@@ -1,0 +1,50 @@
+{
+  "schema_version": "0.1",
+  "visible_face_only": true,
+  "species": [
+    {
+      "id": "soybean",
+      "display_name": "Soybean",
+      "coat_colours": ["yellow", "greenish", "green_blue", "red", "brown", "white", "black", "other"],
+      "pattern_types": ["solid", "bicoloured", "spotted", "mottled", "other", "unknown"],
+      "pilot_vocabulary_pending": false
+    },
+    {
+      "id": "lupinus_mutabilis",
+      "display_name": "Lupinus mutabilis",
+      "coat_colours": ["other", "unknown"],
+      "pattern_types": ["other", "unknown"],
+      "pilot_vocabulary_pending": true
+    },
+    {
+      "id": "lupinus_polyphyllus",
+      "display_name": "Lupinus polyphyllus",
+      "coat_colours": ["other", "unknown"],
+      "pattern_types": ["other", "unknown"],
+      "pilot_vocabulary_pending": true
+    },
+    {
+      "id": "lupinus_mexicanus",
+      "display_name": "Lupinus mexicanus",
+      "coat_colours": ["other", "unknown"],
+      "pattern_types": ["other", "unknown"],
+      "pilot_vocabulary_pending": true
+    }
+  ],
+  "wrinkling_scale": {
+    "0": "none",
+    "1": "slight",
+    "2": "clear",
+    "3": "severe",
+    "ungradable": "ungradable"
+  },
+  "damage_flags": ["cracking", "missing_or_peeling_coat", "chipping_or_breakage", "discoloration"],
+  "global_damage_scale": {
+    "0": "sound",
+    "1": "minor",
+    "2": "moderate",
+    "3": "severe",
+    "ungradable": "ungradable"
+  },
+  "occlusion": ["none", "touching_only", "partial", "heavy"]
+}

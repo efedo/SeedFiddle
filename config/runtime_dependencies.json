@@ -1,0 +1,43 @@
+{
+  "python": {
+    "minimum": "3.12.0",
+    "maximum_exclusive": "3.15.0",
+    "recommended": "3.12"
+  },
+  "packages": [
+    {
+      "distribution": "PySide6",
+      "import_name": "PySide6",
+      "install_spec": "PySide6==6.11.1",
+      "minimum": "6.10.0",
+      "maximum_exclusive": "7.0.0",
+      "purpose": "desktop interface"
+    },
+    {
+      "distribution": "numpy",
+      "import_name": "numpy",
+      "install_spec": "numpy==2.5.1",
+      "minimum": "2.0.0",
+      "maximum_exclusive": "3.0.0",
+      "purpose": "array and image data"
+    },
+    {
+      "distribution": "opencv-python",
+      "import_name": "cv2",
+      "install_spec": "opencv-python==5.0.0.93",
+      "minimum": "4.10.0",
+      "maximum_exclusive": "6.0.0",
+      "purpose": "image decoding and legacy geometric calibration"
+    },
+    {
+      "distribution": "torch",
+      "import_name": "torch",
+      "install_spec": "torch==2.13.0",
+      "minimum": "2.5.0",
+      "maximum_exclusive": "3.0.0",
+      "purpose": "CUDA image analysis, segmentation diagnostics, and trait inference",
+      "index_url": "https://download.pytorch.org/whl/cu126",
+      "required": true
+    }
+  ]
+}

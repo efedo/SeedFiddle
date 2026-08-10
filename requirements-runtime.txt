@@ -1,0 +1,8 @@
+# Preferred development versions. The bootstrapper accepts already-installed
+# compatible versions within the ranges in config/runtime_dependencies.json.
+# The bootstrapper installs PyTorch from the CUDA wheel index declared in
+# config/runtime_dependencies.json rather than from the default package index.
+PySide6==6.11.1
+numpy==2.5.1
+opencv-python==5.0.0.93
+torch==2.13.0

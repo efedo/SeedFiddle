@@ -1,0 +1,1 @@
+"""Seed Vision tests."""
