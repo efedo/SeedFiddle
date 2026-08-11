@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QSizePolicy,
     QSpinBox,
@@ -473,6 +474,14 @@ class PipelineInspector(QWidget):
                 editor.setCurrentText(str(value))
                 editor.currentTextChanged.connect(
                     lambda selected, key=spec.key: self._parameter_edited(key, selected)
+                )
+            elif spec.kind == "text":
+                editor = QLineEdit(self.parameter_container)
+                editor.setText(str(value))
+                editor.editingFinished.connect(
+                    lambda key=spec.key, widget=editor: self._parameter_edited(
+                        key, widget.text()
+                    )
                 )
             else:
                 editor = QCheckBox(self.parameter_container)

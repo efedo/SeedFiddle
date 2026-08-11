@@ -73,6 +73,12 @@ class PipelineNode:
             value = str(value)
             if value not in spec.choices:
                 raise ValueError(f"{value!r} is not valid for {spec.label}.")
+        elif spec.kind == "text":
+            value = str(value).strip()
+            if not value:
+                raise ValueError(f"{spec.label} cannot be empty.")
+        elif spec.kind != "bool":
+            raise ValueError(f"Unsupported parameter kind {spec.kind!r}.")
         if spec.minimum is not None and value < spec.minimum:
             raise ValueError(f"{spec.label} must be at least {spec.minimum}.")
         if spec.maximum is not None and value > spec.maximum:
@@ -816,6 +822,30 @@ def build_default_pipeline() -> PipelineGraph:
         ParameterSpec("minimum_marker_score", "Minimum marker likelihood", "float", 0.0, 1.0, 0.01, "Reject automatic centre maxima below this combined likelihood."),
         ParameterSpec("minimum_instance_area_fraction", "Minimum area / diameter²", "float", 0.05, 1.40, 0.01, "Remove watershed regions smaller than this calibrated seed-relative area."),
         ParameterSpec("maximum_instance_area_fraction", "Confidence max area / diameter²", "float", 0.06, 3.00, 0.01, "Larger assigned regions receive an explicit oversize confidence penalty."),
+    )
+    unet_instance_parameters = (
+        ParameterSpec("checkpoint_path", "Checkpoint path", "text", description="Project-relative or absolute path to a self-describing multi-head U-Net checkpoint."),
+        ParameterSpec("tile_size", "Inference tile size", "int", 128, 2048, 64, "Square CUDA inference tile. Larger tiles reduce seams but consume more GPU memory."),
+        ParameterSpec("tile_overlap", "Tile overlap", "int", 0, 512, 16, "Context blended between adjacent tiles; it must remain below half the tile size."),
+        ParameterSpec("interior_threshold", "Interior threshold", "float", 0.05, 0.95, 0.01, "Minimum learned seed-interior probability admitted to watershed."),
+        ParameterSpec("centre_threshold", "Centre threshold", "float", 0.05, 0.95, 0.01, "Minimum learned centre likelihood accepted as an automatic watershed marker."),
+        ParameterSpec("centre_minimum_separation_fraction", "Centre spacing / diameter", "float", 0.05, 1.50, 0.01, "Minimum marker spacing relative to calibrated seed diameter."),
+        ParameterSpec("minimum_instance_area_fraction", "Minimum area / diameter squared", "float", 0.01, 1.50, 0.01, "Decoded regions below this calibrated area are rejected."),
+        ParameterSpec("physical_boundary_weight", "Physical-boundary weight", "float", 0.0, 1.0, 0.02, "Contribution of the learned physical boundary to watershed elevation."),
+        ParameterSpec("distance_topography_weight", "Distance-topography weight", "float", 0.0, 1.0, 0.02, "Contribution of inverse learned interior depth to watershed elevation."),
+        ParameterSpec("pattern_boundary_discount", "Pattern-boundary discount", "float", 0.0, 1.0, 0.02, "How strongly predicted non-physical coat-pattern boundaries suppress physical boundary cost."),
+        ParameterSpec("uncertainty_penalty", "Uncertainty penalty", "float", 0.0, 1.0, 0.02, "Contribution of predicted dense-task uncertainty to watershed elevation and review confidence."),
+        ParameterSpec("foreground_erosion_fraction", "Foreground erosion / diameter", "float", 0.0, 0.10, 0.005, "Optional calibrated inward correction of the learned interior support before watershed."),
+    )
+    stardist_instance_parameters = (
+        ParameterSpec("checkpoint_path", "Checkpoint path", "text", description="Project-relative or absolute path to a self-describing native PyTorch StarDist checkpoint."),
+        ParameterSpec("tile_size", "Inference tile size", "int", 128, 2048, 64, "Square CUDA inference tile. Larger tiles reduce seams but consume more GPU memory."),
+        ParameterSpec("tile_overlap", "Tile overlap", "int", 0, 512, 16, "Context blended between adjacent tiles; it must remain below half the tile size."),
+        ParameterSpec("object_threshold", "Object threshold", "float", 0.05, 0.95, 0.01, "Minimum learned StarDist object probability retained as a polygon centre."),
+        ParameterSpec("nms_iou_threshold", "NMS overlap threshold", "float", 0.05, 0.95, 0.01, "Polygon overlap above which the lower-scored StarDist candidate is suppressed."),
+        ParameterSpec("local_maximum_radius_fraction", "Peak radius / diameter", "float", 0.01, 0.50, 0.01, "Object-probability non-maximum radius relative to calibrated seed diameter."),
+        ParameterSpec("minimum_instance_area_fraction", "Minimum area / diameter squared", "float", 0.01, 1.50, 0.01, "Decoded polygons below this calibrated area are rejected."),
+        ParameterSpec("maximum_candidates", "Maximum polygon candidates", "int", 64, 16384, 64, "Safety cap applied after object-probability ranking and before polygon NMS."),
     )
     image_quality_parameters = (
         ParameterSpec("quality_noise_scale_fraction", "Noise scale / diameter", "float", 0.005, 0.30, 0.005, "Local high-frequency scale used for sensor/noise risk."),
@@ -1660,6 +1690,102 @@ def build_default_pipeline() -> PipelineGraph:
             ),
         ),
         PipelineNode(
+            "unet_instances",
+            "U-Net + watershed instances",
+            "Learned segmentation",
+            "Distinguish physical contacts from non-physical coat-pattern boundaries",
+            2100,
+            1060,
+            details=(
+                "A native PyTorch residual U-Net predicts seed interior, physical seed "
+                "boundaries, apparent non-physical coat-pattern boundaries, centre/depth "
+                "evidence, and calibrated auxiliary error probabilities. Marker-controlled watershed discounts "
+                "predicted coat-pattern edges while following physical contacts. Applied "
+                "instance annotations remain authoritative markers. Model logits are cached "
+                "separately, so decoder-only setting changes do not repeat inference. This "
+                "node is disabled until a compatible reviewed-data checkpoint exists."
+            ),
+            enabled=False,
+            bypassable=True,
+            status=NodeStatus.BYPASSED,
+            status_detail="Disabled; compatible trained checkpoint required",
+            parameters={
+                "checkpoint_path": "models/unet_seed_instances.pt",
+                "tile_size": 512,
+                "tile_overlap": 96,
+                "interior_threshold": 0.50,
+                "centre_threshold": 0.30,
+                "centre_minimum_separation_fraction": 0.32,
+                "minimum_instance_area_fraction": 0.15,
+                "physical_boundary_weight": 0.72,
+                "distance_topography_weight": 0.28,
+                "pattern_boundary_discount": 0.80,
+                "uncertainty_penalty": 0.20,
+                "foreground_erosion_fraction": 0.0,
+            },
+            parameter_specs=unet_instance_parameters,
+            input_ports=(
+                ("image", "Corrected image/evidence"),
+                ("scale", "Seed diameter"),
+                ("annotations", "Painted IDs"),
+            ),
+            output_ports=(
+                ("instances", "Instance identities"),
+                ("physical", "Physical boundaries"),
+                ("pattern", "Pattern boundaries"),
+                ("uncertainty", "Uncertainty"),
+            ),
+            inline_parameters=(
+                ("interior_threshold", "Interior minimum"),
+                ("centre_threshold", "Centre minimum"),
+                ("pattern_boundary_discount", "Pattern discount"),
+            ),
+        ),
+        PipelineNode(
+            "stardist_instances",
+            "StarDist seed instances",
+            "Learned segmentation",
+            "Predict one scored star-convex polygon for each visible seed",
+            2400,
+            1060,
+            details=(
+                "A native PyTorch StarDist model predicts object probability and radial "
+                "distance along a checkpointed ray bank. Local maxima form star-convex "
+                "seed polygons and overlap-aware non-maximum suppression removes duplicate "
+                "proposals. The strong object-shape prior is intended to ignore internal "
+                "coat transitions but may require U-Net boundary refinement for concave or "
+                "occluded seeds. This node is disabled until a compatible checkpoint exists."
+            ),
+            enabled=False,
+            bypassable=True,
+            status=NodeStatus.BYPASSED,
+            status_detail="Disabled; compatible trained checkpoint required",
+            parameters={
+                "checkpoint_path": "models/stardist_seed_instances.pt",
+                "tile_size": 512,
+                "tile_overlap": 96,
+                "object_threshold": 0.45,
+                "nms_iou_threshold": 0.35,
+                "local_maximum_radius_fraction": 0.08,
+                "minimum_instance_area_fraction": 0.15,
+                "maximum_candidates": 4096,
+            },
+            parameter_specs=stardist_instance_parameters,
+            input_ports=(
+                ("image", "Corrected image/evidence"),
+                ("scale", "Seed diameter"),
+            ),
+            output_ports=(
+                ("instances", "Instance identities"),
+                ("object", "Object probability"),
+                ("uncertainty", "Radial uncertainty"),
+            ),
+            inline_parameters=(
+                ("object_threshold", "Object minimum"),
+                ("nms_iou_threshold", "NMS overlap"),
+            ),
+        ),
+        PipelineNode(
             "radial_profile", "Per-seed radial profiles", "GPU diagnostic",
             "Compare each assigned pixel with expected centre-to-edge lightness",
             2400, 540,
@@ -2085,6 +2211,28 @@ def build_default_pipeline() -> PipelineGraph:
             "SensorNoise",
             source_port="sensor_noise",
         ),
+        PipelineConnection("metadata", "unet_instances", "SpeciesCondition", target_port="image"),
+        PipelineConnection("deskew_colour", "unet_instances", "CorrectedImage", target_port="image"),
+        PipelineConnection("layout_detection", "unet_instances", "DishRegion", target_port="image"),
+        PipelineConnection("seed_scale_estimation", "unet_instances", "SeedDiameter", target_port="scale"),
+        PipelineConnection("foreground_segmentation", "unet_instances", "ForegroundColour", target_port="image"),
+        PipelineConnection("foreground_noise_likelihood", "unet_instances", "ForegroundNoise", target_port="image"),
+        PipelineConnection("background_likelihood", "unet_instances", "BackgroundColour", target_port="image"),
+        PipelineConnection("refined_background_likelihood", "unet_instances", "BackgroundNoise", target_port="image"),
+        PipelineConnection("edge_gradients", "unet_instances", "EdgeMagnitude", target_port="image"),
+        PipelineConnection("illumination_decomposition", "unet_instances", "LocalLighting", target_port="image"),
+        PipelineConnection("image_quality", "unet_instances", "SensorNoise", target_port="image"),
+        PipelineConnection("metadata", "stardist_instances", "SpeciesCondition", target_port="image"),
+        PipelineConnection("deskew_colour", "stardist_instances", "CorrectedImage", target_port="image"),
+        PipelineConnection("layout_detection", "stardist_instances", "DishRegion", target_port="image"),
+        PipelineConnection("seed_scale_estimation", "stardist_instances", "SeedDiameter", target_port="scale"),
+        PipelineConnection("foreground_segmentation", "stardist_instances", "ForegroundColour", target_port="image"),
+        PipelineConnection("foreground_noise_likelihood", "stardist_instances", "ForegroundNoise", target_port="image"),
+        PipelineConnection("background_likelihood", "stardist_instances", "BackgroundColour", target_port="image"),
+        PipelineConnection("refined_background_likelihood", "stardist_instances", "BackgroundNoise", target_port="image"),
+        PipelineConnection("edge_gradients", "stardist_instances", "EdgeMagnitude", target_port="image"),
+        PipelineConnection("illumination_decomposition", "stardist_instances", "LocalLighting", target_port="image"),
+        PipelineConnection("image_quality", "stardist_instances", "SensorNoise", target_port="image"),
         PipelineConnection("instance_masks", "radial_profile", "ProvisionalInstances"),
         PipelineConnection("seed_scale_estimation", "radial_profile", "SeedDiameter"),
         PipelineConnection("seed_interior", "radial_profile", "InteriorProbability"),

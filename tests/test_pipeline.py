@@ -14,8 +14,8 @@ class PipelineModelTests(unittest.TestCase):
         order = graph.topological_order()
         self.assertEqual(order[0], "raw_images")
         self.assertEqual(set(order), set(graph.nodes))
-        self.assertEqual(len(graph.nodes), 28)
-        self.assertEqual(len(graph.connections), 60)
+        self.assertEqual(len(graph.nodes), 30)
+        self.assertEqual(len(graph.connections), 82)
         self.assertEqual(
             graph.upstream("perimeter_background_reference"),
             ("deskew_colour", "layout_detection", "scale_calibration"),
@@ -312,6 +312,7 @@ class PipelineModelTests(unittest.TestCase):
         expected = set(roots)
         for root in roots:
             expected.update(graph.downstream(root, recursive=True))
+        expected.update({"unet_instances", "stardist_instances"})
         self.assertEqual(
             {node.identifier for node in graph.nodes.values() if not node.enabled},
             expected,
@@ -324,6 +325,8 @@ class PipelineModelTests(unittest.TestCase):
         self.assertFalse(graph.node("distance_candidates").enabled)
         self.assertFalse(graph.node("instance_masks").enabled)
         self.assertFalse(graph.node("surface_darkness_gradients").enabled)
+        self.assertFalse(graph.node("unet_instances").enabled)
+        self.assertFalse(graph.node("stardist_instances").enabled)
         self.assertIn("surface_darkness_gradients", graph.unused_nodes)
 
     def test_disabling_a_node_disables_all_dependents(self) -> None:

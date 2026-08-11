@@ -30,8 +30,8 @@ class PipelineCanvasTests(unittest.TestCase):
         self.application.processEvents()
         canvas.fit_graph()
         self.assertGreater(canvas.horizontalScrollBar().maximum(), 0)
-        self.assertEqual(len(canvas.node_items), 28)
-        self.assertEqual(len(canvas.edge_items), 60)
+        self.assertEqual(len(canvas.node_items), 30)
+        self.assertEqual(len(canvas.edge_items), 82)
         self.assertNotIn("circle_candidates", canvas.node_items)
         self.assertEqual(canvas.unused_nodes_button.text(), "Unused nodes (20)")
         unused_actions = [
@@ -189,8 +189,8 @@ class PipelineCanvasTests(unittest.TestCase):
         self.application.processEvents()
         self.assertEqual(restored, ["circle_candidates"])
         self.assertIn("circle_candidates", canvas.node_items)
-        self.assertEqual(len(canvas.node_items), 29)
-        self.assertEqual(len(canvas.edge_items), 67)
+        self.assertEqual(len(canvas.node_items), 31)
+        self.assertEqual(len(canvas.edge_items), 89)
         self.assertEqual(canvas.unused_nodes_button.text(), "Unused nodes (19)")
         self.assertTrue(canvas.unused_nodes_button.isEnabled())
         self.assertTrue(canvas.node_items["circle_candidates"].isSelected())
@@ -203,7 +203,7 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertNotIn("circle_candidates", canvas.node_items)
         self.assertIn("circle_candidates", graph.unused_nodes)
         self.assertFalse(graph.node("circle_candidates").enabled)
-        self.assertEqual(len(canvas.edge_items), 60)
+        self.assertEqual(len(canvas.edge_items), 82)
         self.assertEqual(canvas.unused_nodes_button.text(), "Unused nodes (20)")
         restore_action = next(
             action

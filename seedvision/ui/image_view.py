@@ -105,6 +105,18 @@ OVERLAY_MODES = {
     "procedural_centres",
     "procedural_instances",
     "procedural_confidence",
+    "unet_interior",
+    "unet_physical_boundary",
+    "unet_pattern_boundary",
+    "unet_centres",
+    "unet_distance",
+    "unet_uncertainty",
+    "unet_instances",
+    "unet_confidence",
+    "stardist_object_probability",
+    "stardist_radial_uncertainty",
+    "stardist_instances",
+    "stardist_confidence",
     "none",
     *(mode for _, mode in ADVANCED_OVERLAY_LABELS),
 }
@@ -706,6 +718,52 @@ class ImageView(QGraphicsView):
             self._render_context_annotations(result)
             return
 
+        learned_name = (
+            "unet_instances"
+            if self._overlay_mode.startswith("unet_")
+            else "stardist_instances"
+            if self._overlay_mode.startswith("stardist_")
+            else None
+        )
+        if learned_name is not None:
+            learned = getattr(result, learned_name, None)
+            if learned is not None:
+                identity_mode = self._overlay_mode == learned_name
+                confidence_mode = self._overlay_mode == learned_name.replace(
+                    "instances", "confidence"
+                )
+                if identity_mode:
+                    self._render_rgba_overlay(
+                        learned.instance_rgba(), *result.crop_offset
+                    )
+                    self._render_learned_centres(result, learned)
+                elif confidence_mode:
+                    self._render_scalar_raster(
+                        learned.confidence_raster(),
+                        *result.crop_offset,
+                        valid_mask=result.layers.valid_mask,
+                    )
+                else:
+                    raster_key = {
+                        "unet_interior": "interior",
+                        "unet_physical_boundary": "physical_boundary",
+                        "unet_pattern_boundary": "pattern_boundary",
+                        "unet_centres": "centre",
+                        "unet_distance": "distance",
+                        "unet_uncertainty": "uncertainty",
+                        "stardist_object_probability": "object_probability",
+                        "stardist_radial_uncertainty": "radial_uncertainty",
+                    }[self._overlay_mode]
+                    self._render_scalar_raster(
+                        learned.rasters[raster_key],
+                        *result.crop_offset,
+                        valid_mask=result.layers.valid_mask,
+                    )
+                    if self._overlay_mode == "unet_centres":
+                        self._render_learned_centres(result, learned)
+            self._render_context_annotations(result)
+            return
+
         advanced = getattr(result, "advanced", None)
         if advanced is not None and (
             self._overlay_mode in advanced.rasters
@@ -909,6 +967,25 @@ class ImageView(QGraphicsView):
                 if index < len(procedural.instance_confidences)
                 else 0.0
             )
+            colour = QColor.fromHsvF(0.33 * confidence, 0.95, 1.0)
+            pen = QPen(colour, 3.0)
+            pen.setCosmetic(True)
+            radius = 3.0 + 3.0 * confidence
+            item = self._scene.addEllipse(
+                float(x + offset_x - radius),
+                float(y + offset_y - radius),
+                radius * 2.0,
+                radius * 2.0,
+                pen,
+            )
+            item.setOpacity(self._overlay_opacity)
+            item.setZValue(15)
+            self._overlay_items.append(item)
+
+    def _render_learned_centres(self, result, learned) -> None:
+        offset_x, offset_y = result.crop_offset
+        for index, (x, y) in enumerate(learned.centres_xy):
+            confidence = float(learned.instance_confidences[index])
             colour = QColor.fromHsvF(0.33 * confidence, 0.95, 1.0)
             pen = QPen(colour, 3.0)
             pen.setCosmetic(True)

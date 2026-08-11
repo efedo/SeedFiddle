@@ -170,8 +170,52 @@ repository or `images/` while troubleshooting the environment.
   required by image-backed tests. Generated diagnostics under `artifacts/` are
   ignored.
 
-The full suite passed 124 tests on Python 3.12.10 with PyTorch CUDA on an RTX
-3070 on 2026-08-11 after the procedural separation and visual/performance QA.
+The full suite passed 134 tests on Python 3.12.10 with PyTorch CUDA on an RTX
+3070 on 2026-08-11 after the learned-segmentation implementation and
+visual/performance QA.
+
+## Learned instance-segmentation implementation
+
+Work continues on branch `codex/learned-instance-segmentation`. Two independent
+disabled-by-default active-DAG nodes now provide native PyTorch learned
+segmentation:
+
+- **U-Net + watershed instances** predicts interior, physical boundary,
+  apparent/non-physical coat-pattern boundary, centre plus normalized distance,
+  and auxiliary dense-error probability. Its pattern-aware marker watershed can
+  also consume applied painted instance IDs.
+- **StarDist seed instances** predicts object probability, checkpointed radial
+  distances, and auxiliary radial-error probability, with spatially indexed
+  polygon NMS and local rasterization.
+
+Both nodes use self-describing checkpoints, canonical seed-scale normalization,
+overlap-blended CUDA inference, separate forward/decoder caches, typed controls,
+node-owned overlays, and explicit missing-checkpoint warnings. Checkpoint
+binaries under `models/` are ignored and neither node is enabled automatically.
+
+The new `seedvision/learning/` package includes manifest/annotation I/O,
+content-addressed target caches, exact StarDist target construction,
+deterministic augmentation, training/early stopping, quantitative instance and
+dense-head metrics, validation-only decoder search, frozen test evaluation,
+comparison/contact-sheet rendering, unlabelled fixture review, and an
+experimental U-Net-gated StarDist decoder. Applied complete masks can be
+exported from the File menu; new samples are deliberately marked unreviewed.
+
+The controlled 72-image/1,474-instance synthetic engineering set produced a
+locked-test U-Net F1 of 1.000, PQ 0.820, count error 0, physical-boundary F1
+0.989, and pattern-boundary F1 0.839. StarDist locked-test F1 was 0.996 and PQ
+0.825, but validation and real-image false-object behaviour was substantially
+worse. These are not scientific results.
+
+Visual review on all eleven real fixtures shows that simulator-only weights do
+not transfer: neutral-species U-Net counts are severely low except on sparse
+`IMG_9670c` (15 predicted versus 16 visibly present), while StarDist strongly
+overpredicts pattern/rim/background objects. The repo still has no complete
+human-reviewed real instance masks, so no real accuracy can be calculated and
+publication readiness cannot be claimed. See
+`docs/LEARNED_INSTANCE_SEGMENTATION.md` for the protocol and
+`docs/LEARNED_SEGMENTATION_RESULTS.md` for exact metrics, timings, fixture-by-
+fixture visual findings, and the required real-data path.
 
 ## Procedural separation outcome and next approach
 

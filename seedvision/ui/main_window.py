@@ -44,6 +44,7 @@ from PySide6.QtWidgets import (
 )
 
 from seedvision.pipeline import NodeStatus, build_default_pipeline
+from seedvision.learning.pipeline import StarDistPipelineSettings, UNetPipelineSettings
 from seedvision.annotation import EdgeTraceOptions, ShapeSnapOptions, SmartFillOptions
 from seedvision.segmentation import (
     AdvancedAnalysisSettings,
@@ -82,6 +83,8 @@ OVERLAY_NODE_IDS = (
     "edge_traces",
     "seed_edge_curves",
     "procedural_instances",
+    "unet_instances",
+    "stardist_instances",
     *ADVANCED_NODE_MODES.keys(),
 )
 CALIBRATION_NODE_IDS = (
@@ -180,6 +183,18 @@ OVERLAY_NODE_OWNERS = {
     "procedural_centres": "procedural_instances",
     "procedural_instances": "procedural_instances",
     "procedural_confidence": "procedural_instances",
+    "unet_interior": "unet_instances",
+    "unet_physical_boundary": "unet_instances",
+    "unet_pattern_boundary": "unet_instances",
+    "unet_centres": "unet_instances",
+    "unet_distance": "unet_instances",
+    "unet_uncertainty": "unet_instances",
+    "unet_instances": "unet_instances",
+    "unet_confidence": "unet_instances",
+    "stardist_object_probability": "stardist_instances",
+    "stardist_radial_uncertainty": "stardist_instances",
+    "stardist_instances": "stardist_instances",
+    "stardist_confidence": "stardist_instances",
 }
 for _node_id, _mode in ADVANCED_NODE_MODES.items():
     OVERLAY_NODE_OWNERS[_mode] = _node_id
@@ -231,6 +246,10 @@ class _AnalysisTask(QRunnable):
         layer_settings: AnalysisLayerSettings,
         advanced_settings: AdvancedAnalysisSettings,
         procedural_settings: ProceduralInstanceSettings,
+        unet_settings: UNetPipelineSettings,
+        stardist_settings: StarDistPipelineSettings,
+        learning_root: Path,
+        species: str,
         background_reference_points: tuple[tuple[float, float], ...],
         foreground_reference_points: tuple[tuple[float, float], ...],
         background_reference_mask: np.ndarray | None,
@@ -252,6 +271,10 @@ class _AnalysisTask(QRunnable):
         self.layer_settings = layer_settings
         self.advanced_settings = advanced_settings
         self.procedural_settings = procedural_settings
+        self.unet_settings = unet_settings
+        self.stardist_settings = stardist_settings
+        self.learning_root = Path(learning_root)
+        self.species = str(species)
         self.background_reference_points = background_reference_points
         self.foreground_reference_points = foreground_reference_points
         self.background_reference_mask = (
@@ -299,6 +322,8 @@ class _AnalysisTask(QRunnable):
                 layer_settings=self.layer_settings,
                 advanced_settings=self.advanced_settings,
                 procedural_settings=self.procedural_settings,
+                unet_settings=self.unet_settings,
+                stardist_settings=self.stardist_settings,
                 background_reference_points=self.background_reference_points,
                 foreground_reference_points=self.foreground_reference_points,
                 background_reference_mask=self.background_reference_mask,
@@ -313,6 +338,8 @@ class _AnalysisTask(QRunnable):
                 progress_callback=lambda node_id, state: self.signals.node_progress.emit(
                     str(self.path), node_id, state, self.pipeline_revision
                 ),
+                learning_root=self.learning_root,
+                species=self.species,
             )
         except Exception as error:  # noqa: BLE001 - cross-thread error boundary
             self.signals.failed.emit(
@@ -472,12 +499,21 @@ class MainWindow(QMainWindow):
             self._instance_annotation_editing_changed
         )
 
+        self.export_learning_sample_action = QAction(
+            "Export applied seed labels for learningâ€¦", self
+        )
+        self.export_learning_sample_action.setEnabled(False)
+        self.export_learning_sample_action.triggered.connect(
+            self._export_learning_sample
+        )
+
         self.diagnostics_action = QAction("Runtime summary", self)
         self.diagnostics_action.triggered.connect(self._show_runtime_summary)
 
     def _build_menu(self) -> None:
         file_menu = self.menuBar().addMenu("&File")
         file_menu.addAction(self.open_action)
+        file_menu.addAction(self.export_learning_sample_action)
         file_menu.addSeparator()
         file_menu.addAction(self.exit_action)
 
@@ -555,6 +591,18 @@ class MainWindow(QMainWindow):
             ("Procedural centre likelihood", "procedural_centres"),
             ("Procedural seed instances", "procedural_instances"),
             ("Procedural instance confidence", "procedural_confidence"),
+            ("U-Net seed interior", "unet_interior"),
+            ("U-Net physical boundary", "unet_physical_boundary"),
+            ("U-Net coat-pattern boundary", "unet_pattern_boundary"),
+            ("U-Net centre likelihood", "unet_centres"),
+            ("U-Net interior distance", "unet_distance"),
+            ("U-Net uncertainty", "unet_uncertainty"),
+            ("U-Net watershed instances", "unet_instances"),
+            ("U-Net instance confidence", "unet_confidence"),
+            ("StarDist object probability", "stardist_object_probability"),
+            ("StarDist radial uncertainty", "stardist_radial_uncertainty"),
+            ("StarDist seed instances", "stardist_instances"),
+            ("StarDist instance confidence", "stardist_confidence"),
             *ADVANCED_OVERLAY_LABELS,
             ("None", "none"),
         ]
@@ -1575,6 +1623,14 @@ class MainWindow(QMainWindow):
             **self.pipeline.node("procedural_instances").parameters
         )
 
+    def _unet_settings(self) -> UNetPipelineSettings:
+        return UNetPipelineSettings(**self.pipeline.node("unet_instances").parameters)
+
+    def _stardist_settings(self) -> StarDistPipelineSettings:
+        return StarDistPipelineSettings(
+            **self.pipeline.node("stardist_instances").parameters
+        )
+
     def _calibration_settings(self) -> CalibrationSettings:
         return CalibrationSettings(
             ruler_length_mm=float(
@@ -1630,6 +1686,10 @@ class MainWindow(QMainWindow):
             self._layer_settings(),
             self._advanced_settings(),
             self._procedural_settings(),
+            self._unet_settings(),
+            self._stardist_settings(),
+            self._root,
+            self.species_combo.currentText(),
             (),
             (),
             self._applied_background_reference_masks.get(key),
@@ -1716,7 +1776,21 @@ class MainWindow(QMainWindow):
             self._show_analysis_result(result)
         self._update_analysis_availability()
         self._sync_background_controls()
-        if (
+        learned_result = (
+            result.unet_instances
+            if self.pipeline.node("unet_instances").enabled
+            and result.unet_instances is not None
+            else result.stardist_instances
+            if self.pipeline.node("stardist_instances").enabled
+            and result.stardist_instances is not None
+            else None
+        )
+        if learned_result is not None:
+            self.statusBar().showMessage(
+                f"Generated {learned_result.count:,} reviewable learned instances "
+                f"for {path.name}; scientific validation is still required."
+            )
+        elif (
             self.pipeline.is_active("procedural_instances")
             and result.procedural_instances is not None
         ):
@@ -1875,7 +1949,13 @@ class MainWindow(QMainWindow):
                 f"Fallback estimate ≈ {result.estimated_seed_diameter_px:.0f} px"
             )
         displayed_count = (
-            result.procedural_instances.count
+            result.unet_instances.count
+            if self.pipeline.node("unet_instances").enabled
+            and result.unet_instances is not None
+            else result.stardist_instances.count
+            if self.pipeline.node("stardist_instances").enabled
+            and result.stardist_instances is not None
+            else result.procedural_instances.count
             if self.pipeline.is_active("procedural_instances")
             and result.procedural_instances is not None
             else result.count
@@ -2045,6 +2125,16 @@ class MainWindow(QMainWindow):
         annotation_count = self._mask_pixel_count(annotations)
         annotations_dirty = (
             key in self._instance_annotations_dirty if key is not None else False
+        )
+        self.export_learning_sample_action.setEnabled(
+            has_result
+            and not running
+            and not annotations_dirty
+            and bool(
+                self._mask_pixel_count(
+                    self._applied_instance_annotations.get(key or "")
+                )
+            )
         )
         self.clear_background_points_button.setEnabled(
             bool(background_count) and not running
@@ -2749,6 +2839,7 @@ class MainWindow(QMainWindow):
         affected = {
             "instance_masks",
             "procedural_instances",
+            "unet_instances",
             *self.pipeline.downstream("instance_masks", recursive=True),
         }
         self.pipeline.invalidate(affected)
@@ -2765,6 +2856,12 @@ class MainWindow(QMainWindow):
                 NodeStatus.WARNING,
                 f"{count:,} authoritative painted marker(s); updating",
             )
+        if self.pipeline.node("unet_instances").enabled:
+            self.pipeline.set_status(
+                "unet_instances",
+                NodeStatus.WARNING,
+                f"{count:,} authoritative painted marker(s); updating decoder",
+            )
         self.pipeline.set_status(
             "measurements", NodeStatus.BLOCKED, "Requires reviewed masks"
         )
@@ -2774,6 +2871,7 @@ class MainWindow(QMainWindow):
         if (
             self.pipeline.node("instance_masks").enabled
             or self.pipeline.is_active("procedural_instances")
+            or self.pipeline.node("unet_instances").enabled
         ):
             self._analyses.pop(key, None)
             self._analyze_current_image(dirty_nodes=affected)
@@ -2787,6 +2885,83 @@ class MainWindow(QMainWindow):
                 if self.pipeline.node("instance_masks").enabled
                 else " Enable an instance-separation node to evaluate them downstream."
             )
+        )
+
+    @Slot()
+    def _export_learning_sample(self) -> None:
+        """Persist applied labels and the exact corrected model inputs."""
+
+        key = self._current_image_key()
+        if key is None:
+            return
+        result = self._analyses.get(key)
+        labels = self._applied_instance_annotations.get(key)
+        path = self.image_view.image_path
+        if result is None or labels is None or path is None or not np.any(labels):
+            QMessageBox.warning(
+                self,
+                "Nothing to export",
+                "Run the analysis and apply at least one complete seed-instance mask first.",
+            )
+            return
+        answer = QMessageBox.question(
+            self,
+            "Export learning labels",
+            "Export only complete, edge-accurate instance masks. Interior scribbles or "
+            "partly filled seeds are not valid training labels.\n\n"
+            "This export will be marked unreviewed and cannot be used as scientific "
+            "test evidence until an independent reviewer updates the manifest. Continue?",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        directory = QFileDialog.getExistingDirectory(
+            self,
+            "Choose or create a learning dataset folder",
+            str(self._root / "learning-data"),
+        )
+        if not directory:
+            return
+        destination = Path(directory)
+        manifest_path = destination / "manifest.json"
+        identifier_base = path.stem
+        identifier = identifier_base
+        revision = 1
+        while (destination / f"{identifier}.features.npz").exists():
+            revision += 1
+            identifier = f"{identifier_base}_r{revision}"
+        try:
+            from seedvision.learning.export import export_analysis_sample
+
+            dataset_id = "seed-fiddle-human-annotations"
+            if manifest_path.is_file():
+                dataset_id = json.loads(
+                    manifest_path.read_text(encoding="utf-8")
+                )["dataset_id"]
+            sample = export_analysis_sample(
+                result,
+                labels,
+                manifest_path,
+                dataset_id=dataset_id,
+                identifier=identifier,
+                species=self.species_combo.currentText(),
+                group=identifier_base,
+                split="train",
+                reviewed=False,
+                annotation_revision=str(revision),
+                notes=(
+                    "Exported from applied Seed Fiddle instance annotations; "
+                    "requires independent review."
+                ),
+            )
+        except Exception as error:  # noqa: BLE001 - user-facing export boundary
+            QMessageBox.critical(self, "Learning export failed", str(error))
+            return
+        QMessageBox.information(
+            self,
+            "Learning sample exported",
+            f"Exported {sample.identifier} to:\n{manifest_path}\n\n"
+            "Assign its capture/lot group, split, reviewer, and review state in the "
+            "manifest before training. Keep the locked test split independent.",
         )
 
     @Slot()
@@ -3070,6 +3245,18 @@ class MainWindow(QMainWindow):
             "procedural_centres": "Marker likelihood from smoothed material, physical-boundary depth and annular boundary support; dots are retained markers.",
             "procedural_instances": "Marker-controlled watershed instance identities. Dot colour runs red to green with per-instance confidence.",
             "procedural_confidence": "Per-instance marker, boundary and calibrated-area confidence mapped back onto every assigned pixel.",
+            "unet_interior": "Learned probability that each pixel belongs to visible seed material.",
+            "unet_physical_boundary": "Learned probability of a true physical seed/background or seed/seed boundary.",
+            "unet_pattern_boundary": "Learned probability of an apparent but non-physical internal coat-pattern boundary.",
+            "unet_centres": "Learned centre likelihood after support from normalized interior depth.",
+            "unet_distance": "Learned normalized distance from seed interior pixels to their physical boundary.",
+            "unet_uncertainty": "Aleatoric uncertainty aggregated across the U-Net dense tasks.",
+            "unet_instances": "Pattern-aware marker-controlled watershed identities decoded from the five-head U-Net.",
+            "unet_confidence": "Per-instance U-Net confidence mapped onto decoded pixels; it is not a validation guarantee.",
+            "stardist_object_probability": "Learned probability that a pixel is a suitable centre for a star-convex seed polygon.",
+            "stardist_radial_uncertainty": "Learned uncertainty of the StarDist radial boundary regression.",
+            "stardist_instances": "Star-convex seed polygons retained after score ordering and overlap-aware non-maximum suppression.",
+            "stardist_confidence": "Per-polygon StarDist score mapped onto decoded pixels; it is not a validation guarantee.",
             "seed_interior_probability": "Soft seed-interior evidence from foreground colour, learned foreground noise, and inverse background support.",
             "boundary_confidence": "Hue is the continuous directed boundary normal (0° = 360°); brightness is boundary confidence.",
             "boundary_magnitude": "Boundary confidence without direction encoding.",
@@ -3259,6 +3446,29 @@ class MainWindow(QMainWindow):
                 NodeStatus.WARNING if low_fraction >= 0.20 else NodeStatus.COMPLETE,
                 f"{procedural.count:,} instances; median confidence "
                 f"{median_confidence:.0%}; {low_fraction:.0%} require review",
+            )
+        for node_id, learned in (
+            ("unet_instances", getattr(result, "unet_instances", None)),
+            ("stardist_instances", getattr(result, "stardist_instances", None)),
+        ):
+            if learned is None:
+                continue
+            median_confidence = (
+                float(np.median(learned.instance_confidences))
+                if learned.count
+                else 0.0
+            )
+            low_fraction = (
+                float(np.mean(learned.instance_confidences < 0.55))
+                if learned.count
+                else 1.0
+            )
+            self.pipeline.set_status(
+                node_id,
+                NodeStatus.WARNING,
+                f"{learned.count:,} instances; median confidence "
+                f"{median_confidence:.0%}; {low_fraction:.0%} require review; "
+                "not publication-validated",
             )
         background_mode = result.layers.background_mode
         colour_profile = result.layers.background_colour_profile
@@ -3490,6 +3700,8 @@ class MainWindow(QMainWindow):
             "edge_ridges",
             "edge_traces",
             "procedural_instances",
+            "unet_instances",
+            "stardist_instances",
         ):
             node = self.pipeline.node(node_id)
             if self.pipeline.is_active(node_id) and node.enabled:
@@ -3776,9 +3988,34 @@ class MainWindow(QMainWindow):
             values = dict(self.pipeline.node(node_id).parameters)
             values[key] = value
             ProceduralInstanceSettings(**values)
+        elif node_id == "unet_instances":
+            values = dict(self.pipeline.node(node_id).parameters)
+            values[key] = value
+            UNetPipelineSettings(**values)
+        elif node_id == "stardist_instances":
+            values = dict(self.pipeline.node(node_id).parameters)
+            values[key] = value
+            StarDistPipelineSettings(**values)
 
     @Slot(str, bool)
     def _pipeline_enabled_changed(self, node_id: str, enabled: bool) -> None:
+        if enabled and node_id in {"unet_instances", "stardist_instances"}:
+            configured = Path(
+                str(self.pipeline.node(node_id).parameters["checkpoint_path"])
+            ).expanduser()
+            checkpoint = (
+                configured.resolve()
+                if configured.is_absolute()
+                else (self._root / configured).resolve()
+            )
+            if not checkpoint.is_file():
+                QMessageBox.warning(
+                    self,
+                    "Learned-model checkpoint not found",
+                    f"{checkpoint}\n\nTrain or copy a compatible checkpoint, then enable this node.",
+                )
+                self.pipeline_inspector.set_node(self.pipeline.node(node_id))
+                return
         try:
             affected = self.pipeline.set_enabled(node_id, enabled)
         except ValueError as error:
@@ -3834,7 +4071,20 @@ class MainWindow(QMainWindow):
         if self.image_view.image_path is None:
             return
         self.pipeline.set_status("metadata", NodeStatus.COMPLETE, species)
-        self.pipeline_canvas.refresh(("metadata",))
+        affected = {
+            node_id
+            for node_id in ("unet_instances", "stardist_instances")
+            if self.pipeline.node(node_id).enabled
+        }
+        if affected:
+            self.pipeline.invalidate(affected)
+            key = self._current_image_key()
+            if key is not None:
+                self._cache_dirty_nodes.setdefault(key, set()).update(affected)
+                self._analyses.pop(key, None)
+                if key in self._analysis_caches:
+                    self._analyze_current_image(dirty_nodes=affected)
+        self.pipeline_canvas.refresh(("metadata", *affected))
 
     def _update_analysis_availability(self) -> None:
         path = self.image_view.image_path

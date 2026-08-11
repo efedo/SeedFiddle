@@ -10,3 +10,7 @@ build/
 dist/
 *.egg-info/
 wheels/*.whl
+models/*.pt
+models/*.pth
+models/*.ckpt
+.seedfiddle-cache/

@@ -13,6 +13,15 @@ procedural instance-separation node, and selectable analysis overlays in the
 desktop interface. See [`PLAN.md`](PLAN.md) for the
 agreed scope and delivery sequence.
 
+It also includes disabled-by-default native PyTorch implementations of a
+five-logical-head U-Net plus pattern-aware watershed and 2-D StarDist. Their
+training, validation, fixture-review, and data-export paths are implemented,
+but no checkpoint has been validated for scientific use on real photographs.
+See [`docs/LEARNED_INSTANCE_SEGMENTATION.md`](docs/LEARNED_INSTANCE_SEGMENTATION.md)
+for the protocol and
+[`docs/LEARNED_SEGMENTATION_RESULTS.md`](docs/LEARNED_SEGMENTATION_RESULTS.md)
+for the current evidence and limitations.
+
 ## Launch
 
 With compatible dependencies already available:
@@ -38,6 +47,46 @@ python .\seed_vision.py --offline
 ```
 
 `--offline` requires compatible wheel files in `wheels/`.
+
+## Learned instance models
+
+Applied, complete seed-instance masks can be exported from **File > Export
+applied seed labels for learningâ€¦**. The export stores the exact corrected,
+canonical-scale feature stack, display image, labels, species condition, and an
+unreviewed manifest record. Interior marks or partly filled seeds are not valid
+training masks; update reviewer, capture/lot group, split, and revision metadata
+before training.
+
+The launcher provides reproducible headless actions. For example:
+
+```powershell
+python .\seed_vision.py --learning-audit D:\data\seed-masks\manifest.json
+
+python .\seed_vision.py --train-learned-model unet_watershed `
+  --learning-manifest D:\data\seed-masks\manifest.json `
+  --model-output D:\models\unet.pt
+
+python .\seed_vision.py --train-learned-model stardist `
+  --learning-manifest D:\data\seed-masks\manifest.json `
+  --model-output D:\models\stardist.pt --training-rays 32
+
+python .\seed_vision.py --evaluate-learned-model D:\models\unet.pt `
+  --learning-manifest D:\data\seed-masks\manifest.json `
+  --learning-split validation --optimize-decoder `
+  --evaluation-output D:\reports\unet-validation
+
+python .\seed_vision.py --evaluate-learned-model D:\models\unet.pt `
+  --learning-manifest D:\data\seed-masks\manifest.json `
+  --learning-split test `
+  --decoder-settings D:\reports\unet-validation\evaluation.json `
+  --evaluation-output D:\reports\unet-test
+```
+
+Decoder search is rejected outside the validation split. Synthetic-data and
+unlabelled-fixture commands exist for software/domain-shift checks, but their
+reports always remain scientifically invalid. Checkpoint files are ignored by
+Git and must be distributed with their immutable manifest, provenance, training
+report, and held-out evaluation report.
 
 The window automatically lists supported files in `images/`. Select an image
 and choose **Run active pipeline**. The pipeline first detects the 4×6

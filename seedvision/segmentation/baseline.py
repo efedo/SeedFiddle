@@ -36,6 +36,13 @@ from seedvision.segmentation.procedural import (
     ProceduralInstanceSettings,
     procedural_seed_instances,
 )
+from seedvision.learning.contracts import LearnedInstanceResult, ModelFamily
+from seedvision.learning.pipeline import (
+    StarDistPipelineSettings,
+    UNetPipelineSettings,
+    decode_pipeline_model,
+    predict_pipeline_model,
+)
 
 from seedvision.calibration.geometry import (
     DishCircle,
@@ -354,6 +361,8 @@ class BaselineAnalysis:
     foreground_reference_count: int
     node_timings_seconds: dict[str, float] = field(default_factory=dict)
     procedural_instances: ProceduralInstanceResult | None = None
+    unet_instances: LearnedInstanceResult | None = None
+    stardist_instances: LearnedInstanceResult | None = None
     method: str = "classical fused review proposals"
     approximate: bool = True
 
@@ -393,6 +402,8 @@ def analyze_path(
     layer_settings: AnalysisLayerSettings | None = None,
     advanced_settings: AdvancedAnalysisSettings | None = None,
     procedural_settings: ProceduralInstanceSettings | None = None,
+    unet_settings: UNetPipelineSettings | None = None,
+    stardist_settings: StarDistPipelineSettings | None = None,
     *,
     background_reference_points: tuple[tuple[float, float], ...] = (),
     foreground_reference_points: tuple[tuple[float, float], ...] = (),
@@ -406,6 +417,8 @@ def analyze_path(
     node_cache: PipelineAnalysisCache | None = None,
     dirty_nodes: set[str] | frozenset[str] = frozenset(),
     progress_callback=None,
+    learning_root: Path | None = None,
+    species: str = "unknown",
 ) -> BaselineAnalysis:
     """Read and analyze an image from disk."""
 
@@ -448,6 +461,8 @@ def analyze_path(
         layer_settings=layer_settings,
         advanced_settings=advanced_settings,
         procedural_settings=procedural_settings,
+        unet_settings=unet_settings,
+        stardist_settings=stardist_settings,
         background_reference_points=background_reference_points,
         foreground_reference_points=foreground_reference_points,
         background_reference_mask=background_reference_mask,
@@ -460,6 +475,8 @@ def analyze_path(
         node_cache=node_cache,
         dirty_nodes=dirty_nodes,
         progress_callback=progress_callback,
+        learning_root=learning_root,
+        species=species,
         _initial_timings=(
             {"raw_images": raw_elapsed}
             if raw_elapsed is not None
@@ -478,6 +495,8 @@ def analyze_image(
     layer_settings: AnalysisLayerSettings | None = None,
     advanced_settings: AdvancedAnalysisSettings | None = None,
     procedural_settings: ProceduralInstanceSettings | None = None,
+    unet_settings: UNetPipelineSettings | None = None,
+    stardist_settings: StarDistPipelineSettings | None = None,
     background_reference_points: tuple[tuple[float, float], ...] = (),
     foreground_reference_points: tuple[tuple[float, float], ...] = (),
     background_reference_mask: np.ndarray | None = None,
@@ -490,6 +509,8 @@ def analyze_image(
     node_cache: PipelineAnalysisCache | None = None,
     dirty_nodes: set[str] | frozenset[str] = frozenset(),
     progress_callback=None,
+    learning_root: Path | None = None,
+    species: str = "unknown",
     _initial_timings: dict[str, float] | None = None,
 ) -> BaselineAnalysis:
     """Generate approximate seed proposals for a controlled-layout image."""
@@ -498,6 +519,9 @@ def analyze_image(
     layer_settings = layer_settings or AnalysisLayerSettings()
     advanced_settings = advanced_settings or AdvancedAnalysisSettings()
     procedural_settings = procedural_settings or ProceduralInstanceSettings()
+    unet_settings = unet_settings or UNetPipelineSettings()
+    stardist_settings = stardist_settings or StarDistPipelineSettings()
+    learning_root = Path.cwd() if learning_root is None else Path(learning_root)
     cuda_context = CudaContext.resolve(
         requested=advanced_settings.compute_device,
         allow_cpu_fallback=advanced_settings.allow_cpu_fallback
@@ -1488,8 +1512,131 @@ def analyze_image(
         procedural_result = None
         values.pop("segmentation.procedural_instances", None)
 
+    learned_evidence = {
+        "foreground_colour": foreground_probability,
+        "foreground_noise": layers.foreground_noise_likelihood,
+        "background_colour": layers.background_likelihood,
+        "background_noise": layers.refined_background_likelihood,
+        "edge_magnitude": layers.edge_likelihood,
+        "sensor_noise": advanced.rasters["sensor_noise"],
+        "flattened_grayscale": advanced.rasters["flattened_grayscale"],
+        "shadow": advanced.rasters["shadow_likelihood"],
+        "highlight": advanced.rasters["highlight_likelihood"],
+    }
+    learned_upstream_dirty = (
+        calibration_dirty
+        or layout_dirty
+        or seed_scale_dirty
+        or foreground_dirty
+        or advanced_dirty
+        or bool(
+            layer_dirty
+            & {
+                "background_likelihood",
+                "refined_background_likelihood",
+                "foreground_noise_likelihood",
+                "edge_gradients",
+            }
+        )
+    )
+
+    def learned_branch(node_id, family, branch_settings):
+        enabled = enabled_nodes is not None and node_id in enabled_nodes
+        prefix = f"learning.{node_id}"
+        if not enabled:
+            for suffix in ("outputs", "checkpoint", "inference_signature", "decoder_signature", "result"):
+                values.pop(f"{prefix}.{suffix}", None)
+            return None
+        configured_checkpoint = Path(branch_settings.checkpoint_path).expanduser()
+        resolved_checkpoint = (
+            configured_checkpoint.resolve()
+            if configured_checkpoint.is_absolute()
+            else (learning_root / configured_checkpoint).resolve()
+        )
+        checkpoint_fingerprint = (
+            resolved_checkpoint.stat().st_mtime_ns
+            if resolved_checkpoint.is_file()
+            else None
+        )
+        inference_signature = (
+            *branch_settings.inference_signature,
+            str(resolved_checkpoint).casefold(),
+            checkpoint_fingerprint,
+            str(species),
+            round(float(seed_diameter), 5),
+        )
+        inference_dirty = (
+            learned_upstream_dirty
+            or values.get(f"{prefix}.inference_signature") != inference_signature
+            or f"{prefix}.outputs" not in values
+        )
+        decoder_signature = (
+            *branch_settings.decoder_signature,
+            round(float(seed_diameter), 5),
+            None
+            if local_seed_instance_annotations is None
+            else hash(local_seed_instance_annotations.tobytes()),
+        )
+        decoder_dirty = (
+            inference_dirty
+            or node_id in dirty
+            or values.get(f"{prefix}.decoder_signature") != decoder_signature
+            or f"{prefix}.result" not in values
+        )
+        if decoder_dirty:
+            with timings.measure(node_id):
+                if inference_dirty:
+                    outputs, checkpoint_id = predict_pipeline_model(
+                        family,
+                        root=learning_root,
+                        settings=branch_settings,
+                        source_bgr=layers.gpu_source,
+                        valid_mask=layers.gpu_valid,
+                        evidence=learned_evidence,
+                        species=species,
+                        seed_diameter_px=seed_diameter,
+                    )
+                    values[f"{prefix}.outputs"] = outputs
+                    values[f"{prefix}.checkpoint"] = checkpoint_id
+                    values[f"{prefix}.inference_signature"] = inference_signature
+                else:
+                    outputs = values[f"{prefix}.outputs"]
+                    checkpoint_id = values[f"{prefix}.checkpoint"]
+                decoded = decode_pipeline_model(
+                    family,
+                    outputs,
+                    settings=branch_settings,
+                    seed_diameter_px=seed_diameter,
+                    painted_instances=(
+                        local_seed_instance_annotations
+                        if family is ModelFamily.UNET_WATERSHED
+                        else None
+                    ),
+                    valid_mask=layers.valid_mask,
+                    checkpoint_id=checkpoint_id,
+                )
+            values[f"{prefix}.result"] = decoded
+            values[f"{prefix}.decoder_signature"] = decoder_signature
+            computed.append(node_id)
+            return decoded
+        reused.append(node_id)
+        return values[f"{prefix}.result"]
+
+    unet_result = learned_branch(
+        "unet_instances", ModelFamily.UNET_WATERSHED, unet_settings
+    )
+    stardist_result = learned_branch(
+        "stardist_instances", ModelFamily.STARDIST, stardist_settings
+    )
+
     reported_instance_count = (
-        procedural_result.count if procedural_result is not None else len(proposals)
+        unet_result.count
+        if unet_result is not None
+        else stardist_result.count
+        if stardist_result is not None
+        else procedural_result.count
+        if procedural_result is not None
+        else len(proposals)
     )
     nominal_seed_area = np.pi * (seed_diameter * 0.5) ** 2
     usable_dish_area = np.pi * (
@@ -1504,7 +1651,9 @@ def analyze_image(
         crowding = "low"
 
     warnings = [
-        "Untrained procedural instances; review and correction are required."
+        "Learned instances are not publication-validated; review and correction are required."
+        if unet_result is not None or stardist_result is not None
+        else "Untrained procedural instances; review and correction are required."
         if procedural_result is not None
         else "Untrained classical proposals; review and correction are required."
     ]
@@ -1618,8 +1767,14 @@ def analyze_image(
         foreground_reference_count=accepted_foreground_points,
         node_timings_seconds=node_timings_seconds,
         procedural_instances=procedural_result,
+        unet_instances=unet_result,
+        stardist_instances=stardist_result,
         method=(
-            "procedural marker-controlled watershed (review required)"
+            "multi-head U-Net plus pattern-aware watershed (review required)"
+            if unet_result is not None
+            else "StarDist star-convex polygons (review required)"
+            if stardist_result is not None
+            else "procedural marker-controlled watershed (review required)"
             if procedural_result is not None
             else "classical fused review proposals"
         ),
