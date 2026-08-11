@@ -1,4 +1,4 @@
-"""Single launch point for the Seed Vision desktop application."""
+"""Single launch point for the Seed Fiddle desktop application."""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ from seedvision.bootstrap import (  # noqa: E402 - intentionally after ROOT setu
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Launch the local Seed Vision desktop application."
+        description="Launch the local Seed Fiddle desktop application."
     )
     parser.add_argument(
         "--environment",
@@ -109,7 +109,7 @@ def _run_with_interpreter(
         return subprocess.call(command)
     except OSError as error:
         raise BootstrapError(
-            f"Could not start Seed Vision with {python_executable}: {error}"
+            f"Could not start Seed Fiddle with {python_executable}: {error}"
         ) from error
 
 
@@ -148,7 +148,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"Acceleration: {probe_torch(report.python_executable)}")
                 print(
                     "Image pipeline: PyTorch CUDA for full-raster calibration, "
-                    "proposals, masks, diagnostic overlays, boundaries, and traits; "
+                    "colour/noise probabilities, image-quality products, and edge "
+                    "diagnostics, with experimental proposal/mask stages retained "
+                    "in the node toolbox; "
                     "OpenCV/NumPy CPU for decoding, Qt display, and compact metadata."
                 )
             return 0 if report.ready else 2
@@ -220,7 +222,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             bootstrap="never",
         )
     except BootstrapError as error:
-        print(f"Seed Vision bootstrap error: {error}", file=sys.stderr)
+        print(f"Seed Fiddle bootstrap error: {error}", file=sys.stderr)
         return 2
 
 

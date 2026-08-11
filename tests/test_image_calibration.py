@@ -220,6 +220,40 @@ class ImageCalibrationTests(unittest.TestCase):
         self.assertLess(dish.inner_radius, dish.outer_radius)
         self.assertEqual(dish.radius, dish.outer_radius)
 
+    def test_pilot_batch_rims_match_the_calibrated_96_mm_outer_edges(self) -> None:
+        import cv2
+        from pathlib import Path
+
+        from seedvision.calibration.geometry import detect_dish
+        from seedvision.calibration.image import calibrate_image
+        from seedvision.cuda import CudaContext
+
+        root = Path(__file__).resolve().parents[1]
+        paths = sorted((root / "images").glob("*.JPG"))
+        if not all(path.exists() for path in paths):
+            self.skipTest("Petri-rim regression fixtures are not present")
+        if len(paths) != 11:
+            self.skipTest("The complete eleven-image pilot batch is not present")
+        context = CudaContext.resolve()
+        for path in paths:
+            image = cv2.imread(str(path), cv2.IMREAD_COLOR)
+            calibration = calibrate_image(image, cuda_context=context)
+            dish = detect_dish(
+                calibration.corrected_bgr,
+                cuda_context=context,
+                image_tensor=calibration.gpu_corrected_bgr,
+                pixels_per_mm=calibration.pixels_per_mm,
+            )
+            with self.subTest(path=path.name):
+                self.assertIsNotNone(calibration.pixels_per_mm)
+                inner_radius_mm = dish.inner_radius / calibration.pixels_per_mm
+                outer_radius_mm = dish.outer_radius / calibration.pixels_per_mm
+                self.assertGreaterEqual(inner_radius_mm, 43.5)
+                self.assertLessEqual(inner_radius_mm, 47.0)
+                self.assertGreaterEqual(outer_radius_mm, 47.0)
+                self.assertLessEqual(outer_radius_mm, 49.2)
+                self.assertTrue(dish.rim_pair_detected)
+
 
 if __name__ == "__main__":
     unittest.main()

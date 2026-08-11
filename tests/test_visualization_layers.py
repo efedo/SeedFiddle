@@ -105,6 +105,45 @@ class AnalysisLayerTests(unittest.TestCase):
             float(np.mean(displayed[56:72, 56:72, 0])),
         )
 
+    def test_foreground_noise_profile_classifies_foreground_texture(self) -> None:
+        import numpy as np
+
+        from seedvision.visualization import build_analysis_layers
+
+        rng = np.random.default_rng(41)
+        image = np.full((96, 96, 3), 218, dtype=np.uint8)
+        foreground_noise = rng.integers(
+            -22, 23, size=(44, 44, 1), dtype=np.int16
+        )
+        image[26:70, 26:70] = np.clip(
+            105 + foreground_noise, 0, 255
+        ).astype(np.uint8)
+        foreground_probability = np.full((96, 96), 18, np.uint8)
+        foreground_probability[26:70, 26:70] = 235
+        valid = np.full((96, 96), 255, np.uint8)
+        layers = build_analysis_layers(
+            image,
+            valid,
+            np.empty((0, 2), np.float32),
+            np.empty((0,), np.float32),
+            32.0,
+            offset_x=0,
+            offset_y=0,
+            foreground_probability=foreground_probability,
+            instance_masks_enabled=False,
+            seed_edge_curves_enabled=False,
+        )
+
+        likelihood = np.asarray(layers.foreground_noise_likelihood)
+        self.assertGreater(
+            float(np.mean(likelihood[34:62, 34:62])),
+            float(np.mean(likelihood[4:20, 4:20])) + 80.0,
+        )
+        self.assertGreater(
+            layers.foreground_noise_frequency_profile.separation, 0.5
+        )
+        self.assertEqual(layers.foreground_noise_rgba().shape, (96, 96, 4))
+
     def test_refined_background_exposes_24_directed_rays_and_colour_range(self) -> None:
         import cv2
         import numpy as np
@@ -250,6 +289,96 @@ class AnalysisLayerTests(unittest.TestCase):
             self.assertEqual(int(layers.background_likelihood[y, x]), expected)
             self.assertEqual(int(layers.refined_background_likelihood[y, x]), expected)
 
+    def test_layer_exclusions_fit_negative_evidence_without_pixel_overrides(self) -> None:
+        import numpy as np
+
+        from seedvision.cuda import CudaContext
+        from seedvision.segmentation.baseline import BaselineSettings, _foreground_feature
+        from seedvision.visualization import build_analysis_layers
+
+        image = np.full((96, 96, 3), 220, np.uint8)
+        image[24:72, 24:72] = (65, 85, 135)
+        valid = np.full((96, 96), 255, np.uint8)
+        foreground_probability = np.full((96, 96), 20, np.uint8)
+        foreground_probability[24:72, 24:72] = 235
+        background_exclusion = np.zeros((96, 96), dtype=bool)
+        foreground_exclusion = np.zeros((96, 96), dtype=bool)
+        background_exclusion[8:16, 8:16] = True
+        foreground_exclusion[40:48, 40:48] = True
+        baseline_layers = build_analysis_layers(
+            image,
+            valid,
+            np.empty((0, 2), np.float32),
+            np.empty((0,), np.float32),
+            32.0,
+            offset_x=0,
+            offset_y=0,
+            foreground_probability=foreground_probability,
+            instance_masks_enabled=False,
+            seed_edge_curves_enabled=False,
+        )
+        layers = build_analysis_layers(
+            image,
+            valid,
+            np.empty((0, 2), np.float32),
+            np.empty((0,), np.float32),
+            32.0,
+            offset_x=0,
+            offset_y=0,
+            foreground_probability=foreground_probability,
+            background_exclusion_mask=background_exclusion,
+            foreground_exclusion_mask=foreground_exclusion,
+            instance_masks_enabled=False,
+            seed_edge_curves_enabled=False,
+        )
+        background_colour = np.asarray(layers.background_likelihood)
+        background_noise = np.asarray(layers.refined_background_likelihood)
+        foreground_noise = np.asarray(layers.foreground_noise_likelihood)
+        # The brush coordinates are not overwritten. A same-colour unpainted
+        # patch receives the same fitted negative-colour response.
+        remote_background = np.s_[8:16, 70:78]
+        self.assertGreater(float(np.mean(background_colour[background_exclusion])), 0.0)
+        self.assertAlmostEqual(
+            float(np.mean(background_colour[background_exclusion])),
+            float(np.mean(background_colour[remote_background])),
+            delta=2.0,
+        )
+        self.assertLess(
+            float(np.mean(background_colour[remote_background])),
+            float(np.mean(np.asarray(baseline_layers.background_likelihood)[remote_background])),
+        )
+        self.assertGreater(float(np.mean(background_noise[background_exclusion])), 0.0)
+        self.assertGreater(float(np.mean(foreground_noise[foreground_exclusion])), 0.0)
+        self.assertTrue(
+            layers.background_colour_profile.excluded_component_centres_lab
+        )
+
+        baseline_foreground = _foreground_feature(
+            image,
+            BaselineSettings(),
+            CudaContext.resolve(requested="cpu"),
+            seed_diameter=32.0,
+        )
+        foreground_result = _foreground_feature(
+            image,
+            BaselineSettings(),
+            CudaContext.resolve(requested="cpu"),
+            foreground_exclusion_mask=foreground_exclusion,
+            seed_diameter=32.0,
+        )
+        foreground_colour = np.asarray(foreground_result[1])
+        remote_foreground = np.s_[40:48, 56:64]
+        self.assertGreater(float(np.mean(foreground_colour[foreground_exclusion])), 0.0)
+        self.assertAlmostEqual(
+            float(np.mean(foreground_colour[foreground_exclusion])),
+            float(np.mean(foreground_colour[remote_foreground])),
+            delta=2.0,
+        )
+        self.assertLess(
+            float(np.mean(foreground_colour[remote_foreground])),
+            float(np.mean(np.asarray(baseline_foreground[1])[remote_foreground])),
+        )
+
     def test_vertical_edge_encodes_a_directed_vertical_tangent(self) -> None:
         import numpy as np
 
@@ -323,6 +452,186 @@ class AnalysisLayerTests(unittest.TestCase):
                 offset_y=0,
             )
         self.assertEqual(gradients.call_count, 1)
+
+    def test_surface_gradients_separate_lightening_and_darkening_directions(self) -> None:
+        import numpy as np
+
+        from seedvision.cuda import CudaContext
+        from seedvision.cuda.layers import surface_directional_darkness_gradients
+        from seedvision.visualization import AnalysisLayerSettings
+
+        height = width = 96
+        ramp = np.tile(
+            np.linspace(20, 235, width, dtype=np.uint8), (height, 1)
+        )
+        image = np.repeat(ramp[:, :, None], 3, axis=2)
+        valid = np.full((height, width), 255, dtype=np.uint8)
+        products = surface_directional_darkness_gradients(
+            image,
+            valid,
+            30.0,
+            AnalysisLayerSettings(
+                surface_gradient_blur_sigma=0.5,
+                surface_gradient_radius_fraction=0.30,
+                surface_gradient_direction_step_degrees=15,
+                surface_gradient_sample_count=8,
+            ),
+            cuda_context=CudaContext.resolve(requested="cpu"),
+        )
+        center = np.s_[20:76, 20:76]
+        lightening_hue = np.asarray(products.lightening_hue_raster)[center]
+        darkening_hue = np.asarray(products.darkening_hue_raster)[center]
+
+        self.assertGreater(
+            float(np.median(products.lightening_magnitude[center].cpu())), 0.5
+        )
+        self.assertGreater(
+            float(np.median(products.darkening_magnitude[center].cpu())), 0.5
+        )
+        # Increasing L* toward image-right is 0 degrees (hue 0); decreasing L*
+        # toward image-left is 180 degrees (OpenCV hue 90).
+        self.assertLessEqual(float(np.median(lightening_hue)), 2.0)
+        self.assertAlmostEqual(float(np.median(darkening_hue)), 90.0, delta=2.0)
+
+    def test_surface_gradient_ceiling_zeros_only_slopes_above_the_limit(self) -> None:
+        import numpy as np
+
+        from seedvision.cuda import CudaContext
+        from seedvision.cuda.layers import (
+            surface_directional_darkness_gradients,
+            upper_magnitude_surface_gradient,
+        )
+        from seedvision.visualization import AnalysisLayerSettings
+
+        ramp = np.tile(np.linspace(20, 235, 96, dtype=np.uint8), (96, 1))
+        image = np.repeat(ramp[:, :, None], 3, axis=2)
+        valid = np.full((96, 96), 255, dtype=np.uint8)
+        products = surface_directional_darkness_gradients(
+            image,
+            valid,
+            30.0,
+            AnalysisLayerSettings(
+                surface_gradient_blur_sigma=0.5,
+                surface_gradient_radius_fraction=0.30,
+            ),
+            cuda_context=CudaContext.resolve(requested="cpu"),
+        )
+        ceiling = 1.0
+        filtered, _ = upper_magnitude_surface_gradient(
+            products, ceiling, "lightening"
+        )
+        filtered_values = np.asarray(filtered)
+        raw_values = products.lightening_magnitude.cpu().numpy()
+        above = raw_values > ceiling
+        retained = (raw_values > 0.0) & (raw_values <= ceiling)
+
+        self.assertTrue(np.any(above))
+        self.assertTrue(np.any(retained))
+        self.assertFalse(np.any(filtered_values[above]))
+        self.assertTrue(np.any(filtered_values[retained] > 0))
+
+    def test_frequency_noise_masks_separate_darkness_and_colour_energy(self) -> None:
+        import cv2
+        import numpy as np
+
+        from seedvision.cuda import CudaContext
+        from seedvision.cuda.layers import multiscale_frequency_noise_masks
+        from seedvision.visualization import AnalysisLayerSettings
+
+        valid = np.full((128, 128), 255, dtype=np.uint8)
+        checker = (np.indices((128, 64)).sum(axis=0) % 2) * 56 - 28
+        darkness = np.full((128, 128), 140, dtype=np.int16)
+        darkness[:, 64:] += checker
+        darkness_image = np.repeat(
+            np.clip(darkness, 0, 255).astype(np.uint8)[:, :, None], 3, axis=2
+        )
+        settings = AnalysisLayerSettings(
+            frequency_noise_fine_scale_fraction=0.008,
+            frequency_noise_medium_scale_fraction=0.030,
+            frequency_noise_coarse_scale_fraction=0.100,
+            frequency_noise_context_fraction=0.025,
+        )
+        context = CudaContext.resolve(requested="cpu")
+        darkness_products = multiscale_frequency_noise_masks(
+            darkness_image,
+            valid,
+            40.0,
+            settings,
+            cuda_context=context,
+        )
+        darkness_fine = np.asarray(darkness_products.darkness_masks[0])
+        self.assertGreater(
+            float(np.mean(darkness_fine[:, 72:120])),
+            float(np.mean(darkness_fine[:, 8:56])) + 40.0,
+        )
+
+        lab = np.empty((128, 128, 3), dtype=np.uint8)
+        lab[:, :, 0] = 150
+        lab[:, :, 1] = 128
+        lab[:, :, 2] = 128
+        lab[:, 64:, 1] = np.where(checker > 0, 170, 86).astype(np.uint8)
+        colour_image = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+        colour_products = multiscale_frequency_noise_masks(
+            colour_image,
+            valid,
+            40.0,
+            settings,
+            cuda_context=context,
+        )
+        colour_fine = np.asarray(colour_products.colour_masks[0])
+        self.assertGreater(
+            float(np.mean(colour_fine[:, 72:120])),
+            float(np.mean(colour_fine[:, 8:56])) + 40.0,
+        )
+        self.assertEqual(len(colour_products.darkness_masks), 3)
+        self.assertEqual(len(colour_products.colour_masks), 3)
+        self.assertTrue(
+            all(np.asarray(mask).shape == (128, 128) for mask in (
+                *colour_products.darkness_masks,
+                *colour_products.colour_masks,
+            ))
+        )
+
+    def test_surface_filter_change_reuses_gradient_and_frequency_node_caches(self) -> None:
+        import numpy as np
+
+        from seedvision.visualization import AnalysisLayerSettings, build_analysis_layers
+
+        ramp = np.tile(np.linspace(25, 225, 80, dtype=np.uint8), (80, 1))
+        image = np.repeat(ramp[:, :, None], 3, axis=2)
+        valid = np.full((80, 80), 255, dtype=np.uint8)
+        cache: dict[str, object] = {}
+        build_analysis_layers(
+            image,
+            valid,
+            np.empty((0, 2), dtype=np.float32),
+            np.empty((0,), dtype=np.float32),
+            28.0,
+            offset_x=0,
+            offset_y=0,
+            cache_values=cache,
+        )
+        first_gradients = cache["layer.surface_darkness_gradients"]
+        first_filter = cache["layer.lightening_gradient_ceiling"]
+        first_frequency = cache["layer.frequency_noise_masks"]
+
+        build_analysis_layers(
+            image,
+            valid,
+            np.empty((0, 2), dtype=np.float32),
+            np.empty((0,), dtype=np.float32),
+            28.0,
+            offset_x=0,
+            offset_y=0,
+            cache_values=cache,
+            dirty_nodes={"lightening_gradient_ceiling"},
+            settings=AnalysisLayerSettings(
+                lightening_gradient_maximum_slope=0.75
+            ),
+        )
+        self.assertIs(cache["layer.surface_darkness_gradients"], first_gradients)
+        self.assertIs(cache["layer.frequency_noise_masks"], first_frequency)
+        self.assertIsNot(cache["layer.lightening_gradient_ceiling"], first_filter)
 
     def test_user_edge_gamma_setting_changes_edge_likelihood(self) -> None:
         import numpy as np
@@ -445,6 +754,37 @@ class AnalysisLayerTests(unittest.TestCase):
         for label in range(1, 5):
             self.assertGreater(np.count_nonzero(layers.instance_labels == label), 0)
 
+    def test_annotated_seed_interiors_seed_distinct_instance_masks(self) -> None:
+        import cv2
+        import numpy as np
+
+        from seedvision.visualization import build_analysis_layers
+
+        image = np.full((96, 96, 3), 225, dtype=np.uint8)
+        cv2.circle(image, (30, 30), 12, (30, 75, 175), -1)
+        cv2.circle(image, (65, 65), 12, (45, 105, 155), -1)
+        valid = np.full((96, 96), 255, dtype=np.uint8)
+        annotations = np.zeros((96, 96), dtype=np.uint16)
+        annotations[28:33, 28:33] = 17
+        annotations[63:68, 63:68] = 42
+        layers = build_analysis_layers(
+            image,
+            valid,
+            np.empty((0, 2), dtype=np.float32),
+            np.empty((0,), dtype=np.float32),
+            28.0,
+            offset_x=0,
+            offset_y=0,
+            seed_instance_annotations=annotations,
+        )
+
+        labels = np.asarray(layers.instance_labels)
+        self.assertEqual(int(labels[30, 30]), 1)
+        self.assertEqual(int(labels[65, 65]), 2)
+        self.assertEqual(set(np.unique(labels)), {0, 1, 2})
+        self.assertGreater(np.count_nonzero(labels == 1), 25)
+        self.assertGreater(np.count_nonzero(labels == 2), 25)
+
     def test_boundary_troubleshooting_products_stay_lazy_until_viewed(self) -> None:
         import cv2
         import numpy as np
@@ -470,6 +810,14 @@ class AnalysisLayerTests(unittest.TestCase):
             layers.instance_labels,
             layers.edge_likelihood,
             layers.directed_edge_hue,
+            layers.lightening_surface_gradient,
+            layers.lightening_surface_direction,
+            layers.darkening_surface_gradient,
+            layers.darkening_surface_direction,
+            layers.weak_lightening_surface_gradient,
+            layers.weak_darkening_surface_gradient,
+            *layers.darkness_frequency_noise_masks,
+            *layers.colour_frequency_noise_masks,
             layers.edge_ridges,
             layers.edge_trace_labels,
             layers.edge_trace_continuity,

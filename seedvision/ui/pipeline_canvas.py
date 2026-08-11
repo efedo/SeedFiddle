@@ -16,12 +16,18 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QMenu,
     QSpinBox,
     QStyleOptionGraphicsItem,
+    QToolButton,
     QWidget,
 )
 
 from seedvision.pipeline import NodeStatus, PipelineConnection, PipelineGraph, PipelineNode
+from seedvision.ui.canvas_controls import style_canvas_control_bar
 
 
 STATUS_COLOURS = {
@@ -92,6 +98,7 @@ class PipelineNodeItem(QGraphicsObject):
             self._footer_y = max(84.0, port_bottom + 4.0)
         self.height = max(self.DEFAULT_HEIGHT, self._footer_y + 24.0)
         self._inline_editors: dict[str, QWidget] = {}
+        self._adjacent = False
         self.setPos(node.x, node.y)
         self.setFlags(
             self.GraphicsItemFlag.ItemIsMovable
@@ -206,6 +213,13 @@ class PipelineNodeItem(QGraphicsObject):
             editor.setEnabled(self.node.enabled and self.node.implemented)
         self.update()
 
+    def set_adjacent(self, adjacent: bool) -> None:
+        adjacent = bool(adjacent)
+        if adjacent == self._adjacent:
+            return
+        self._adjacent = adjacent
+        self.update()
+
     def paint(
         self,
         painter: QPainter,
@@ -216,8 +230,16 @@ class PipelineNodeItem(QGraphicsObject):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         body = QRectF(0, 0, self.width, self.height)
         selected = self.isSelected()
-        border = QColor("#8fdcff") if selected else QColor("#4d5865")
-        border_pen = QPen(border, 2.5 if selected else 1.3)
+        if selected:
+            border = QColor("#8fdcff")
+            border_width = 2.8
+        elif self._adjacent:
+            border = QColor("#bf7cff")
+            border_width = 2.4
+        else:
+            border = QColor("#4d5865")
+            border_width = 1.3
+        border_pen = QPen(border, border_width)
         border_pen.setCosmetic(True)
         painter.setPen(border_pen)
         painter.setBrush(QColor("#272e36") if self.node.enabled else QColor("#24282d"))
@@ -376,8 +398,11 @@ class PipelineCanvas(QGraphicsView):
     """Zoomable, pannable, and movable Qt pipeline-node canvas."""
 
     node_selected = Signal(str)
+    unused_node_restored = Signal(str)
+    unused_node_shelved = Signal(str)
     parameter_changed = Signal(str, str, object)
     NODE_GAP = 18.0
+    OPTIONAL_TOOLBOX_NODE_IDS = frozenset({"circle_candidates"})
 
     def __init__(self, graph: PipelineGraph, parent=None) -> None:
         super().__init__(parent)
@@ -401,8 +426,69 @@ class PipelineCanvas(QGraphicsView):
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
+        self.setViewportMargins(0, 38, 0, 0)
+        self._build_control_bar()
         self._populate()
         self._scene.selectionChanged.connect(self._selection_changed)
+
+    def _build_control_bar(self) -> None:
+        self.control_bar = QFrame(self)
+        controls = QHBoxLayout(self.control_bar)
+        controls.setContentsMargins(8, 4, 8, 4)
+        controls.setSpacing(5)
+        self.auto_arrange_button = QToolButton(self.control_bar)
+        self.auto_arrange_button.setText("Auto arrange")
+        self.auto_arrange_button.setToolTip(
+            "Reposition nodes into non-overlapping dependency columns while "
+            "reducing connection crossings. Manual overlaps remain allowed."
+        )
+        self.auto_arrange_button.clicked.connect(self.auto_arrange)
+        self.move_to_unused_button = QToolButton(self.control_bar)
+        self.move_to_unused_button.setText("Move to unused")
+        self.move_to_unused_button.setToolTip(
+            "Move the selected optional node and its connections back to the "
+            "Unused nodes toolbox."
+        )
+        self.move_to_unused_button.setEnabled(False)
+        self.move_to_unused_button.clicked.connect(
+            self._shelve_selected_optional_node
+        )
+        self.unused_nodes_button = QToolButton(self.control_bar)
+        self.unused_nodes_button.setPopupMode(
+            QToolButton.ToolButtonPopupMode.InstantPopup
+        )
+        self.unused_nodes_button.setToolTip(
+            "Nodes preserved for possible future use but excluded from the "
+            "current calculation graph."
+        )
+        self.unused_nodes_menu = QMenu(self.unused_nodes_button)
+        self.unused_nodes_button.setMenu(self.unused_nodes_menu)
+        self._refresh_unused_node_toolbox()
+        self.zoom_out_button = QToolButton(self.control_bar)
+        self.zoom_out_button.setText("−")
+        self.zoom_out_button.setToolTip("Zoom out")
+        self.zoom_out_button.clicked.connect(self.zoom_out)
+        self.zoom_label = QLabel("100%", self.control_bar)
+        self.zoom_label.setMinimumWidth(48)
+        self.zoom_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.zoom_in_button = QToolButton(self.control_bar)
+        self.zoom_in_button.setText("+")
+        self.zoom_in_button.setToolTip("Zoom in")
+        self.zoom_in_button.clicked.connect(self.zoom_in)
+        self.fit_button = QToolButton(self.control_bar)
+        self.fit_button.setText("Fit")
+        self.fit_button.setToolTip("Fit the complete pipeline")
+        self.fit_button.clicked.connect(self.fit_graph)
+        controls.addWidget(self.auto_arrange_button)
+        controls.addWidget(self.move_to_unused_button)
+        controls.addWidget(self.unused_nodes_button)
+        controls.addStretch(1)
+        controls.addWidget(self.zoom_out_button)
+        controls.addWidget(self.zoom_label)
+        controls.addWidget(self.zoom_in_button)
+        controls.addWidget(self.fit_button)
+        style_canvas_control_bar(self.control_bar, "pipelineControlBar")
+        self.control_bar.raise_()
 
     def _populate(self) -> None:
         for node in self.graph.nodes.values():
@@ -434,21 +520,128 @@ class PipelineCanvas(QGraphicsView):
         self._update_scene_rect()
 
     def _node_released(self, node_id: str) -> None:
-        """Move a dropped node to the nearest non-overlapping vertical slot."""
+        """Keep the user's exact drop position, including intentional overlaps."""
 
-        item = self.node_items[node_id]
-        new_y = self._nearest_available_y(
-            item,
-            float(item.pos().y()),
-            tuple(other for other in self.node_items.values() if other is not item),
-        )
-        if not math.isclose(new_y, float(item.pos().y()), abs_tol=0.01):
-            self._arranging_nodes = True
-            try:
-                item.setPos(item.pos().x(), new_y)
-            finally:
-                self._arranging_nodes = False
         self._node_moved(node_id)
+
+    def auto_arrange(self) -> None:
+        """Apply a compact Sugiyama-style layout with barycentric ordering."""
+
+        topological = self.graph.topological_order()
+        ranks: dict[str, int] = {}
+        for node_id in topological:
+            upstream = self.graph.upstream(node_id)
+            ranks[node_id] = (
+                0 if not upstream else max(ranks[parent] + 1 for parent in upstream)
+            )
+        columns: dict[int, list[str]] = {}
+        for node_id in topological:
+            columns.setdefault(ranks[node_id], []).append(node_id)
+        for node_ids in columns.values():
+            node_ids.sort(key=lambda identifier: float(self.node_items[identifier].pos().y()))
+
+        def positions() -> dict[str, float]:
+            return {
+                node_id: float(index)
+                for node_ids in columns.values()
+                for index, node_id in enumerate(node_ids)
+            }
+
+        for _ in range(5):
+            ordering = positions()
+            for rank in sorted(columns):
+                if rank == 0:
+                    continue
+                columns[rank].sort(
+                    key=lambda node_id: (
+                        sum(ordering[parent] for parent in self.graph.upstream(node_id))
+                        / max(1, len(self.graph.upstream(node_id))),
+                        ordering[node_id],
+                    )
+                )
+            ordering = positions()
+            for rank in sorted(columns, reverse=True):
+                children_by_node = {
+                    node_id: self.graph.downstream(node_id)
+                    for node_id in columns[rank]
+                }
+                columns[rank].sort(
+                    key=lambda node_id: (
+                        sum(ordering[child] for child in children_by_node[node_id])
+                        / max(1, len(children_by_node[node_id]))
+                        if children_by_node[node_id]
+                        else ordering[node_id],
+                        ordering[node_id],
+                    )
+                )
+
+        self._arranging_nodes = True
+        try:
+            for rank, node_ids in columns.items():
+                total_height = sum(
+                    self.node_items[node_id].height for node_id in node_ids
+                ) + self.NODE_GAP * max(0, len(node_ids) - 1)
+                y = -total_height * 0.5
+                for node_id in node_ids:
+                    item = self.node_items[node_id]
+                    item.setPos(rank * 270.0, y)
+                    y += item.height + self.NODE_GAP
+        finally:
+            self._arranging_nodes = False
+        for edge in self.edge_items:
+            edge.update_path()
+        self._update_scene_rect()
+
+    def _refresh_unused_node_toolbox(self) -> None:
+        self.unused_nodes_menu.clear()
+        count = len(self.graph.unused_nodes)
+        self.unused_nodes_button.setText(f"Unused nodes ({count})")
+        self.unused_nodes_button.setEnabled(bool(count))
+        for node in self.graph.unused_nodes.values():
+            action = self.unused_nodes_menu.addAction(
+                f"Add {node.title} to graph"
+            )
+            action.setToolTip(node.description)
+            action.setStatusTip(node.description)
+            action.triggered.connect(
+                lambda _checked=False, node_id=node.identifier: (
+                    self._restore_unused_node(node_id)
+                )
+            )
+
+    def _restore_unused_node(self, node_id: str) -> None:
+        self.graph.restore_unused_node(node_id)
+        self.node_items.clear()
+        self.edge_items.clear()
+        self._scene.clear()
+        self._populate()
+        self._refresh_unused_node_toolbox()
+        self.select_node(node_id)
+        self.unused_node_restored.emit(node_id)
+
+    def _shelve_selected_optional_node(self) -> None:
+        selected = [
+            item
+            for item in self._scene.selectedItems()
+            if isinstance(item, PipelineNodeItem)
+        ]
+        if not selected:
+            return
+        node_id = selected[0].node.identifier
+        if node_id not in self.OPTIONAL_TOOLBOX_NODE_IDS:
+            return
+        self.graph.shelve_node(node_id)
+        shelved = self.graph.node(node_id)
+        shelved.enabled = False
+        shelved.status = NodeStatus.BYPASSED
+        shelved.status_detail = "Disabled in the unused-node toolbox"
+        self.node_items.clear()
+        self.edge_items.clear()
+        self._scene.clear()
+        self._populate()
+        self._refresh_unused_node_toolbox()
+        self.move_to_unused_button.setEnabled(False)
+        self.unused_node_shelved.emit(node_id)
 
     def _resolve_all_overlaps(self) -> None:
         """Compact the authored graph positions without allowing node collisions."""
@@ -546,12 +739,21 @@ class PipelineCanvas(QGraphicsView):
             item for item in self._scene.selectedItems() if isinstance(item, PipelineNodeItem)
         ]
         selected_id = selected[0].node.identifier if selected else None
+        adjacent_ids = set()
+        if selected_id is not None:
+            adjacent_ids.update(self.graph.upstream(selected_id))
+            adjacent_ids.update(self.graph.downstream(selected_id))
+        for node_id, item in self.node_items.items():
+            item.set_adjacent(node_id in adjacent_ids)
         for edge in self.edge_items:
             edge.set_highlighted(
                 selected_id is not None
                 and selected_id
                 in (edge.connection.source, edge.connection.target)
             )
+        self.move_to_unused_button.setEnabled(
+            selected_id in self.OPTIONAL_TOOLBOX_NODE_IDS
+        )
         if selected_id is not None:
             self.node_selected.emit(selected_id)
 
@@ -564,7 +766,9 @@ class PipelineCanvas(QGraphicsView):
     def refresh(self, node_ids=None) -> None:
         identifiers = self.node_items if node_ids is None else node_ids
         for node_id in identifiers:
-            self.node_items[node_id].refresh()
+            item = self.node_items.get(node_id)
+            if item is not None:
+                item.refresh()
         for edge in self.edge_items:
             edge.update_path()
 
@@ -582,6 +786,24 @@ class PipelineCanvas(QGraphicsView):
             self.scale(0.55, 0.55)
             self.centerOn(bounds.left(), bounds.center().y())
         self._zoom_steps = 0
+        self._update_zoom_indicator()
+
+    def zoom_in(self) -> None:
+        self._zoom_by(1.18)
+
+    def zoom_out(self) -> None:
+        self._zoom_by(1.0 / 1.18)
+
+    def _zoom_by(self, factor: float) -> None:
+        current = float(self.transform().m11())
+        target = current * float(factor)
+        if not 0.12 <= target <= 5.0:
+            return
+        self.scale(float(factor), float(factor))
+        self._update_zoom_indicator()
+
+    def _update_zoom_indicator(self) -> None:
+        self.zoom_label.setText(f"{self.transform().m11() * 100.0:.0f}%")
 
     def showEvent(self, event) -> None:  # noqa: N802 - Qt override
         super().showEvent(event)
@@ -594,13 +816,13 @@ class PipelineCanvas(QGraphicsView):
 
     def wheelEvent(self, event: QWheelEvent) -> None:  # noqa: N802 - Qt override
         direction = 1 if event.angleDelta().y() > 0 else -1
-        if direction < 0 and self._zoom_steps <= -8:
-            return
-        if direction > 0 and self._zoom_steps >= 20:
-            return
-        factor = 1.18 if direction > 0 else 1 / 1.18
-        self.scale(factor, factor)
+        self._zoom_by(1.18 if direction > 0 else 1 / 1.18)
         self._zoom_steps += direction
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt override
+        super().resizeEvent(event)
+        self.control_bar.setGeometry(0, 0, max(120, self.width()), 38)
+        self.control_bar.raise_()
 
     def drawBackground(self, painter: QPainter, rect: QRectF) -> None:  # noqa: N802
         painter.fillRect(rect, QColor("#1c2229"))

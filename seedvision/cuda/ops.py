@@ -358,6 +358,7 @@ def lab_colour_distribution(
     scale_floors=(8.0, 3.0, 3.0),
     distance_weights=(1.0, 1.25, 1.25),
     maximum_fit_samples: int = 32768,
+    output_mask=None,
 ):
     """Fit a robust multimodal Lab distribution and return class membership.
 
@@ -508,13 +509,169 @@ def lab_colour_distribution(
             centres, scales, component_weights
         )
         rounds_completed += 1
-    probability = probability * eligible
+    probability = probability * (
+        eligible if output_mask is None else output_mask.bool()
+    )
     return (
         probability.clamp(0.0, 1.0),
         centres,
         scales,
         component_weights,
         sample_count,
+        rounds_completed,
+    )
+
+
+def lab_colour_frequency_distribution(
+    lab,
+    reference_samples,
+    eligible_mask,
+    *,
+    maximum_bins: int = 64,
+    refinement_iterations: int = 2,
+    refinement_min_probability: float = 0.82,
+    frequency_weight_power: float = 0.0,
+    scale_multiplier: float = 1.0,
+    scale_floors=(8.0, 4.0, 4.0),
+    distance_weights=(1.0, 1.25, 1.25),
+    quantization_steps=(4.0, 3.0, 3.0),
+    maximum_fit_samples: int = 32768,
+):
+    """Estimate colour membership from a reference-pixel frequency table.
+
+    Unlike the compact regional mixture used for automatic estimates, this
+    model never averages light and dark painted patterns into one prototype.
+    Reference pixels are quantized into small Lab cells, each cell retains its
+    measured occurrence, and cautious refinement may widen only those original
+    cells.  It cannot create an unsupported colour mode.
+    """
+
+    import torch
+
+    samples = reference_samples.reshape(-1, 3).to(
+        device=lab.device, dtype=lab.dtype
+    )
+    if not int(samples.shape[0]):
+        raise ValueError("At least one Lab reference pixel is required.")
+    if int(samples.shape[0]) > maximum_fit_samples:
+        indices = torch.linspace(
+            0,
+            int(samples.shape[0]) - 1,
+            maximum_fit_samples,
+            device=lab.device,
+        ).round().long()
+        samples = samples[indices]
+    eligible = eligible_mask.bool()
+    floors = torch.as_tensor(scale_floors, device=lab.device, dtype=lab.dtype)
+    metric_weights = torch.as_tensor(
+        distance_weights, device=lab.device, dtype=lab.dtype
+    )
+    steps = torch.as_tensor(
+        quantization_steps, device=lab.device, dtype=lab.dtype
+    )
+    quantized = torch.round(samples / steps).to(torch.int16)
+    cells, counts = torch.unique(
+        quantized, dim=0, return_counts=True
+    )
+    maximum_bins = max(1, int(maximum_bins))
+    if int(cells.shape[0]) > maximum_bins:
+        selected = torch.topk(counts, maximum_bins, sorted=True).indices
+        cells = cells[selected]
+    centres = cells.to(dtype=lab.dtype) * steps
+
+    # Reassign every immutable reference pixel to its nearest retained colour
+    # cell. These counts remain authoritative through all refinement rounds.
+    sample_delta = (samples[:, None, :] - centres[None, :, :]) / floors
+    sample_distance = torch.sum(
+        sample_delta.square() * metric_weights[None, None, :], dim=2
+    )
+    sample_assignment = torch.argmin(sample_distance, dim=1)
+    anchor_counts = torch.bincount(
+        sample_assignment, minlength=int(centres.shape[0])
+    ).to(dtype=lab.dtype)
+    component_weights = anchor_counts / anchor_counts.sum().clamp_min(1.0)
+    scales = floors[None].repeat(int(centres.shape[0]), 1)
+
+    def evaluate(current_scales):
+        probability = torch.zeros(lab.shape[:2], device=lab.device, dtype=lab.dtype)
+        strongest = torch.zeros_like(probability)
+        assignments = torch.zeros(
+            lab.shape[:2], device=lab.device, dtype=torch.int16
+        )
+        adjusted = component_weights.clamp_min(1e-6).pow(
+            max(0.0, float(frequency_weight_power))
+        )
+        adjusted /= adjusted.max().clamp_min(1e-6)
+        for start in range(0, int(centres.shape[0]), 4):
+            stop = min(start + 4, int(centres.shape[0]))
+            effective_scales = current_scales[start:stop] * max(
+                0.05, float(scale_multiplier)
+            )
+            delta = (
+                lab[:, :, None, :] - centres[None, None, start:stop, :]
+            ) / effective_scales[None, None, :, :]
+            distance = torch.sum(
+                delta.square() * metric_weights[None, None, None, :], dim=3
+            )
+            membership = torch.exp(-0.5 * distance)
+            probability += torch.sum(
+                membership * adjusted[None, None, start:stop], dim=2
+            )
+            chunk_strongest, chunk_index = torch.max(membership, dim=2)
+            replace = chunk_strongest > strongest
+            strongest = torch.maximum(strongest, chunk_strongest)
+            assignments = torch.where(
+                replace,
+                (chunk_index + start).to(torch.int16),
+                assignments,
+            )
+        return probability.clamp(0.0, 1.0) * eligible, strongest, assignments
+
+    probability, strongest, assignments = evaluate(scales)
+    rounds_completed = 0
+    refined_sample_count = int(samples.shape[0])
+    for _ in range(max(0, int(refinement_iterations))):
+        accepted_mask = eligible & (
+            strongest >= float(refinement_min_probability)
+        )
+        accepted = lab[accepted_mask]
+        accepted_assignment = assignments[accepted_mask].long()
+        if not int(accepted.shape[0]):
+            break
+        if int(accepted.shape[0]) > maximum_fit_samples:
+            indices = torch.linspace(
+                0,
+                int(accepted.shape[0]) - 1,
+                maximum_fit_samples,
+                device=lab.device,
+            ).round().long()
+            accepted = accepted[indices]
+            accepted_assignment = accepted_assignment[indices]
+        updated_scales = []
+        for component in range(int(centres.shape[0])):
+            members = accepted[accepted_assignment == component]
+            if int(members.shape[0]) < 4:
+                updated_scales.append(scales[component])
+                continue
+            deviation = torch.median(
+                torch.abs(members - centres[component]), dim=0
+            ).values * 1.4826
+            # Interior refinement can widen an anchored mode modestly but can
+            # never move its centre or grow without bound into seed-like tray
+            # colours (or vice versa).
+            updated_scales.append(
+                torch.minimum(torch.maximum(deviation, floors), floors * 3.0)
+            )
+        scales = torch.stack(updated_scales)
+        refined_sample_count = int(samples.shape[0] + accepted.shape[0])
+        probability, strongest, assignments = evaluate(scales)
+        rounds_completed += 1
+    return (
+        probability.clamp(0.0, 1.0),
+        centres,
+        scales,
+        component_weights,
+        refined_sample_count,
         rounds_completed,
     )
 

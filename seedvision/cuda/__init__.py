@@ -1,4 +1,4 @@
-"""Shared CUDA tensor operations used by Seed Vision's analysis pipeline."""
+"""Shared CUDA tensor operations used by Seed Fiddle's analysis pipeline."""
 
 from seedvision.cuda.ops import (
     CudaContext,
@@ -16,6 +16,7 @@ from seedvision.cuda.ops import (
     gradient_magnitude,
     image_to_tensor,
     lab_colour_distribution,
+    lab_colour_frequency_distribution,
     otsu_threshold,
     oriented_connected_components,
     resize,
@@ -39,6 +40,7 @@ __all__ = [
     "gradient_magnitude",
     "image_to_tensor",
     "lab_colour_distribution",
+    "lab_colour_frequency_distribution",
     "otsu_threshold",
     "oriented_connected_components",
     "resize",

@@ -27,8 +27,10 @@ from seedvision.cuda import (
     gradient_magnitude,
     image_to_tensor,
     lab_colour_distribution,
+    lab_colour_frequency_distribution,
     otsu_threshold,
 )
+from seedvision.cuda.layers import directional_edges
 
 from seedvision.calibration.geometry import (
     DishCircle,
@@ -51,6 +53,10 @@ from seedvision.visualization import (
     build_analysis_layers,
 )
 from seedvision.timing import NodeTimingRecorder
+from seedvision.visualization.advanced import (
+    local_lighting_evidence_tensors,
+    sensor_noise_likelihood_tensor,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,11 +85,11 @@ class BaselineSettings:
     foreground_reference_weight: float = 0.75
     foreground_local_contrast_scale_fraction: float = 0.18
     foreground_shadow_rejection_strength: float = 1.0
-    foreground_reference_components: int = 4
+    foreground_reference_components: int = 64
     foreground_distribution_fit_iterations: int = 6
     foreground_refinement_iterations: int = 2
     foreground_refinement_min_probability: float = 0.82
-    foreground_frequency_weight_power: float = 0.35
+    foreground_frequency_weight_power: float = 0.0
     foreground_distribution_scale_multiplier: float = 1.50
     distance_blur_fraction: float = 0.025
     distance_neighborhood_fraction: float = 0.58
@@ -94,6 +100,11 @@ class BaselineSettings:
     circle_max_radius_fraction: float = 0.62
     circle_edge_threshold: int = 80
     circle_working_maximum_dimension: int = 1280
+    circle_edge_magnitude_weight: float = 0.50
+    circle_sensor_noise_weight: float = 0.20
+    circle_flattened_grayscale_weight: float = 0.10
+    circle_shadow_weight: float = 0.10
+    circle_highlight_weight: float = 0.10
     circle_confidence: float = 0.62
     distance_confidence: float = 0.48
 
@@ -157,7 +168,7 @@ class BaselineSettings:
             "foreground_reference_components": (
                 self.foreground_reference_components,
                 1,
-                8,
+                256,
             ),
             "foreground_distribution_fit_iterations": (
                 self.foreground_distribution_fit_iterations,
@@ -221,12 +232,48 @@ class BaselineSettings:
                 512,
                 4096,
             ),
+            "circle_edge_magnitude_weight": (
+                self.circle_edge_magnitude_weight,
+                0.0,
+                1.0,
+            ),
+            "circle_sensor_noise_weight": (
+                self.circle_sensor_noise_weight,
+                0.0,
+                1.0,
+            ),
+            "circle_flattened_grayscale_weight": (
+                self.circle_flattened_grayscale_weight,
+                0.0,
+                1.0,
+            ),
+            "circle_shadow_weight": (
+                self.circle_shadow_weight,
+                0.0,
+                1.0,
+            ),
+            "circle_highlight_weight": (
+                self.circle_highlight_weight,
+                0.0,
+                1.0,
+            ),
             "circle_confidence": (self.circle_confidence, 0.10, 1.00),
             "distance_confidence": (self.distance_confidence, 0.10, 1.00),
         }
         for name, (value, minimum, maximum) in ranges.items():
             if not minimum <= value <= maximum:
                 raise ValueError(f"{name} must be between {minimum} and {maximum}.")
+        if (
+            self.circle_edge_magnitude_weight
+            + self.circle_sensor_noise_weight
+            + self.circle_flattened_grayscale_weight
+            + self.circle_shadow_weight
+            + self.circle_highlight_weight
+            <= 0
+        ):
+            raise ValueError(
+                "At least one circle evidence weight must be greater than zero."
+            )
         if not 0.0 <= self.reference_roi_x_min < self.reference_roi_x_max <= 1.0:
             raise ValueError("Reference ROI X fractions must satisfy 0 ≤ min < max ≤ 1.")
         if not 0.0 <= self.reference_roi_y_min < self.reference_roi_y_max <= 1.0:
@@ -263,6 +310,10 @@ class BackgroundSamplingBand:
     outer_radius_px: float
     outside_vessel: bool
     sample_count: int
+    buffer_cm: float = 0.0
+    thickness_cm: float = 0.0
+    buffer_px: float = 0.0
+    thickness_px: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -340,7 +391,11 @@ def analyze_path(
     foreground_reference_points: tuple[tuple[float, float], ...] = (),
     background_reference_mask: np.ndarray | None = None,
     foreground_reference_mask: np.ndarray | None = None,
+    background_exclusion_mask: np.ndarray | None = None,
+    foreground_exclusion_mask: np.ndarray | None = None,
+    seed_instance_annotations: np.ndarray | None = None,
     background_colour_enabled: bool = True,
+    enabled_nodes: set[str] | frozenset[str] | None = None,
     node_cache: PipelineAnalysisCache | None = None,
     dirty_nodes: set[str] | frozenset[str] = frozenset(),
     progress_callback=None,
@@ -389,7 +444,11 @@ def analyze_path(
         foreground_reference_points=foreground_reference_points,
         background_reference_mask=background_reference_mask,
         foreground_reference_mask=foreground_reference_mask,
+        background_exclusion_mask=background_exclusion_mask,
+        foreground_exclusion_mask=foreground_exclusion_mask,
+        seed_instance_annotations=seed_instance_annotations,
         background_colour_enabled=background_colour_enabled,
+        enabled_nodes=enabled_nodes,
         node_cache=node_cache,
         dirty_nodes=dirty_nodes,
         progress_callback=progress_callback,
@@ -414,7 +473,11 @@ def analyze_image(
     foreground_reference_points: tuple[tuple[float, float], ...] = (),
     background_reference_mask: np.ndarray | None = None,
     foreground_reference_mask: np.ndarray | None = None,
+    background_exclusion_mask: np.ndarray | None = None,
+    foreground_exclusion_mask: np.ndarray | None = None,
+    seed_instance_annotations: np.ndarray | None = None,
     background_colour_enabled: bool = True,
+    enabled_nodes: set[str] | frozenset[str] | None = None,
     node_cache: PipelineAnalysisCache | None = None,
     dirty_nodes: set[str] | frozenset[str] = frozenset(),
     progress_callback=None,
@@ -439,6 +502,9 @@ def analyze_image(
     computed: list[str] = []
     reused: list[str] = []
 
+    def node_enabled(node_id: str) -> bool:
+        return enabled_nodes is None or node_id in enabled_nodes
+
     calibration_nodes = {
         "colour_reference", "ruler_detection", "deskew_colour", "scale_calibration"
     }
@@ -462,6 +528,15 @@ def analyze_image(
     foreground_reference_mask = _aligned_reference_mask(
         foreground_reference_mask, analysis_image.shape[:2]
     )
+    background_exclusion_mask = _aligned_reference_mask(
+        background_exclusion_mask, analysis_image.shape[:2]
+    )
+    foreground_exclusion_mask = _aligned_reference_mask(
+        foreground_exclusion_mask, analysis_image.shape[:2]
+    )
+    seed_instance_annotations = _aligned_instance_annotations(
+        seed_instance_annotations, analysis_image.shape[:2]
+    )
 
     layout_dirty = calibration_dirty or "layout_detection" in dirty or "dish" not in values
     if layout_dirty:
@@ -471,6 +546,7 @@ def analyze_image(
                 dish_settings,
                 cuda_context=cuda_context,
                 image_tensor=calibration.gpu_corrected_bgr,
+                pixels_per_mm=calibration.pixels_per_mm,
             )
         values["dish"] = dish
         computed.append("layout_detection")
@@ -555,6 +631,30 @@ def analyze_image(
             offset_x : offset_x + crop_width,
         ]
     )
+    local_background_exclusion_mask = (
+        None
+        if background_exclusion_mask is None
+        else background_exclusion_mask[
+            offset_y : offset_y + crop_height,
+            offset_x : offset_x + crop_width,
+        ]
+    )
+    local_foreground_exclusion_mask = (
+        None
+        if foreground_exclusion_mask is None
+        else foreground_exclusion_mask[
+            offset_y : offset_y + crop_height,
+            offset_x : offset_x + crop_width,
+        ]
+    )
+    local_seed_instance_annotations = (
+        None
+        if seed_instance_annotations is None
+        else seed_instance_annotations[
+            offset_y : offset_y + crop_height,
+            offset_x : offset_x + crop_width,
+        ]
+    )
     reference_samples_dirty = (
         crop_dirty
         or seed_scale_dirty
@@ -574,7 +674,16 @@ def analyze_image(
             background_reference_points,
             reference_radius,
             cuda_context,
-            reference_mask=background_reference_mask,
+            reference_mask=(
+                background_reference_mask
+                if background_exclusion_mask is None
+                else (
+                    np.asarray(background_reference_mask, dtype=bool)
+                    if background_reference_mask is not None
+                    else np.zeros(analysis_image.shape[:2], dtype=bool)
+                )
+                & ~np.asarray(background_exclusion_mask, dtype=bool)
+            ),
             image_tensor=calibration.gpu_corrected_bgr,
         )
         values["reference.samples"] = (
@@ -590,6 +699,49 @@ def analyze_image(
         if 0 <= x < crop.shape[1] and 0 <= y < crop.shape[0]
     )
 
+    perimeter_background_dirty = (
+        calibration_dirty
+        or layout_dirty
+        or "perimeter_background_reference" in dirty
+        or "perimeter_background" not in values
+        or "perimeter.full_lab" not in values
+    )
+    if perimeter_background_dirty:
+        with timings.measure("perimeter_background_reference"):
+            full_perimeter_lab = (
+                bgr_to_lab(
+                    calibration.gpu_corrected_bgr
+                    if calibration.gpu_corrected_bgr is not None
+                    else image_to_tensor(analysis_image, cuda_context)
+                )
+                if calibration_dirty or "perimeter.full_lab" not in values
+                else values["perimeter.full_lab"]
+            )
+            values["perimeter.full_lab"] = full_perimeter_lab
+            perimeter_background = _dish_perimeter_background_lab(
+                analysis_image,
+                dish,
+                calibration.pixels_per_mm,
+                cuda_context,
+                buffer_cm=layer_settings.perimeter_background_buffer_cm,
+                thickness_cm=(
+                    layer_settings.perimeter_background_band_thickness_cm
+                ),
+                image_tensor=calibration.gpu_corrected_bgr,
+                lab_tensor=full_perimeter_lab,
+            )
+        values["perimeter_background"] = perimeter_background
+        computed.append("perimeter_background_reference")
+    else:
+        perimeter_background = values["perimeter_background"]
+        full_perimeter_lab = values["perimeter.full_lab"]
+        reused.append("perimeter_background_reference")
+    (
+        background_perimeter_prior_lab,
+        background_perimeter_band,
+        background_perimeter_samples_lab,
+    ) = perimeter_background
+
     foreground_dirty = (
         crop_dirty
         or seed_scale_dirty
@@ -598,12 +750,20 @@ def analyze_image(
     )
     if foreground_dirty:
         foreground_timing = timings.start("foreground_segmentation")
-        perimeter_prior_lab, perimeter_background_band = _dish_perimeter_background_lab(
+        (
+            foreground_perimeter_prior_lab,
+            foreground_perimeter_band,
+            foreground_perimeter_samples_lab,
+        ) = _dish_perimeter_background_lab(
             analysis_image,
             dish,
             calibration.pixels_per_mm,
             cuda_context,
+            band_radii_px=_legacy_background_band_radii(
+                dish, calibration.pixels_per_mm
+            ),
             image_tensor=calibration.gpu_corrected_bgr,
+            lab_tensor=full_perimeter_lab,
         )
         (
             feature,
@@ -611,7 +771,7 @@ def analyze_image(
             valid,
             analysis_valid,
             foreground_threshold,
-            perimeter_background_lab,
+            foreground_perimeter_background_lab,
             segmentation_background_lab,
             foreground_colour_profile,
         ) = _foreground_feature(
@@ -624,10 +784,12 @@ def analyze_image(
             background_reference_mask=local_background_reference_mask,
             foreground_reference_points=local_foreground_points,
             foreground_reference_mask=local_foreground_reference_mask,
+            foreground_exclusion_mask=local_foreground_exclusion_mask,
             reference_radius=reference_radius,
             seed_diameter=seed_diameter,
             analysis_radius=float(dish.outer_radius),
-            perimeter_background_lab=perimeter_prior_lab,
+            perimeter_background_lab=foreground_perimeter_prior_lab,
+            perimeter_background_samples_lab=foreground_perimeter_samples_lab,
             source_tensor=gpu_crop_source,
             lab_tensor=gpu_crop_lab,
         )
@@ -637,9 +799,6 @@ def analyze_image(
             seed_diameter,
             settings,
             cuda_context,
-            foreground_reference_points=local_foreground_points,
-            foreground_reference_mask=local_foreground_reference_mask,
-            reference_radius=reference_radius,
         )
         values["foreground"] = (
             feature,
@@ -648,8 +807,9 @@ def analyze_image(
             analysis_valid,
             mask,
             foreground_threshold,
-            perimeter_background_lab,
-            perimeter_background_band,
+            foreground_perimeter_background_lab,
+            foreground_perimeter_band,
+            foreground_perimeter_samples_lab,
             segmentation_background_lab,
             foreground_colour_profile,
         )
@@ -663,12 +823,16 @@ def analyze_image(
             analysis_valid,
             mask,
             foreground_threshold,
-            perimeter_background_lab,
-            perimeter_background_band,
+            foreground_perimeter_background_lab,
+            foreground_perimeter_band,
+            foreground_perimeter_samples_lab,
             segmentation_background_lab,
             foreground_colour_profile,
         ) = values["foreground"]
         reused.append("foreground_segmentation")
+    perimeter_background_lab = background_perimeter_prior_lab
+    perimeter_background_band = background_perimeter_band
+    perimeter_background_samples_lab = background_perimeter_samples_lab
     if local_foreground_reference_mask is not None:
         reference_tensor = image_to_tensor(
             np.asarray(local_foreground_reference_mask, np.uint8), cuda_context
@@ -680,18 +844,172 @@ def analyze_image(
             ).sum().item()
         )
 
+    # The dormant circle toolbox node consumes the same cached evidence shown
+    # by Edge gradients and Image-quality diagnostics. Compute those products
+    # early only when the circle node is explicitly restored and enabled; the
+    # normal default DAG retains its existing calculation order and cost.
+    circle_edge_products = None
+    circle_sensor_noise = None
+    circle_local_lighting = None
+    precomputed_edge_gradients = False
+    circle_evidence_dirty = False
+    if node_enabled("circle_candidates"):
+        valid_tensor = image_to_tensor(valid, cuda_context) > 0
+        edge_evidence_dirty = (
+            node_enabled("edge_gradients")
+            and (
+                crop_dirty
+                or "edge_gradients" in dirty
+                or "layer.edge_gradients" not in values
+            )
+        )
+        if node_enabled("edge_gradients"):
+            if edge_evidence_dirty:
+                edge_timing = timings.start("edge_gradients")
+                circle_edge_products = directional_edges(
+                    crop,
+                    valid,
+                    layer_settings,
+                    cuda_context=cuda_context,
+                    source_tensor=gpu_crop_source,
+                    lab_tensor=gpu_crop_lab,
+                    valid_tensor=valid_tensor,
+                )
+                values["layer.edge_gradients"] = circle_edge_products
+                timings.stop(edge_timing)
+                precomputed_edge_gradients = True
+            else:
+                circle_edge_products = values["layer.edge_gradients"]
+
+        sensor_evidence_dirty = (
+            node_enabled("image_quality")
+            and (
+                crop_dirty
+                or seed_scale_dirty
+                or "image_quality" in dirty
+                or "circle.sensor_noise_evidence" not in values
+            )
+        )
+        if node_enabled("image_quality"):
+            if sensor_evidence_dirty:
+                previous_advanced = values.get("advanced.layers")
+                previous_sensor_noise = (
+                    None
+                    if previous_advanced is None
+                    else previous_advanced.rasters.get("sensor_noise")
+                )
+                if (
+                    previous_sensor_noise is not None
+                    and not crop_dirty
+                    and not seed_scale_dirty
+                    and "image_quality" not in dirty
+                ):
+                    circle_sensor_noise = (
+                        image_to_tensor(previous_sensor_noise, cuda_context) / 255.0
+                    )
+                else:
+                    image_quality_timing = timings.start(
+                        "image_quality", report_progress=False
+                    )
+                    circle_sensor_noise = sensor_noise_likelihood_tensor(
+                        gpu_crop_source,
+                        valid_tensor,
+                        seed_diameter,
+                        advanced_settings,
+                    )
+                    timings.stop(image_quality_timing)
+                values["circle.sensor_noise_evidence"] = circle_sensor_noise
+            else:
+                circle_sensor_noise = values["circle.sensor_noise_evidence"]
+
+        lighting_evidence_dirty = (
+            node_enabled("illumination_decomposition")
+            and (
+                crop_dirty
+                or seed_scale_dirty
+                or "illumination_decomposition" in dirty
+                or "circle.local_lighting_evidence" not in values
+            )
+        )
+        if node_enabled("illumination_decomposition"):
+            if lighting_evidence_dirty:
+                previous_advanced = values.get("advanced.layers")
+                lighting_names = (
+                    "illumination_field",
+                    "flattened_grayscale",
+                    "shadow_likelihood",
+                    "highlight_likelihood",
+                    "reflectance_image",
+                )
+                previous_lighting = (
+                    None
+                    if previous_advanced is None
+                    else tuple(
+                        previous_advanced.rasters.get(name)
+                        for name in lighting_names
+                    )
+                )
+                if (
+                    previous_lighting is not None
+                    and all(item is not None for item in previous_lighting)
+                    and not crop_dirty
+                    and not seed_scale_dirty
+                    and "illumination_decomposition" not in dirty
+                ):
+                    circle_local_lighting = tuple(
+                        image_to_tensor(item, cuda_context) / 255.0
+                        for item in previous_lighting
+                    )
+                else:
+                    lighting_timing = timings.start(
+                        "illumination_decomposition", report_progress=False
+                    )
+                    circle_local_lighting = local_lighting_evidence_tensors(
+                        gpu_crop_source,
+                        valid_tensor,
+                        seed_diameter,
+                        advanced_settings,
+                    )
+                    timings.stop(lighting_timing)
+                values["circle.local_lighting_evidence"] = (
+                    circle_local_lighting
+                )
+            else:
+                circle_local_lighting = values[
+                    "circle.local_lighting_evidence"
+                ]
+        circle_evidence_dirty = (
+            edge_evidence_dirty
+            or sensor_evidence_dirty
+            or lighting_evidence_dirty
+        )
+
     distance_dirty = (
         foreground_dirty
         or "distance_candidates" in dirty
         or "distance" not in values
     )
     if distance_dirty:
-        with timings.measure("distance_candidates"):
-            marker_candidates, distance_transform = _distance_candidates(
-                mask, seed_diameter, settings, cuda_context
+        if node_enabled("distance_candidates"):
+            with timings.measure("distance_candidates"):
+                marker_candidates, distance_transform = _distance_candidates(
+                    mask, seed_diameter, settings, cuda_context
+                )
+            computed.append("distance_candidates")
+        else:
+            import torch
+
+            marker_candidates = []
+            distance_transform = GpuRaster(
+                torch.zeros(
+                    (1, 1, crop_height, crop_width),
+                    device=cuda_context.device,
+                    dtype=torch.float32,
+                ),
+                numpy_dtype=np.float32,
+                name="disabled distance transform",
             )
         values["distance"] = (marker_candidates, distance_transform)
-        computed.append("distance_candidates")
     else:
         marker_candidates, distance_transform = values["distance"]
         reused.append("distance_candidates")
@@ -703,22 +1021,47 @@ def analyze_image(
     circle_dirty = (
         crop_dirty
         or seed_scale_dirty
+        or circle_evidence_dirty
         or "circle_candidates" in dirty
         or "circles" not in values
     )
     if circle_dirty:
-        with timings.measure("circle_candidates"):
-            circle_candidates = _circle_candidates(
-                crop,
-                seed_diameter,
-                settings,
-                cuda_context,
-                accumulator_threshold=circle_threshold,
-                source_tensor=gpu_crop_source,
-                analysis_radius=float(dish.outer_radius),
-            )
+        if node_enabled("circle_candidates"):
+            with timings.measure("circle_candidates"):
+                circle_candidates = _circle_candidates(
+                    crop,
+                    seed_diameter,
+                    settings,
+                    cuda_context,
+                    accumulator_threshold=circle_threshold,
+                    source_tensor=gpu_crop_source,
+                    edge_magnitude_tensor=(
+                        None
+                        if circle_edge_products is None
+                        else circle_edge_products.strength
+                    ),
+                    sensor_noise_tensor=circle_sensor_noise,
+                    flattened_grayscale_tensor=(
+                        None
+                        if circle_local_lighting is None
+                        else circle_local_lighting[1]
+                    ),
+                    shadow_likelihood_tensor=(
+                        None
+                        if circle_local_lighting is None
+                        else circle_local_lighting[2]
+                    ),
+                    highlight_likelihood_tensor=(
+                        None
+                        if circle_local_lighting is None
+                        else circle_local_lighting[3]
+                    ),
+                    analysis_radius=float(dish.outer_radius),
+                )
+            computed.append("circle_candidates")
+        else:
+            circle_candidates = []
         values["circles"] = circle_candidates
-        computed.append("circle_candidates")
     else:
         circle_candidates = values["circles"]
         reused.append("circle_candidates")
@@ -730,24 +1073,27 @@ def analyze_image(
         or "fused" not in values
     )
     if identification_dirty:
-        identification_timing = timings.start("identification")
-        circle_candidates = _filter_circle_candidates(
-            circle_candidates,
-            marker_candidates,
-            distance_transform,
-            seed_diameter,
-            settings,
-        )
-        values["circles"] = circle_candidates
-        fused = _fuse_candidates(
-            marker_candidates,
-            circle_candidates,
-            seed_diameter,
-            settings,
-        )
+        if node_enabled("identification"):
+            identification_timing = timings.start("identification")
+            circle_candidates = _filter_circle_candidates(
+                circle_candidates,
+                marker_candidates,
+                distance_transform,
+                seed_diameter,
+                settings,
+            )
+            values["circles"] = circle_candidates
+            fused = _fuse_candidates(
+                marker_candidates,
+                circle_candidates,
+                seed_diameter,
+                settings,
+            )
+            timings.stop(identification_timing)
+            computed.append("identification")
+        else:
+            fused = []
         values["fused"] = fused
-        timings.stop(identification_timing)
-        computed.append("identification")
     else:
         fused = values["fused"]
         reused.append("identification")
@@ -771,8 +1117,13 @@ def analyze_image(
             {
                 "background_likelihood",
                 "refined_background_likelihood",
+                "foreground_noise_likelihood",
                 "instance_masks",
                 "edge_gradients",
+                "surface_darkness_gradients",
+                "lightening_gradient_ceiling",
+                "darkening_gradient_ceiling",
+                "frequency_noise_masks",
                 "directed_edges",
                 "undirected_edges",
                 "edge_ridges",
@@ -785,6 +1136,11 @@ def analyze_image(
             {
                 "background_likelihood",
                 "refined_background_likelihood",
+                "foreground_noise_likelihood",
+                "surface_darkness_gradients",
+                "lightening_gradient_ceiling",
+                "darkening_gradient_ceiling",
+                "frequency_noise_masks",
                 "instance_masks",
                 "seed_edge_curves",
             }
@@ -792,7 +1148,16 @@ def analyze_image(
     if identification_dirty:
         layer_dirty.update({"instance_masks", "seed_edge_curves"})
     if foreground_dirty:
-        layer_dirty.add("seed_edge_curves")
+        layer_dirty.update({"foreground_noise_likelihood", "seed_edge_curves"})
+    if perimeter_background_dirty:
+        layer_dirty.update(
+            {
+                "background_likelihood",
+                "refined_background_likelihood",
+                "instance_masks",
+                "seed_edge_curves",
+            }
+        )
     if "edge_gradients" in layer_dirty:
         layer_dirty.update(
             {
@@ -802,6 +1167,10 @@ def analyze_image(
                 "edge_traces",
                 "seed_edge_curves",
             }
+        )
+    if "surface_darkness_gradients" in layer_dirty:
+        layer_dirty.update(
+            {"lightening_gradient_ceiling", "darkening_gradient_ceiling"}
         )
     if "edge_ridges" in layer_dirty:
         layer_dirty.update({"edge_traces", "seed_edge_curves"})
@@ -819,12 +1188,21 @@ def analyze_image(
         layer_dirty.update({"instance_masks", "seed_edge_curves"})
     if "instance_masks" in layer_dirty:
         layer_dirty.add("seed_edge_curves")
+    if precomputed_edge_gradients:
+        # Downstream invalidation above still applies, but the shared gradient
+        # field itself has already been refreshed for the circle consumer.
+        layer_dirty.discard("edge_gradients")
 
     layer_cache_keys = {
         "background_likelihood": "layer.background",
         "refined_background_likelihood": "layer.refined_background",
+        "foreground_noise_likelihood": "layer.foreground_noise",
         "instance_masks": "layer.instances",
         "edge_gradients": "layer.edge_gradients",
+        "surface_darkness_gradients": "layer.surface_darkness_gradients",
+        "lightening_gradient_ceiling": "layer.lightening_gradient_ceiling",
+        "darkening_gradient_ceiling": "layer.darkening_gradient_ceiling",
+        "frequency_noise_masks": "layer.frequency_noise_masks",
         "directed_edges": "layer.directed_edges",
         "undirected_edges": "layer.undirected_edges",
         "edge_ridges": "layer.edge_ridges",
@@ -832,7 +1210,9 @@ def analyze_image(
         "seed_edge_curves": "layer.seed_edge_curves",
     }
     for node_id, cache_key in layer_cache_keys.items():
-        if node_id in layer_dirty or cache_key not in values:
+        if node_id == "edge_gradients" and precomputed_edge_gradients:
+            computed.append(node_id)
+        elif node_id in layer_dirty or cache_key not in values:
             computed.append(node_id)
         else:
             reused.append(node_id)
@@ -843,7 +1223,11 @@ def analyze_image(
             gpu_crop_lab,
             image_to_tensor(valid, cuda_context) > 0,
         )
-    if crop_dirty or "layer.surrounding_noise_inputs" not in values:
+    if (
+        crop_dirty
+        or perimeter_background_dirty
+        or "layer.surrounding_noise_inputs" not in values
+    ):
         values["layer.surrounding_noise_inputs"] = _surrounding_noise_inputs(
             analysis_image.shape[:2],
             calibration.gpu_corrected_bgr,
@@ -875,10 +1259,27 @@ def analyze_image(
         foreground_reference_points=local_foreground_points,
         background_reference_mask=local_background_reference_mask,
         foreground_reference_mask=local_foreground_reference_mask,
+        background_exclusion_mask=local_background_exclusion_mask,
+        foreground_exclusion_mask=local_foreground_exclusion_mask,
+        seed_instance_annotations=local_seed_instance_annotations,
         background_reference_samples=background_samples,
         background_reference_sample_count=accepted_background_points,
         background_prior_lab=perimeter_background_lab,
+        background_prior_samples_lab=perimeter_background_samples_lab,
         background_colour_enabled=background_colour_enabled,
+        foreground_noise_enabled=node_enabled("foreground_noise_likelihood"),
+        surface_darkness_gradients_enabled=node_enabled(
+            "surface_darkness_gradients"
+        ),
+        lightening_gradient_ceiling_enabled=node_enabled(
+            "lightening_gradient_ceiling"
+        ),
+        darkening_gradient_ceiling_enabled=node_enabled(
+            "darkening_gradient_ceiling"
+        ),
+        frequency_noise_masks_enabled=node_enabled("frequency_noise_masks"),
+        instance_masks_enabled=node_enabled("instance_masks"),
+        seed_edge_curves_enabled=node_enabled("seed_edge_curves"),
         foreground_probability=foreground_probability,
         foreground_colour_profile=foreground_colour_profile,
         surrounding_noise_source_tensor=surrounding_noise_source,
@@ -910,21 +1311,40 @@ def analyze_image(
         )
 
     advanced_node_ids = set(ADVANCED_NODE_MODES)
-    requested_advanced_nodes = dirty & advanced_node_ids
+    enabled_advanced_nodes = (
+        advanced_node_ids
+        if enabled_nodes is None
+        else advanced_node_ids & set(enabled_nodes)
+    )
+    requested_advanced_nodes = dirty & enabled_advanced_nodes
     previous_advanced = values.get("advanced.layers")
+    if previous_advanced is not None and any(
+        node_id in dirty and node_id not in enabled_advanced_nodes
+        for node_id in advanced_node_ids
+    ):
+        # A newly disabled branch must not retain stale visible products. Rebuild
+        # compact zero placeholders and the independent enabled diagnostics.
+        previous_advanced = None
     upstream_advanced_dirty = (
         calibration_dirty
         or foreground_dirty
         or distance_dirty
         or identification_dirty
-        or bool(layer_dirty & {"instance_masks", "directed_edges"})
+        or bool(
+            layer_dirty
+            & {
+                "foreground_noise_likelihood",
+                "instance_masks",
+                "directed_edges",
+            }
+        )
     )
     if previous_advanced is None:
-        requested_advanced_nodes = set(advanced_node_ids)
+        requested_advanced_nodes = set(enabled_advanced_nodes)
     elif upstream_advanced_dirty and not requested_advanced_nodes:
         # Direct API callers may name only a legacy source node, whereas the
         # Qt graph supplies the full recursive dirty set.
-        requested_advanced_nodes = set(advanced_node_ids)
+        requested_advanced_nodes = set(enabled_advanced_nodes)
     advanced_dirty = (
         bool(requested_advanced_nodes)
         or upstream_advanced_dirty
@@ -979,13 +1399,19 @@ def analyze_image(
             offset_x=offset_x,
             offset_y=offset_y,
             foreground_probability=foreground_probability,
+            foreground_noise_probability=layers.foreground_noise_likelihood,
+            background_colour_probability=layers.background_likelihood,
+            background_noise_probability=layers.refined_background_likelihood,
             full_image_shape=analysis_image.shape[:2],
             calibration_anchors=tuple(calibration_anchors),
             settings=advanced_settings,
             previous=previous_advanced,
             dirty_nodes=requested_advanced_nodes,
+            enabled_nodes=enabled_advanced_nodes,
             source_tensor=layers.gpu_source,
             valid_tensor=layers.gpu_valid,
+            sensor_noise_tensor=circle_sensor_noise,
+            local_lighting_tensors=circle_local_lighting,
             timing_recorder=timings,
         )
         values["advanced.layers"] = advanced
@@ -995,11 +1421,15 @@ def analyze_image(
         )
         reused.extend(
             node_id for node_id in ADVANCED_NODE_MODES
-            if node_id not in requested_advanced_nodes
+            if node_id in enabled_advanced_nodes
+            and node_id not in requested_advanced_nodes
         )
     else:
         advanced = values["advanced.layers"]
-        reused.extend(ADVANCED_NODE_MODES)
+        reused.extend(
+            node_id for node_id in ADVANCED_NODE_MODES
+            if node_id in enabled_advanced_nodes
+        )
 
     nominal_seed_area = np.pi * (seed_diameter * 0.5) ** 2
     usable_dish_area = np.pi * (
@@ -1045,7 +1475,8 @@ def analyze_image(
     if background_prior_deviation >= 18.0:
         warnings.append(
             "Detected background colour deviates substantially from the median "
-            "colour in the 0.5 cm band immediately outside the dish perimeter "
+            f"colour in the {perimeter_background_band.thickness_cm:.2f} cm band "
+            f"after the {perimeter_background_band.buffer_cm:.2f} cm dish buffer "
             f"(weighted Lab distance {background_prior_deviation:.1f})."
         )
     if calibration.pixels_per_mm is None:
@@ -1138,16 +1569,37 @@ def _dish_crop(
 def _background_band_radii(
     dish: DishCircle,
     pixels_per_mm: float | None,
+    *,
+    buffer_cm: float = 0.35,
+    thickness_cm: float = 0.50,
 ) -> tuple[float, float]:
-    """Preferred 0.5 cm outside-rim annulus in corrected-image pixels."""
+    """Return the exact buffered outside-rim annulus in corrected-image pixels."""
+
+    vessel_radius = float(dish.outer_radius)
+    pixels_per_cm = (
+        10.0 * float(pixels_per_mm)
+        if pixels_per_mm is not None and pixels_per_mm > 0
+        else vessel_radius / 4.8
+    )
+    buffer_px = float(buffer_cm) * pixels_per_cm
+    thickness_px = float(thickness_cm) * pixels_per_cm
+    inner_radius = vessel_radius + buffer_px
+    return inner_radius, inner_radius + thickness_px
+
+
+def _legacy_background_band_radii(
+    dish: DishCircle,
+    pixels_per_mm: float | None,
+) -> tuple[float, float]:
+    """Retain the established compact prior used only by foreground segmentation."""
 
     vessel_radius = float(dish.outer_radius)
     band_width = (
-        5.0 * pixels_per_mm
+        5.0 * float(pixels_per_mm)
         if pixels_per_mm is not None and pixels_per_mm > 0
         else vessel_radius * 0.08
     )
-    band_width = max(3.0, min(float(band_width), vessel_radius * 0.25))
+    band_width = max(3.0, min(band_width, vessel_radius * 0.25))
     return vessel_radius * 1.005, vessel_radius + band_width
 
 
@@ -1261,6 +1713,29 @@ def _aligned_reference_mask(
             interpolation=cv2.INTER_NEAREST,
         )
     return values > 0
+
+
+def _aligned_instance_annotations(
+    annotations: np.ndarray | None,
+    shape: tuple[int, int],
+) -> np.ndarray | None:
+    """Return an unsigned seed-identity label map aligned to the corrected image."""
+
+    if annotations is None:
+        return None
+    values = np.asarray(annotations)
+    if values.ndim != 2:
+        raise ValueError("Seed instance annotations must be a two-dimensional label map.")
+    if np.any(values < 0) or np.any(values > np.iinfo(np.uint16).max):
+        raise ValueError("Seed instance annotation IDs must be between 0 and 65,535.")
+    values = values.astype(np.uint16, copy=False)
+    if values.shape != shape:
+        values = cv2.resize(
+            values,
+            (shape[1], shape[0]),
+            interpolation=cv2.INTER_NEAREST,
+        )
+    return values
 
 
 def _sample_count(samples) -> int:
@@ -1388,6 +1863,7 @@ def _foreground_feature(
     background_reference_mask: np.ndarray | None = None,
     foreground_reference_points: tuple[tuple[float, float], ...] = (),
     foreground_reference_mask: np.ndarray | None = None,
+    foreground_exclusion_mask: np.ndarray | None = None,
     reference_radius: int = 3,
     seed_diameter: float = 24.0,
     valid_radius: float | None = None,
@@ -1395,6 +1871,7 @@ def _foreground_feature(
     center_x: float | None = None,
     center_y: float | None = None,
     perimeter_background_lab: tuple[float, float, float] | None = None,
+    perimeter_background_samples_lab=None,
     source_tensor=None,
     lab_tensor=None,
 ) -> tuple[
@@ -1473,6 +1950,13 @@ def _foreground_feature(
             )[0, 0]
             > 0
         ) & valid_pixels
+    foreground_exclusion_tensor = torch.zeros_like(valid_pixels)
+    if foreground_exclusion_mask is not None:
+        foreground_exclusion_tensor = image_to_tensor(
+            np.asarray(foreground_exclusion_mask, np.uint8), cuda_context
+        )[0, 0] > 0
+        foreground_exclusion_tensor &= valid_pixels
+        foreground_reference_tensor &= ~foreground_exclusion_tensor
     manual_mask = _reference_point_mask(
         height,
         width,
@@ -1492,6 +1976,11 @@ def _foreground_feature(
         )
     elif int(manual_mask.sum().item()) >= 1:
         supplied_background = lab[manual_mask]
+    if supplied_background is None and _sample_count(perimeter_background_samples_lab):
+        supplied_background = perimeter_background_samples_lab
+        background_refinement_iterations = 0
+    else:
+        background_refinement_iterations = settings.foreground_refinement_iterations
     if supplied_background is not None:
         (
             _,
@@ -1504,9 +1993,9 @@ def _foreground_feature(
             lab,
             supplied_background,
             valid_pixels & ~foreground_reference_tensor,
-            maximum_components=settings.foreground_reference_components,
+            maximum_components=min(8, settings.foreground_reference_components),
             fit_iterations=settings.foreground_distribution_fit_iterations,
-            refinement_iterations=settings.foreground_refinement_iterations,
+            refinement_iterations=background_refinement_iterations,
             refinement_min_probability=settings.foreground_refinement_min_probability,
             frequency_weight_power=settings.foreground_frequency_weight_power,
             scale_multiplier=settings.foreground_distribution_scale_multiplier,
@@ -1602,10 +2091,14 @@ def _foreground_feature(
     foreground_fitted_sample_count = 0
     foreground_refinement_rounds = 0
     foreground_profile_sample_mask = None
+    excluded_centres = None
+    excluded_scales = None
+    excluded_weights = None
+    exclusion_strength = 0.95
 
-    # Painted foreground pixels fit a multimodal colour distribution. Iterative
-    # rounds admit only high-confidence matches while retaining the painted
-    # pixels as anchors, so uncommon coat colours are not averaged together.
+    # Painted foreground pixels form an empirical colour-frequency table.
+    # Individual light/dark pattern colours remain separate anchors; cautious
+    # refinement can widen their tolerances but cannot move or invent modes.
     if foreground_reference_tensor.any():
         (
             prototype_probability,
@@ -1614,12 +2107,11 @@ def _foreground_feature(
             foreground_weights,
             foreground_fitted_sample_count,
             foreground_refinement_rounds,
-        ) = lab_colour_distribution(
+        ) = lab_colour_frequency_distribution(
             lab,
             lab[foreground_reference_tensor],
-            valid_pixels & ~manual_mask,
-            maximum_components=settings.foreground_reference_components,
-            fit_iterations=settings.foreground_distribution_fit_iterations,
+            valid_pixels & ~manual_mask & ~foreground_exclusion_tensor,
+            maximum_bins=settings.foreground_reference_components,
             refinement_iterations=settings.foreground_refinement_iterations,
             refinement_min_probability=settings.foreground_refinement_min_probability,
             frequency_weight_power=settings.foreground_frequency_weight_power,
@@ -1631,18 +2123,46 @@ def _foreground_feature(
                 settings.foreground_chroma_weight,
             ),
         )
-        enhancement = (
-            settings.foreground_reference_weight
+        # Reference evidence participates in the same calculation everywhere.
+        # Nothing underneath the brush is forced to one; a matching unpainted
+        # pixel receives exactly the same colour-derived log-odds contribution.
+        probability = torch.sigmoid(
+            torch.logit(probability.clamp(1e-5, 1.0 - 1e-5))
+            + 6.0
+            * settings.foreground_reference_weight
             * prototype_probability
-            * (1.0 - probability)
-        )
-        probability = probability + enhancement
-        probability = torch.where(
-            foreground_reference_tensor,
-            torch.ones_like(probability),
-            probability,
         )
         foreground_profile_sample_mask = foreground_reference_tensor
+
+    if foreground_exclusion_tensor.any():
+        (
+            excluded_membership,
+            excluded_centres,
+            excluded_scales,
+            excluded_weights,
+            _,
+            _,
+        ) = lab_colour_frequency_distribution(
+            lab,
+            lab[foreground_exclusion_tensor],
+            valid_pixels,
+            maximum_bins=max(16, settings.foreground_reference_components),
+            refinement_iterations=0,
+            frequency_weight_power=0.0,
+            scale_multiplier=settings.foreground_distribution_scale_multiplier,
+            scale_floors=(8.0, 4.0, 4.0),
+            distance_weights=(
+                1.0,
+                settings.foreground_chroma_weight,
+                settings.foreground_chroma_weight,
+            ),
+        )
+        # Painted exclusions define a negative colour-frequency model. Apply
+        # it identically at every matching colour rather than zeroing pixels
+        # merely because the brush passed over their coordinates.
+        probability = probability * (
+            1.0 - exclusion_strength * excluded_membership
+        )
 
     # Without a painted anchor, summarize the colours that the current
     # foreground calculation itself considers confidently seed-like. This is a
@@ -1651,6 +2171,7 @@ def _foreground_feature(
         automatic_foreground = (
             valid_pixels
             & ~manual_mask
+            & ~foreground_exclusion_tensor
             & (probability >= max(0.70, settings.foreground_refinement_min_probability))
         )
         if int(automatic_foreground.sum().item()) < 16:
@@ -1659,12 +2180,18 @@ def _foreground_feature(
                 probability,
                 torch.zeros_like(probability),
             )
-            if int((valid_pixels & ~manual_mask).sum().item()):
+            if int((valid_pixels & ~manual_mask & ~foreground_exclusion_tensor).sum().item()):
                 cutoff = torch.quantile(
-                    eligible_probability[valid_pixels & ~manual_mask], 0.90
+                    eligible_probability[
+                        valid_pixels & ~manual_mask & ~foreground_exclusion_tensor
+                    ],
+                    0.90,
                 )
                 automatic_foreground = (
-                    valid_pixels & ~manual_mask & (probability >= cutoff)
+                    valid_pixels
+                    & ~manual_mask
+                    & ~foreground_exclusion_tensor
+                    & (probability >= cutoff)
                 )
         if int(automatic_foreground.sum().item()):
             (
@@ -1677,8 +2204,8 @@ def _foreground_feature(
             ) = lab_colour_distribution(
                 lab,
                 lab[automatic_foreground],
-                valid_pixels & ~manual_mask,
-                maximum_components=settings.foreground_reference_components,
+                valid_pixels & ~manual_mask & ~foreground_exclusion_tensor,
+                maximum_components=min(8, settings.foreground_reference_components),
                 fit_iterations=settings.foreground_distribution_fit_iterations,
                 refinement_iterations=0,
                 refinement_min_probability=settings.foreground_refinement_min_probability,
@@ -1725,8 +2252,36 @@ def _foreground_feature(
                 float(value) for value in foreground_weights.cpu().tolist()
             ),
             refinement_iterations=int(foreground_refinement_rounds),
+            excluded_component_centres_lab=(
+                ()
+                if excluded_centres is None
+                else tuple(
+                    tuple(float(value) for value in row)
+                    for row in excluded_centres.cpu().tolist()
+                )
+            ),
+            excluded_component_scales_lab=(
+                ()
+                if excluded_scales is None
+                else tuple(
+                    tuple(float(value) for value in row)
+                    for row in excluded_scales.cpu().tolist()
+                )
+            ),
+            excluded_component_weights=(
+                ()
+                if excluded_weights is None
+                else tuple(
+                    float(value) for value in excluded_weights.cpu().tolist()
+                )
+            ),
+            exclusion_strength=exclusion_strength,
         )
-    probability = torch.where(valid_pixels, probability, torch.zeros_like(probability))
+    probability = torch.where(
+        valid_pixels,
+        probability,
+        torch.zeros_like(probability),
+    )
 
     return (
         GpuRaster(
@@ -1761,9 +2316,18 @@ def _dish_perimeter_background_lab(
     pixels_per_mm: float | None,
     cuda_context: CudaContext,
     *,
+    buffer_cm: float = 0.35,
+    thickness_cm: float = 0.50,
+    band_radii_px: tuple[float, float] | None = None,
     image_tensor=None,
-) -> tuple[tuple[float, float, float], BackgroundSamplingBand]:
-    """Median Lab colour in the 0.5 cm band immediately outside a dish."""
+    lab_tensor=None,
+) -> tuple[tuple[float, float, float], BackgroundSamplingBand, object]:
+    """Return the colour summary and sampled Lab pixels outside a dish.
+
+    The bounded sample remains on the analysis device so downstream colour
+    models retain the annulus's multimodal distribution instead of reducing it
+    to one regional average.
+    """
 
     import torch
 
@@ -1778,24 +2342,52 @@ def _dish_perimeter_background_lab(
         + (yy - float(dish.center_y)).square()
     )
     vessel_radius = float(dish.outer_radius)
-    inner_radius, outer_radius = _background_band_radii(dish, pixels_per_mm)
-    band_width = outer_radius - vessel_radius
+    inner_radius, outer_radius = (
+        _background_band_radii(
+            dish,
+            pixels_per_mm,
+            buffer_cm=buffer_cm,
+            thickness_cm=thickness_cm,
+        )
+        if band_radii_px is None
+        else (float(band_radii_px[0]), float(band_radii_px[1]))
+    )
+    buffer_width = inner_radius - vessel_radius
+    band_width = outer_radius - inner_radius
+    pixels_per_cm = (
+        10.0 * float(pixels_per_mm)
+        if pixels_per_mm is not None and pixels_per_mm > 0
+        else vessel_radius / 4.8
+    )
+    reported_buffer_cm = buffer_width / max(pixels_per_cm, 1e-6)
+    reported_thickness_cm = band_width / max(pixels_per_cm, 1e-6)
     ring = (distance >= inner_radius) & (distance <= outer_radius)
     sample_count = int(ring.sum().item())
     outside_vessel = True
     if sample_count < 16:
-        outer_radius = vessel_radius * 0.995
-        inner_radius = outer_radius - band_width
+        outer_radius = max(0.0, vessel_radius - buffer_width)
+        inner_radius = max(0.0, outer_radius - band_width)
         ring = (distance <= outer_radius) & (distance >= inner_radius)
         sample_count = int(ring.sum().item())
         outside_vessel = False
-    source = (
-        image_to_tensor(image, cuda_context)
-        if image_tensor is None
-        else image_tensor
-    )
-    lab = bgr_to_lab(source)[0].permute(1, 2, 0)
-    median = torch.median(lab[ring], dim=0).values
+    if lab_tensor is None:
+        source = (
+            image_to_tensor(image, cuda_context)
+            if image_tensor is None
+            else image_tensor
+        )
+        lab_tensor = bgr_to_lab(source)
+    lab = lab_tensor[0].permute(1, 2, 0)
+    samples = lab[ring]
+    if int(samples.shape[0]) > 32768:
+        indices = torch.linspace(
+            0,
+            int(samples.shape[0]) - 1,
+            32768,
+            device=cuda_context.device,
+        ).round().long()
+        samples = samples[indices]
+    median = torch.median(samples, dim=0).values
     return (
         tuple(float(value) for value in median.cpu().tolist()),
         BackgroundSamplingBand(
@@ -1803,7 +2395,12 @@ def _dish_perimeter_background_lab(
             outer_radius_px=float(outer_radius),
             outside_vessel=outside_vessel,
             sample_count=sample_count,
+            buffer_cm=float(reported_buffer_cm),
+            thickness_cm=float(reported_thickness_cm),
+            buffer_px=float(buffer_width),
+            thickness_px=float(band_width),
         ),
+        samples,
     )
 
 
@@ -1813,10 +2410,6 @@ def _foreground_mask(
     seed_diameter: float,
     settings: BaselineSettings,
     cuda_context: CudaContext,
-    *,
-    foreground_reference_points: tuple[tuple[float, float], ...] = (),
-    foreground_reference_mask: np.ndarray | None = None,
-    reference_radius: int = 3,
 ) -> object:
     import torch
 
@@ -1827,23 +2420,6 @@ def _foreground_mask(
     if kernel_size % 2 == 0:
         kernel_size += 1
     mask = binary_close(binary_open(mask, kernel_size), kernel_size)
-    if foreground_reference_points or (
-        foreground_reference_mask is not None
-        and np.any(foreground_reference_mask)
-    ):
-        forced = _reference_point_mask(
-            probability.shape[0],
-            probability.shape[1],
-            foreground_reference_points,
-            reference_radius,
-            cuda_context,
-        )
-        if foreground_reference_mask is not None:
-            forced |= image_to_tensor(
-                np.asarray(foreground_reference_mask, np.uint8), cuda_context
-            )[0, 0] > 0
-        forced = forced[None, None]
-        mask |= forced & valid_tensor
     return GpuRaster(
         mask.to(torch.uint8) * 255,
         numpy_dtype=np.uint8,
@@ -1936,6 +2512,11 @@ def _circle_candidates(
     *,
     accumulator_threshold: int | None = None,
     source_tensor=None,
+    edge_magnitude_tensor=None,
+    sensor_noise_tensor=None,
+    flattened_grayscale_tensor=None,
+    shadow_likelihood_tensor=None,
+    highlight_likelihood_tensor=None,
     analysis_radius: float | None = None,
     analysis_center: tuple[float, float] | None = None,
 ) -> list[_Candidate]:
@@ -1963,15 +2544,85 @@ def _circle_candidates(
         )
     )
     working_diameter = seed_diameter * working_scale
-    gray = gaussian_blur(
-        bgr_to_gray(working_source),
-        1.2,
-    )
-    gradient, _, _ = gradient_magnitude(gray)
-    high = torch.quantile(gradient.reshape(-1), 0.995).clamp_min(1.0)
-    edge = (gradient / high).clamp(0.0, 1.0)
+
+    def working_evidence(values):
+        if values is None:
+            return None
+        if isinstance(values, GpuRaster):
+            tensor = values.gpu_tensor(
+                device=cuda_context.device, dtype=torch.float32
+            )
+        elif torch.is_tensor(values):
+            tensor = values.to(
+                device=cuda_context.device, dtype=torch.float32
+            )
+        else:
+            tensor = image_to_tensor(np.asarray(values), cuda_context)
+        if tensor.ndim == 2:
+            tensor = tensor[None, None]
+        elif tensor.ndim == 3:
+            tensor = tensor[None]
+        if tensor.shape[1] > 1:
+            tensor = torch.mean(tensor, dim=1, keepdim=True)
+        if float(tensor.max().item()) > 1.5:
+            tensor = tensor / 255.0
+        if tensor.shape[-2:] != (working_height, working_width):
+            tensor = functional.interpolate(
+                tensor,
+                (working_height, working_width),
+                mode="bilinear",
+                align_corners=False,
+            )
+        return tensor.clamp(0.0, 1.0)
+
+    edge = working_evidence(edge_magnitude_tensor)
+    if edge is None:
+        # Preserve a direct-call fallback, while the authored pipeline wiring
+        # supplies the shared multichannel edge magnitude in normal use.
+        gray = gaussian_blur(bgr_to_gray(working_source), 1.2)
+        gradient, _, _ = gradient_magnitude(gray)
+        high = torch.quantile(gradient.reshape(-1), 0.995).clamp_min(1.0)
+        edge = (gradient / high).clamp(0.0, 1.0)
     edge_floor = settings.circle_edge_threshold / 255.0 * 0.45
     edge = torch.where(edge >= edge_floor, edge, torch.zeros_like(edge))
+
+    evidence_weight = settings.circle_edge_magnitude_weight
+    evidence = edge * evidence_weight
+
+    def add_boundary_evidence(values, weight: float) -> None:
+        nonlocal evidence, evidence_weight
+        raster = working_evidence(values)
+        if raster is None or weight <= 0:
+            return
+        boundary, _, _ = gradient_magnitude(
+            gaussian_blur(raster, 0.8), scharr=True
+        )
+        high = torch.quantile(boundary.reshape(-1), 0.995).clamp_min(1e-6)
+        boundary = (boundary / high).clamp(0.0, 1.0)
+        boundary = torch.where(
+            boundary >= edge_floor * 0.65,
+            boundary,
+            torch.zeros_like(boundary),
+        )
+        evidence += boundary * weight
+        evidence_weight += weight
+
+    # These inputs are region/intensity rasters, so their spatial transitions
+    # supply ring support rather than their filled interiors.
+    add_boundary_evidence(
+        sensor_noise_tensor, settings.circle_sensor_noise_weight
+    )
+    add_boundary_evidence(
+        flattened_grayscale_tensor,
+        settings.circle_flattened_grayscale_weight,
+    )
+    add_boundary_evidence(
+        shadow_likelihood_tensor, settings.circle_shadow_weight
+    )
+    add_boundary_evidence(
+        highlight_likelihood_tensor, settings.circle_highlight_weight
+    )
+    edge = evidence / max(evidence_weight, 1e-6)
     minimum_radius = max(
         4, round(working_diameter * settings.circle_min_radius_fraction)
     )

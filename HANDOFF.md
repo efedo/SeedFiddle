@@ -78,37 +78,101 @@ repository or `images/` while troubleshooting the environment.
 
 - Colour-card/swatch detection, colour balance, projective deskew, ruler
   detection, 5 cm scale overlay, absolute scale, and dual Petri-dish rims.
+- Petri-dish search uses the ruler-calibrated, editable expected 96 mm outer
+  diameter to prevent crowded seed-mass edges from replacing the physical rim;
+  all eleven committed fixtures have visually verified inner and outer edges.
 - Native Qt node graph with inline Blueprint-style controls, dependency-aware
-  caching, node timings, progress colours, connected-edge highlighting, and
-  node-driven viewer overlays/intermediates.
-- GPU foreground/background probabilities, directional texture continuation,
-  shared edge gradients, directed/undirected tangents, boundary tracing and
-  fit diagnostics, instance masks, and downstream seed/condition diagnostics.
-- Painted binary foreground/background reference masks with a live brush
-  outline, Paint/Eraser modes, explicit Apply/Revert, and Lab probability-gamut
-  plots for both classes.
+  caching, node timings, progress colours, purple adjacent-node highlighting,
+  manual overlap, automatic non-overlapping arrangement, zoom controls, and
+  node-driven viewer overlays/intermediates. The one-line toolbar includes an
+  unused-node toolbox; **Circle candidates**, **Distance-peak candidates**, the
+  directional surface-darkness gradient branch and its lightening/darkening
+  derivative upper cutoffs, and every distance-dependent node are preserved
+  there with their authored connections but excluded from the default DAG and
+  calculations.
+- Overlay selection and opacity are compact top-toolbar controls. The main
+  selector groups indented layers under disabled owning-node headings, and a
+  synchronized selector directly below the selected node title lists only that
+  node's overlays. Background
+  and foreground-reference painting are top-toolbar modes that reveal one contextual control
+  panel over the image; the right inspector contains only image metadata, the
+  selected `Node:` controls, its local overlay selector and explanation, and
+  applicable summaries.
+- A separate **Annotate seed instances** mode records distinct-colour,
+  full-resolution integer seed IDs. It provides a freehand brush, magnetic edge
+  tracing, edge-supported circle/ellipse snapping, adaptive smart fill, and an
+  eraser. Assisted tools now show debounced live previews and commit on click:
+  edge trace uses click anchors and a magnetic path preview, shape snap shows a
+  nominal shape cursor plus the fitted boundary, and smart fill previews its
+  region even when the active seed has no prior marks. Trace/shape tools
+  optionally use directed or undirected edge tangents. Smart fill uses OpenCV's
+  native floating-range neighbour comparison, preserves other IDs,
+  stops at edges, and exposes bounded tunnelling/tolerance/growth options for
+  patterned seeds. Freehand drags use a lightweight vector stroke preview and
+  rebuild the annotation raster once on release; they never rebuild the
+  analysis overlays. Assisted algorithms crop edge work to their local cursor
+  region instead of rebuilding or normalizing full-resolution rasters on every
+  event.
+  Draft/apply/revert state is per image and independent of the
+  binary colour-reference masks; applied labels constrain the provisional
+  instance branch without overriding foreground probability.
+- GPU foreground/background colour probabilities, symmetric three-band noise
+  profiles with directional texture continuation, shared edge gradients,
+  directed/undirected tangents, ridge thinning, and oriented edge traces.
+- **Perimeter background reference** is a separate cached active node. Its
+  ruler-calibrated outer-rim buffer defaults to 0.35 cm and its independently
+  adjustable median-colour band thickness defaults to 0.5 cm; both are shown
+  exactly in a dedicated overlay, with a nominal-dish scale fallback.
+- A six-output active multiscale node supplies fine/medium/coarse surrounding RMS
+  darkness and Lab-colour noise energy. The maximum one-sided lightening and
+  darkening CIE L* surface slopes, their query-to-target directions, and the two
+  dependent derivative upper cutoffs are disabled and preserved in the
+  unused-node toolbox. These raw masks are intentionally distinct from the
+  learned foreground/background noise profiles.
+- Painted binary foreground/background reference masks plus independent
+  negative-evidence masks for each layer. Exclusion samples fit separate
+  colour-frequency and texture distributions that downweight matching evidence
+  globally; they never hard-zero their painted coordinates. The editor includes
+  a live brush outline, direct per-layer Erase buttons, shared Paint/Eraser modes,
+  explicit Apply/Revert, a painted-overlay visibility toggle, and Lab
+  probability models shown as HSV-rendered hue/tint/shade contour projections
+  for both colour classes. The underlying projection colours are not dimmed;
+  probability is projected across saturation before contours are drawn.
+- **Grayscale & local lighting** estimates a valid-mask-aware broad field,
+  flattens grayscale with a clipped log ratio, and maps standardized local
+  deviations through separate nonlinear shadow/highlight sigmoids. All rasters
+  remain GPU-resident and selectable as overlays.
+- The dormant **Circle candidates** toolbox node has authored inputs from shared
+  edge magnitude, sensor/noise, flattened grayscale, shadow, and highlight
+  products. Its CUDA ring bank weights their boundary transitions independently,
+  while remaining disabled and outside the default DAG. A selected restored
+  circle node can be moved back to **Unused nodes** and restored again later.
+- Foreground references use a per-pixel Lab colour-frequency table, never a
+  regional average or painted-pixel probability override. Automatic background
+  colour is anchored to the retained outside-dish annulus distribution.
+- The independent seed-interior branch remains visible but disabled. It now
+  consumes foreground colour probability, learned foreground-noise probability,
+  and background evidence; an editable texture weight controls the colour/noise
+  blend before background support is incorporated. The
+  distance, instance, final boundary, review, measurement, classification,
+  aggregation, and output branch is outside the active DAG in **Unused nodes**.
+- The application is branded **Seed Fiddle** and uses the seed-and-fiddle-bow
+  icon under `seedvision/assets/seed_vision_icon.png`.
 - The 11 low-resolution test photographs under `images/` are committed and are
   required by image-backed tests. Generated diagnostics under `artifacts/` are
   ignored.
 
-The full suite passed 80 tests immediately before this hand-off was written.
+The full suite passed 120 tests on Python 3.12.10 with PyTorch CUDA on an RTX
+3070 on 2026-08-10 after the directional surface-darkness branch was disabled
+and moved to the unused-node toolbox.
 
 ## Important unfinished concern
 
-Automatic foreground/background separation can still classify pale or white
-seed-coat patterns as background when their colour resembles the tray. The
-recommended next improvement, discussed but not yet implemented, is to:
-
-1. Fit robust colour and multiscale texture distributions from the verified
-   dish-surrounding annulus rather than allowing in-dish pseudo-labels to
-   redefine background freely.
-2. Cap interior self-refinement to annulus-supported modes.
-3. Softly suppress background probability inside high-confidence closed curves
-   of plausible seed diameter, while preserving painted references as hard
-   constraints.
-
-Do not address this by merely tightening the colour tolerance; that would also
-discard real background under illumination and shadow changes.
+The colour/noise corrections above are implemented and covered by focused
+tests, but a working seed-separation algorithm is still unfinished. Build the
+next proof of concept around foreground/noise interior evidence plus the active
+edge-gradient/ridge/trace boundary cost; do not restore the former distance or
+circle proposal branches merely to obtain a count.
 
 ## First actions for the next agent
 

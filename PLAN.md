@@ -1,4 +1,4 @@
-# Seed Vision implementation plan
+# Seed Fiddle implementation plan
 
 ## Objective
 
@@ -116,9 +116,9 @@ seedvision/export/            CSV, JSON, and annotated imagery
 ```
 
 GPU work runs outside the Qt GUI thread and communicates through Qt signals.
-Calibration, foreground/background estimation, distance and circle proposals,
-shared gradients, boundary tracing, provisional masks, and the fifteen advanced
-raster products use a CUDA-first PyTorch backend. Node tensors and intermediate
+Calibration, foreground/background colour and noise estimation, shared gradients,
+edge tracing, image-quality products, and the retained experimental analysis
+stages use a CUDA-first PyTorch backend. Node tensors and intermediate
 overlays remain on GPU and are reused by downstream stages; only a selected Qt
 overlay, the corrected display image, or compact metadata/geometry is
 materialized on CPU. OpenCV remains the image decoder and compatibility layer,
@@ -160,57 +160,95 @@ desktop shell.
 - Native Qt visual pipeline from raw images to final output
 - Typed node parameters, status, per-node CUDA/CPU calculation timing, and
   downstream cache invalidation
-- Explicit dish-layout, seed-scale, foreground-mask, distance-peak,
-  Hough-circle, and candidate-fusion stages with visible method explanations
-  and per-run diagnostics
+- Explicit dish-layout, seed-scale, symmetric foreground/background colour and
+  noise-probability stages, plus shared edge-gradient/ridge/trace diagnostics
+  with visible method explanations and per-run diagnostics
+- Toolbox-preserved, disabled one-sided maximum lightening/darkening
+  surface-slope diagnostics and derivative upper cutoffs, plus active raw
+  fine/medium/coarse surrounding RMS masks for darkness and Lab colour noise
 - Node-selected access to most implemented algorithm settings, with bounded
   editors, concise Blueprint-style controls on every configurable graph node,
   tooltip descriptions, composite validation, shared edge-field controls, and
   downstream cache invalidation
-- Preliminary automatic masks (implemented as provisional watershed masks)
-- Selectable proposal, instance-mask, colour-background,
-  noise-frequency-background, undirected-edge, directed-edge, and seed-edge
-  curve overlays
-- Fifteen CUDA-first diagnostic/trait products: soft interior, boundary
+- Preliminary automatic masks (retained in the unused-node toolbox pending validation)
+- Selectable foreground/background colour and noise, image-quality,
+  undirected-edge, directed-edge, ridge, and trace overlays
+- Fifteen authored CUDA-first diagnostic/trait products, with unfinished
+  distance-dependent products retained outside the active DAG: soft interior
+  (fusing foreground colour, learned foreground noise, and background evidence), boundary
   normals, touching split, ellipse support, proposal disagreement, assignment
   confidence, contact graph, illumination decomposition, image quality,
   per-seed radial profile, wrinkling, coat damage, pattern probabilities,
   colour probabilities, and calibration residual risk
-- Per-seed provisional trait summaries and lot-level broad class proportions
-- Per-image manual background reference points, automatic fallback, and a
-  bypassable background-colour/noise branch
+- Dormant per-seed provisional trait summaries and lot-level broad class proportions
+- Per-image manual background/foreground references, independent exclusions
+  for each probability layer, painted-overlay visibility, automatic fallback,
+  and a bypassable background-colour/noise branch
+- Separate per-image foreground-reference masks and distinct-colour seed-instance
+  annotations, each with independent draft/apply/revert state; freehand,
+  live-preview/click-to-apply magnetic edge tracing, nominal-cursor plus
+  edge-supported circle/ellipse snapping, adaptive neighbour-relative smart fill
+  from marked or unmarked seeds with bounded tunnelling, and erasing are available;
+  freehand drags use a lightweight vector preview and one annotation-raster
+  refresh on release, while assisted previews operate on local cursor regions;
+  applied instance IDs constrain only the provisional instance branch
 - Mask editing and autosave
 - Versioned annotation representation
 
-Exit: representative samples can be annotated entirely inside Seed Vision.
+Exit: representative samples can be annotated entirely inside Seed Fiddle.
 
 Current pilot status: 11 low-resolution images load directly from `images/`;
 the application detects colour swatches and the ruler, deskews and
-neutral-balances the image, assigns pixels per millimetre, detects the Petri
-dish, and creates fused classical review proposals in a background thread. A
-movable, zoomable Qt node canvas exposes the full classical proposal path:
-dish Hough detection, isolated-reference seed scaling, Lab foreground masking,
-distance-transform peaks, Hough circle candidates, and confidence-weighted
-fusion. Its inspector explains each method and each parameter inline, while
-per-run node status reports the actual threshold, mask coverage, candidate
-counts, and fused total. The image viewer can switch between unique spatially contrasting
-instance colours, dark-to-light background-colour likelihood, and a continuous
-noise-frequency refinement trained from colour-derived pseudo-labels. It also
-provides continuous full-palette hue representations of both axial/undirected
-and polarity-aware directed edge tangents, sharing one edge-strength map.
-The directed field also feeds a seed-edge curve likelihood that combines edge
-strength, seed-radius arc continuity, directed tangent agreement, and an
-inferred seed interior that darkens toward the boundary. Background and tangent
-evidence branch directly from the corrected image; only the curve-radius test
-also consumes the global seed scale from identification.
-Automatic background colour can be overridden with user-selected reference
-patches anywhere on the corrected image; the background branch can also be
-bypassed without disabling seed proposals, provisional masks, or edge maps.
-Directed tangents use lightness polarity and place the brighter side on their
-right. Each overlay is represented by a live-status branch in the pipeline;
-selecting an overlay node prepares that layer in Image review. The sparse
-16-seed image is the first count regression target. The masks are provisional;
-interactive correction and autosave remain to be built.
+neutral-balances the image, assigns pixels per millimetre, and detects both
+physical Petri-dish edges in a background thread. The active DAG now stops at
+validated calibration and diagnostic evidence: symmetric foreground/background
+colour and three-band noise probabilities, illumination/image-quality products,
+simple grayscale flattening, nonlinear local shadow/highlight products, and a
+shared CUDA edge-gradient/ridge/trace path. Independent active diagnostics also
+provide one-sided maximum lightening/darkening L* surface slopes and six raw
+multiscale darkness/colour noise masks. The editable strong-slope cutoff views
+remain authored but have moved to the unused-node toolbox.
+Distance-peak candidates and
+all of their DAG descendants—identification, provisional instances, final
+boundary confirmation, review, measurement, classification, aggregation, and
+output—are preserved with their wiring in the unused-node toolbox. Circle
+candidates are preserved there independently. When explicitly restored, the
+circle bank consumes cached shared edge magnitude and sensor/noise-boundary
+evidence plus flattened-grayscale, local-shadow, and local-highlight boundaries
+through separate weights. The user can move the restored node back to the
+toolbox and add it again later; this experiment does not make circle candidates
+part of the default separation workflow.
+
+Foreground/background reference masks and their independent exclusion masks
+have per-image draft/apply/revert state. Painted foreground colours remain
+individual Lab frequency bins and never force the probability under the brush
+to one. Painted reference/exclusion colours can be hidden while inspecting an
+overlay. Seed-instance IDs remain separate from foreground references. Their
+annotation mode now supports freehand marks, magnetic edge tracing, shape
+snapping, and locally adaptive smart fill for partially annotated patterned
+seeds. Split/merge tools, annotation persistence, and a validated automatic
+seed-separation algorithm remain to be built. The sparse 16-seed image remains
+the first count regression target.
+
+### Next seed-separation proof of concept
+
+1. Fuse foreground colour and foreground-noise probability into soft interior
+   evidence while preserving their disagreement as uncertainty.
+2. Train or calibrate a boundary probability from shared edge magnitude,
+   thinned-ridge support, trace continuity, tangent orientation, and the
+   foreground/noise transition sampled across each edge normal.
+3. Bridge only tangent-compatible trace gaps, then propose closed or nearly
+   closed contours whose size is plausible under the image-specific seed scale.
+   Applied seed-instance interior marks become high-confidence identity seeds.
+4. Run a GPU multi-label geodesic watershed or graph cut inside foreground
+   support. Expansion cost rises sharply at the calibrated boundary probability;
+   no distance-peak or circular centre proposal is required.
+5. Merge unsupported fragments and split touching regions only when a supported
+   contour crosses the shared neck. Retain per-boundary and per-instance
+   confidence instead of silently forcing a complete partition.
+6. Validate count error, boundary F1/IoU, split/merge error, and uncertainty on
+   manually reviewed isolated, touching, patterned, and partially occluded
+   fixtures before moving any separation node back into the active DAG.
 
 ### Phase 3 — calibration and measurements (started)
 

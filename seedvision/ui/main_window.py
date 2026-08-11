@@ -1,4 +1,4 @@
-"""Seed Vision desktop interface for pipeline control and image review."""
+"""Seed Fiddle desktop interface for pipeline control and image review."""
 
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QButtonGroup,
     QComboBox,
     QCheckBox,
+    QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
     QFrame,
@@ -34,13 +35,16 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSlider,
+    QSpinBox,
     QSplitter,
+    QStackedWidget,
     QToolBar,
     QVBoxLayout,
     QWidget,
 )
 
 from seedvision.pipeline import NodeStatus, build_default_pipeline
+from seedvision.annotation import EdgeTraceOptions, ShapeSnapOptions, SmartFillOptions
 from seedvision.segmentation import (
     AdvancedAnalysisSettings,
     AnalysisLayerSettings,
@@ -65,7 +69,12 @@ OVERLAY_NODE_IDS = (
     "instance_masks",
     "background_likelihood",
     "refined_background_likelihood",
+    "foreground_noise_likelihood",
     "edge_gradients",
+    "surface_darkness_gradients",
+    "lightening_gradient_ceiling",
+    "darkening_gradient_ceiling",
+    "frequency_noise_masks",
     "undirected_edges",
     "directed_edges",
     "edge_ridges",
@@ -81,10 +90,8 @@ CALIBRATION_NODE_IDS = (
 )
 IDENTIFICATION_STAGE_NODE_IDS = (
     "seed_scale_estimation",
+    "perimeter_background_reference",
     "foreground_segmentation",
-    "distance_candidates",
-    "circle_candidates",
-    "identification",
 )
 VIEWER_NODE_MODES = {
     "raw_images": "raw_image",
@@ -95,6 +102,7 @@ VIEWER_NODE_MODES = {
     "layout_detection": "layout_detection",
     "scale_calibration": "calibrated_image",
     "seed_scale_estimation": "seed_scale_estimation",
+    "perimeter_background_reference": "perimeter_background_reference",
     "foreground_segmentation": "foreground_mask",
     "distance_candidates": "distance_candidates",
     "circle_candidates": "circle_candidates",
@@ -105,6 +113,14 @@ VIEWER_NODE_MODES = {
         for node_id in OVERLAY_NODE_IDS
     },
 }
+VIEWER_NODE_MODES.update(
+    {
+        "surface_darkness_gradients": "surface_lightening_gradient",
+        "lightening_gradient_ceiling": "weak_lightening_gradient",
+        "darkening_gradient_ceiling": "weak_darkening_gradient",
+        "frequency_noise_masks": "darkness_noise_fine",
+    }
+)
 
 OVERLAY_NODE_OWNERS = {
     "raw_image": "raw_images",
@@ -113,6 +129,7 @@ OVERLAY_NODE_OWNERS = {
     "colour_reference": "colour_reference",
     "ruler_detection": "ruler_detection",
     "layout_detection": "layout_detection",
+    "perimeter_background_reference": "perimeter_background_reference",
     "seed_scale_estimation": "seed_scale_estimation",
     "foreground_feature": "foreground_segmentation",
     "foreground_mask": "foreground_segmentation",
@@ -124,7 +141,22 @@ OVERLAY_NODE_OWNERS = {
     "instance_masks": "instance_masks",
     "background_likelihood": "background_likelihood",
     "refined_background_likelihood": "refined_background_likelihood",
+    "foreground_noise_likelihood": "foreground_noise_likelihood",
     "edge_gradients": "edge_gradients",
+    "surface_lightening_gradient": "surface_darkness_gradients",
+    "surface_lightening_magnitude": "surface_darkness_gradients",
+    "surface_darkening_gradient": "surface_darkness_gradients",
+    "surface_darkening_magnitude": "surface_darkness_gradients",
+    "weak_lightening_gradient": "lightening_gradient_ceiling",
+    "weak_lightening_magnitude": "lightening_gradient_ceiling",
+    "weak_darkening_gradient": "darkening_gradient_ceiling",
+    "weak_darkening_magnitude": "darkening_gradient_ceiling",
+    "darkness_noise_fine": "frequency_noise_masks",
+    "darkness_noise_medium": "frequency_noise_masks",
+    "darkness_noise_coarse": "frequency_noise_masks",
+    "colour_noise_fine": "frequency_noise_masks",
+    "colour_noise_medium": "frequency_noise_masks",
+    "colour_noise_coarse": "frequency_noise_masks",
     "undirected_edges": "undirected_edges",
     "directed_edges": "directed_edges",
     "edge_ridges": "edge_ridges",
@@ -147,9 +179,11 @@ OVERLAY_NODE_OWNERS.update(
     {
         "boundary_magnitude": "boundary_normals",
         "contested_pixels": "assignment_confidence",
+        "flattened_grayscale": "illumination_decomposition",
         "shadow_likelihood": "illumination_decomposition",
+        "highlight_likelihood": "illumination_decomposition",
         "reflectance_image": "illumination_decomposition",
-        "glare_likelihood": "image_quality",
+        "glare_likelihood": "illumination_decomposition",
         "focus_quality": "image_quality",
         "clipped_highlights": "image_quality",
         "underexposure": "image_quality",
@@ -192,7 +226,11 @@ class _AnalysisTask(QRunnable):
         foreground_reference_points: tuple[tuple[float, float], ...],
         background_reference_mask: np.ndarray | None,
         foreground_reference_mask: np.ndarray | None,
+        background_exclusion_mask: np.ndarray | None,
+        foreground_exclusion_mask: np.ndarray | None,
+        seed_instance_annotations: np.ndarray | None,
         background_colour_enabled: bool,
+        enabled_nodes: frozenset[str],
         pipeline_revision: int,
         node_cache: PipelineAnalysisCache,
         dirty_nodes: frozenset[str],
@@ -216,7 +254,23 @@ class _AnalysisTask(QRunnable):
             if foreground_reference_mask is None
             else np.asarray(foreground_reference_mask, dtype=bool).copy()
         )
+        self.background_exclusion_mask = (
+            None
+            if background_exclusion_mask is None
+            else np.asarray(background_exclusion_mask, dtype=bool).copy()
+        )
+        self.foreground_exclusion_mask = (
+            None
+            if foreground_exclusion_mask is None
+            else np.asarray(foreground_exclusion_mask, dtype=bool).copy()
+        )
+        self.seed_instance_annotations = (
+            None
+            if seed_instance_annotations is None
+            else np.asarray(seed_instance_annotations, dtype=np.uint16).copy()
+        )
         self.background_colour_enabled = background_colour_enabled
+        self.enabled_nodes = enabled_nodes
         self.pipeline_revision = pipeline_revision
         self.node_cache = node_cache
         self.dirty_nodes = dirty_nodes
@@ -238,7 +292,11 @@ class _AnalysisTask(QRunnable):
                 foreground_reference_points=self.foreground_reference_points,
                 background_reference_mask=self.background_reference_mask,
                 foreground_reference_mask=self.foreground_reference_mask,
+                background_exclusion_mask=self.background_exclusion_mask,
+                foreground_exclusion_mask=self.foreground_exclusion_mask,
+                seed_instance_annotations=self.seed_instance_annotations,
                 background_colour_enabled=self.background_colour_enabled,
+                enabled_nodes=self.enabled_nodes,
                 node_cache=self.node_cache,
                 dirty_nodes=self.dirty_nodes,
                 progress_callback=lambda node_id, state: self.signals.node_progress.emit(
@@ -269,15 +327,22 @@ class MainWindow(QMainWindow):
         self._draft_foreground_reference_masks: dict[str, np.ndarray] = {}
         self._applied_background_reference_masks: dict[str, np.ndarray] = {}
         self._applied_foreground_reference_masks: dict[str, np.ndarray] = {}
+        self._draft_background_exclusion_masks: dict[str, np.ndarray] = {}
+        self._draft_foreground_exclusion_masks: dict[str, np.ndarray] = {}
+        self._applied_background_exclusion_masks: dict[str, np.ndarray] = {}
+        self._applied_foreground_exclusion_masks: dict[str, np.ndarray] = {}
         self._reference_masks_dirty: set[str] = set()
+        self._draft_instance_annotations: dict[str, np.ndarray] = {}
+        self._applied_instance_annotations: dict[str, np.ndarray] = {}
+        self._instance_annotations_dirty: set[str] = set()
         self._active_tasks: dict[str, _AnalysisTask] = {}
         self._thread_pool = QThreadPool.globalInstance()
-        self._selected_pipeline_node = "identification"
+        self._selected_pipeline_node = "seed_scale_estimation"
         self._selecting_node_from_overlay = False
         self._selecting_overlay_from_node = False
         self.pipeline = build_default_pipeline()
 
-        self.setWindowTitle("Seed Vision — visual analysis pipeline")
+        self.setWindowTitle("Seed Fiddle")
         self.setMinimumSize(1100, 700)
         self.resize(1540, 920)
 
@@ -286,8 +351,18 @@ class MainWindow(QMainWindow):
         self.image_view.reference_mask_edited.connect(
             self._reference_mask_edited
         )
+        self.image_view.instance_annotations_edited.connect(
+            self._instance_annotations_edited
+        )
+        self.image_view.instance_tool_status.connect(self.statusBar().showMessage)
         self.pipeline_canvas = PipelineCanvas(self.pipeline, self)
         self.pipeline_canvas.node_selected.connect(self._pipeline_node_selected)
+        self.pipeline_canvas.unused_node_restored.connect(
+            self._pipeline_unused_node_restored
+        )
+        self.pipeline_canvas.unused_node_shelved.connect(
+            self._pipeline_unused_node_shelved
+        )
         self.pipeline_canvas.parameter_changed.connect(
             self._pipeline_parameter_changed
         )
@@ -296,6 +371,12 @@ class MainWindow(QMainWindow):
             self._pipeline_parameter_changed
         )
         self.pipeline_inspector.enabled_changed.connect(self._pipeline_enabled_changed)
+        self.pipeline_inspector.parameters_reset.connect(
+            self._pipeline_parameters_reset
+        )
+        self.pipeline_inspector.overlay_selected.connect(
+            self._inspector_overlay_selected
+        )
 
         self.image_list = QListWidget(self)
         self.image_list.setAlternatingRowColors(True)
@@ -305,6 +386,8 @@ class MainWindow(QMainWindow):
         self.species_combo.currentTextChanged.connect(self._species_changed)
 
         self._build_actions()
+        self._build_overlay_controls()
+        self._build_reference_panel()
         self._build_menu()
         self._build_toolbar()
         self._build_layout()
@@ -328,7 +411,7 @@ class MainWindow(QMainWindow):
         self.open_action.setShortcut(QKeySequence.StandardKey.Open)
         self.open_action.triggered.connect(self._choose_images)
 
-        self.analyze_action = QAction("Run to seed identification", self)
+        self.analyze_action = QAction("Run active pipeline", self)
         self.analyze_action.setShortcut("Ctrl+R")
         self.analyze_action.setEnabled(False)
         self.analyze_action.triggered.connect(self._analyze_current_image)
@@ -357,6 +440,27 @@ class MainWindow(QMainWindow):
         self.actual_size_action.setShortcut("1")
         self.actual_size_action.triggered.connect(self.image_view.actual_size)
 
+        self.paint_background_action = QAction("Paint background", self)
+        self.paint_background_action.setCheckable(True)
+        self.paint_background_action.setEnabled(False)
+        self.paint_background_action.toggled.connect(
+            self._background_toolbar_editing_changed
+        )
+
+        self.paint_foreground_action = QAction("Paint foreground references", self)
+        self.paint_foreground_action.setCheckable(True)
+        self.paint_foreground_action.setEnabled(False)
+        self.paint_foreground_action.toggled.connect(
+            self._foreground_toolbar_editing_changed
+        )
+
+        self.annotate_instances_action = QAction("Annotate seed instances", self)
+        self.annotate_instances_action.setCheckable(True)
+        self.annotate_instances_action.setEnabled(False)
+        self.annotate_instances_action.toggled.connect(
+            self._instance_annotation_editing_changed
+        )
+
         self.diagnostics_action = QAction("Runtime summary", self)
         self.diagnostics_action.triggered.connect(self._show_runtime_summary)
 
@@ -380,20 +484,800 @@ class MainWindow(QMainWindow):
         help_menu = self.menuBar().addMenu("&Help")
         help_menu.addAction(self.diagnostics_action)
 
+    def _build_overlay_controls(self) -> None:
+        """Create the compact viewer controls shared by the top toolbar."""
+
+        self.overlay_combo = QComboBox(self)
+        self._overlay_entries: list[tuple[str, str]] = [
+            ("Raw image", "raw_image"),
+            ("Detected colour swatches", "colour_reference"),
+            ("Deskewed colour image + swatches", "deskew_colour"),
+            ("Detected ruler", "ruler_detection"),
+            ("Calibrated image & 5 cm scale", "calibrated_image"),
+            ("Detected vessel layout", "layout_detection"),
+            ("Perimeter background reference", "perimeter_background_reference"),
+            ("Reference seed scale", "seed_scale_estimation"),
+            ("Foreground strength", "foreground_feature"),
+            ("Foreground colour probability", "foreground_mask"),
+            ("Foreground binary proposal mask", "foreground_binary_mask"),
+            ("Distance transform", "distance_transform"),
+            ("Distance-peak candidates", "distance_candidates"),
+            ("Circle candidates", "circle_candidates"),
+            ("Seed proposals", "proposals"),
+            ("Instance colour masks", "instance_masks"),
+            ("Background colour probability", "background_likelihood"),
+            ("Background noise probability", "refined_background_likelihood"),
+            ("Foreground noise probability", "foreground_noise_likelihood"),
+            ("Shared edge magnitude", "edge_gradients"),
+            ("Surface lightening direction", "surface_lightening_gradient"),
+            ("Surface lightening magnitude", "surface_lightening_magnitude"),
+            ("Surface darkening direction", "surface_darkening_gradient"),
+            ("Surface darkening magnitude", "surface_darkening_magnitude"),
+            ("Weak lightening direction", "weak_lightening_gradient"),
+            ("Weak lightening magnitude", "weak_lightening_magnitude"),
+            ("Weak darkening direction", "weak_darkening_gradient"),
+            ("Weak darkening magnitude", "weak_darkening_magnitude"),
+            ("Fine darkness noise", "darkness_noise_fine"),
+            ("Medium darkness noise", "darkness_noise_medium"),
+            ("Coarse darkness noise", "darkness_noise_coarse"),
+            ("Fine colour noise", "colour_noise_fine"),
+            ("Medium colour noise", "colour_noise_medium"),
+            ("Coarse colour noise", "colour_noise_coarse"),
+            ("Edge tangent (undirected)", "undirected_edges"),
+            ("Edge tangent (directed)", "directed_edges"),
+            ("Thinned edge ridges", "edge_ridges"),
+            ("Oriented edge traces", "edge_traces"),
+            ("Trace continuity", "edge_trace_continuity"),
+            ("Trace gap confidence", "edge_trace_gap_confidence"),
+            ("Radius confirmation", "edge_radius_confirmation"),
+            ("Circle-fit confidence", "edge_circle_fit"),
+            ("Ellipse-fit confidence", "edge_ellipse_fit"),
+            ("Circle/ellipse fit residual", "edge_fit_residual"),
+            ("Seed-centre votes", "edge_centre_votes"),
+            ("Semantic boundary side", "edge_semantic_sides"),
+            ("Rejected edge reasons", "edge_rejections"),
+            ("Fitted centres and ellipses", "edge_fit_geometry"),
+            ("Final seed-boundary confidence", "seed_edge_curves"),
+            *ADVANCED_OVERLAY_LABELS,
+            ("None", "none"),
+        ]
+        self._rebuild_overlay_combo("raw_image")
+        self.overlay_combo.setEnabled(False)
+        self.overlay_combo.currentIndexChanged.connect(self._overlay_changed)
+
+        self.overlay_opacity_slider = QSlider(Qt.Orientation.Horizontal, self)
+        self.overlay_opacity_slider.setRange(0, 100)
+        self.overlay_opacity_slider.setValue(68)
+        self.overlay_opacity_slider.setEnabled(False)
+        self.overlay_opacity_slider.valueChanged.connect(
+            self._overlay_opacity_changed
+        )
+        self.overlay_opacity_label = QLabel("68%", self)
+        self.overlay_opacity_label.setMinimumWidth(36)
+
+        # The owning node remains available to tests and accessibility tools,
+        # but is no longer repeated as a visible field in the detail panel.
+        self.overlay_owner_label = self._muted_label("No graph node")
+        self.overlay_owner_label.hide()
+        self.overlay_legend_label = self._muted_label(
+            "Run the analysis to inspect its intermediate raster layers."
+        )
+        self.overlay_legend_label.setObjectName("overlayLegend")
+
+    def _active_overlay_entries(self) -> tuple[tuple[str, str], ...]:
+        return tuple(
+            (label, mode)
+            for label, mode in self._overlay_entries
+            if (
+                (owner := _overlay_node_owner(mode)) is None
+                or self.pipeline.is_active(owner)
+            )
+        )
+
+    def _rebuild_overlay_combo(self, selected_mode: str | None = None) -> None:
+        """Group selectable overlays beneath disabled owning-node headings."""
+
+        selected_mode = selected_mode or str(self.overlay_combo.currentData() or "")
+        grouped: dict[str | None, list[tuple[str, str]]] = {}
+        for label, mode in self._active_overlay_entries():
+            grouped.setdefault(_overlay_node_owner(mode), []).append((label, mode))
+        with QSignalBlocker(self.overlay_combo):
+            self.overlay_combo.clear()
+            for owner, entries in grouped.items():
+                heading = (
+                    "Viewer"
+                    if owner is None
+                    else self.pipeline.node(owner).title
+                )
+                self.overlay_combo.addItem(heading, f"__overlay_group__:{owner}")
+                heading_item = self.overlay_combo.model().item(
+                    self.overlay_combo.count() - 1
+                )
+                heading_item.setEnabled(False)
+                heading_font = heading_item.font()
+                heading_font.setBold(True)
+                heading_item.setFont(heading_font)
+                for label, mode in entries:
+                    self.overlay_combo.addItem(f"    {label}", mode)
+            index = self.overlay_combo.findData(selected_mode)
+            if index < 0:
+                index = self.overlay_combo.findData("raw_image")
+            if index >= 0:
+                self.overlay_combo.setCurrentIndex(index)
+        if hasattr(self, "pipeline_inspector"):
+            self._sync_inspector_overlay_options()
+
+    def _overlay_options_for_node(self, node_id: str) -> tuple[tuple[str, str], ...]:
+        return tuple(
+            (label, mode)
+            for label, mode in self._active_overlay_entries()
+            if _overlay_node_owner(mode) == node_id
+        )
+
+    def _sync_inspector_overlay_options(self) -> None:
+        if not hasattr(self, "pipeline_inspector"):
+            return
+        self.pipeline_inspector.set_overlay_options(
+            self._overlay_options_for_node(self._selected_pipeline_node),
+            str(self.overlay_combo.currentData() or ""),
+        )
+
+    def _build_reference_panel(self) -> None:
+        """Build reference-painting and instance-annotation controls."""
+
+        self.reference_panel = QFrame(self.image_view)
+        self.reference_panel.setObjectName("referencePaintPanel")
+        self.reference_panel.setMaximumWidth(440)
+        self.reference_panel.setStyleSheet(
+            "QFrame#referencePaintPanel { background: palette(window); "
+            "border: 1px solid palette(mid); border-radius: 3px; }"
+        )
+        layout = QVBoxLayout(self.reference_panel)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(4)
+
+        self.reference_controls = QWidget(self.reference_panel)
+        reference_layout = QVBoxLayout(self.reference_controls)
+        reference_layout.setContentsMargins(0, 0, 0, 0)
+        reference_layout.setSpacing(4)
+
+        reference_layout.addWidget(self._section_label("Painted background reference"))
+        self.background_enabled_checkbox = QCheckBox(
+            "Use background colour analysis", self.reference_controls
+        )
+        self.background_enabled_checkbox.setChecked(
+            self.pipeline.node("background_likelihood").enabled
+        )
+        self.background_enabled_checkbox.toggled.connect(
+            self._background_enabled_toggled
+        )
+        reference_layout.addWidget(self.background_enabled_checkbox)
+        self.show_reference_areas_checkbox = QCheckBox(
+            "Show painted reference/exclusion areas", self.reference_controls
+        )
+        self.show_reference_areas_checkbox.setChecked(True)
+        self.show_reference_areas_checkbox.toggled.connect(
+            self.image_view.set_reference_annotations_visible
+        )
+        reference_layout.addWidget(self.show_reference_areas_checkbox)
+
+        reference_buttons = QWidget(self.reference_controls)
+        reference_button_layout = QHBoxLayout(reference_buttons)
+        reference_button_layout.setContentsMargins(0, 0, 0, 0)
+        self.background_point_button = QPushButton(
+            "Paint background", reference_buttons
+        )
+        self.background_point_button.setCheckable(True)
+        self.background_point_button.setEnabled(False)
+        self.background_point_button.toggled.connect(
+            self._background_point_editing_changed
+        )
+        self.erase_background_points_button = QPushButton(
+            "Erase", reference_buttons
+        )
+        self.erase_background_points_button.setEnabled(False)
+        self.erase_background_points_button.setToolTip(
+            "Select the background-reference layer and erase from it with left-drag."
+        )
+        self.erase_background_points_button.clicked.connect(
+            lambda: self._start_reference_eraser("background")
+        )
+        self.clear_background_points_button = QPushButton(
+            "Clear", reference_buttons
+        )
+        self.clear_background_points_button.setEnabled(False)
+        self.clear_background_points_button.clicked.connect(
+            self._clear_background_points
+        )
+        reference_button_layout.addWidget(self.background_point_button, 1)
+        reference_button_layout.addWidget(self.erase_background_points_button)
+        reference_button_layout.addWidget(self.clear_background_points_button)
+        reference_layout.addWidget(reference_buttons)
+        self.background_reference_label = self._muted_label(
+            "Automatic background colour selection; no painted area."
+        )
+        reference_layout.addWidget(self.background_reference_label)
+
+        background_exclusion_buttons = QWidget(self.reference_controls)
+        background_exclusion_layout = QHBoxLayout(background_exclusion_buttons)
+        background_exclusion_layout.setContentsMargins(0, 0, 0, 0)
+        self.background_exclusion_button = QPushButton(
+            "Exclude from background", background_exclusion_buttons
+        )
+        self.background_exclusion_button.setCheckable(True)
+        self.background_exclusion_button.setToolTip(
+            "Paint negative examples for the fitted background colour and texture "
+            "models; painted coordinates are not forcibly zeroed."
+        )
+        self.background_exclusion_button.toggled.connect(
+            self._background_exclusion_editing_changed
+        )
+        self.erase_background_exclusion_button = QPushButton(
+            "Erase", background_exclusion_buttons
+        )
+        self.erase_background_exclusion_button.setEnabled(False)
+        self.erase_background_exclusion_button.setToolTip(
+            "Select the negative-background layer and erase from it with left-drag."
+        )
+        self.erase_background_exclusion_button.clicked.connect(
+            lambda: self._start_reference_eraser("background_exclusion")
+        )
+        self.clear_background_exclusion_button = QPushButton(
+            "Clear", background_exclusion_buttons
+        )
+        self.clear_background_exclusion_button.clicked.connect(
+            self._clear_background_exclusion
+        )
+        background_exclusion_layout.addWidget(self.background_exclusion_button, 1)
+        background_exclusion_layout.addWidget(self.erase_background_exclusion_button)
+        background_exclusion_layout.addWidget(self.clear_background_exclusion_button)
+        reference_layout.addWidget(background_exclusion_buttons)
+        self.background_exclusion_label = self._muted_label(
+            "No painted negative background examples."
+        )
+        reference_layout.addWidget(self.background_exclusion_label)
+
+        reference_layout.addWidget(self._separator())
+        reference_layout.addWidget(self._section_label("Painted foreground reference"))
+        foreground_buttons = QWidget(self.reference_controls)
+        foreground_button_layout = QHBoxLayout(foreground_buttons)
+        foreground_button_layout.setContentsMargins(0, 0, 0, 0)
+        self.foreground_point_button = QPushButton(
+            "Paint foreground references", foreground_buttons
+        )
+        self.foreground_point_button.setCheckable(True)
+        self.foreground_point_button.setEnabled(False)
+        self.foreground_point_button.toggled.connect(
+            self._foreground_point_editing_changed
+        )
+        self.erase_foreground_points_button = QPushButton(
+            "Erase", foreground_buttons
+        )
+        self.erase_foreground_points_button.setEnabled(False)
+        self.erase_foreground_points_button.setToolTip(
+            "Select the foreground-reference layer and erase from it with left-drag."
+        )
+        self.erase_foreground_points_button.clicked.connect(
+            lambda: self._start_reference_eraser("foreground")
+        )
+        self.clear_foreground_points_button = QPushButton(
+            "Clear", foreground_buttons
+        )
+        self.clear_foreground_points_button.setEnabled(False)
+        self.clear_foreground_points_button.clicked.connect(
+            self._clear_foreground_points
+        )
+        foreground_button_layout.addWidget(self.foreground_point_button, 1)
+        foreground_button_layout.addWidget(self.erase_foreground_points_button)
+        foreground_button_layout.addWidget(self.clear_foreground_points_button)
+        reference_layout.addWidget(foreground_buttons)
+        self.foreground_reference_label = self._muted_label(
+            "No painted foreground reference."
+        )
+        reference_layout.addWidget(self.foreground_reference_label)
+
+        foreground_exclusion_buttons = QWidget(self.reference_controls)
+        foreground_exclusion_layout = QHBoxLayout(foreground_exclusion_buttons)
+        foreground_exclusion_layout.setContentsMargins(0, 0, 0, 0)
+        self.foreground_exclusion_button = QPushButton(
+            "Exclude from foreground", foreground_exclusion_buttons
+        )
+        self.foreground_exclusion_button.setCheckable(True)
+        self.foreground_exclusion_button.setToolTip(
+            "Paint negative examples for the fitted foreground colour and texture "
+            "models; painted coordinates are not forcibly zeroed."
+        )
+        self.foreground_exclusion_button.toggled.connect(
+            self._foreground_exclusion_editing_changed
+        )
+        self.erase_foreground_exclusion_button = QPushButton(
+            "Erase", foreground_exclusion_buttons
+        )
+        self.erase_foreground_exclusion_button.setEnabled(False)
+        self.erase_foreground_exclusion_button.setToolTip(
+            "Select the negative-foreground layer and erase from it with left-drag."
+        )
+        self.erase_foreground_exclusion_button.clicked.connect(
+            lambda: self._start_reference_eraser("foreground_exclusion")
+        )
+        self.clear_foreground_exclusion_button = QPushButton(
+            "Clear", foreground_exclusion_buttons
+        )
+        self.clear_foreground_exclusion_button.clicked.connect(
+            self._clear_foreground_exclusion
+        )
+        foreground_exclusion_layout.addWidget(self.foreground_exclusion_button, 1)
+        foreground_exclusion_layout.addWidget(self.erase_foreground_exclusion_button)
+        foreground_exclusion_layout.addWidget(self.clear_foreground_exclusion_button)
+        reference_layout.addWidget(foreground_exclusion_buttons)
+        self.foreground_exclusion_label = self._muted_label(
+            "No painted negative foreground examples."
+        )
+        reference_layout.addWidget(self.foreground_exclusion_label)
+
+        brush_widget = QWidget(self.reference_controls)
+        brush_layout = QHBoxLayout(brush_widget)
+        brush_layout.setContentsMargins(0, 0, 0, 0)
+        self.reference_brush_slider = QSlider(
+            Qt.Orientation.Horizontal, brush_widget
+        )
+        self.reference_brush_slider.setRange(2, 200)
+        self.reference_brush_slider.setValue(12)
+        self.reference_brush_slider.setToolTip(
+            "Full-resolution brush radius in corrected-image pixels. "
+            "The viewer outline shows the exact covered area. Right-drag remains "
+            "a temporary eraser shortcut in Paint mode."
+        )
+        self.reference_brush_slider.valueChanged.connect(
+            self._reference_brush_radius_changed
+        )
+        self.reference_brush_label = QLabel("12 px", brush_widget)
+        self.reference_brush_label.setMinimumWidth(48)
+        brush_layout.addWidget(self.reference_brush_slider, 1)
+        brush_layout.addWidget(self.reference_brush_label)
+
+        brush_mode_widget = QWidget(self.reference_controls)
+        brush_mode_layout = QHBoxLayout(brush_mode_widget)
+        brush_mode_layout.setContentsMargins(0, 0, 0, 0)
+        self.reference_paint_mode_button = QPushButton("Paint", brush_mode_widget)
+        self.reference_paint_mode_button.setCheckable(True)
+        self.reference_paint_mode_button.setChecked(True)
+        self.reference_paint_mode_button.setToolTip(
+            "Left-drag adds pixels to the selected reference mask."
+        )
+        self.reference_eraser_button = QPushButton("Eraser", brush_mode_widget)
+        self.reference_eraser_button.setCheckable(True)
+        self.reference_eraser_button.setToolTip(
+            "Left-drag removes pixels from the selected reference mask. The dashed "
+            "red brush outline indicates erasing."
+        )
+        self.reference_brush_mode_group = QButtonGroup(brush_mode_widget)
+        self.reference_brush_mode_group.setExclusive(True)
+        self.reference_brush_mode_group.addButton(self.reference_paint_mode_button)
+        self.reference_brush_mode_group.addButton(self.reference_eraser_button)
+        self.reference_eraser_button.toggled.connect(
+            self._reference_eraser_toggled
+        )
+        brush_mode_layout.addWidget(self.reference_paint_mode_button)
+        brush_mode_layout.addWidget(self.reference_eraser_button)
+
+        brush_form = QFormLayout()
+        brush_form.setVerticalSpacing(4)
+        brush_form.addRow("Brush mode", brush_mode_widget)
+        brush_form.addRow("Brush radius", brush_widget)
+        reference_layout.addLayout(brush_form)
+
+        confirmation_buttons = QWidget(self.reference_controls)
+        confirmation_layout = QHBoxLayout(confirmation_buttons)
+        confirmation_layout.setContentsMargins(0, 0, 0, 0)
+        self.apply_reference_masks_button = QPushButton(
+            "Apply reference masks", confirmation_buttons
+        )
+        self.apply_reference_masks_button.setEnabled(False)
+        self.apply_reference_masks_button.setToolTip(
+            "Confirm both painted masks and run only the affected pipeline nodes."
+        )
+        self.apply_reference_masks_button.clicked.connect(
+            self._apply_reference_masks
+        )
+        self.revert_reference_masks_button = QPushButton(
+            "Revert edits", confirmation_buttons
+        )
+        self.revert_reference_masks_button.setEnabled(False)
+        self.revert_reference_masks_button.clicked.connect(
+            self._revert_reference_masks
+        )
+        confirmation_layout.addWidget(self.apply_reference_masks_button, 1)
+        confirmation_layout.addWidget(self.revert_reference_masks_button)
+        reference_layout.addWidget(confirmation_buttons)
+        self.reference_confirmation_label = self._muted_label(
+            "Painting is a draft and does not run calculations until applied."
+        )
+        reference_layout.addWidget(self.reference_confirmation_label)
+
+        self.instance_annotation_controls = QWidget(self.reference_panel)
+        instance_layout = QVBoxLayout(self.instance_annotation_controls)
+        instance_layout.setContentsMargins(0, 0, 0, 0)
+        instance_layout.setSpacing(5)
+        instance_layout.addWidget(self._section_label("Seed instance annotations"))
+        self.instance_annotation_help_label = self._muted_label(
+            "Give each seed a separate colour ID. Assisted tools preview their snapped "
+            "result under the cursor and apply it on click; smart fill can start an "
+            "unmarked seed or extend a partial annotation."
+        )
+        instance_layout.addWidget(self.instance_annotation_help_label)
+
+        instance_selector = QWidget(self.instance_annotation_controls)
+        selector_layout = QHBoxLayout(instance_selector)
+        selector_layout.setContentsMargins(0, 0, 0, 0)
+        self.instance_colour_swatch = QLabel(instance_selector)
+        self.instance_colour_swatch.setFixedSize(22, 22)
+        self.instance_id_spin = QSpinBox(instance_selector)
+        self.instance_id_spin.setRange(1, np.iinfo(np.uint16).max)
+        self.instance_id_spin.setPrefix("Seed ")
+        self.instance_id_spin.valueChanged.connect(self._instance_id_changed)
+        self.new_instance_button = QPushButton("New seed", instance_selector)
+        self.new_instance_button.clicked.connect(self._new_instance_annotation)
+        selector_layout.addWidget(self.instance_colour_swatch)
+        selector_layout.addWidget(self.instance_id_spin, 1)
+        selector_layout.addWidget(self.new_instance_button)
+        instance_layout.addWidget(instance_selector)
+
+        instance_edit_buttons = QWidget(self.instance_annotation_controls)
+        instance_edit_layout = QHBoxLayout(instance_edit_buttons)
+        instance_edit_layout.setContentsMargins(0, 0, 0, 0)
+        self.clear_current_instance_button = QPushButton(
+            "Clear current seed", instance_edit_buttons
+        )
+        self.clear_current_instance_button.clicked.connect(
+            self._clear_current_instance_annotation
+        )
+        self.clear_all_instances_button = QPushButton(
+            "Clear all", instance_edit_buttons
+        )
+        self.clear_all_instances_button.clicked.connect(
+            self._clear_all_instance_annotations
+        )
+        instance_edit_layout.addWidget(self.clear_current_instance_button, 1)
+        instance_edit_layout.addWidget(self.clear_all_instances_button)
+        instance_layout.addWidget(instance_edit_buttons)
+
+        instance_brush_widget = QWidget(self.instance_annotation_controls)
+        instance_brush_layout = QHBoxLayout(instance_brush_widget)
+        instance_brush_layout.setContentsMargins(0, 0, 0, 0)
+        self.instance_brush_slider = QSlider(
+            Qt.Orientation.Horizontal, instance_brush_widget
+        )
+        self.instance_brush_slider.setRange(2, 200)
+        self.instance_brush_slider.setValue(12)
+        self.instance_brush_slider.setToolTip(
+            "Full-resolution freehand radius and magnetic-trace width. Short central "
+            "marks are enough before using smart fill or the downstream instance branch."
+        )
+        self.instance_brush_slider.valueChanged.connect(
+            self._instance_brush_radius_changed
+        )
+        self.instance_brush_label = QLabel("12 px", instance_brush_widget)
+        self.instance_brush_label.setMinimumWidth(48)
+        instance_brush_layout.addWidget(self.instance_brush_slider, 1)
+        instance_brush_layout.addWidget(self.instance_brush_label)
+
+        instance_mode_widget = QWidget(self.instance_annotation_controls)
+        instance_mode_layout = QHBoxLayout(instance_mode_widget)
+        instance_mode_layout.setContentsMargins(0, 0, 0, 0)
+        self.instance_paint_mode_button = QPushButton("Brush", instance_mode_widget)
+        self.instance_paint_mode_button.setCheckable(True)
+        self.instance_paint_mode_button.setChecked(True)
+        self.instance_edge_trace_button = QPushButton("Trace edge", instance_mode_widget)
+        self.instance_edge_trace_button.setCheckable(True)
+        self.instance_edge_trace_button.setToolTip(
+            "Click an edge anchor, move to preview the magnetic path, then click to apply."
+        )
+        self.instance_shape_snap_button = QPushButton("Snap shape", instance_mode_widget)
+        self.instance_shape_snap_button.setCheckable(True)
+        self.instance_shape_snap_button.setToolTip(
+            "Move the reference shape over a seed to preview its edge fit, then click to fill."
+        )
+        self.instance_smart_fill_button = QPushButton("Smart fill", instance_mode_widget)
+        self.instance_smart_fill_button.setCheckable(True)
+        self.instance_smart_fill_button.setToolTip(
+            "Preview and click a locally adaptive edge-stopped fill; no prior mark is required."
+        )
+        self.instance_eraser_button = QPushButton("Eraser", instance_mode_widget)
+        self.instance_eraser_button.setCheckable(True)
+        self.instance_eraser_button.setToolTip(
+            "Erase annotation marks without changing foreground references. "
+            "Right-drag is a temporary eraser shortcut."
+        )
+        self.instance_brush_mode_group = QButtonGroup(instance_mode_widget)
+        self.instance_brush_mode_group.setExclusive(True)
+        instance_tools = (
+            (self.instance_paint_mode_button, "brush"),
+            (self.instance_edge_trace_button, "edge_trace"),
+            (self.instance_shape_snap_button, "shape_snap"),
+            (self.instance_smart_fill_button, "smart_fill"),
+            (self.instance_eraser_button, "eraser"),
+        )
+        for button, tool in instance_tools:
+            self.instance_brush_mode_group.addButton(button)
+            button.toggled.connect(
+                lambda checked, selected_tool=tool: self._instance_tool_selected(
+                    selected_tool, checked
+                )
+            )
+            instance_mode_layout.addWidget(button)
+
+        instance_layout.addWidget(instance_mode_widget)
+
+        instance_brush_form = QFormLayout()
+        instance_brush_form.setVerticalSpacing(4)
+        instance_brush_form.addRow("Brush / trace width", instance_brush_widget)
+        instance_layout.addLayout(instance_brush_form)
+
+        self.instance_tool_options_stack = QStackedWidget(
+            self.instance_annotation_controls
+        )
+        self.instance_tool_pages: dict[str, QWidget] = {}
+
+        brush_page = QWidget(self.instance_tool_options_stack)
+        brush_page_layout = QVBoxLayout(brush_page)
+        brush_page_layout.setContentsMargins(0, 0, 0, 0)
+        brush_page_layout.addWidget(
+            self._muted_label(
+                "Freehand interior painting. Right-drag temporarily erases with any tool."
+            )
+        )
+        self.instance_tool_pages["brush"] = brush_page
+        self.instance_tool_options_stack.addWidget(brush_page)
+
+        edge_page = QWidget(self.instance_tool_options_stack)
+        edge_form = QFormLayout(edge_page)
+        edge_form.setContentsMargins(0, 0, 0, 0)
+        edge_form.setVerticalSpacing(4)
+        edge_form.addRow(
+            self._muted_label(
+                "First click sets an edge anchor. Move for a live snapped preview; "
+                "each later click applies a segment."
+            )
+        )
+        self.edge_trace_search_spin = QSpinBox(edge_page)
+        self.edge_trace_search_spin.setRange(2, 200)
+        self.edge_trace_search_spin.setValue(18)
+        self.edge_trace_search_spin.setSuffix(" px")
+        self.edge_trace_attraction_spin = QSpinBox(edge_page)
+        self.edge_trace_attraction_spin.setRange(0, 100)
+        self.edge_trace_attraction_spin.setValue(85)
+        self.edge_trace_attraction_spin.setSuffix("%")
+        self.edge_trace_tangent_combo = QComboBox(edge_page)
+        self.edge_trace_tangent_combo.addItem("Off", "off")
+        self.edge_trace_tangent_combo.addItem("Undirected", "undirected")
+        self.edge_trace_tangent_combo.addItem("Directed", "directed")
+        self.edge_trace_tangent_combo.setCurrentIndex(1)
+        self.edge_trace_tangent_weight_spin = QSpinBox(edge_page)
+        self.edge_trace_tangent_weight_spin.setRange(0, 100)
+        self.edge_trace_tangent_weight_spin.setValue(45)
+        self.edge_trace_tangent_weight_spin.setSuffix("%")
+        self.edge_trace_smoothing_spin = QSpinBox(edge_page)
+        self.edge_trace_smoothing_spin.setRange(0, 8)
+        self.edge_trace_smoothing_spin.setValue(2)
+        edge_form.addRow("Edge search", self.edge_trace_search_spin)
+        edge_form.addRow("Edge attraction", self.edge_trace_attraction_spin)
+        edge_form.addRow("Edge tangents", self.edge_trace_tangent_combo)
+        edge_form.addRow("Tangent influence", self.edge_trace_tangent_weight_spin)
+        edge_form.addRow("Path smoothing", self.edge_trace_smoothing_spin)
+        self.instance_tool_pages["edge_trace"] = edge_page
+        self.instance_tool_options_stack.addWidget(edge_page)
+
+        shape_page = QWidget(self.instance_tool_options_stack)
+        shape_form = QFormLayout(shape_page)
+        shape_form.setContentsMargins(0, 0, 0, 0)
+        shape_form.setVerticalSpacing(4)
+        shape_form.addRow(
+            self._muted_label(
+                "Move the nominal seed-shape cursor to preview the nearest edge fit; "
+                "click once to fill it."
+            )
+        )
+        self.shape_snap_shape_combo = QComboBox(shape_page)
+        self.shape_snap_shape_combo.addItem("Ellipse", "ellipse")
+        self.shape_snap_shape_combo.addItem("Circle", "circle")
+        self.shape_snap_edge_search_spin = QSpinBox(shape_page)
+        self.shape_snap_edge_search_spin.setRange(1, 200)
+        self.shape_snap_edge_search_spin.setValue(14)
+        self.shape_snap_edge_search_spin.setSuffix(" px")
+        self.shape_snap_centre_search_spin = QSpinBox(shape_page)
+        self.shape_snap_centre_search_spin.setRange(0, 100)
+        self.shape_snap_centre_search_spin.setValue(5)
+        self.shape_snap_centre_search_spin.setSuffix(" px")
+        self.shape_snap_samples_spin = QSpinBox(shape_page)
+        self.shape_snap_samples_spin.setRange(24, 360)
+        self.shape_snap_samples_spin.setSingleStep(24)
+        self.shape_snap_samples_spin.setValue(96)
+        self.shape_snap_rotation_spin = QDoubleSpinBox(shape_page)
+        self.shape_snap_rotation_spin.setRange(-180.0, 180.0)
+        self.shape_snap_rotation_spin.setDecimals(1)
+        self.shape_snap_rotation_spin.setSuffix("Â°")
+        self.shape_snap_tangent_combo = QComboBox(shape_page)
+        self.shape_snap_tangent_combo.addItem("Off", "off")
+        self.shape_snap_tangent_combo.addItem("Undirected", "undirected")
+        self.shape_snap_tangent_combo.addItem("Directed", "directed")
+        self.shape_snap_tangent_combo.setCurrentIndex(1)
+        self.shape_snap_tangent_weight_spin = QSpinBox(shape_page)
+        self.shape_snap_tangent_weight_spin.setRange(0, 100)
+        self.shape_snap_tangent_weight_spin.setValue(35)
+        self.shape_snap_tangent_weight_spin.setSuffix("%")
+        shape_form.addRow("Shape", self.shape_snap_shape_combo)
+        shape_form.addRow("Edge search", self.shape_snap_edge_search_spin)
+        shape_form.addRow("Centre search", self.shape_snap_centre_search_spin)
+        shape_form.addRow("Boundary samples", self.shape_snap_samples_spin)
+        shape_form.addRow("Ellipse rotation", self.shape_snap_rotation_spin)
+        shape_form.addRow("Edge tangents", self.shape_snap_tangent_combo)
+        shape_form.addRow("Tangent influence", self.shape_snap_tangent_weight_spin)
+        self.instance_tool_pages["shape_snap"] = shape_page
+        self.instance_tool_options_stack.addWidget(shape_page)
+
+        fill_page = QWidget(self.instance_tool_options_stack)
+        fill_form = QFormLayout(fill_page)
+        fill_form.setContentsMargins(0, 0, 0, 0)
+        fill_form.setVerticalSpacing(4)
+        fill_form.addRow(
+            self._muted_label(
+                "Move for a live fill preview and click to apply. An unmarked seed "
+                "starts at the cursor; a partial mark supplies additional context."
+            )
+        )
+        self.smart_fill_colour_tolerance_spin = QDoubleSpinBox(fill_page)
+        self.smart_fill_colour_tolerance_spin.setRange(1.0, 100.0)
+        self.smart_fill_colour_tolerance_spin.setDecimals(1)
+        self.smart_fill_colour_tolerance_spin.setValue(18.0)
+        self.smart_fill_edge_stop_spin = QSpinBox(fill_page)
+        self.smart_fill_edge_stop_spin.setRange(0, 100)
+        self.smart_fill_edge_stop_spin.setValue(58)
+        self.smart_fill_edge_stop_spin.setSuffix("%")
+        self.smart_fill_tunnel_combo = QComboBox(fill_page)
+        for label, strength in (
+            ("Off", 0.0),
+            ("Gentle", 0.25),
+            ("Medium", 0.50),
+            ("Strong", 0.75),
+            ("Maximum", 1.0),
+        ):
+            self.smart_fill_tunnel_combo.addItem(label, strength)
+        self.smart_fill_radius_spin = QDoubleSpinBox(fill_page)
+        self.smart_fill_radius_spin.setRange(0.30, 5.0)
+        self.smart_fill_radius_spin.setSingleStep(0.10)
+        self.smart_fill_radius_spin.setDecimals(2)
+        self.smart_fill_radius_spin.setValue(1.20)
+        self.smart_fill_radius_spin.setSuffix(" Ã— seed diameter")
+        self.smart_fill_pixel_limit_spin = QSpinBox(fill_page)
+        self.smart_fill_pixel_limit_spin.setRange(1_000, 10_000_000)
+        self.smart_fill_pixel_limit_spin.setSingleStep(10_000)
+        self.smart_fill_pixel_limit_spin.setValue(150_000)
+        self.smart_fill_connectivity_combo = QComboBox(fill_page)
+        self.smart_fill_connectivity_combo.addItem("8 neighbours", 8)
+        self.smart_fill_connectivity_combo.addItem("4 neighbours", 4)
+        fill_form.addRow("Local Lab tolerance", self.smart_fill_colour_tolerance_spin)
+        fill_form.addRow("Stop at edge", self.smart_fill_edge_stop_spin)
+        fill_form.addRow("Tunnelling", self.smart_fill_tunnel_combo)
+        fill_form.addRow("Maximum growth radius", self.smart_fill_radius_spin)
+        fill_form.addRow("Maximum added pixels", self.smart_fill_pixel_limit_spin)
+        fill_form.addRow("Connectivity", self.smart_fill_connectivity_combo)
+        self.instance_tool_pages["smart_fill"] = fill_page
+        self.instance_tool_options_stack.addWidget(fill_page)
+
+        eraser_page = QWidget(self.instance_tool_options_stack)
+        eraser_page_layout = QVBoxLayout(eraser_page)
+        eraser_page_layout.setContentsMargins(0, 0, 0, 0)
+        eraser_page_layout.addWidget(
+            self._muted_label("Erase instance labels without changing colour references.")
+        )
+        self.instance_tool_pages["eraser"] = eraser_page
+        self.instance_tool_options_stack.addWidget(eraser_page)
+        instance_layout.addWidget(self.instance_tool_options_stack)
+
+        for control in (
+            self.edge_trace_search_spin,
+            self.edge_trace_attraction_spin,
+            self.edge_trace_tangent_combo,
+            self.edge_trace_tangent_weight_spin,
+            self.edge_trace_smoothing_spin,
+            self.shape_snap_shape_combo,
+            self.shape_snap_edge_search_spin,
+            self.shape_snap_centre_search_spin,
+            self.shape_snap_samples_spin,
+            self.shape_snap_rotation_spin,
+            self.shape_snap_tangent_combo,
+            self.shape_snap_tangent_weight_spin,
+            self.smart_fill_colour_tolerance_spin,
+            self.smart_fill_edge_stop_spin,
+            self.smart_fill_tunnel_combo,
+            self.smart_fill_radius_spin,
+            self.smart_fill_pixel_limit_spin,
+            self.smart_fill_connectivity_combo,
+        ):
+            signal = (
+                control.currentIndexChanged
+                if isinstance(control, QComboBox)
+                else control.valueChanged
+            )
+            signal.connect(self._sync_instance_tool_settings)
+        self._sync_instance_tool_settings()
+
+        self.instance_annotation_status_label = self._muted_label(
+            "No seed instances annotated."
+        )
+        instance_layout.addWidget(self.instance_annotation_status_label)
+
+        instance_confirmation = QWidget(self.instance_annotation_controls)
+        instance_confirmation_layout = QHBoxLayout(instance_confirmation)
+        instance_confirmation_layout.setContentsMargins(0, 0, 0, 0)
+        self.apply_instance_annotations_button = QPushButton(
+            "Apply instance annotations", instance_confirmation
+        )
+        self.apply_instance_annotations_button.clicked.connect(
+            self._apply_instance_annotations
+        )
+        self.revert_instance_annotations_button = QPushButton(
+            "Revert edits", instance_confirmation
+        )
+        self.revert_instance_annotations_button.clicked.connect(
+            self._revert_instance_annotations
+        )
+        instance_confirmation_layout.addWidget(
+            self.apply_instance_annotations_button, 1
+        )
+        instance_confirmation_layout.addWidget(
+            self.revert_instance_annotations_button
+        )
+        instance_layout.addWidget(instance_confirmation)
+        self.instance_annotation_confirmation_label = self._muted_label(
+            "Annotations constrain the instance branch only after they are applied."
+        )
+        instance_layout.addWidget(self.instance_annotation_confirmation_label)
+
+        layout.addWidget(self.reference_controls)
+        layout.addWidget(self.instance_annotation_controls)
+        self.instance_annotation_controls.hide()
+        self._update_instance_colour_swatch()
+
+        self.reference_panel.hide()
+        self.image_view.set_context_panel(self.reference_panel)
+
     def _build_toolbar(self) -> None:
-        toolbar = QToolBar("Workflow", self)
-        toolbar.setIconSize(QSize(18, 18))
-        toolbar.setMovable(False)
-        toolbar.addAction(self.open_action)
-        toolbar.addAction(self.analyze_action)
-        toolbar.addSeparator()
-        toolbar.addAction(self.image_workspace_action)
-        toolbar.addAction(self.pipeline_workspace_action)
-        toolbar.addAction(self.split_workspace_action)
-        toolbar.addSeparator()
-        toolbar.addAction(self.fit_action)
-        toolbar.addAction(self.actual_size_action)
-        self.addToolBar(toolbar)
+        self.workflow_toolbar = QToolBar("Workflow", self)
+        self.workflow_toolbar.setIconSize(QSize(18, 18))
+        self.workflow_toolbar.setMovable(False)
+        self.workflow_toolbar.addAction(self.open_action)
+        self.workflow_toolbar.addAction(self.analyze_action)
+        self.workflow_toolbar.addSeparator()
+        self.workflow_toolbar.addAction(self.image_workspace_action)
+        self.workflow_toolbar.addAction(self.pipeline_workspace_action)
+        self.workflow_toolbar.addAction(self.split_workspace_action)
+        self.workflow_toolbar.addSeparator()
+        self.workflow_toolbar.addAction(self.fit_action)
+        self.workflow_toolbar.addAction(self.actual_size_action)
+        self.workflow_toolbar.addSeparator()
+
+        overlay_label = QLabel("Overlay:", self.workflow_toolbar)
+        overlay_label.setObjectName("overlayToolbarLabel")
+        self.overlay_combo.setMinimumContentsLength(18)
+        self.overlay_combo.setMaximumWidth(340)
+        self.workflow_toolbar.addWidget(overlay_label)
+        self.workflow_toolbar.addWidget(self.overlay_combo)
+        self.workflow_toolbar.addSeparator()
+
+        opacity_label = QLabel("Opacity:", self.workflow_toolbar)
+        opacity_label.setObjectName("opacityToolbarLabel")
+        self.overlay_opacity_slider.setMinimumWidth(90)
+        self.overlay_opacity_slider.setMaximumWidth(170)
+        self.workflow_toolbar.addWidget(opacity_label)
+        self.workflow_toolbar.addWidget(self.overlay_opacity_slider)
+        self.workflow_toolbar.addWidget(self.overlay_opacity_label)
+        self.workflow_toolbar.addSeparator()
+        self.workflow_toolbar.addAction(self.paint_background_action)
+        self.workflow_toolbar.addAction(self.paint_foreground_action)
+        self.workflow_toolbar.addAction(self.annotate_instances_action)
+        self.addToolBar(self.workflow_toolbar)
 
     def _build_layout(self) -> None:
         self.workspace_splitter = QSplitter(Qt.Orientation.Vertical, self)
@@ -448,12 +1332,10 @@ class MainWindow(QMainWindow):
         form.addRow("Analysis device", self.compute_status_label)
         layout.addLayout(form)
 
-        # Keep the selected node inspector near the top of the panel. It is
-        # the primary control surface while working in the graph; calibration
-        # summaries and global actions remain available immediately below it.
+        # The node title identifies this section without a second heading.
         layout.addWidget(self._separator())
-        layout.addWidget(self._section_label("Selected pipeline node"))
         layout.addWidget(self.pipeline_inspector)
+        layout.addWidget(self.overlay_legend_label)
 
         self.calibration_section = QWidget(content)
         calibration_layout = QVBoxLayout(self.calibration_section)
@@ -481,7 +1363,7 @@ class MainWindow(QMainWindow):
         baseline_layout.setContentsMargins(0, 0, 0, 0)
         baseline_layout.addWidget(self._separator())
         baseline_layout.addWidget(self._section_label("Baseline analysis"))
-        self.analyze_button = QPushButton("Run to seed identification", content)
+        self.analyze_button = QPushButton("Run active pipeline", content)
         self.analyze_button.setEnabled(False)
         self.analyze_button.clicked.connect(self._analyze_current_image)
         self.analyze_button.setVisible(False)
@@ -498,235 +1380,6 @@ class MainWindow(QMainWindow):
         )
         self.warning_label.setVisible(False)
         layout.addWidget(self.baseline_section)
-
-        layout.addWidget(self._separator())
-        layout.addWidget(self._section_label("Viewer overlay"))
-        self.overlay_combo = QComboBox(content)
-        self.overlay_combo.addItem("Raw image", "raw_image")
-        self.overlay_combo.addItem("Detected colour swatches", "colour_reference")
-        self.overlay_combo.addItem(
-            "Deskewed colour image + swatches", "deskew_colour"
-        )
-        self.overlay_combo.addItem("Detected ruler", "ruler_detection")
-        self.overlay_combo.addItem(
-            "Calibrated image & 5 cm scale", "calibrated_image"
-        )
-        self.overlay_combo.addItem("Detected vessel layout", "layout_detection")
-        self.overlay_combo.addItem("Reference seed scale", "seed_scale_estimation")
-        self.overlay_combo.addItem("Foreground strength", "foreground_feature")
-        self.overlay_combo.addItem("Foreground probability", "foreground_mask")
-        self.overlay_combo.addItem(
-            "Foreground binary proposal mask", "foreground_binary_mask"
-        )
-        self.overlay_combo.addItem("Distance transform", "distance_transform")
-        self.overlay_combo.addItem("Distance-peak candidates", "distance_candidates")
-        self.overlay_combo.addItem("Circle candidates", "circle_candidates")
-        self.overlay_combo.addItem("Seed proposals", "proposals")
-        self.overlay_combo.addItem("Instance colour masks", "instance_masks")
-        self.overlay_combo.addItem(
-            "Background colour likelihood", "background_likelihood"
-        )
-        self.overlay_combo.addItem(
-            "Refined background (noise frequency)",
-            "refined_background_likelihood",
-        )
-        self.overlay_combo.addItem("Shared edge magnitude", "edge_gradients")
-        self.overlay_combo.addItem("Edge tangent (undirected)", "undirected_edges")
-        self.overlay_combo.addItem("Edge tangent (directed)", "directed_edges")
-        self.overlay_combo.addItem("Thinned edge ridges", "edge_ridges")
-        self.overlay_combo.addItem("Oriented edge traces", "edge_traces")
-        self.overlay_combo.addItem("Trace continuity", "edge_trace_continuity")
-        self.overlay_combo.addItem("Trace gap confidence", "edge_trace_gap_confidence")
-        self.overlay_combo.addItem("Radius confirmation", "edge_radius_confirmation")
-        self.overlay_combo.addItem("Circle-fit confidence", "edge_circle_fit")
-        self.overlay_combo.addItem("Ellipse-fit confidence", "edge_ellipse_fit")
-        self.overlay_combo.addItem("Circle/ellipse fit residual", "edge_fit_residual")
-        self.overlay_combo.addItem("Seed-centre votes", "edge_centre_votes")
-        self.overlay_combo.addItem("Semantic boundary side", "edge_semantic_sides")
-        self.overlay_combo.addItem("Rejected edge reasons", "edge_rejections")
-        self.overlay_combo.addItem("Fitted centres and ellipses", "edge_fit_geometry")
-        self.overlay_combo.addItem("Final seed-boundary confidence", "seed_edge_curves")
-        for label, mode in ADVANCED_OVERLAY_LABELS:
-            self.overlay_combo.addItem(label, mode)
-        self.overlay_combo.addItem("None", "none")
-        self.overlay_combo.setEnabled(False)
-        self.overlay_combo.currentIndexChanged.connect(self._overlay_changed)
-        overlay_form = QFormLayout()
-        overlay_form.addRow("Layer", self.overlay_combo)
-
-        opacity_widget = QWidget(content)
-        opacity_layout = QHBoxLayout(opacity_widget)
-        opacity_layout.setContentsMargins(0, 0, 0, 0)
-        self.overlay_opacity_slider = QSlider(Qt.Orientation.Horizontal, content)
-        self.overlay_opacity_slider.setRange(0, 100)
-        self.overlay_opacity_slider.setValue(68)
-        self.overlay_opacity_slider.setEnabled(False)
-        self.overlay_opacity_slider.valueChanged.connect(
-            self._overlay_opacity_changed
-        )
-        self.overlay_opacity_label = QLabel("68%", content)
-        self.overlay_opacity_label.setMinimumWidth(36)
-        opacity_layout.addWidget(self.overlay_opacity_slider, 1)
-        opacity_layout.addWidget(self.overlay_opacity_label)
-        overlay_form.addRow("Opacity", opacity_widget)
-        self.overlay_owner_label = self._muted_label("No graph node")
-        overlay_form.addRow("Graph node", self.overlay_owner_label)
-        layout.addLayout(overlay_form)
-        self.overlay_legend_label = self._muted_label(
-            "Run the analysis to inspect its intermediate raster layers."
-        )
-        layout.addWidget(self.overlay_legend_label)
-
-        layout.addWidget(self._separator())
-        layout.addWidget(self._section_label("Painted background reference"))
-        self.background_enabled_checkbox = QCheckBox(
-            "Use background colour analysis", content
-        )
-        self.background_enabled_checkbox.setChecked(
-            self.pipeline.node("background_likelihood").enabled
-        )
-        self.background_enabled_checkbox.toggled.connect(
-            self._background_enabled_toggled
-        )
-        layout.addWidget(self.background_enabled_checkbox)
-        reference_buttons = QWidget(content)
-        reference_button_layout = QHBoxLayout(reference_buttons)
-        reference_button_layout.setContentsMargins(0, 0, 0, 0)
-        self.background_point_button = QPushButton(
-            "Paint background", reference_buttons
-        )
-        self.background_point_button.setCheckable(True)
-        self.background_point_button.setEnabled(False)
-        self.background_point_button.toggled.connect(
-            self._background_point_editing_changed
-        )
-        self.clear_background_points_button = QPushButton(
-            "Clear", reference_buttons
-        )
-        self.clear_background_points_button.setEnabled(False)
-        self.clear_background_points_button.clicked.connect(
-            self._clear_background_points
-        )
-        reference_button_layout.addWidget(self.background_point_button, 1)
-        reference_button_layout.addWidget(self.clear_background_points_button)
-        layout.addWidget(reference_buttons)
-        self.background_reference_label = self._muted_label(
-            "Automatic background colour selection; no painted area."
-        )
-        layout.addWidget(self.background_reference_label)
-
-        layout.addWidget(self._separator())
-        layout.addWidget(self._section_label("Painted foreground reference"))
-        foreground_buttons = QWidget(content)
-        foreground_button_layout = QHBoxLayout(foreground_buttons)
-        foreground_button_layout.setContentsMargins(0, 0, 0, 0)
-        self.foreground_point_button = QPushButton(
-            "Paint foreground", foreground_buttons
-        )
-        self.foreground_point_button.setCheckable(True)
-        self.foreground_point_button.setEnabled(False)
-        self.foreground_point_button.toggled.connect(
-            self._foreground_point_editing_changed
-        )
-        self.clear_foreground_points_button = QPushButton(
-            "Clear", foreground_buttons
-        )
-        self.clear_foreground_points_button.setEnabled(False)
-        self.clear_foreground_points_button.clicked.connect(
-            self._clear_foreground_points
-        )
-        foreground_button_layout.addWidget(self.foreground_point_button, 1)
-        foreground_button_layout.addWidget(self.clear_foreground_points_button)
-        layout.addWidget(foreground_buttons)
-        self.foreground_reference_label = self._muted_label(
-            "No painted foreground reference."
-        )
-        layout.addWidget(self.foreground_reference_label)
-
-        brush_widget = QWidget(content)
-        brush_layout = QHBoxLayout(brush_widget)
-        brush_layout.setContentsMargins(0, 0, 0, 0)
-        self.reference_brush_slider = QSlider(
-            Qt.Orientation.Horizontal, brush_widget
-        )
-        self.reference_brush_slider.setRange(2, 200)
-        self.reference_brush_slider.setValue(12)
-        self.reference_brush_slider.setToolTip(
-            "Full-resolution brush radius in corrected-image pixels. "
-            "The viewer outline shows the exact covered area. Right-drag remains "
-            "a temporary eraser shortcut in Paint mode."
-        )
-        self.reference_brush_slider.valueChanged.connect(
-            self._reference_brush_radius_changed
-        )
-        self.reference_brush_label = QLabel("12 px", brush_widget)
-        self.reference_brush_label.setMinimumWidth(48)
-        brush_layout.addWidget(self.reference_brush_slider, 1)
-        brush_layout.addWidget(self.reference_brush_label)
-
-        brush_mode_widget = QWidget(content)
-        brush_mode_layout = QHBoxLayout(brush_mode_widget)
-        brush_mode_layout.setContentsMargins(0, 0, 0, 0)
-        self.reference_paint_mode_button = QPushButton(
-            "Paint", brush_mode_widget
-        )
-        self.reference_paint_mode_button.setCheckable(True)
-        self.reference_paint_mode_button.setChecked(True)
-        self.reference_paint_mode_button.setToolTip(
-            "Left-drag adds pixels to the selected reference mask."
-        )
-        self.reference_eraser_button = QPushButton(
-            "Eraser", brush_mode_widget
-        )
-        self.reference_eraser_button.setCheckable(True)
-        self.reference_eraser_button.setToolTip(
-            "Left-drag removes pixels from the selected reference mask. The dashed "
-            "red brush outline indicates erasing."
-        )
-        self.reference_brush_mode_group = QButtonGroup(brush_mode_widget)
-        self.reference_brush_mode_group.setExclusive(True)
-        self.reference_brush_mode_group.addButton(
-            self.reference_paint_mode_button
-        )
-        self.reference_brush_mode_group.addButton(self.reference_eraser_button)
-        self.reference_eraser_button.toggled.connect(
-            self._reference_eraser_toggled
-        )
-        brush_mode_layout.addWidget(self.reference_paint_mode_button)
-        brush_mode_layout.addWidget(self.reference_eraser_button)
-
-        brush_form = QFormLayout()
-        brush_form.addRow("Brush mode", brush_mode_widget)
-        brush_form.addRow("Brush radius", brush_widget)
-        layout.addLayout(brush_form)
-
-        confirmation_buttons = QWidget(content)
-        confirmation_layout = QHBoxLayout(confirmation_buttons)
-        confirmation_layout.setContentsMargins(0, 0, 0, 0)
-        self.apply_reference_masks_button = QPushButton(
-            "Apply reference masks", confirmation_buttons
-        )
-        self.apply_reference_masks_button.setEnabled(False)
-        self.apply_reference_masks_button.setToolTip(
-            "Confirm both painted masks and run only the affected pipeline nodes."
-        )
-        self.apply_reference_masks_button.clicked.connect(
-            self._apply_reference_masks
-        )
-        self.revert_reference_masks_button = QPushButton(
-            "Revert edits", confirmation_buttons
-        )
-        self.revert_reference_masks_button.setEnabled(False)
-        self.revert_reference_masks_button.clicked.connect(
-            self._revert_reference_masks
-        )
-        confirmation_layout.addWidget(self.apply_reference_masks_button, 1)
-        confirmation_layout.addWidget(self.revert_reference_masks_button)
-        layout.addWidget(confirmation_buttons)
-        self.reference_confirmation_label = self._muted_label(
-            "Painting is a draft and does not run calculations until applied."
-        )
-        layout.addWidget(self.reference_confirmation_label)
 
         layout.addStretch(1)
 
@@ -859,10 +1512,12 @@ class MainWindow(QMainWindow):
             "seed_scale_estimation",
             "foreground_segmentation",
             "distance_candidates",
-            "circle_candidates",
             "identification",
         ):
-            values.update(self.pipeline.node(node_id).parameters)
+            if self.pipeline.is_active(node_id):
+                values.update(self.pipeline.node(node_id).parameters)
+        if self.pipeline.is_active("circle_candidates"):
+            values.update(self.pipeline.node("circle_candidates").parameters)
         return BaselineSettings(**values)
 
     def _dish_settings(self) -> DishDetectionSettings:
@@ -871,21 +1526,29 @@ class MainWindow(QMainWindow):
     def _layer_settings(self) -> AnalysisLayerSettings:
         values: dict[str, object] = {}
         for node_id in (
+            "perimeter_background_reference",
             "background_likelihood",
             "refined_background_likelihood",
+            "foreground_noise_likelihood",
             "edge_gradients",
+            "surface_darkness_gradients",
+            "lightening_gradient_ceiling",
+            "darkening_gradient_ceiling",
+            "frequency_noise_masks",
             "edge_ridges",
             "edge_traces",
             "instance_masks",
             "seed_edge_curves",
         ):
-            values.update(self.pipeline.node(node_id).parameters)
+            if self.pipeline.is_active(node_id):
+                values.update(self.pipeline.node(node_id).parameters)
         return AnalysisLayerSettings(**values)
 
     def _advanced_settings(self) -> AdvancedAnalysisSettings:
         values: dict[str, object] = {}
         for node_id in ADVANCED_NODE_MODES:
-            values.update(self.pipeline.node(node_id).parameters)
+            if self.pipeline.is_active(node_id):
+                values.update(self.pipeline.node(node_id).parameters)
         return AdvancedAnalysisSettings(**values)
 
     def _calibration_settings(self) -> CalibrationSettings:
@@ -922,8 +1585,7 @@ class MainWindow(QMainWindow):
         self, *, dirty_nodes: set[str] | frozenset[str] | None = None
     ) -> None:
         path = self.image_view.image_path
-        identification = self.pipeline.node("identification")
-        if path is None or not identification.enabled:
+        if path is None:
             return
         key = str(path.resolve()).casefold()
         pending_dirty = self._cache_dirty_nodes.setdefault(key, set())
@@ -947,7 +1609,15 @@ class MainWindow(QMainWindow):
             (),
             self._applied_background_reference_masks.get(key),
             self._applied_foreground_reference_masks.get(key),
+            self._applied_background_exclusion_masks.get(key),
+            self._applied_foreground_exclusion_masks.get(key),
+            self._applied_instance_annotations.get(key),
             self.pipeline.node("background_likelihood").enabled,
+            frozenset(
+                node.identifier
+                for node in self.pipeline.nodes.values()
+                if node.enabled
+            ),
             self.pipeline.revision,
             node_cache,
             requested_dirty,
@@ -960,7 +1630,7 @@ class MainWindow(QMainWindow):
         self._update_analysis_availability()
         self.count_label.setText("Analysing…")
         self.warning_label.setText(
-            "Executing layout detection and seed identification in the background."
+            "Executing the active calibration and diagnostic pipeline in the background."
         )
         self.statusBar().showMessage(f"Analysing {path.name}…")
         self._thread_pool.start(task)
@@ -1021,9 +1691,14 @@ class MainWindow(QMainWindow):
             self._show_analysis_result(result)
         self._update_analysis_availability()
         self._sync_background_controls()
-        self.statusBar().showMessage(
-            f"Generated {result.count:,} approximate proposals for {path.name}."
-        )
+        if self.pipeline.is_active("identification"):
+            self.statusBar().showMessage(
+                f"Generated {result.count:,} approximate proposals for {path.name}."
+            )
+        else:
+            self.statusBar().showMessage(
+                f"Completed active diagnostic pipeline for {path.name}."
+            )
         if self._cache_dirty_nodes.get(key):
             self._analyze_current_image()
 
@@ -1080,8 +1755,12 @@ class MainWindow(QMainWindow):
         )
         with QSignalBlocker(self.reference_brush_slider):
             self.reference_brush_slider.setValue(brush_radius)
+        with QSignalBlocker(self.instance_brush_slider):
+            self.instance_brush_slider.setValue(brush_radius)
         self.reference_brush_label.setText(f"{brush_radius} px")
+        self.instance_brush_label.setText(f"{brush_radius} px")
         self.image_view.set_reference_brush_radius(brush_radius)
+        self._sync_instance_tool_settings()
         path = result.image_path
         key = str(path.resolve()).casefold() if path is not None else ""
         self.image_view.set_reference_masks(
@@ -1091,6 +1770,17 @@ class MainWindow(QMainWindow):
             self._draft_foreground_reference_masks.get(
                 key, self._applied_foreground_reference_masks.get(key)
             ),
+            self._draft_background_exclusion_masks.get(
+                key, self._applied_background_exclusion_masks.get(key)
+            ),
+            self._draft_foreground_exclusion_masks.get(
+                key, self._applied_foreground_exclusion_masks.get(key)
+            ),
+        )
+        self.image_view.set_instance_annotations(
+            self._draft_instance_annotations.get(
+                key, self._applied_instance_annotations.get(key)
+            )
         )
         calibration = result.calibration
         card = calibration.colour_card
@@ -1159,46 +1849,46 @@ class MainWindow(QMainWindow):
         self._sync_background_controls()
 
     def _sync_directional_overlay_choices(self, result) -> None:
-        selected = self.overlay_combo.currentData()
-        for index in range(self.overlay_combo.count() - 1, -1, -1):
-            mode = str(self.overlay_combo.itemData(index))
-            if mode.startswith((
+        selected = str(self.overlay_combo.currentData() or "")
+        self._overlay_entries = [
+            (label, mode)
+            for label, mode in self._overlay_entries
+            if not mode.startswith((
                 "directional_background:",
                 "colour_probability:",
                 "pattern_probability:",
-            )):
-                self.overlay_combo.removeItem(index)
-        none_index = self.overlay_combo.findData("none")
+            ))
+            and mode != "none"
+        ]
         for direction_index, angle in enumerate(
             result.layers.directional_background_angles_degrees
         ):
-            self.overlay_combo.insertItem(
-                none_index,
-                f"Background ray {angle:g}°",
-                f"directional_background:{direction_index}",
+            self._overlay_entries.append(
+                (
+                    f"Background ray {angle:g}°",
+                    f"directional_background:{direction_index}",
+                )
             )
-            none_index += 1
         for probability_index, class_name in enumerate(
             result.advanced.colour_class_names
         ):
-            self.overlay_combo.insertItem(
-                none_index,
-                f"Colour probability: {class_name}",
-                f"colour_probability:{probability_index}",
+            self._overlay_entries.append(
+                (
+                    f"Colour probability: {class_name}",
+                    f"colour_probability:{probability_index}",
+                )
             )
-            none_index += 1
         for probability_index, class_name in enumerate(
             result.advanced.pattern_class_names
         ):
-            self.overlay_combo.insertItem(
-                none_index,
-                f"Pattern probability: {class_name}",
-                f"pattern_probability:{probability_index}",
+            self._overlay_entries.append(
+                (
+                    f"Pattern probability: {class_name}",
+                    f"pattern_probability:{probability_index}",
+                )
             )
-            none_index += 1
-        restored = self.overlay_combo.findData(selected)
-        if restored >= 0:
-            self.overlay_combo.setCurrentIndex(restored)
+        self._overlay_entries.append(("None", "none"))
+        self._rebuild_overlay_combo(selected)
 
     def _current_image_key(self) -> str | None:
         path = self.image_view.image_path
@@ -1211,18 +1901,65 @@ class MainWindow(QMainWindow):
             return
         with QSignalBlocker(self.background_point_button):
             self.background_point_button.setChecked(False)
+        with QSignalBlocker(self.paint_background_action):
+            self.paint_background_action.setChecked(False)
         self.image_view.set_background_point_editing(False)
+        self._sync_reference_panel_visibility()
 
     def _stop_foreground_point_editing(self) -> None:
         if not hasattr(self, "foreground_point_button"):
             return
         with QSignalBlocker(self.foreground_point_button):
             self.foreground_point_button.setChecked(False)
+        with QSignalBlocker(self.paint_foreground_action):
+            self.paint_foreground_action.setChecked(False)
         self.image_view.set_foreground_point_editing(False)
+        self._sync_reference_panel_visibility()
+
+    def _stop_background_exclusion_editing(self) -> None:
+        if not hasattr(self, "background_exclusion_button"):
+            return
+        with QSignalBlocker(self.background_exclusion_button):
+            self.background_exclusion_button.setChecked(False)
+        self.image_view.set_background_exclusion_editing(False)
+        self._sync_reference_panel_visibility()
+
+    def _stop_foreground_exclusion_editing(self) -> None:
+        if not hasattr(self, "foreground_exclusion_button"):
+            return
+        with QSignalBlocker(self.foreground_exclusion_button):
+            self.foreground_exclusion_button.setChecked(False)
+        self.image_view.set_foreground_exclusion_editing(False)
+        self._sync_reference_panel_visibility()
+
+    def _stop_instance_annotation_editing(self) -> None:
+        if not hasattr(self, "annotate_instances_action"):
+            return
+        with QSignalBlocker(self.annotate_instances_action):
+            self.annotate_instances_action.setChecked(False)
+        self.image_view.set_instance_annotation_editing(False)
+        self._sync_reference_panel_visibility()
 
     def _stop_reference_point_editing(self) -> None:
         self._stop_background_point_editing()
         self._stop_foreground_point_editing()
+        self._stop_background_exclusion_editing()
+        self._stop_foreground_exclusion_editing()
+        self._stop_instance_annotation_editing()
+        self.image_view.set_context_panel_visible(False)
+
+    def _sync_reference_panel_visibility(self) -> None:
+        active = (
+            self.background_point_button.isChecked()
+            or self.foreground_point_button.isChecked()
+            or self.background_exclusion_button.isChecked()
+            or self.foreground_exclusion_button.isChecked()
+            or self.annotate_instances_action.isChecked()
+        )
+        instance_mode = self.annotate_instances_action.isChecked()
+        self.reference_controls.setVisible(active and not instance_mode)
+        self.instance_annotation_controls.setVisible(instance_mode)
+        self.image_view.set_context_panel_visible(active)
 
     def _sync_background_controls(self) -> None:
         if not hasattr(self, "background_point_button"):
@@ -1236,30 +1973,92 @@ class MainWindow(QMainWindow):
         can_edit = enabled and has_result and not running
         self.background_point_button.setEnabled(can_edit)
         self.foreground_point_button.setEnabled(has_result and not running)
+        self.background_exclusion_button.setEnabled(can_edit)
+        self.foreground_exclusion_button.setEnabled(has_result and not running)
+        self.erase_background_points_button.setEnabled(can_edit)
+        self.erase_foreground_points_button.setEnabled(has_result and not running)
+        self.erase_background_exclusion_button.setEnabled(can_edit)
+        self.erase_foreground_exclusion_button.setEnabled(has_result and not running)
+        self.paint_background_action.setEnabled(can_edit)
+        self.paint_foreground_action.setEnabled(has_result and not running)
+        self.annotate_instances_action.setEnabled(has_result and not running)
         background_mask = self._draft_background_reference_masks.get(
             key or "", self._applied_background_reference_masks.get(key or "")
         )
         foreground_mask = self._draft_foreground_reference_masks.get(
             key or "", self._applied_foreground_reference_masks.get(key or "")
         )
+        background_exclusion = self._draft_background_exclusion_masks.get(
+            key or "", self._applied_background_exclusion_masks.get(key or "")
+        )
+        foreground_exclusion = self._draft_foreground_exclusion_masks.get(
+            key or "", self._applied_foreground_exclusion_masks.get(key or "")
+        )
         background_count = self._mask_pixel_count(background_mask)
         foreground_count = self._mask_pixel_count(foreground_mask)
+        background_exclusion_count = self._mask_pixel_count(background_exclusion)
+        foreground_exclusion_count = self._mask_pixel_count(foreground_exclusion)
         dirty = key in self._reference_masks_dirty if key is not None else False
+        annotations = self._draft_instance_annotations.get(
+            key or "", self._applied_instance_annotations.get(key or "")
+        )
+        annotation_ids = self._instance_ids(annotations)
+        annotation_count = self._mask_pixel_count(annotations)
+        annotations_dirty = (
+            key in self._instance_annotations_dirty if key is not None else False
+        )
         self.clear_background_points_button.setEnabled(
             bool(background_count) and not running
         )
         self.clear_foreground_points_button.setEnabled(
             bool(foreground_count) and not running
         )
+        self.clear_background_exclusion_button.setEnabled(
+            bool(background_exclusion_count) and not running
+        )
+        self.clear_foreground_exclusion_button.setEnabled(
+            bool(foreground_exclusion_count) and not running
+        )
         self.apply_reference_masks_button.setEnabled(dirty and not running)
         self.revert_reference_masks_button.setEnabled(dirty and not running)
         self.reference_brush_slider.setEnabled(has_result and not running)
         self.reference_paint_mode_button.setEnabled(has_result and not running)
         self.reference_eraser_button.setEnabled(has_result and not running)
+        self.instance_id_spin.setEnabled(has_result and not running)
+        self.new_instance_button.setEnabled(has_result and not running)
+        self.instance_brush_slider.setEnabled(has_result and not running)
+        for button in (
+            self.instance_paint_mode_button,
+            self.instance_edge_trace_button,
+            self.instance_shape_snap_button,
+            self.instance_smart_fill_button,
+            self.instance_eraser_button,
+        ):
+            button.setEnabled(has_result and not running)
+        self.instance_tool_options_stack.setEnabled(has_result and not running)
+        active_id = self.instance_id_spin.value()
+        self.clear_current_instance_button.setEnabled(
+            active_id in annotation_ids and not running
+        )
+        self.clear_all_instances_button.setEnabled(
+            bool(annotation_count) and not running
+        )
+        self.apply_instance_annotations_button.setEnabled(
+            annotations_dirty and not running
+        )
+        self.revert_instance_annotations_button.setEnabled(
+            annotations_dirty and not running
+        )
         if not can_edit and self.background_point_button.isChecked():
             self._stop_background_point_editing()
         if (not has_result or running) and self.foreground_point_button.isChecked():
             self._stop_foreground_point_editing()
+        if not can_edit and self.background_exclusion_button.isChecked():
+            self._stop_background_exclusion_editing()
+        if (not has_result or running) and self.foreground_exclusion_button.isChecked():
+            self._stop_foreground_exclusion_editing()
+        if (not has_result or running) and self.annotate_instances_action.isChecked():
+            self._stop_instance_annotation_editing()
         if not enabled:
             text = "Disabled. Rerun to skip colour and noise background maps."
         elif background_count:
@@ -1276,61 +2075,333 @@ class MainWindow(QMainWindow):
         else:
             foreground_text = "No painted foreground reference."
         self.foreground_reference_label.setText(foreground_text)
+        if background_exclusion_count:
+            suffix = " (unapplied draft)" if dirty else " (applied)"
+            background_exclusion_text = (
+                f"{background_exclusion_count:,} negative background-example pixels"
+                f"{suffix}."
+            )
+        else:
+            background_exclusion_text = "No painted negative background examples."
+        self.background_exclusion_label.setText(background_exclusion_text)
+        if foreground_exclusion_count:
+            suffix = " (unapplied draft)" if dirty else " (applied)"
+            foreground_exclusion_text = (
+                f"{foreground_exclusion_count:,} negative foreground-example pixels"
+                f"{suffix}."
+            )
+        else:
+            foreground_exclusion_text = "No painted negative foreground examples."
+        self.foreground_exclusion_label.setText(foreground_exclusion_text)
         self.reference_confirmation_label.setText(
             "Draft changed. Apply once painting is complete; analysis is still using "
             "the previous confirmed masks."
             if dirty
             else "Painting is a draft and does not run calculations until applied."
         )
+        if annotation_ids:
+            suffix = " (unapplied draft)" if annotations_dirty else " (applied)"
+            self.instance_annotation_status_label.setText(
+                f"{len(annotation_ids):,} seed IDs; {annotation_count:,} interior "
+                f"annotation pixels{suffix}."
+            )
+        else:
+            self.instance_annotation_status_label.setText(
+                "No seed instances annotated."
+            )
+        self.instance_annotation_confirmation_label.setText(
+            "Draft changed. Apply when the annotations are complete; downstream "
+            "instance calculations still use the previous annotations."
+            if annotations_dirty
+            else "Annotations constrain the instance branch only after they are applied."
+        )
 
     @staticmethod
     def _mask_pixel_count(mask: np.ndarray | None) -> int:
         return 0 if mask is None else int(np.count_nonzero(mask))
+
+    @staticmethod
+    def _instance_ids(annotations: np.ndarray | None) -> tuple[int, ...]:
+        if annotations is None:
+            return ()
+        return tuple(int(value) for value in np.unique(annotations) if value > 0)
 
     @Slot(bool)
     def _background_enabled_toggled(self, enabled: bool) -> None:
         self._pipeline_enabled_changed("background_likelihood", enabled)
 
     @Slot(bool)
+    def _background_toolbar_editing_changed(self, enabled: bool) -> None:
+        with QSignalBlocker(self.background_point_button):
+            self.background_point_button.setChecked(enabled)
+        self._background_point_editing_changed(enabled)
+
+    @Slot(bool)
+    def _foreground_toolbar_editing_changed(self, enabled: bool) -> None:
+        with QSignalBlocker(self.foreground_point_button):
+            self.foreground_point_button.setChecked(enabled)
+        self._foreground_point_editing_changed(enabled)
+
+    @Slot(bool)
     def _background_point_editing_changed(self, enabled: bool) -> None:
+        with QSignalBlocker(self.paint_background_action):
+            self.paint_background_action.setChecked(enabled)
         if enabled:
             with QSignalBlocker(self.foreground_point_button):
                 self.foreground_point_button.setChecked(False)
+            with QSignalBlocker(self.background_exclusion_button):
+                self.background_exclusion_button.setChecked(False)
+            with QSignalBlocker(self.foreground_exclusion_button):
+                self.foreground_exclusion_button.setChecked(False)
+            with QSignalBlocker(self.paint_foreground_action):
+                self.paint_foreground_action.setChecked(False)
+            with QSignalBlocker(self.annotate_instances_action):
+                self.annotate_instances_action.setChecked(False)
         self.image_view.set_background_point_editing(enabled)
         if enabled:
+            self.image_view.set_reference_brush_radius(
+                float(self.reference_brush_slider.value())
+            )
+            self.image_view.set_reference_erase_mode(
+                self.reference_eraser_button.isChecked()
+            )
             overlay_index = self.overlay_combo.findData("background_likelihood")
             if overlay_index >= 0:
                 self.overlay_combo.setCurrentIndex(overlay_index)
             self.image_view.show()
+            self._sync_reference_panel_visibility()
             self.statusBar().showMessage(
                 f"Background brush: left-drag to {self._reference_brush_action()}; "
                 "right-drag temporarily erases."
             )
         else:
+            self._sync_reference_panel_visibility()
             self.statusBar().showMessage("Background reference painting finished.")
 
     @Slot(bool)
     def _foreground_point_editing_changed(self, enabled: bool) -> None:
+        with QSignalBlocker(self.paint_foreground_action):
+            self.paint_foreground_action.setChecked(enabled)
         if enabled:
             with QSignalBlocker(self.background_point_button):
                 self.background_point_button.setChecked(False)
+            with QSignalBlocker(self.background_exclusion_button):
+                self.background_exclusion_button.setChecked(False)
+            with QSignalBlocker(self.foreground_exclusion_button):
+                self.foreground_exclusion_button.setChecked(False)
+            with QSignalBlocker(self.paint_background_action):
+                self.paint_background_action.setChecked(False)
+            with QSignalBlocker(self.annotate_instances_action):
+                self.annotate_instances_action.setChecked(False)
         self.image_view.set_foreground_point_editing(enabled)
         if enabled:
+            self.image_view.set_reference_brush_radius(
+                float(self.reference_brush_slider.value())
+            )
+            self.image_view.set_reference_erase_mode(
+                self.reference_eraser_button.isChecked()
+            )
             overlay_index = self.overlay_combo.findData("foreground_mask")
             if overlay_index >= 0:
                 self.overlay_combo.setCurrentIndex(overlay_index)
             self.image_view.show()
+            self._sync_reference_panel_visibility()
             self.statusBar().showMessage(
                 f"Foreground brush: left-drag to {self._reference_brush_action()}; "
                 "right-drag temporarily erases."
             )
         else:
+            self._sync_reference_panel_visibility()
             self.statusBar().showMessage("Foreground reference painting finished.")
+
+    @Slot(bool)
+    def _background_exclusion_editing_changed(self, enabled: bool) -> None:
+        if enabled:
+            for button in (
+                self.background_point_button,
+                self.foreground_point_button,
+                self.foreground_exclusion_button,
+            ):
+                with QSignalBlocker(button):
+                    button.setChecked(False)
+            with QSignalBlocker(self.paint_background_action):
+                self.paint_background_action.setChecked(False)
+            with QSignalBlocker(self.paint_foreground_action):
+                self.paint_foreground_action.setChecked(False)
+            with QSignalBlocker(self.annotate_instances_action):
+                self.annotate_instances_action.setChecked(False)
+        self.image_view.set_background_exclusion_editing(enabled)
+        if enabled:
+            self.image_view.set_reference_brush_radius(
+                float(self.reference_brush_slider.value())
+            )
+            self.image_view.set_reference_erase_mode(
+                self.reference_eraser_button.isChecked()
+            )
+            overlay_index = self.overlay_combo.findData("background_likelihood")
+            if overlay_index >= 0:
+                self.overlay_combo.setCurrentIndex(overlay_index)
+            self.statusBar().showMessage(
+                "Background exclusion brush: painted colours and textures become "
+                "negative evidence that downweights matching regions throughout the image."
+            )
+        self._sync_reference_panel_visibility()
+
+    @Slot(bool)
+    def _foreground_exclusion_editing_changed(self, enabled: bool) -> None:
+        if enabled:
+            for button in (
+                self.background_point_button,
+                self.foreground_point_button,
+                self.background_exclusion_button,
+            ):
+                with QSignalBlocker(button):
+                    button.setChecked(False)
+            with QSignalBlocker(self.paint_background_action):
+                self.paint_background_action.setChecked(False)
+            with QSignalBlocker(self.paint_foreground_action):
+                self.paint_foreground_action.setChecked(False)
+            with QSignalBlocker(self.annotate_instances_action):
+                self.annotate_instances_action.setChecked(False)
+        self.image_view.set_foreground_exclusion_editing(enabled)
+        if enabled:
+            self.image_view.set_reference_brush_radius(
+                float(self.reference_brush_slider.value())
+            )
+            self.image_view.set_reference_erase_mode(
+                self.reference_eraser_button.isChecked()
+            )
+            overlay_index = self.overlay_combo.findData("foreground_mask")
+            if overlay_index >= 0:
+                self.overlay_combo.setCurrentIndex(overlay_index)
+            self.statusBar().showMessage(
+                "Foreground exclusion brush: painted colours and textures become "
+                "negative evidence that downweights matching regions throughout the image."
+            )
+        self._sync_reference_panel_visibility()
+
+    @Slot(bool)
+    def _instance_annotation_editing_changed(self, enabled: bool) -> None:
+        if enabled:
+            with QSignalBlocker(self.background_point_button):
+                self.background_point_button.setChecked(False)
+            with QSignalBlocker(self.foreground_point_button):
+                self.foreground_point_button.setChecked(False)
+            with QSignalBlocker(self.paint_background_action):
+                self.paint_background_action.setChecked(False)
+            with QSignalBlocker(self.paint_foreground_action):
+                self.paint_foreground_action.setChecked(False)
+            with QSignalBlocker(self.background_exclusion_button):
+                self.background_exclusion_button.setChecked(False)
+            with QSignalBlocker(self.foreground_exclusion_button):
+                self.foreground_exclusion_button.setChecked(False)
+        self.image_view.set_instance_annotation_editing(enabled)
+        if enabled:
+            self.image_view.set_active_instance_id(self.instance_id_spin.value())
+            self.image_view.set_reference_brush_radius(
+                float(self.instance_brush_slider.value())
+            )
+            self._sync_instance_tool_settings()
+            self.image_view.set_instance_annotation_tool(
+                self._current_instance_tool()
+            )
+            overlay_index = self.overlay_combo.findData("instance_masks")
+            if overlay_index >= 0:
+                self.overlay_combo.setCurrentIndex(overlay_index)
+            self.image_view.show()
+            self._show_instance_tool_instructions(self._current_instance_tool())
+        else:
+            self.statusBar().showMessage("Seed instance annotation finished.")
+        self._sync_reference_panel_visibility()
 
     @Slot(int)
     def _reference_brush_radius_changed(self, radius: int) -> None:
         self.reference_brush_label.setText(f"{radius} px")
         self.image_view.set_reference_brush_radius(float(radius))
+
+    @Slot(int)
+    def _instance_brush_radius_changed(self, radius: int) -> None:
+        self.instance_brush_label.setText(f"{radius} px")
+        self.image_view.set_reference_brush_radius(float(radius))
+
+    def _current_instance_tool(self) -> str:
+        for button, tool in (
+            (self.instance_paint_mode_button, "brush"),
+            (self.instance_edge_trace_button, "edge_trace"),
+            (self.instance_shape_snap_button, "shape_snap"),
+            (self.instance_smart_fill_button, "smart_fill"),
+            (self.instance_eraser_button, "eraser"),
+        ):
+            if button.isChecked():
+                return tool
+        return "brush"
+
+    @Slot(str, bool)
+    def _instance_tool_selected(self, tool: str, checked: bool) -> None:
+        if not checked:
+            return
+        page = self.instance_tool_pages.get(tool)
+        if page is not None:
+            self.instance_tool_options_stack.setCurrentWidget(page)
+        self._sync_instance_tool_settings()
+        self.image_view.set_instance_annotation_tool(tool)
+        self.image_view._layout_context_panel()
+        self._show_instance_tool_instructions(tool)
+
+    def _show_instance_tool_instructions(self, tool: str) -> None:
+        instructions = {
+            "brush": "Brush: paint an interior mark for the current seed; right-drag erases.",
+            "edge_trace": "Trace edge: click the first anchor, move to preview the snapped path, then click to apply each segment.",
+            "shape_snap": "Snap shape: move the reference shape over a seed, inspect the live edge fit, then click to fill.",
+            "smart_fill": "Smart fill: move to preview locally adaptive growth, then click; an existing mark is optional.",
+            "eraser": "Eraser: drag over instance labels to remove them.",
+        }
+        self.statusBar().showMessage(instructions[tool])
+
+    @Slot()
+    def _sync_instance_tool_settings(self, *_unused) -> None:
+        if not hasattr(self, "edge_trace_search_spin"):
+            return
+        self.image_view.set_edge_trace_options(
+            EdgeTraceOptions(
+                search_radius_px=self.edge_trace_search_spin.value(),
+                edge_attraction=self.edge_trace_attraction_spin.value() / 100.0,
+                tangent_mode=str(self.edge_trace_tangent_combo.currentData()),
+                tangent_weight=self.edge_trace_tangent_weight_spin.value() / 100.0,
+                smoothing=self.edge_trace_smoothing_spin.value(),
+            )
+        )
+        self.image_view.set_shape_snap_options(
+            ShapeSnapOptions(
+                shape=str(self.shape_snap_shape_combo.currentData()),
+                edge_search_radius_px=self.shape_snap_edge_search_spin.value(),
+                centre_search_radius_px=self.shape_snap_centre_search_spin.value(),
+                angular_samples=self.shape_snap_samples_spin.value(),
+                rotation_degrees=self.shape_snap_rotation_spin.value(),
+                tangent_mode=str(self.shape_snap_tangent_combo.currentData()),
+                tangent_weight=self.shape_snap_tangent_weight_spin.value() / 100.0,
+            )
+        )
+        diameter = float(
+            getattr(self.image_view._analysis_result, "estimated_seed_diameter_px", 100.0)
+        )
+        maximum_radius = int(
+            np.clip(
+                round(diameter * self.smart_fill_radius_spin.value()),
+                4,
+                4096,
+            )
+        )
+        self.image_view.set_smart_fill_options(
+            SmartFillOptions(
+                colour_tolerance_lab=self.smart_fill_colour_tolerance_spin.value(),
+                edge_stop_threshold=self.smart_fill_edge_stop_spin.value() / 100.0,
+                tunnel_strength=float(self.smart_fill_tunnel_combo.currentData()),
+                maximum_radius_px=maximum_radius,
+                maximum_added_pixels=self.smart_fill_pixel_limit_spin.value(),
+                connectivity=int(self.smart_fill_connectivity_combo.currentData()),
+            )
+        )
 
     @Slot(bool)
     def _reference_eraser_toggled(self, enabled: bool) -> None:
@@ -1340,11 +2411,49 @@ class MainWindow(QMainWindow):
             if self.background_point_button.isChecked()
             else "foreground"
             if self.foreground_point_button.isChecked()
+            else "negative background"
+            if self.background_exclusion_button.isChecked()
+            else "negative foreground"
+            if self.foreground_exclusion_button.isChecked()
             else "reference"
         )
         self.statusBar().showMessage(
             f"{active_class.capitalize()} brush set to "
             f"{'erase' if enabled else 'paint'}."
+        )
+
+    def _start_reference_eraser(self, mask_kind: str) -> None:
+        """Activate one painted mask and make left-drag erase from it."""
+
+        buttons = {
+            "background": self.background_point_button,
+            "foreground": self.foreground_point_button,
+            "background_exclusion": self.background_exclusion_button,
+            "foreground_exclusion": self.foreground_exclusion_button,
+        }
+        button = buttons[mask_kind]
+        if not button.isEnabled():
+            return
+        button.setChecked(True)
+        self.reference_eraser_button.setChecked(True)
+
+    @Slot(bool)
+    def _instance_eraser_toggled(self, enabled: bool) -> None:
+        if enabled:
+            self._instance_tool_selected("eraser", True)
+
+    @Slot(int)
+    def _instance_id_changed(self, identifier: int) -> None:
+        self.image_view.set_active_instance_id(identifier)
+        self._update_instance_colour_swatch()
+        self._sync_background_controls()
+
+    def _update_instance_colour_swatch(self) -> None:
+        if not hasattr(self, "instance_colour_swatch"):
+            return
+        colour = self.image_view.instance_colour(self.instance_id_spin.value())
+        self.instance_colour_swatch.setStyleSheet(
+            f"background: {colour.name()}; border: 1px solid palette(mid);"
         )
 
     def _reference_brush_action(self) -> str:
@@ -1353,23 +2462,105 @@ class MainWindow(QMainWindow):
     @Slot(str, object)
     def _reference_mask_edited(self, class_name: str, mask) -> None:
         key = self._current_image_key()
-        if key is None or class_name not in {"background", "foreground"}:
+        targets = {
+            "background": self._draft_background_reference_masks,
+            "foreground": self._draft_foreground_reference_masks,
+            "background_exclusion": self._draft_background_exclusion_masks,
+            "foreground_exclusion": self._draft_foreground_exclusion_masks,
+        }
+        if key is None or class_name not in targets:
             return
         values = self._empty_current_image_mask() if mask is None else np.asarray(
             mask, dtype=bool
         ).copy()
-        target = (
-            self._draft_background_reference_masks
-            if class_name == "background"
-            else self._draft_foreground_reference_masks
-        )
-        target[key] = values
+        targets[class_name][key] = values
         self._reference_masks_dirty.add(key)
         self._sync_background_controls()
         self.statusBar().showMessage(
             f"{class_name.capitalize()} mask edited; no calculations run. "
             "Apply the reference masks when painting is complete."
         )
+
+    @Slot(object)
+    def _instance_annotations_edited(self, annotations) -> None:
+        key = self._current_image_key()
+        if key is None:
+            return
+        values = (
+            self._empty_current_instance_annotations()
+            if annotations is None
+            else np.asarray(annotations, dtype=np.uint16)
+        )
+        self._draft_instance_annotations[key] = values
+        self._instance_annotations_dirty.add(key)
+        self._sync_background_controls()
+        self.statusBar().showMessage(
+            "Seed instance marks edited; foreground references are unchanged. "
+            "Apply the annotations when the interior marks are complete."
+        )
+
+    @Slot()
+    def _new_instance_annotation(self) -> None:
+        key = self._current_image_key()
+        if key is None:
+            return
+        annotations = self._draft_instance_annotations.get(
+            key, self._applied_instance_annotations.get(key)
+        )
+        identifiers = self._instance_ids(annotations)
+        identifier = (max(identifiers) + 1) if identifiers else 1
+        self.instance_id_spin.setValue(
+            min(identifier, np.iinfo(np.uint16).max)
+        )
+        self.instance_paint_mode_button.setChecked(True)
+        self.statusBar().showMessage(
+            f"Seed {self.instance_id_spin.value()} selected; paint a short interior mark."
+        )
+
+    @Slot()
+    def _clear_current_instance_annotation(self) -> None:
+        key = self._current_image_key()
+        if key is None:
+            return
+        source = self._draft_instance_annotations.get(
+            key, self._applied_instance_annotations.get(key)
+        )
+        if source is None:
+            return
+        values = np.asarray(source, dtype=np.uint16).copy()
+        values[values == self.instance_id_spin.value()] = 0
+        self._draft_instance_annotations[key] = values
+        self._instance_annotations_dirty.add(key)
+        self.image_view.set_instance_annotations(values)
+        self._sync_background_controls()
+
+    @Slot()
+    def _clear_all_instance_annotations(self) -> None:
+        key = self._current_image_key()
+        if key is None:
+            return
+        values = self._empty_current_instance_annotations()
+        self._draft_instance_annotations[key] = values
+        self._instance_annotations_dirty.add(key)
+        self.image_view.set_instance_annotations(values)
+        self._sync_background_controls()
+
+    @Slot()
+    def _revert_instance_annotations(self) -> None:
+        key = self._current_image_key()
+        if key is None:
+            return
+        applied = self._applied_instance_annotations.get(key)
+        if applied is None:
+            self._draft_instance_annotations.pop(key, None)
+        else:
+            self._draft_instance_annotations[key] = applied.copy()
+        self._instance_annotations_dirty.discard(key)
+        self.image_view.set_instance_annotations(
+            self._draft_instance_annotations.get(key)
+        )
+        self._sync_background_controls()
+        self.statusBar().showMessage("Discarded unapplied instance-annotation edits.")
 
     @Slot()
     def _clear_background_points(self) -> None:
@@ -1382,6 +2573,12 @@ class MainWindow(QMainWindow):
             None,
             self._draft_foreground_reference_masks.get(
                 key, self._applied_foreground_reference_masks.get(key)
+            ),
+            self._draft_background_exclusion_masks.get(
+                key, self._applied_background_exclusion_masks.get(key)
+            ),
+            self._draft_foreground_exclusion_masks.get(
+                key, self._applied_foreground_exclusion_masks.get(key)
             ),
         )
         self._sync_background_controls()
@@ -1398,7 +2595,33 @@ class MainWindow(QMainWindow):
                 key, self._applied_background_reference_masks.get(key)
             ),
             None,
+            self._draft_background_exclusion_masks.get(
+                key, self._applied_background_exclusion_masks.get(key)
+            ),
+            self._draft_foreground_exclusion_masks.get(
+                key, self._applied_foreground_exclusion_masks.get(key)
+            ),
         )
+        self._sync_background_controls()
+
+    @Slot()
+    def _clear_background_exclusion(self) -> None:
+        key = self._current_image_key()
+        if key is None:
+            return
+        self._draft_background_exclusion_masks[key] = self._empty_current_image_mask()
+        self._reference_masks_dirty.add(key)
+        self._sync_reference_masks_to_view(key)
+        self._sync_background_controls()
+
+    @Slot()
+    def _clear_foreground_exclusion(self) -> None:
+        key = self._current_image_key()
+        if key is None:
+            return
+        self._draft_foreground_exclusion_masks[key] = self._empty_current_image_mask()
+        self._reference_masks_dirty.add(key)
+        self._sync_reference_masks_to_view(key)
         self._sync_background_controls()
 
     @Slot()
@@ -1411,6 +2634,8 @@ class MainWindow(QMainWindow):
         self.image_view.set_reference_masks(
             self._draft_background_reference_masks.get(key),
             self._draft_foreground_reference_masks.get(key),
+            self._draft_background_exclusion_masks.get(key),
+            self._draft_foreground_exclusion_masks.get(key),
         )
         self._sync_background_controls()
         self.statusBar().showMessage("Discarded unapplied reference-mask edits.")
@@ -1425,6 +2650,14 @@ class MainWindow(QMainWindow):
                 self._applied_foreground_reference_masks,
                 self._draft_foreground_reference_masks,
             ),
+            (
+                self._applied_background_exclusion_masks,
+                self._draft_background_exclusion_masks,
+            ),
+            (
+                self._applied_foreground_exclusion_masks,
+                self._draft_foreground_exclusion_masks,
+            ),
         ):
             mask = applied.get(key)
             if mask is None:
@@ -1432,12 +2665,78 @@ class MainWindow(QMainWindow):
             else:
                 draft[key] = mask.copy()
 
+    def _sync_reference_masks_to_view(self, key: str) -> None:
+        self.image_view.set_reference_masks(
+            self._draft_background_reference_masks.get(
+                key, self._applied_background_reference_masks.get(key)
+            ),
+            self._draft_foreground_reference_masks.get(
+                key, self._applied_foreground_reference_masks.get(key)
+            ),
+            self._draft_background_exclusion_masks.get(
+                key, self._applied_background_exclusion_masks.get(key)
+            ),
+            self._draft_foreground_exclusion_masks.get(
+                key, self._applied_foreground_exclusion_masks.get(key)
+            ),
+        )
+
     def _empty_current_image_mask(self) -> np.ndarray:
         image_size = self.image_view.image_size
         if image_size is None:
             return np.zeros((0, 0), dtype=bool)
         width, height = image_size
         return np.zeros((height, width), dtype=bool)
+
+    def _empty_current_instance_annotations(self) -> np.ndarray:
+        image_size = self.image_view.image_size
+        if image_size is None:
+            return np.zeros((0, 0), dtype=np.uint16)
+        width, height = image_size
+        return np.zeros((height, width), dtype=np.uint16)
+
+    @Slot()
+    def _apply_instance_annotations(self) -> None:
+        key = self._current_image_key()
+        if key is None or key not in self._instance_annotations_dirty:
+            return
+        self._stop_instance_annotation_editing()
+        annotations = self._draft_instance_annotations.get(key)
+        if annotations is None or not np.any(annotations):
+            self._applied_instance_annotations.pop(key, None)
+        else:
+            self._applied_instance_annotations[key] = annotations.copy()
+        self._instance_annotations_dirty.discard(key)
+        affected = {
+            "instance_masks",
+            *self.pipeline.downstream("instance_masks", recursive=True),
+        }
+        self.pipeline.invalidate(affected)
+        count = len(self._instance_ids(self._applied_instance_annotations.get(key)))
+        if self.pipeline.node("instance_masks").enabled:
+            self.pipeline.set_status(
+                "instance_masks",
+                NodeStatus.WARNING,
+                f"{count:,} annotated seed interiors; updating",
+            )
+        self.pipeline.set_status(
+            "measurements", NodeStatus.BLOCKED, "Requires reviewed masks"
+        )
+        self.pipeline_canvas.refresh(affected)
+        self.pipeline_inspector.refresh_status()
+        self._cache_dirty_nodes.setdefault(key, set()).update(affected)
+        if self.pipeline.node("instance_masks").enabled:
+            self._analyses.pop(key, None)
+            self._analyze_current_image(dirty_nodes=affected)
+        self._sync_background_controls()
+        self.statusBar().showMessage(
+            f"Applied {count:,} seed instance annotations."
+            + (
+                " Instance masks are updating."
+                if self.pipeline.node("instance_masks").enabled
+                else " Enable Instance colour masks to evaluate them downstream."
+            )
+        )
 
     @Slot()
     def _apply_reference_masks(self) -> None:
@@ -1453,6 +2752,14 @@ class MainWindow(QMainWindow):
             (
                 self._draft_foreground_reference_masks,
                 self._applied_foreground_reference_masks,
+            ),
+            (
+                self._draft_background_exclusion_masks,
+                self._applied_background_exclusion_masks,
+            ),
+            (
+                self._draft_foreground_exclusion_masks,
+                self._applied_foreground_exclusion_masks,
             ),
         ):
             mask = draft.get(key)
@@ -1488,6 +2795,9 @@ class MainWindow(QMainWindow):
         self.pipeline.set_status(
             "refined_background_likelihood", NodeStatus.IDLE, "Updating"
         )
+        self.pipeline.set_status(
+            "foreground_noise_likelihood", NodeStatus.IDLE, "Updating"
+        )
         self.pipeline.set_status("instance_masks", NodeStatus.IDLE, "Updating")
         self.pipeline.set_status(
             "measurements", NodeStatus.BLOCKED, "Requires reviewed masks"
@@ -1508,6 +2818,7 @@ class MainWindow(QMainWindow):
         owner = _overlay_node_owner(mode)
         if owner is None:
             self.overlay_owner_label.setText("No graph node")
+            self._sync_inspector_overlay_options()
             return
         self.overlay_owner_label.setText(self.pipeline.node(owner).title)
         if (
@@ -1519,6 +2830,18 @@ class MainWindow(QMainWindow):
                 self.pipeline_canvas.select_node(owner)
             finally:
                 self._selecting_node_from_overlay = False
+        self._sync_inspector_overlay_options()
+
+    @Slot(str)
+    def _inspector_overlay_selected(self, mode: str) -> None:
+        index = self.overlay_combo.findData(mode)
+        if index < 0:
+            return
+        self._selecting_overlay_from_node = True
+        try:
+            self.overlay_combo.setCurrentIndex(index)
+        finally:
+            self._selecting_overlay_from_node = False
 
     @Slot(int)
     def _overlay_opacity_changed(self, value: int) -> None:
@@ -1559,13 +2882,19 @@ class MainWindow(QMainWindow):
                 "glass edge used by every downstream analysis. Dashed circles indicate an "
                 "inferred pair when two supported radial peaks were unavailable."
             ),
+            "perimeter_background_reference": (
+                "Cyan outlines the detected upper/outer dish edge. The filled annulus "
+                "shows the exact buffered band used for the initial median background "
+                "colour: cyan when it is outside the dish, or orange for the inside-rim "
+                "fallback when too little outer band is visible."
+            ),
             "seed_scale_estimation": "Cyan: isolated-reference search region. Yellow: the image-specific master seed diameter.",
             "foreground_feature": "Brightness is Lab colour distance from the estimated dish background before thresholding.",
             "foreground_mask": "Soft foreground probability: black is tray, rim, or dark inter-seed gap; white is seed-surface evidence. The binary proposal mask is available separately.",
             "foreground_binary_mask": "Binary, morphologically cleaned foreground supplied to the distance-transform proposal branch.",
             "distance_transform": "Brightness is distance from the nearest foreground boundary; local maxima can become seed centres.",
             "distance_candidates": "Yellow circles are the centres/radii proposed by distance-transform peaks before fusion.",
-            "circle_candidates": "Yellow circles are CUDA multiradius ring-support proposals before fusion with distance peaks.",
+            "circle_candidates": "Yellow circles are CUDA multiradius proposals supported by edge, sensor/noise, flattened-grayscale, shadow, and highlight boundaries.",
             "proposals": (
                 "Cyan: upper/outer dish analysis rim. Yellow: provisional seed "
                 "extent. Red: detected centre."
@@ -1588,10 +2917,56 @@ class MainWindow(QMainWindow):
                 "learned texture classifier is also displayed across the initial "
                 "dish-surrounding sampling annulus."
             ),
+            "foreground_noise_likelihood": (
+                "Foreground texture probability: black = non-foreground-like local "
+                "frequency; white = foreground-like texture. Fine, medium, and coarse "
+                "profiles are learned from foreground-colour pseudo-labels without "
+                "forcing painted reference pixels to one."
+            ),
             "edge_gradients": (
                 "Brightness is the shared CUDA multichannel edge magnitude. "
                 "The same cached continuous tangent field feeds both direction encoders."
             ),
+            "surface_lightening_gradient": (
+                "Hue is the one-sided direction from each query pixel toward the target "
+                "with the greatest positive CIE L* slope; brightness is that maximum "
+                "lightening slope after display normalization."
+            ),
+            "surface_lightening_magnitude": (
+                "Brightness is the maximum positive target-minus-query CIE L* slope "
+                "found along any sampled one-sided ray."
+            ),
+            "surface_darkening_gradient": (
+                "Hue is the one-sided direction from each query pixel toward the target "
+                "with the greatest negative CIE L* slope; brightness is the corresponding "
+                "positive darkening magnitude."
+            ),
+            "surface_darkening_magnitude": (
+                "Brightness is the maximum positive query-minus-target CIE L* slope "
+                "found along any sampled one-sided ray."
+            ),
+            "weak_lightening_gradient": (
+                "Lightening direction and brightness after responses above the editable "
+                "raw L*/pixel ceiling have been set exactly to zero to suppress edges."
+            ),
+            "weak_lightening_magnitude": (
+                "Filtered lightening magnitude; black includes every strong response "
+                "removed by the upper L*/pixel ceiling."
+            ),
+            "weak_darkening_gradient": (
+                "Darkening direction and brightness after responses above the editable "
+                "raw L*/pixel ceiling have been set exactly to zero to suppress edges."
+            ),
+            "weak_darkening_magnitude": (
+                "Filtered darkening magnitude; black includes every strong response "
+                "removed by the upper L*/pixel ceiling."
+            ),
+            "darkness_noise_fine": "Fine-band surrounding RMS energy of CIE L* variation.",
+            "darkness_noise_medium": "Medium-band surrounding RMS energy of CIE L* variation.",
+            "darkness_noise_coarse": "Coarse-band surrounding RMS energy of CIE L* variation.",
+            "colour_noise_fine": "Fine-band surrounding RMS energy of Lab a*/b* colour variation.",
+            "colour_noise_medium": "Medium-band surrounding RMS energy of Lab a*/b* colour variation.",
+            "colour_noise_coarse": "Coarse-band surrounding RMS energy of Lab a*/b* colour variation.",
             "undirected_edges": (
                 "Hue = undirected edge tangent (0° = 180°); brightness = "
                 "maximum multichannel edge likelihood. Opposite tangent "
@@ -1638,7 +3013,7 @@ class MainWindow(QMainWindow):
                 "continuity, dense arc radii, centre voting, circle/ellipse residuals, "
                 "and soft semantic/lightness confirmation."
             ),
-            "seed_interior_probability": "Soft seed-interior evidence from colour-derived foreground and inverse background support.",
+            "seed_interior_probability": "Soft seed-interior evidence from foreground colour, learned foreground noise, and inverse background support.",
             "boundary_confidence": "Hue is the continuous directed boundary normal (0° = 360°); brightness is boundary confidence.",
             "boundary_magnitude": "Boundary confidence without direction encoding.",
             "touching_split_likelihood": "High values mark shallow foreground necks and concave distance-transform saddles that may separate touching seeds.",
@@ -1648,7 +3023,9 @@ class MainWindow(QMainWindow):
             "contested_pixels": "Pixels bordering two different provisional instance labels.",
             "contact_graph": "Shared-boundary likelihood plus vector links between proposals close enough to touch or overlap.",
             "illumination_field": "Estimated broad illumination component; shown as grayscale intensity.",
-            "shadow_likelihood": "Pixels substantially darker than the local illumination field.",
+            "flattened_grayscale": "Grayscale after a local illumination log-ratio flattens broad lighting variation; middle gray means locally expected brightness.",
+            "shadow_likelihood": "Nonlinear likelihood that a pixel is unusually dark relative to local lighting and local absolute deviation.",
+            "highlight_likelihood": "Nonlinear likelihood that a pixel is unusually bright relative to local lighting and local absolute deviation.",
             "reflectance_image": "Approximate illumination-normalized luminance used by coat analyses.",
             "glare_likelihood": "Bright, low-saturation pixels likely affected by specular reflection.",
             "image_quality_risk": "Composite of low local focus, highlight clipping, underexposure, and high-frequency noise.",
@@ -1770,6 +3147,17 @@ class MainWindow(QMainWindow):
                 else f"Dish fallback diameter {result.estimated_seed_diameter_px:.1f}px"
             ),
         )
+        sampling_band = result.perimeter_background_band
+        self.pipeline.set_status(
+            "perimeter_background_reference",
+            NodeStatus.COMPLETE if sampling_band.outside_vessel else NodeStatus.WARNING,
+            (
+                f"{sampling_band.buffer_cm:.2f} cm buffer; "
+                f"{sampling_band.thickness_cm:.2f} cm band; "
+                f"{sampling_band.sample_count:,} pixels"
+                + ("" if sampling_band.outside_vessel else "; inside-rim fallback")
+            ),
+        )
         foreground_fraction = result.foreground_pixel_count / max(
             1, result.analysis_region_pixel_count
         )
@@ -1790,7 +3178,7 @@ class MainWindow(QMainWindow):
         self.pipeline.set_status(
             "circle_candidates",
             NodeStatus.COMPLETE,
-            f"{result.circle_candidate_count:,} CUDA ring(s) — Hough circle replacement",
+            f"{result.circle_candidate_count:,} CUDA edge/noise-supported ring(s)",
         )
         self.pipeline.set_status(
             "identification",
@@ -1812,7 +3200,9 @@ class MainWindow(QMainWindow):
         if sampling_band is not None and background_mode != "disabled":
             prior_suffix += (
                 f"; initial {'outer' if sampling_band.outside_vessel else 'inner fallback'} "
-                f"band {sampling_band.sample_count:,} px"
+                f"band {sampling_band.sample_count:,} px; "
+                f"{sampling_band.buffer_cm:.2f} cm buffer / "
+                f"{sampling_band.thickness_cm:.2f} cm thickness"
             )
         if background_mode == "disabled":
             self.pipeline.set_status(
@@ -1853,10 +3243,66 @@ class MainWindow(QMainWindow):
                 f"{len(result.layers.directional_background_likelihoods)} rays; "
                 f"three-band separation {profile.separation:.2f}; surrounding annulus shown",
             )
+        foreground_noise_profile = result.layers.foreground_noise_frequency_profile
+        if foreground_noise_profile is not None:
+            self.pipeline.set_status(
+                "foreground_noise_likelihood",
+                NodeStatus.COMPLETE,
+                "Foreground/non-foreground three-band separation "
+                f"{foreground_noise_profile.separation:.2f}",
+            )
         self.pipeline.set_status(
             "edge_gradients",
             NodeStatus.COMPLETE,
             "Shared Lab/Scharr magnitude and continuous tangent field cached",
+        )
+        if (
+            self.pipeline.is_active("surface_darkness_gradients")
+            and self.pipeline.node("surface_darkness_gradients").enabled
+        ):
+            direction_count = len(
+                range(
+                    0,
+                    360,
+                    int(
+                        self.pipeline.node("surface_darkness_gradients").parameters[
+                            "surface_gradient_direction_step_degrees"
+                        ]
+                    ),
+                )
+            )
+            self.pipeline.set_status(
+                "surface_darkness_gradients",
+                NodeStatus.COMPLETE,
+                "Maximum lightening/darkening slopes from "
+                f"{direction_count} one-sided directions",
+            )
+        if (
+            self.pipeline.is_active("lightening_gradient_ceiling")
+            and self.pipeline.node("lightening_gradient_ceiling").enabled
+        ):
+            self.pipeline.set_status(
+                "lightening_gradient_ceiling",
+                NodeStatus.COMPLETE,
+                "Strong lightening edges suppressed above "
+                f"{self.pipeline.node('lightening_gradient_ceiling').parameters['lightening_gradient_maximum_slope']:.2f} L*/px",
+            )
+        if (
+            self.pipeline.is_active("darkening_gradient_ceiling")
+            and self.pipeline.node("darkening_gradient_ceiling").enabled
+        ):
+            self.pipeline.set_status(
+                "darkening_gradient_ceiling",
+                NodeStatus.COMPLETE,
+                "Strong darkening edges suppressed above "
+                f"{self.pipeline.node('darkening_gradient_ceiling').parameters['darkening_gradient_maximum_slope']:.2f} L*/px",
+            )
+        noise_scales = result.layers.frequency_noise_band_scales_px
+        self.pipeline.set_status(
+            "frequency_noise_masks",
+            NodeStatus.COMPLETE,
+            "Darkness/colour RMS masks at "
+            + ", ".join(f"{value:.1f}px" for value in noise_scales),
         )
         self.pipeline.set_status(
             "undirected_edges",
@@ -1901,14 +3347,14 @@ class MainWindow(QMainWindow):
             result.advanced.seed_pattern_proportions,
         )
         advanced_details = {
-            "seed_interior": "Foreground/background probability fused",
+            "seed_interior": "Foreground colour/noise and background probability fused",
             "boundary_normals": "Boundary magnitude and directed normals ready",
             "touching_split": "Neck and distance-saddle evidence ready",
             "ellipse_likelihood": "Multiscale orientation and radial support ready",
             "proposal_disagreement": "Four proposal evidence sources compared",
             "assignment_confidence": "Assignment and contested-pixel maps ready",
             "contact_graph": f"{len(result.advanced.contact_pairs):,} candidate contact link(s)",
-            "illumination_decomposition": "Illumination, reflectance, shadow, and glare ready",
+            "illumination_decomposition": "Flattened grayscale plus local shadow/highlight maps ready",
             "image_quality": "Focus, clipping, exposure, and noise maps ready",
             "radial_profile": "Normalized radial coordinates and residuals ready",
             "wrinkling": f"Mean provisional likelihood {result.advanced.mean_wrinkling_likelihood:.0%}",
@@ -1934,6 +3380,13 @@ class MainWindow(QMainWindow):
             NodeStatus.WARNING,
             f"Provisional seeds — colour: {colour_distribution}; pattern: {pattern_distribution}",
         )
+        for node in self.pipeline.nodes.values():
+            if not node.enabled:
+                self.pipeline.set_status(
+                    node.identifier,
+                    NodeStatus.BYPASSED,
+                    "Disabled by pipeline dependency",
+                )
         self.pipeline_canvas.refresh()
         self.pipeline_inspector.refresh_status()
 
@@ -1946,34 +3399,45 @@ class MainWindow(QMainWindow):
         )
         for node_id in (*CALIBRATION_NODE_IDS, "layout_detection"):
             self.pipeline.set_status(node_id, NodeStatus.IDLE, "Ready")
-        for node_id in IDENTIFICATION_STAGE_NODE_IDS[:-1]:
+        for node_id in IDENTIFICATION_STAGE_NODE_IDS:
             self.pipeline.set_status(node_id, NodeStatus.IDLE, "Ready")
-        identification = self.pipeline.node("identification")
-        self.pipeline.set_status(
-            "identification",
-            NodeStatus.IDLE if identification.enabled else NodeStatus.BYPASSED,
-            "Ready" if identification.enabled else "Bypassed",
-        )
         for node_id in (
             "background_likelihood",
             "refined_background_likelihood",
+            "foreground_noise_likelihood",
             "edge_gradients",
+            "surface_darkness_gradients",
+            "lightening_gradient_ceiling",
+            "darkening_gradient_ceiling",
+            "frequency_noise_masks",
             "undirected_edges",
             "directed_edges",
             "edge_ridges",
             "edge_traces",
         ):
-            self.pipeline.set_status(node_id, NodeStatus.IDLE, "Ready")
+            node = self.pipeline.node(node_id)
+            if self.pipeline.is_active(node_id) and node.enabled:
+                self.pipeline.set_status(node_id, NodeStatus.IDLE, "Ready")
+            elif not node.enabled:
+                self.pipeline.set_status(
+                    node_id,
+                    NodeStatus.BYPASSED,
+                    (
+                        "Disabled in the unused-node toolbox"
+                        if not self.pipeline.is_active(node_id)
+                        else "Disabled by pipeline dependency"
+                    ),
+                )
         self.pipeline.set_status("seed_edge_curves", NodeStatus.IDLE, "Ready")
         for node_id in ADVANCED_NODE_MODES:
             self.pipeline.set_status(node_id, NodeStatus.IDLE, "Ready")
         self.pipeline.set_status(
             "instance_masks",
-            NodeStatus.IDLE if identification.enabled else NodeStatus.BLOCKED,
-            "Ready" if identification.enabled else "Requires seed proposals",
+            NodeStatus.BLOCKED,
+            "Stored in the unused-node toolbox",
         )
         background = self.pipeline.node("background_likelihood")
-        if identification.enabled and not background.enabled:
+        if not background.enabled:
             self.pipeline.set_status(
                 "background_likelihood", NodeStatus.BYPASSED, "Bypassed"
             )
@@ -1989,6 +3453,13 @@ class MainWindow(QMainWindow):
         self.pipeline.set_status("classification", NodeStatus.PLANNED, "Planned")
         self.pipeline.set_status("aggregation", NodeStatus.PLANNED, "Planned")
         self.pipeline.set_status("output", NodeStatus.PLANNED, "Planned")
+        for node in self.pipeline.nodes.values():
+            if not node.enabled:
+                self.pipeline.set_status(
+                    node.identifier,
+                    NodeStatus.BYPASSED,
+                    "Disabled by pipeline dependency",
+                )
         self.pipeline_canvas.refresh()
         self.pipeline_inspector.refresh_status()
 
@@ -2002,12 +3473,17 @@ class MainWindow(QMainWindow):
             "scale_calibration": "Resolving ruler tick spacing",
             "layout_detection": "Detecting both corrected Petri-dish glass edges",
             "seed_scale_estimation": "Measuring isolated reference components",
+            "perimeter_background_reference": "Sampling the buffered outside-dish colour band",
             "foreground_segmentation": "Estimating Lab background and thresholding",
             "distance_candidates": "Finding distance-transform peaks",
-            "circle_candidates": "Running CUDA multiradius ring detection",
+            "circle_candidates": "Fusing edge and local-lighting ring evidence",
             "identification": "Fusing candidate centres",
             "instance_masks": "Separating provisional instances",
             "edge_gradients": "Computing shared Lab/Scharr gradient field",
+            "surface_darkness_gradients": "Searching one-sided lightening and darkening surface slopes",
+            "lightening_gradient_ceiling": "Suppressing strong lightening edges",
+            "darkening_gradient_ceiling": "Suppressing strong darkening edges",
+            "frequency_noise_masks": "Calculating multiscale darkness and colour RMS energy",
             "undirected_edges": "Encoding axial edge tangents",
             "directed_edges": "Resolving edge polarity",
             "edge_ridges": "Thinning float edges and reconstructing hysteresis",
@@ -2015,6 +3491,7 @@ class MainWindow(QMainWindow):
             "seed_edge_curves": "Confirming radii, circles, ellipses, centres, and semantic sides",
             "background_likelihood": "Estimating the likely colour range",
             "refined_background_likelihood": "Evaluating directed texture rays",
+            "foreground_noise_likelihood": "Evaluating foreground texture rays",
             "seed_interior": "Fusing seed-interior evidence on the tensor device",
             "boundary_normals": "Estimating boundary confidence and normals",
             "touching_split": "Scoring necks and distance saddles",
@@ -2022,7 +3499,7 @@ class MainWindow(QMainWindow):
             "proposal_disagreement": "Comparing independent proposal evidence",
             "assignment_confidence": "Scoring provisional pixel ownership",
             "contact_graph": "Resolving touching and overlapping proposals",
-            "illumination_decomposition": "Separating illumination and reflectance",
+            "illumination_decomposition": "Flattening grayscale and classifying local lighting extremes",
             "image_quality": "Mapping focus, exposure, glare, and noise",
             "radial_profile": "Accumulating seed radial profiles",
             "wrinkling": "Detecting seed-scaled ridge texture",
@@ -2038,10 +3515,10 @@ class MainWindow(QMainWindow):
                 "metadata", NodeStatus.COMPLETE, self.species_combo.currentText()
             )
         for node_id in targets & details.keys():
-            if node_id == "background_likelihood" and not self.pipeline.node(
-                node_id
-            ).enabled:
-                self.pipeline.set_status(node_id, NodeStatus.BYPASSED, "Disabled")
+            if not self.pipeline.node(node_id).enabled:
+                self.pipeline.set_status(
+                    node_id, NodeStatus.BYPASSED, "Disabled by pipeline dependency"
+                )
             elif (
                 node_id == "refined_background_likelihood"
                 and not self.pipeline.node("background_likelihood").enabled
@@ -2075,6 +3552,42 @@ class MainWindow(QMainWindow):
                     self.overlay_combo.setCurrentIndex(index)
                 finally:
                     self._selecting_overlay_from_node = False
+        self._sync_inspector_overlay_options()
+
+    @Slot(str)
+    def _pipeline_unused_node_restored(self, node_id: str) -> None:
+        """Expose a toolbox node's viewer layer after explicit restoration."""
+
+        mode = VIEWER_NODE_MODES.get(node_id)
+        self._rebuild_overlay_combo(mode)
+        overlay_index = self.overlay_combo.findData(mode or "")
+        if overlay_index >= 0:
+            self.overlay_combo.setCurrentIndex(overlay_index)
+        self.pipeline_inspector.set_node(self.pipeline.node(node_id))
+        self._sync_inspector_overlay_options()
+        self.statusBar().showMessage(
+            f"Restored {self.pipeline.node(node_id).title} to the graph; "
+            "it remains disabled until explicitly enabled."
+        )
+
+    @Slot(str)
+    def _pipeline_unused_node_shelved(self, node_id: str) -> None:
+        """Remove an optional node's viewer product and stale cached result."""
+
+        self._rebuild_overlay_combo("raw_image")
+        for image_key in set(self._analysis_caches) | set(self._analyses):
+            self._cache_dirty_nodes.setdefault(image_key, set()).add(node_id)
+            self._analyses.pop(image_key, None)
+        fallback = "illumination_decomposition"
+        if self.pipeline.is_active(fallback):
+            self.pipeline_canvas.select_node(fallback)
+            self.pipeline_inspector.set_node(self.pipeline.node(fallback))
+        current_key = self._current_image_key()
+        if current_key is not None and current_key in self._analysis_caches:
+            self._analyze_current_image(dirty_nodes={node_id})
+        self.statusBar().showMessage(
+            f"Moved {self.pipeline.node(node_id).title} to Unused nodes."
+        )
 
     @Slot(str, str, object)
     def _pipeline_parameter_changed(self, node_id: str, key: str, value) -> None:
@@ -2107,6 +3620,33 @@ class MainWindow(QMainWindow):
             f"Changed {self.pipeline.node(node_id).title}; recomputing graph dependents."
         )
 
+    @Slot(str)
+    def _pipeline_parameters_reset(self, node_id: str) -> None:
+        affected = self.pipeline.reset_parameters(node_id)
+        self.pipeline_inspector.set_node(self.pipeline.node(node_id))
+        if not affected:
+            self.statusBar().showMessage(
+                f"{self.pipeline.node(node_id).title} already uses its defaults."
+            )
+            return
+        affected_set = set(affected)
+        if "measurements" in affected_set:
+            self.pipeline.set_status(
+                "measurements", NodeStatus.BLOCKED, "Requires reviewed masks"
+            )
+        for image_key in set(self._analysis_caches) | set(self._analyses):
+            self._cache_dirty_nodes.setdefault(image_key, set()).update(
+                affected_set
+            )
+            self._analyses.pop(image_key, None)
+        self.pipeline_canvas.refresh(affected)
+        current_key = self._current_image_key()
+        if current_key is not None and current_key in self._analysis_caches:
+            self._analyze_current_image(dirty_nodes=affected_set)
+        self.statusBar().showMessage(
+            f"Reset {self.pipeline.node(node_id).title} to defaults; recomputing dependents."
+        )
+
     def _validate_settings_override(
         self, node_id: str, key: str, value: object
     ) -> None:
@@ -2114,13 +3654,20 @@ class MainWindow(QMainWindow):
             "seed_scale_estimation",
             "foreground_segmentation",
             "distance_candidates",
-            "circle_candidates",
             "identification",
         }
+        if self.pipeline.is_active("circle_candidates"):
+            baseline_nodes.add("circle_candidates")
         layer_nodes = {
+            "perimeter_background_reference",
             "background_likelihood",
             "refined_background_likelihood",
+            "foreground_noise_likelihood",
             "edge_gradients",
+            "surface_darkness_gradients",
+            "lightening_gradient_ceiling",
+            "darkening_gradient_ceiling",
+            "frequency_noise_masks",
             "edge_ridges",
             "edge_traces",
             "instance_masks",
@@ -2152,7 +3699,12 @@ class MainWindow(QMainWindow):
 
     @Slot(str, bool)
     def _pipeline_enabled_changed(self, node_id: str, enabled: bool) -> None:
-        affected = self.pipeline.set_enabled(node_id, enabled)
+        try:
+            affected = self.pipeline.set_enabled(node_id, enabled)
+        except ValueError as error:
+            QMessageBox.warning(self, "Cannot enable pipeline node", str(error))
+            self.pipeline_inspector.set_node(self.pipeline.node(node_id))
+            return
         if not affected:
             return
         affected_set = set(affected)
@@ -2161,40 +3713,7 @@ class MainWindow(QMainWindow):
                 affected_set
             )
             self._analyses.pop(image_key, None)
-        if node_id == "identification" and not enabled:
-            self.pipeline.set_status(
-                "instance_masks", NodeStatus.BLOCKED, "Requires seed identification"
-            )
-            self.pipeline.set_status(
-                "seed_edge_curves", NodeStatus.IDLE, "Ready from seed scale and edges"
-            )
-            for overlay_node_id in ("undirected_edges", "directed_edges"):
-                self.pipeline.set_status(
-                    overlay_node_id,
-                    NodeStatus.IDLE,
-                    "Ready from corrected image",
-                )
-            if self.pipeline.node("background_likelihood").enabled:
-                self.pipeline.set_status(
-                    "background_likelihood",
-                    NodeStatus.IDLE,
-                    "Ready from corrected image",
-                )
-                self.pipeline.set_status(
-                    "refined_background_likelihood",
-                    NodeStatus.IDLE,
-                    "Ready from corrected image",
-                )
-            else:
-                self.pipeline.set_status(
-                    "background_likelihood", NodeStatus.BYPASSED, "Bypassed"
-                )
-                self.pipeline.set_status(
-                    "refined_background_likelihood",
-                    NodeStatus.BLOCKED,
-                    "Background colour analysis disabled",
-                )
-        elif node_id == "background_likelihood":
+        if node_id == "background_likelihood":
             self._stop_background_point_editing()
             if enabled:
                 self.pipeline.set_status(
@@ -2212,8 +3731,12 @@ class MainWindow(QMainWindow):
                     NodeStatus.BLOCKED,
                     "Background colour analysis disabled",
                 )
+        for affected_id in affected:
+            if not self.pipeline.node(affected_id).enabled:
                 self.pipeline.set_status(
-                    "instance_masks", NodeStatus.IDLE, "Ready without background map"
+                    affected_id,
+                    NodeStatus.BYPASSED,
+                    "Disabled by pipeline dependency",
                 )
         self.pipeline_canvas.refresh(affected)
         self.pipeline_inspector.set_node(self.pipeline.node(node_id))
@@ -2221,7 +3744,6 @@ class MainWindow(QMainWindow):
         if (
             current_key is not None
             and current_key in self._analysis_caches
-            and self.pipeline.node("identification").enabled
         ):
             self._analyze_current_image(dirty_nodes=affected_set)
         self._update_analysis_availability()
@@ -2241,7 +3763,6 @@ class MainWindow(QMainWindow):
             running = str(path.resolve()).casefold() in self._active_tasks
         available = (
             path is not None
-            and self.pipeline.node("identification").enabled
             and not running
         )
         self.analyze_button.setEnabled(available)
@@ -2275,8 +3796,8 @@ class MainWindow(QMainWindow):
 
         QMessageBox.information(
             self,
-            "Seed Vision runtime",
-            f"Seed Vision {__version__}\n"
+            "Seed Fiddle runtime",
+            f"Seed Fiddle {__version__}\n"
             f"Application folder: {self._root}\n\n"
             "Run seed_vision.py --diagnostics for package and GPU details.",
         )

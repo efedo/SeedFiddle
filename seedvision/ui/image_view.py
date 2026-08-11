@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import cv2
 import numpy as np
 from PySide6.QtCore import QLineF, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (
@@ -22,9 +23,29 @@ from PySide6.QtGui import (
     QTransform,
     QWheelEvent,
 )
-from PySide6.QtWidgets import QGraphicsScene, QGraphicsTextItem, QGraphicsView
+from PySide6.QtWidgets import (
+    QFrame,
+    QGraphicsScene,
+    QGraphicsTextItem,
+    QGraphicsView,
+    QHBoxLayout,
+    QLabel,
+    QToolButton,
+)
 
+from seedvision.ui.canvas_controls import style_canvas_control_bar
 from seedvision.visualization import ADVANCED_OVERLAY_LABELS
+from seedvision.annotation import (
+    EdgeTraceOptions,
+    ShapeSnapOptions,
+    SmartFillOptions,
+    SmartFillRegion,
+    smart_fill_instance,
+    smart_fill_region,
+    snap_edge_point,
+    snap_shape_polygon,
+    trace_edge_path,
+)
 
 
 SUPPORTED_SUFFIXES = {".bmp", ".jpeg", ".jpg", ".png", ".tif", ".tiff"}
@@ -35,6 +56,7 @@ OVERLAY_MODES = {
     "colour_reference",
     "ruler_detection",
     "layout_detection",
+    "perimeter_background_reference",
     "seed_scale_estimation",
     "foreground_feature",
     "foreground_mask",
@@ -46,7 +68,22 @@ OVERLAY_MODES = {
     "instance_masks",
     "background_likelihood",
     "refined_background_likelihood",
+    "foreground_noise_likelihood",
     "edge_gradients",
+    "surface_lightening_gradient",
+    "surface_lightening_magnitude",
+    "surface_darkening_gradient",
+    "surface_darkening_magnitude",
+    "weak_lightening_gradient",
+    "weak_lightening_magnitude",
+    "weak_darkening_gradient",
+    "weak_darkening_magnitude",
+    "darkness_noise_fine",
+    "darkness_noise_medium",
+    "darkness_noise_coarse",
+    "colour_noise_fine",
+    "colour_noise_medium",
+    "colour_noise_coarse",
     "undirected_edges",
     "directed_edges",
     "edge_ridges",
@@ -73,6 +110,8 @@ class ImageView(QGraphicsView):
     image_dropped = Signal(str)
     reference_paint_finished = Signal()
     reference_mask_edited = Signal(str, object)
+    instance_annotations_edited = Signal(object)
+    instance_tool_status = Signal(str)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -90,6 +129,34 @@ class ImageView(QGraphicsView):
         self._fit_pending = False
         self._background_reference_mask: np.ndarray | None = None
         self._foreground_reference_mask: np.ndarray | None = None
+        self._background_exclusion_mask: np.ndarray | None = None
+        self._foreground_exclusion_mask: np.ndarray | None = None
+        self._reference_annotations_visible = True
+        self._instance_annotations: np.ndarray | None = None
+        self._active_instance_id = 1
+        self._instance_annotation_tool = "brush"
+        self._edge_trace_options = EdgeTraceOptions()
+        self._shape_snap_options = ShapeSnapOptions()
+        self._smart_fill_options = SmartFillOptions()
+        self._instance_tool_points: list[QPointF] = []
+        self._annotation_evidence_cache: dict[str, np.ndarray] = {}
+        self._instance_trace_anchor: QPointF | None = None
+        self._instance_preview_geometry: np.ndarray | None = None
+        self._instance_shape_reference_geometry: np.ndarray | None = None
+        self._instance_preview_region: SmartFillRegion | None = None
+        self._instance_preview_endpoint: QPointF | None = None
+        self._instance_preview_point: QPointF | None = None
+        self._pending_instance_preview_point: QPointF | None = None
+        self._instance_preview_items = []
+        self._instance_annotation_overlay_item = None
+        self._instance_live_stroke_path: QPainterPath | None = None
+        self._instance_live_stroke_item = None
+        self._instance_preview_timer = QTimer(self)
+        self._instance_preview_timer.setSingleShot(True)
+        self._instance_preview_timer.setInterval(35)
+        self._instance_preview_timer.timeout.connect(
+            self._update_pending_instance_preview
+        )
         self._reference_point_mode: str | None = None
         self._reference_brush_radius = 12.0
         self._reference_erase_enabled = False
@@ -98,6 +165,7 @@ class ImageView(QGraphicsView):
         self._last_reference_paint_point: QPointF | None = None
         self._last_reference_hover_point: QPointF | None = None
         self._reference_brush_outline_item = None
+        self._context_panel: QFrame | None = None
 
         self.setAcceptDrops(True)
         self.setMouseTracking(True)
@@ -110,7 +178,70 @@ class ImageView(QGraphicsView):
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
+        self.setViewportMargins(0, 38, 0, 0)
+        self._build_zoom_controls()
         self._show_placeholder()
+
+    def _build_zoom_controls(self) -> None:
+        self.zoom_controls = QFrame(self)
+        controls = QHBoxLayout(self.zoom_controls)
+        controls.setContentsMargins(8, 4, 8, 4)
+        controls.setSpacing(5)
+        heading = QLabel("Image zoom", self.zoom_controls)
+        self.zoom_out_button = QToolButton(self.zoom_controls)
+        self.zoom_out_button.setText("−")
+        self.zoom_out_button.setToolTip("Zoom out")
+        self.zoom_out_button.clicked.connect(self.zoom_out)
+        self.zoom_label = QLabel("100%", self.zoom_controls)
+        self.zoom_label.setMinimumWidth(48)
+        self.zoom_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.zoom_in_button = QToolButton(self.zoom_controls)
+        self.zoom_in_button.setText("+")
+        self.zoom_in_button.setToolTip("Zoom in")
+        self.zoom_in_button.clicked.connect(self.zoom_in)
+        self.fit_button = QToolButton(self.zoom_controls)
+        self.fit_button.setText("Fit")
+        self.fit_button.clicked.connect(self.fit_image)
+        self.actual_size_button = QToolButton(self.zoom_controls)
+        self.actual_size_button.setText("100%")
+        self.actual_size_button.setToolTip("Show one image pixel per screen pixel")
+        self.actual_size_button.clicked.connect(self.actual_size)
+        controls.addWidget(heading)
+        controls.addStretch(1)
+        controls.addWidget(self.zoom_out_button)
+        controls.addWidget(self.zoom_label)
+        controls.addWidget(self.zoom_in_button)
+        controls.addWidget(self.fit_button)
+        controls.addWidget(self.actual_size_button)
+        style_canvas_control_bar(self.zoom_controls, "imageZoomControls")
+        self.zoom_controls.raise_()
+
+    def set_context_panel(self, panel: QFrame) -> None:
+        """Attach a contextual control panel above the image viewport."""
+
+        panel.setParent(self)
+        self._context_panel = panel
+        self._layout_context_panel()
+        self.zoom_controls.raise_()
+
+    def set_context_panel_visible(self, visible: bool) -> None:
+        if self._context_panel is None:
+            return
+        self._context_panel.setVisible(visible)
+        if visible:
+            self._layout_context_panel()
+            self._context_panel.raise_()
+            self.zoom_controls.raise_()
+
+    def _layout_context_panel(self) -> None:
+        if self._context_panel is None:
+            return
+        hint = self._context_panel.sizeHint()
+        available_width = max(240, self.width() - 24)
+        available_height = max(140, self.height() - 58)
+        width = min(max(360, hint.width()), available_width)
+        height = min(hint.height(), available_height)
+        self._context_panel.setGeometry(12, 46, width, height)
 
     @property
     def image_path(self) -> Path | None:
@@ -129,6 +260,10 @@ class ImageView(QGraphicsView):
         self._overlay_items = []
         self._analysis_result = None
         self._reference_brush_outline_item = None
+        self._instance_annotation_overlay_item = None
+        self._instance_preview_items = []
+        self._instance_live_stroke_path = None
+        self._instance_live_stroke_item = None
         message = QGraphicsTextItem(
             "Open or drop a calibrated laboratory image\n"
             "Supported formats: PNG, JPEG, TIFF, BMP"
@@ -154,7 +289,20 @@ class ImageView(QGraphicsView):
         self._analysis_result = None
         self._background_reference_mask = None
         self._foreground_reference_mask = None
+        self._background_exclusion_mask = None
+        self._foreground_exclusion_mask = None
+        self._instance_annotations = None
+        self._instance_tool_points.clear()
+        self._annotation_evidence_cache.clear()
         self._reference_brush_outline_item = None
+        self._instance_annotation_overlay_item = None
+        self._instance_preview_items = []
+        self._instance_live_stroke_path = None
+        self._instance_live_stroke_item = None
+        self._instance_trace_anchor = None
+        self._instance_preview_geometry = None
+        self._instance_shape_reference_geometry = None
+        self._instance_preview_region = None
         self._image_item = self._scene.addPixmap(pixmap)
         self._image_item.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
         self._scene.setSceneRect(self._image_item.boundingRect())
@@ -181,17 +329,20 @@ class ImageView(QGraphicsView):
 
         self._clear_overlay_items()
         self._analysis_result = None
+        self._annotation_evidence_cache.clear()
         self._restore_source_image()
 
     def _clear_overlay_items(self) -> None:
         for item in self._overlay_items:
             self._scene.removeItem(item)
         self._overlay_items.clear()
+        self._instance_annotation_overlay_item = None
 
     def show_analysis(self, result) -> None:
         """Store an analysis result and render the selected overlay layer."""
 
         self._analysis_result = result
+        self._annotation_evidence_cache.clear()
         calibration = getattr(result, "calibration", None)
         if calibration is not None:
             self._set_bgr_base_image(calibration.corrected_bgr)
@@ -204,6 +355,8 @@ class ImageView(QGraphicsView):
         self,
         background_mask: np.ndarray | None,
         foreground_mask: np.ndarray | None,
+        background_exclusion_mask: np.ndarray | None = None,
+        foreground_exclusion_mask: np.ndarray | None = None,
     ) -> None:
         """Display editable full-resolution binary masks in image coordinates."""
 
@@ -213,15 +366,29 @@ class ImageView(QGraphicsView):
         self._foreground_reference_mask = self._normalized_reference_mask(
             foreground_mask
         )
+        self._background_exclusion_mask = self._normalized_reference_mask(
+            background_exclusion_mask
+        )
+        self._foreground_exclusion_mask = self._normalized_reference_mask(
+            foreground_exclusion_mask
+        )
         self._render_analysis()
 
     def reference_mask(self, class_name: str) -> np.ndarray | None:
-        mask = (
-            self._background_reference_mask
-            if class_name == "background"
-            else self._foreground_reference_mask
-        )
+        masks = {
+            "background": self._background_reference_mask,
+            "foreground": self._foreground_reference_mask,
+            "background_exclusion": self._background_exclusion_mask,
+            "foreground_exclusion": self._foreground_exclusion_mask,
+        }
+        if class_name not in masks:
+            raise ValueError(f"Unknown reference-mask class {class_name!r}.")
+        mask = masks[class_name]
         return None if mask is None else mask.copy()
+
+    def set_reference_annotations_visible(self, visible: bool) -> None:
+        self._reference_annotations_visible = bool(visible)
+        self._render_analysis()
 
     def _normalized_reference_mask(
         self, mask: np.ndarray | None
@@ -242,6 +409,81 @@ class ImageView(QGraphicsView):
     def set_foreground_point_editing(self, enabled: bool) -> None:
         self._set_reference_point_mode("foreground" if enabled else None)
 
+    def set_background_exclusion_editing(self, enabled: bool) -> None:
+        self._set_reference_point_mode("background_exclusion" if enabled else None)
+
+    def set_foreground_exclusion_editing(self, enabled: bool) -> None:
+        self._set_reference_point_mode("foreground_exclusion" if enabled else None)
+
+    def set_instance_annotations(self, annotations: np.ndarray | None) -> None:
+        """Display an editable full-resolution seed-identity label map."""
+
+        if annotations is None:
+            self._instance_annotations = None
+        else:
+            values = np.asarray(annotations)
+            if values.ndim != 2:
+                raise ValueError("Instance annotations must be a two-dimensional label map.")
+            if np.any(values < 0) or np.any(values > np.iinfo(np.uint16).max):
+                raise ValueError("Instance annotation IDs must fit in an unsigned 16-bit label map.")
+            image_size = self.image_size
+            if image_size is not None:
+                width, height = image_size
+                if values.shape != (height, width):
+                    raise ValueError(
+                        f"Instance annotation shape {values.shape} does not match "
+                        f"image {(height, width)}."
+                    )
+            self._instance_annotations = values.astype(np.uint16, copy=True)
+        self._instance_trace_anchor = None
+        self._clear_instance_preview()
+        self._clear_instance_live_stroke()
+        self._render_analysis()
+        self._schedule_instance_preview(self._last_reference_hover_point)
+
+    def instance_annotations(self) -> np.ndarray | None:
+        labels = self._instance_annotations
+        return None if labels is None else labels.copy()
+
+    def set_instance_annotation_editing(self, enabled: bool) -> None:
+        self._set_reference_point_mode("instance" if enabled else None)
+
+    def set_instance_annotation_tool(self, tool: str) -> None:
+        """Choose the brush, eraser, or image-aware instance tool."""
+
+        if tool not in {"brush", "edge_trace", "shape_snap", "smart_fill", "eraser"}:
+            raise ValueError(f"Unknown instance annotation tool {tool!r}.")
+        self._instance_annotation_tool = tool
+        self._instance_tool_points.clear()
+        self._instance_trace_anchor = None
+        self._clear_instance_preview()
+        self._clear_instance_live_stroke()
+        self.set_reference_erase_mode(tool == "eraser")
+        self._schedule_instance_preview(self._last_reference_hover_point)
+
+    def set_edge_trace_options(self, options: EdgeTraceOptions) -> None:
+        self._edge_trace_options = options
+        self._schedule_instance_preview(self._last_reference_hover_point)
+
+    def set_shape_snap_options(self, options: ShapeSnapOptions) -> None:
+        self._shape_snap_options = options
+        self._schedule_instance_preview(self._last_reference_hover_point)
+
+    def set_smart_fill_options(self, options: SmartFillOptions) -> None:
+        self._smart_fill_options = options
+        self._schedule_instance_preview(self._last_reference_hover_point)
+
+    def set_active_instance_id(self, identifier: int) -> None:
+        identifier = int(identifier)
+        if not 1 <= identifier <= np.iinfo(np.uint16).max:
+            raise ValueError("Seed instance IDs must be between 1 and 65,535.")
+        self._active_instance_id = identifier
+        self._instance_trace_anchor = None
+        self._clear_instance_preview()
+        self._clear_instance_live_stroke()
+        if self._last_reference_hover_point is not None:
+            self._update_reference_brush_outline(self._last_reference_hover_point)
+
     def set_reference_brush_radius(self, radius: float) -> None:
         """Set the corrected-image radius of the visibly painted sample area."""
 
@@ -250,7 +492,10 @@ class ImageView(QGraphicsView):
             self._update_reference_brush_outline(
                 self._last_reference_hover_point
             )
-        self._render_analysis()
+        # Changing a seed-annotation brush must not rebuild every analysis
+        # overlay.  The cursor and the next committed stroke are sufficient.
+        if self._reference_point_mode != "instance":
+            self._render_analysis()
 
     def set_reference_erase_mode(self, enabled: bool) -> None:
         """Choose whether left-button reference strokes paint or erase."""
@@ -272,6 +517,9 @@ class ImageView(QGraphicsView):
             self._last_reference_paint_point = None
             self._last_reference_hover_point = None
             self._hide_reference_brush_outline()
+            self._instance_trace_anchor = None
+            self._clear_instance_preview()
+            self._clear_instance_live_stroke()
             self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
             self.viewport().unsetCursor()
 
@@ -284,6 +532,10 @@ class ImageView(QGraphicsView):
             self._hide_reference_brush_outline()
             return
         self._last_reference_hover_point = QPointF(scene_point)
+        if self._instance_assisted_tool_active():
+            self._hide_reference_brush_outline()
+            self._schedule_instance_preview(scene_point)
+            return
         radius = self._reference_brush_radius
         if self._reference_brush_outline_item is None:
             self._reference_brush_outline_item = self._scene.addEllipse(
@@ -312,6 +564,12 @@ class ImageView(QGraphicsView):
             else QColor("#36f1b1")
             if self._reference_point_mode == "background"
             else QColor("#ff765f")
+            if self._reference_point_mode == "foreground"
+            else QColor("#be5cff")
+            if self._reference_point_mode == "background_exclusion"
+            else QColor("#ffce48")
+            if self._reference_point_mode == "foreground_exclusion"
+            else self.instance_colour(self._active_instance_id)
         )
         pen = QPen(colour, 2.0)
         pen.setCosmetic(True)
@@ -373,6 +631,11 @@ class ImageView(QGraphicsView):
             return
         if self._overlay_mode == "layout_detection":
             self._render_dish_edges(result, width=4, include_inner=True)
+            self._render_context_annotations(result)
+            return
+        if self._overlay_mode == "perimeter_background_reference":
+            self._render_dish_edges(result, width=3, include_inner=False)
+            self._render_background_sampling_band(result)
             self._render_context_annotations(result)
             return
         if self._overlay_mode == "seed_scale_estimation":
@@ -444,8 +707,51 @@ class ImageView(QGraphicsView):
             rgba = layers.background_rgba()
         elif self._overlay_mode == "refined_background_likelihood":
             rgba = layers.refined_background_rgba()
+        elif self._overlay_mode == "foreground_noise_likelihood":
+            rgba = layers.foreground_noise_rgba()
         elif self._overlay_mode == "edge_gradients":
             rgba = layers.edge_magnitude_rgba()
+        elif self._overlay_mode in {
+            "surface_lightening_gradient",
+            "surface_darkening_gradient",
+            "weak_lightening_gradient",
+            "weak_darkening_gradient",
+        }:
+            filtered = self._overlay_mode.startswith("weak_")
+            polarity = (
+                "lightening"
+                if "lightening" in self._overlay_mode
+                else "darkening"
+            )
+            rgba = layers.surface_gradient_rgba(
+                polarity, filtered=filtered
+            )
+        elif self._overlay_mode in {
+            "surface_lightening_magnitude",
+            "surface_darkening_magnitude",
+            "weak_lightening_magnitude",
+            "weak_darkening_magnitude",
+        }:
+            filtered = self._overlay_mode.startswith("weak_")
+            polarity = (
+                "lightening"
+                if "lightening" in self._overlay_mode
+                else "darkening"
+            )
+            rgba = layers.surface_gradient_magnitude_rgba(
+                polarity, filtered=filtered
+            )
+        elif self._overlay_mode in {
+            "darkness_noise_fine",
+            "darkness_noise_medium",
+            "darkness_noise_coarse",
+            "colour_noise_fine",
+            "colour_noise_medium",
+            "colour_noise_coarse",
+        }:
+            channel, _, band = self._overlay_mode.partition("_noise_")
+            band_index = {"fine": 0, "medium": 1, "coarse": 2}[band]
+            rgba = layers.frequency_noise_rgba(channel, band_index)
         elif self._overlay_mode == "edge_ridges":
             rgba = layers.edge_ridges_rgba()
         elif self._overlay_mode == "edge_traces":
@@ -696,7 +1002,10 @@ class ImageView(QGraphicsView):
         item.setOpacity(self._overlay_opacity)
         item.setZValue(13)
         item.setToolTip(
-            f"Initial background sampling band: {band.sample_count:,} pixels; "
+            "Initial background sampling band: "
+            f"{band.buffer_cm:.2f} cm buffer, "
+            f"{band.thickness_cm:.2f} cm thickness, "
+            f"{band.sample_count:,} pixels; "
             + ("outside upper rim" if band.outside_vessel else "inside-rim fallback")
         )
         self._overlay_items.append(item)
@@ -729,8 +1038,11 @@ class ImageView(QGraphicsView):
     ) -> None:
         if include_scale:
             self._render_scale_bar(result)
-        self._render_background_reference_points()
-        self._render_foreground_reference_points()
+        if self._reference_annotations_visible:
+            self._render_background_reference_points()
+            self._render_foreground_reference_points()
+            self._render_exclusion_masks()
+        self._render_instance_annotations()
 
     def _background_marker_radius(self) -> float:
         return self._reference_brush_radius
@@ -748,6 +1060,118 @@ class ImageView(QGraphicsView):
             (255, 118, 95),
             31,
         )
+
+    def _render_exclusion_masks(self) -> None:
+        self._render_reference_mask(
+            self._background_exclusion_mask,
+            (190, 92, 255),
+            32,
+        )
+        self._render_reference_mask(
+            self._foreground_exclusion_mask,
+            (255, 206, 72),
+            33,
+        )
+
+    @staticmethod
+    def instance_colour(identifier: int) -> QColor:
+        """Return a stable, high-contrast colour for a positive seed ID."""
+
+        hue = (max(1, int(identifier)) * 0.61803398875) % 1.0
+        return QColor.fromHsvF(hue, 0.78, 1.0)
+
+    def _render_instance_annotations(self) -> None:
+        if self._instance_annotation_overlay_item is not None:
+            item = self._instance_annotation_overlay_item
+            if item in self._overlay_items:
+                self._overlay_items.remove(item)
+            if item.scene() is self._scene:
+                self._scene.removeItem(item)
+            self._instance_annotation_overlay_item = None
+        labels = self._instance_annotations
+        if labels is None or not np.any(labels):
+            return
+        source_height, source_width = labels.shape
+        maximum_display_dimension = 2048
+        if max(source_height, source_width) > maximum_display_dimension:
+            factor = maximum_display_dimension / max(source_height, source_width)
+            display_width = max(1, round(source_width * factor))
+            display_height = max(1, round(source_height * factor))
+            columns = np.minimum(
+                (np.arange(display_width) * source_width / display_width).astype(int),
+                source_width - 1,
+            )
+            rows = np.minimum(
+                (np.arange(display_height) * source_height / display_height).astype(int),
+                source_height - 1,
+            )
+            display_labels = labels[np.ix_(rows, columns)]
+        else:
+            display_labels = labels
+        rgba = np.zeros((*display_labels.shape, 4), np.uint8)
+        for identifier in np.unique(display_labels):
+            if identifier == 0:
+                continue
+            colour = self.instance_colour(int(identifier))
+            selected = display_labels == identifier
+            rgba[selected, :3] = (colour.red(), colour.green(), colour.blue())
+            rgba[selected, 3] = 156
+        height, width = display_labels.shape
+        image = QImage(
+            rgba.data,
+            width,
+            height,
+            int(rgba.strides[0]),
+            QImage.Format.Format_RGBA8888,
+        ).copy()
+        item = self._scene.addPixmap(QPixmap.fromImage(image))
+        item.setTransformationMode(Qt.TransformationMode.FastTransformation)
+        item.setTransform(
+            QTransform.fromScale(source_width / width, source_height / height)
+        )
+        item.setZValue(32)
+        self._overlay_items.append(item)
+        self._instance_annotation_overlay_item = item
+
+    def _refresh_instance_annotation_overlay(self) -> None:
+        self._render_instance_annotations()
+        self._raise_instance_preview_items()
+
+    def _start_instance_live_stroke(
+        self, scene_point: QPointF, *, erase: bool
+    ) -> None:
+        self._clear_instance_live_stroke()
+        colour = (
+            QColor(255, 70, 85, 180)
+            if erase
+            else self.instance_colour(self._active_instance_id)
+        )
+        if not erase:
+            colour.setAlpha(170)
+        pen = QPen(colour, max(2.0, self._reference_brush_radius * 2.0))
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        path = QPainterPath(scene_point)
+        path.lineTo(scene_point.x() + 0.01, scene_point.y())
+        self._instance_live_stroke_path = path
+        self._instance_live_stroke_item = self._scene.addPath(path, pen)
+        self._instance_live_stroke_item.setZValue(1002.0)
+
+    def _extend_instance_live_stroke(self, scene_point: QPointF) -> None:
+        if (
+            self._instance_live_stroke_path is None
+            or self._instance_live_stroke_item is None
+        ):
+            return
+        self._instance_live_stroke_path.lineTo(scene_point)
+        self._instance_live_stroke_item.setPath(self._instance_live_stroke_path)
+
+    def _clear_instance_live_stroke(self) -> None:
+        item = self._instance_live_stroke_item
+        if item is not None and item.scene() is self._scene:
+            self._scene.removeItem(item)
+        self._instance_live_stroke_item = None
+        self._instance_live_stroke_path = None
 
     def _render_reference_mask(
         self,
@@ -954,25 +1378,521 @@ class ImageView(QGraphicsView):
             Qt.AspectRatioMode.KeepAspectRatio,
         )
         self._zoom_steps = 0
+        self._update_zoom_indicator()
 
     def actual_size(self) -> None:
         if self._image_item is None:
             return
         self.resetTransform()
         self._zoom_steps = 0
+        self._update_zoom_indicator()
+
+    def zoom_in(self) -> None:
+        self._zoom_by(1.2)
+
+    def zoom_out(self) -> None:
+        self._zoom_by(1.0 / 1.2)
+
+    def _zoom_by(self, factor: float) -> None:
+        if self._image_item is None:
+            return
+        current = float(self.transform().m11())
+        target = current * float(factor)
+        if not 0.03 <= target <= 32.0:
+            return
+        self.scale(float(factor), float(factor))
+        self._update_zoom_indicator()
+
+    def _update_zoom_indicator(self) -> None:
+        self.zoom_label.setText(f"{self.transform().m11() * 100.0:.0f}%")
 
     def wheelEvent(self, event: QWheelEvent) -> None:  # noqa: N802 - Qt override
         if self._image_item is None:
             super().wheelEvent(event)
             return
         direction = 1 if event.angleDelta().y() > 0 else -1
-        if direction < 0 and self._zoom_steps <= -8:
-            return
-        if direction > 0 and self._zoom_steps >= 30:
-            return
-        factor = 1.2 if direction > 0 else 1 / 1.2
-        self.scale(factor, factor)
+        self._zoom_by(1.2 if direction > 0 else 1 / 1.2)
         self._zoom_steps += direction
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt override
+        super().resizeEvent(event)
+        self.zoom_controls.setGeometry(0, 0, max(120, self.width()), 38)
+        self._layout_context_panel()
+        if self._context_panel is not None:
+            self._context_panel.raise_()
+        self.zoom_controls.raise_()
+
+    def _instance_assisted_tool_active(self) -> bool:
+        return (
+            self._reference_point_mode == "instance"
+            and not self._reference_erase_enabled
+            and self._instance_annotation_tool
+            in {"edge_trace", "shape_snap", "smart_fill"}
+        )
+
+    def _remove_instance_preview_items(self) -> None:
+        for item in self._instance_preview_items:
+            if item.scene() is self._scene:
+                self._scene.removeItem(item)
+        self._instance_preview_items.clear()
+
+    def _clear_instance_preview(self) -> None:
+        self._instance_preview_timer.stop()
+        self._pending_instance_preview_point = None
+        self._instance_preview_geometry = None
+        self._instance_shape_reference_geometry = None
+        self._instance_preview_region = None
+        self._instance_preview_endpoint = None
+        self._instance_preview_point = None
+        self._remove_instance_preview_items()
+
+    def _raise_instance_preview_items(self) -> None:
+        for item in self._instance_preview_items:
+            item.setZValue(1001.0)
+
+    def _schedule_instance_preview(self, scene_point: QPointF | None) -> None:
+        if (
+            scene_point is None
+            or not self._instance_assisted_tool_active()
+            or self._image_item is None
+            or not self._image_item.boundingRect().contains(scene_point)
+        ):
+            return
+        self._pending_instance_preview_point = QPointF(scene_point)
+        if not self._instance_preview_timer.isActive():
+            self._instance_preview_timer.start()
+
+    def _update_pending_instance_preview(self) -> None:
+        point = self._pending_instance_preview_point
+        self._pending_instance_preview_point = None
+        if point is not None:
+            self._update_instance_assisted_preview(point)
+
+    @staticmethod
+    def _preview_path(geometry: np.ndarray, *, closed: bool) -> QPainterPath:
+        points = np.asarray(geometry, dtype=np.float32).reshape(-1, 2)
+        path = QPainterPath()
+        if not len(points):
+            return path
+        path.moveTo(float(points[0, 0]), float(points[0, 1]))
+        for x, y in points[1:]:
+            path.lineTo(float(x), float(y))
+        if closed:
+            path.closeSubpath()
+        return path
+
+    def _shape_reference_polygon(self, centre: QPointF, radius: float) -> np.ndarray:
+        options = self._shape_snap_options
+        angles = np.linspace(
+            0.0,
+            2.0 * np.pi,
+            options.angular_samples,
+            endpoint=False,
+            dtype=np.float32,
+        )
+        radius_x = max(3.0, float(radius))
+        radius_y = radius_x if options.shape == "circle" else radius_x * 0.72
+        rotation = np.deg2rad(options.rotation_degrees)
+        cosine, sine = np.cos(angles), np.sin(angles)
+        local_x, local_y = radius_x * cosine, radius_y * sine
+        cos_r, sin_r = float(np.cos(rotation)), float(np.sin(rotation))
+        return np.column_stack(
+            (
+                centre.x() + local_x * cos_r - local_y * sin_r,
+                centre.y() + local_x * sin_r + local_y * cos_r,
+            )
+        ).astype(np.float32)
+
+    def _render_instance_assisted_preview(self) -> None:
+        self._remove_instance_preview_items()
+        colour = self.instance_colour(self._active_instance_id)
+        pen = QPen(colour, 3.0)
+        pen.setCosmetic(True)
+        pen.setStyle(Qt.PenStyle.DashLine)
+        if self._instance_annotation_tool == "smart_fill":
+            region = self._instance_preview_region
+            if region is not None and region.added_count:
+                rgba = np.zeros((*region.mask.shape, 4), np.uint8)
+                rgba[region.mask, :3] = (
+                    colour.red(),
+                    colour.green(),
+                    colour.blue(),
+                )
+                rgba[region.mask, 3] = 108
+                height, width = region.mask.shape
+                image = QImage(
+                    rgba.data,
+                    width,
+                    height,
+                    int(rgba.strides[0]),
+                    QImage.Format.Format_RGBA8888,
+                ).copy()
+                item = self._scene.addPixmap(QPixmap.fromImage(image))
+                item.setPos(float(region.x), float(region.y))
+                self._instance_preview_items.append(item)
+        else:
+            geometry = self._instance_preview_geometry
+            if (
+                self._instance_annotation_tool == "shape_snap"
+                and self._instance_shape_reference_geometry is not None
+            ):
+                reference_pen = QPen(QColor("#ffffff"), 1.5)
+                reference_pen.setCosmetic(True)
+                reference_pen.setStyle(Qt.PenStyle.DotLine)
+                reference_item = self._scene.addPath(
+                    self._preview_path(
+                        self._instance_shape_reference_geometry,
+                        closed=True,
+                    ),
+                    reference_pen,
+                    QBrush(Qt.BrushStyle.NoBrush),
+                )
+                self._instance_preview_items.append(reference_item)
+            if geometry is not None and len(geometry) > 1:
+                closed = self._instance_annotation_tool == "shape_snap"
+                fill = QColor(colour)
+                fill.setAlpha(55 if closed else 0)
+                item = self._scene.addPath(
+                    self._preview_path(geometry, closed=closed),
+                    pen,
+                    QBrush(fill) if closed else QBrush(Qt.BrushStyle.NoBrush),
+                )
+                self._instance_preview_items.append(item)
+            endpoint = self._instance_preview_endpoint
+            if endpoint is not None:
+                radius = max(3.0, self._edge_trace_options.search_radius_px * 0.18)
+                marker = self._scene.addEllipse(
+                    endpoint.x() - radius,
+                    endpoint.y() - radius,
+                    radius * 2.0,
+                    radius * 2.0,
+                    pen,
+                    QBrush(QColor(colour.red(), colour.green(), colour.blue(), 70)),
+                )
+                self._instance_preview_items.append(marker)
+        if self._instance_trace_anchor is not None:
+            anchor = self._instance_trace_anchor
+            anchor_pen = QPen(QColor("#ffffff"), 2.0)
+            anchor_pen.setCosmetic(True)
+            marker = self._scene.addEllipse(
+                anchor.x() - 4.0,
+                anchor.y() - 4.0,
+                8.0,
+                8.0,
+                anchor_pen,
+                QBrush(colour),
+            )
+            self._instance_preview_items.append(marker)
+        self._raise_instance_preview_items()
+
+    def _update_instance_assisted_preview(self, scene_point: QPointF) -> None:
+        if not self._instance_assisted_tool_active():
+            self._clear_instance_preview()
+            return
+        try:
+            edge = self._full_annotation_evidence("edge_likelihood")
+            self._instance_preview_point = QPointF(scene_point)
+            self._instance_preview_geometry = None
+            self._instance_shape_reference_geometry = None
+            self._instance_preview_region = None
+            self._instance_preview_endpoint = QPointF(scene_point)
+            if self._instance_annotation_tool == "edge_trace":
+                snapped = snap_edge_point(
+                    (scene_point.x(), scene_point.y()),
+                    edge,
+                    self._edge_trace_options.search_radius_px,
+                )
+                endpoint = QPointF(float(snapped[0]), float(snapped[1]))
+                self._instance_preview_endpoint = endpoint
+                if self._instance_trace_anchor is None:
+                    self._instance_preview_geometry = np.asarray(
+                        ((snapped[0], snapped[1]),), dtype=np.int32
+                    )
+                else:
+                    tangent = self._annotation_tangent(
+                        self._edge_trace_options.tangent_mode
+                    )
+                    self._instance_preview_geometry = trace_edge_path(
+                        (
+                            self._instance_trace_anchor.x(),
+                            self._instance_trace_anchor.y(),
+                        ),
+                        (endpoint.x(), endpoint.y()),
+                        edge,
+                        self._edge_trace_options,
+                        tangent,
+                    )
+            elif self._instance_annotation_tool == "shape_snap":
+                tangent = self._annotation_tangent(
+                    self._shape_snap_options.tangent_mode
+                )
+                fallback = float(
+                    getattr(
+                        self._analysis_result,
+                        "estimated_seed_diameter_px",
+                        60.0,
+                    )
+                ) * 0.5
+                self._instance_shape_reference_geometry = (
+                    self._shape_reference_polygon(scene_point, fallback)
+                )
+                self._instance_preview_geometry = snap_shape_polygon(
+                    (scene_point.x(), scene_point.y()),
+                    (scene_point.x(), scene_point.y()),
+                    edge,
+                    self._shape_snap_options,
+                    tangent,
+                    fallback_radius_px=fallback,
+                )
+                self._instance_preview_endpoint = None
+            else:
+                labels = self._ensure_instance_labels()
+                corrected = np.asarray(self._analysis_result.calibration.corrected_bgr)
+                self._instance_preview_region = smart_fill_region(
+                    labels,
+                    corrected,
+                    edge,
+                    (scene_point.x(), scene_point.y()),
+                    self._active_instance_id,
+                    self._smart_fill_options,
+                )
+                self._instance_preview_endpoint = None
+            self._render_instance_assisted_preview()
+        except (RuntimeError, ValueError) as error:
+            self._clear_instance_preview()
+            self.instance_tool_status.emit(str(error))
+
+    def _preview_matches(self, scene_point: QPointF) -> bool:
+        return (
+            self._instance_preview_point is not None
+            and QLineF(self._instance_preview_point, scene_point).length() <= 0.75
+        )
+
+    def _commit_instance_assisted_preview(self, scene_point: QPointF) -> bool:
+        if not self._preview_matches(scene_point):
+            self._update_instance_assisted_preview(scene_point)
+        if self._instance_annotation_tool == "edge_trace":
+            endpoint = self._instance_preview_endpoint
+            if endpoint is None:
+                return False
+            if self._instance_trace_anchor is None:
+                self._instance_trace_anchor = QPointF(endpoint)
+                self.instance_tool_status.emit(
+                    "Edge-trace anchor set. Move the cursor to preview a snapped "
+                    "segment, then click to apply it."
+                )
+                self._render_instance_assisted_preview()
+                return False
+            geometry = self._instance_preview_geometry
+            if geometry is None or len(geometry) < 2:
+                return False
+            changed = self._paint_instance_geometry(geometry, filled=False)
+            self._instance_trace_anchor = QPointF(endpoint)
+            self.instance_tool_status.emit(
+                f"Edge trace added {changed:,} pixels to seed "
+                f"{self._active_instance_id}; the endpoint is the next anchor."
+            )
+        elif self._instance_annotation_tool == "shape_snap":
+            geometry = self._instance_preview_geometry
+            if geometry is None or len(geometry) < 3:
+                return False
+            changed = self._paint_instance_geometry(geometry, filled=True)
+            self.instance_tool_status.emit(
+                f"Shape snap added {changed:,} pixels to seed "
+                f"{self._active_instance_id}."
+            )
+        else:
+            region = self._instance_preview_region
+            if region is None or not region.added_count:
+                self.instance_tool_status.emit(
+                    "Smart fill found no reachable pixels at this cursor position."
+                )
+                return False
+            labels = self._ensure_instance_labels()
+            height, width = region.mask.shape
+            roi = labels[
+                region.y : region.y + height,
+                region.x : region.x + width,
+            ]
+            writable = region.mask & (
+                (roi == 0) | (roi == self._active_instance_id)
+            )
+            changed = int(
+                np.count_nonzero(writable & (roi != self._active_instance_id))
+            )
+            roi[writable] = np.uint16(self._active_instance_id)
+            self.instance_tool_status.emit(
+                f"Smart fill added {changed:,} locally matched pixels to seed "
+                f"{self._active_instance_id}."
+            )
+        if changed:
+            self._refresh_instance_annotation_overlay()
+            # The main window owns this draft from here. Avoid a second
+            # full-resolution label-map copy on every assisted click.
+            self.instance_annotations_edited.emit(self._instance_annotations)
+            self.reference_paint_finished.emit()
+        self._schedule_instance_preview(scene_point)
+        return changed > 0
+
+    def _instance_uses_assisted_tool(self, button: Qt.MouseButton) -> bool:
+        return button == Qt.MouseButton.LeftButton and self._instance_assisted_tool_active()
+
+    def _full_annotation_evidence(self, attribute: str) -> np.ndarray:
+        """Materialize one compact analysis raster in full-image coordinates."""
+
+        cached = self._annotation_evidence_cache.get(attribute)
+        if cached is not None:
+            return cached
+        result = self._analysis_result
+        image_size = self.image_size
+        if result is None or image_size is None:
+            raise RuntimeError("Run the image analysis before using assisted tools.")
+        source = getattr(result.layers, attribute, None)
+        if source is None:
+            raise RuntimeError(f"The analysis did not produce {attribute.replace('_', ' ')}.")
+        values = np.asarray(source)
+        if values.ndim != 2:
+            values = np.squeeze(values)
+        if values.ndim != 2:
+            raise RuntimeError(f"{attribute.replace('_', ' ').capitalize()} is not a raster.")
+        width, height = image_size
+        if values.shape == (height, width):
+            full = values
+        else:
+            full = np.zeros((height, width), dtype=values.dtype)
+            offset_x = int(getattr(result.layers, "offset_x", result.crop_offset[0]))
+            offset_y = int(getattr(result.layers, "offset_y", result.crop_offset[1]))
+            target_x0, target_y0 = max(0, offset_x), max(0, offset_y)
+            source_x0, source_y0 = max(0, -offset_x), max(0, -offset_y)
+            copy_width = min(values.shape[1] - source_x0, width - target_x0)
+            copy_height = min(values.shape[0] - source_y0, height - target_y0)
+            if copy_width > 0 and copy_height > 0:
+                full[
+                    target_y0 : target_y0 + copy_height,
+                    target_x0 : target_x0 + copy_width,
+                ] = values[
+                    source_y0 : source_y0 + copy_height,
+                    source_x0 : source_x0 + copy_width,
+                ]
+        self._annotation_evidence_cache[attribute] = full
+        return full
+
+    def _annotation_tangent(self, mode: str) -> np.ndarray | None:
+        if mode == "off":
+            return None
+        attribute = (
+            "undirected_edge_hue" if mode == "undirected" else "directed_edge_hue"
+        )
+        return self._full_annotation_evidence(attribute)
+
+    def _ensure_instance_labels(self) -> np.ndarray:
+        image_size = self.image_size
+        if image_size is None:
+            raise RuntimeError("No image is loaded.")
+        width, height = image_size
+        if self._instance_annotations is None or self._instance_annotations.shape != (height, width):
+            self._instance_annotations = np.zeros((height, width), dtype=np.uint16)
+        return self._instance_annotations
+
+    def _paint_instance_geometry(self, geometry: np.ndarray, *, filled: bool) -> int:
+        labels = self._ensure_instance_labels()
+        paint = np.zeros(labels.shape, dtype=np.uint8)
+        points = np.asarray(geometry, dtype=np.int32).reshape((-1, 1, 2))
+        if filled:
+            cv2.fillPoly(paint, [points], 255, lineType=cv2.LINE_AA)
+        else:
+            thickness = max(1, int(round(self._reference_brush_radius * 0.7)))
+            cv2.polylines(
+                paint,
+                [points],
+                False,
+                255,
+                thickness=thickness,
+                lineType=cv2.LINE_AA,
+            )
+        writable = (paint > 0) & (
+            (labels == 0) | (labels == self._active_instance_id)
+        )
+        changed = int(np.count_nonzero(writable & (labels != self._active_instance_id)))
+        labels[writable] = np.uint16(self._active_instance_id)
+        return changed
+
+    def _apply_instance_assisted_tool(self, end_point: QPointF) -> bool:
+        """Apply the current image-aware tool and report whether labels changed."""
+
+        try:
+            edge = self._full_annotation_evidence("edge_likelihood")
+            if self._instance_annotation_tool == "edge_trace":
+                points = [*self._instance_tool_points]
+                if not points or QLineF(points[-1], end_point).length() > 0.5:
+                    points.append(QPointF(end_point))
+                if len(points) < 2:
+                    return False
+                tangent = self._annotation_tangent(
+                    self._edge_trace_options.tangent_mode
+                )
+                changed = 0
+                for start, end in zip(points, points[1:]):
+                    path = trace_edge_path(
+                        (start.x(), start.y()),
+                        (end.x(), end.y()),
+                        edge,
+                        self._edge_trace_options,
+                        tangent,
+                    )
+                    changed += self._paint_instance_geometry(path, filled=False)
+                self.instance_tool_status.emit(
+                    f"Edge trace added {changed:,} pixels to seed {self._active_instance_id}."
+                )
+                return changed > 0
+            if self._instance_annotation_tool == "shape_snap":
+                if not self._instance_tool_points:
+                    return False
+                tangent = self._annotation_tangent(
+                    self._shape_snap_options.tangent_mode
+                )
+                start = self._instance_tool_points[0]
+                fallback = float(
+                    getattr(self._analysis_result, "estimated_seed_diameter_px", 60.0)
+                ) * 0.5
+                polygon = snap_shape_polygon(
+                    (start.x(), start.y()),
+                    (end_point.x(), end_point.y()),
+                    edge,
+                    self._shape_snap_options,
+                    tangent,
+                    fallback_radius_px=fallback,
+                )
+                changed = self._paint_instance_geometry(polygon, filled=True)
+                self.instance_tool_status.emit(
+                    f"Shape snap added {changed:,} pixels to seed {self._active_instance_id}."
+                )
+                return changed > 0
+            if self._instance_annotation_tool == "smart_fill":
+                labels = self._ensure_instance_labels()
+                corrected = np.asarray(self._analysis_result.calibration.corrected_bgr)
+                filled, changed = smart_fill_instance(
+                    labels,
+                    corrected,
+                    edge,
+                    (end_point.x(), end_point.y()),
+                    self._active_instance_id,
+                    self._smart_fill_options,
+                )
+                if changed:
+                    self._instance_annotations = filled
+                    self.instance_tool_status.emit(
+                        f"Smart fill added {changed:,} locally matched pixels to seed "
+                        f"{self._active_instance_id}."
+                    )
+                    return True
+                self.instance_tool_status.emit(
+                    "Smart fill found no reachable pixels. Move inside the seed or "
+                    "adjust its edge/tolerance settings."
+                )
+        except (RuntimeError, ValueError) as error:
+            self.instance_tool_status.emit(str(error))
+        return False
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         if self._reference_point_mode is None or self._image_item is None:
@@ -986,6 +1906,11 @@ class ImageView(QGraphicsView):
             Qt.MouseButton.LeftButton,
             Qt.MouseButton.RightButton,
         }:
+            if self._instance_uses_assisted_tool(event.button()):
+                self._update_reference_brush_outline(scene_point)
+                self._commit_instance_assisted_preview(scene_point)
+                event.accept()
+                return
             self._reference_paint_button = event.button()
             self._reference_stroke_erases = (
                 self._reference_erase_enabled
@@ -997,7 +1922,13 @@ class ImageView(QGraphicsView):
                 scene_point,
                 erase=self._reference_stroke_erases,
             )
-            self._render_analysis()
+            if self._reference_point_mode == "instance":
+                self._start_instance_live_stroke(
+                    scene_point,
+                    erase=self._reference_stroke_erases,
+                )
+            else:
+                self._render_analysis()
             event.accept()
             return
         super().mousePressEvent(event)
@@ -1036,7 +1967,10 @@ class ImageView(QGraphicsView):
             )
         # Interpolation may add many mask circles, but only one viewer redraw is
         # required for this mouse event.
-        self._render_analysis()
+        if self._reference_point_mode == "instance":
+            self._extend_instance_live_stroke(scene_point)
+        else:
+            self._render_analysis()
         self._last_reference_paint_point = scene_point
         event.accept()
 
@@ -1045,15 +1979,32 @@ class ImageView(QGraphicsView):
             self._reference_point_mode is not None
             and self._reference_paint_button == event.button()
         ):
+            assisted = self._instance_uses_assisted_tool(event.button())
+            changed = False
+            if assisted:
+                scene_point = self.mapToScene(event.position().toPoint())
+                if self._image_item is not None and self._image_item.boundingRect().contains(scene_point):
+                    changed = self._apply_instance_assisted_tool(scene_point)
             self._reference_paint_button = None
             self._reference_stroke_erases = False
             self._last_reference_paint_point = None
+            self._instance_tool_points.clear()
             if self._last_reference_hover_point is not None:
                 self._update_reference_brush_outline(
                     self._last_reference_hover_point
                 )
-            mask = self.reference_mask(self._reference_point_mode)
-            self.reference_mask_edited.emit(self._reference_point_mode, mask)
+            if self._reference_point_mode == "instance":
+                if changed or not assisted:
+                    # Emit the mutable draft itself; applied annotations are
+                    # copied only when the user commits them.
+                    self.instance_annotations_edited.emit(self._instance_annotations)
+                self._refresh_instance_annotation_overlay()
+                self._clear_instance_live_stroke()
+            else:
+                mask = self.reference_mask(self._reference_point_mode)
+                self.reference_mask_edited.emit(self._reference_point_mode, mask)
+            if changed and self._reference_point_mode != "instance":
+                self._render_analysis()
             self.reference_paint_finished.emit()
             event.accept()
             return
@@ -1062,6 +2013,12 @@ class ImageView(QGraphicsView):
     def leaveEvent(self, event) -> None:  # noqa: N802 - Qt override
         self._last_reference_hover_point = None
         self._hide_reference_brush_outline()
+        self._instance_preview_point = None
+        self._instance_preview_geometry = None
+        self._instance_shape_reference_geometry = None
+        self._instance_preview_region = None
+        self._instance_preview_endpoint = None
+        self._remove_instance_preview_items()
         super().leaveEvent(event)
 
     def _emit_reference_brush_dab(
@@ -1073,20 +2030,31 @@ class ImageView(QGraphicsView):
         if image_size is None:
             return
         width, height = image_size
-        attribute = (
-            "_background_reference_mask"
-            if self._reference_point_mode == "background"
-            else "_foreground_reference_mask"
-        )
-        mask = getattr(self, attribute)
-        if mask is None or mask.shape != (height, width):
-            mask = np.zeros((height, width), dtype=bool)
-            setattr(self, attribute, mask)
+        if self._reference_point_mode == "instance":
+            attribute = "_instance_annotations"
+            mask = getattr(self, attribute)
+            if mask is None or mask.shape != (height, width):
+                mask = np.zeros((height, width), dtype=np.uint16)
+                setattr(self, attribute, mask)
+            value = 0 if erase else self._active_instance_id
+        else:
+            attributes = {
+                "background": "_background_reference_mask",
+                "foreground": "_foreground_reference_mask",
+                "background_exclusion": "_background_exclusion_mask",
+                "foreground_exclusion": "_foreground_exclusion_mask",
+            }
+            attribute = attributes[self._reference_point_mode]
+            mask = getattr(self, attribute)
+            if mask is None or mask.shape != (height, width):
+                mask = np.zeros((height, width), dtype=bool)
+                setattr(self, attribute, mask)
+            value = not erase
         self._paint_mask_circle(
             mask,
             scene_point.x(),
             scene_point.y(),
-            not erase,
+            value,
         )
 
     def _paint_mask_circle(
@@ -1094,7 +2062,7 @@ class ImageView(QGraphicsView):
         mask: np.ndarray,
         point_x: float,
         point_y: float,
-        value: bool,
+        value: bool | int,
     ) -> None:
         radius = max(1, int(round(self._reference_brush_radius)))
         center_x = int(round(point_x))

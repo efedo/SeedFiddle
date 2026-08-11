@@ -15,8 +15,8 @@ def run(root: Path) -> int:
 
     from seedvision.ui.main_window import MainWindow
 
-    QCoreApplication.setOrganizationName("Seed Vision")
-    QCoreApplication.setApplicationName("Seed Vision")
+    QCoreApplication.setOrganizationName("Seed Fiddle")
+    QCoreApplication.setApplicationName("Seed Fiddle")
     QCoreApplication.setApplicationVersion("0.1.0-dev")
 
     application = QApplication.instance() or QApplication(sys.argv)

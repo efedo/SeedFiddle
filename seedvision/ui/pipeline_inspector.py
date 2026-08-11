@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import numpy as np
-from PySide6.QtCore import QRectF, QSize, Qt, Signal
+from PySide6.QtCore import QSignalBlocker, QRectF, QSize, Slot, Qt, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPalette, QPen
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFormLayout,
+    QHBoxLayout,
     QLabel,
+    QPushButton,
     QSizePolicy,
     QSpinBox,
     QToolButton,
@@ -22,7 +24,7 @@ from seedvision.pipeline import PipelineNode
 
 
 class BackgroundColourGamut(QWidget):
-    """Compact CIE Lab gamut slice with fitted class probabilities."""
+    """Compact hue/tint/shade HSV projection with fitted probabilities."""
 
     CONTOURS = (
         (0.25, QColor("#11181d")),
@@ -35,10 +37,9 @@ class BackgroundColourGamut(QWidget):
         super().__init__(parent)
         self._image: QImage | None = None
         self._probability: np.ndarray | None = None
-        self._bounds = (0.0, 255.0, 0.0, 255.0)
         self._centres = np.empty((0, 3), np.float32)
+        self._centre_points = np.empty((0, 2), np.float32)
         self._weights = np.empty((0,), np.float32)
-        self._lightness = 128.0
         self._class_name = "background"
         self.setMinimumHeight(205)
         self.setSizePolicy(
@@ -62,6 +63,7 @@ class BackgroundColourGamut(QWidget):
             self._image = None
             self._probability = None
             self._centres = np.empty((0, 3), np.float32)
+            self._centre_points = np.empty((0, 2), np.float32)
             self._weights = np.empty((0,), np.float32)
             self.update()
             return
@@ -76,6 +78,18 @@ class BackgroundColourGamut(QWidget):
         ).reshape(-1, 3)
         weights = np.asarray(
             profile.component_weights or (1.0,), dtype=np.float32
+        ).reshape(-1)
+        excluded_centres = np.asarray(
+            profile.excluded_component_centres_lab,
+            dtype=np.float32,
+        ).reshape(-1, 3)
+        excluded_scales = np.asarray(
+            profile.excluded_component_scales_lab,
+            dtype=np.float32,
+        ).reshape(-1, 3)
+        excluded_weights = np.asarray(
+            profile.excluded_component_weights,
+            dtype=np.float32,
         ).reshape(-1)
         if len(scales) != len(centres):
             scales = np.repeat(
@@ -97,50 +111,87 @@ class BackgroundColourGamut(QWidget):
             float(parameters.get(f"{class_name}_frequency_weight_power", 0.0)),
         )
         effective_scales = scales * scale_multiplier
+        if len(excluded_scales) != len(excluded_centres):
+            excluded_scales = np.repeat(
+                np.asarray(profile.scale_lab, np.float32)[None],
+                len(excluded_centres),
+                axis=0,
+            )
+        if len(excluded_weights) != len(excluded_centres):
+            excluded_weights = np.full(
+                len(excluded_centres),
+                1.0 / max(1, len(excluded_centres)),
+                np.float32,
+            )
+        excluded_scales = np.maximum(excluded_scales, 0.25) * scale_multiplier
+        excluded_adjusted_weights = np.maximum(excluded_weights, 1e-6)
+        if len(excluded_adjusted_weights):
+            excluded_adjusted_weights /= max(
+                float(excluded_adjusted_weights.max()), 1e-6
+            )
 
-        a_min, a_max = self._axis_bounds(
-            centres[:, 1], effective_scales[:, 1]
-        )
-        b_min, b_max = self._axis_bounds(
-            centres[:, 2], effective_scales[:, 2]
-        )
         width, height = 320, 180
-        a_values = np.linspace(a_min, a_max, width, dtype=np.float32)
-        b_values = np.linspace(b_max, b_min, height, dtype=np.float32)
-        aa, bb = np.meshgrid(a_values, b_values)
-        self._lightness = float(profile.centre_lab[0])
-        lab = np.stack(
-            (
-                np.full_like(aa, self._lightness),
-                aa,
-                bb,
-            ),
-            axis=2,
-        )
-        delta = (
-            lab[:, :, None, :] - centres[None, None, :, :]
-        ) / effective_scales[None, None, :, :]
-        distance = np.sum(
-            (delta * delta) * np.asarray((1.0, 1.25, 1.25), np.float32),
-            axis=3,
-        )
-        membership = np.exp(-0.5 * distance)
-        adjusted_weights = np.maximum(weights, 1e-6) ** frequency_power
-        adjusted_weights /= max(float(adjusted_weights.max()), 1e-6)
-        probability = np.clip(
-            np.sum(membership * adjusted_weights[None, None, :], axis=2),
-            0.0,
-            1.0,
-        )
+        hsv = self._hsv_projection(width, height)
 
         import cv2
 
-        rgb = cv2.cvtColor(
-            np.clip(np.rint(lab), 0, 255).astype(np.uint8),
-            cv2.COLOR_LAB2RGB,
-        ).astype(np.float32)
-        brightness = 0.20 + 0.80 * np.sqrt(probability)[..., None]
-        display = np.clip(rgb * brightness, 0, 255).astype(np.uint8)
+        rgb = cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB)
+        adjusted_weights = np.maximum(weights, 1e-6) ** frequency_power
+        adjusted_weights /= max(float(adjusted_weights.max()), 1e-6)
+        # The attached-style hue/tint/shade square has one hidden colour
+        # dimension. Project the fitted distribution by taking maximum
+        # membership across saturation at each hue and tone, so neutral and
+        # partially saturated learned colours are not omitted from the map.
+        hue = hsv[:, :, 0]
+        lightness = np.uint8(
+            np.rint(np.linspace(255.0, 0.0, height, dtype=np.float32))
+        )[:, None]
+        probability = np.zeros((height, width), np.float32)
+        for saturation in np.linspace(0.0, 255.0, 11, dtype=np.float32):
+            hls = np.empty_like(hsv)
+            hls[:, :, 0] = hue
+            hls[:, :, 1] = lightness
+            hls[:, :, 2] = np.uint8(np.rint(saturation))
+            projected_rgb = cv2.cvtColor(hls, cv2.COLOR_HLS2RGB)
+            projected_lab = cv2.cvtColor(
+                projected_rgb, cv2.COLOR_RGB2LAB
+            ).astype(np.float32)
+            plane_probability = np.zeros((height, width), np.float32)
+            for centre, scale, weight in zip(
+                centres, effective_scales, adjusted_weights, strict=True
+            ):
+                delta = (projected_lab - centre) / scale
+                distance = np.sum(
+                    (delta * delta)
+                    * np.asarray((1.0, 1.25, 1.25), np.float32),
+                    axis=2,
+                )
+                plane_probability += np.exp(-0.5 * distance) * weight
+            excluded_probability = np.zeros((height, width), np.float32)
+            for centre, scale, weight in zip(
+                excluded_centres,
+                excluded_scales,
+                excluded_adjusted_weights,
+                strict=True,
+            ):
+                delta = (projected_lab - centre) / scale
+                distance = np.sum(
+                    (delta * delta)
+                    * np.asarray((1.0, 1.25, 1.25), np.float32),
+                    axis=2,
+                )
+                excluded_probability += np.exp(-0.5 * distance) * weight
+            plane_probability *= 1.0 - float(profile.exclusion_strength) * np.clip(
+                excluded_probability, 0.0, 1.0
+            )
+            probability = np.maximum(
+                probability, np.clip(plane_probability, 0.0, 1.0)
+            )
+
+        # Preserve the actual projected colour everywhere. Membership is
+        # communicated exclusively by the high-contrast contour lines; dimming
+        # unselected regions made the represented colours impossible to judge.
+        display = rgb.copy()
         for level, colour in self.CONTOURS:
             edge = self._contour_edge(probability, level)
             display[edge] = (colour.red(), colour.green(), colour.blue())
@@ -153,33 +204,54 @@ class BackgroundColourGamut(QWidget):
             QImage.Format.Format_RGB888,
         ).copy()
         self._probability = probability
-        self._bounds = (a_min, a_max, b_min, b_max)
         self._centres = centres
+        self._centre_points = self._project_centres(
+            centres, width, height
+        )
         self._weights = weights
         self.update()
 
     def _update_tooltip(self) -> None:
         self.setToolTip(
-            "A local CIE Lab a*/b* gamut slice. Pixel colour is the represented "
+            "An HSV hue/tint/shade projection. Pixel colour is the represented "
             f"colour; contour lines show fitted {self._class_name} membership "
-            "probability. Circle labels show learned colour-mode occurrence in "
+            "probability projected across the unshown saturation dimension in "
+            "the model's Lab space. "
+            "Circle labels show learned colour-mode occurrence in "
             "the references or automatic high-confidence samples."
         )
 
     @staticmethod
-    def _axis_bounds(centres: np.ndarray, scales: np.ndarray) -> tuple[float, float]:
-        minimum = float(np.min(centres - scales * 3.25))
-        maximum = float(np.max(centres + scales * 3.25))
-        midpoint = (minimum + maximum) * 0.5
-        half_span = max(32.0, (maximum - minimum) * 0.5)
-        minimum = max(0.0, midpoint - half_span)
-        maximum = min(255.0, midpoint + half_span)
-        if maximum - minimum < 64.0:
-            if minimum <= 0.0:
-                maximum = min(255.0, 64.0)
-            elif maximum >= 255.0:
-                minimum = max(0.0, 191.0)
-        return minimum, maximum
+    def _hsv_projection(width: int, height: int) -> np.ndarray:
+        """Return hue across X and white-to-pure-to-black colour down Y."""
+
+        hue = np.linspace(0.0, 179.0, width, dtype=np.float32)
+        row = np.linspace(0.0, 1.0, height, dtype=np.float32)
+        saturation = np.where(row <= 0.5, row * 2.0, 1.0) * 255.0
+        value = np.where(row <= 0.5, 1.0, (1.0 - row) * 2.0) * 255.0
+        hsv = np.empty((height, width, 3), np.uint8)
+        hsv[:, :, 0] = np.uint8(np.rint(hue))[None, :]
+        hsv[:, :, 1] = np.uint8(np.rint(saturation))[:, None]
+        hsv[:, :, 2] = np.uint8(np.rint(value))[:, None]
+        return hsv
+
+    @staticmethod
+    def _project_centres(
+        centres: np.ndarray, width: int, height: int
+    ) -> np.ndarray:
+        """Place learned Lab modes by their hue and HLS-equivalent tone."""
+
+        import cv2
+
+        lab = np.clip(np.rint(centres), 0, 255).astype(np.uint8)[:, None, :]
+        rgb = cv2.cvtColor(lab, cv2.COLOR_LAB2RGB)
+        hls = cv2.cvtColor(rgb, cv2.COLOR_RGB2HLS)[:, 0].astype(np.float32)
+        return np.column_stack(
+            (
+                hls[:, 0] / 179.0 * max(1, width - 1),
+                (1.0 - hls[:, 1] / 255.0) * max(1, height - 1),
+            )
+        ).astype(np.float32)
 
     @staticmethod
     def _contour_edge(probability: np.ndarray, level: float) -> np.ndarray:
@@ -215,28 +287,21 @@ class BackgroundColourGamut(QWidget):
         painter.drawText(
             QRectF(0.0, plot.top(), 24.0, plot.height()),
             Qt.AlignmentFlag.AlignCenter,
-            "b*",
+            "tone",
         )
         painter.drawText(
             QRectF(plot.left(), plot.bottom(), plot.width(), 18.0),
             Qt.AlignmentFlag.AlignCenter,
-            "a*",
-        )
-        painter.setPen(QColor("#ffffff"))
-        painter.drawText(
-            plot.adjusted(5.0, 3.0, -5.0, -3.0),
-            Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight,
-            f"L≈{self._lightness:.0f}",
+            "HSV hue",
         )
 
-        a_min, a_max, b_min, b_max = self._bounds
-        for centre, weight in zip(self._centres, self._weights, strict=False):
-            x = plot.left() + (float(centre[1]) - a_min) / max(
-                a_max - a_min, 1e-6
-            ) * plot.width()
-            y = plot.top() + (b_max - float(centre[2])) / max(
-                b_max - b_min, 1e-6
-            ) * plot.height()
+        image_width = max(1, self._image.width() - 1)
+        image_height = max(1, self._image.height() - 1)
+        for point, weight in zip(
+            self._centre_points, self._weights, strict=False
+        ):
+            x = plot.left() + float(point[0]) / image_width * plot.width()
+            y = plot.top() + float(point[1]) / image_height * plot.height()
             painter.setPen(QPen(QColor("#101418"), 3.0))
             painter.setBrush(QColor("#ffffff"))
             painter.drawEllipse(QRectF(x - 4.0, y - 4.0, 8.0, 8.0))
@@ -263,6 +328,8 @@ class PipelineInspector(QWidget):
 
     parameter_changed = Signal(str, str, object)
     enabled_changed = Signal(str, bool)
+    parameters_reset = Signal(str)
+    overlay_selected = Signal(str)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -273,6 +340,13 @@ class PipelineInspector(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         self.title_label = QLabel("Select a pipeline node", self)
         self.title_label.setStyleSheet("font-weight: 650; font-size: 14px;")
+        self.overlay_combo = QComboBox(self)
+        self.overlay_combo.setObjectName("nodeOverlaySelector")
+        self.overlay_combo.setToolTip(
+            "Choose among the image overlays produced by this pipeline node."
+        )
+        self.overlay_combo.setVisible(False)
+        self.overlay_combo.currentIndexChanged.connect(self._overlay_changed)
         self.description_label = QLabel(
             "Node controls and parameters will appear here.", self
         )
@@ -321,10 +395,23 @@ class PipelineInspector(QWidget):
         self.parameter_container = QWidget(self)
         self.parameter_form = QFormLayout(self.parameter_container)
         self.parameter_form.setContentsMargins(0, 0, 0, 0)
+        self.parameters_header = QWidget(self)
+        parameters_header_layout = QHBoxLayout(self.parameters_header)
+        parameters_header_layout.setContentsMargins(0, 0, 0, 0)
         self.parameters_heading = QLabel("Settings", self)
         self.parameters_heading.setStyleSheet("font-weight: 600; margin-top: 6px;")
-        self.parameters_heading.setVisible(False)
+        self.reset_parameters_button = QPushButton("Reset", self.parameters_header)
+        self.reset_parameters_button.setToolTip(
+            "Restore every setting on this node to its authored default."
+        )
+        self.reset_parameters_button.setMaximumWidth(72)
+        self.reset_parameters_button.clicked.connect(self._reset_parameters)
+        parameters_header_layout.addWidget(self.parameters_heading)
+        parameters_header_layout.addStretch(1)
+        parameters_header_layout.addWidget(self.reset_parameters_button)
+        self.parameters_header.setVisible(False)
         layout.addWidget(self.title_label)
+        layout.addWidget(self.overlay_combo)
         layout.addWidget(self.description_label)
         layout.addWidget(self.method_heading)
         layout.addWidget(self.details_label)
@@ -333,12 +420,12 @@ class PipelineInspector(QWidget):
         layout.addWidget(self.gamut_heading)
         layout.addWidget(self.gamut_widget)
         layout.addWidget(self.gamut_caption)
-        layout.addWidget(self.parameters_heading)
+        layout.addWidget(self.parameters_header)
         layout.addWidget(self.parameter_container)
 
     def set_node(self, node: PipelineNode) -> None:
         self._node = node
-        self.title_label.setText(node.title)
+        self.title_label.setText(f"Node: {node.title}")
         self.description_label.setText(node.description)
         self.details_label.setText(node.details)
         self.method_heading.blockSignals(True)
@@ -400,8 +487,42 @@ class PipelineInspector(QWidget):
             self.parameter_form.addRow(field_label, editor)
             self._parameter_widgets.append(editor)
         self.parameter_container.setVisible(bool(node.parameter_specs))
-        self.parameters_heading.setVisible(bool(node.parameter_specs))
+        self.parameters_header.setVisible(bool(node.parameter_specs))
         self._update_background_gamut()
+
+    def set_overlay_options(
+        self,
+        options: tuple[tuple[str, str], ...],
+        current_mode: str,
+    ) -> None:
+        """Show only the overlays owned by the selected pipeline node."""
+
+        with QSignalBlocker(self.overlay_combo):
+            self.overlay_combo.clear()
+            for label, mode in options:
+                self.overlay_combo.addItem(label, mode)
+            if options:
+                index = self.overlay_combo.findData(current_mode)
+                self.overlay_combo.setCurrentIndex(max(0, index))
+                self.overlay_combo.setEnabled(True)
+                self.overlay_combo.setToolTip(
+                    "Choose among the image overlays produced by this pipeline node."
+                )
+            else:
+                self.overlay_combo.addItem("No image overlays", "")
+                self.overlay_combo.setCurrentIndex(0)
+                self.overlay_combo.setEnabled(False)
+                self.overlay_combo.setToolTip(
+                    "This pipeline node does not produce a viewable image overlay."
+                )
+        self.overlay_combo.setVisible(self._node is not None)
+
+    @Slot(int)
+    def _overlay_changed(self, index: int) -> None:
+        del index
+        mode = str(self.overlay_combo.currentData() or "")
+        if mode:
+            self.overlay_selected.emit(mode)
 
     def _method_expanded_changed(self, expanded: bool) -> None:
         has_details = self._node is not None and bool(self._node.details)
@@ -468,11 +589,22 @@ class PipelineInspector(QWidget):
             if reference_count
             else "automatic high-confidence modes"
         )
+        exclusion_modes = len(
+            getattr(profile, "excluded_component_centres_lab", ())
+        )
+        exclusion_description = (
+            f" {exclusion_modes} negative-evidence mode(s) from painted exclusions "
+            "downweight matching colours without overriding painted coordinates."
+            if exclusion_modes
+            else ""
+        )
         self.gamut_caption.setText(
-            f"Colour beneath the contours is the CIE Lab gamut at the dominant "
-            f"lightness. Contours are 25/50/75/90% membership; circles are learned "
+            f"Colour beneath the contours is an HSV hue/tint/shade projection "
+            f"(white through pure colour to black). Contours project the fitted "
+            f"Lab model across saturation and show 25/50/75/90% membership; "
+            f"circles are learned "
             f"{source_description} labelled by frequency. Observed 5–95% BGR: "
-            f"{low}–{high}."
+            f"{low}–{high}.{exclusion_description}"
         )
 
     def _enabled_toggled(self, enabled: bool) -> None:
@@ -482,6 +614,10 @@ class PipelineInspector(QWidget):
     def _parameter_edited(self, key: str, value) -> None:
         if self._node is not None:
             self.parameter_changed.emit(self._node.identifier, key, value)
+
+    def _reset_parameters(self) -> None:
+        if self._node is not None:
+            self.parameters_reset.emit(self._node.identifier)
 
 
 def _adaptive_text_colour(widget: QWidget, *, emphasized: bool) -> str:

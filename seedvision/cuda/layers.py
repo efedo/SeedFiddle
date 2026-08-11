@@ -1,4 +1,4 @@
-"""PyTorch implementations of Seed Vision's legacy diagnostic layers."""
+"""PyTorch implementations of Seed Fiddle's diagnostic layers."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from seedvision.cuda.ops import (
     gradient_magnitude,
     image_to_tensor,
     lab_colour_distribution,
+    lab_colour_frequency_distribution,
     oriented_connected_components,
 )
 
@@ -42,6 +43,35 @@ class EdgeGradientProducts:
         yield self.strength_raster
         yield self.directed_hue_raster
         yield self.undirected_hue_raster
+
+
+@dataclass(slots=True)
+class SurfaceGradientProducts:
+    """Maximum one-sided L* slopes retained at a bounded GPU working size."""
+
+    source_height: int
+    source_width: int
+    work_scale: float
+    valid: object
+    lightening_magnitude: object
+    darkening_magnitude: object
+    lightening_strength: object
+    darkening_strength: object
+    lightening_hue_float: object
+    darkening_hue_float: object
+    lightening_strength_raster: GpuRaster
+    darkening_strength_raster: GpuRaster
+    lightening_hue_raster: GpuRaster
+    darkening_hue_raster: GpuRaster
+
+
+@dataclass(slots=True)
+class FrequencyNoiseMaskProducts:
+    """Fine/medium/coarse local RMS masks for darkness and Lab chroma."""
+
+    band_scales_px: tuple[float, float, float]
+    darkness_masks: tuple[GpuRaster, GpuRaster, GpuRaster]
+    colour_masks: tuple[GpuRaster, GpuRaster, GpuRaster]
 
 
 @dataclass(slots=True)
@@ -212,10 +242,21 @@ def build_cuda_analysis_layers(
     foreground_reference_points: tuple[tuple[float, float], ...] = (),
     background_reference_mask: np.ndarray | None = None,
     foreground_reference_mask: np.ndarray | None = None,
+    background_exclusion_mask: np.ndarray | None = None,
+    foreground_exclusion_mask: np.ndarray | None = None,
+    seed_instance_annotations: np.ndarray | None = None,
     background_reference_samples: np.ndarray | None = None,
     background_reference_sample_count: int = 0,
     background_prior_lab: tuple[float, float, float] | None = None,
+    background_prior_samples_lab=None,
     background_colour_enabled: bool = True,
+    foreground_noise_enabled: bool = True,
+    surface_darkness_gradients_enabled: bool = True,
+    lightening_gradient_ceiling_enabled: bool = True,
+    darkening_gradient_ceiling_enabled: bool = True,
+    frequency_noise_masks_enabled: bool = True,
+    instance_masks_enabled: bool = True,
+    seed_edge_curves_enabled: bool = True,
     foreground_probability=None,
     foreground_colour_profile=None,
     surrounding_noise_source_tensor=None,
@@ -244,6 +285,10 @@ def build_cuda_analysis_layers(
     radii = np.asarray(radii, np.float32).reshape(-1)
     if len(centers) != len(radii):
         raise ValueError("Each seed center requires one radius.")
+    if seed_instance_annotations is not None:
+        seed_instance_annotations = np.asarray(seed_instance_annotations)
+        if seed_instance_annotations.shape != crop.shape[:2]:
+            raise ValueError("Seed instance annotations must match the crop dimensions.")
 
     gpu_inputs = values.get("layer.gpu_inputs")
     if gpu_inputs is None:
@@ -268,9 +313,11 @@ def build_cuda_analysis_layers(
             foreground_reference_points=foreground_reference_points,
             background_reference_mask=background_reference_mask,
             foreground_reference_mask=foreground_reference_mask,
+            background_exclusion_mask=background_exclusion_mask,
             background_reference_samples=background_reference_samples,
             background_reference_sample_count=background_reference_sample_count,
             background_prior_lab=background_prior_lab,
+            background_prior_samples_lab=background_prior_samples_lab,
             sample_radius=max(2, round(seed_diameter * settings.background_sample_radius_fraction)),
             settings=settings,
             cuda_context=context,
@@ -317,6 +364,7 @@ def build_cuda_analysis_layers(
             foreground_reference_points=foreground_reference_points,
             background_reference_mask=background_reference_mask,
             foreground_reference_mask=foreground_reference_mask,
+            target_exclusion_mask=background_exclusion_mask,
             reference_radius=max(
                 2,
                 round(seed_diameter * settings.background_sample_radius_fraction),
@@ -341,6 +389,63 @@ def build_cuda_analysis_layers(
     else:
         refined_result = values["layer.refined_background"]
     refined_background, noise_profile, directional_background, directional_angles = refined_result
+    foreground_noise_dirty = (
+        "foreground_segmentation" in dirty
+        or "foreground_noise_likelihood" in dirty
+        or "layer.foreground_noise" not in values
+    )
+    if (
+        foreground_noise_dirty
+        and foreground_noise_enabled
+        and foreground_probability is not None
+    ):
+        foreground_noise_timing = (
+            None
+            if timing_recorder is None
+            else timing_recorder.start("foreground_noise_likelihood")
+        )
+        foreground_noise_result = noise_frequency_foreground_likelihood(
+            crop,
+            valid_mask,
+            foreground_probability,
+            seed_diameter,
+            settings,
+            background_reference_points=background_reference_points,
+            background_reference_mask=background_reference_mask,
+            foreground_exclusion_mask=foreground_exclusion_mask,
+            reference_radius=max(
+                2,
+                round(seed_diameter * settings.background_sample_radius_fraction),
+            ),
+            cuda_context=context,
+            source_tensor=source_tensor,
+            lab_tensor=lab_tensor,
+            valid_tensor=valid_tensor,
+        )
+        values["layer.foreground_noise"] = foreground_noise_result
+        if foreground_noise_timing is not None:
+            timing_recorder.stop(foreground_noise_timing)
+    elif foreground_noise_dirty:
+        foreground_noise_result = (
+            _lazy_u8(
+                source_tensor[:, :1] * 0.0,
+                "disabled foreground noise likelihood",
+            ),
+            empty_noise_frequency_profile(
+                seed_diameter, _foreground_noise_settings(settings)
+            ),
+            (),
+            (),
+        )
+        values["layer.foreground_noise"] = foreground_noise_result
+    else:
+        foreground_noise_result = values["layer.foreground_noise"]
+    (
+        foreground_noise,
+        foreground_noise_profile,
+        _directional_foreground,
+        _directional_foreground_angles,
+    ) = foreground_noise_result
     surrounding_dirty = (
         refined_dirty
         or "layer.surrounding_noise" not in values
@@ -372,7 +477,7 @@ def build_cuda_analysis_layers(
     instance_dirty = (
         refined_dirty or "instance_masks" in dirty or "layer.instances" not in values
     )
-    if instance_dirty:
+    if instance_dirty and instance_masks_enabled:
         import torch
 
         instance_timing = (
@@ -389,20 +494,46 @@ def build_cuda_analysis_layers(
             numpy_dtype=np.uint8,
             name="agreed background likelihood",
         )
+        (
+            instance_centers,
+            instance_radii,
+            annotation_identifiers,
+        ) = _merge_annotated_instance_seeds(
+            centers,
+            radii,
+            seed_instance_annotations,
+            seed_diameter,
+        )
         labels = instance_voronoi(
             valid_mask,
             agreed_background,
-            centers,
-            radii,
+            instance_centers,
+            instance_radii,
             seed_diameter,
             settings,
             cuda_context=context,
             valid_tensor=valid_tensor,
+            seed_instance_annotations=seed_instance_annotations,
+            annotation_identifiers=annotation_identifiers,
         )
-        colours = spatially_contrasting_colours(centers)
+        colours = spatially_contrasting_colours(instance_centers)
         values["layer.instances"] = labels, colours
         if instance_timing is not None:
             timing_recorder.stop(instance_timing)
+    elif instance_dirty:
+        import torch
+
+        labels = GpuRaster(
+            torch.zeros(
+                valid_tensor.shape,
+                device=context.device,
+                dtype=torch.int32,
+            ),
+            numpy_dtype=np.int32,
+            name="disabled instance masks",
+        )
+        colours = np.zeros((1, 3), np.uint8)
+        values["layer.instances"] = labels, colours
     else:
         labels, colours = values["layer.instances"]
 
@@ -432,6 +563,144 @@ def build_cuda_analysis_layers(
     shared_edge_likelihood = gradient_result.strength_raster
     shared_directed_hue = gradient_result.directed_hue_raster
     shared_undirected_hue = gradient_result.undirected_hue_raster
+
+    surface_gradients_dirty = (
+        "surface_darkness_gradients" in dirty
+        or "layer.surface_darkness_gradients" not in values
+    )
+    if surface_gradients_dirty and surface_darkness_gradients_enabled:
+        surface_timing = (
+            None
+            if timing_recorder is None
+            else timing_recorder.start("surface_darkness_gradients")
+        )
+        surface_gradients = surface_directional_darkness_gradients(
+            crop,
+            valid_mask,
+            seed_diameter,
+            settings,
+            cuda_context=context,
+            lab_tensor=lab_tensor,
+            valid_tensor=valid_tensor,
+        )
+        if surface_timing is not None:
+            timing_recorder.stop(surface_timing)
+        values["layer.surface_darkness_gradients"] = surface_gradients
+    elif surface_gradients_dirty:
+        zero = valid_tensor.float() * 0.0
+        zero_raster = _lazy_u8(zero, "disabled surface darkness gradients")
+        surface_gradients = SurfaceGradientProducts(
+            source_height=int(zero.shape[-2]),
+            source_width=int(zero.shape[-1]),
+            work_scale=1.0,
+            valid=valid_tensor[0, 0],
+            lightening_magnitude=zero[0, 0],
+            darkening_magnitude=zero[0, 0],
+            lightening_strength=zero[0, 0],
+            darkening_strength=zero[0, 0],
+            lightening_hue_float=zero[0, 0],
+            darkening_hue_float=zero[0, 0],
+            lightening_strength_raster=zero_raster,
+            darkening_strength_raster=zero_raster,
+            lightening_hue_raster=zero_raster,
+            darkening_hue_raster=zero_raster,
+        )
+        values["layer.surface_darkness_gradients"] = surface_gradients
+    else:
+        surface_gradients = values["layer.surface_darkness_gradients"]
+
+    lightening_ceiling_dirty = (
+        surface_gradients_dirty
+        or "lightening_gradient_ceiling" in dirty
+        or "layer.lightening_gradient_ceiling" not in values
+    )
+    if (
+        lightening_ceiling_dirty
+        and surface_darkness_gradients_enabled
+        and lightening_gradient_ceiling_enabled
+    ):
+        lightening_timing = (
+            None
+            if timing_recorder is None
+            else timing_recorder.start("lightening_gradient_ceiling")
+        )
+        lightening_ceiling = upper_magnitude_surface_gradient(
+            surface_gradients,
+            settings.lightening_gradient_maximum_slope,
+            "lightening",
+        )
+        if lightening_timing is not None:
+            timing_recorder.stop(lightening_timing)
+        values["layer.lightening_gradient_ceiling"] = lightening_ceiling
+    elif lightening_ceiling_dirty:
+        zero = _lazy_u8(valid_tensor.float() * 0.0, "disabled weak lightening gradient")
+        lightening_ceiling = (zero, zero)
+        values["layer.lightening_gradient_ceiling"] = lightening_ceiling
+    else:
+        lightening_ceiling = values["layer.lightening_gradient_ceiling"]
+
+    darkening_ceiling_dirty = (
+        surface_gradients_dirty
+        or "darkening_gradient_ceiling" in dirty
+        or "layer.darkening_gradient_ceiling" not in values
+    )
+    if (
+        darkening_ceiling_dirty
+        and surface_darkness_gradients_enabled
+        and darkening_gradient_ceiling_enabled
+    ):
+        darkening_timing = (
+            None
+            if timing_recorder is None
+            else timing_recorder.start("darkening_gradient_ceiling")
+        )
+        darkening_ceiling = upper_magnitude_surface_gradient(
+            surface_gradients,
+            settings.darkening_gradient_maximum_slope,
+            "darkening",
+        )
+        if darkening_timing is not None:
+            timing_recorder.stop(darkening_timing)
+        values["layer.darkening_gradient_ceiling"] = darkening_ceiling
+    elif darkening_ceiling_dirty:
+        zero = _lazy_u8(valid_tensor.float() * 0.0, "disabled weak darkening gradient")
+        darkening_ceiling = (zero, zero)
+        values["layer.darkening_gradient_ceiling"] = darkening_ceiling
+    else:
+        darkening_ceiling = values["layer.darkening_gradient_ceiling"]
+
+    frequency_noise_dirty = (
+        "frequency_noise_masks" in dirty
+        or "layer.frequency_noise_masks" not in values
+    )
+    if frequency_noise_dirty and frequency_noise_masks_enabled:
+        frequency_timing = (
+            None
+            if timing_recorder is None
+            else timing_recorder.start("frequency_noise_masks")
+        )
+        frequency_noise = multiscale_frequency_noise_masks(
+            crop,
+            valid_mask,
+            seed_diameter,
+            settings,
+            cuda_context=context,
+            lab_tensor=lab_tensor,
+            valid_tensor=valid_tensor,
+        )
+        if frequency_timing is not None:
+            timing_recorder.stop(frequency_timing)
+        values["layer.frequency_noise_masks"] = frequency_noise
+    elif frequency_noise_dirty:
+        zero = _lazy_u8(valid_tensor.float() * 0.0, "disabled frequency noise mask")
+        frequency_noise = FrequencyNoiseMaskProducts(
+            band_scales_px=(0.0, 0.0, 0.0),
+            darkness_masks=(zero, zero, zero),
+            colour_masks=(zero, zero, zero),
+        )
+        values["layer.frequency_noise_masks"] = frequency_noise
+    else:
+        frequency_noise = values["layer.frequency_noise_masks"]
 
     directed_dirty = (
         gradients_dirty
@@ -503,6 +772,7 @@ def build_cuda_analysis_layers(
             previous=previous_curve_result,
             recompute_ridges=ridges_dirty,
             recompute_traces=traces_dirty,
+            compute_final=seed_edge_curves_enabled,
             timing_recorder=timing_recorder,
         )
         values["layer.seed_edge_curves"] = curve_result
@@ -525,11 +795,24 @@ def build_cuda_analysis_layers(
         background_likelihood=background,
         refined_background_likelihood=refined_background,
         noise_frequency_profile=noise_profile,
+        foreground_noise_likelihood=foreground_noise,
+        foreground_noise_frequency_profile=foreground_noise_profile,
         edge_likelihood=edge_likelihood,
         directed_edge_hue=directed_edge_hue,
         undirected_edge_hue=undirected_edge_hue,
         seed_edge_curve_likelihood=curve_likelihood,
         seed_edge_curve_radius_px=curve_radius,
+        lightening_surface_gradient=surface_gradients.lightening_strength_raster,
+        lightening_surface_direction=surface_gradients.lightening_hue_raster,
+        darkening_surface_gradient=surface_gradients.darkening_strength_raster,
+        darkening_surface_direction=surface_gradients.darkening_hue_raster,
+        weak_lightening_surface_gradient=lightening_ceiling[0],
+        weak_lightening_surface_direction=lightening_ceiling[1],
+        weak_darkening_surface_gradient=darkening_ceiling[0],
+        weak_darkening_surface_direction=darkening_ceiling[1],
+        frequency_noise_band_scales_px=frequency_noise.band_scales_px,
+        darkness_frequency_noise_masks=frequency_noise.darkness_masks,
+        colour_frequency_noise_masks=frequency_noise.colour_masks,
         valid_mask=_lazy_u8(valid_tensor.float() * 255.0, "valid dish mask"),
         undirected_edge_likelihood=undirected_edge_likelihood,
         background_mode=background_mode,
@@ -593,9 +876,11 @@ def background_colour_likelihood(
     foreground_reference_points=(),
     background_reference_mask=None,
     foreground_reference_mask=None,
+    background_exclusion_mask=None,
     background_reference_samples=None,
     background_reference_sample_count=0,
     background_prior_lab=None,
+    background_prior_samples_lab=None,
     sample_radius=3,
     settings=None,
     cuda_context=None,
@@ -641,11 +926,18 @@ def background_colour_likelihood(
             np.asarray(foreground_reference_mask, np.uint8), context
         )[0, 0] > 0
         foreground_point_mask &= valid
+    background_exclusion = torch.zeros_like(valid)
+    if background_exclusion_mask is not None:
+        background_exclusion = image_to_tensor(
+            np.asarray(background_exclusion_mask, np.uint8), context
+        )[0, 0] > 0
+        background_exclusion &= valid
+        background_point_mask &= ~background_exclusion
     mode = "automatic"
     reference_count = 0
     supplied = None
     source_values = None
-    eligible = valid & ~foreground_point_mask
+    eligible = valid & ~foreground_point_mask & ~background_exclusion
     if _sample_count(background_reference_samples):
         supplied = _bgr_samples_to_lab(background_reference_samples, context)
         mode = "manual"
@@ -656,10 +948,15 @@ def background_colour_likelihood(
             source_values = source[0].permute(1, 2, 0)[background_point_mask]
             mode = "manual"
             reference_count = (
-                int(np.count_nonzero(background_reference_mask))
+                int(background_point_mask.sum().item())
                 if background_reference_mask is not None
                 else len(background_reference_points)
             )
+
+    automatic_prior_samples = False
+    if supplied is None and _sample_count(background_prior_samples_lab):
+        supplied = background_prior_samples_lab
+        automatic_prior_samples = True
 
     if supplied is None:
         if background_prior_lab is not None:
@@ -736,7 +1033,9 @@ def background_colour_likelihood(
         eligible,
         maximum_components=settings.background_colour_components,
         fit_iterations=settings.background_distribution_fit_iterations,
-        refinement_iterations=settings.background_refinement_iterations,
+        refinement_iterations=(
+            0 if automatic_prior_samples else settings.background_refinement_iterations
+        ),
         refinement_min_probability=settings.background_refinement_min_probability,
         frequency_weight_power=settings.background_frequency_weight_power,
         scale_multiplier=settings.background_distribution_scale_multiplier,
@@ -745,10 +1044,45 @@ def background_colour_likelihood(
             settings.background_chroma_scale_floor,
             settings.background_chroma_scale_floor,
         ),
+        output_mask=valid & ~foreground_point_mask,
     )
     dominant_component = int(torch.argmax(component_weights).item())
     centre = component_centres[dominant_component]
     scale = component_scales[dominant_component]
+    excluded_centres = None
+    excluded_scales = None
+    excluded_weights = None
+    exclusion_strength = 0.95
+    if bool(background_exclusion.any().item()):
+        (
+            excluded_membership,
+            excluded_centres,
+            excluded_scales,
+            excluded_weights,
+            _,
+            _,
+        ) = lab_colour_frequency_distribution(
+            lab,
+            lab[background_exclusion],
+            valid,
+            maximum_bins=max(16, settings.background_colour_components * 16),
+            refinement_iterations=0,
+            frequency_weight_power=0.0,
+            scale_multiplier=settings.background_distribution_scale_multiplier,
+            scale_floors=(
+                settings.background_lightness_scale_floor,
+                settings.background_chroma_scale_floor,
+                settings.background_chroma_scale_floor,
+            ),
+        )
+        # Exclusions are learned negative colours, not output-mask overrides.
+        # Every matching pixel receives the same attenuation, including pixels
+        # outside the user's brush. The bounded factor prevents a painted
+        # coordinate from becoming an artificial exact zero.
+        likelihood = likelihood * (
+            1.0 - exclusion_strength * excluded_membership
+        )
+
     # Reference regions are hard semantic constraints, not merely training
     # samples. Foreground wins if the user accidentally overlaps both classes.
     likelihood = torch.where(background_point_mask, torch.ones_like(likelihood), likelihood)
@@ -794,6 +1128,28 @@ def background_colour_likelihood(
             float(value) for value in component_weights.cpu().tolist()
         ),
         refinement_iterations=refinement_rounds,
+        excluded_component_centres_lab=(
+            ()
+            if excluded_centres is None
+            else tuple(
+                tuple(float(value) for value in row)
+                for row in excluded_centres.cpu().tolist()
+            )
+        ),
+        excluded_component_scales_lab=(
+            ()
+            if excluded_scales is None
+            else tuple(
+                tuple(float(value) for value in row)
+                for row in excluded_scales.cpu().tolist()
+            )
+        ),
+        excluded_component_weights=(
+            ()
+            if excluded_weights is None
+            else tuple(float(value) for value in excluded_weights.cpu().tolist())
+        ),
+        exclusion_strength=exclusion_strength,
     )
     return _lazy_u8(
         likelihood[None, None] * 255.0, "background colour likelihood"
@@ -818,6 +1174,8 @@ def noise_frequency_background_likelihood(
     foreground_reference_points=(),
     background_reference_mask=None,
     foreground_reference_mask=None,
+    target_exclusion_mask=None,
+    target_name="background",
     reference_radius=3,
     cuda_context=None,
     source_tensor=None,
@@ -862,6 +1220,13 @@ def noise_frequency_background_likelihood(
         )[0, 0] > 0
     full_hard_background &= full_valid[0, 0]
     full_hard_foreground &= full_valid[0, 0]
+    full_target_exclusion = torch.zeros_like(full_hard_background)
+    if target_exclusion_mask is not None:
+        full_target_exclusion = image_to_tensor(
+            np.asarray(target_exclusion_mask, np.uint8), context
+        )[0, 0] > 0
+        full_target_exclusion &= full_valid[0, 0]
+        full_hard_background &= ~full_target_exclusion
 
     work_scale = min(
         1.0,
@@ -879,6 +1244,7 @@ def noise_frequency_background_likelihood(
         )
         hard_background = full_hard_background
         hard_foreground = full_hard_foreground
+        target_exclusion = full_target_exclusion
     else:
         source = functional.interpolate(
             full_source, (height, width), mode="area"
@@ -902,6 +1268,11 @@ def noise_frequency_background_likelihood(
             (height, width),
             mode="nearest",
         )[0, 0] > 0.5
+        target_exclusion = functional.interpolate(
+            full_target_exclusion[None, None].float(),
+            (height, width),
+            mode="nearest",
+        )[0, 0] > 0.5
     reported_scales = _noise_scales(seed_diameter, settings)
     scales = _noise_scales(seed_diameter * work_scale, settings)
     fine = gaussian_blur(lab, max(0.55, scales[0]))
@@ -914,15 +1285,35 @@ def noise_frequency_background_likelihood(
         local = gaussian_blur(energy, max(0.65, min(2.5, sigma * 0.35)))
         features.append(torch.log1p(torch.sqrt(local.clamp_min(1e-10)) * 255.0))
     feature = torch.cat(features, dim=1)
-    confident_background = valid & (colour >= settings.noise_background_min_likelihood / 255.0)
-    confident_nonbackground = valid & (colour <= settings.noise_nonbackground_max_likelihood / 255.0)
+    eligible = valid
+    if not bool(eligible.any().item()):
+        return (
+            _lazy_u8(full_colour * 0.0, f"excluded {target_name} noise likelihood"),
+            empty_noise_frequency_profile(seed_diameter, settings),
+            (),
+            (),
+        )
+    confident_background = (
+        eligible
+        & ~target_exclusion[None, None]
+        & (colour >= settings.noise_background_min_likelihood / 255.0)
+    )
+    confident_nonbackground = (
+        eligible & (colour <= settings.noise_nonbackground_max_likelihood / 255.0)
+    ) | target_exclusion[None, None]
     minimum_samples = max(32, round(int(valid.sum().item()) * 0.002))
     if int(confident_background.sum().item()) < minimum_samples:
-        threshold = torch.quantile(colour[valid], 0.75)
-        confident_background = valid & (colour >= threshold)
+        threshold = torch.quantile(colour[eligible], 0.75)
+        confident_background = (
+            eligible
+            & ~target_exclusion[None, None]
+            & (colour >= threshold)
+        )
     if int(confident_nonbackground.sum().item()) < minimum_samples:
-        threshold = torch.quantile(colour[valid], 0.25)
-        confident_nonbackground = valid & (colour <= threshold)
+        threshold = torch.quantile(colour[eligible], 0.25)
+        confident_nonbackground = (
+            eligible & (colour <= threshold)
+        ) | target_exclusion[None, None]
 
     bg_values = feature.permute(0, 2, 3, 1)[confident_background.permute(0, 2, 3, 1).expand(-1, -1, -1, 3)].reshape(-1, 3)
     non_values = feature.permute(0, 2, 3, 1)[confident_nonbackground.permute(0, 2, 3, 1).expand(-1, -1, -1, 3)].reshape(-1, 3)
@@ -1021,12 +1412,12 @@ def noise_frequency_background_likelihood(
     directional = tuple(
         _lazy_u8(
             restore(item) * 255.0,
-            f"background ray {angle:g} degrees",
+            f"{target_name} ray {angle:g} degrees",
         )
         for item, angle in zip(directional_tensors, angles, strict=True)
     )
     return (
-        _lazy_u8(restore(refined) * 255.0, "refined background likelihood"),
+        _lazy_u8(restore(refined) * 255.0, f"{target_name} noise likelihood"),
         profile,
         directional,
         angles,
@@ -1144,6 +1535,394 @@ def _robust_tensor_distribution(values):
     return centre, scale.clamp_min(0.045)
 
 
+def _positive_percentile(torch, values, valid, percentile: float):
+    """Return a stable positive response percentile without downloading values."""
+
+    selected = values[valid.expand_as(values)]
+    selected = selected[selected > 1e-8]
+    if selected.numel() == 0:
+        return torch.as_tensor(1.0, device=values.device, dtype=values.dtype)
+    return torch.quantile(selected, float(percentile) / 100.0).clamp_min(1e-6)
+
+
+def _restored_u8(
+    functional,
+    tensor,
+    height: int,
+    width: int,
+    name: str,
+    *,
+    mode: str = "bilinear",
+    multiplier: float = 255.0,
+):
+    """Restore a working tensor to the full crop while retaining it on-device."""
+
+    values = tensor
+    if values.ndim == 2:
+        values = values[None, None]
+    elif values.ndim == 3:
+        values = values[None]
+    if values.shape[-2:] != (height, width):
+        kwargs = {} if mode == "nearest" else {"align_corners": False}
+        values = functional.interpolate(values, (height, width), mode=mode, **kwargs)
+    return _lazy_u8(values * multiplier, name)
+
+
+def surface_directional_darkness_gradients(
+    crop,
+    valid_mask,
+    seed_diameter,
+    settings=None,
+    *,
+    cuda_context=None,
+    lab_tensor=None,
+    valid_tensor=None,
+):
+    """Find maximum query-to-target lightening and darkening slopes on rays."""
+
+    from seedvision.visualization.layers import AnalysisLayerSettings
+    import torch
+    import torch.nn.functional as functional
+
+    settings = settings or AnalysisLayerSettings()
+    context = cuda_context or CudaContext.resolve()
+    full_lab = (
+        bgr_to_lab(image_to_tensor(crop, context))
+        if lab_tensor is None
+        else lab_tensor
+    )
+    full_valid = (
+        image_to_tensor(valid_mask, context) > 0
+        if valid_tensor is None
+        else valid_tensor.bool()
+    )
+    source_height, source_width = full_valid.shape[-2:]
+    work_scale = min(
+        1.0,
+        float(settings.surface_gradient_working_maximum_dimension)
+        / max(source_height, source_width),
+    )
+    height = max(8, round(source_height * work_scale))
+    width = max(8, round(source_width * work_scale))
+    if (height, width) == (source_height, source_width):
+        lab = full_lab
+        valid = full_valid
+    else:
+        lab = functional.interpolate(
+            full_lab, (height, width), mode="bilinear", align_corners=False
+        )
+        valid = functional.interpolate(
+            full_valid.float(), (height, width), mode="nearest"
+        ) > 0.5
+
+    # OpenCV-compatible Lab tensors encode L*=0..100 as 0..255. Convert back so
+    # the reported slope and downstream ceilings have stable physical units.
+    lightness = lab[:, 0:1] * (100.0 / 255.0)
+    lightness = gaussian_blur(
+        lightness,
+        max(0.10, float(settings.surface_gradient_blur_sigma) * work_scale),
+    )
+    yy, xx = torch.meshgrid(
+        torch.arange(height, device=context.device, dtype=torch.float32),
+        torch.arange(width, device=context.device, dtype=torch.float32),
+        indexing="ij",
+    )
+    ray_length = max(
+        1.0,
+        float(seed_diameter)
+        * work_scale
+        * float(settings.surface_gradient_radius_fraction),
+    )
+    first_distance = min(1.0, ray_length)
+    distances = torch.linspace(
+        first_distance,
+        ray_length,
+        int(settings.surface_gradient_sample_count),
+        device=context.device,
+    )
+    # Convert each working-grid displacement back to original-image pixels.
+    physical_distances = distances / max(work_scale, 1e-6)
+    query = lightness[0, 0]
+    query_valid = valid[0, 0]
+    lightening = torch.zeros_like(query)
+    darkening = torch.zeros_like(query)
+    lightening_angle = torch.zeros_like(query)
+    darkening_angle = torch.zeros_like(query)
+    distance_view = distances[:, None, None]
+    denominator = physical_distances[:, None, None].clamp_min(1e-6)
+    for degrees in range(
+        0, 360, int(settings.surface_gradient_direction_step_degrees)
+    ):
+        radians = np.deg2rad(float(degrees))
+        sample_x = xx[None] + float(np.cos(radians)) * distance_view
+        sample_y = yy[None] + float(np.sin(radians)) * distance_view
+        target = bilinear_sample(lightness, sample_x, sample_y)
+        target_valid = bilinear_sample(valid.float(), sample_x, sample_y) > 0.999
+        signed_slope = (target - query[None]) / denominator
+        unavailable = torch.full_like(target, -float("inf"))
+        local_lightening = torch.relu(
+            torch.where(target_valid, signed_slope, unavailable).max(dim=0).values
+        )
+        local_darkening = torch.relu(
+            torch.where(target_valid, -signed_slope, unavailable).max(dim=0).values
+        )
+        lightening_update = local_lightening > lightening
+        darkening_update = local_darkening > darkening
+        lightening = torch.where(lightening_update, local_lightening, lightening)
+        darkening = torch.where(darkening_update, local_darkening, darkening)
+        lightening_angle = torch.where(
+            lightening_update,
+            torch.full_like(lightening_angle, float(degrees)),
+            lightening_angle,
+        )
+        darkening_angle = torch.where(
+            darkening_update,
+            torch.full_like(darkening_angle, float(degrees)),
+            darkening_angle,
+        )
+
+    lightening *= query_valid
+    darkening *= query_valid
+    combined = torch.cat((lightening[None, None], darkening[None, None]), dim=0)
+    combined_valid = query_valid[None, None].expand_as(combined)
+    normalization = _positive_percentile(
+        torch,
+        combined,
+        combined_valid,
+        settings.surface_gradient_normalization_percentile,
+    )
+    gamma = float(settings.surface_gradient_strength_gamma)
+    lightening_strength = (
+        (lightening / normalization).clamp(0.0, 1.0).pow(gamma) * query_valid
+    )
+    darkening_strength = (
+        (darkening / normalization).clamp(0.0, 1.0).pow(gamma) * query_valid
+    )
+    lightening_hue = torch.remainder(lightening_angle * 0.5, 180.0) * query_valid
+    darkening_hue = torch.remainder(darkening_angle * 0.5, 180.0) * query_valid
+    return SurfaceGradientProducts(
+        source_height=source_height,
+        source_width=source_width,
+        work_scale=work_scale,
+        valid=query_valid,
+        lightening_magnitude=lightening,
+        darkening_magnitude=darkening,
+        lightening_strength=lightening_strength,
+        darkening_strength=darkening_strength,
+        lightening_hue_float=lightening_hue,
+        darkening_hue_float=darkening_hue,
+        lightening_strength_raster=_restored_u8(
+            functional,
+            lightening_strength,
+            source_height,
+            source_width,
+            "maximum lightening surface slope",
+        ),
+        darkening_strength_raster=_restored_u8(
+            functional,
+            darkening_strength,
+            source_height,
+            source_width,
+            "maximum darkening surface slope",
+        ),
+        lightening_hue_raster=_restored_u8(
+            functional,
+            lightening_hue,
+            source_height,
+            source_width,
+            "lightening target direction",
+            mode="nearest",
+            multiplier=1.0,
+        ),
+        darkening_hue_raster=_restored_u8(
+            functional,
+            darkening_hue,
+            source_height,
+            source_width,
+            "darkening target direction",
+            mode="nearest",
+            multiplier=1.0,
+        ),
+    )
+
+
+def upper_magnitude_surface_gradient(
+    products: SurfaceGradientProducts,
+    maximum_slope: float,
+    polarity: str,
+):
+    """Zero surface responses above a raw L*/original-pixel ceiling."""
+
+    import torch.nn.functional as functional
+
+    if polarity == "lightening":
+        magnitude = products.lightening_magnitude
+        strength = products.lightening_strength
+        hue = products.lightening_hue_float
+    elif polarity == "darkening":
+        magnitude = products.darkening_magnitude
+        strength = products.darkening_strength
+        hue = products.darkening_hue_float
+    else:
+        raise ValueError("Surface-gradient polarity must be lightening or darkening.")
+    retained = (magnitude > 0.0) & (magnitude <= float(maximum_slope)) & products.valid
+    filtered_strength = strength * retained
+    filtered_hue = hue * retained
+    return (
+        _restored_u8(
+            functional,
+            filtered_strength,
+            products.source_height,
+            products.source_width,
+            f"weak {polarity} surface slope",
+        ),
+        _restored_u8(
+            functional,
+            filtered_hue,
+            products.source_height,
+            products.source_width,
+            f"weak {polarity} target direction",
+            mode="nearest",
+            multiplier=1.0,
+        ),
+    )
+
+
+def multiscale_frequency_noise_masks(
+    crop,
+    valid_mask,
+    seed_diameter,
+    settings=None,
+    *,
+    cuda_context=None,
+    lab_tensor=None,
+    valid_tensor=None,
+):
+    """Calculate local darkness and chroma RMS energy in three frequency bands."""
+
+    from seedvision.visualization.layers import AnalysisLayerSettings
+    import torch
+    import torch.nn.functional as functional
+
+    settings = settings or AnalysisLayerSettings()
+    context = cuda_context or CudaContext.resolve()
+    full_lab = (
+        bgr_to_lab(image_to_tensor(crop, context))
+        if lab_tensor is None
+        else lab_tensor
+    )
+    full_valid = (
+        image_to_tensor(valid_mask, context) > 0
+        if valid_tensor is None
+        else valid_tensor.bool()
+    )
+    source_height, source_width = full_valid.shape[-2:]
+    work_scale = min(
+        1.0,
+        float(settings.frequency_noise_working_maximum_dimension)
+        / max(source_height, source_width),
+    )
+    height = max(8, round(source_height * work_scale))
+    width = max(8, round(source_width * work_scale))
+    if (height, width) == (source_height, source_width):
+        lab = full_lab
+        valid = full_valid
+    else:
+        lab = functional.interpolate(
+            full_lab, (height, width), mode="bilinear", align_corners=False
+        )
+        valid = functional.interpolate(
+            full_valid.float(), (height, width), mode="nearest"
+        ) > 0.5
+    valid_float = valid.float()
+    # Work in physical Lab units so darkness and chroma energies remain stable
+    # across images even though each display mask is normalized independently.
+    lab_physical = torch.cat(
+        (
+            lab[:, 0:1] * (100.0 / 255.0),
+            lab[:, 1:3] - 128.0,
+        ),
+        dim=1,
+    )
+    reported_scales = (
+        float(seed_diameter) * settings.frequency_noise_fine_scale_fraction,
+        float(seed_diameter) * settings.frequency_noise_medium_scale_fraction,
+        float(seed_diameter) * settings.frequency_noise_coarse_scale_fraction,
+    )
+    scales = tuple(max(0.35, value * work_scale) for value in reported_scales)
+    context_sigma = max(
+        0.35,
+        float(seed_diameter)
+        * work_scale
+        * settings.frequency_noise_context_fraction,
+    )
+
+    def masked_blur(values, sigma):
+        numerator = gaussian_blur(values * valid_float, sigma)
+        denominator = gaussian_blur(valid_float, sigma).clamp_min(1e-4)
+        return numerator / denominator
+
+    fine = masked_blur(lab_physical, scales[0])
+    medium = masked_blur(lab_physical, scales[1])
+    coarse = masked_blur(lab_physical, scales[2])
+    residuals = (lab_physical - fine, fine - medium, medium - coarse)
+    darkness_masks = []
+    colour_masks = []
+    band_names = ("fine", "medium", "coarse")
+    gamma = float(settings.frequency_noise_strength_gamma)
+    for residual, band_name in zip(residuals, band_names, strict=True):
+        darkness_energy = torch.sqrt(
+            masked_blur(residual[:, 0:1].square(), context_sigma).clamp_min(0.0)
+        ) * valid_float
+        colour_energy = torch.sqrt(
+            masked_blur(
+                residual[:, 1:3].square().mean(dim=1, keepdim=True),
+                context_sigma,
+            ).clamp_min(0.0)
+        ) * valid_float
+        darkness_norm = _positive_percentile(
+            torch,
+            darkness_energy,
+            valid,
+            settings.frequency_noise_normalization_percentile,
+        ).clamp_min(0.05)
+        colour_norm = _positive_percentile(
+            torch,
+            colour_energy,
+            valid,
+            settings.frequency_noise_normalization_percentile,
+        ).clamp_min(0.05)
+        darkness_strength = (
+            darkness_energy / darkness_norm
+        ).clamp(0.0, 1.0).pow(gamma) * valid_float
+        colour_strength = (
+            colour_energy / colour_norm
+        ).clamp(0.0, 1.0).pow(gamma) * valid_float
+        darkness_masks.append(
+            _restored_u8(
+                functional,
+                darkness_strength,
+                source_height,
+                source_width,
+                f"{band_name} darkness noise energy",
+            )
+        )
+        colour_masks.append(
+            _restored_u8(
+                functional,
+                colour_strength,
+                source_height,
+                source_width,
+                f"{band_name} colour noise energy",
+            )
+        )
+    return FrequencyNoiseMaskProducts(
+        band_scales_px=reported_scales,
+        darkness_masks=tuple(darkness_masks),
+        colour_masks=tuple(colour_masks),
+    )
+
+
 def directional_edges(
     crop,
     valid_mask,
@@ -1218,6 +1997,7 @@ def seed_boundary_tracing(
     previous: BoundaryTraceProducts | None = None,
     recompute_ridges: bool = True,
     recompute_traces: bool = True,
+    compute_final: bool = True,
     timing_recorder=None,
 ) -> BoundaryTraceProducts:
     """Trace thinned ridges and confirm circle/ellipse seed boundaries on GPU."""
@@ -1486,6 +2266,49 @@ def seed_boundary_tracing(
         )
         if trace_timing is not None:
             timing_recorder.stop(trace_timing)
+
+    if not compute_final:
+        zero = torch.zeros(
+            (1, 1, source_height, source_width),
+            device=context.device,
+            dtype=torch.float32,
+        )
+        zero_u8 = _lazy_u8(zero, "disabled seed boundary confidence")
+        return BoundaryTraceProducts(
+            final_likelihood=zero_u8,
+            selected_radius=_lazy_float(
+                zero, "disabled selected boundary radius"
+            ),
+            ridges=full_u8(
+                (nms * accepted)[None, None], "thinned edge ridges"
+            ),
+            trace_labels=_lazy_int(
+                functional.interpolate(
+                    trace_labels.float(),
+                    (source_height, source_width),
+                    mode="nearest",
+                ).round(),
+                "oriented edge trace labels",
+            ),
+            trace_continuity=full_u8(
+                continuity[None, None], "trace continuity"
+            ),
+            gap_confidence=full_u8(
+                gap_confidence[None, None], "trace gap confidence"
+            ),
+            radius_ratio_hue=zero_u8,
+            radius_confidence=zero_u8,
+            circle_confidence=zero_u8,
+            ellipse_confidence=zero_u8,
+            fit_residual=zero_u8,
+            centre_votes=zero_u8,
+            semantic_sides=zero_u8,
+            rejection_hue=zero_u8,
+            rejection_strength=zero_u8,
+            geometry=None,
+            ridge_state=ridge_state,
+            trace_state=trace_state,
+        )
 
     final_timing = (
         None
@@ -1937,6 +2760,100 @@ def seed_edge_curve_likelihood(
     )
 
 
+def _foreground_noise_settings(settings):
+    """Present foreground-prefixed controls to the shared noise classifier."""
+
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        noise_medium_scale_fraction=settings.foreground_noise_medium_scale_fraction,
+        noise_coarse_scale_fraction=settings.foreground_noise_coarse_scale_fraction,
+        noise_direction_step_degrees=settings.foreground_noise_direction_step_degrees,
+        noise_vector_length_fraction=settings.foreground_noise_vector_length_fraction,
+        noise_vector_sample_count=settings.foreground_noise_vector_sample_count,
+        noise_vector_decay=settings.foreground_noise_vector_decay,
+        noise_direction_integration=settings.foreground_noise_direction_integration,
+        noise_background_min_likelihood=settings.foreground_noise_foreground_min_likelihood,
+        noise_nonbackground_max_likelihood=settings.foreground_noise_nonforeground_max_likelihood,
+        noise_working_maximum_dimension=settings.foreground_noise_working_maximum_dimension,
+    )
+
+
+def noise_frequency_foreground_likelihood(
+    crop,
+    valid_mask,
+    colour_likelihood,
+    seed_diameter,
+    settings,
+    *,
+    background_reference_points=(),
+    background_reference_mask=None,
+    foreground_exclusion_mask=None,
+    reference_radius=3,
+    cuda_context=None,
+    source_tensor=None,
+    lab_tensor=None,
+    valid_tensor=None,
+):
+    """Classify foreground texture without forcing painted foreground pixels."""
+
+    return noise_frequency_background_likelihood(
+        crop,
+        valid_mask,
+        colour_likelihood,
+        seed_diameter,
+        _foreground_noise_settings(settings),
+        foreground_reference_points=background_reference_points,
+        foreground_reference_mask=background_reference_mask,
+        target_exclusion_mask=foreground_exclusion_mask,
+        target_name="foreground",
+        reference_radius=reference_radius,
+        cuda_context=cuda_context,
+        source_tensor=source_tensor,
+        lab_tensor=lab_tensor,
+        valid_tensor=valid_tensor,
+    )
+
+
+def _merge_annotated_instance_seeds(
+    centers: np.ndarray,
+    radii: np.ndarray,
+    annotations: np.ndarray | None,
+    seed_diameter: float,
+) -> tuple[np.ndarray, np.ndarray, tuple[int, ...]]:
+    """Prepend annotated interiors as seeds and suppress duplicate proposals."""
+
+    automatic_centers = np.asarray(centers, np.float32).reshape(-1, 2)
+    automatic_radii = np.asarray(radii, np.float32).reshape(-1)
+    if annotations is None or not np.any(annotations):
+        return automatic_centers, automatic_radii, ()
+    values = np.asarray(annotations)
+    rows, columns = np.nonzero(values)
+    painted_ids = values[rows, columns]
+    identifiers, inverse = np.unique(painted_ids, return_inverse=True)
+    counts = np.bincount(inverse).astype(np.float64)
+    manual_centers = np.column_stack(
+        (
+            np.bincount(inverse, weights=columns) / counts,
+            np.bincount(inverse, weights=rows) / counts,
+        )
+    ).astype(np.float32)
+    manual_radii = np.full(
+        len(manual_centers), max(1.0, float(seed_diameter) * 0.43), np.float32
+    )
+    if len(automatic_centers):
+        displacement = automatic_centers[:, None, :] - manual_centers[None, :, :]
+        nearest = np.sqrt(np.sum(displacement * displacement, axis=2)).min(axis=1)
+        retain = nearest > max(2.0, float(seed_diameter) * 0.48)
+        automatic_centers = automatic_centers[retain]
+        automatic_radii = automatic_radii[retain]
+    return (
+        np.concatenate((manual_centers, automatic_centers), axis=0),
+        np.concatenate((manual_radii, automatic_radii), axis=0),
+        tuple(int(value) for value in identifiers),
+    )
+
+
 def instance_voronoi(
     valid_mask,
     background_likelihood,
@@ -1947,6 +2864,8 @@ def instance_voronoi(
     *,
     cuda_context=None,
     valid_tensor=None,
+    seed_instance_annotations: np.ndarray | None = None,
+    annotation_identifiers: tuple[int, ...] = (),
 ):
     import torch
 
@@ -1995,6 +2914,17 @@ def instance_voronoi(
     foreground_gate = background < 0.82
     accepted = valid & foreground_gate & (best_distance <= 1.0)
     labels = torch.where(accepted, best_label, torch.zeros_like(best_label))
+    if seed_instance_annotations is not None and annotation_identifiers:
+        annotation_values = np.asarray(seed_instance_annotations)
+        rows, columns = np.nonzero(annotation_values)
+        identifiers = np.asarray(annotation_identifiers)
+        mapped = np.zeros(annotation_values.shape, dtype=np.int32)
+        painted_ids = annotation_values[rows, columns]
+        mapped[rows, columns] = np.searchsorted(identifiers, painted_ids) + 1
+        constraints = torch.as_tensor(mapped, device=context.device)
+        labels = torch.where(
+            valid & (constraints > 0), constraints.to(torch.int32), labels
+        )
     return _lazy_int(labels[None, None], "instance labels")
 
 

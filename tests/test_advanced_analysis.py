@@ -138,6 +138,170 @@ class AdvancedAnalysisTests(unittest.TestCase):
             first.rasters["wrinkling_likelihood"],
         )
 
+    def test_seed_interior_consumes_foreground_noise_probability(self) -> None:
+        inputs = _synthetic_inputs()
+        shape = inputs[0].shape[:2]
+        settings = AdvancedAnalysisSettings(
+            compute_device="cpu",
+            maximum_dimension=256,
+            interior_smoothing_fraction=0.005,
+            interior_background_weight=0.0,
+            interior_foreground_noise_weight=1.0,
+        )
+        quiet = build_advanced_analysis_layers(
+            *inputs,
+            offset_x=10,
+            offset_y=20,
+            full_image_shape=(140, 160),
+            foreground_probability=np.full(shape, 255, np.uint8),
+            foreground_noise_probability=np.zeros(shape, np.uint8),
+            settings=settings,
+        )
+        noisy = build_advanced_analysis_layers(
+            *inputs,
+            offset_x=10,
+            offset_y=20,
+            full_image_shape=(140, 160),
+            foreground_probability=np.full(shape, 255, np.uint8),
+            foreground_noise_probability=np.full(shape, 255, np.uint8),
+            settings=settings,
+            previous=quiet,
+            dirty_nodes={"seed_interior"},
+        )
+
+        quiet_interior = np.asarray(quiet.rasters["seed_interior_probability"])
+        noisy_interior = np.asarray(noisy.rasters["seed_interior_probability"])
+        self.assertEqual(int(quiet_interior.max()), 0)
+        self.assertGreater(float(np.mean(noisy_interior[16:-16, 16:-16])), 245.0)
+        self.assertIs(
+            noisy.rasters["boundary_magnitude"],
+            quiet.rasters["boundary_magnitude"],
+        )
+
+    def test_precomputed_sensor_noise_matches_image_quality_output(self) -> None:
+        import torch
+
+        from seedvision.visualization.advanced import (
+            sensor_noise_likelihood_tensor,
+        )
+
+        inputs = _synthetic_inputs()
+        crop, valid = inputs[:2]
+        source_tensor = torch.from_numpy(crop.copy()).permute(2, 0, 1)[None].float()
+        valid_tensor = torch.from_numpy(valid > 0)[None, None]
+        settings = AdvancedAnalysisSettings(
+            compute_device="cpu",
+            allow_cpu_fallback=False,
+            maximum_dimension=256,
+        )
+        sensor_noise = sensor_noise_likelihood_tensor(
+            source_tensor,
+            valid_tensor,
+            inputs[11],
+            settings,
+        )
+        direct = build_advanced_analysis_layers(
+            *inputs,
+            offset_x=10,
+            offset_y=20,
+            full_image_shape=(140, 160),
+            settings=settings,
+            source_tensor=source_tensor,
+            valid_tensor=valid_tensor,
+        )
+        reused = build_advanced_analysis_layers(
+            *inputs,
+            offset_x=10,
+            offset_y=20,
+            full_image_shape=(140, 160),
+            settings=settings,
+            source_tensor=source_tensor,
+            valid_tensor=valid_tensor,
+            sensor_noise_tensor=sensor_noise,
+        )
+        difference = np.abs(
+            np.asarray(direct.rasters["sensor_noise"], dtype=np.int16)
+            - np.asarray(reused.rasters["sensor_noise"], dtype=np.int16)
+        )
+        self.assertLessEqual(int(difference.max()), 1)
+
+    def test_local_lighting_flattens_gradient_and_classifies_extremes(self) -> None:
+        import torch
+
+        from seedvision.visualization.advanced import (
+            local_lighting_evidence_tensors,
+        )
+
+        height = width = 128
+        horizontal = np.linspace(0.35, 0.85, width, dtype=np.float32)
+        luminance = np.tile(horizontal, (height, 1))
+        cv2.circle(luminance, (40, 64), 12, 0.15, -1)
+        cv2.circle(luminance, (90, 64), 12, 1.00, -1)
+        image = np.uint8(np.clip(luminance * 255.0, 0.0, 255.0))
+        image = np.repeat(image[:, :, None], 3, axis=2)
+        source = torch.from_numpy(image).permute(2, 0, 1)[None].float()
+        valid = torch.ones((1, 1, height, width), dtype=torch.bool)
+        settings = AdvancedAnalysisSettings(
+            compute_device="cpu",
+            allow_cpu_fallback=False,
+            maximum_dimension=256,
+        )
+        products = local_lighting_evidence_tensors(
+            source, valid, 32.0, settings
+        )
+        _, flattened, shadow, highlight, _ = products
+
+        raw_difference = abs(float(luminance[20, 20] - luminance[20, 108]))
+        flat_difference = abs(
+            float(flattened[0, 0, 20, 20] - flattened[0, 0, 20, 108])
+        )
+        self.assertLess(flat_difference, raw_difference * 0.35)
+        self.assertGreater(float(shadow[0, 0, 64, 40]), 0.60)
+        self.assertLess(float(highlight[0, 0, 64, 40]), 0.10)
+        self.assertGreater(float(highlight[0, 0, 64, 90]), 0.60)
+        self.assertLess(float(shadow[0, 0, 64, 90]), 0.10)
+
+        inputs = _synthetic_inputs()
+        crop, input_valid = inputs[:2]
+        input_source = (
+            torch.from_numpy(crop.copy()).permute(2, 0, 1)[None].float()
+        )
+        input_valid_tensor = torch.from_numpy(input_valid > 0)[None, None]
+        precomputed = local_lighting_evidence_tensors(
+            input_source, input_valid_tensor, inputs[11], settings
+        )
+        direct = build_advanced_analysis_layers(
+            *inputs,
+            offset_x=10,
+            offset_y=20,
+            full_image_shape=(140, 160),
+            settings=settings,
+            source_tensor=input_source,
+            valid_tensor=input_valid_tensor,
+        )
+        reused = build_advanced_analysis_layers(
+            *inputs,
+            offset_x=10,
+            offset_y=20,
+            full_image_shape=(140, 160),
+            settings=settings,
+            source_tensor=input_source,
+            valid_tensor=input_valid_tensor,
+            local_lighting_tensors=precomputed,
+        )
+        for name in (
+            "illumination_field",
+            "flattened_grayscale",
+            "shadow_likelihood",
+            "highlight_likelihood",
+            "reflectance_image",
+        ):
+            difference = np.abs(
+                np.asarray(direct.rasters[name], dtype=np.int16)
+                - np.asarray(reused.rasters[name], dtype=np.int16)
+            )
+            self.assertLessEqual(int(difference.max()), 1, name)
+
 
 if __name__ == "__main__":
     unittest.main()

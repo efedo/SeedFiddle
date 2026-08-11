@@ -227,7 +227,7 @@ def format_report(report: RuntimeReport, configuration: BootstrapConfiguration) 
         f"< {configuration.python.maximum_exclusive}"
     )
     lines = [
-        "Seed Vision runtime diagnostics",
+        "Seed Fiddle runtime diagnostics",
         f"Python: {report.python_version} ({report.architecture_bits}-bit; {python_status})",
         f"Interpreter: {report.python_executable}",
         f"Environment: {environment}",
@@ -338,7 +338,7 @@ def install_dependencies(
             wheelhouse=root / "wheels",
             offline=True,
         )
-        run_checked(command, description="install Seed Vision runtime dependencies")
+        run_checked(command, description="install Seed Fiddle runtime dependencies")
         return
 
     groups: dict[str | None, list[Dependency]] = {}
@@ -352,7 +352,7 @@ def install_dependencies(
             offline=False,
             index_url=index_url,
         )
-        run_checked(command, description="install Seed Vision runtime dependencies")
+        run_checked(command, description="install Seed Fiddle runtime dependencies")
 
 
 def probe_torch(python_executable: Path | str) -> str:

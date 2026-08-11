@@ -13,14 +13,24 @@ class PipelineModelTests(unittest.TestCase):
         graph = build_default_pipeline()
         order = graph.topological_order()
         self.assertEqual(order[0], "raw_images")
-        self.assertEqual(order[-1], "output")
-        self.assertEqual(len(graph.nodes), 41)
-        self.assertEqual(len(graph.connections), 89)
+        self.assertEqual(set(order), set(graph.nodes))
+        self.assertEqual(len(graph.nodes), 27)
+        self.assertEqual(len(graph.connections), 50)
+        self.assertEqual(
+            graph.upstream("perimeter_background_reference"),
+            ("deskew_colour", "layout_detection", "scale_calibration"),
+        )
+        self.assertEqual(
+            graph.downstream("perimeter_background_reference"),
+            ("background_likelihood",),
+        )
         for connection in graph.connections:
             self.assertLess(graph.node(connection.source).x, graph.node(connection.target).x)
 
     def test_identification_change_invalidates_only_downstream_nodes(self) -> None:
         graph = build_default_pipeline()
+        for node_id in tuple(graph.unused_nodes):
+            graph.restore_unused_node(node_id)
         graph.set_status("raw_images", NodeStatus.COMPLETE, "image.jpg")
         graph.set_status("layout_detection", NodeStatus.COMPLETE, "Dish found")
         graph.set_status("identification", NodeStatus.COMPLETE, "16 proposals")
@@ -36,9 +46,9 @@ class PipelineModelTests(unittest.TestCase):
                 "seed_edge_curves",
                 "radial_profile",
                 "assignment_confidence",
+                "proposal_disagreement",
                 "wrinkling",
                 "coat_damage",
-                "proposal_disagreement",
                 "contact_graph",
                 "review",
                 "measurements",
@@ -53,6 +63,8 @@ class PipelineModelTests(unittest.TestCase):
 
     def test_overlay_nodes_expose_the_analysis_branches(self) -> None:
         graph = build_default_pipeline()
+        for node_id in tuple(graph.unused_nodes):
+            graph.restore_unused_node(node_id)
         self.assertTrue(graph.node("background_likelihood").bypassable)
         self.assertEqual(
             graph.upstream("instance_masks"),
@@ -68,12 +80,50 @@ class PipelineModelTests(unittest.TestCase):
             ("background_likelihood", "seed_scale_estimation"),
         )
         self.assertEqual(
+            graph.upstream("foreground_noise_likelihood"),
+            ("foreground_segmentation", "seed_scale_estimation"),
+        )
+        self.assertEqual(
             graph.upstream("background_likelihood"),
-            ("deskew_colour", "seed_scale_estimation"),
+            (
+                "deskew_colour",
+                "seed_scale_estimation",
+                "perimeter_background_reference",
+            ),
         )
         self.assertEqual(graph.upstream("edge_gradients"), ("deskew_colour",))
         self.assertEqual(graph.upstream("undirected_edges"), ("edge_gradients",))
         self.assertEqual(graph.upstream("directed_edges"), ("edge_gradients",))
+        self.assertEqual(
+            graph.upstream("surface_darkness_gradients"),
+            ("deskew_colour", "seed_scale_estimation"),
+        )
+        self.assertEqual(
+            graph.upstream("lightening_gradient_ceiling"),
+            ("surface_darkness_gradients",),
+        )
+        self.assertEqual(
+            graph.upstream("darkening_gradient_ceiling"),
+            ("surface_darkness_gradients",),
+        )
+        self.assertEqual(
+            graph.upstream("frequency_noise_masks"),
+            ("deskew_colour", "seed_scale_estimation"),
+        )
+        surface_outputs = {
+            (connection.target, connection.target_port): connection.source_port
+            for connection in graph.connections
+            if connection.source == "surface_darkness_gradients"
+        }
+        self.assertEqual(
+            surface_outputs,
+            {
+                ("lightening_gradient_ceiling", "magnitude"): "lightening_magnitude",
+                ("lightening_gradient_ceiling", "direction"): "lightening_direction",
+                ("darkening_gradient_ceiling", "magnitude"): "darkening_magnitude",
+                ("darkening_gradient_ceiling", "direction"): "darkening_direction",
+            },
+        )
         edge_outputs = {
             connection.target: connection.source_port
             for connection in graph.connections
@@ -84,29 +134,29 @@ class PipelineModelTests(unittest.TestCase):
         self.assertIn("edge_ridges", edge_outputs)
         self.assertIn("edge_traces", edge_outputs)
         self.assertEqual(
-            graph.upstream("seed_edge_curves"),
-            (
+            set(graph.upstream("seed_edge_curves")),
+            {
                 "edge_traces",
                 "edge_gradients",
                 "seed_scale_estimation",
                 "background_likelihood",
                 "foreground_segmentation",
                 "instance_masks",
-            ),
+            },
         )
         self.assertEqual(graph.upstream("edge_ridges"), ("edge_gradients",))
         self.assertEqual(
             graph.upstream("edge_traces"), ("edge_ridges", "edge_gradients")
         )
         self.assertEqual(
-            graph.upstream("review"),
-            (
+            set(graph.upstream("review")),
+            {
                 "touching_split",
                 "proposal_disagreement",
                 "assignment_confidence",
                 "contact_graph",
                 "instance_masks",
-            ),
+            },
         )
         self.assertEqual(
             graph.upstream("seed_interior"),
@@ -114,22 +164,30 @@ class PipelineModelTests(unittest.TestCase):
                 "foreground_segmentation",
                 "background_likelihood",
                 "refined_background_likelihood",
+                "foreground_noise_likelihood",
             ),
         )
+        affected = graph.set_parameter(
+            "foreground_noise_likelihood",
+            "foreground_noise_vector_length_fraction",
+            0.70,
+        )
+        self.assertIn("seed_interior", affected)
+        self.assertIn("boundary_normals", affected)
         self.assertEqual(
             graph.upstream("boundary_normals"),
             ("seed_interior", "directed_edges"),
         )
         self.assertEqual(
-            graph.upstream("classification"),
-            (
+            set(graph.upstream("classification")),
+            {
                 "review",
                 "wrinkling",
                 "coat_damage",
                 "pattern_decomposition",
                 "colour_probabilities",
                 "calibration_residuals",
-            ),
+            },
         )
 
     def test_calibration_nodes_feed_the_corrected_analysis_path(self) -> None:
@@ -142,9 +200,11 @@ class PipelineModelTests(unittest.TestCase):
             ("deskew_colour", "ruler_detection"),
         )
         self.assertEqual(
-            graph.upstream("identification"),
-            ("distance_candidates", "circle_candidates"),
+            graph.upstream("layout_detection"),
+            ("deskew_colour", "scale_calibration"),
         )
+        self.assertNotIn("identification", graph.nodes)
+        self.assertIn("identification", graph.unused_nodes)
         self.assertEqual(
             graph.upstream("seed_scale_estimation"),
             ("deskew_colour", "layout_detection"),
@@ -158,21 +218,120 @@ class PipelineModelTests(unittest.TestCase):
         )
         self.assertNotIn("deskew_colour", affected)
         self.assertIn("scale_calibration", affected)
+        self.assertIn("layout_detection", affected)
         self.assertNotIn("identification", affected)
-        self.assertNotIn("foreground_segmentation", affected)
+        self.assertIn("foreground_segmentation", affected)
+        self.assertIn("foreground_noise_likelihood", affected)
         self.assertNotIn("circle_candidates", affected)
-        self.assertIn("output", affected)
+        self.assertNotIn("output", affected)
+
+    def test_circle_candidates_are_preserved_in_the_unused_node_toolbox(self) -> None:
+        graph = build_default_pipeline()
+        self.assertNotIn("circle_candidates", graph.nodes)
+        self.assertIn("circle_candidates", graph.unused_nodes)
+        self.assertEqual(graph.node("circle_candidates").title, "Circle candidates")
+        self.assertEqual(len(graph.unused_nodes), 20)
+        self.assertEqual(len(graph.unused_connections), 61)
+        restored = graph.restore_unused_node("circle_candidates")
+        self.assertEqual(len(restored), 7)
+        self.assertIn("circle_candidates", graph.nodes)
+        self.assertNotIn("circle_candidates", graph.unused_nodes)
+        self.assertEqual(graph.upstream("circle_candidates"), (
+            "foreground_segmentation",
+            "seed_scale_estimation",
+            "edge_gradients",
+            "image_quality",
+            "illumination_decomposition",
+        ))
+
+    def test_surface_darkness_branch_is_disabled_in_the_unused_toolbox(self) -> None:
+        graph = build_default_pipeline()
+        branch = {
+            "surface_darkness_gradients",
+            "lightening_gradient_ceiling",
+            "darkening_gradient_ceiling",
+        }
+        self.assertTrue(branch.issubset(graph.unused_nodes))
+        self.assertTrue(branch.isdisjoint(graph.nodes))
+        self.assertTrue(all(not graph.node(node_id).enabled for node_id in branch))
+        self.assertTrue(
+            all(graph.node(node_id).status is NodeStatus.BYPASSED for node_id in branch)
+        )
+        preserved = {
+            connection
+            for connection in graph.unused_connections
+            if connection.source in branch or connection.target in branch
+        }
+        self.assertEqual(len(preserved), 6)
+
+        restored = graph.restore_unused_node("surface_darkness_gradients")
+        self.assertEqual(len(restored), 2)
+        self.assertEqual(
+            graph.upstream("surface_darkness_gradients"),
+            ("deskew_colour", "seed_scale_estimation"),
+        )
+        self.assertFalse(graph.node("surface_darkness_gradients").enabled)
 
     def test_pipeline_configuration_is_json_serializable(self) -> None:
         payload = build_default_pipeline().to_dict()
         encoded = json.dumps(payload)
         self.assertIn("Seed identification", encoded)
+        self.assertIn("Circle candidates", encoded)
         self.assertIn("InstanceProposals", encoded)
         self.assertIn("calculation_seconds", payload["nodes"][0])
+        self.assertEqual(len(payload["unused_nodes"]), 20)
+
+    def test_unfinished_candidate_and_mask_branches_default_to_disabled(self) -> None:
+        graph = build_default_pipeline()
+        roots = {"seed_interior"}
+        expected = set(roots)
+        for root in roots:
+            expected.update(graph.downstream(root, recursive=True))
+        self.assertEqual(
+            {node.identifier for node in graph.nodes.values() if not node.enabled},
+            expected,
+        )
+        self.assertTrue(all(graph.node(node_id).bypassable for node_id in expected))
+        self.assertTrue(
+            all(graph.node(node_id).status is NodeStatus.BYPASSED for node_id in expected)
+        )
+        self.assertFalse(graph.node("circle_candidates").enabled)
+        self.assertFalse(graph.node("distance_candidates").enabled)
+        self.assertFalse(graph.node("instance_masks").enabled)
+        self.assertFalse(graph.node("surface_darkness_gradients").enabled)
+        self.assertIn("surface_darkness_gradients", graph.unused_nodes)
+
+    def test_disabling_a_node_disables_all_dependents(self) -> None:
+        graph = build_default_pipeline()
+        affected = graph.set_enabled("background_likelihood", False)
+        self.assertFalse(graph.node("background_likelihood").enabled)
+        self.assertTrue(graph.node("identification").enabled is False)
+        self.assertTrue(graph.node("foreground_noise_likelihood").enabled)
+        self.assertTrue(
+            all(not graph.node(node_id).enabled for node_id in affected)
+        )
+
+    def test_reset_parameters_restores_authored_defaults(self) -> None:
+        graph = build_default_pipeline()
+        original = graph.node("foreground_segmentation").parameters[
+            "foreground_reference_weight"
+        ]
+        graph.set_parameter(
+            "foreground_segmentation", "foreground_reference_weight", 0.25
+        )
+        affected = graph.reset_parameters("foreground_segmentation")
+        self.assertEqual(
+            graph.node("foreground_segmentation").parameters[
+                "foreground_reference_weight"
+            ],
+            original,
+        )
+        self.assertIn("foreground_segmentation", affected)
+        self.assertEqual(graph.reset_parameters("foreground_segmentation"), ())
 
     def test_every_configurable_node_has_compact_graph_controls(self) -> None:
         graph = build_default_pipeline()
-        for node in graph.nodes.values():
+        for node in (*graph.nodes.values(), *graph.unused_nodes.values()):
             if not node.parameter_specs:
                 continue
             self.assertGreaterEqual(len(node.inline_parameters), 1, node.identifier)
@@ -187,7 +346,7 @@ class PipelineModelTests(unittest.TestCase):
         graph = build_default_pipeline()
         controls = {
             (node.identifier, spec.key)
-            for node in graph.nodes.values()
+            for node in (*graph.nodes.values(), *graph.unused_nodes.values())
             for spec in node.parameter_specs
         }
         consumed_keys: set[str] = set()
@@ -228,6 +387,7 @@ class PipelineModelTests(unittest.TestCase):
 
     def test_invalid_parameter_value_is_rejected(self) -> None:
         graph = build_default_pipeline()
+        graph.restore_unused_node("circle_candidates")
         with self.assertRaises(ValueError):
             graph.set_parameter(
                 "circle_candidates", "circle_accumulator_threshold", 100
@@ -277,6 +437,14 @@ class BaselineSettingsTests(unittest.TestCase):
             BaselineSettings(
                 circle_min_radius_fraction=0.7,
                 circle_max_radius_fraction=0.6,
+            )
+        with self.assertRaises(ValueError):
+            BaselineSettings(
+                circle_edge_magnitude_weight=0.0,
+                circle_sensor_noise_weight=0.0,
+                circle_flattened_grayscale_weight=0.0,
+                circle_shadow_weight=0.0,
+                circle_highlight_weight=0.0,
             )
 
     def test_composite_dish_and_layer_settings_are_validated(self) -> None:

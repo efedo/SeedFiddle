@@ -50,6 +50,14 @@ class PipelineNode:
     output_ports: tuple[tuple[str, str], ...] = ()
     inline_parameters: tuple[tuple[str, str], ...] = ()
     calculation_seconds: float | None = None
+    default_parameters: dict[str, Any] = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        # Keep an immutable-by-convention snapshot for the inspector's Reset
+        # action.  Each node owns its dictionaries, so resetting one card can
+        # never mutate a shared default object.
+        self.parameters = dict(self.parameters)
+        self.default_parameters = dict(self.parameters)
 
     def set_parameter(self, key: str, value: Any) -> None:
         spec = next((item for item in self.parameter_specs if item.key == key), None)
@@ -93,30 +101,105 @@ class PipelineGraph:
         self.nodes = {node.identifier: node for node in node_list}
         if len(self.nodes) != len(node_list):
             raise ValueError("Pipeline node identifiers must be unique.")
+        self.unused_nodes: dict[str, PipelineNode] = {}
         self.connections = tuple(connections)
+        self.unused_connections: tuple[PipelineConnection, ...] = ()
         self.revision = 0
         self._validate_connections()
         self.topological_order()
 
     def node(self, identifier: str) -> PipelineNode:
-        try:
+        if identifier in self.nodes:
             return self.nodes[identifier]
-        except KeyError as error:
-            raise KeyError(f"Unknown pipeline node {identifier!r}.") from error
+        if identifier in self.unused_nodes:
+            return self.unused_nodes[identifier]
+        raise KeyError(f"Unknown pipeline node {identifier!r}.")
+
+    def is_active(self, identifier: str) -> bool:
+        return identifier in self.nodes
+
+    def shelve_node(self, identifier: str, *, record_revision: bool = True) -> None:
+        """Move an active node and all incident edges to the unused toolbox."""
+
+        if identifier not in self.nodes:
+            raise ValueError(f"Pipeline node {identifier!r} is not active.")
+        node = self.nodes.pop(identifier)
+        retained = tuple(
+            connection
+            for connection in self.connections
+            if identifier not in (connection.source, connection.target)
+        )
+        removed = tuple(
+            connection
+            for connection in self.connections
+            if identifier in (connection.source, connection.target)
+        )
+        self.connections = retained
+        self.unused_nodes[identifier] = node
+        self.unused_connections = (*self.unused_connections, *removed)
+        self._validate_connections()
+        self.topological_order()
+        if record_revision:
+            self.revision += 1
+
+    def restore_unused_node(self, identifier: str) -> tuple[PipelineConnection, ...]:
+        """Restore a toolbox node and every now-resolvable preserved edge."""
+
+        if identifier not in self.unused_nodes:
+            raise ValueError(f"Unused pipeline node {identifier!r} was not found.")
+        node = self.unused_nodes.pop(identifier)
+        self.nodes[identifier] = node
+        restored = tuple(
+            connection
+            for connection in self.unused_connections
+            if connection.source in self.nodes and connection.target in self.nodes
+        )
+        self.unused_connections = tuple(
+            connection
+            for connection in self.unused_connections
+            if connection not in restored
+        )
+        self.connections = (*self.connections, *restored)
+        try:
+            self._validate_connections()
+            self.topological_order()
+        except Exception:
+            self.connections = tuple(
+                connection
+                for connection in self.connections
+                if connection not in restored
+            )
+            self.unused_connections = (*self.unused_connections, *restored)
+            self.unused_nodes[identifier] = self.nodes.pop(identifier)
+            raise
+        self.revision += 1
+        return restored
+
+    def _require_active(self, identifier: str) -> PipelineNode:
+        if identifier in self.unused_nodes:
+            raise ValueError(
+                f"Pipeline node {identifier!r} is in the unused-node toolbox. "
+                "Restore it before changing the active graph."
+            )
+        return self.node(identifier)
 
     def upstream(self, identifier: str) -> tuple[str, ...]:
         return tuple(
-            connection.source
-            for connection in self.connections
-            if connection.target == identifier
+            dict.fromkeys(
+                connection.source
+                for connection in self.connections
+                if connection.target == identifier
+            )
         )
 
     def downstream(self, identifier: str, *, recursive: bool = False) -> tuple[str, ...]:
-        direct = [
-            connection.target
-            for connection in self.connections
-            if connection.source == identifier
-        ]
+        direct = list(
+            dict.fromkeys(
+                connection.target
+                for connection in self.connections
+                if connection.source == identifier
+            )
+        )
         if not recursive:
             return tuple(direct)
         visited: set[str] = set()
@@ -150,7 +233,7 @@ class PipelineGraph:
         return tuple(result)
 
     def set_parameter(self, node_id: str, key: str, value: Any) -> tuple[str, ...]:
-        node = self.node(node_id)
+        node = self._require_active(node_id)
         previous = node.parameters.get(key)
         node.set_parameter(key, value)
         if node.parameters[key] == previous:
@@ -160,23 +243,57 @@ class PipelineGraph:
         self.invalidate(affected)
         return affected
 
+    def reset_parameters(self, node_id: str) -> tuple[str, ...]:
+        """Restore one node's authored defaults and invalidate its dependents."""
+
+        node = self._require_active(node_id)
+        if node.parameters == node.default_parameters:
+            return ()
+        node.parameters = dict(node.default_parameters)
+        self.revision += 1
+        affected = (node_id, *self.downstream(node_id, recursive=True))
+        self.invalidate(affected, preserve_bypassed=True)
+        return affected
+
     def set_enabled(self, node_id: str, enabled: bool) -> tuple[str, ...]:
-        node = self.node(node_id)
+        node = self._require_active(node_id)
         enabled = bool(enabled)
         if node.enabled == enabled:
             return ()
-        node.enabled = enabled
-        node.status = NodeStatus.IDLE if enabled else NodeStatus.BYPASSED
-        node.status_detail = "Not run" if enabled else "Bypassed"
-        self.revision += 1
         affected = (node_id, *self.downstream(node_id, recursive=True))
+        if enabled:
+            disabled_upstream = tuple(
+                upstream_id
+                for upstream_id in self.upstream(node_id)
+                if not self.node(upstream_id).enabled
+            )
+            if disabled_upstream:
+                titles = ", ".join(
+                    self.node(upstream_id).title for upstream_id in disabled_upstream
+                )
+                raise ValueError(f"Enable upstream node(s) first: {titles}.")
+            node.enabled = True
+            node.status = NodeStatus.IDLE
+            node.status_detail = "Not run"
+        else:
+            # A disabled calculation cannot leave consumers apparently active.
+            # Re-enabling remains explicit so a user never unknowingly turns a
+            # whole unfinished branch back on.
+            for affected_id in affected:
+                affected_node = self.node(affected_id)
+                affected_node.enabled = False
+                affected_node.status = NodeStatus.BYPASSED
+                affected_node.status_detail = "Disabled by pipeline dependency"
+        self.revision += 1
         self.invalidate(affected, preserve_bypassed=True)
         return affected
 
     def set_status(
         self, node_id: str, status: NodeStatus, detail: str = ""
     ) -> None:
-        node = self.node(node_id)
+        if node_id in self.unused_nodes:
+            return
+        node = self._require_active(node_id)
         node.status = status
         node.status_detail = detail or status.value.capitalize()
 
@@ -184,6 +301,8 @@ class PipelineGraph:
         self, node_ids: Iterable[str], *, preserve_bypassed: bool = False
     ) -> None:
         for node_id in node_ids:
+            if node_id in self.unused_nodes:
+                continue
             node = self.node(node_id)
             if preserve_bypassed and not node.enabled:
                 node.status = NodeStatus.BYPASSED
@@ -196,36 +315,45 @@ class PipelineGraph:
                 node.status_detail = "Not run"
 
     def to_dict(self) -> dict[str, Any]:
+        def node_payload(node: PipelineNode) -> dict[str, Any]:
+            return {
+                "id": node.identifier,
+                "title": node.title,
+                "category": node.category,
+                "description": node.description,
+                "details": node.details,
+                "position": [node.x, node.y],
+                "enabled": node.enabled,
+                "implemented": node.implemented,
+                "bypassable": node.bypassable,
+                "parameters": dict(node.parameters),
+                "input_ports": list(node.input_ports),
+                "output_ports": list(node.output_ports),
+                "inline_parameters": list(node.inline_parameters),
+                "calculation_seconds": node.calculation_seconds,
+            }
+
+        def connection_payload(connection: PipelineConnection) -> dict[str, str]:
+            return {
+                "source": connection.source,
+                "target": connection.target,
+                "data_type": connection.data_type,
+                "source_port": connection.source_port,
+                "target_port": connection.target_port,
+            }
+
         return {
             "revision": self.revision,
-            "nodes": [
-                {
-                    "id": node.identifier,
-                    "title": node.title,
-                    "category": node.category,
-                    "description": node.description,
-                    "details": node.details,
-                    "position": [node.x, node.y],
-                    "enabled": node.enabled,
-                    "implemented": node.implemented,
-                    "bypassable": node.bypassable,
-                    "parameters": dict(node.parameters),
-                    "input_ports": list(node.input_ports),
-                    "output_ports": list(node.output_ports),
-                    "inline_parameters": list(node.inline_parameters),
-                    "calculation_seconds": node.calculation_seconds,
-                }
-                for node in self.nodes.values()
-            ],
+            "nodes": [node_payload(node) for node in self.nodes.values()],
             "connections": [
-                {
-                    "source": connection.source,
-                    "target": connection.target,
-                    "data_type": connection.data_type,
-                    "source_port": connection.source_port,
-                    "target_port": connection.target_port,
-                }
-                for connection in self.connections
+                connection_payload(connection) for connection in self.connections
+            ],
+            "unused_nodes": [
+                node_payload(node) for node in self.unused_nodes.values()
+            ],
+            "unused_connections": [
+                connection_payload(connection)
+                for connection in self.unused_connections
             ],
         }
 
@@ -311,7 +439,9 @@ def build_default_pipeline() -> PipelineGraph:
         ParameterSpec("max_radius_fraction", "Maximum radius / height", "float", 0.06, 0.48, 0.01, "Largest dish radius as a fraction of corrected image height."),
         ParameterSpec("expected_center_x_fraction", "Expected centre X", "float", 0.05, 0.95, 0.01, "Weak selection prior as a fraction of image width."),
         ParameterSpec("expected_center_y_fraction", "Expected centre Y", "float", 0.05, 0.95, 0.01, "Weak selection prior as a fraction of image height."),
-        ParameterSpec("expected_radius_fraction", "Expected radius / height", "float", 0.05, 0.48, 0.005, "Weak selection prior for choosing among detected circles."),
+        ParameterSpec("expected_radius_fraction", "Fallback radius / height", "float", 0.05, 0.48, 0.005, "Fallback selection prior used only when a calibrated ruler scale or physical dish diameter is unavailable."),
+        ParameterSpec("expected_outer_diameter_mm", "Expected outer diameter", "float", 0.0, 1000.0, 1.0, "Expected physical diameter of the exterior Petri-dish edge. Set to zero to use only the image-relative fallback radius."),
+        ParameterSpec("calibrated_outer_radius_tolerance_fraction", "Outer diameter tolerance", "float", 0.0, 0.25, 0.005, "Allowed fractional deviation of the exterior glass edge from the ruler-calibrated expected radius."),
         ParameterSpec("rim_pair_search_fraction", "Dual-rim search / radius", "float", 0.03, 0.30, 0.005, "Radial range searched around the selected Petri-dish circle for the second concentric glass edge."),
         ParameterSpec("rim_pair_min_separation_fraction", "Minimum rim separation", "float", 0.005, 0.29, 0.005, "Smallest accepted separation between lower and upper glass edges, relative to dish radius."),
         ParameterSpec("rim_pair_max_separation_fraction", "Maximum rim separation", "float", 0.01, 0.30, 0.005, "Largest accepted separation between lower and upper glass edges, relative to dish radius."),
@@ -367,8 +497,8 @@ def build_default_pipeline() -> PipelineGraph:
         ParameterSpec("foreground_reference_weight", "Foreground reference influence", "float", 0.0, 1.0, 0.05, "How strongly colours represented in the painted foreground distribution enhance seed probability across the dish."),
         ParameterSpec("foreground_local_contrast_scale_fraction", "Local contrast scale / diameter", "float", 0.03, 0.60, 0.01, "Gaussian neighbourhood, relative to seed diameter, used to distinguish locally bright seed surfaces from darker inter-seed gaps."),
         ParameterSpec("foreground_shadow_rejection_strength", "Shadow rejection", "float", 0.0, 3.0, 0.05, "Weight of seed-scale local lightness evidence in crowded dishes. It ramps down automatically when ample true tray is visible; increase when dark gaps are mistaken for seeds."),
-        ParameterSpec("foreground_reference_components", "Reference colour modes", "int", 1, 8, 1, "Maximum robust Lab mixture components fitted to the painted foreground area."),
-        ParameterSpec("foreground_distribution_fit_iterations", "Distribution fit rounds", "int", 1, 20, 1, "Robust clustering rounds used to fit each painted foreground colour distribution."),
+        ParameterSpec("foreground_reference_components", "Reference colour-frequency bins", "int", 1, 256, 4, "Maximum quantized Lab colour cells retained from individual painted foreground pixels."),
+        ParameterSpec("foreground_distribution_fit_iterations", "Automatic summary fit rounds", "int", 1, 20, 1, "Robust clustering rounds used only for the diagnostic automatic foreground-colour summary when no painted reference exists."),
         ParameterSpec("foreground_refinement_iterations", "Reference refinement rounds", "int", 0, 8, 1, "Number of cautious self-refinement rounds after fitting the painted foreground pixels."),
         ParameterSpec("foreground_refinement_min_probability", "Refinement acceptance", "float", 0.50, 0.99, 0.01, "Only pixels at or above this foreground colour-membership probability can enter a refinement round."),
         ParameterSpec("foreground_frequency_weight_power", "Mode frequency influence", "float", 0.0, 1.0, 0.05, "Weights each learned colour mode by how frequently it occurs in the painted foreground mask. Zero treats all represented colours equally; one uses their painted-area proportions directly."),
@@ -412,11 +542,54 @@ def build_default_pipeline() -> PipelineGraph:
         ),
         ParameterSpec("circle_edge_threshold", "Circle edge threshold", "int", 10, 200, 1, "Minimum normalized CUDA gradient retained by the ring bank."),
         ParameterSpec("circle_working_maximum_dimension", "GPU working dimension", "int", 512, 4096, 128, "Maximum circle-bank image dimension. Resizing, convolution, and coordinate restoration all stay on GPU."),
+        ParameterSpec(
+            "circle_edge_magnitude_weight",
+            "Edge-magnitude weight",
+            "float",
+            0.0,
+            1.0,
+            0.05,
+            "Contribution of the shared Lab/Scharr edge-magnitude raster to ring support.",
+        ),
+        ParameterSpec(
+            "circle_sensor_noise_weight",
+            "Sensor/noise-boundary weight",
+            "float",
+            0.0,
+            1.0,
+            0.05,
+            "Contribution of boundaries derived from the image-quality node's sensor/noise likelihood.",
+        ),
+        ParameterSpec(
+            "circle_flattened_grayscale_weight",
+            "Flattened-grayscale weight",
+            "float",
+            0.0,
+            1.0,
+            0.05,
+            "Contribution of boundaries in the locally flattened grayscale raster.",
+        ),
+        ParameterSpec(
+            "circle_shadow_weight",
+            "Shadow-boundary weight",
+            "float",
+            0.0,
+            1.0,
+            0.05,
+            "Contribution of transitions around nonlinear local-shadow areas.",
+        ),
+        ParameterSpec(
+            "circle_highlight_weight",
+            "Highlight-boundary weight",
+            "float",
+            0.0,
+            1.0,
+            0.05,
+            "Contribution of transitions around nonlinear local-highlight areas.",
+        ),
         ParameterSpec("circle_min_distance_fraction", "Minimum centre spacing / diameter", "float", 0.20, 1.20, 0.01, "Local-maximum spacing between returned CUDA ring centres."),
         ParameterSpec("circle_min_radius_fraction", "Minimum radius / diameter", "float", 0.05, 0.80, 0.01, "Smallest tested CUDA ring radius relative to estimated seed diameter."),
         ParameterSpec("circle_max_radius_fraction", "Maximum radius / diameter", "float", 0.10, 1.20, 0.01, "Largest tested CUDA ring radius relative to estimated seed diameter."),
-    )
-    fusion_parameters = (
         ParameterSpec(
             "merge_distance_fraction",
             "Duplicate merge distance",
@@ -428,6 +601,8 @@ def build_default_pipeline() -> PipelineGraph:
             "CUDA ring centre is confidence-weighted into that candidate.",
         ),
         ParameterSpec("circle_confidence", "Circle candidate confidence", "float", 0.10, 1.00, 0.01, "Weight assigned to every CUDA ring proposal during fusion."),
+    )
+    fusion_parameters = (
         ParameterSpec("distance_confidence", "Distance candidate confidence", "float", 0.10, 1.00, 0.01, "Weight assigned to every distance-peak proposal during fusion."),
     )
     background_parameters = (
@@ -445,6 +620,27 @@ def build_default_pipeline() -> PipelineGraph:
         ParameterSpec("background_frequency_weight_power", "Mode frequency influence", "float", 0.0, 1.0, 0.05, "Weights each learned background colour mode by its occurrence frequency in the painted mask. Zero treats represented modes equally; one applies their area proportions directly."),
         ParameterSpec("background_distribution_scale_multiplier", "Colour tolerance multiplier", "float", 0.50, 3.00, 0.05, "Expands or contracts every learned background Lab colour mode before per-pixel probability is calculated."),
     )
+    perimeter_background_parameters = (
+        ParameterSpec(
+            "perimeter_background_buffer_cm",
+            "Outer-rim buffer (cm)",
+            "float",
+            0.0,
+            2.0,
+            0.05,
+            "Clear distance between the detected exterior Petri-dish edge and "
+            "the start of the automatic median-colour reference band.",
+        ),
+        ParameterSpec(
+            "perimeter_background_band_thickness_cm",
+            "Reference band thickness (cm)",
+            "float",
+            0.05,
+            2.0,
+            0.05,
+            "Radial thickness of the automatic median-colour reference band.",
+        ),
+    )
     noise_parameters = (
         ParameterSpec("noise_medium_scale_fraction", "Medium band / diameter", "float", 0.005, 0.20, 0.005, "Medium Gaussian frequency boundary relative to seed diameter."),
         ParameterSpec("noise_coarse_scale_fraction", "Coarse band / diameter", "float", 0.01, 0.40, 0.005, "Coarse Gaussian frequency boundary relative to seed diameter."),
@@ -456,6 +652,26 @@ def build_default_pipeline() -> PipelineGraph:
         ParameterSpec("noise_background_min_likelihood", "Confident background minimum", "int", 0, 255, 1, "Minimum colour-likelihood value used as a texture background pseudo-label."),
         ParameterSpec("noise_nonbackground_max_likelihood", "Confident non-background maximum", "int", 0, 255, 1, "Maximum colour-likelihood value used as a texture non-background pseudo-label."),
         ParameterSpec("noise_working_maximum_dimension", "GPU working dimension", "int", 512, 4096, 128, "Maximum directional-noise analysis dimension. Work and upsampling stay on GPU; selected overlays retain the full crop dimensions."),
+    )
+    foreground_noise_parameters = tuple(
+        ParameterSpec(
+            {
+                "noise_background_min_likelihood": "foreground_noise_foreground_min_likelihood",
+                "noise_nonbackground_max_likelihood": "foreground_noise_nonforeground_max_likelihood",
+            }.get(spec.key, spec.key.replace("noise_", "foreground_noise_", 1)),
+            spec.label.replace("background", "foreground").replace(
+                "Background", "Foreground"
+            ),
+            spec.kind,
+            spec.minimum,
+            spec.maximum,
+            spec.step,
+            spec.description.replace("background", "foreground").replace(
+                "Background", "Foreground"
+            ),
+            spec.choices,
+        )
+        for spec in noise_parameters
     )
     edge_parameters = (
         ParameterSpec("edge_blur_sigma", "Pre-edge blur sigma", "float", 0.1, 5.0, 0.1, "Gaussian sigma applied in Lab before Scharr derivatives."),
@@ -469,6 +685,30 @@ def build_default_pipeline() -> PipelineGraph:
         "edge_normalization_percentile": 99.0,
         "edge_strength_gamma": 0.65,
     }
+    surface_gradient_parameters = (
+        ParameterSpec("surface_gradient_blur_sigma", "Surface blur sigma", "float", 0.1, 8.0, 0.1, "Gaussian smoothing applied to CIE L* before one-sided surface slopes are measured."),
+        ParameterSpec("surface_gradient_radius_fraction", "Ray length / diameter", "float", 0.05, 2.0, 0.05, "Farthest target pixel tested along each one-sided ray, relative to the image-specific seed diameter."),
+        ParameterSpec("surface_gradient_direction_step_degrees", "Direction step", "int", 5, 90, 5, "Angular spacing between independently tested one-sided rays; smaller steps resolve direction more finely."),
+        ParameterSpec("surface_gradient_sample_count", "Samples per ray", "int", 2, 32, 1, "Number of target distances tested along each direction before the maximum lightening and darkening slopes are selected."),
+        ParameterSpec("surface_gradient_normalization_percentile", "Strength normalization percentile", "float", 80.0, 99.9, 0.1, "Raw L* slope percentile mapped to maximum overlay brightness without changing the physical cutoff values."),
+        ParameterSpec("surface_gradient_strength_gamma", "Strength display gamma", "float", 0.10, 2.00, 0.05, "Display-only exponent applied after percentile normalization; below one reveals weak surface changes."),
+        ParameterSpec("surface_gradient_working_maximum_dimension", "GPU working dimension", "int", 512, 4096, 128, "Maximum tensor dimension used for the ray bank; outputs are restored to the full dish crop on the GPU."),
+    )
+    surface_gradient_ceiling_parameters = (
+        ParameterSpec("lightening_gradient_maximum_slope", "Maximum retained L* slope / px", "float", 0.05, 30.0, 0.05, "Zero lightening responses whose raw CIE L* change per original-image pixel exceeds this ceiling, suppressing hard edges."),
+    )
+    darkening_gradient_ceiling_parameters = (
+        ParameterSpec("darkening_gradient_maximum_slope", "Maximum retained L* slope / px", "float", 0.05, 30.0, 0.05, "Zero darkening responses whose raw CIE L* change per original-image pixel exceeds this ceiling, suppressing hard edges."),
+    )
+    frequency_noise_mask_parameters = (
+        ParameterSpec("frequency_noise_fine_scale_fraction", "Fine scale / diameter", "float", 0.002, 0.20, 0.002, "Smallest Gaussian scale used to isolate high-frequency local darkness and Lab-chroma variation."),
+        ParameterSpec("frequency_noise_medium_scale_fraction", "Medium scale / diameter", "float", 0.005, 0.50, 0.005, "Middle Gaussian scale defining the fine-to-medium frequency band."),
+        ParameterSpec("frequency_noise_coarse_scale_fraction", "Coarse scale / diameter", "float", 0.01, 1.50, 0.01, "Largest Gaussian scale defining the medium-to-coarse frequency band."),
+        ParameterSpec("frequency_noise_context_fraction", "RMS context / diameter", "float", 0.002, 0.50, 0.002, "Surrounding neighbourhood over which each band-limited darkness or colour residual is converted to local RMS energy."),
+        ParameterSpec("frequency_noise_normalization_percentile", "Mask normalization percentile", "float", 80.0, 99.9, 0.1, "Per-band response percentile mapped to full mask brightness."),
+        ParameterSpec("frequency_noise_strength_gamma", "Mask display gamma", "float", 0.10, 2.00, 0.05, "Display exponent shared by all six frequency masks."),
+        ParameterSpec("frequency_noise_working_maximum_dimension", "GPU working dimension", "int", 512, 4096, 128, "Maximum tensor dimension used for multiscale noise energy before full-resolution GPU restoration."),
+    )
     instance_parameters = (
         ParameterSpec("instance_min_extent_fraction", "Minimum mask extent / diameter", "float", 0.20, 1.20, 0.01, "Minimum circular extent retained around each proposal."),
         ParameterSpec("instance_max_extent_fraction", "Maximum mask extent / diameter", "float", 0.30, 1.50, 0.01, "Maximum circular extent retained around each proposal."),
@@ -529,6 +769,7 @@ def build_default_pipeline() -> PipelineGraph:
         ParameterSpec("maximum_dimension", "GPU working dimension", "int", 256, 4096, 128, "Maximum dish-crop dimension processed by the diagnostic tensor branch. Outputs are resampled to full crop size."),
         ParameterSpec("interior_smoothing_fraction", "Interior smoothing / diameter", "float", 0.005, 0.30, 0.005, "Gaussian smoothing scale applied to foreground evidence relative to the global seed diameter."),
         ParameterSpec("interior_background_weight", "Background-evidence weight", "float", 0.0, 1.0, 0.05, "Blend between the foreground-strength model and inverse background evidence."),
+        ParameterSpec("interior_foreground_noise_weight", "Foreground-noise weight", "float", 0.0, 1.0, 0.05, "Blend between foreground colour probability and the learned foreground-noise probability before inverse background evidence is incorporated."),
     )
     boundary_normal_parameters = (
         ParameterSpec("boundary_width_fraction", "Boundary width / diameter", "float", 0.005, 0.20, 0.005, "Width of the probability morphology band combined with colour/lightness gradients."),
@@ -550,6 +791,11 @@ def build_default_pipeline() -> PipelineGraph:
     )
     illumination_parameters = (
         ParameterSpec("illumination_scale_fraction", "Illumination scale / diameter", "float", 0.10, 4.0, 0.05, "Large Gaussian scale used to separate illumination from seed reflectance."),
+        ParameterSpec("flattening_contrast_gain", "Flattened contrast gain", "float", 0.10, 8.0, 0.10, "Gain applied to the log ratio between grayscale and its local illumination field."),
+        ParameterSpec("lighting_deviation_scale_fraction", "Extreme context / diameter", "float", 0.01, 1.0, 0.01, "Local context used to standardize dark and bright deviations from flattened grayscale."),
+        ParameterSpec("shadow_z_threshold", "Shadow deviation threshold", "float", 0.05, 5.0, 0.05, "Standardized negative local-lighting deviation at which shadow probability reaches its nonlinear transition."),
+        ParameterSpec("highlight_z_threshold", "Highlight deviation threshold", "float", 0.05, 5.0, 0.05, "Standardized positive local-lighting deviation at which highlight probability reaches its nonlinear transition."),
+        ParameterSpec("lighting_extreme_softness", "Extreme transition softness", "float", 0.05, 2.0, 0.05, "Width of the sigmoid transition used for both shadow and highlight likelihoods."),
     )
     image_quality_parameters = (
         ParameterSpec("quality_noise_scale_fraction", "Noise scale / diameter", "float", 0.005, 0.30, 0.005, "Local high-frequency scale used for sensor/noise risk."),
@@ -620,14 +866,17 @@ def build_default_pipeline() -> PipelineGraph:
             "Layout detection",
             "Calibration",
             "Detect the lower and upper concentric glass edges of a Petri dish",
-            960,
-            -160,
+            1120,
+            -400,
             details=(
                 "The corrected image is reduced to the configured maximum dimension, "
                 "converted to grayscale, and Gaussian-blurred on the tensor device. "
                 "A CUDA circle bank scores radial-gradient support across the configured radius interval. "
-                "The editable centre/radius prior selects a primary circular edge, then a dense "
-                "concentric radial profile resolves the lower/inner and upper/outer glass edges. "
+                "When ruler scale is available, the editable physical outer-diameter prior excludes "
+                "smaller circular seed-mass boundaries; otherwise the image-relative radius prior is used. "
+                "The selected primary circular edge then seeds a dense "
+                "concentric radial-profile search that resolves the lower/inner and "
+                "upper/outer glass edges. "
                 "Both edges are retained for layout review; the outer edge defines the complete "
                 "vessel extent and is the radius supplied to every downstream analysis node. "
                 "The result is tagged as a Petri-dish vessel so "
@@ -641,8 +890,10 @@ def build_default_pipeline() -> PipelineGraph:
                 "expected_center_x_fraction": 0.58,
                 "expected_center_y_fraction": 0.40,
                 "expected_radius_fraction": 0.225,
+                "expected_outer_diameter_mm": 96.0,
+                "calibrated_outer_radius_tolerance_fraction": 0.025,
                 "rim_pair_search_fraction": 0.14,
-                "rim_pair_min_separation_fraction": 0.015,
+                "rim_pair_min_separation_fraction": 0.025,
                 "rim_pair_max_separation_fraction": 0.12,
                 "rim_pair_expected_separation_fraction": 0.045,
                 "rim_pair_secondary_support_fraction": 0.30,
@@ -654,8 +905,8 @@ def build_default_pipeline() -> PipelineGraph:
             "Absolute ruler scale",
             "Calibration",
             "Estimate pixels per millimetre from deskewed ruler ticks",
-            1200,
-            100,
+            1040,
+            240,
             parameters={"minor_tick_mm": 1.0},
             parameter_specs=scale_parameters,
         ),
@@ -690,27 +941,53 @@ def build_default_pipeline() -> PipelineGraph:
             parameter_specs=seed_scale_parameters,
         ),
         PipelineNode(
-            "foreground_segmentation",
-            "Dish foreground mask",
+            "perimeter_background_reference",
+            "Perimeter background reference",
             "Segmentation",
-            "Separate seed-like colour from the estimated dish background",
+            "Sample a buffered colour-reference band outside the Petri dish",
+            1240,
+            40,
+            details=(
+                "The ruler-calibrated controls define a clear buffer beyond the "
+                "detected upper/outer glass edge followed by an independently "
+                "adjustable annular sampling band. Every pixel in that band contributes "
+                "to the initial median Lab colour and multimodal background reference. "
+                "When ruler scale is unavailable, the detected 48 mm dish radius supplies "
+                "the metric fallback. If too little of the requested outer annulus is "
+                "visible, an orange inside-rim fallback preserves the configured gap and "
+                "band thickness."
+            ),
+            parameters={
+                "perimeter_background_buffer_cm": 0.35,
+                "perimeter_background_band_thickness_cm": 0.50,
+            },
+            parameter_specs=perimeter_background_parameters,
+        ),
+        PipelineNode(
+            "foreground_segmentation",
+            "Foreground colour probability",
+            "Segmentation",
+            "Estimate per-pixel foreground probability from seed-like colour",
             1440,
             -200,
             details=(
-                "The median CIE Lab colour in the 0.5 cm band immediately outside "
-                "the detected dish starts background selection, preventing pale seeds "
-                "from being mistaken for the background class. Similar in-dish pixels "
-                "refine that estimate; painted background areas override it. Foreground "
+                "Individual CIE Lab colours in a compact rim-adjacent outside band "
+                "define the foreground branch's background prior, preventing "
+                "pale seeds from redefining the background class. Painted background areas "
+                "override that automatic evidence. Foreground "
                 "strength is a weighted Lab distance, Otsu centres a soft grayscale "
                 "probability transition. Seed-scale local lightness then suppresses dark "
                 "inter-seed gaps while retaining locally brighter seed surfaces, and a "
                 "seed-scaled kernel cleans the derived binary proposal mask. Painted "
                 "foreground pixels fit a multimodal Lab distribution; cautious refinement "
-                "rounds enhance high-confidence matches across the dish while keeping the "
-                "painted area anchored. It is also hard-included after morphology. "
+                "rounds widen the anchored colour bins across the dish without moving "
+                "their centres. Painted pixels are never forced into the result; they "
+                "receive the same colour-derived probability as matching unpainted pixels. "
+                "Foreground exclusions fit separate negative colour and texture distributions; "
+                "matching evidence is downweighted globally rather than zeroing the brush path. "
                 "The inspector plots the painted distribution—or a diagnostic fit to "
                 "automatic high-confidence foreground pixels—as probability contours "
-                "over a CIE Lab colour-gamut slice. "
+                "over an HSV hue/tint/shade projection evaluated by the Lab model. "
                 "Diagnostics cover the full dish, while proposals retain an editable "
                 "inset measured from the upper/outer rim."
             ),
@@ -724,11 +1001,11 @@ def build_default_pipeline() -> PipelineGraph:
                 "foreground_reference_weight": 0.75,
                 "foreground_local_contrast_scale_fraction": 0.18,
                 "foreground_shadow_rejection_strength": 1.0,
-                "foreground_reference_components": 4,
+                "foreground_reference_components": 64,
                 "foreground_distribution_fit_iterations": 6,
                 "foreground_refinement_iterations": 2,
                 "foreground_refinement_min_probability": 0.82,
-                "foreground_frequency_weight_power": 0.35,
+                "foreground_frequency_weight_power": 0.0,
                 "foreground_distribution_scale_multiplier": 1.50,
             },
             parameter_specs=foreground_parameters,
@@ -763,12 +1040,14 @@ def build_default_pipeline() -> PipelineGraph:
             1680,
             -100,
             details=(
-                "The grayscale dish crop is blurred on CUDA and convolved with a "
-                "bank of normalized ring kernels. Radius and centre-spacing limits are "
+                "The shared Lab/Scharr edge magnitude plus boundaries in sensor/noise, "
+                "flattened grayscale, local-shadow, and local-highlight rasters are "
+                "weighted on CUDA and convolved with a bank of normalized "
+                "ring kernels. Radius and centre-spacing limits are "
                 "editable fractions of the estimated seed diameter. "
                 "Candidates outside the configured inset from the upper/outer dish rim are discarded. "
-                "This branch is complementary to distance peaks and is currently "
-                "biased toward roughly round visible seed boundaries."
+                "This experimental toolbox branch remains biased toward roughly round "
+                "visible seed boundaries and is not part of the default DAG."
             ),
             parameters={
                 "circle_accumulator_threshold": 22,
@@ -776,31 +1055,47 @@ def build_default_pipeline() -> PipelineGraph:
                 "dense_distance_candidate_threshold": 30,
                 "circle_edge_threshold": 80,
                 "circle_working_maximum_dimension": 1280,
+                "circle_edge_magnitude_weight": 0.50,
+                "circle_sensor_noise_weight": 0.20,
+                "circle_flattened_grayscale_weight": 0.10,
+                "circle_shadow_weight": 0.10,
+                "circle_highlight_weight": 0.10,
                 "circle_min_distance_fraction": 0.58,
                 "circle_min_radius_fraction": 0.22,
                 "circle_max_radius_fraction": 0.62,
+                "merge_distance_fraction": 0.48,
+                "circle_confidence": 0.62,
             },
             parameter_specs=circle_parameters,
+            input_ports=(
+                ("region", "Dish search region"),
+                ("scale", "Seed diameter"),
+                ("edge", "Edge magnitude"),
+                ("noise", "Sensor/noise likelihood"),
+                ("flattened", "Flattened grayscale"),
+                ("shadow", "Local shadow likelihood"),
+                ("highlight", "Local highlight likelihood"),
+            ),
+            output_ports=(("candidates", "Circle candidates"),),
         ),
         PipelineNode(
             "identification",
             "Seed identification",
             "Segmentation",
-            "Fuse circle and distance-peak candidates into review proposals",
+            "Consolidate active seed-centre candidates into review proposals",
             1920,
             -200,
             details=(
-                "Distance peaks establish seed interiors; CUDA ring candidates then enter using "
-                "their editable confidence weights. A ring candidate near a distance peak "
-                "is merged using confidence-weighted centre coordinates and the larger "
-                "radius. Otherwise it is retained as another seed proposal. Results "
-                "are sorted top-to-bottom then left-to-right. These are untrained "
-                "review proposals—not validated instance counts—and overlaps still "
+                "The default graph turns distance peaks directly into spatially sorted "
+                "review proposals. If Circle candidates is restored from the unused-node "
+                "toolbox and enabled, nearby CUDA ring candidates are merged using the "
+                "circle node's editable distance and confidence, while separated rings "
+                "remain additional proposals. Results are sorted top-to-bottom then "
+                "left-to-right. These are untrained review proposals—not validated "
+                "instance counts—and overlaps still "
                 "require later mask correction."
             ),
             parameters={
-                "merge_distance_fraction": 0.48,
-                "circle_confidence": 0.62,
                 "distance_confidence": 0.48,
             },
             parameter_specs=fusion_parameters,
@@ -808,7 +1103,7 @@ def build_default_pipeline() -> PipelineGraph:
         ),
         PipelineNode(
             "background_likelihood",
-            "Background colour",
+            "Background colour probability",
             "Diagnostic overlay",
             "Automatic or user-referenced per-pixel background likelihood",
             1320,
@@ -831,16 +1126,18 @@ def build_default_pipeline() -> PipelineGraph:
             parameter_specs=background_parameters,
             details=(
                 "Painted areas, or pixels within a fixed weighted-colour tolerance of "
-                "the median colour in the 0.5 cm outer dish-perimeter band, fit a multimodal "
+                "the median colour in the buffered outer dish-perimeter band, fit a multimodal "
                 "CIE Lab probability distribution with a separate centre and spread for each mode. "
                 "Optional iterative rounds admit only high-probability matches while retaining the "
                 "painted pixels as anchors. Background and foreground reference areas are enforced "
-                "as hard constraints in both colour and directional-noise maps. If too little "
+                "as hard constraints in both colour and directional-noise maps. "
+                "Painted background exclusions instead fit separate negative colour and texture "
+                "evidence, attenuating every match without overwriting painted coordinates. If too little "
                 "matching tray is visible inside a crowded dish, the outer perimeter "
                 "measurement remains authoritative instead of admitting seed colours. The node "
                 "overlay outlines the exact annulus used for that initial estimate. The node "
-                "inspector plots fitted membership contours over a local CIE Lab colour-gamut "
-                "slice, including learned mode locations and reference frequencies. Its status "
+                "inspector plots fitted membership contours over an HSV hue/tint/shade "
+                "projection, including learned mode locations and reference frequencies. Its status "
                 "reports the BGR range, selected area, and a warning when the final estimate "
                 "deviates substantially from the perimeter prior."
             ),
@@ -859,10 +1156,20 @@ def build_default_pipeline() -> PipelineGraph:
                 "instance_radius_extent_multiplier": 1.55,
             },
             parameter_specs=instance_parameters,
+            details=(
+                "Applied seed-instance annotations enter here as distinct interior "
+                "identity constraints. Their centroids are prepended to automatic "
+                "candidate centres, and a nearby automatic duplicate is suppressed. "
+                "The provisional masks then grow within the editable radial extent "
+                "and foreground/background gate while retaining each painted interior. "
+                "These integer IDs never alter the foreground colour model or force "
+                "foreground probability. The node remains disabled by default until "
+                "its separation quality has been validated."
+            ),
         ),
         PipelineNode(
             "refined_background_likelihood",
-            "Background noise profile",
+            "Background noise probability",
             "Diagnostic overlay",
             "Directional frequency continuation learned from colour pseudo-labels",
             1440,
@@ -892,6 +1199,34 @@ def build_default_pipeline() -> PipelineGraph:
             ),
         ),
         PipelineNode(
+            "foreground_noise_likelihood",
+            "Foreground noise probability",
+            "Diagnostic overlay",
+            "Directional frequency continuation learned from foreground colour pseudo-labels",
+            1560,
+            -20,
+            parameters={
+                "foreground_noise_medium_scale_fraction": 0.03,
+                "foreground_noise_coarse_scale_fraction": 0.08,
+                "foreground_noise_direction_step_degrees": 15,
+                "foreground_noise_vector_length_fraction": 0.55,
+                "foreground_noise_vector_sample_count": 9,
+                "foreground_noise_vector_decay": 0.86,
+                "foreground_noise_direction_integration": "maximum",
+                "foreground_noise_foreground_min_likelihood": 190,
+                "foreground_noise_nonforeground_max_likelihood": 65,
+                "foreground_noise_working_maximum_dimension": 1280,
+            },
+            parameter_specs=foreground_noise_parameters,
+            details=(
+                "Fine, medium, and coarse texture distributions are learned from "
+                "confident foreground-colour and non-foreground pseudo-labels. The "
+                "same one-sided ray integration used by the background-noise node "
+                "continues matching seed texture through patterned coats without "
+                "turning painted foreground pixels into forced output values."
+            ),
+        ),
+        PipelineNode(
             "edge_gradients",
             "Edge gradients",
             "GPU diagnostic",
@@ -909,6 +1244,7 @@ def build_default_pipeline() -> PipelineGraph:
             parameter_specs=edge_parameters,
             input_ports=(("image", "Corrected image"),),
             output_ports=(
+                ("magnitude", "Edge magnitude"),
                 ("undirected", "Undirected 0–180°"),
                 ("directed", "Directed 0–360°"),
             ),
@@ -917,6 +1253,132 @@ def build_default_pipeline() -> PipelineGraph:
                 ("edge_chroma_weight", "Chroma ×"),
                 ("edge_normalization_percentile", "Norm %"),
                 ("edge_strength_gamma", "Gamma"),
+            ),
+        ),
+        PipelineNode(
+            "surface_darkness_gradients",
+            "Directional surface darkness gradients",
+            "GPU diagnostic",
+            "Find maximum one-sided lightening and darkening L* slopes",
+            1440,
+            1080,
+            details=(
+                "CIE L* is smoothed once, then sampled at several distances along "
+                "independent one-sided rays. Every query pixel keeps the largest positive "
+                "target-minus-query slope as its lightening result and the largest positive "
+                "query-minus-target slope as its darkening result. Magnitudes are reported "
+                "as L* change per original-image pixel; hue encodes the query-to-target "
+                "direction over 0–360°. This measures gradual surface variation rather "
+                "than only the local Scharr derivative used by Edge gradients."
+            ),
+            parameters={
+                "surface_gradient_blur_sigma": 1.6,
+                "surface_gradient_radius_fraction": 0.45,
+                "surface_gradient_direction_step_degrees": 15,
+                "surface_gradient_sample_count": 8,
+                "surface_gradient_normalization_percentile": 99.0,
+                "surface_gradient_strength_gamma": 0.60,
+                "surface_gradient_working_maximum_dimension": 1280,
+            },
+            parameter_specs=surface_gradient_parameters,
+            bypassable=True,
+            input_ports=(
+                ("image", "Corrected image"),
+                ("scale", "Seed diameter"),
+            ),
+            output_ports=(
+                ("lightening_magnitude", "Lightening magnitude"),
+                ("lightening_direction", "Lightening direction"),
+                ("darkening_magnitude", "Darkening magnitude"),
+                ("darkening_direction", "Darkening direction"),
+            ),
+        ),
+        PipelineNode(
+            "lightening_gradient_ceiling",
+            "Lightening derivative upper cutoff",
+            "GPU diagnostic",
+            "Suppress lightening slopes above an editable upper magnitude",
+            1740,
+            1060,
+            details=(
+                "The raw lightening slope and its query-to-target direction are reused from "
+                "Directional surface darkness gradients. Pixels above the editable CIE L* "
+                "slope ceiling are set exactly to zero so strong physical edges do not "
+                "participate in this gradual-surface diagnostic."
+            ),
+            parameters={"lightening_gradient_maximum_slope": 1.0},
+            parameter_specs=surface_gradient_ceiling_parameters,
+            bypassable=True,
+            input_ports=(
+                ("magnitude", "Lightening magnitude"),
+                ("direction", "Lightening direction"),
+            ),
+            output_ports=(
+                ("magnitude", "Filtered lightening magnitude"),
+                ("direction", "Filtered lightening direction"),
+            ),
+        ),
+        PipelineNode(
+            "darkening_gradient_ceiling",
+            "Darkening derivative upper cutoff",
+            "GPU diagnostic",
+            "Suppress darkening slopes above an editable upper magnitude",
+            1740,
+            1240,
+            details=(
+                "The raw darkening slope and its query-to-target direction are reused from "
+                "Directional surface darkness gradients. Pixels above the editable CIE L* "
+                "slope ceiling are set exactly to zero so strong physical edges do not "
+                "participate in this gradual-surface diagnostic."
+            ),
+            parameters={"darkening_gradient_maximum_slope": 1.0},
+            parameter_specs=darkening_gradient_ceiling_parameters,
+            bypassable=True,
+            input_ports=(
+                ("magnitude", "Darkening magnitude"),
+                ("direction", "Darkening direction"),
+            ),
+            output_ports=(
+                ("magnitude", "Filtered darkening magnitude"),
+                ("direction", "Filtered darkening direction"),
+            ),
+        ),
+        PipelineNode(
+            "frequency_noise_masks",
+            "Multiscale darkness & colour noise",
+            "GPU diagnostic",
+            "Measure surrounding darkness and Lab-colour energy in three bands",
+            1440,
+            1420,
+            details=(
+                "A seed-relative Gaussian pyramid separates fine, medium, and coarse "
+                "frequencies. Within each band, surrounding RMS energy is calculated "
+                "independently for CIE L* darkness variation and Lab a*/b* colour "
+                "variation. The six masks are image-derived energies rather than learned "
+                "class probabilities and remain separate for downstream seed separation."
+            ),
+            parameters={
+                "frequency_noise_fine_scale_fraction": 0.008,
+                "frequency_noise_medium_scale_fraction": 0.030,
+                "frequency_noise_coarse_scale_fraction": 0.100,
+                "frequency_noise_context_fraction": 0.025,
+                "frequency_noise_normalization_percentile": 99.0,
+                "frequency_noise_strength_gamma": 0.65,
+                "frequency_noise_working_maximum_dimension": 1280,
+            },
+            parameter_specs=frequency_noise_mask_parameters,
+            bypassable=True,
+            input_ports=(
+                ("image", "Corrected image"),
+                ("scale", "Seed diameter"),
+            ),
+            output_ports=(
+                ("darkness_fine", "Fine darkness noise"),
+                ("darkness_medium", "Medium darkness noise"),
+                ("darkness_coarse", "Coarse darkness noise"),
+                ("colour_fine", "Fine colour noise"),
+                ("colour_medium", "Medium colour noise"),
+                ("colour_coarse", "Coarse colour noise"),
             ),
         ),
         PipelineNode(
@@ -1036,10 +1498,10 @@ def build_default_pipeline() -> PipelineGraph:
         ),
         PipelineNode(
             "seed_interior", "Seed-interior probability", "GPU diagnostic",
-            "Fuse foreground and background evidence into a soft seed-interior map",
+            "Fuse foreground colour, foreground noise, and background evidence into a soft seed-interior map",
             1680, 180,
-            details="CUDA PyTorch smooths the colour-derived foreground response, blends inverse background evidence, and retains a continuous probability instead of an early hard threshold.",
-            parameters={"compute_device": "cuda", "allow_cpu_fallback": False, "maximum_dimension": 1024, "interior_smoothing_fraction": 0.055, "interior_background_weight": 0.55},
+            details="CUDA PyTorch smooths colour-derived foreground probability and learned foreground-noise probability, blends them with an adjustable texture weight, then incorporates inverse background evidence while retaining a continuous probability instead of an early hard threshold.",
+            parameters={"compute_device": "cuda", "allow_cpu_fallback": False, "maximum_dimension": 1024, "interior_smoothing_fraction": 0.055, "interior_background_weight": 0.55, "interior_foreground_noise_weight": 0.35},
             parameter_specs=seed_interior_parameters,
         ),
         PipelineNode(
@@ -1091,12 +1553,36 @@ def build_default_pipeline() -> PipelineGraph:
             parameter_specs=contact_parameters,
         ),
         PipelineNode(
-            "illumination_decomposition", "Illumination decomposition", "GPU diagnostic",
-            "Separate broad illumination, reflectance, shadow, and glare",
-            1200, 760,
-            details="A seed-scaled low-frequency field estimates illumination. Dividing luminance by this field gives reflectance; additional intermediates expose shadow and specular risk.",
-            parameters={"illumination_scale_fraction": 0.55},
+            "illumination_decomposition", "Grayscale & local lighting", "GPU diagnostic",
+            "Flatten grayscale and identify locally unusual shadow/highlight areas",
+            1440, 760,
+            details=(
+                "A valid-mask-aware, seed-scaled Gaussian field estimates local lighting. "
+                "A clipped log grayscale/lighting ratio produces simple flattened grayscale. "
+                "The residual is standardized by its local absolute deviation and passed "
+                "through separate nonlinear sigmoid thresholds for shadow and highlight "
+                "areas. Broad illumination, reflectance, and specular risk remain available."
+            ),
+            parameters={
+                "illumination_scale_fraction": 0.55,
+                "flattening_contrast_gain": 1.80,
+                "lighting_deviation_scale_fraction": 0.10,
+                "shadow_z_threshold": 0.75,
+                "highlight_z_threshold": 0.75,
+                "lighting_extreme_softness": 0.30,
+            },
             parameter_specs=illumination_parameters,
+            input_ports=(
+                ("image", "Corrected image"),
+                ("scale", "Seed diameter"),
+            ),
+            output_ports=(
+                ("illumination", "Local illumination"),
+                ("flattened", "Flattened grayscale"),
+                ("shadow", "Local shadow likelihood"),
+                ("highlight", "Local highlight likelihood"),
+                ("reflectance", "Reflectance"),
+            ),
         ),
         PipelineNode(
             "image_quality", "Image-quality diagnostics", "GPU diagnostic",
@@ -1105,6 +1591,7 @@ def build_default_pipeline() -> PipelineGraph:
             details="The composite risk map is backed by separately viewable focus, clipped-highlight, underexposure, and sensor-noise maps.",
             parameters={"quality_noise_scale_fraction": 0.025},
             parameter_specs=image_quality_parameters,
+            output_ports=(("sensor_noise", "Sensor/noise likelihood"),),
         ),
         PipelineNode(
             "radial_profile", "Per-seed radial profiles", "GPU diagnostic",
@@ -1187,13 +1674,17 @@ def build_default_pipeline() -> PipelineGraph:
         "layout_detection": (
             ("downsample_max_dimension", "GPU dimension"),
             ("hough_accumulator_threshold", "Rim support"),
-            ("expected_radius_fraction", "Expected radius"),
+            ("expected_outer_diameter_mm", "Outer diameter mm"),
             ("rim_pair_expected_separation_fraction", "Expected rim gap"),
         ),
         "scale_calibration": (("minor_tick_mm", "Minor tick mm"),),
         "seed_scale_estimation": (
             ("reference_scale_factor", "Reference scale"),
             ("fallback_diameter_fraction", "Fallback diameter"),
+        ),
+        "perimeter_background_reference": (
+            ("perimeter_background_buffer_cm", "Buffer cm"),
+            ("perimeter_background_band_thickness_cm", "Band cm"),
         ),
         "foreground_segmentation": (
             ("foreground_otsu_fraction", "Otsu multiplier"),
@@ -1208,11 +1699,9 @@ def build_default_pipeline() -> PipelineGraph:
             ("circle_accumulator_threshold", "Ring support"),
             ("circle_min_radius_fraction", "Radius min"),
             ("circle_max_radius_fraction", "Radius max"),
-            ("circle_working_maximum_dimension", "GPU dimension"),
+            ("circle_confidence", "Circle weight"),
         ),
         "identification": (
-            ("merge_distance_fraction", "Merge distance"),
-            ("circle_confidence", "Circle weight"),
             ("distance_confidence", "Distance weight"),
         ),
         "background_likelihood": (
@@ -1231,11 +1720,35 @@ def build_default_pipeline() -> PipelineGraph:
             ("noise_direction_integration", "Integration"),
             ("noise_working_maximum_dimension", "GPU dimension"),
         ),
+        "foreground_noise_likelihood": (
+            ("foreground_noise_direction_step_degrees", "Direction step"),
+            ("foreground_noise_vector_length_fraction", "Ray length"),
+            ("foreground_noise_direction_integration", "Integration"),
+            ("foreground_noise_working_maximum_dimension", "GPU dimension"),
+        ),
         "edge_gradients": (
             ("edge_blur_sigma", "Blur sigma"),
             ("edge_chroma_weight", "Chroma weight"),
             ("edge_normalization_percentile", "Normalize %"),
             ("edge_strength_gamma", "Gamma"),
+        ),
+        "surface_darkness_gradients": (
+            ("surface_gradient_radius_fraction", "Ray length"),
+            ("surface_gradient_direction_step_degrees", "Direction step"),
+            ("surface_gradient_sample_count", "Ray samples"),
+            ("surface_gradient_working_maximum_dimension", "GPU dimension"),
+        ),
+        "lightening_gradient_ceiling": (
+            ("lightening_gradient_maximum_slope", "Maximum slope"),
+        ),
+        "darkening_gradient_ceiling": (
+            ("darkening_gradient_maximum_slope", "Maximum slope"),
+        ),
+        "frequency_noise_masks": (
+            ("frequency_noise_fine_scale_fraction", "Fine scale"),
+            ("frequency_noise_medium_scale_fraction", "Medium scale"),
+            ("frequency_noise_coarse_scale_fraction", "Coarse scale"),
+            ("frequency_noise_context_fraction", "RMS context"),
         ),
         "edge_ridges": (
             ("ridge_nms_step_px", "NMS step"),
@@ -1259,6 +1772,7 @@ def build_default_pipeline() -> PipelineGraph:
             ("compute_device", "Device"),
             ("maximum_dimension", "GPU dimension"),
             ("interior_background_weight", "Background weight"),
+            ("interior_foreground_noise_weight", "FG noise weight"),
         ),
         "boundary_normals": (("boundary_width_fraction", "Boundary width"),),
         "touching_split": (("split_neck_fraction", "Neck depth"),),
@@ -1266,7 +1780,12 @@ def build_default_pipeline() -> PipelineGraph:
         "proposal_disagreement": (("disagreement_scale_fraction", "Evidence spread"),),
         "assignment_confidence": (("assignment_boundary_penalty", "Boundary penalty"),),
         "contact_graph": (("contact_distance_multiplier", "Contact distance"),),
-        "illumination_decomposition": (("illumination_scale_fraction", "Field scale"),),
+        "illumination_decomposition": (
+            ("illumination_scale_fraction", "Field scale"),
+            ("flattening_contrast_gain", "Flatten gain"),
+            ("shadow_z_threshold", "Shadow z"),
+            ("highlight_z_threshold", "Highlight z"),
+        ),
         "image_quality": (("quality_noise_scale_fraction", "Noise scale"),),
         "radial_profile": (("radial_bin_count", "Radial bins"),),
         "wrinkling": (("wrinkle_scale_fraction", "Wrinkle scale"),),
@@ -1286,15 +1805,53 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineConnection("deskew_colour", "layout_detection", "CorrectedImage"),
         PipelineConnection("deskew_colour", "scale_calibration", "CorrectedImage"),
         PipelineConnection("ruler_detection", "scale_calibration", "RulerAxis"),
+        PipelineConnection("scale_calibration", "layout_detection", "PixelsPerMillimetre"),
         PipelineConnection("deskew_colour", "seed_scale_estimation", "CorrectedImage"),
         PipelineConnection("layout_detection", "seed_scale_estimation", "VesselGeometry"),
+        PipelineConnection(
+            "deskew_colour", "perimeter_background_reference", "CorrectedImage"
+        ),
+        PipelineConnection(
+            "layout_detection", "perimeter_background_reference", "VesselGeometry"
+        ),
+        PipelineConnection(
+            "scale_calibration",
+            "perimeter_background_reference",
+            "PixelsPerMillimetre",
+        ),
         PipelineConnection("deskew_colour", "foreground_segmentation", "CorrectedImage"),
         PipelineConnection("layout_detection", "foreground_segmentation", "VesselGeometry"),
         PipelineConnection("seed_scale_estimation", "foreground_segmentation", "SeedDiameter"),
         PipelineConnection("foreground_segmentation", "distance_candidates", "ForegroundMask"),
         PipelineConnection("seed_scale_estimation", "distance_candidates", "SeedDiameter"),
-        PipelineConnection("foreground_segmentation", "circle_candidates", "DishSearchRegion"),
-        PipelineConnection("seed_scale_estimation", "circle_candidates", "SeedDiameter"),
+        PipelineConnection(
+            "foreground_segmentation", "circle_candidates", "DishSearchRegion",
+            target_port="region",
+        ),
+        PipelineConnection(
+            "seed_scale_estimation", "circle_candidates", "SeedDiameter",
+            target_port="scale",
+        ),
+        PipelineConnection(
+            "edge_gradients", "circle_candidates", "EdgeMagnitude",
+            source_port="magnitude", target_port="edge",
+        ),
+        PipelineConnection(
+            "image_quality", "circle_candidates", "SensorNoiseLikelihood",
+            source_port="sensor_noise", target_port="noise",
+        ),
+        PipelineConnection(
+            "illumination_decomposition", "circle_candidates", "FlattenedGrayscale",
+            source_port="flattened", target_port="flattened",
+        ),
+        PipelineConnection(
+            "illumination_decomposition", "circle_candidates", "ShadowLikelihood",
+            source_port="shadow", target_port="shadow",
+        ),
+        PipelineConnection(
+            "illumination_decomposition", "circle_candidates", "HighlightLikelihood",
+            source_port="highlight", target_port="highlight",
+        ),
         PipelineConnection("distance_candidates", "identification", "DistancePeaks"),
         PipelineConnection("circle_candidates", "identification", "CudaRings"),
         PipelineConnection(
@@ -1302,6 +1859,11 @@ def build_default_pipeline() -> PipelineGraph:
         ),
         PipelineConnection(
             "seed_scale_estimation", "background_likelihood", "SeedDiameter"
+        ),
+        PipelineConnection(
+            "perimeter_background_reference",
+            "background_likelihood",
+            "PerimeterColourSamples",
         ),
         PipelineConnection("identification", "instance_masks", "SeedProposals"),
         PipelineConnection(
@@ -1321,7 +1883,69 @@ def build_default_pipeline() -> PipelineGraph:
             "SeedDiameter",
         ),
         PipelineConnection(
+            "foreground_segmentation",
+            "foreground_noise_likelihood",
+            "ColourPseudoLabels",
+        ),
+        PipelineConnection(
+            "seed_scale_estimation",
+            "foreground_noise_likelihood",
+            "SeedDiameter",
+        ),
+        PipelineConnection(
             "deskew_colour", "edge_gradients", "CorrectedImage", target_port="image"
+        ),
+        PipelineConnection(
+            "deskew_colour",
+            "surface_darkness_gradients",
+            "CorrectedImage",
+            target_port="image",
+        ),
+        PipelineConnection(
+            "seed_scale_estimation",
+            "surface_darkness_gradients",
+            "SeedDiameter",
+            target_port="scale",
+        ),
+        PipelineConnection(
+            "surface_darkness_gradients",
+            "lightening_gradient_ceiling",
+            "LighteningMagnitude",
+            source_port="lightening_magnitude",
+            target_port="magnitude",
+        ),
+        PipelineConnection(
+            "surface_darkness_gradients",
+            "lightening_gradient_ceiling",
+            "LighteningDirection",
+            source_port="lightening_direction",
+            target_port="direction",
+        ),
+        PipelineConnection(
+            "surface_darkness_gradients",
+            "darkening_gradient_ceiling",
+            "DarkeningMagnitude",
+            source_port="darkening_magnitude",
+            target_port="magnitude",
+        ),
+        PipelineConnection(
+            "surface_darkness_gradients",
+            "darkening_gradient_ceiling",
+            "DarkeningDirection",
+            source_port="darkening_direction",
+            target_port="direction",
+        ),
+        PipelineConnection(
+            "deskew_colour",
+            "frequency_noise_masks",
+            "CorrectedImage",
+            target_port="image",
+        ),
+        PipelineConnection(
+            "seed_scale_estimation",
+            "frequency_noise_masks",
+            "SeedDiameter",
+            target_port="scale",
         ),
         PipelineConnection(
             "edge_gradients",
@@ -1348,6 +1972,7 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineConnection("foreground_segmentation", "seed_interior", "ForegroundEvidence"),
         PipelineConnection("background_likelihood", "seed_interior", "BackgroundProbability"),
         PipelineConnection("refined_background_likelihood", "seed_interior", "DirectionalBackground"),
+        PipelineConnection("foreground_noise_likelihood", "seed_interior", "ForegroundNoiseProbability"),
         PipelineConnection("seed_interior", "boundary_normals", "InteriorProbability"),
         PipelineConnection("directed_edges", "boundary_normals", "ColourGradient"),
         PipelineConnection("boundary_normals", "touching_split", "BoundaryConfidence"),
@@ -1361,8 +1986,18 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineConnection("boundary_normals", "assignment_confidence", "BoundaryConfidence"),
         PipelineConnection("assignment_confidence", "contact_graph", "AssignmentConfidence"),
         PipelineConnection("identification", "contact_graph", "SeedProposals"),
-        PipelineConnection("deskew_colour", "illumination_decomposition", "CorrectedImage"),
-        PipelineConnection("illumination_decomposition", "image_quality", "IlluminationProducts"),
+        PipelineConnection(
+            "deskew_colour", "illumination_decomposition", "CorrectedImage",
+            target_port="image",
+        ),
+        PipelineConnection(
+            "seed_scale_estimation", "illumination_decomposition", "SeedDiameter",
+            target_port="scale",
+        ),
+        PipelineConnection(
+            "illumination_decomposition", "image_quality", "IlluminationProducts",
+            source_port="illumination",
+        ),
         PipelineConnection("directed_edges", "image_quality", "ImageGradients"),
         PipelineConnection("instance_masks", "radial_profile", "ProvisionalInstances"),
         PipelineConnection("seed_scale_estimation", "radial_profile", "SeedDiameter"),
@@ -1374,9 +2009,15 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineConnection("boundary_normals", "coat_damage", "BoundaryConfidence"),
         PipelineConnection("image_quality", "coat_damage", "ImageQuality"),
         PipelineConnection("seed_interior", "pattern_decomposition", "InteriorProbability"),
-        PipelineConnection("illumination_decomposition", "pattern_decomposition", "Reflectance"),
+        PipelineConnection(
+            "illumination_decomposition", "pattern_decomposition", "Reflectance",
+            source_port="reflectance",
+        ),
         PipelineConnection("seed_interior", "colour_probabilities", "InteriorProbability"),
-        PipelineConnection("illumination_decomposition", "colour_probabilities", "Reflectance"),
+        PipelineConnection(
+            "illumination_decomposition", "colour_probabilities", "Reflectance",
+            source_port="reflectance",
+        ),
         PipelineConnection("colour_reference", "calibration_residuals", "ReferenceConfidence"),
         PipelineConnection("ruler_detection", "calibration_residuals", "ReferenceConfidence"),
         PipelineConnection("deskew_colour", "calibration_residuals", "CalibrationTransform"),
@@ -1397,4 +2038,34 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineConnection("classification", "aggregation", "TraitTable"),
         PipelineConnection("aggregation", "output", "LotSummary"),
     )
-    return PipelineGraph(nodes, connections)
+    graph = PipelineGraph(nodes, connections)
+    disabled_roots = (
+        "distance_candidates",
+        "circle_candidates",
+        "instance_masks",
+        "seed_interior",
+        "surface_darkness_gradients",
+    )
+    disabled = set(disabled_roots)
+    for root in disabled_roots:
+        disabled.update(graph.downstream(root, recursive=True))
+    for node_id in disabled:
+        node = graph.node(node_id)
+        node.enabled = False
+        node.bypassable = True
+        node.status = NodeStatus.BYPASSED
+        node.status_detail = "Disabled by default while this branch is under review"
+    # Preserve experimental or unfinished branches and all of their authored
+    # wiring without making them part of the default executable graph. The node
+    # editor exposes every removed node through its unused-node toolbox.
+    graph.shelve_node("circle_candidates", record_revision=False)
+    graph.shelve_node("lightening_gradient_ceiling", record_revision=False)
+    graph.shelve_node("darkening_gradient_ceiling", record_revision=False)
+    graph.shelve_node("surface_darkness_gradients", record_revision=False)
+    distance_branch = (
+        "distance_candidates",
+        *graph.downstream("distance_candidates", recursive=True),
+    )
+    for node_id in distance_branch:
+        graph.shelve_node(node_id, record_revision=False)
+    return graph

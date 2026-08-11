@@ -27,7 +27,7 @@ ADVANCED_NODE_MODES = {
     "proposal_disagreement": "proposal_disagreement",
     "assignment_confidence": "instance_assignment_confidence",
     "contact_graph": "contact_graph",
-    "illumination_decomposition": "illumination_field",
+    "illumination_decomposition": "flattened_grayscale",
     "image_quality": "image_quality_risk",
     "radial_profile": "radial_profile_residual",
     "wrinkling": "wrinkling_likelihood",
@@ -48,7 +48,9 @@ ADVANCED_OVERLAY_LABELS = (
     ("Contested instance pixels", "contested_pixels"),
     ("Occlusion/contact graph", "contact_graph"),
     ("Estimated illumination field", "illumination_field"),
-    ("Shadow likelihood", "shadow_likelihood"),
+    ("Flattened grayscale", "flattened_grayscale"),
+    ("Local shadow likelihood", "shadow_likelihood"),
+    ("Local highlight likelihood", "highlight_likelihood"),
     ("Reflectance image", "reflectance_image"),
     ("Specular/glare likelihood", "glare_likelihood"),
     ("Image-quality risk", "image_quality_risk"),
@@ -80,6 +82,7 @@ class AdvancedAnalysisSettings:
     maximum_dimension: int = 1024
     interior_smoothing_fraction: float = 0.055
     interior_background_weight: float = 0.55
+    interior_foreground_noise_weight: float = 0.35
     boundary_width_fraction: float = 0.025
     split_neck_fraction: float = 0.36
     ellipse_radial_tolerance: float = 0.22
@@ -87,6 +90,11 @@ class AdvancedAnalysisSettings:
     assignment_boundary_penalty: float = 0.70
     contact_distance_multiplier: float = 1.28
     illumination_scale_fraction: float = 0.55
+    flattening_contrast_gain: float = 1.80
+    lighting_deviation_scale_fraction: float = 0.10
+    shadow_z_threshold: float = 0.75
+    highlight_z_threshold: float = 0.75
+    lighting_extreme_softness: float = 0.30
     quality_noise_scale_fraction: float = 0.025
     radial_bin_count: int = 24
     wrinkle_scale_fraction: float = 0.035
@@ -102,6 +110,12 @@ class AdvancedAnalysisSettings:
             raise ValueError("maximum_dimension must be between 256 and 4096.")
         if not 4 <= self.radial_bin_count <= 128:
             raise ValueError("radial_bin_count must be between 4 and 128.")
+        if not 0.0 <= self.interior_background_weight <= 1.0:
+            raise ValueError("interior_background_weight must be between 0 and 1.")
+        if not 0.0 <= self.interior_foreground_noise_weight <= 1.0:
+            raise ValueError(
+                "interior_foreground_noise_weight must be between 0 and 1."
+            )
         positive = (
             self.interior_smoothing_fraction,
             self.boundary_width_fraction,
@@ -110,6 +124,11 @@ class AdvancedAnalysisSettings:
             self.disagreement_scale_fraction,
             self.contact_distance_multiplier,
             self.illumination_scale_fraction,
+            self.flattening_contrast_gain,
+            self.lighting_deviation_scale_fraction,
+            self.shadow_z_threshold,
+            self.highlight_z_threshold,
+            self.lighting_extreme_softness,
             self.quality_noise_scale_fraction,
             self.wrinkle_scale_fraction,
             self.damage_anomaly_scale_fraction,
@@ -186,7 +205,12 @@ class AdvancedAnalysisLayers:
             rgb = _hsv_full_saturation_to_rgb(hue, strength)
             return np.dstack((rgb, alpha))
         raster = np.asarray(self.rasters[mode])
-        if mode in {"illumination_field", "reflectance_image", "radial_coordinate"}:
+        if mode in {
+            "illumination_field",
+            "flattened_grayscale",
+            "reflectance_image",
+            "radial_coordinate",
+        }:
             return np.dstack((raster, raster, raster, alpha))
         return _heat_rgba(raster, alpha)
 
@@ -217,6 +241,179 @@ class AdvancedAnalysisLayers:
         )
 
 
+def _local_lighting_evidence(
+    torch,
+    functional,
+    luminance,
+    valid,
+    seed_diameter: float,
+    settings: AdvancedAnalysisSettings,
+):
+    """Flatten luminance and classify locally unusual dark/bright areas."""
+
+    illumination_sigma = max(
+        3.0, seed_diameter * settings.illumination_scale_fraction
+    )
+    illumination_support = _gaussian(
+        torch, functional, valid, illumination_sigma
+    ).clamp_min(1e-4)
+    illumination = _gaussian(
+        torch, functional, luminance * valid, illumination_sigma
+    ) / illumination_support
+    illumination = illumination.clamp(0.0, 1.0) * valid
+
+    # A log ratio removes multiplicative lighting while retaining a stable
+    # mid-gray reference. This is intentionally a simple, interpretable
+    # flattening rather than histogram equalization.
+    log_ratio = torch.log(
+        (luminance + 0.02) / (illumination + 0.02)
+    ) * valid
+    flattened = (
+        0.5 + log_ratio * settings.flattening_contrast_gain
+    ).clamp(0.0, 1.0) * valid
+
+    deviation_sigma = max(
+        0.8, seed_diameter * settings.lighting_deviation_scale_fraction
+    )
+    deviation_support = _gaussian(
+        torch, functional, valid, deviation_sigma
+    ).clamp_min(1e-4)
+    local_deviation = _gaussian(
+        torch, functional, torch.abs(log_ratio) * valid, deviation_sigma
+    ) / deviation_support
+    standardized = log_ratio / local_deviation.clamp_min(0.025)
+    softness = max(0.05, settings.lighting_extreme_softness)
+    shadow = torch.sigmoid(
+        (-standardized - settings.shadow_z_threshold) / softness
+    ) * valid
+    highlight = torch.sigmoid(
+        (standardized - settings.highlight_z_threshold) / softness
+    ) * valid
+    reflectance = _normalize(
+        torch, luminance / (illumination + 0.08), valid
+    ) * valid
+    return illumination, flattened, shadow, highlight, reflectance
+
+
+def local_lighting_evidence_tensors(
+    source_tensor,
+    valid_tensor,
+    seed_diameter: float,
+    settings: AdvancedAnalysisSettings,
+):
+    """Return full-resolution GPU tensors owned by the illumination node."""
+
+    import torch
+    import torch.nn.functional as functional
+
+    source = source_tensor.to(dtype=torch.float32)
+    valid_full = valid_tensor.to(device=source.device).bool()
+    source_height, source_width = source.shape[-2:]
+    scale = min(
+        1.0,
+        float(settings.maximum_dimension) / max(source_height, source_width),
+    )
+    height = max(8, round(source_height * scale))
+    width = max(8, round(source_width * scale))
+    rgb = source[:, (2, 1, 0)] / 255.0
+    if (height, width) != (source_height, source_width):
+        rgb = functional.interpolate(
+            rgb, (height, width), mode="bilinear", align_corners=False
+        )
+        valid = functional.interpolate(
+            valid_full.float(), (height, width), mode="nearest"
+        )
+    else:
+        valid = valid_full.float()
+    luminance = (
+        0.2126 * rgb[:, 0:1]
+        + 0.7152 * rgb[:, 1:2]
+        + 0.0722 * rgb[:, 2:3]
+    )
+    products = _local_lighting_evidence(
+        torch,
+        functional,
+        luminance,
+        valid,
+        seed_diameter * scale,
+        settings,
+    )
+    if (height, width) == (source_height, source_width):
+        return tuple(product * valid_full.float() for product in products)
+    return tuple(
+        functional.interpolate(
+            product,
+            (source_height, source_width),
+            mode="bilinear",
+            align_corners=False,
+        )
+        * valid_full.float()
+        for product in products
+    )
+
+
+def sensor_noise_likelihood_tensor(
+    source_tensor,
+    valid_tensor,
+    seed_diameter: float,
+    settings: AdvancedAnalysisSettings,
+):
+    """Return the image-quality node's full-resolution sensor/noise tensor.
+
+    This extraction lets another node consume the exact image-quality evidence
+    without forcing it to recompute a private approximation from the source
+    image. Work is performed at the advanced-analysis resolution and restored
+    to the source raster on the same device.
+    """
+
+    import torch
+    import torch.nn.functional as functional
+
+    source = source_tensor.to(dtype=torch.float32)
+    valid_full = valid_tensor.to(device=source.device).bool()
+    source_height, source_width = source.shape[-2:]
+    scale = min(
+        1.0,
+        float(settings.maximum_dimension) / max(source_height, source_width),
+    )
+    height = max(8, round(source_height * scale))
+    width = max(8, round(source_width * scale))
+    rgb = source[:, (2, 1, 0)] / 255.0
+    if (height, width) != (source_height, source_width):
+        rgb = functional.interpolate(
+            rgb, (height, width), mode="bilinear", align_corners=False
+        )
+        valid = functional.interpolate(
+            valid_full.float(), (height, width), mode="nearest"
+        )
+    else:
+        valid = valid_full.float()
+    luminance = (
+        0.2126 * rgb[:, 0:1]
+        + 0.7152 * rgb[:, 1:2]
+        + 0.0722 * rgb[:, 2:3]
+    )
+    noise_sigma = max(
+        0.8,
+        seed_diameter * scale * settings.quality_noise_scale_fraction,
+    )
+    sensor_noise = _normalize(
+        torch,
+        torch.abs(
+            luminance - _gaussian(torch, functional, luminance, noise_sigma)
+        ),
+        valid,
+    ) * valid
+    if (height, width) != (source_height, source_width):
+        sensor_noise = functional.interpolate(
+            sensor_noise,
+            (source_height, source_width),
+            mode="bilinear",
+            align_corners=False,
+        )
+    return sensor_noise * valid_full.float()
+
+
 def build_advanced_analysis_layers(
     crop: np.ndarray,
     valid_mask: np.ndarray,
@@ -235,12 +432,18 @@ def build_advanced_analysis_layers(
     offset_y: int,
     full_image_shape: tuple[int, int],
     foreground_probability: object | None = None,
+    foreground_noise_probability: object | None = None,
+    background_colour_probability: object | None = None,
+    background_noise_probability: object | None = None,
     calibration_anchors: tuple[tuple[float, float, float], ...] = (),
     settings: AdvancedAnalysisSettings | None = None,
     previous: AdvancedAnalysisLayers | None = None,
     dirty_nodes: set[str] | frozenset[str] = frozenset(),
+    enabled_nodes: set[str] | frozenset[str] | None = None,
     source_tensor=None,
     valid_tensor=None,
+    sensor_noise_tensor=None,
+    local_lighting_tensors=None,
     timing_recorder=None,
 ) -> AdvancedAnalysisLayers:
     """Build all fifteen diagnostic products on one PyTorch device."""
@@ -251,8 +454,11 @@ def build_advanced_analysis_layers(
     settings = settings or AdvancedAnalysisSettings()
     dirty = set(dirty_nodes)
 
+    def enabled(node_id: str) -> bool:
+        return enabled_nodes is None or node_id in enabled_nodes
+
     def active(node_id: str) -> bool:
-        return previous is None or node_id in dirty
+        return enabled(node_id) and (previous is None or node_id in dirty)
 
     active_order = tuple(
         node_id for node_id in ADVANCED_NODE_MODES if active(node_id)
@@ -325,6 +531,35 @@ def build_advanced_analysis_layers(
             "bilinear",
         ).clamp(0.0, 1.0)
     )
+    fg_noise_probability = (
+        None
+        if foreground_noise_probability is None or not active("seed_interior")
+        else _resize_numpy(
+            torch,
+            functional,
+            foreground_noise_probability,
+            device,
+            height,
+            width,
+            "bilinear",
+        ).clamp(0.0, 1.0)
+    )
+    background_probabilities = tuple(
+        _resize_numpy(
+            torch,
+            functional,
+            probability,
+            device,
+            height,
+            width,
+            "bilinear",
+        ).clamp(0.0, 1.0)
+        for probability in (
+            background_colour_probability,
+            background_noise_probability,
+        )
+        if probability is not None and active("seed_interior")
+    )
     distance = _resize_numpy(
         torch, functional, distance_transform, device, height, width, "bilinear",
         normalize=False,
@@ -333,7 +568,9 @@ def build_advanced_analysis_layers(
 
     def cached_scalar(name: str):
         if previous is None:
-            raise RuntimeError(f"No cached advanced raster is available for {name}.")
+            return torch.zeros(
+                (1, 1, height, width), device=device, dtype=torch.float32
+            )
         return _resize_numpy(
             torch, functional, previous.rasters[name], device, height, width,
             "bilinear",
@@ -341,7 +578,9 @@ def build_advanced_analysis_layers(
 
     def cached_hue(name: str):
         if previous is None:
-            raise RuntimeError(f"No cached advanced hue raster is available for {name}.")
+            return torch.zeros(
+                (1, 1, height, width), device=device, dtype=torch.uint8
+            )
         return _resize_numpy(
             torch, functional, previous.hue_rasters[name][0], device, height,
             width, "bilinear", normalize=False,
@@ -376,11 +615,29 @@ def build_advanced_analysis_layers(
             feature_probability = _gaussian(
                 torch, functional, fg_probability, smoothing
             )
-        background_hint = 1.0 - _gaussian(
-            torch, functional, 1.0 - fg_mask, smoothing
+        noise_probability = (
+            feature_probability
+            if fg_noise_probability is None
+            else _gaussian(torch, functional, fg_noise_probability, smoothing)
         )
+        foreground_evidence = (
+            feature_probability
+            * (1.0 - settings.interior_foreground_noise_weight)
+            + noise_probability * settings.interior_foreground_noise_weight
+        )
+        if background_probabilities:
+            background_probability = torch.stack(
+                background_probabilities, dim=0
+            ).mean(dim=0)
+            background_hint = 1.0 - _gaussian(
+                torch, functional, background_probability, smoothing
+            )
+        else:
+            background_hint = 1.0 - _gaussian(
+                torch, functional, 1.0 - fg_mask, smoothing
+            )
         interior = (
-            feature_probability * (1.0 - settings.interior_background_weight)
+            foreground_evidence * (1.0 - settings.interior_background_weight)
             + background_hint * settings.interior_background_weight
         ).clamp(0.0, 1.0) * valid
         stop_timing(node_timing)
@@ -459,9 +716,18 @@ def build_advanced_analysis_layers(
         )
         stop_timing(node_timing)
     else:
-        ellipse = _resize_numpy(
-            torch, functional, previous.hue_rasters["ellipse_likelihood"][1],
-            device, height, width, "bilinear",
+        ellipse = (
+            cached_scalar("ellipse_likelihood")
+            if previous is None
+            else _resize_numpy(
+                torch,
+                functional,
+                previous.hue_rasters["ellipse_likelihood"][1],
+                device,
+                height,
+                width,
+                "bilinear",
+            )
         )
         ellipse_hue = cached_hue("ellipse_likelihood")
 
@@ -504,7 +770,7 @@ def build_advanced_analysis_layers(
         contact_raster = torch.maximum(contested, boundary * contested)
         stop_timing(node_timing)
     else:
-        contact_pairs = previous.contact_pairs
+        contact_pairs = () if previous is None else previous.contact_pairs
         contact_raster = cached_scalar("contact_graph")
 
     maximum_rgb = torch.max(rgb, dim=1, keepdim=True).values
@@ -512,18 +778,45 @@ def build_advanced_analysis_layers(
     saturation = (maximum_rgb - minimum_rgb) / (maximum_rgb + 1e-4)
     if active("illumination_decomposition"):
         node_timing = start_timing("illumination_decomposition")
-        illumination_sigma = max(
-            3.0, diameter * settings.illumination_scale_fraction
-        )
-        illumination = _gaussian(
-            torch, functional, luminance, illumination_sigma
-        )
-        shadow = torch.sigmoid(
-            (illumination - luminance) * 14.0 - 0.35
-        ) * valid
-        reflectance = _normalize(
-            torch, luminance / (illumination + 0.08), valid
-        )
+        if local_lighting_tensors is None:
+            (
+                illumination,
+                flattened,
+                shadow,
+                highlight,
+                reflectance,
+            ) = _local_lighting_evidence(
+                torch,
+                functional,
+                luminance,
+                valid,
+                diameter,
+                settings,
+            )
+        else:
+            resized_lighting = []
+            for tensor in local_lighting_tensors:
+                values = tensor.to(device=device, dtype=torch.float32)
+                if values.ndim == 2:
+                    values = values[None, None]
+                elif values.ndim == 3:
+                    values = values[None]
+                resized_lighting.append(
+                    functional.interpolate(
+                        values,
+                        (height, width),
+                        mode="bilinear",
+                        align_corners=False,
+                    ).clamp(0.0, 1.0)
+                    * valid
+                )
+            (
+                illumination,
+                flattened,
+                shadow,
+                highlight,
+                reflectance,
+            ) = resized_lighting
         glare = (
             torch.sigmoid((maximum_rgb - 0.90) * 35.0)
             * torch.sigmoid((0.20 - saturation) * 18.0) * valid
@@ -531,7 +824,9 @@ def build_advanced_analysis_layers(
         stop_timing(node_timing)
     else:
         illumination = cached_scalar("illumination_field")
+        flattened = cached_scalar("flattened_grayscale")
         shadow = cached_scalar("shadow_likelihood")
+        highlight = cached_scalar("highlight_likelihood")
         reflectance = cached_scalar("reflectance_image")
         glare = cached_scalar("glare_likelihood")
 
@@ -540,17 +835,32 @@ def build_advanced_analysis_layers(
         focus = _normalize(torch, gradient, valid)
         clipped = torch.sigmoid((maximum_rgb - 0.965) * 80.0) * valid
         underexposure = torch.sigmoid((0.10 - luminance) * 45.0) * valid
-        noise_sigma = max(
-            0.8, diameter * settings.quality_noise_scale_fraction
-        )
-        sensor_noise = _normalize(
-            torch,
-            torch.abs(
-                luminance
-                - _gaussian(torch, functional, luminance, noise_sigma)
-            ),
-            valid,
-        )
+        if sensor_noise_tensor is None:
+            noise_sigma = max(
+                0.8, diameter * settings.quality_noise_scale_fraction
+            )
+            sensor_noise = _normalize(
+                torch,
+                torch.abs(
+                    luminance
+                    - _gaussian(torch, functional, luminance, noise_sigma)
+                ),
+                valid,
+            )
+        else:
+            sensor_noise = sensor_noise_tensor.to(
+                device=device, dtype=torch.float32
+            )
+            if sensor_noise.ndim == 2:
+                sensor_noise = sensor_noise[None, None]
+            elif sensor_noise.ndim == 3:
+                sensor_noise = sensor_noise[None]
+            sensor_noise = functional.interpolate(
+                sensor_noise,
+                (height, width),
+                mode="bilinear",
+                align_corners=False,
+            ).clamp(0.0, 1.0) * valid
         quality_risk = torch.maximum(
             torch.maximum(1.0 - focus, clipped),
             torch.maximum(underexposure, sensor_noise * 0.7),
@@ -681,8 +991,14 @@ def build_advanced_analysis_layers(
         ).to(torch.uint8)
         stop_timing(node_timing)
     else:
-        pattern_probability = cached_probabilities(
-            previous.pattern_probabilities
+        pattern_probability = (
+            torch.zeros(
+                (1, len(PATTERN_CLASS_NAMES), height, width),
+                device=device,
+                dtype=torch.float32,
+            )
+            if previous is None
+            else cached_probabilities(previous.pattern_probabilities)
         )
         pattern_confidence = cached_scalar("pattern_confidence")
         pattern_hue = cached_hue("pattern_classes")
@@ -724,13 +1040,27 @@ def build_advanced_analysis_layers(
         entropy /= np.log(len(COLOUR_CLASS_NAMES))
         stop_timing(node_timing)
     else:
-        colour_probability = cached_probabilities(
-            previous.colour_probabilities
+        colour_probability = (
+            torch.zeros(
+                (1, len(COLOUR_CLASS_NAMES), height, width),
+                device=device,
+                dtype=torch.float32,
+            )
+            if previous is None
+            else cached_probabilities(previous.colour_probabilities)
         )
-        colour_confidence = _resize_numpy(
-            torch, functional,
-            previous.hue_rasters["colour_classes"][1], device, height,
-            width, "bilinear",
+        colour_confidence = (
+            cached_scalar("colour_confidence")
+            if previous is None
+            else _resize_numpy(
+                torch,
+                functional,
+                previous.hue_rasters["colour_classes"][1],
+                device,
+                height,
+                width,
+                "bilinear",
+            )
         )
         colour_hue = cached_hue("colour_classes")
         entropy = cached_scalar("colour_uncertainty")
@@ -789,7 +1119,9 @@ def build_advanced_analysis_layers(
         "contested_pixels": contested,
         "contact_graph": contact_raster,
         "illumination_field": illumination,
+        "flattened_grayscale": flattened,
         "shadow_likelihood": shadow,
+        "highlight_likelihood": highlight,
         "reflectance_image": reflectance,
         "glare_likelihood": glare,
         "image_quality_risk": quality_risk,
@@ -814,7 +1146,9 @@ def build_advanced_analysis_layers(
         "contested_pixels": "assignment_confidence",
         "contact_graph": "contact_graph",
         "illumination_field": "illumination_decomposition",
+        "flattened_grayscale": "illumination_decomposition",
         "shadow_likelihood": "illumination_decomposition",
+        "highlight_likelihood": "illumination_decomposition",
         "reflectance_image": "illumination_decomposition",
         "glare_likelihood": "illumination_decomposition",
         "image_quality_risk": "image_quality",
@@ -835,7 +1169,11 @@ def build_advanced_analysis_layers(
         if previous is not None and not active(owner):
             rasters[name] = previous.rasters[name]
         else:
-            output_timing = start_timing(owner, report_progress=False)
+            output_timing = (
+                start_timing(owner, report_progress=False)
+                if active(owner)
+                else None
+            )
             rasters[name] = _to_u8(
                 torch, functional, tensor, source_height, source_width
             )
@@ -844,7 +1182,11 @@ def build_advanced_analysis_layers(
     def hue_output(name, owner, hue, strength):
         if previous is not None and not active(owner):
             return previous.hue_rasters[name]
-        output_timing = start_timing(owner, report_progress=False)
+        output_timing = (
+            start_timing(owner, report_progress=False)
+            if active(owner)
+            else None
+        )
         result = (
             _to_u8(
                 torch, functional, hue.float() / 179.0,
@@ -862,8 +1204,10 @@ def build_advanced_analysis_layers(
     if previous is not None and not active("ellipse_likelihood"):
         ellipse_strength = previous.hue_rasters["ellipse_likelihood"][1]
     else:
-        output_timing = start_timing(
-            "ellipse_likelihood", report_progress=False
+        output_timing = (
+            start_timing("ellipse_likelihood", report_progress=False)
+            if active("ellipse_likelihood")
+            else None
         )
         ellipse_strength = _to_u8(
             torch, functional, ellipse, source_height, source_width
@@ -881,8 +1225,10 @@ def build_advanced_analysis_layers(
         hue_rasters["colour_classes"] = previous.hue_rasters["colour_classes"]
         colour_outputs = previous.colour_probabilities
     else:
-        output_timing = start_timing(
-            "colour_probabilities", report_progress=False
+        output_timing = (
+            start_timing("colour_probabilities", report_progress=False)
+            if active("colour_probabilities")
+            else None
         )
         hue_rasters["colour_classes"] = (
             _to_u8(
@@ -905,8 +1251,10 @@ def build_advanced_analysis_layers(
     if previous is not None and not active("pattern_decomposition"):
         pattern_outputs = previous.pattern_probabilities
     else:
-        output_timing = start_timing(
-            "pattern_decomposition", report_progress=False
+        output_timing = (
+            start_timing("pattern_decomposition", report_progress=False)
+            if active("pattern_decomposition")
+            else None
         )
         pattern_outputs = tuple(
             _to_u8(

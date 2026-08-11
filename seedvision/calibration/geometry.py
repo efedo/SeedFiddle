@@ -32,8 +32,10 @@ class DishDetectionSettings:
     expected_center_x_fraction: float = 0.58
     expected_center_y_fraction: float = 0.40
     expected_radius_fraction: float = 0.225
+    expected_outer_diameter_mm: float = 96.0
+    calibrated_outer_radius_tolerance_fraction: float = 0.025
     rim_pair_search_fraction: float = 0.14
-    rim_pair_min_separation_fraction: float = 0.015
+    rim_pair_min_separation_fraction: float = 0.025
     rim_pair_max_separation_fraction: float = 0.12
     rim_pair_expected_separation_fraction: float = 0.045
     rim_pair_secondary_support_fraction: float = 0.30
@@ -54,6 +56,14 @@ class DishDetectionSettings:
         ):
             if not 0.05 <= value <= 0.95:
                 raise ValueError(f"{name} must be between 0.05 and 0.95.")
+        if not 0.0 <= self.expected_outer_diameter_mm <= 1000.0:
+            raise ValueError(
+                "expected_outer_diameter_mm must be between 0 and 1000."
+            )
+        if not 0.0 <= self.calibrated_outer_radius_tolerance_fraction <= 0.25:
+            raise ValueError(
+                "calibrated_outer_radius_tolerance_fraction must be between 0 and 0.25."
+            )
         if not 0.03 <= self.rim_pair_search_fraction <= 0.30:
             raise ValueError("rim_pair_search_fraction must be between 0.03 and 0.30.")
         if not (
@@ -125,6 +135,7 @@ def detect_dish(
     *,
     cuda_context: CudaContext | None = None,
     image_tensor=None,
+    pixels_per_mm: float | None = None,
 ) -> DishCircle:
     """Locate the Petri dish using its circular rim and the pilot layout prior.
 
@@ -155,6 +166,54 @@ def detect_dish(
     expected_radius = small_height * settings.expected_radius_fraction
     minimum_radius = max(4.0, small_height * settings.min_radius_fraction)
     maximum_radius = max(minimum_radius + 2.0, small_height * settings.max_radius_fraction)
+    calibrated_primary_radius_range: tuple[float, float] | None = None
+    calibrated_outer_radius_range: tuple[float, float] | None = None
+    if (
+        pixels_per_mm is not None
+        and float(pixels_per_mm) > 0.0
+        and settings.expected_outer_diameter_mm > 0.0
+    ):
+        # The photographed layout includes a ruler and a consistent exterior
+        # dish diameter. Use that calibrated physical size to prevent the
+        # generic circle bank from treating a crowded seed-mass boundary as
+        # glass, then require the outer member of the resolved pair to remain
+        # within the editable physical tolerance.
+        calibrated_expected_outer_radius = (
+            float(pixels_per_mm)
+            * settings.expected_outer_diameter_mm
+            * 0.5
+            * scale
+        )
+        calibrated_outer_minimum = (
+            calibrated_expected_outer_radius
+            * (1.0 - settings.calibrated_outer_radius_tolerance_fraction)
+        )
+        calibrated_outer_maximum = (
+            calibrated_expected_outer_radius
+            * (1.0 + settings.calibrated_outer_radius_tolerance_fraction)
+        )
+        calibrated_primary_minimum = max(
+            minimum_radius,
+            calibrated_expected_outer_radius
+            * (1.0 - settings.rim_pair_max_separation_fraction),
+        )
+        calibrated_primary_maximum = min(
+            maximum_radius,
+            calibrated_outer_maximum,
+        )
+        if calibrated_primary_maximum <= calibrated_primary_minimum + 2.0:
+            raise CalibrationDetectionError(
+                "The calibrated dish diameter conflicts with the configured "
+                "image-relative radius range."
+            )
+        calibrated_primary_radius_range = (
+            calibrated_primary_minimum,
+            calibrated_primary_maximum,
+        )
+        calibrated_outer_radius_range = (
+            calibrated_outer_minimum,
+            calibrated_outer_maximum,
+        )
     center_step = max(3.0, small_height / 115.0)
     radius_step = max(2.0, (maximum_radius - minimum_radius) / 36.0)
     x_values = torch.arange(
@@ -213,6 +272,19 @@ def detect_dish(
             + 1.5 * torch.abs(candidate[:, 2] - expected_radius) / small_height
         )
         score = support - error * 0.22
+        if calibrated_primary_radius_range is not None:
+            calibrated_minimum_radius, calibrated_maximum_radius = (
+                calibrated_primary_radius_range
+            )
+            admissible = (
+                (candidate[:, 2] >= calibrated_minimum_radius)
+                & (candidate[:, 2] <= calibrated_maximum_radius)
+            )
+            score = torch.where(
+                admissible,
+                score,
+                torch.full_like(score, -torch.inf),
+            )
         index = torch.argmax(score)
         if score[index] > best_score:
             best_score = score[index]
@@ -246,6 +318,7 @@ def detect_dish(
             maximum_radius,
             settings,
             context,
+            outer_radius_range=calibrated_outer_radius_range,
         )
     )
     lower_radius = round(lower_radius_small * inverse_scale)
@@ -288,6 +361,8 @@ def _detect_petri_rim_pair(
     maximum_radius: float,
     settings: DishDetectionSettings,
     context: CudaContext,
+    *,
+    outer_radius_range: tuple[float, float] | None = None,
 ) -> tuple[float, float, float, float, bool]:
     """Select lower/inner and upper/outer glass edges from one radial profile."""
 
@@ -322,7 +397,17 @@ def _detect_petri_rim_pair(
     )
     compact = torch.stack((radii, support), dim=1).detach().cpu().numpy()
     radius_values = compact[:, 0]
-    support_values = compact[:, 1]
+    raw_support_values = compact[:, 1]
+    # A glass rim creates several narrow reflections. Suppress single-radius
+    # noise before selecting the physical inner and exterior boundaries.
+    smoothing_kernel = np.asarray((1.0, 2.0, 3.0, 2.0, 1.0), np.float32)
+    smoothing_kernel /= smoothing_kernel.sum()
+    support_values = np.convolve(
+        np.pad(raw_support_values, (2, 2), mode="edge"),
+        smoothing_kernel,
+        mode="valid",
+    )
+    selection_support = support_values * 0.65 + raw_support_values * 0.35
     if len(radius_values) < 5:
         primary_support = float(support_values.max())
         return (
@@ -333,21 +418,40 @@ def _detect_petri_rim_pair(
             False,
         )
 
-    peak_indices = [
+    peak_indices = {
         index
         for index in range(2, len(support_values) - 2)
         if support_values[index]
         >= float(np.max(support_values[index - 2 : index + 3]))
-    ]
+    }
+    # Preserve narrow but coherent exterior reflections that the smoothing
+    # kernel can merge into a neighbouring glass highlight.
+    peak_indices.update(
+        index
+        for index in range(2, len(raw_support_values) - 2)
+        if raw_support_values[index]
+        >= float(np.max(raw_support_values[index - 2 : index + 3]))
+    )
+    peak_indices = sorted(peak_indices)
     if not peak_indices:
-        peak_indices = [int(np.argmax(support_values))]
-    maximum_support = max(float(np.max(support_values)), 1e-6)
+        peak_indices = [int(np.argmax(selection_support))]
+    maximum_support = max(float(np.max(selection_support)), 1e-6)
     peak_indices = [
         index
         for index in peak_indices
-        if float(support_values[index])
+        if float(selection_support[index])
         >= maximum_support * settings.rim_pair_secondary_support_fraction
     ]
+
+    def valid_outer(index: int) -> bool:
+        if outer_radius_range is None:
+            return True
+        return (
+            outer_radius_range[0]
+            <= float(radius_values[index])
+            <= outer_radius_range[1]
+        )
+
     anchor_tolerance = primary_radius * 0.04
     anchor_candidates = [
         index
@@ -358,7 +462,7 @@ def _detect_petri_rim_pair(
         anchor = max(
             anchor_candidates,
             key=lambda index: (
-                float(support_values[index]) / maximum_support
+                float(selection_support[index]) / maximum_support
                 - abs(float(radius_values[index]) - primary_radius)
                 / max(anchor_tolerance, 1e-6)
                 * 0.12
@@ -366,6 +470,8 @@ def _detect_petri_rim_pair(
         )
         outer_candidates = []
         for index in peak_indices:
+            if not valid_outer(index):
+                continue
             separation_fraction = float(
                 radius_values[index] - radius_values[anchor]
             ) / max(primary_radius, 1e-6)
@@ -383,8 +489,19 @@ def _detect_petri_rim_pair(
                     1e-6,
                 )
                 score = (
-                    float(support_values[index]) / maximum_support
+                    float(selection_support[index]) / maximum_support
                     - separation_error * 0.18
+                    - max(
+                        0.0,
+                        settings.rim_pair_expected_separation_fraction
+                        - separation_fraction,
+                    )
+                    / max(
+                        settings.rim_pair_expected_separation_fraction
+                        - settings.rim_pair_min_separation_fraction,
+                        1e-6,
+                    )
+                    * 0.28
                 )
                 outer_candidates.append((score, index))
         if outer_candidates:
@@ -392,13 +509,15 @@ def _detect_petri_rim_pair(
             return (
                 float(radius_values[anchor]),
                 float(radius_values[outer]),
-                float(support_values[anchor]),
-                float(support_values[outer]),
+                float(selection_support[anchor]),
+                float(selection_support[outer]),
                 True,
             )
     best_pair: tuple[float, int, int] | None = None
     for first_position, first in enumerate(peak_indices):
         for second in peak_indices[first_position + 1 :]:
+            if not valid_outer(second):
+                continue
             separation = float(radius_values[second] - radius_values[first])
             separation_fraction = separation / max(primary_radius, 1e-6)
             if not (
@@ -408,7 +527,7 @@ def _detect_petri_rim_pair(
             ):
                 continue
             strength = (
-                float(support_values[first]) + float(support_values[second])
+                float(selection_support[first]) + float(selection_support[second])
             ) / (2.0 * maximum_support)
             separation_error = abs(
                 separation_fraction - settings.rim_pair_expected_separation_fraction
@@ -417,29 +536,53 @@ def _detect_petri_rim_pair(
                 - settings.rim_pair_min_separation_fraction,
                 1e-6,
             )
-            score = strength - separation_error * 0.18
+            score = (
+                strength
+                - separation_error * 0.18
+                - max(
+                    0.0,
+                    settings.rim_pair_expected_separation_fraction
+                    - separation_fraction,
+                )
+                / max(
+                    settings.rim_pair_expected_separation_fraction
+                    - settings.rim_pair_min_separation_fraction,
+                    1e-6,
+                )
+                * 0.28
+            )
             if best_pair is None or score > best_pair[0]:
                 best_pair = (score, first, second)
     if best_pair is None:
-        primary_index = int(np.argmax(support_values))
+        primary_index = int(np.argmax(selection_support))
         separated = [
             index
             for index in peak_indices
-            if settings.rim_pair_min_separation_fraction
-            <= abs(float(radius_values[index] - radius_values[primary_index]))
+            if index > primary_index
+            and valid_outer(index)
+            and settings.rim_pair_min_separation_fraction
+            <= (float(radius_values[index] - radius_values[primary_index]))
             / max(primary_radius, 1e-6)
             <= settings.rim_pair_max_separation_fraction
         ]
         if separated:
-            secondary = max(separated, key=lambda index: support_values[index])
+            secondary = max(separated, key=lambda index: selection_support[index])
             first, second = sorted((primary_index, secondary))
         else:
             inferred_gap = (
                 primary_radius * settings.rim_pair_expected_separation_fraction
             )
-            first_radius = max(radius_start, primary_radius - inferred_gap * 0.5)
             second_radius = min(radius_end, primary_radius + inferred_gap * 0.5)
-            primary_support = float(support_values[primary_index])
+            if outer_radius_range is not None:
+                second_radius = float(
+                    np.clip(
+                        second_radius,
+                        outer_radius_range[0],
+                        outer_radius_range[1],
+                    )
+                )
+            first_radius = max(radius_start, second_radius - inferred_gap)
+            primary_support = float(selection_support[primary_index])
             return (
                 first_radius,
                 second_radius,
@@ -452,7 +595,7 @@ def _detect_petri_rim_pair(
     return (
         float(radius_values[first]),
         float(radius_values[second]),
-        float(support_values[first]),
-        float(support_values[second]),
+        float(selection_support[first]),
+        float(selection_support[second]),
         True,
     )

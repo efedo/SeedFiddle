@@ -35,6 +35,10 @@ class BackgroundColourProfile:
     component_scales_lab: tuple[tuple[float, float, float], ...] = ()
     component_weights: tuple[float, ...] = ()
     refinement_iterations: int = 0
+    excluded_component_centres_lab: tuple[tuple[float, float, float], ...] = ()
+    excluded_component_scales_lab: tuple[tuple[float, float, float], ...] = ()
+    excluded_component_weights: tuple[float, ...] = ()
+    exclusion_strength: float = 0.95
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,12 +55,18 @@ class ForegroundColourProfile:
     component_scales_lab: tuple[tuple[float, float, float], ...] = ()
     component_weights: tuple[float, ...] = ()
     refinement_iterations: int = 0
+    excluded_component_centres_lab: tuple[tuple[float, float, float], ...] = ()
+    excluded_component_scales_lab: tuple[tuple[float, float, float], ...] = ()
+    excluded_component_weights: tuple[float, ...] = ()
+    exclusion_strength: float = 0.95
 
 
 @dataclass(frozen=True, slots=True)
 class AnalysisLayerSettings:
     """User-adjustable settings for diagnostic and provisional mask layers."""
 
+    perimeter_background_buffer_cm: float = 0.35
+    perimeter_background_band_thickness_cm: float = 0.50
     background_sample_radius_fraction: float = 0.10
     background_chroma_percentile: float = 50.0
     background_lightness_percentile: float = 55.0
@@ -80,10 +90,36 @@ class AnalysisLayerSettings:
     noise_background_min_likelihood: int = 190
     noise_nonbackground_max_likelihood: int = 65
     noise_working_maximum_dimension: int = 1280
+    foreground_noise_medium_scale_fraction: float = 0.03
+    foreground_noise_coarse_scale_fraction: float = 0.08
+    foreground_noise_direction_step_degrees: int = 15
+    foreground_noise_vector_length_fraction: float = 0.55
+    foreground_noise_vector_sample_count: int = 9
+    foreground_noise_vector_decay: float = 0.86
+    foreground_noise_direction_integration: str = "maximum"
+    foreground_noise_foreground_min_likelihood: int = 190
+    foreground_noise_nonforeground_max_likelihood: int = 65
+    foreground_noise_working_maximum_dimension: int = 1280
     edge_blur_sigma: float = 1.2
     edge_chroma_weight: float = 1.5
     edge_normalization_percentile: float = 99.0
     edge_strength_gamma: float = 0.65
+    surface_gradient_blur_sigma: float = 1.6
+    surface_gradient_radius_fraction: float = 0.45
+    surface_gradient_direction_step_degrees: int = 15
+    surface_gradient_sample_count: int = 8
+    surface_gradient_normalization_percentile: float = 99.0
+    surface_gradient_strength_gamma: float = 0.60
+    surface_gradient_working_maximum_dimension: int = 1280
+    lightening_gradient_maximum_slope: float = 1.0
+    darkening_gradient_maximum_slope: float = 1.0
+    frequency_noise_fine_scale_fraction: float = 0.008
+    frequency_noise_medium_scale_fraction: float = 0.030
+    frequency_noise_coarse_scale_fraction: float = 0.100
+    frequency_noise_context_fraction: float = 0.025
+    frequency_noise_normalization_percentile: float = 99.0
+    frequency_noise_strength_gamma: float = 0.65
+    frequency_noise_working_maximum_dimension: int = 1280
     instance_min_extent_fraction: float = 0.72
     instance_max_extent_fraction: float = 0.95
     instance_radius_extent_multiplier: float = 1.55
@@ -129,10 +165,18 @@ class AnalysisLayerSettings:
     boundary_working_maximum_dimension: int = 1280
 
     def __post_init__(self) -> None:
+        if not 0.0 <= self.perimeter_background_buffer_cm <= 2.0:
+            raise ValueError("Perimeter background buffer must be between 0 and 2 cm.")
+        if not 0.05 <= self.perimeter_background_band_thickness_cm <= 2.0:
+            raise ValueError(
+                "Perimeter background band thickness must be between 0.05 and 2 cm."
+            )
         percentages = (
             self.background_chroma_percentile,
             self.background_lightness_percentile,
             self.edge_normalization_percentile,
+            self.surface_gradient_normalization_percentile,
+            self.frequency_noise_normalization_percentile,
         )
         if any(not 1.0 <= value <= 99.9 for value in percentages):
             raise ValueError("Layer percentiles must be between 1 and 99.9.")
@@ -166,6 +210,10 @@ class AnalysisLayerSettings:
             raise ValueError("Medium noise scale must be below coarse noise scale.")
         if self.noise_nonbackground_max_likelihood >= self.noise_background_min_likelihood:
             raise ValueError("Non-background likelihood maximum must be below background minimum.")
+        if self.foreground_noise_medium_scale_fraction >= self.foreground_noise_coarse_scale_fraction:
+            raise ValueError("Medium foreground-noise scale must be below its coarse scale.")
+        if self.foreground_noise_nonforeground_max_likelihood >= self.foreground_noise_foreground_min_likelihood:
+            raise ValueError("Non-foreground likelihood maximum must be below foreground minimum.")
         if self.instance_min_extent_fraction >= self.instance_max_extent_fraction:
             raise ValueError("Minimum instance extent must be below maximum extent.")
         if not 0.0001 <= self.background_minimum_sample_fraction <= 0.25:
@@ -174,14 +222,24 @@ class AnalysisLayerSettings:
             raise ValueError("Background prior tolerance is out of range.")
         if not 5 <= self.noise_direction_step_degrees <= 90:
             raise ValueError("Noise direction step must be between 5 and 90 degrees.")
+        if not 5 <= self.foreground_noise_direction_step_degrees <= 90:
+            raise ValueError("Foreground-noise direction step must be between 5 and 90 degrees.")
         if not 0.05 <= self.noise_vector_length_fraction <= 2.0:
             raise ValueError("Noise vector length fraction is out of range.")
+        if not 0.05 <= self.foreground_noise_vector_length_fraction <= 2.0:
+            raise ValueError("Foreground-noise vector length fraction is out of range.")
         if not 2 <= self.noise_vector_sample_count <= 32:
             raise ValueError("Noise vector sample count must be between 2 and 32.")
+        if not 2 <= self.foreground_noise_vector_sample_count <= 32:
+            raise ValueError("Foreground-noise vector sample count must be between 2 and 32.")
         if not 512 <= self.noise_working_maximum_dimension <= 4096:
             raise ValueError("Noise working dimension must be between 512 and 4096.")
+        if not 512 <= self.foreground_noise_working_maximum_dimension <= 4096:
+            raise ValueError("Foreground-noise working dimension must be between 512 and 4096.")
         if not 0.10 <= self.noise_vector_decay <= 1.0:
             raise ValueError("Noise vector decay must be between 0.10 and 1.")
+        if not 0.10 <= self.foreground_noise_vector_decay <= 1.0:
+            raise ValueError("Foreground-noise vector decay must be between 0.10 and 1.")
         if self.background_lightness_scale_floor <= 0.0:
             raise ValueError("Background lightness scale floor must be positive.")
         if self.background_chroma_scale_floor <= 0.0:
@@ -200,6 +258,37 @@ class AnalysisLayerSettings:
             raise ValueError("Background colour tolerance multiplier must be between 0.5 and 3.")
         if self.noise_direction_integration not in {"mean", "maximum", "minimum", "median"}:
             raise ValueError("Unknown directional background integration method.")
+        if self.foreground_noise_direction_integration not in {"mean", "maximum", "minimum", "median"}:
+            raise ValueError("Unknown directional foreground integration method.")
+        if not 0.05 <= self.surface_gradient_radius_fraction <= 2.0:
+            raise ValueError("Surface-gradient ray length fraction is out of range.")
+        if not 5 <= self.surface_gradient_direction_step_degrees <= 90:
+            raise ValueError("Surface-gradient direction step must be between 5 and 90 degrees.")
+        if not 2 <= self.surface_gradient_sample_count <= 32:
+            raise ValueError("Surface-gradient sample count must be between 2 and 32.")
+        if not 512 <= self.surface_gradient_working_maximum_dimension <= 4096:
+            raise ValueError("Surface-gradient working dimension must be between 512 and 4096.")
+        if self.surface_gradient_blur_sigma <= 0.0:
+            raise ValueError("Surface-gradient blur sigma must be positive.")
+        if self.surface_gradient_strength_gamma <= 0.0:
+            raise ValueError("Surface-gradient display gamma must be positive.")
+        if self.lightening_gradient_maximum_slope <= 0.0:
+            raise ValueError("Lightening-gradient slope ceiling must be positive.")
+        if self.darkening_gradient_maximum_slope <= 0.0:
+            raise ValueError("Darkening-gradient slope ceiling must be positive.")
+        if not (
+            0.0
+            < self.frequency_noise_fine_scale_fraction
+            < self.frequency_noise_medium_scale_fraction
+            < self.frequency_noise_coarse_scale_fraction
+        ):
+            raise ValueError("Frequency-noise scale fractions must be strictly increasing.")
+        if self.frequency_noise_context_fraction <= 0.0:
+            raise ValueError("Frequency-noise RMS context must be positive.")
+        if self.frequency_noise_strength_gamma <= 0.0:
+            raise ValueError("Frequency-noise display gamma must be positive.")
+        if not 512 <= self.frequency_noise_working_maximum_dimension <= 4096:
+            raise ValueError("Frequency-noise working dimension must be between 512 and 4096.")
         if not 0.25 <= self.ridge_nms_step_px <= 3.0:
             raise ValueError("Ridge NMS step must be between 0.25 and 3 pixels.")
         if not 0.0 <= self.ridge_low_threshold < self.ridge_high_threshold <= 1.0:
@@ -255,6 +344,19 @@ class AnalysisLayers:
     seed_edge_curve_likelihood: object
     seed_edge_curve_radius_px: object
     valid_mask: object
+    lightening_surface_gradient: object | None = None
+    lightening_surface_direction: object | None = None
+    darkening_surface_gradient: object | None = None
+    darkening_surface_direction: object | None = None
+    weak_lightening_surface_gradient: object | None = None
+    weak_lightening_surface_direction: object | None = None
+    weak_darkening_surface_gradient: object | None = None
+    weak_darkening_surface_direction: object | None = None
+    frequency_noise_band_scales_px: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    darkness_frequency_noise_masks: tuple[object, ...] = ()
+    colour_frequency_noise_masks: tuple[object, ...] = ()
+    foreground_noise_likelihood: object | None = None
+    foreground_noise_frequency_profile: NoiseFrequencyProfile | None = None
     undirected_edge_likelihood: object | None = None
     background_mode: str = "automatic"
     background_reference_count: int = 0
@@ -299,6 +401,15 @@ class AnalysisLayers:
         alpha = np.uint8(np.asarray(self.valid_mask) > 0) * 255
         return np.dstack((gray, gray, gray, alpha))
 
+    def foreground_noise_rgba(self) -> np.ndarray:
+        gray = (
+            np.zeros_like(np.asarray(self.valid_mask), dtype=np.uint8)
+            if self.foreground_noise_likelihood is None
+            else np.asarray(self.foreground_noise_likelihood)
+        )
+        alpha = np.uint8(np.asarray(self.valid_mask) > 0) * 255
+        return np.dstack((gray, gray, gray, alpha))
+
     def directional_background_rgba(self, index: int) -> np.ndarray:
         gray = 255 - np.asarray(self.directional_background_likelihoods[index])
         alpha = np.uint8(np.asarray(self.valid_mask) > 0) * 255
@@ -323,6 +434,37 @@ class AnalysisLayers:
         return np.dstack(
             (likelihood, likelihood, likelihood, alpha)
         )
+
+    def surface_gradient_rgba(
+        self, polarity: str, *, filtered: bool = False
+    ) -> np.ndarray:
+        prefix = "weak_" if filtered else ""
+        if polarity not in {"lightening", "darkening"}:
+            raise ValueError("Surface-gradient polarity must be lightening or darkening.")
+        strength = getattr(self, f"{prefix}{polarity}_surface_gradient")
+        hue = getattr(self, f"{prefix}{polarity}_surface_direction")
+        return self._edge_rgba(hue, strength)
+
+    def surface_gradient_magnitude_rgba(
+        self, polarity: str, *, filtered: bool = False
+    ) -> np.ndarray:
+        prefix = "weak_" if filtered else ""
+        if polarity not in {"lightening", "darkening"}:
+            raise ValueError("Surface-gradient polarity must be lightening or darkening.")
+        strength = np.asarray(
+            getattr(self, f"{prefix}{polarity}_surface_gradient")
+        )
+        alpha = np.uint8(np.asarray(self.valid_mask) > 0) * 255
+        return np.dstack((strength, strength, strength, alpha))
+
+    def frequency_noise_rgba(self, channel: str, band_index: int) -> np.ndarray:
+        if channel == "darkness":
+            raster = self.darkness_frequency_noise_masks[band_index]
+        elif channel == "colour":
+            raster = self.colour_frequency_noise_masks[band_index]
+        else:
+            raise ValueError("Frequency-noise channel must be darkness or colour.")
+        return self._heat_rgba(raster)
 
     def undirected_edge_rgba(self) -> np.ndarray:
         return self._edge_rgba(self.undirected_edge_hue, self.undirected_edge_likelihood)
@@ -402,10 +544,21 @@ def build_analysis_layers(
     foreground_reference_points: tuple[tuple[float, float], ...] = (),
     background_reference_mask: np.ndarray | None = None,
     foreground_reference_mask: np.ndarray | None = None,
+    background_exclusion_mask: np.ndarray | None = None,
+    foreground_exclusion_mask: np.ndarray | None = None,
+    seed_instance_annotations: np.ndarray | None = None,
     background_reference_samples: np.ndarray | None = None,
     background_reference_sample_count: int = 0,
     background_prior_lab: tuple[float, float, float] | None = None,
+    background_prior_samples_lab=None,
     background_colour_enabled: bool = True,
+    foreground_noise_enabled: bool = True,
+    surface_darkness_gradients_enabled: bool = True,
+    lightening_gradient_ceiling_enabled: bool = True,
+    darkening_gradient_ceiling_enabled: bool = True,
+    frequency_noise_masks_enabled: bool = True,
+    instance_masks_enabled: bool = True,
+    seed_edge_curves_enabled: bool = True,
     foreground_probability=None,
     foreground_colour_profile: ForegroundColourProfile | None = None,
     surrounding_noise_source_tensor=None,
@@ -432,10 +585,21 @@ def build_analysis_layers(
         foreground_reference_points=foreground_reference_points,
         background_reference_mask=background_reference_mask,
         foreground_reference_mask=foreground_reference_mask,
+        background_exclusion_mask=background_exclusion_mask,
+        foreground_exclusion_mask=foreground_exclusion_mask,
+        seed_instance_annotations=seed_instance_annotations,
         background_reference_samples=background_reference_samples,
         background_reference_sample_count=background_reference_sample_count,
         background_prior_lab=background_prior_lab,
+        background_prior_samples_lab=background_prior_samples_lab,
         background_colour_enabled=background_colour_enabled,
+        foreground_noise_enabled=foreground_noise_enabled,
+        surface_darkness_gradients_enabled=surface_darkness_gradients_enabled,
+        lightening_gradient_ceiling_enabled=lightening_gradient_ceiling_enabled,
+        darkening_gradient_ceiling_enabled=darkening_gradient_ceiling_enabled,
+        frequency_noise_masks_enabled=frequency_noise_masks_enabled,
+        instance_masks_enabled=instance_masks_enabled,
+        seed_edge_curves_enabled=seed_edge_curves_enabled,
         foreground_probability=foreground_probability,
         foreground_colour_profile=foreground_colour_profile,
         surrounding_noise_source_tensor=surrounding_noise_source_tensor,
