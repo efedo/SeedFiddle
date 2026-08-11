@@ -30,8 +30,8 @@ class PipelineCanvasTests(unittest.TestCase):
         self.application.processEvents()
         canvas.fit_graph()
         self.assertGreater(canvas.horizontalScrollBar().maximum(), 0)
-        self.assertEqual(len(canvas.node_items), 27)
-        self.assertEqual(len(canvas.edge_items), 50)
+        self.assertEqual(len(canvas.node_items), 28)
+        self.assertEqual(len(canvas.edge_items), 60)
         self.assertNotIn("circle_candidates", canvas.node_items)
         self.assertEqual(canvas.unused_nodes_button.text(), "Unused nodes (20)")
         unused_actions = [
@@ -65,6 +65,7 @@ class PipelineCanvasTests(unittest.TestCase):
             "directed_edges",
             "edge_ridges",
             "edge_traces",
+            "procedural_instances",
         ):
             self.assertIn(overlay_node_id, canvas.node_items)
         for stage_node_id in (
@@ -188,8 +189,8 @@ class PipelineCanvasTests(unittest.TestCase):
         self.application.processEvents()
         self.assertEqual(restored, ["circle_candidates"])
         self.assertIn("circle_candidates", canvas.node_items)
-        self.assertEqual(len(canvas.node_items), 28)
-        self.assertEqual(len(canvas.edge_items), 57)
+        self.assertEqual(len(canvas.node_items), 29)
+        self.assertEqual(len(canvas.edge_items), 67)
         self.assertEqual(canvas.unused_nodes_button.text(), "Unused nodes (19)")
         self.assertTrue(canvas.unused_nodes_button.isEnabled())
         self.assertTrue(canvas.node_items["circle_candidates"].isSelected())
@@ -202,7 +203,7 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertNotIn("circle_candidates", canvas.node_items)
         self.assertIn("circle_candidates", graph.unused_nodes)
         self.assertFalse(graph.node("circle_candidates").enabled)
-        self.assertEqual(len(canvas.edge_items), 50)
+        self.assertEqual(len(canvas.edge_items), 60)
         self.assertEqual(canvas.unused_nodes_button.text(), "Unused nodes (20)")
         restore_action = next(
             action
@@ -681,6 +682,12 @@ class PipelineCanvasTests(unittest.TestCase):
         self.application.processEvents()
         self.assertEqual(window.overlay_combo.currentData(), "colour_noise_coarse")
         self.assertEqual(window.image_view._overlay_mode, "colour_noise_coarse")
+
+        window.pipeline_canvas.select_node("procedural_instances")
+        self.application.processEvents()
+        self.assertEqual(node_selector.count(), 6)
+        self.assertEqual(node_selector.currentData(), "procedural_instances")
+        self.assertGreaterEqual(node_selector.findData("procedural_confidence"), 0)
 
         window.pipeline_canvas.select_node("metadata")
         self.application.processEvents()
@@ -1539,13 +1546,16 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertNotIn(key, window._draft_foreground_reference_masks)
 
         window._apply_instance_annotations()
-        self.assertEqual(analyses, [])
+        self.assertEqual(analyses, [True])
         self.assertNotIn(key, window._instance_annotations_dirty)
         self.assertTrue(
             np.array_equal(window._applied_instance_annotations[key], labels)
         )
         self.assertIn(
             "instance_masks", window._cache_dirty_nodes.get(key, set())
+        )
+        self.assertIn(
+            "procedural_instances", window._cache_dirty_nodes.get(key, set())
         )
         window.close()
 

@@ -797,6 +797,26 @@ def build_default_pipeline() -> PipelineGraph:
         ParameterSpec("highlight_z_threshold", "Highlight deviation threshold", "float", 0.05, 5.0, 0.05, "Standardized positive local-lighting deviation at which highlight probability reaches its nonlinear transition."),
         ParameterSpec("lighting_extreme_softness", "Extreme transition softness", "float", 0.05, 2.0, 0.05, "Width of the sigmoid transition used for both shadow and highlight likelihoods."),
     )
+    procedural_instance_parameters = (
+        ParameterSpec("working_maximum_dimension", "Topology working dimension", "int", 256, 4096, 128, "Maximum raster dimension downloaded after GPU resizing for CPU marker-controlled watershed."),
+        ParameterSpec("foreground_threshold_scale", "Material threshold scale", "float", 0.20, 2.00, 0.02, "Multiplier applied to the Otsu seed-material threshold."),
+        ParameterSpec("occupancy_closing_fraction", "Material closing / diameter", "float", 0.01, 0.50, 0.01, "Seed-relative closing radius used to bridge interrupted material evidence."),
+        ParameterSpec("occupancy_hole_area_fraction", "Filled-hole area / diameter²", "float", 0.0, 4.0, 0.05, "Largest enclosed low-probability coat region filled as seed material."),
+        ParameterSpec("dish_margin_fraction", "Dish margin / diameter", "float", 0.0, 0.50, 0.01, "Inset from the valid dish boundary that prevents glass-rim instances."),
+        ParameterSpec("boundary_edge_weight", "Edge weight", "float", 0.0, 1.0, 0.02, "Contribution of shared Lab edge magnitude to physical boundary cost."),
+        ParameterSpec("boundary_sensor_weight", "Sensor/noise weight", "float", 0.0, 1.0, 0.02, "Contribution of sensor/noise transitions to physical boundary cost."),
+        ParameterSpec("boundary_ridge_weight", "Ridge weight", "float", 0.0, 1.0, 0.02, "Contribution of thinned edge ridges to physical boundary cost."),
+        ParameterSpec("boundary_shadow_weight", "Local-shadow weight", "float", 0.0, 1.0, 0.02, "Contribution of local-shadow transitions to physical boundary cost."),
+        ParameterSpec("strong_boundary_quantile", "Strong-boundary quantile", "float", 0.05, 0.95, 0.01, "Boundary-cost quantile treated as a barrier when measuring seed-core depth."),
+        ParameterSpec("centre_material_weight", "Centre material weight", "float", 0.0, 1.0, 0.02, "Contribution of seed-scale smoothed material evidence to marker likelihood."),
+        ParameterSpec("centre_distance_weight", "Centre depth weight", "float", 0.0, 1.0, 0.02, "Contribution of distance from strong physical boundaries to marker likelihood."),
+        ParameterSpec("centre_ring_weight", "Centre ring weight", "float", 0.0, 1.0, 0.02, "Contribution of annular boundary support around a possible seed centre."),
+        ParameterSpec("centre_minimum_separation_fraction", "Marker spacing / diameter", "float", 0.10, 1.00, 0.01, "Minimum automatic marker spacing in ordinary and crowded seed material."),
+        ParameterSpec("sparse_centre_minimum_separation_fraction", "Sparse marker spacing / diameter", "float", 0.10, 1.00, 0.01, "Stricter marker spacing used when seed material covers less than 35% of the dish."),
+        ParameterSpec("minimum_marker_score", "Minimum marker likelihood", "float", 0.0, 1.0, 0.01, "Reject automatic centre maxima below this combined likelihood."),
+        ParameterSpec("minimum_instance_area_fraction", "Minimum area / diameter²", "float", 0.05, 1.40, 0.01, "Remove watershed regions smaller than this calibrated seed-relative area."),
+        ParameterSpec("maximum_instance_area_fraction", "Confidence max area / diameter²", "float", 0.06, 3.00, 0.01, "Larger assigned regions receive an explicit oversize confidence penalty."),
+    )
     image_quality_parameters = (
         ParameterSpec("quality_noise_scale_fraction", "Noise scale / diameter", "float", 0.005, 0.30, 0.005, "Local high-frequency scale used for sensor/noise risk."),
     )
@@ -1594,6 +1614,52 @@ def build_default_pipeline() -> PipelineGraph:
             output_ports=(("sensor_noise", "Sensor/noise likelihood"),),
         ),
         PipelineNode(
+            "procedural_instances",
+            "Procedural seed separation",
+            "Segmentation",
+            "Fuse material, physical-boundary and seed-scale evidence into reviewable instances",
+            2100,
+            820,
+            details=(
+                "Foreground colour/noise and inverse background evidence first define a "
+                "seed-material gate. Seed-sized enclosed coat-pattern holes are filled, but "
+                "the detected dish margin is excluded. Shared edges, thinned ridges, local "
+                "shadow and sensor/noise transitions form a physical boundary cost. "
+                "Seed-scale material, boundary depth and annular support propose centres; "
+                "distinct painted seed-instance IDs replace nearby automatic markers. A "
+                "bounded CPU marker-controlled watershed performs the topological partition, "
+                "then reports per-instance confidence from marker, boundary and area support. "
+                "This is an untrained review aid: patterned coats can still create false "
+                "centres, so low-confidence results must not be treated as validated counts."
+            ),
+            parameters={
+                "working_maximum_dimension": 1600,
+                "foreground_threshold_scale": 0.82,
+                "occupancy_closing_fraction": 0.12,
+                "occupancy_hole_area_fraction": 1.25,
+                "dish_margin_fraction": 0.12,
+                "boundary_edge_weight": 0.56,
+                "boundary_sensor_weight": 0.24,
+                "boundary_ridge_weight": 0.12,
+                "boundary_shadow_weight": 0.08,
+                "strong_boundary_quantile": 0.67,
+                "centre_material_weight": 0.30,
+                "centre_distance_weight": 0.40,
+                "centre_ring_weight": 0.30,
+                "centre_minimum_separation_fraction": 0.42,
+                "sparse_centre_minimum_separation_fraction": 0.58,
+                "minimum_marker_score": 0.12,
+                "minimum_instance_area_fraction": 0.18,
+                "maximum_instance_area_fraction": 1.45,
+            },
+            parameter_specs=procedural_instance_parameters,
+            inline_parameters=(
+                ("foreground_threshold_scale", "Material threshold"),
+                ("centre_minimum_separation_fraction", "Marker spacing"),
+                ("minimum_marker_score", "Marker minimum"),
+            ),
+        ),
+        PipelineNode(
             "radial_profile", "Per-seed radial profiles", "GPU diagnostic",
             "Compare each assigned pixel with expected centre-to-edge lightness",
             2400, 540,
@@ -1999,6 +2065,26 @@ def build_default_pipeline() -> PipelineGraph:
             source_port="illumination",
         ),
         PipelineConnection("directed_edges", "image_quality", "ImageGradients"),
+        PipelineConnection("layout_detection", "procedural_instances", "DishRegion"),
+        PipelineConnection("seed_scale_estimation", "procedural_instances", "SeedDiameter"),
+        PipelineConnection("foreground_segmentation", "procedural_instances", "ForegroundColour"),
+        PipelineConnection("foreground_noise_likelihood", "procedural_instances", "ForegroundNoise"),
+        PipelineConnection("background_likelihood", "procedural_instances", "BackgroundColour"),
+        PipelineConnection("refined_background_likelihood", "procedural_instances", "BackgroundNoise"),
+        PipelineConnection("edge_gradients", "procedural_instances", "EdgeMagnitude"),
+        PipelineConnection("edge_ridges", "procedural_instances", "ThinnedRidges"),
+        PipelineConnection(
+            "illumination_decomposition",
+            "procedural_instances",
+            "LocalShadow",
+            source_port="shadow",
+        ),
+        PipelineConnection(
+            "image_quality",
+            "procedural_instances",
+            "SensorNoise",
+            source_port="sensor_noise",
+        ),
         PipelineConnection("instance_masks", "radial_profile", "ProvisionalInstances"),
         PipelineConnection("seed_scale_estimation", "radial_profile", "SeedDiameter"),
         PipelineConnection("seed_interior", "radial_profile", "InteriorProbability"),

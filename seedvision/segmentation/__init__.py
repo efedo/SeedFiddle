@@ -11,6 +11,11 @@ from seedvision.segmentation.baseline import (
 )
 from seedvision.calibration import CalibrationSettings, DishDetectionSettings
 from seedvision.visualization import AdvancedAnalysisSettings, AnalysisLayerSettings
+from seedvision.segmentation.procedural import (
+    ProceduralInstanceResult,
+    ProceduralInstanceSettings,
+    procedural_seed_instances,
+)
 
 __all__ = [
     "BaselineAnalysis",
@@ -19,9 +24,12 @@ __all__ = [
     "CalibrationSettings",
     "DishDetectionSettings",
     "PipelineAnalysisCache",
+    "ProceduralInstanceResult",
+    "ProceduralInstanceSettings",
     "AnalysisLayerSettings",
     "AdvancedAnalysisSettings",
     "SeedProposal",
     "analyze_image",
     "analyze_path",
+    "procedural_seed_instances",
 ]

@@ -8,8 +8,9 @@
 Seed Fiddle is a local PySide6 application for counting, measuring, and broadly
 classifying soybean and lupin seeds in calibrated laboratory photographs.
 
-The project now includes a PyTorch CUDA proposal pipeline and selectable
-analysis overlays in the desktop interface. See [`PLAN.md`](PLAN.md) for the
+The project now includes a PyTorch CUDA evidence pipeline, a review-oriented
+procedural instance-separation node, and selectable analysis overlays in the
+desktop interface. See [`PLAN.md`](PLAN.md) for the
 agreed scope and delivery sequence.
 
 ## Launch
@@ -151,9 +152,11 @@ Each seed ID is shown in a stable, distinct colour;
 **New seed** advances to another identity, while the selector permits revising
 an existing one. These integer labels are stored independently from foreground
 colour references, so they never force foreground probability. Applying them
-invalidates only **Instance colour masks** and its dependents. When that
-provisional branch is enabled, the marked interiors seed its constrained mask
-growth. Right-drag remains a temporary eraser for every annotation tool.
+invalidates **Procedural seed separation** as well as the dormant **Instance
+colour masks** branch. Each distinct painted ID becomes an authoritative
+procedural watershed marker and suppresses a nearby automatic duplicate without
+altering foreground probability. Right-drag remains a temporary eraser for
+every annotation tool.
 
 Every painted foreground pixel contributes to a quantized CIE Lab
 colour-frequency table, so light and dark seed patterns remain separate instead
@@ -219,7 +222,7 @@ minor-tick interval, and maximum accepted deskew. Mask review, trait
 classification, aggregation, and export are retained in **Unused nodes** while
 they are implemented.
 
-### Active analysis and future seed separation
+### Active analysis and procedural seed separation
 
 The active layout-to-diagnostic span is represented by these live pipeline nodes:
 
@@ -261,16 +264,27 @@ The active layout-to-diagnostic span is represented by these live pipeline nodes
 5. **Foreground noise probability** learns a matching three-band profile from
    foreground-colour pseudo-labels. It continues texture evidence across
    patterned coats without hard-forcing painted reference pixels.
-5. **Edge gradients**, **Thinned edge ridges**, and **Oriented edge traces**
+6. **Edge gradients**, **Thinned edge ridges**, and **Oriented edge traces**
    retain the strongest current evidence for visible seed boundaries without
    depending on an unvalidated centre proposal.
-6. The disabled **Directional surface darkness gradients** toolbox node searches
+7. **Procedural seed separation** fuses foreground colour/noise and inverse
+   background into a material likelihood, fills only enclosed seed-sized coat
+   holes, and excludes a seed-relative dish margin. Shared edge magnitude,
+   sensor/noise transitions, thinned ridges, and local shadow form a physical
+   boundary cost. Smoothed material, boundary depth, and annular boundary
+   support produce automatic markers; distinct painted instance IDs replace
+   nearby automatic markers. OpenCV marker-controlled watershed performs the
+   bounded topological partition, and marker/boundary/area evidence supplies a
+   per-instance confidence. Six owned overlays expose every stage. GPU inputs
+   are resized before this topology-only CPU transfer, and the result is cached
+   at the node.
+8. The disabled **Directional surface darkness gradients** toolbox node searches
    independent one-sided rays and emits lightening/darkening magnitude and
    direction products. Its lightening and darkening derivative cutoff nodes
    retain only raw slopes at or below their editable L*/pixel ceilings,
    suppressing strong edges. The complete three-node branch is preserved with
    its connections in **Unused nodes**.
-7. **Multiscale darkness & colour noise** builds a seed-relative Gaussian
+9. **Multiscale darkness & colour noise** builds a seed-relative Gaussian
    pyramid and exposes surrounding fine/medium/coarse RMS energy separately for
    L* darkness and Lab chroma. These masks are raw diagnostic evidence and do
    not learn foreground/background classes.
@@ -325,6 +339,9 @@ The inspector exposes the implemented settings on their owning nodes, including:
 - fine/medium/coarse frequency-noise scales, surrounding RMS context,
   normalization, display gamma, and GPU working size;
 - dormant provisional instance-extent limits; and
+- procedural material threshold/morphology, dish margin, boundary fusion,
+  centre-evidence weights and spacing, marker acceptance, topology resolution,
+  and calibrated area confidence limits;
 - ridge NMS/hysteresis, oriented trace linking and gap controls, dense radius
   and arc sampling, circle/ellipse fits, centre voting, semantic sides,
   optional lightness boost, and rejection confidence; and
@@ -351,13 +368,15 @@ terminal scale dashes rather than the ends of the plastic ruler body. The result
 and displayed as a physical scale bar; batch CSV reports include swatch count,
 deskew angle, scale, and scale confidence.
 
-The active implemented diagnostic layers are first-class pipeline nodes:
+The active implemented evidence layers are first-class pipeline nodes:
 foreground/background colour and noise probability, shared edge gradients,
 undirected/directed tangents, one-sided lightening/darkening surface gradients,
 six multiscale darkness/colour noise masks,
 thinned ridges, oriented traces, illumination, image quality, and calibration
-residuals. Dormant instance, boundary, review, and output nodes remain serialized
-in the toolbox alongside the optional strong-slope cutoff views.
+residuals. The active procedural node consumes those products and exposes
+review-oriented seed identities and confidence. The former distance-based
+instance, boundary, review, and output nodes remain serialized in the toolbox
+alongside the optional strong-slope cutoff views.
 The background-colour node is bypassable, and its automatic colour estimate can
 be replaced per image by a user-painted binary reference mask in Image review.
 Their node headers follow analysis running/completion/failure state. Selecting
@@ -367,9 +386,20 @@ Background colour probability and **Edge gradients** derive directly from **Desk
 balance**, rather than from seed identification. The shared gradient outputs
 feed both tangent displays and the active ridge/trace branch.
 
-The active outputs are diagnostic evidence, not validated counts or reviewed
-instance masks. Packed, touching samples are expected to need corrections and
-will supply training and validation data for a future separation model.
+The procedural output is not a validated count or reviewed instance mask.
+Visual QA across all eleven fixtures found useful separation for pale round
+seeds and plausible partitions for densely packed round seeds, but it also
+found obvious false splits and merges on strongly bicoloured elongated lupins.
+The sparse `IMG_9670c.JPG` fixture visibly contains 16 dish seeds but receives
+18 automatic instances. On the RTX 3070 test system, the cached procedural node
+itself takes about 0.41–0.87 seconds for the evaluated 856–1758 px dish crops;
+the complete active pipeline takes about 2.1–6.3 seconds. These results establish
+an honest classical baseline and a useful annotation bootstrap, not production
+counting accuracy. High-accuracy automation now requires manually reviewed
+instance masks and a small species-conditioned boundary/instance model (for
+example U-Net plus watershed or StarDist); a transformer is not justified by
+the present dataset size. Patterned, touching samples remain correction and
+training data for that model.
 Background, foreground, noise, and edge values are image-derived
 likelihood scores rather than probabilities calibrated against labelled data.
 The noise profile falls back to the colour likelihood when the image does not
@@ -391,10 +421,13 @@ PySide6, NumPy, OpenCV, and PyTorch are core runtime dependencies. The bootstrap
 manifest installs PyTorch from its CUDA wheel index. The ordinary
 `opencv-python` wheel is used for image decoding and a few compact compatibility
 operations. Full-raster calibration, proposal, foreground/background, edge,
-boundary, mask, and advanced analyses use PyTorch CUDA. Authoritative tensors
-and intermediate overlays stay on the GPU. Only a selected Qt overlay, the
-corrected display image, or compact result metadata/geometry is transferred to
-CPU. The right panel reports the exact active tensor device and any fallback.
+boundary, and advanced evidence analyses use PyTorch CUDA. Authoritative tensors
+and intermediate overlays stay on the GPU. The procedural node is the documented
+exception: it resizes its required evidence on the tensor device, transfers a
+bounded working raster for OpenCV watershed topology, and restores integer
+labels for Qt review. Selected overlays, the corrected display image, and
+compact result metadata/geometry also transfer to CPU. The right panel reports
+the exact active tensor device and any fallback.
 
 ## License
 

@@ -170,7 +170,8 @@ desktop shell.
   editors, concise Blueprint-style controls on every configurable graph node,
   tooltip descriptions, composite validation, shared edge-field controls, and
   downstream cache invalidation
-- Preliminary automatic masks (retained in the unused-node toolbox pending validation)
+- Review-oriented procedural automatic masks with explicit confidence; the
+  former distance-based masks remain in the unused-node toolbox
 - Selectable foreground/background colour and noise, image-quality,
   undirected-edge, directed-edge, ridge, and trace overlays
 - Fifteen authored CUDA-first diagnostic/trait products, with unfinished
@@ -191,7 +192,8 @@ desktop shell.
   from marked or unmarked seeds with bounded tunnelling, and erasing are available;
   freehand drags use a lightweight vector preview and one annotation-raster
   refresh on release, while assisted previews operate on local cursor regions;
-  applied instance IDs constrain only the provisional instance branch
+  applied instance IDs constrain the active procedural watershed as
+  authoritative markers and also constrain the dormant provisional branch
 - Mask editing and autosave
 - Versioned annotation representation
 
@@ -200,11 +202,12 @@ Exit: representative samples can be annotated entirely inside Seed Fiddle.
 Current pilot status: 11 low-resolution images load directly from `images/`;
 the application detects colour swatches and the ruler, deskews and
 neutral-balances the image, assigns pixels per millimetre, and detects both
-physical Petri-dish edges in a background thread. The active DAG now stops at
-validated calibration and diagnostic evidence: symmetric foreground/background
+physical Petri-dish edges in a background thread. The active DAG now continues
+from validated calibration and diagnostic evidence—symmetric foreground/background
 colour and three-band noise probabilities, illumination/image-quality products,
 simple grayscale flattening, nonlinear local shadow/highlight products, and a
-shared CUDA edge-gradient/ridge/trace path. Independent active diagnostics also
+shared CUDA edge-gradient/ridge/trace path—into a review-oriented procedural
+watershed with explicit instance confidence. Independent active diagnostics also
 provide one-sided maximum lightening/darkening L* surface slopes and six raw
 multiscale darkness/colour noise masks. The editable strong-slope cutoff views
 remain authored but have moved to the unused-node toolbox.
@@ -224,31 +227,42 @@ have per-image draft/apply/revert state. Painted foreground colours remain
 individual Lab frequency bins and never force the probability under the brush
 to one. Painted reference/exclusion colours can be hidden while inspecting an
 overlay. Seed-instance IDs remain separate from foreground references. Their
-annotation mode now supports freehand marks, magnetic edge tracing, shape
-snapping, and locally adaptive smart fill for partially annotated patterned
-seeds. Split/merge tools, annotation persistence, and a validated automatic
-seed-separation algorithm remain to be built. The sparse 16-seed image remains
-the first count regression target.
+annotation mode supports freehand marks, magnetic edge tracing, shape snapping,
+and locally adaptive smart fill for partially annotated patterned seeds. The
+active **Procedural seed separation** node now implements the classical proof
+of concept: colour/noise material fusion, scale-aware coat-hole filling, a
+fused edge/sensor/ridge/shadow boundary cost, material/depth/ring centre
+markers, marker-controlled watershed, and per-instance confidence. Painted
+instance IDs are authoritative markers. The node transfers only GPU-resized
+bounded rasters for the CPU topology step and caches the full result.
 
-### Next seed-separation proof of concept
+### Procedural validation outcome and learned-model milestone
 
-1. Fuse foreground colour and foreground-noise probability into soft interior
-   evidence while preserving their disagreement as uncertainty.
-2. Train or calibrate a boundary probability from shared edge magnitude,
-   thinned-ridge support, trace continuity, tangent orientation, and the
-   foreground/noise transition sampled across each edge normal.
-3. Bridge only tangent-compatible trace gaps, then propose closed or nearly
-   closed contours whose size is plausible under the image-specific seed scale.
-   Applied seed-instance interior marks become high-confidence identity seeds.
-4. Run a GPU multi-label geodesic watershed or graph cut inside foreground
-   support. Expansion cost rises sharply at the calibrated boundary probability;
-   no distance-peak or circular centre proposal is required.
-5. Merge unsupported fragments and split touching regions only when a supported
-   contour crosses the shared neck. Retain per-boundary and per-instance
-   confidence instead of silently forcing a complete partition.
-6. Validate count error, boundary F1/IoU, split/merge error, and uncertainty on
-   manually reviewed isolated, touching, patterned, and partially occluded
-   fixtures before moving any separation node back into the active DAG.
+All eleven fixtures were rendered as corrected image, material evidence/mask,
+boundary cost, centre likelihood, and coloured instance overlay. Pale round and
+dense round samples are useful annotation starting points. Strongly bicoloured
+elongated lupins still have obvious coat-pattern false splits and contact merges;
+the sparse 16-seed regression image produces 18 automatic instances. Adjusting
+material morphology, marker spacing, centre evidence, orientation voting, and
+area priors did not remove this ambiguity consistently across species. The
+optimized node takes about 0.41–0.87 seconds per 856–1758 px dish crop on the
+RTX 3070.
+
+The next milestone is therefore:
+
+1. Review and correct procedural masks in representative isolated, touching,
+   patterned, dense, and partially occluded strata.
+2. Persist those masks as versioned training/validation data with species and
+   review state.
+3. Train a small species-conditioned boundary/instance model—initially U-Net
+   plus seeded watershed or StarDist—using tiled full-resolution images and
+   realistic synthetic contacts. Do not start with a transformer given the
+   present data volume.
+4. Evaluate count error, boundary F1/IoU, split/merge error, confidence
+   calibration, and correction time on held-out lots.
+5. Keep the procedural result as a transparent fallback and annotation
+   bootstrap; replace automatic count reporting only when the learned model
+   meets agreed acceptance criteria.
 
 ### Phase 3 — calibration and measurements (started)
 

@@ -14,8 +14,8 @@ class PipelineModelTests(unittest.TestCase):
         order = graph.topological_order()
         self.assertEqual(order[0], "raw_images")
         self.assertEqual(set(order), set(graph.nodes))
-        self.assertEqual(len(graph.nodes), 27)
-        self.assertEqual(len(graph.connections), 50)
+        self.assertEqual(len(graph.nodes), 28)
+        self.assertEqual(len(graph.connections), 60)
         self.assertEqual(
             graph.upstream("perimeter_background_reference"),
             ("deskew_colour", "layout_detection", "scale_calibration"),
@@ -93,6 +93,7 @@ class PipelineModelTests(unittest.TestCase):
         )
         self.assertEqual(graph.upstream("edge_gradients"), ("deskew_colour",))
         self.assertEqual(graph.upstream("undirected_edges"), ("edge_gradients",))
+
         self.assertEqual(graph.upstream("directed_edges"), ("edge_gradients",))
         self.assertEqual(
             graph.upstream("surface_darkness_gradients"),
@@ -189,6 +190,30 @@ class PipelineModelTests(unittest.TestCase):
                 "calibration_residuals",
             },
         )
+
+    def test_procedural_instances_have_explicit_evidence_dependencies(self) -> None:
+        graph = build_default_pipeline()
+        self.assertEqual(
+            graph.upstream("procedural_instances"),
+            (
+                "layout_detection",
+                "seed_scale_estimation",
+                "foreground_segmentation",
+                "foreground_noise_likelihood",
+                "background_likelihood",
+                "refined_background_likelihood",
+                "edge_gradients",
+                "edge_ridges",
+                "illumination_decomposition",
+                "image_quality",
+            ),
+        )
+        graph.set_status("procedural_instances", NodeStatus.COMPLETE, "Calculated")
+        affected = graph.set_parameter(
+            "procedural_instances", "minimum_marker_score", 0.13
+        )
+        self.assertEqual(affected, ("procedural_instances",))
+        self.assertEqual(graph.node("procedural_instances").status, NodeStatus.IDLE)
 
     def test_calibration_nodes_feed_the_corrected_analysis_path(self) -> None:
         graph = build_default_pipeline()

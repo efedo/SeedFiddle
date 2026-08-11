@@ -114,11 +114,19 @@ repository or `images/` while troubleshooting the environment.
   region instead of rebuilding or normalizing full-resolution rasters on every
   event.
   Draft/apply/revert state is per image and independent of the
-  binary colour-reference masks; applied labels constrain the provisional
-  instance branch without overriding foreground probability.
+  binary colour-reference masks; applied labels become authoritative markers
+  for the active procedural watershed and also constrain the dormant
+  provisional instance branch without overriding foreground probability.
 - GPU foreground/background colour probabilities, symmetric three-band noise
   profiles with directional texture continuation, shared edge gradients,
   directed/undirected tangents, ridge thinning, and oriented edge traces.
+- Active **Procedural seed separation** combines seed-material evidence,
+  edge/sensor/ridge/shadow physical-boundary cost, scale-aware centre markers,
+  marker-controlled watershed, and explicit per-instance confidence. Its six
+  overlays expose material likelihood/mask, boundary cost, centre likelihood,
+  instance identities, and confidence. GPU rasters are resized before the one
+  essential bounded CPU topology transfer, the result is node-cached, and
+  distinct painted instance IDs suppress nearby automatic markers.
 - **Perimeter background reference** is a separate cached active node. Its
   ruler-calibrated outer-rim buffer defaults to 0.35 cm and its independently
   adjustable median-colour band thickness defaults to 0.5 cm; both are shown
@@ -162,17 +170,29 @@ repository or `images/` while troubleshooting the environment.
   required by image-backed tests. Generated diagnostics under `artifacts/` are
   ignored.
 
-The full suite passed 120 tests on Python 3.12.10 with PyTorch CUDA on an RTX
-3070 on 2026-08-10 after the directional surface-darkness branch was disabled
-and moved to the unused-node toolbox.
+The full suite passed 124 tests on Python 3.12.10 with PyTorch CUDA on an RTX
+3070 on 2026-08-11 after the procedural separation and visual/performance QA.
 
-## Important unfinished concern
+## Procedural separation outcome and next approach
 
-The colour/noise corrections above are implemented and covered by focused
-tests, but a working seed-separation algorithm is still unfinished. Build the
-next proof of concept around foreground/noise interior evidence plus the active
-edge-gradient/ridge/trace boundary cost; do not restore the former distance or
-circle proposal branches merely to obtain a count.
+The complete procedural proof of concept is implemented, but visual QA says it
+is an annotation bootstrap rather than a validated counter. It usefully
+separates pale round seeds and gives plausible dense round-seed partitions, but
+strongly bicoloured elongated lupins still show obvious false splits at coat
+transitions and merges at contacts. The sparse `IMG_9670c.JPG` dish visibly has
+16 seeds and receives 18 automatic instances. Automatic fixture counts are
+diagnostic only: `IMG_0002c` 621, `IMG_9632c` 130, `IMG_9636c` 92, `IMG_9641c`
+90, `IMG_9666c` 129, `IMG_9667c` 138, `IMG_9668c` 84, `IMG_9670c` 18,
+`IMG_9685c` 116, `IMG_9689c` 58, and `IMG_9974c` 563.
+
+After vectorizing label statistics, the procedural node takes approximately
+0.41–0.87 seconds on the RTX 3070 for the tested 856–1758 px dish crops; the
+complete active analysis takes approximately 2.1–6.3 seconds. Further manual
+threshold tuning did not resolve the core ambiguity because true contacts and
+within-seed coat boundaries can have equally strong edges. The next justified
+step is to review masks produced by this node and train a small
+species-conditioned boundary/instance model (U-Net plus watershed or StarDist).
+Do not start with a transformer: eleven unlabelled fixtures do not support it.
 
 ## First actions for the next agent
 

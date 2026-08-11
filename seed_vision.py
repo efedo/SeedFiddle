@@ -149,9 +149,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(
                     "Image pipeline: PyTorch CUDA for full-raster calibration, "
                     "colour/noise probabilities, image-quality products, and edge "
-                    "diagnostics, with experimental proposal/mask stages retained "
-                    "in the node toolbox; "
-                    "OpenCV/NumPy CPU for decoding, Qt display, and compact metadata."
+                    "diagnostics; GPU-resized evidence plus bounded OpenCV/NumPy CPU "
+                    "topology for active procedural instances; former experimental "
+                    "proposal/mask stages retained in the node toolbox; CPU also used "
+                    "for decoding, Qt display, and compact metadata."
                 )
             return 0 if report.ready else 2
 

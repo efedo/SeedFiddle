@@ -31,6 +31,11 @@ from seedvision.cuda import (
     otsu_threshold,
 )
 from seedvision.cuda.layers import directional_edges
+from seedvision.segmentation.procedural import (
+    ProceduralInstanceResult,
+    ProceduralInstanceSettings,
+    procedural_seed_instances,
+)
 
 from seedvision.calibration.geometry import (
     DishCircle,
@@ -348,6 +353,7 @@ class BaselineAnalysis:
     background_prior_deviation: float
     foreground_reference_count: int
     node_timings_seconds: dict[str, float] = field(default_factory=dict)
+    procedural_instances: ProceduralInstanceResult | None = None
     method: str = "classical fused review proposals"
     approximate: bool = True
 
@@ -386,6 +392,7 @@ def analyze_path(
     dish_settings: DishDetectionSettings | None = None,
     layer_settings: AnalysisLayerSettings | None = None,
     advanced_settings: AdvancedAnalysisSettings | None = None,
+    procedural_settings: ProceduralInstanceSettings | None = None,
     *,
     background_reference_points: tuple[tuple[float, float], ...] = (),
     foreground_reference_points: tuple[tuple[float, float], ...] = (),
@@ -440,6 +447,7 @@ def analyze_path(
         dish_settings=dish_settings,
         layer_settings=layer_settings,
         advanced_settings=advanced_settings,
+        procedural_settings=procedural_settings,
         background_reference_points=background_reference_points,
         foreground_reference_points=foreground_reference_points,
         background_reference_mask=background_reference_mask,
@@ -469,6 +477,7 @@ def analyze_image(
     dish_settings: DishDetectionSettings | None = None,
     layer_settings: AnalysisLayerSettings | None = None,
     advanced_settings: AdvancedAnalysisSettings | None = None,
+    procedural_settings: ProceduralInstanceSettings | None = None,
     background_reference_points: tuple[tuple[float, float], ...] = (),
     foreground_reference_points: tuple[tuple[float, float], ...] = (),
     background_reference_mask: np.ndarray | None = None,
@@ -488,6 +497,7 @@ def analyze_image(
     settings = settings or BaselineSettings()
     layer_settings = layer_settings or AnalysisLayerSettings()
     advanced_settings = advanced_settings or AdvancedAnalysisSettings()
+    procedural_settings = procedural_settings or ProceduralInstanceSettings()
     cuda_context = CudaContext.resolve(
         requested=advanced_settings.compute_device,
         allow_cpu_fallback=advanced_settings.allow_cpu_fallback
@@ -1431,20 +1441,72 @@ def analyze_image(
             if node_id in enabled_advanced_nodes
         )
 
+    # This new review branch is opt-in for API callers that omit graph state;
+    # the desktop always passes its explicit active-node set.
+    procedural_enabled = (
+        enabled_nodes is not None and "procedural_instances" in enabled_nodes
+    )
+    procedural_dirty = (
+        calibration_dirty
+        or foreground_dirty
+        or advanced_dirty
+        or bool(
+            layer_dirty
+            & {
+                "background_likelihood",
+                "refined_background_likelihood",
+                "foreground_noise_likelihood",
+                "edge_gradients",
+                "edge_ridges",
+            }
+        )
+        or "procedural_instances" in dirty
+        or "segmentation.procedural_instances" not in values
+    )
+    if procedural_enabled and procedural_dirty:
+        with timings.measure("procedural_instances"):
+            procedural_result = procedural_seed_instances(
+                layers.valid_mask,
+                seed_diameter,
+                foreground_probability=foreground_probability,
+                foreground_noise_probability=layers.foreground_noise_likelihood,
+                background_probability=layers.background_likelihood,
+                refined_background_probability=layers.refined_background_likelihood,
+                edge_magnitude=layers.edge_likelihood,
+                edge_ridges=layers.edge_ridges,
+                sensor_noise=advanced.rasters["sensor_noise"],
+                shadow_likelihood=advanced.rasters["shadow_likelihood"],
+                seed_instance_annotations=local_seed_instance_annotations,
+                settings=procedural_settings,
+            )
+        values["segmentation.procedural_instances"] = procedural_result
+        computed.append("procedural_instances")
+    elif procedural_enabled:
+        procedural_result = values["segmentation.procedural_instances"]
+        reused.append("procedural_instances")
+    else:
+        procedural_result = None
+        values.pop("segmentation.procedural_instances", None)
+
+    reported_instance_count = (
+        procedural_result.count if procedural_result is not None else len(proposals)
+    )
     nominal_seed_area = np.pi * (seed_diameter * 0.5) ** 2
     usable_dish_area = np.pi * (
         dish.outer_radius * settings.inner_radius_fraction
     ) ** 2
-    packing_estimate = len(proposals) * nominal_seed_area / max(1.0, usable_dish_area)
-    if packing_estimate >= 0.62 or len(proposals) >= 250:
+    packing_estimate = reported_instance_count * nominal_seed_area / max(1.0, usable_dish_area)
+    if packing_estimate >= 0.62 or reported_instance_count >= 250:
         crowding = "high"
-    elif packing_estimate >= 0.28 or len(proposals) >= 70:
+    elif packing_estimate >= 0.28 or reported_instance_count >= 70:
         crowding = "moderate"
     else:
         crowding = "low"
 
     warnings = [
-        "Untrained classical proposals; review and correction are required."
+        "Untrained procedural instances; review and correction are required."
+        if procedural_result is not None
+        else "Untrained classical proposals; review and correction are required."
     ]
     warnings.extend(calibration.warnings)
     if layers.background_mode == "disabled":
@@ -1489,6 +1551,15 @@ def analyze_image(
         warnings.append(
             "Touching/overlapping seeds make the proposal count especially uncertain."
         )
+    if procedural_result is not None:
+        low_confidence_fraction = float(
+            np.mean(procedural_result.instance_confidences < 0.55)
+        ) if procedural_result.count else 1.0
+        if low_confidence_fraction >= 0.20:
+            warnings.append(
+                "Procedural instance separation contains substantial low-confidence "
+                "structure; review the confidence overlay before using its count."
+            )
 
     measured_timings = timings.finalize()
     node_timings_seconds = (
@@ -1546,6 +1617,12 @@ def analyze_image(
         background_prior_deviation=background_prior_deviation,
         foreground_reference_count=accepted_foreground_points,
         node_timings_seconds=node_timings_seconds,
+        procedural_instances=procedural_result,
+        method=(
+            "procedural marker-controlled watershed (review required)"
+            if procedural_result is not None
+            else "classical fused review proposals"
+        ),
     )
     if node_cache is not None:
         values["result"] = result

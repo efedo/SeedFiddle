@@ -52,6 +52,7 @@ from seedvision.segmentation import (
     CalibrationSettings,
     DishDetectionSettings,
     PipelineAnalysisCache,
+    ProceduralInstanceSettings,
 )
 from seedvision.visualization import ADVANCED_NODE_MODES, ADVANCED_OVERLAY_LABELS
 from seedvision.ui.image_view import ImageView, SUPPORTED_SUFFIXES
@@ -80,6 +81,7 @@ OVERLAY_NODE_IDS = (
     "edge_ridges",
     "edge_traces",
     "seed_edge_curves",
+    "procedural_instances",
     *ADVANCED_NODE_MODES.keys(),
 )
 CALIBRATION_NODE_IDS = (
@@ -172,6 +174,12 @@ OVERLAY_NODE_OWNERS = {
     "edge_rejections": "seed_edge_curves",
     "edge_fit_geometry": "seed_edge_curves",
     "seed_edge_curves": "seed_edge_curves",
+    "procedural_seed_material": "procedural_instances",
+    "procedural_seed_mask": "procedural_instances",
+    "procedural_boundary_cost": "procedural_instances",
+    "procedural_centres": "procedural_instances",
+    "procedural_instances": "procedural_instances",
+    "procedural_confidence": "procedural_instances",
 }
 for _node_id, _mode in ADVANCED_NODE_MODES.items():
     OVERLAY_NODE_OWNERS[_mode] = _node_id
@@ -222,6 +230,7 @@ class _AnalysisTask(QRunnable):
         dish_settings: DishDetectionSettings,
         layer_settings: AnalysisLayerSettings,
         advanced_settings: AdvancedAnalysisSettings,
+        procedural_settings: ProceduralInstanceSettings,
         background_reference_points: tuple[tuple[float, float], ...],
         foreground_reference_points: tuple[tuple[float, float], ...],
         background_reference_mask: np.ndarray | None,
@@ -242,6 +251,7 @@ class _AnalysisTask(QRunnable):
         self.dish_settings = dish_settings
         self.layer_settings = layer_settings
         self.advanced_settings = advanced_settings
+        self.procedural_settings = procedural_settings
         self.background_reference_points = background_reference_points
         self.foreground_reference_points = foreground_reference_points
         self.background_reference_mask = (
@@ -288,6 +298,7 @@ class _AnalysisTask(QRunnable):
                 dish_settings=self.dish_settings,
                 layer_settings=self.layer_settings,
                 advanced_settings=self.advanced_settings,
+                procedural_settings=self.procedural_settings,
                 background_reference_points=self.background_reference_points,
                 foreground_reference_points=self.foreground_reference_points,
                 background_reference_mask=self.background_reference_mask,
@@ -538,6 +549,12 @@ class MainWindow(QMainWindow):
             ("Rejected edge reasons", "edge_rejections"),
             ("Fitted centres and ellipses", "edge_fit_geometry"),
             ("Final seed-boundary confidence", "seed_edge_curves"),
+            ("Seed-material likelihood", "procedural_seed_material"),
+            ("Seed-material mask", "procedural_seed_mask"),
+            ("Physical boundary cost", "procedural_boundary_cost"),
+            ("Procedural centre likelihood", "procedural_centres"),
+            ("Procedural seed instances", "procedural_instances"),
+            ("Procedural instance confidence", "procedural_confidence"),
             *ADVANCED_OVERLAY_LABELS,
             ("None", "none"),
         ]
@@ -1551,6 +1568,13 @@ class MainWindow(QMainWindow):
                 values.update(self.pipeline.node(node_id).parameters)
         return AdvancedAnalysisSettings(**values)
 
+    def _procedural_settings(self) -> ProceduralInstanceSettings:
+        if not self.pipeline.is_active("procedural_instances"):
+            return ProceduralInstanceSettings()
+        return ProceduralInstanceSettings(
+            **self.pipeline.node("procedural_instances").parameters
+        )
+
     def _calibration_settings(self) -> CalibrationSettings:
         return CalibrationSettings(
             ruler_length_mm=float(
@@ -1605,6 +1629,7 @@ class MainWindow(QMainWindow):
             self._dish_settings(),
             self._layer_settings(),
             self._advanced_settings(),
+            self._procedural_settings(),
             (),
             (),
             self._applied_background_reference_masks.get(key),
@@ -1691,7 +1716,15 @@ class MainWindow(QMainWindow):
             self._show_analysis_result(result)
         self._update_analysis_availability()
         self._sync_background_controls()
-        if self.pipeline.is_active("identification"):
+        if (
+            self.pipeline.is_active("procedural_instances")
+            and result.procedural_instances is not None
+        ):
+            self.statusBar().showMessage(
+                f"Generated {result.procedural_instances.count:,} reviewable procedural "
+                f"instances for {path.name}."
+            )
+        elif self.pipeline.is_active("identification"):
             self.statusBar().showMessage(
                 f"Generated {result.count:,} approximate proposals for {path.name}."
             )
@@ -1841,7 +1874,13 @@ class MainWindow(QMainWindow):
             self.reference_status_label.setText(
                 f"Fallback estimate ≈ {result.estimated_seed_diameter_px:.0f} px"
             )
-        self.count_label.setText(f"≈ {result.count:,} seeds")
+        displayed_count = (
+            result.procedural_instances.count
+            if self.pipeline.is_active("procedural_instances")
+            and result.procedural_instances is not None
+            else result.count
+        )
+        self.count_label.setText(f"≈ {displayed_count:,} seeds")
         self.crowding_label.setText(
             f"Crowding: {result.crowding}. Method: {result.method}."
         )
@@ -2709,6 +2748,7 @@ class MainWindow(QMainWindow):
         self._instance_annotations_dirty.discard(key)
         affected = {
             "instance_masks",
+            "procedural_instances",
             *self.pipeline.downstream("instance_masks", recursive=True),
         }
         self.pipeline.invalidate(affected)
@@ -2719,22 +2759,33 @@ class MainWindow(QMainWindow):
                 NodeStatus.WARNING,
                 f"{count:,} annotated seed interiors; updating",
             )
+        if self.pipeline.is_active("procedural_instances"):
+            self.pipeline.set_status(
+                "procedural_instances",
+                NodeStatus.WARNING,
+                f"{count:,} authoritative painted marker(s); updating",
+            )
         self.pipeline.set_status(
             "measurements", NodeStatus.BLOCKED, "Requires reviewed masks"
         )
         self.pipeline_canvas.refresh(affected)
         self.pipeline_inspector.refresh_status()
         self._cache_dirty_nodes.setdefault(key, set()).update(affected)
-        if self.pipeline.node("instance_masks").enabled:
+        if (
+            self.pipeline.node("instance_masks").enabled
+            or self.pipeline.is_active("procedural_instances")
+        ):
             self._analyses.pop(key, None)
             self._analyze_current_image(dirty_nodes=affected)
         self._sync_background_controls()
         self.statusBar().showMessage(
             f"Applied {count:,} seed instance annotations."
             + (
-                " Instance masks are updating."
+                " Procedural instances are updating."
+                if self.pipeline.is_active("procedural_instances")
+                else " Instance masks are updating."
                 if self.pipeline.node("instance_masks").enabled
-                else " Enable Instance colour masks to evaluate them downstream."
+                else " Enable an instance-separation node to evaluate them downstream."
             )
         )
 
@@ -3013,6 +3064,12 @@ class MainWindow(QMainWindow):
                 "continuity, dense arc radii, centre voting, circle/ellipse residuals, "
                 "and soft semantic/lightness confirmation."
             ),
+            "procedural_seed_material": "Combined foreground colour/noise and inverse-background likelihood used to gate procedural instances.",
+            "procedural_seed_mask": "Thresholded seed material after dish-margin removal and seed-sized enclosed coat-hole filling.",
+            "procedural_boundary_cost": "Normalized physical boundary cost fused from edges, sensor/noise, ridges and local shadow.",
+            "procedural_centres": "Marker likelihood from smoothed material, physical-boundary depth and annular boundary support; dots are retained markers.",
+            "procedural_instances": "Marker-controlled watershed instance identities. Dot colour runs red to green with per-instance confidence.",
+            "procedural_confidence": "Per-instance marker, boundary and calibrated-area confidence mapped back onto every assigned pixel.",
             "seed_interior_probability": "Soft seed-interior evidence from foreground colour, learned foreground noise, and inverse background support.",
             "boundary_confidence": "Hue is the continuous directed boundary normal (0° = 360°); brightness is boundary confidence.",
             "boundary_magnitude": "Boundary confidence without direction encoding.",
@@ -3185,6 +3242,24 @@ class MainWindow(QMainWindow):
             NodeStatus.COMPLETE,
             f"{result.count:,} approximate proposals",
         )
+        procedural = getattr(result, "procedural_instances", None)
+        if procedural is not None:
+            median_confidence = (
+                float(np.median(procedural.instance_confidences))
+                if procedural.count
+                else 0.0
+            )
+            low_fraction = (
+                float(np.mean(procedural.instance_confidences < 0.55))
+                if procedural.count
+                else 1.0
+            )
+            self.pipeline.set_status(
+                "procedural_instances",
+                NodeStatus.WARNING if low_fraction >= 0.20 else NodeStatus.COMPLETE,
+                f"{procedural.count:,} instances; median confidence "
+                f"{median_confidence:.0%}; {low_fraction:.0%} require review",
+            )
         background_mode = result.layers.background_mode
         colour_profile = result.layers.background_colour_profile
         background_deviation = float(
@@ -3414,6 +3489,7 @@ class MainWindow(QMainWindow):
             "directed_edges",
             "edge_ridges",
             "edge_traces",
+            "procedural_instances",
         ):
             node = self.pipeline.node(node_id)
             if self.pipeline.is_active(node_id) and node.enabled:
@@ -3696,6 +3772,10 @@ class MainWindow(QMainWindow):
                 values.update(self.pipeline.node(advanced_id).parameters)
             values[key] = value
             AdvancedAnalysisSettings(**values)
+        elif node_id == "procedural_instances":
+            values = dict(self.pipeline.node(node_id).parameters)
+            values[key] = value
+            ProceduralInstanceSettings(**values)
 
     @Slot(str, bool)
     def _pipeline_enabled_changed(self, node_id: str, enabled: bool) -> None:

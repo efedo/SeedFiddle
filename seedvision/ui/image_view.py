@@ -99,6 +99,12 @@ OVERLAY_MODES = {
     "edge_rejections",
     "edge_fit_geometry",
     "seed_edge_curves",
+    "procedural_seed_material",
+    "procedural_seed_mask",
+    "procedural_boundary_cost",
+    "procedural_centres",
+    "procedural_instances",
+    "procedural_confidence",
     "none",
     *(mode for _, mode in ADVANCED_OVERLAY_LABELS),
 }
@@ -459,19 +465,21 @@ class ImageView(QGraphicsView):
         self._clear_instance_preview()
         self._clear_instance_live_stroke()
         self.set_reference_erase_mode(tool == "eraser")
-        self._schedule_instance_preview(self._last_reference_hover_point)
 
     def set_edge_trace_options(self, options: EdgeTraceOptions) -> None:
         self._edge_trace_options = options
-        self._schedule_instance_preview(self._last_reference_hover_point)
+        if self._instance_preview_point is not None:
+            self._schedule_instance_preview(self._last_reference_hover_point)
 
     def set_shape_snap_options(self, options: ShapeSnapOptions) -> None:
         self._shape_snap_options = options
-        self._schedule_instance_preview(self._last_reference_hover_point)
+        if self._instance_preview_point is not None:
+            self._schedule_instance_preview(self._last_reference_hover_point)
 
     def set_smart_fill_options(self, options: SmartFillOptions) -> None:
         self._smart_fill_options = options
-        self._schedule_instance_preview(self._last_reference_hover_point)
+        if self._instance_preview_point is not None:
+            self._schedule_instance_preview(self._last_reference_hover_point)
 
     def set_active_instance_id(self, identifier: int) -> None:
         identifier = int(identifier)
@@ -672,6 +680,32 @@ class ImageView(QGraphicsView):
             self._render_context_annotations(result)
             return
 
+        if self._overlay_mode.startswith("procedural_"):
+            procedural = getattr(result, "procedural_instances", None)
+            if procedural is not None:
+                if self._overlay_mode == "procedural_instances":
+                    self._render_rgba_overlay(
+                        procedural.instance_rgba(), *result.crop_offset
+                    )
+                    self._render_procedural_centres(result)
+                else:
+                    raster = {
+                        "procedural_seed_material": procedural.occupancy_likelihood,
+                        "procedural_seed_mask": procedural.occupancy_mask,
+                        "procedural_boundary_cost": procedural.boundary_cost,
+                        "procedural_centres": procedural.centre_likelihood,
+                        "procedural_confidence": procedural.confidence_raster(),
+                    }[self._overlay_mode]
+                    self._render_scalar_raster(
+                        raster,
+                        *result.crop_offset,
+                        valid_mask=result.layers.valid_mask,
+                    )
+                    if self._overlay_mode == "procedural_centres":
+                        self._render_procedural_centres(result)
+            self._render_context_annotations(result)
+            return
+
         advanced = getattr(result, "advanced", None)
         if advanced is not None and (
             self._overlay_mode in advanced.rasters
@@ -863,6 +897,32 @@ class ImageView(QGraphicsView):
         item.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
         item.setZValue(10)
         self._overlay_items.append(item)
+
+    def _render_procedural_centres(self, result) -> None:
+        procedural = getattr(result, "procedural_instances", None)
+        if procedural is None:
+            return
+        offset_x, offset_y = result.crop_offset
+        for index, (x, y) in enumerate(procedural.centres_xy):
+            confidence = (
+                float(procedural.instance_confidences[index])
+                if index < len(procedural.instance_confidences)
+                else 0.0
+            )
+            colour = QColor.fromHsvF(0.33 * confidence, 0.95, 1.0)
+            pen = QPen(colour, 3.0)
+            pen.setCosmetic(True)
+            radius = 3.0 + 3.0 * confidence
+            item = self._scene.addEllipse(
+                float(x + offset_x - radius),
+                float(y + offset_y - radius),
+                radius * 2.0,
+                radius * 2.0,
+                pen,
+            )
+            item.setOpacity(self._overlay_opacity)
+            item.setZValue(15)
+            self._overlay_items.append(item)
 
     def _render_contact_graph(self, result) -> None:
         proposals = {proposal.identifier: proposal for proposal in result.proposals}
@@ -1458,6 +1518,15 @@ class ImageView(QGraphicsView):
             or not self._image_item.boundingRect().contains(scene_point)
         ):
             return
+        # Produce the first hover result immediately so entering an assisted
+        # tool never shows a blank cursor while the debounce interval elapses.
+        # Subsequent moves remain coalesced by the timer for interactive speed.
+        if (
+            self._instance_preview_point is None
+            and self._pending_instance_preview_point is None
+        ):
+            self._update_instance_assisted_preview(QPointF(scene_point))
+            return
         self._pending_instance_preview_point = QPointF(scene_point)
         if not self._instance_preview_timer.isActive():
             self._instance_preview_timer.start()
@@ -1677,6 +1746,9 @@ class ImageView(QGraphicsView):
                 return False
             if self._instance_trace_anchor is None:
                 self._instance_trace_anchor = QPointF(endpoint)
+                self._instance_preview_point = None
+                self._pending_instance_preview_point = None
+                self._instance_preview_timer.stop()
                 self.instance_tool_status.emit(
                     "Edge-trace anchor set. Move the cursor to preview a snapped "
                     "segment, then click to apply it."
@@ -1688,6 +1760,7 @@ class ImageView(QGraphicsView):
                 return False
             changed = self._paint_instance_geometry(geometry, filled=False)
             self._instance_trace_anchor = QPointF(endpoint)
+            self._instance_preview_point = None
             self.instance_tool_status.emit(
                 f"Edge trace added {changed:,} pixels to seed "
                 f"{self._active_instance_id}; the endpoint is the next anchor."
