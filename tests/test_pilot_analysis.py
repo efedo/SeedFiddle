@@ -273,6 +273,57 @@ class PilotAnalysisTests(unittest.TestCase):
         self.assertGreaterEqual(len(profile.component_centres_lab), 1)
         self.assertAlmostEqual(sum(profile.component_weights), 1.0, places=4)
 
+    def test_isolated_reference_seed_colours_drive_automatic_foreground(self) -> None:
+        import numpy as np
+
+        from seedvision.cuda import CudaContext
+        from seedvision.segmentation.baseline import (
+            BaselineSettings,
+            _bgr_samples_to_lab,
+            _foreground_feature,
+        )
+
+        crop = np.full((128, 128, 3), (180, 190, 200), np.uint8)
+        crop[36:92, 18:52] = (55, 65, 75)
+        context = CudaContext.resolve(requested="cpu")
+        settings = BaselineSettings(
+            foreground_reference_weight=0.90,
+            foreground_refinement_iterations=0,
+        )
+        reference_bgr = np.full((512, 3), (180, 190, 200), np.uint8)
+        reference_lab = _bgr_samples_to_lab(reference_bgr, context)
+        background_lab = _bgr_samples_to_lab(
+            np.full((512, 3), (220, 220, 220), np.uint8), context
+        )
+
+        unreferenced = _foreground_feature(
+            crop,
+            settings,
+            context,
+            perimeter_background_samples_lab=background_lab,
+            seed_diameter=28.0,
+        )[1]
+        automatic_result = _foreground_feature(
+            crop,
+            settings,
+            context,
+            perimeter_background_samples_lab=background_lab,
+            automatic_foreground_samples_lab=reference_lab,
+            seed_diameter=28.0,
+        )
+        automatic = automatic_result[1]
+        profile = automatic_result[-1]
+
+        matching_loss = int(unreferenced[50, 96]) - int(automatic[50, 96])
+        distractor_loss = int(unreferenced[60, 32]) - int(automatic[60, 32])
+        self.assertLess(matching_loss, 30)
+        self.assertGreater(distractor_loss, matching_loss + 25)
+        self.assertIsNotNone(profile)
+        assert profile is not None
+        self.assertEqual(profile.source, "isolated_reference_seeds")
+        self.assertEqual(profile.source_sample_count, 512)
+        self.assertGreaterEqual(len(profile.component_centres_lab), 1)
+
     def test_zero_reference_weight_never_forces_painted_foreground(self) -> None:
         import numpy as np
 

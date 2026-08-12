@@ -158,6 +158,11 @@ class GpuBoundaryGeometry:
             self.download_count += 1
         return self._host_cache
 
+    def release_host_cache(self) -> None:
+        """Drop compact CPU geometry mirrors when their owning cache is evicted."""
+
+        self._host_cache = None
+
 
 def _lazy_u8(tensor, name: str) -> GpuRaster:
     import torch
@@ -299,7 +304,12 @@ def build_cuda_analysis_layers(
         values["layer.gpu_inputs"] = gpu_inputs
     else:
         source_tensor, lab_tensor, valid_tensor = gpu_inputs
-    background_dirty = "background_likelihood" in dirty or "layer.background" not in values
+    painted_reference_dirty = "painted_reference_layers" in dirty
+    background_dirty = (
+        painted_reference_dirty
+        or "background_likelihood" in dirty
+        or "layer.background" not in values
+    )
     if background_dirty and background_colour_enabled:
         background_timing = (
             None
@@ -390,7 +400,8 @@ def build_cuda_analysis_layers(
         refined_result = values["layer.refined_background"]
     refined_background, noise_profile, directional_background, directional_angles = refined_result
     foreground_noise_dirty = (
-        "foreground_segmentation" in dirty
+        painted_reference_dirty
+        or "foreground_segmentation" in dirty
         or "foreground_noise_likelihood" in dirty
         or "layer.foreground_noise" not in values
     )
@@ -411,7 +422,9 @@ def build_cuda_analysis_layers(
             seed_diameter,
             settings,
             background_reference_points=background_reference_points,
+            foreground_reference_points=foreground_reference_points,
             background_reference_mask=background_reference_mask,
+            foreground_reference_mask=foreground_reference_mask,
             foreground_exclusion_mask=foreground_exclusion_mask,
             reference_radius=max(
                 2,
@@ -1102,6 +1115,29 @@ def background_colour_likelihood(
                     device=context.device,
                     dtype=torch.float32,
                 )
+        elif automatic_prior_samples and _sample_count(background_prior_samples_lab):
+            # The fitted automatic samples come from the exterior annulus in
+            # Lab space. Convert that compact sample itself for the inspector's
+            # observed BGR range; using arbitrary in-dish valid pixels here made
+            # the caption look as though the annulus seed had been discarded.
+            import cv2
+
+            prior_lab = (
+                background_prior_samples_lab.detach()
+                .to(device="cpu", dtype=torch.float32)
+                .numpy()
+                if torch.is_tensor(background_prior_samples_lab)
+                else np.asarray(background_prior_samples_lab, dtype=np.float32)
+            )
+            prior_lab_u8 = np.clip(
+                np.rint(prior_lab.reshape(-1, 1, 3)), 0, 255
+            ).astype(np.uint8)
+            prior_bgr = cv2.cvtColor(
+                prior_lab_u8, cv2.COLOR_LAB2BGR
+            ).reshape(-1, 3)
+            range_values = torch.as_tensor(
+                prior_bgr, device=context.device, dtype=torch.float32
+            )
         else:
             range_values = source[0].permute(1, 2, 0)[valid][: min(4096, int(valid.sum().item()))]
     else:
@@ -1181,6 +1217,7 @@ def noise_frequency_background_likelihood(
     source_tensor=None,
     lab_tensor=None,
     valid_tensor=None,
+    target_reference_precedence=False,
 ):
     from seedvision.visualization.layers import NoiseFrequencyProfile
     import torch
@@ -1196,14 +1233,17 @@ def noise_frequency_background_likelihood(
     )
     full_colour = _raster_tensor(colour_likelihood, context, normalized=True)
     source_height, source_width = full_valid.shape[-2:]
-    full_hard_background = _point_mask(
+    # The background-named inputs represent the target class. The foreground
+    # wrapper swaps its painted masks into those positions so both classifiers
+    # share the same direct-supervision implementation.
+    full_target_reference = _point_mask(
         source_height,
         source_width,
         background_reference_points,
         reference_radius,
         context,
     )
-    full_hard_foreground = _point_mask(
+    full_nontarget_reference = _point_mask(
         source_height,
         source_width,
         foreground_reference_points,
@@ -1211,22 +1251,28 @@ def noise_frequency_background_likelihood(
         context,
     )
     if background_reference_mask is not None:
-        full_hard_background |= image_to_tensor(
+        full_target_reference |= image_to_tensor(
             np.asarray(background_reference_mask, np.uint8), context
         )[0, 0] > 0
     if foreground_reference_mask is not None:
-        full_hard_foreground |= image_to_tensor(
+        full_nontarget_reference |= image_to_tensor(
             np.asarray(foreground_reference_mask, np.uint8), context
         )[0, 0] > 0
-    full_hard_background &= full_valid[0, 0]
-    full_hard_foreground &= full_valid[0, 0]
-    full_target_exclusion = torch.zeros_like(full_hard_background)
+    full_target_reference &= full_valid[0, 0]
+    full_nontarget_reference &= full_valid[0, 0]
+    if target_reference_precedence:
+        full_nontarget_reference &= ~full_target_reference
+    else:
+        # Foreground wins accidental positive-mask overlap, matching the colour
+        # models' foreground-precedence convention.
+        full_target_reference &= ~full_nontarget_reference
+    full_target_exclusion = torch.zeros_like(full_target_reference)
     if target_exclusion_mask is not None:
         full_target_exclusion = image_to_tensor(
             np.asarray(target_exclusion_mask, np.uint8), context
         )[0, 0] > 0
         full_target_exclusion &= full_valid[0, 0]
-        full_hard_background &= ~full_target_exclusion
+        full_target_reference &= ~full_target_exclusion
 
     work_scale = min(
         1.0,
@@ -1242,8 +1288,8 @@ def noise_frequency_background_likelihood(
             full_valid,
             full_colour,
         )
-        hard_background = full_hard_background
-        hard_foreground = full_hard_foreground
+        target_reference = full_target_reference
+        nontarget_reference = full_nontarget_reference
         target_exclusion = full_target_exclusion
     else:
         source = functional.interpolate(
@@ -1258,21 +1304,18 @@ def noise_frequency_background_likelihood(
         colour = functional.interpolate(
             full_colour, (height, width), mode="bilinear", align_corners=False
         )
-        hard_background = functional.interpolate(
-            full_hard_background[None, None].float(),
-            (height, width),
-            mode="nearest",
-        )[0, 0] > 0.5
-        hard_foreground = functional.interpolate(
-            full_hard_foreground[None, None].float(),
-            (height, width),
-            mode="nearest",
-        )[0, 0] > 0.5
-        target_exclusion = functional.interpolate(
-            full_target_exclusion[None, None].float(),
-            (height, width),
-            mode="nearest",
-        )[0, 0] > 0.5
+        # Preserve even narrow painted regions when the noise classifier works
+        # at a bounded resolution; nearest-neighbour downsampling could drop a
+        # small ground-truth stroke entirely.
+        target_reference = functional.adaptive_max_pool2d(
+            full_target_reference[None, None].float(), (height, width)
+        )[0, 0] > 0.0
+        nontarget_reference = functional.adaptive_max_pool2d(
+            full_nontarget_reference[None, None].float(), (height, width)
+        )[0, 0] > 0.0
+        target_exclusion = functional.adaptive_max_pool2d(
+            full_target_exclusion[None, None].float(), (height, width)
+        )[0, 0] > 0.0
     reported_scales = _noise_scales(seed_diameter, settings)
     scales = _noise_scales(seed_diameter * work_scale, settings)
     fine = gaussian_blur(lab, max(0.55, scales[0]))
@@ -1293,27 +1336,54 @@ def noise_frequency_background_likelihood(
             (),
             (),
         )
-    confident_background = (
+    if target_reference_precedence:
+        nontarget_reference &= ~target_reference
+    else:
+        target_reference &= ~nontarget_reference
+    automatic_target = (
         eligible
         & ~target_exclusion[None, None]
+        & ~nontarget_reference[None, None]
         & (colour >= settings.noise_background_min_likelihood / 255.0)
     )
-    confident_nonbackground = (
-        eligible & (colour <= settings.noise_nonbackground_max_likelihood / 255.0)
-    ) | target_exclusion[None, None]
+    automatic_nontarget = (
+        eligible
+        & ~target_reference[None, None]
+        & (colour <= settings.noise_nonbackground_max_likelihood / 255.0)
+    )
     minimum_samples = max(32, round(int(valid.sum().item()) * 0.002))
-    if int(confident_background.sum().item()) < minimum_samples:
+    if bool(target_reference.any().item()):
+        # Painted target regions supply the actual texture observations. Colour
+        # pseudo-labels are used only when the user has not painted this class.
+        confident_background = target_reference[None, None]
+    else:
+        confident_background = automatic_target
+    if (
+        not bool(target_reference.any().item())
+        and int(confident_background.sum().item()) < minimum_samples
+    ):
         threshold = torch.quantile(colour[eligible], 0.75)
         confident_background = (
             eligible
             & ~target_exclusion[None, None]
+            & ~nontarget_reference[None, None]
             & (colour >= threshold)
         )
-    if int(confident_nonbackground.sum().item()) < minimum_samples:
+    manual_nontarget = nontarget_reference | target_exclusion
+    if bool(manual_nontarget.any().item()):
+        confident_nonbackground = manual_nontarget[None, None]
+    else:
+        confident_nonbackground = automatic_nontarget
+    if (
+        not bool(manual_nontarget.any().item())
+        and int(confident_nonbackground.sum().item()) < minimum_samples
+    ):
         threshold = torch.quantile(colour[eligible], 0.25)
         confident_nonbackground = (
-            eligible & (colour <= threshold)
-        ) | target_exclusion[None, None]
+            eligible
+            & ~target_reference[None, None]
+            & (colour <= threshold)
+        )
 
     bg_values = feature.permute(0, 2, 3, 1)[confident_background.permute(0, 2, 3, 1).expand(-1, -1, -1, 3)].reshape(-1, 3)
     non_values = feature.permute(0, 2, 3, 1)[confident_nonbackground.permute(0, 2, 3, 1).expand(-1, -1, -1, 3)].reshape(-1, 3)
@@ -1324,9 +1394,6 @@ def noise_frequency_background_likelihood(
     non_log = -0.5 * (((values - non_center) / non_scale).square() + 2.0 * torch.log(non_scale)).sum(dim=-1, keepdim=True)
     texture_probability = torch.sigmoid((bg_log - non_log) * 0.72).permute(0, 3, 1, 2)
     base = (0.72 * texture_probability + 0.28 * colour).clamp(1e-4, 1.0) * valid
-
-    base = torch.where(hard_background[None, None], torch.ones_like(base), base)
-    base = torch.where(hard_foreground[None, None], torch.zeros_like(base), base)
     yy, xx = torch.meshgrid(
         torch.arange(height, device=context.device, dtype=torch.float32),
         torch.arange(width, device=context.device, dtype=torch.float32),
@@ -1357,8 +1424,6 @@ def noise_frequency_background_likelihood(
         ).sum(dim=0)
         support = (weight_view * sample_valid).sum(dim=0)
         directional = torch.exp(accumulated / support.clamp_min(0.15)) * valid[0, 0]
-        directional = torch.where(hard_background, torch.ones_like(directional), directional)
-        directional = torch.where(hard_foreground, torch.zeros_like(directional), directional)
         directional_tensors.append(directional)
     stack = torch.stack(directional_tensors)
     if settings.noise_direction_integration == "mean":
@@ -1369,8 +1434,6 @@ def noise_frequency_background_likelihood(
         refined = stack.median(dim=0).values
     else:
         refined = stack.max(dim=0).values
-    refined = torch.where(hard_background, torch.ones_like(refined), refined)
-    refined = torch.where(hard_foreground, torch.zeros_like(refined), refined)
 
     pooled_scale = torch.sqrt(bg_scale.square() + non_scale.square()).clamp_min(1e-4)
     # Report the symmetric two-class separation (distance from each centre to
@@ -1401,25 +1464,12 @@ def noise_frequency_background_likelihood(
                 mode="bilinear",
                 align_corners=False,
             )
-        values = values * full_valid.float()
-        values = torch.where(
-            full_hard_background[None, None], torch.ones_like(values), values
-        )
-        return torch.where(
-            full_hard_foreground[None, None], torch.zeros_like(values), values
-        )
+        return values * full_valid.float()
 
-    directional = tuple(
-        _lazy_u8(
-            restore(item) * 255.0,
-            f"{target_name} ray {angle:g} degrees",
-        )
-        for item, angle in zip(directional_tensors, angles, strict=True)
-    )
     return (
         _lazy_u8(restore(refined) * 255.0, f"{target_name} noise likelihood"),
         profile,
-        directional,
+        (),
         angles,
     )
 
@@ -2787,7 +2837,9 @@ def noise_frequency_foreground_likelihood(
     settings,
     *,
     background_reference_points=(),
+    foreground_reference_points=(),
     background_reference_mask=None,
+    foreground_reference_mask=None,
     foreground_exclusion_mask=None,
     reference_radius=3,
     cuda_context=None,
@@ -2795,7 +2847,7 @@ def noise_frequency_foreground_likelihood(
     lab_tensor=None,
     valid_tensor=None,
 ):
-    """Classify foreground texture without forcing painted foreground pixels."""
+    """Classify foreground texture from direct painted or fallback evidence."""
 
     return noise_frequency_background_likelihood(
         crop,
@@ -2803,7 +2855,9 @@ def noise_frequency_foreground_likelihood(
         colour_likelihood,
         seed_diameter,
         _foreground_noise_settings(settings),
+        background_reference_points=foreground_reference_points,
         foreground_reference_points=background_reference_points,
+        background_reference_mask=foreground_reference_mask,
         foreground_reference_mask=background_reference_mask,
         target_exclusion_mask=foreground_exclusion_mask,
         target_name="foreground",
@@ -2812,6 +2866,7 @@ def noise_frequency_foreground_likelihood(
         source_tensor=source_tensor,
         lab_tensor=lab_tensor,
         valid_tensor=valid_tensor,
+        target_reference_precedence=True,
     )
 
 

@@ -122,6 +122,15 @@ worst fixture from 69.5 to 19.4 seconds; the optimized complete StarDist review
 averaged 7.73 seconds (85.07 seconds total). These are batch-review timings, not
 model-forward-only timings.
 
+The annotation-bootstrap coordinate path was subsequently exercised on
+`IMG_9670c.JPG`. It expanded the bounded 854 x 854 procedural crop at offset
+`(1509, 542)` into a 3243 x 2129 corrected-image label draft without shifting
+the visible seed contours. Visual inspection also preserved the known failure:
+18 proposal identities for 16 visible dish seeds, including obvious rim
+fragments and imperfect contours. That is the intended honest workflow: the
+automatic result saves initial tracing effort while presenting its errors for
+human correction rather than silently promoting them to labels.
+
 ## Required path to scientific use
 
 1. Produce complete, edge-accurate instance masks for representative real

@@ -39,6 +39,8 @@ class LearningSample:
     reviewed: bool
     pattern_boundary: str | None = None
     pattern_valid: str | None = None
+    physical_boundary: str | None = None
+    physical_valid: str | None = None
     image: str | None = None
     annotation_author: str | None = None
     annotation_revision: str | None = None
@@ -144,6 +146,8 @@ def export_learning_sample(
     reviewed: bool = False,
     pattern_boundary: np.ndarray | None = None,
     pattern_valid: np.ndarray | None = None,
+    physical_boundary: np.ndarray | None = None,
+    physical_valid: np.ndarray | None = None,
     annotation_author: str | None = None,
     annotation_revision: str | None = None,
     notes: str | None = None,
@@ -188,6 +192,17 @@ def export_learning_sample(
             raise ValueError("Pattern rasters must share the instance-label dimensions.")
         if np.any(pattern & ~pattern_known):
             raise ValueError("Every positive pattern-boundary pixel must be marked valid.")
+    if (physical_boundary is None) != (physical_valid is None):
+        raise ValueError("Physical-boundary and validity rasters must be supplied together.")
+    physical = None
+    physical_known = None
+    if physical_boundary is not None:
+        physical = np.asarray(physical_boundary) > 0
+        physical_known = np.asarray(physical_valid) > 0
+        if physical.shape != label_values.shape or physical_known.shape != label_values.shape:
+            raise ValueError("Physical-boundary rasters must share the instance-label dimensions.")
+        if np.any(physical & ~physical_known):
+            raise ValueError("Every positive physical-boundary pixel must be marked valid.")
 
     if manifest_path.is_file():
         manifest = LearningManifest.load(manifest_path)
@@ -213,6 +228,10 @@ def export_learning_sample(
     pattern_valid_name = (
         f"{identifier}.pattern_valid.png" if pattern_known is not None else None
     )
+    physical_name = f"{identifier}.physical.png" if physical is not None else None
+    physical_valid_name = (
+        f"{identifier}.physical_valid.png" if physical_known is not None else None
+    )
     temporary_feature = root / f"{identifier}.features.tmp.npz"
     np.savez_compressed(temporary_feature, features=values.astype(np.float16))
     temporary_feature.replace(root / feature_name)
@@ -222,6 +241,9 @@ def export_learning_sample(
     if pattern is not None:
         write_label_image(root / pattern_name, np.uint8(pattern) * 255)
         write_label_image(root / pattern_valid_name, np.uint8(pattern_known) * 255)
+    if physical is not None:
+        write_label_image(root / physical_name, np.uint8(physical) * 255)
+        write_label_image(root / physical_valid_name, np.uint8(physical_known) * 255)
     sample = LearningSample(
         identifier=identifier,
         features=feature_name,
@@ -232,6 +254,8 @@ def export_learning_sample(
         reviewed=bool(reviewed),
         pattern_boundary=pattern_name,
         pattern_valid=pattern_valid_name,
+        physical_boundary=physical_name,
+        physical_valid=physical_valid_name,
         image=image_name,
         annotation_author=annotation_author,
         annotation_revision=annotation_revision,
@@ -336,6 +360,23 @@ def audit_manifest(path: Path | str) -> dict[str, Any]:
                 errors.append(
                     f"Pattern positives fall outside the validity mask for {sample.identifier}."
                 )
+        if bool(sample.physical_boundary) != bool(sample.physical_valid):
+            errors.append(
+                f"Physical boundary and validity paths must be paired: {sample.identifier}"
+            )
+        if sample.physical_boundary and sample.physical_valid:
+            physical = read_label_image(
+                resolve_sample_path(manifest_path, sample.physical_boundary)
+            )
+            physical_valid = read_label_image(
+                resolve_sample_path(manifest_path, sample.physical_valid)
+            )
+            if physical.shape != labels.shape or physical_valid.shape != labels.shape:
+                errors.append(f"Physical-boundary dimensions differ for {sample.identifier}.")
+            elif np.any((physical > 0) & (physical_valid == 0)):
+                errors.append(
+                    f"Physical-boundary positives fall outside validity for {sample.identifier}."
+                )
     for group, splits in split_groups.items():
         if len(splits) > 1:
             errors.append(f"Group {group!r} crosses dataset splits: {sorted(splits)}")
@@ -419,7 +460,27 @@ class SeedTileDataset:
             pattern_valid = read_label_image(
                 resolve_sample_path(self.manifest_path, sample.pattern_valid or "")
             ) > 0
-        label_digest = file_sha256(label_path)[:16]
+        physical = None
+        physical_valid = None
+        if sample.physical_boundary:
+            physical = read_label_image(
+                resolve_sample_path(self.manifest_path, sample.physical_boundary)
+            ) > 0
+            physical_valid = read_label_image(
+                resolve_sample_path(self.manifest_path, sample.physical_valid or "")
+            ) > 0
+        digest_parts = [file_sha256(label_path)]
+        for optional in (
+            sample.pattern_boundary,
+            sample.pattern_valid,
+            sample.physical_boundary,
+            sample.physical_valid,
+        ):
+            if optional:
+                digest_parts.append(
+                    file_sha256(resolve_sample_path(self.manifest_path, optional))
+                )
+        label_digest = sha256("".join(digest_parts).encode("ascii")).hexdigest()[:16]
         family_suffix = (
             "unet" if self.family is ModelFamily.UNET_WATERSHED else f"stardist{self.ray_count}"
         )
@@ -438,6 +499,8 @@ class SeedTileDataset:
                 labels,
                 pattern_boundary=pattern,
                 pattern_valid=pattern_valid,
+                physical_boundary=physical,
+                physical_valid=physical_valid,
             )
             targets = {
                 "interior": built.interior[None],

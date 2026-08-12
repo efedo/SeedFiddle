@@ -43,6 +43,12 @@ class GpuRaster:
         return self._host_cache is not None
 
     @property
+    def host_cache(self) -> np.ndarray | None:
+        """Return the existing CPU mirror without causing a download."""
+
+        return self._host_cache
+
+    @property
     def dtype(self) -> np.dtype:
         return self._numpy_dtype
 

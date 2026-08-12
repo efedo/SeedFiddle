@@ -12,6 +12,7 @@ from PySide6.QtGui import (
     QColor,
     QDragEnterEvent,
     QDropEvent,
+    QFont,
     QImage,
     QImageReader,
     QMouseEvent,
@@ -35,6 +36,7 @@ from PySide6.QtWidgets import (
 
 from seedvision.ui.canvas_controls import style_canvas_control_bar
 from seedvision.visualization import ADVANCED_OVERLAY_LABELS
+from seedvision.resources import release_host_caches
 from seedvision.annotation import (
     EdgeTraceOptions,
     ShapeSnapOptions,
@@ -137,10 +139,12 @@ class ImageView(QGraphicsView):
         self.setScene(self._scene)
         self._image_item = None
         self._image_path: Path | None = None
-        self._source_image: QImage | None = None
+        self._source_pixmap: QPixmap | None = None
+        self._corrected_pixmap: QPixmap | None = None
+        self._corrected_base_key: tuple[int, tuple[int, ...], tuple[int, ...]] | None = None
+        self._displayed_base = "source"
         self._overlay_items = []
         self._analysis_result = None
-        self._source_image = None
         self._overlay_mode = "proposals"
         self._overlay_opacity = 0.68
         self._zoom_steps = 0
@@ -149,6 +153,8 @@ class ImageView(QGraphicsView):
         self._foreground_reference_mask: np.ndarray | None = None
         self._background_exclusion_mask: np.ndarray | None = None
         self._foreground_exclusion_mask: np.ndarray | None = None
+        self._physical_edge_reference_mask: np.ndarray | None = None
+        self._non_edge_reference_mask: np.ndarray | None = None
         self._reference_annotations_visible = True
         self._instance_annotations: np.ndarray | None = None
         self._active_instance_id = 1
@@ -169,6 +175,8 @@ class ImageView(QGraphicsView):
         self._instance_annotation_overlay_item = None
         self._instance_live_stroke_path: QPainterPath | None = None
         self._instance_live_stroke_item = None
+        self._reference_live_stroke_path: QPainterPath | None = None
+        self._reference_live_stroke_item = None
         self._instance_preview_timer = QTimer(self)
         self._instance_preview_timer.setSingleShot(True)
         self._instance_preview_timer.setInterval(35)
@@ -178,6 +186,7 @@ class ImageView(QGraphicsView):
         self._reference_point_mode: str | None = None
         self._reference_brush_radius = 12.0
         self._reference_erase_enabled = False
+        self._edge_reference_snap_enabled = True
         self._reference_paint_button: Qt.MouseButton | None = None
         self._reference_stroke_erases = False
         self._last_reference_paint_point: QPointF | None = None
@@ -277,11 +286,17 @@ class ImageView(QGraphicsView):
         self._image_item = None
         self._overlay_items = []
         self._analysis_result = None
+        self._source_pixmap = None
+        self._corrected_pixmap = None
+        self._corrected_base_key = None
+        self._displayed_base = "source"
         self._reference_brush_outline_item = None
         self._instance_annotation_overlay_item = None
         self._instance_preview_items = []
         self._instance_live_stroke_path = None
         self._instance_live_stroke_item = None
+        self._reference_live_stroke_path = None
+        self._reference_live_stroke_item = None
         message = QGraphicsTextItem(
             "Open or drop a calibrated laboratory image\n"
             "Supported formats: PNG, JPEG, TIFF, BMP"
@@ -301,7 +316,11 @@ class ImageView(QGraphicsView):
             return False, reader.errorString() or "Qt could not decode the image."
 
         pixmap = QPixmap.fromImage(image)
-        self._source_image = image.copy()
+        self._source_pixmap = pixmap
+        self._corrected_pixmap = None
+        self._corrected_base_key = None
+        self._displayed_base = "source"
+        release_host_caches(self._analysis_result)
         self._scene.clear()
         self._overlay_items = []
         self._analysis_result = None
@@ -309,6 +328,8 @@ class ImageView(QGraphicsView):
         self._foreground_reference_mask = None
         self._background_exclusion_mask = None
         self._foreground_exclusion_mask = None
+        self._physical_edge_reference_mask = None
+        self._non_edge_reference_mask = None
         self._instance_annotations = None
         self._instance_tool_points.clear()
         self._annotation_evidence_cache.clear()
@@ -317,6 +338,8 @@ class ImageView(QGraphicsView):
         self._instance_preview_items = []
         self._instance_live_stroke_path = None
         self._instance_live_stroke_item = None
+        self._reference_live_stroke_path = None
+        self._reference_live_stroke_item = None
         self._instance_trace_anchor = None
         self._instance_preview_geometry = None
         self._instance_shape_reference_geometry = None
@@ -346,8 +369,11 @@ class ImageView(QGraphicsView):
         """Remove analysis graphics without disturbing the loaded image."""
 
         self._clear_overlay_items()
+        release_host_caches(self._analysis_result)
         self._analysis_result = None
         self._annotation_evidence_cache.clear()
+        self._corrected_pixmap = None
+        self._corrected_base_key = None
         self._restore_source_image()
 
     def _clear_overlay_items(self) -> None:
@@ -356,14 +382,22 @@ class ImageView(QGraphicsView):
         self._overlay_items.clear()
         self._instance_annotation_overlay_item = None
 
-    def show_analysis(self, result) -> None:
+    def show_analysis(self, result, *, render: bool = True) -> None:
         """Store an analysis result and render the selected overlay layer."""
 
+        if self._analysis_result is not result:
+            release_host_caches(self._analysis_result)
+            self._corrected_pixmap = None
+            self._corrected_base_key = None
+            self._displayed_base = "stale"
         self._analysis_result = result
         self._annotation_evidence_cache.clear()
-        calibration = getattr(result, "calibration", None)
-        if calibration is not None:
-            self._set_bgr_base_image(calibration.corrected_bgr)
+        if render:
+            self._render_analysis()
+
+    def refresh_analysis(self) -> None:
+        """Render the current base, overlay, and annotations once."""
+
         self._render_analysis()
 
     def set_background_point_editing(self, enabled: bool) -> None:
@@ -375,65 +409,143 @@ class ImageView(QGraphicsView):
         foreground_mask: np.ndarray | None,
         background_exclusion_mask: np.ndarray | None = None,
         foreground_exclusion_mask: np.ndarray | None = None,
+        *,
+        physical_edge_mask: np.ndarray | None = None,
+        non_edge_mask: np.ndarray | None = None,
+        copy: bool = True,
+        render: bool = True,
+        normalize_material: bool = True,
     ) -> None:
         """Display editable full-resolution binary masks in image coordinates."""
 
-        self._background_reference_mask = self._normalized_reference_mask(
-            background_mask
+        background = self._normalized_reference_mask(
+            background_mask, copy=copy
         )
-        self._foreground_reference_mask = self._normalized_reference_mask(
-            foreground_mask
+        foreground = self._normalized_reference_mask(
+            foreground_mask, copy=copy
         )
-        self._background_exclusion_mask = self._normalized_reference_mask(
-            background_exclusion_mask
+        background_other = self._normalized_reference_mask(
+            background_exclusion_mask, copy=copy
         )
-        self._foreground_exclusion_mask = self._normalized_reference_mask(
-            foreground_exclusion_mask
+        foreground_other = self._normalized_reference_mask(
+            foreground_exclusion_mask, copy=copy
         )
-        self._render_analysis()
+        present = next(
+            (
+                value
+                for value in (background, foreground, background_other, foreground_other)
+                if value is not None
+            ),
+            None,
+        )
+        if present is None:
+            self._background_reference_mask = None
+            self._foreground_reference_mask = None
+            self._background_exclusion_mask = None
+            self._foreground_exclusion_mask = None
+        else:
+            empty = np.zeros(present.shape, dtype=bool)
+            background_values = empty if background is None else background
+            foreground_values = empty if foreground is None else foreground
+            if background_other is None:
+                other = empty if foreground_other is None else foreground_other
+            elif foreground_other is None or foreground_other is background_other:
+                other = background_other
+            else:
+                other = background_other | foreground_other
+            # MainWindow normally supplies an already-exclusive categorical
+            # layer. Preserve those arrays rather than allocating three new
+            # full-resolution masks every time the display is refreshed. The
+            # slower normalization path also accepts old four-mask sessions.
+            conflicts = normalize_material and bool(
+                np.any(background_values & foreground_values)
+                or np.any(background_values & other)
+                or np.any(foreground_values & other)
+            )
+            if conflicts:
+                foreground_values = foreground_values & ~other
+                background_values = background_values & ~other & ~foreground_values
+            self._background_reference_mask = background_values
+            self._foreground_reference_mask = foreground_values
+            self._background_exclusion_mask = other
+            self._foreground_exclusion_mask = other
+        self._physical_edge_reference_mask = self._normalized_reference_mask(
+            physical_edge_mask, copy=copy
+        )
+        self._non_edge_reference_mask = self._normalized_reference_mask(
+            non_edge_mask, copy=copy
+        )
+        if render:
+            self._render_analysis()
 
-    def reference_mask(self, class_name: str) -> np.ndarray | None:
+    def reference_mask(
+        self, class_name: str, *, copy: bool = True
+    ) -> np.ndarray | None:
         masks = {
             "background": self._background_reference_mask,
             "foreground": self._foreground_reference_mask,
             "background_exclusion": self._background_exclusion_mask,
             "foreground_exclusion": self._foreground_exclusion_mask,
+            "physical_edge": self._physical_edge_reference_mask,
+            "non_edge": self._non_edge_reference_mask,
         }
+        if class_name == "other":
+            mask = self._background_exclusion_mask
+            return None if mask is None else mask.copy() if copy else mask
         if class_name not in masks:
             raise ValueError(f"Unknown reference-mask class {class_name!r}.")
         mask = masks[class_name]
-        return None if mask is None else mask.copy()
+        return None if mask is None else mask.copy() if copy else mask
 
     def set_reference_annotations_visible(self, visible: bool) -> None:
         self._reference_annotations_visible = bool(visible)
         self._render_analysis()
 
     def _normalized_reference_mask(
-        self, mask: np.ndarray | None
+        self, mask: np.ndarray | None, *, copy: bool
     ) -> np.ndarray | None:
         if mask is None:
             return None
         image_size = self.image_size
         if image_size is None:
-            return np.asarray(mask, dtype=bool).copy()
+            values = np.asarray(mask, dtype=bool)
+            return values.copy() if copy else values
         width, height = image_size
         values = np.asarray(mask, dtype=bool)
         if values.shape != (height, width):
             raise ValueError(
                 f"Reference mask shape {values.shape} does not match image {(height, width)}."
             )
-        return values.copy()
+        return values.copy() if copy else values
 
     def set_foreground_point_editing(self, enabled: bool) -> None:
         self._set_reference_point_mode("foreground" if enabled else None)
 
     def set_background_exclusion_editing(self, enabled: bool) -> None:
-        self._set_reference_point_mode("background_exclusion" if enabled else None)
+        self._set_reference_point_mode("other" if enabled else None)
 
     def set_foreground_exclusion_editing(self, enabled: bool) -> None:
-        self._set_reference_point_mode("foreground_exclusion" if enabled else None)
+        self._set_reference_point_mode("other" if enabled else None)
 
-    def set_instance_annotations(self, annotations: np.ndarray | None) -> None:
+    def set_other_reference_editing(self, enabled: bool) -> None:
+        self._set_reference_point_mode("other" if enabled else None)
+
+    def set_physical_edge_reference_editing(self, enabled: bool) -> None:
+        self._set_reference_point_mode("physical_edge" if enabled else None)
+
+    def set_non_edge_reference_editing(self, enabled: bool) -> None:
+        self._set_reference_point_mode("non_edge" if enabled else None)
+
+    def set_edge_reference_snap(self, enabled: bool) -> None:
+        self._edge_reference_snap_enabled = bool(enabled)
+
+    def set_instance_annotations(
+        self,
+        annotations: np.ndarray | None,
+        *,
+        copy: bool = True,
+        render: bool = True,
+    ) -> None:
         """Display an editable full-resolution seed-identity label map."""
 
         if annotations is None:
@@ -452,11 +564,12 @@ class ImageView(QGraphicsView):
                         f"Instance annotation shape {values.shape} does not match "
                         f"image {(height, width)}."
                     )
-            self._instance_annotations = values.astype(np.uint16, copy=True)
+            self._instance_annotations = values.astype(np.uint16, copy=copy)
         self._instance_trace_anchor = None
         self._clear_instance_preview()
         self._clear_instance_live_stroke()
-        self._render_analysis()
+        if render:
+            self._render_analysis()
         self._schedule_instance_preview(self._last_reference_hover_point)
 
     def instance_annotations(self) -> np.ndarray | None:
@@ -512,10 +625,8 @@ class ImageView(QGraphicsView):
             self._update_reference_brush_outline(
                 self._last_reference_hover_point
             )
-        # Changing a seed-annotation brush must not rebuild every analysis
-        # overlay.  The cursor and the next committed stroke are sufficient.
-        if self._reference_point_mode != "instance":
-            self._render_analysis()
+        # The brush cursor and next committed stroke are sufficient; mask
+        # overlays do not depend on the configured brush radius.
 
     def set_reference_erase_mode(self, enabled: bool) -> None:
         """Choose whether left-button reference strokes paint or erase."""
@@ -540,6 +651,7 @@ class ImageView(QGraphicsView):
             self._instance_trace_anchor = None
             self._clear_instance_preview()
             self._clear_instance_live_stroke()
+            self._clear_reference_live_stroke()
             self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
             self.viewport().unsetCursor()
 
@@ -556,11 +668,19 @@ class ImageView(QGraphicsView):
             self._hide_reference_brush_outline()
             self._schedule_instance_preview(scene_point)
             return
+        display_point = scene_point
+        if (
+            self._reference_point_mode in {"physical_edge", "non_edge"}
+            and self._edge_reference_snap_enabled
+        ):
+            # This is also the live preview of the position that the next
+            # physical-edge dab will commit.
+            display_point = self._snap_reference_edge_point(scene_point)
         radius = self._reference_brush_radius
         if self._reference_brush_outline_item is None:
             self._reference_brush_outline_item = self._scene.addEllipse(
-                scene_point.x() - radius,
-                scene_point.y() - radius,
+                display_point.x() - radius,
+                display_point.y() - radius,
                 radius * 2.0,
                 radius * 2.0,
             )
@@ -568,8 +688,8 @@ class ImageView(QGraphicsView):
             self._reference_brush_outline_item.setBrush(Qt.BrushStyle.NoBrush)
         else:
             self._reference_brush_outline_item.setRect(
-                scene_point.x() - radius,
-                scene_point.y() - radius,
+                display_point.x() - radius,
+                display_point.y() - radius,
                 radius * 2.0,
                 radius * 2.0,
             )
@@ -585,10 +705,12 @@ class ImageView(QGraphicsView):
             if self._reference_point_mode == "background"
             else QColor("#ff765f")
             if self._reference_point_mode == "foreground"
-            else QColor("#be5cff")
-            if self._reference_point_mode == "background_exclusion"
-            else QColor("#ffce48")
-            if self._reference_point_mode == "foreground_exclusion"
+            else QColor("#96969c")
+            if self._reference_point_mode == "other"
+            else QColor("#ffd137")
+            if self._reference_point_mode == "physical_edge"
+            else QColor("#5ca0ff")
+            if self._reference_point_mode == "non_edge"
             else self.instance_colour(self._active_instance_id)
         )
         pen = QPen(colour, 2.0)
@@ -605,7 +727,6 @@ class ImageView(QGraphicsView):
 
     def set_overlay_mode(self, mode: str) -> None:
         if mode not in OVERLAY_MODES and not mode.startswith((
-            "directional_background:",
             "colour_probability:",
             "pattern_probability:",
         )):
@@ -618,19 +739,25 @@ class ImageView(QGraphicsView):
     def set_overlay_opacity(self, opacity: float) -> None:
         self._overlay_opacity = max(0.0, min(1.0, float(opacity)))
         for item in self._overlay_items:
-            item.setOpacity(self._overlay_opacity)
+            if item.data(0) != "fixed-opacity-overlay-annotation":
+                item.setOpacity(self._overlay_opacity)
 
     def _render_analysis(self) -> None:
         self._clear_overlay_items()
         result = self._analysis_result
         if result is None:
             return
+        # Preserve at most the CPU mirrors needed by the currently displayed
+        # overlay. Previous overlay downloads have already been copied into Qt.
+        release_host_caches(result)
         if self._overlay_mode == "raw_image":
             self._restore_source_image()
             return
         calibration = getattr(result, "calibration", None)
         if calibration is not None:
             self._set_bgr_base_image(calibration.corrected_bgr)
+        else:
+            self._restore_source_image()
         if self._overlay_mode == "calibrated_image":
             self._render_context_annotations(result, include_scale=True)
             return
@@ -656,6 +783,7 @@ class ImageView(QGraphicsView):
         if self._overlay_mode == "perimeter_background_reference":
             self._render_dish_edges(result, width=3, include_inner=False)
             self._render_background_sampling_band(result)
+            self._render_background_starting_colour(result)
             self._render_context_annotations(result)
             return
         if self._overlay_mode == "seed_scale_estimation":
@@ -697,7 +825,9 @@ class ImageView(QGraphicsView):
             if procedural is not None:
                 if self._overlay_mode == "procedural_instances":
                     self._render_rgba_overlay(
-                        procedural.instance_rgba(), *result.crop_offset
+                        procedural.instance_rgba(),
+                        *result.crop_offset,
+                        source_shape=procedural.source_shape,
                     )
                     self._render_procedural_centres(result)
                 else:
@@ -712,6 +842,7 @@ class ImageView(QGraphicsView):
                         raster,
                         *result.crop_offset,
                         valid_mask=result.layers.valid_mask,
+                        source_shape=procedural.source_shape,
                     )
                     if self._overlay_mode == "procedural_centres":
                         self._render_procedural_centres(result)
@@ -790,10 +921,7 @@ class ImageView(QGraphicsView):
         ):
             self._render_context_annotations(result)
             return
-        if self._overlay_mode.startswith("directional_background:"):
-            index = int(self._overlay_mode.partition(":")[2])
-            rgba = layers.directional_background_rgba(index)
-        elif self._overlay_mode == "instance_masks":
+        if self._overlay_mode == "instance_masks":
             rgba = layers.instance_rgba()
         elif self._overlay_mode == "background_likelihood":
             rgba = layers.background_rgba()
@@ -939,7 +1067,12 @@ class ImageView(QGraphicsView):
             self._overlay_items.append(item)
 
     def _render_rgba_overlay(
-        self, rgba: np.ndarray, offset_x: int, offset_y: int
+        self,
+        rgba: np.ndarray,
+        offset_x: int,
+        offset_y: int,
+        *,
+        source_shape: tuple[int, int] | None = None,
     ) -> None:
         height, width = rgba.shape[:2]
         image = QImage(
@@ -951,6 +1084,11 @@ class ImageView(QGraphicsView):
         ).copy()
         item = self._scene.addPixmap(QPixmap.fromImage(image))
         item.setPos(offset_x, offset_y)
+        if source_shape is not None and source_shape != (height, width):
+            source_height, source_width = source_shape
+            item.setTransform(
+                QTransform.fromScale(source_width / width, source_height / height)
+            )
         item.setOpacity(self._overlay_opacity)
         item.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
         item.setZValue(10)
@@ -1031,15 +1169,24 @@ class ImageView(QGraphicsView):
         offset_y: int,
         *,
         valid_mask: np.ndarray,
+        source_shape: tuple[int, int] | None = None,
     ) -> None:
         values = np.asarray(raster)
+        height, width = values.shape[:2]
+        valid_values_u8 = np.asarray(valid_mask)
+        if valid_values_u8.shape != (height, width):
+            valid_values_u8 = cv2.resize(
+                valid_values_u8,
+                (width, height),
+                interpolation=cv2.INTER_NEAREST,
+            )
         if values.dtype == np.uint8:
             gray = values
         else:
-            valid_values = values[np.asarray(valid_mask) > 0]
+            valid_values = values[valid_values_u8 > 0]
             scale = float(np.percentile(valid_values, 99.0)) if valid_values.size else 1.0
             gray = np.uint8(np.clip(np.rint(values / max(scale, 1e-6) * 255), 0, 255))
-        alpha = np.uint8(np.asarray(valid_mask) > 0) * 255
+        alpha = np.uint8(valid_values_u8 > 0) * 255
         rgba = np.dstack((gray, gray, gray, alpha))
         height, width = rgba.shape[:2]
         image = QImage(
@@ -1047,6 +1194,11 @@ class ImageView(QGraphicsView):
         ).copy()
         item = self._scene.addPixmap(QPixmap.fromImage(image))
         item.setPos(offset_x, offset_y)
+        if source_shape is not None and source_shape != (height, width):
+            source_height, source_width = source_shape
+            item.setTransform(
+                QTransform.fromScale(source_width / width, source_height / height)
+            )
         item.setOpacity(self._overlay_opacity)
         item.setZValue(10)
         self._overlay_items.append(item)
@@ -1179,6 +1331,7 @@ class ImageView(QGraphicsView):
             self._render_background_reference_points()
             self._render_foreground_reference_points()
             self._render_exclusion_masks()
+            self._render_edge_reference_masks()
         self._render_instance_annotations()
 
     def _background_marker_radius(self) -> float:
@@ -1201,13 +1354,20 @@ class ImageView(QGraphicsView):
     def _render_exclusion_masks(self) -> None:
         self._render_reference_mask(
             self._background_exclusion_mask,
-            (190, 92, 255),
+            (150, 150, 156),
             32,
         )
+
+    def _render_edge_reference_masks(self) -> None:
         self._render_reference_mask(
-            self._foreground_exclusion_mask,
-            (255, 206, 72),
-            33,
+            self._physical_edge_reference_mask,
+            (255, 209, 55),
+            34,
+        )
+        self._render_reference_mask(
+            self._non_edge_reference_mask,
+            (92, 160, 255),
+            35,
         )
 
     @staticmethod
@@ -1270,6 +1430,76 @@ class ImageView(QGraphicsView):
         self._overlay_items.append(item)
         self._instance_annotation_overlay_item = item
 
+    def _render_background_starting_colour(self, result) -> None:
+        """Show the exact median colour selected from the perimeter band."""
+
+        median_lab = getattr(result, "perimeter_background_lab", None)
+        image_size = self.image_size
+        if median_lab is None or image_size is None:
+            return
+        lab_values = np.asarray(median_lab, dtype=np.float32)
+        if lab_values.shape != (3,) or not np.isfinite(lab_values).all():
+            return
+        lab_u8 = np.clip(np.rint(lab_values), 0, 255).astype(np.uint8)[None, None]
+        blue, green, red = (
+            int(value)
+            for value in cv2.cvtColor(lab_u8, cv2.COLOR_LAB2BGR)[0, 0]
+        )
+        colour = QColor(red, green, blue)
+        colour_hex = colour.name(QColor.NameFormat.HexRgb).upper()
+        width, height = image_size
+        shortest = float(min(width, height))
+        font_pixels = max(16, min(64, round(shortest * 0.014)))
+        swatch_size = max(44.0, min(150.0, shortest * 0.055))
+        padding = max(8.0, font_pixels * 0.38)
+        gap = max(8.0, font_pixels * 0.34)
+        margin = max(18.0, shortest * 0.025)
+        label_text = f"Median starting background\n{colour_hex}"
+        tooltip = (
+            "Selected median starting background colour: "
+            f"{colour_hex}; OpenCV Lab "
+            f"{lab_values[0]:.1f}, {lab_values[1]:.1f}, {lab_values[2]:.1f}."
+        )
+
+        label = self._scene.addText(label_text)
+        font = QFont(label.font())
+        font.setPixelSize(font_pixels)
+        font.setBold(True)
+        label.setFont(font)
+        label.setDefaultTextColor(QColor("#ffffff"))
+        text_bounds = label.boundingRect()
+        content_height = max(swatch_size, text_bounds.height())
+        panel_width = padding * 2.0 + swatch_size + gap + text_bounds.width()
+        panel_height = padding * 2.0 + content_height
+        panel = self._scene.addRect(
+            margin,
+            margin,
+            panel_width,
+            panel_height,
+            QPen(QColor(255, 255, 255, 185), 2.0),
+            QBrush(QColor(16, 20, 24, 220)),
+        )
+        swatch = self._scene.addRect(
+            margin + padding,
+            margin + padding + (content_height - swatch_size) * 0.5,
+            swatch_size,
+            swatch_size,
+            QPen(QColor("#ffffff"), 3.0),
+            QBrush(colour),
+        )
+        label.setPos(
+            margin + padding + swatch_size + gap,
+            margin + padding + (content_height - text_bounds.height()) * 0.5,
+        )
+        for item, z_value in ((panel, 40.0), (swatch, 41.0), (label, 41.0)):
+            # The swatch communicates an absolute colour. It must not blend
+            # with the photograph when the raster-overlay opacity is changed.
+            item.setData(0, "fixed-opacity-overlay-annotation")
+            item.setOpacity(1.0)
+            item.setZValue(z_value)
+            item.setToolTip(tooltip)
+            self._overlay_items.append(item)
+
     def _refresh_instance_annotation_overlay(self) -> None:
         self._render_instance_annotations()
         self._raise_instance_preview_items()
@@ -1309,6 +1539,59 @@ class ImageView(QGraphicsView):
             self._scene.removeItem(item)
         self._instance_live_stroke_item = None
         self._instance_live_stroke_path = None
+
+    def _start_reference_live_stroke(
+        self, scene_point: QPointF, *, erase: bool
+    ) -> None:
+        self._clear_reference_live_stroke()
+        if (
+            self._reference_point_mode in {"physical_edge", "non_edge"}
+            and self._edge_reference_snap_enabled
+        ):
+            scene_point = self._snap_reference_edge_point(scene_point)
+        colours = {
+            "background": QColor(54, 241, 177, 185),
+            "foreground": QColor(255, 118, 95, 185),
+            "other": QColor(150, 150, 156, 185),
+            "physical_edge": QColor(255, 209, 55, 210),
+            "non_edge": QColor(92, 160, 255, 185),
+        }
+        colour = (
+            QColor(255, 70, 85, 190)
+            if erase
+            else colours.get(self._reference_point_mode, QColor(255, 255, 255, 180))
+        )
+        pen = QPen(colour, max(2.0, self._reference_brush_radius * 2.0))
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        if erase:
+            pen.setStyle(Qt.PenStyle.DashLine)
+        path = QPainterPath(scene_point)
+        path.lineTo(scene_point.x() + 0.01, scene_point.y())
+        self._reference_live_stroke_path = path
+        self._reference_live_stroke_item = self._scene.addPath(path, pen)
+        self._reference_live_stroke_item.setZValue(1002.0)
+
+    def _extend_reference_live_stroke(self, scene_point: QPointF) -> None:
+        if (
+            self._reference_live_stroke_path is None
+            or self._reference_live_stroke_item is None
+        ):
+            return
+        if (
+            self._reference_point_mode in {"physical_edge", "non_edge"}
+            and self._edge_reference_snap_enabled
+        ):
+            scene_point = self._snap_reference_edge_point(scene_point)
+        self._reference_live_stroke_path.lineTo(scene_point)
+        self._reference_live_stroke_item.setPath(self._reference_live_stroke_path)
+
+    def _clear_reference_live_stroke(self) -> None:
+        item = self._reference_live_stroke_item
+        if item is not None and item.scene() is self._scene:
+            self._scene.removeItem(item)
+        self._reference_live_stroke_item = None
+        self._reference_live_stroke_path = None
 
     def _render_reference_mask(
         self,
@@ -1358,23 +1641,31 @@ class ImageView(QGraphicsView):
     def _set_bgr_base_image(self, bgr) -> None:
         if self._image_item is None:
             return
-        contiguous = bgr if bgr.flags.c_contiguous else bgr.copy()
-        height, width = contiguous.shape[:2]
-        image = QImage(
-            contiguous.data,
-            width,
-            height,
-            int(contiguous.strides[0]),
-            QImage.Format.Format_BGR888,
-        ).copy()
-        self._image_item.setPixmap(QPixmap.fromImage(image))
-        self._scene.setSceneRect(self._image_item.boundingRect())
+        key = (id(bgr), tuple(bgr.shape), tuple(bgr.strides))
+        if self._corrected_pixmap is None or self._corrected_base_key != key:
+            contiguous = bgr if bgr.flags.c_contiguous else bgr.copy()
+            height, width = contiguous.shape[:2]
+            image = QImage(
+                contiguous.data,
+                width,
+                height,
+                int(contiguous.strides[0]),
+                QImage.Format.Format_BGR888,
+            ).copy()
+            self._corrected_pixmap = QPixmap.fromImage(image)
+            self._corrected_base_key = key
+        if self._displayed_base != "corrected":
+            self._image_item.setPixmap(self._corrected_pixmap)
+            self._scene.setSceneRect(self._image_item.boundingRect())
+            self._displayed_base = "corrected"
 
     def _restore_source_image(self) -> None:
-        if self._image_item is None or self._source_image is None:
+        if self._image_item is None or self._source_pixmap is None:
             return
-        self._image_item.setPixmap(QPixmap.fromImage(self._source_image))
-        self._scene.setSceneRect(self._image_item.boundingRect())
+        if self._displayed_base != "source":
+            self._image_item.setPixmap(self._source_pixmap)
+            self._scene.setSceneRect(self._image_item.boundingRect())
+            self._displayed_base = "source"
 
     def _render_colour_reference(self, result, *, corrected: bool) -> None:
         calibration = getattr(result, "calibration", None)
@@ -2078,7 +2369,10 @@ class ImageView(QGraphicsView):
                     erase=self._reference_stroke_erases,
                 )
             else:
-                self._render_analysis()
+                self._start_reference_live_stroke(
+                    scene_point,
+                    erase=self._reference_stroke_erases,
+                )
             event.accept()
             return
         super().mousePressEvent(event)
@@ -2115,12 +2409,10 @@ class ImageView(QGraphicsView):
                 interpolated,
                 erase=self._reference_stroke_erases,
             )
-        # Interpolation may add many mask circles, but only one viewer redraw is
-        # required for this mouse event.
         if self._reference_point_mode == "instance":
             self._extend_instance_live_stroke(scene_point)
         else:
-            self._render_analysis()
+            self._extend_reference_live_stroke(scene_point)
         self._last_reference_paint_point = scene_point
         event.accept()
 
@@ -2151,10 +2443,12 @@ class ImageView(QGraphicsView):
                 self._refresh_instance_annotation_overlay()
                 self._clear_instance_live_stroke()
             else:
+                # Signal payloads are immutable snapshots for external listeners.
+                # The main window stores this sole copy as the next draft.
                 mask = self.reference_mask(self._reference_point_mode)
                 self.reference_mask_edited.emit(self._reference_point_mode, mask)
-            if changed and self._reference_point_mode != "instance":
                 self._render_analysis()
+                self._clear_reference_live_stroke()
             self.reference_paint_finished.emit()
             event.accept()
             return
@@ -2188,24 +2482,97 @@ class ImageView(QGraphicsView):
                 setattr(self, attribute, mask)
             value = 0 if erase else self._active_instance_id
         else:
+            mode = self._reference_point_mode
             attributes = {
                 "background": "_background_reference_mask",
                 "foreground": "_foreground_reference_mask",
-                "background_exclusion": "_background_exclusion_mask",
-                "foreground_exclusion": "_foreground_exclusion_mask",
+                "other": "_background_exclusion_mask",
+                "physical_edge": "_physical_edge_reference_mask",
+                "non_edge": "_non_edge_reference_mask",
             }
-            attribute = attributes[self._reference_point_mode]
+            attribute = attributes[mode]
             mask = getattr(self, attribute)
             if mask is None or mask.shape != (height, width):
                 mask = np.zeros((height, width), dtype=bool)
                 setattr(self, attribute, mask)
             value = not erase
-        self._paint_mask_circle(
-            mask,
-            scene_point.x(),
-            scene_point.y(),
-            value,
+            if mode == "other":
+                self._foreground_exclusion_mask = mask
+            if (
+                not erase
+                and mode in {"physical_edge", "non_edge"}
+                and self._edge_reference_snap_enabled
+            ):
+                scene_point = self._snap_reference_edge_point(scene_point)
+            if mode in {"background", "foreground", "other"}:
+                exclusive_masks = self._ensure_material_reference_masks(height, width)
+            else:
+                exclusive_masks = self._ensure_edge_reference_masks(height, width)
+            # The helper may have lazily copied an immutable applied array.
+            mask = getattr(self, attribute)
+        self._paint_mask_circle(mask, scene_point.x(), scene_point.y(), value)
+        if self._reference_point_mode != "instance" and not erase:
+            for other_mask in exclusive_masks:
+                if other_mask is mask:
+                    continue
+                self._paint_mask_circle(
+                    other_mask, scene_point.x(), scene_point.y(), False
+                )
+
+    def _ensure_material_reference_masks(
+        self, height: int, width: int
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        attributes = (
+            "_background_reference_mask",
+            "_foreground_reference_mask",
+            "_background_exclusion_mask",
         )
+        masks = []
+        for attribute in attributes:
+            mask = getattr(self, attribute)
+            if mask is None or mask.shape != (height, width):
+                mask = np.zeros((height, width), dtype=bool)
+                setattr(self, attribute, mask)
+            elif not mask.flags.writeable:
+                mask = mask.copy()
+                setattr(self, attribute, mask)
+            masks.append(mask)
+        # Other is represented to the existing analysis API as negative
+        # evidence for both material models; both names share one array.
+        self._foreground_exclusion_mask = masks[2]
+        return tuple(masks)
+
+    def _ensure_edge_reference_masks(
+        self, height: int, width: int
+    ) -> tuple[np.ndarray, np.ndarray]:
+        masks = []
+        for attribute in (
+            "_physical_edge_reference_mask",
+            "_non_edge_reference_mask",
+        ):
+            mask = getattr(self, attribute)
+            if mask is None or mask.shape != (height, width):
+                mask = np.zeros((height, width), dtype=bool)
+                setattr(self, attribute, mask)
+            elif not mask.flags.writeable:
+                mask = mask.copy()
+                setattr(self, attribute, mask)
+            masks.append(mask)
+        return tuple(masks)
+
+    def _snap_reference_edge_point(self, scene_point: QPointF) -> QPointF:
+        """Snap boundary-review dabs to the strongest nearby analysed edge."""
+
+        try:
+            edge = self._full_annotation_evidence("edge_likelihood")
+            snapped_x, snapped_y = snap_edge_point(
+                (scene_point.x(), scene_point.y()),
+                edge,
+                max(3.0, self._reference_brush_radius * 1.5),
+            )
+            return QPointF(float(snapped_x), float(snapped_y))
+        except (RuntimeError, ValueError):
+            return scene_point
 
     def _paint_mask_circle(
         self,

@@ -8,23 +8,10 @@ returned path, polygon, or label map as one undoable annotation draft change.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from heapq import heappop, heappush
 from math import atan2, cos, hypot, pi
 
 import cv2
 import numpy as np
-
-
-_NEIGHBOURS_8 = (
-    (-1, -1, 2**0.5),
-    (0, -1, 1.0),
-    (1, -1, 2**0.5),
-    (-1, 0, 1.0),
-    (1, 0, 1.0),
-    (-1, 1, 2**0.5),
-    (0, 1, 1.0),
-    (1, 1, 2**0.5),
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,23 +111,6 @@ def _normalized_strength(values: np.ndarray) -> np.ndarray:
     return np.nan_to_num(result, nan=0.0, posinf=1.0, neginf=0.0).clip(0.0, 1.0)
 
 
-def _tangent_alignment(
-    hue: np.ndarray | None,
-    x: int,
-    y: int,
-    step_angle: float,
-    mode: str,
-) -> float:
-    if hue is None or mode == "off":
-        return 1.0
-    encoded = float(hue[y, x])
-    if mode == "undirected":
-        tangent = encoded * pi / 180.0
-        return abs(cos(step_angle - tangent))
-    tangent = encoded * 2.0 * pi / 180.0
-    return 0.5 + 0.5 * cos(step_angle - tangent)
-
-
 def snap_edge_point(
     point_xy: tuple[float, float],
     edge_strength: np.ndarray,
@@ -176,18 +146,20 @@ def trace_edge_path(
     options: EdgeTraceOptions = EdgeTraceOptions(),
     tangent_hue: np.ndarray | None = None,
 ) -> np.ndarray:
-    """Return an edge-attracted path as integer ``(x, y)`` coordinates.
+    """Return a fast magnetic path sampled across a bounded line corridor.
 
-    The search is restricted to a padded corridor around the drag. This keeps
-    interactive work bounded and prevents a distant strong edge from stealing
-    a user's path.
+    OpenCV samples the complete perpendicular search strip in native code. A
+    smoothed maximum-support track then supplies the preview path. This avoids
+    the former Python heap search whose latency grew to seconds for long paths
+    or wide search radii, while retaining edge and tangent evidence.
     """
 
     edge_values = np.asarray(edge_strength)
     if edge_values.ndim != 2:
         raise ValueError("Edge strength must be a two-dimensional raster.")
     height, width = edge_values.shape
-    if tangent_hue is not None and np.asarray(tangent_hue).shape != edge_values.shape:
+    hue_values = None if tangent_hue is None else np.asarray(tangent_hue)
+    if hue_values is not None and hue_values.shape != edge_values.shape:
         raise ValueError("Tangent hue and edge strength must have the same shape.")
     start_x = int(np.clip(round(start_xy[0]), 0, width - 1))
     start_y = int(np.clip(round(start_xy[1]), 0, height - 1))
@@ -196,95 +168,92 @@ def trace_edge_path(
     if (start_x, start_y) == (end_x, end_y):
         return np.asarray(((start_x, start_y),), dtype=np.int32)
 
-    padding = int(options.search_radius_px)
-    x0 = max(0, min(start_x, end_x) - padding)
-    y0 = max(0, min(start_y, end_y) - padding)
-    x1 = min(width, max(start_x, end_x) + padding + 1)
-    y1 = min(height, max(start_y, end_y) + padding + 1)
-    roi = _normalized_strength(edge_values[y0:y1, x0:x1])
-    roi_hue = None if tangent_hue is None else np.asarray(tangent_hue)[y0:y1, x0:x1]
-    sx, sy = start_x - x0, start_y - y0
-    ex, ey = end_x - x0, end_y - y0
-    roi_height, roi_width = roi.shape
-
-    # Reject points outside a generously rounded line corridor. The rectangle
-    # still includes the user's endpoints, while corners cannot attract detours.
-    yy, xx = np.mgrid[:roi_height, :roi_width]
-    vx, vy = float(ex - sx), float(ey - sy)
-    length_sq = max(1.0, vx * vx + vy * vy)
-    projection = np.clip(((xx - sx) * vx + (yy - sy) * vy) / length_sq, 0.0, 1.0)
-    nearest_x = sx + projection * vx
-    nearest_y = sy + projection * vy
-    deviation = np.hypot(xx - nearest_x, yy - nearest_y)
-    corridor = deviation <= float(padding)
-
-    distance = np.full((roi_height, roi_width), np.inf, dtype=np.float32)
-    parent_x = np.full((roi_height, roi_width), -1, dtype=np.int32)
-    parent_y = np.full((roi_height, roi_width), -1, dtype=np.int32)
-    distance[sy, sx] = 0.0
-    def heuristic(x: int, y: int) -> float:
-        return hypot(float(ex - x), float(ey - y))
-
-    queue: list[tuple[float, float, int, int]] = [
-        (heuristic(sx, sy), 0.0, sx, sy)
-    ]
+    delta_x = float(end_x - start_x)
+    delta_y = float(end_y - start_y)
+    length = hypot(delta_x, delta_y)
+    unit_x, unit_y = delta_x / length, delta_y / length
+    normal_x, normal_y = -unit_y, unit_x
+    sample_count = min(1024, max(2, int(np.ceil(length)) + 1))
+    along = np.linspace(0.0, length, sample_count, dtype=np.float32)
+    padding = float(options.search_radius_px)
+    offset_count = min(129, int(options.search_radius_px) * 2 + 1)
+    offsets = np.linspace(-padding, padding, offset_count, dtype=np.float32)
+    map_x = (
+        float(start_x)
+        + along[None, :] * unit_x
+        + offsets[:, None] * normal_x
+    ).astype(np.float32, copy=False)
+    map_y = (
+        float(start_y)
+        + along[None, :] * unit_y
+        + offsets[:, None] * normal_y
+    ).astype(np.float32, copy=False)
+    edge_strip = cv2.remap(
+        edge_values,
+        map_x,
+        map_y,
+        cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=0,
+    )
+    edge_strip = _normalized_strength(edge_strip)
     attraction = float(options.edge_attraction)
-    tangent_weight = float(options.tangent_weight)
-    while queue:
-        _, cost, x, y = heappop(queue)
-        if cost > float(distance[y, x]) + 1e-6:
-            continue
-        if (x, y) == (ex, ey):
-            break
-        for dx, dy, step_distance in _NEIGHBOURS_8:
-            nx, ny = x + dx, y + dy
-            if not (0 <= nx < roi_width and 0 <= ny < roi_height):
-                continue
-            if not corridor[ny, nx]:
-                continue
-            edge_cost = 1.0 + attraction * 5.0 * (1.0 - float(roi[ny, nx]))
-            step_angle = atan2(float(dy), float(dx))
-            alignment = _tangent_alignment(
-                roi_hue, nx, ny, step_angle, options.tangent_mode
-            )
-            tangent_cost = tangent_weight * 3.0 * (1.0 - alignment)
-            corridor_cost = 0.35 * float(deviation[ny, nx]) / max(1.0, padding)
-            next_cost = cost + step_distance * (edge_cost + tangent_cost + corridor_cost)
-            if next_cost + 1e-6 >= float(distance[ny, nx]):
-                continue
-            distance[ny, nx] = next_cost
-            parent_x[ny, nx] = x
-            parent_y[ny, nx] = y
-            heappush(
-                queue,
-                (next_cost + heuristic(nx, ny), next_cost, nx, ny),
-            )
+    score = attraction * edge_strip
 
-    if not np.isfinite(distance[ey, ex]):
-        samples = max(abs(end_x - start_x), abs(end_y - start_y)) + 1
-        return np.column_stack(
-            (
-                np.rint(np.linspace(start_x, end_x, samples)),
-                np.rint(np.linspace(start_y, end_y, samples)),
-            )
-        ).astype(np.int32)
+    if hue_values is not None and options.tangent_mode != "off":
+        hue_strip = cv2.remap(
+            hue_values,
+            map_x,
+            map_y,
+            cv2.INTER_NEAREST,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=0,
+        ).astype(np.float32)
+        path_angle = atan2(delta_y, delta_x)
+        if options.tangent_mode == "undirected":
+            tangent_angle = hue_strip * pi / 180.0
+            alignment = np.abs(np.cos(path_angle - tangent_angle))
+        else:
+            tangent_angle = hue_strip * 2.0 * pi / 180.0
+            alignment = 0.5 + 0.5 * np.cos(path_angle - tangent_angle)
+        score += float(options.tangent_weight) * alignment
 
-    reversed_path: list[tuple[int, int]] = []
-    x, y = ex, ey
-    while True:
-        reversed_path.append((x + x0, y + y0))
-        if (x, y) == (sx, sy):
-            break
-        x, y = int(parent_x[y, x]), int(parent_y[y, x])
-    path = np.asarray(reversed_path[::-1], dtype=np.float32)
-    if options.smoothing and len(path) > 4:
-        radius = int(options.smoothing)
-        padded = np.pad(path, ((radius, radius), (0, 0)), mode="edge")
-        path = np.asarray(
-            [padded[index : index + radius * 2 + 1].mean(axis=0) for index in range(len(path))]
+    score -= 0.10 * np.abs(offsets[:, None]) / max(1.0, padding)
+    selected_offsets = offsets[np.argmax(score, axis=0)]
+    sigma = 0.65 + 0.55 * float(options.smoothing)
+    selected_offsets = cv2.GaussianBlur(
+        selected_offsets[None, :],
+        (0, 0),
+        sigmaX=sigma,
+        borderType=cv2.BORDER_REPLICATE,
+    )[0]
+
+    # Anchor both clicks and limit lateral jumps so adjacent strong coat edges
+    # cannot make the preview teleport between unrelated boundaries.
+    step_length = length / max(1, sample_count - 1)
+    maximum_jump = max(1.0, step_length * 1.8)
+    selected_offsets[0] = 0.0
+    for index in range(1, sample_count):
+        selected_offsets[index] = np.clip(
+            selected_offsets[index],
+            selected_offsets[index - 1] - maximum_jump,
+            selected_offsets[index - 1] + maximum_jump,
         )
-        path[0] = (start_x, start_y)
-        path[-1] = (end_x, end_y)
+    selected_offsets[-1] = 0.0
+    for index in range(sample_count - 2, -1, -1):
+        selected_offsets[index] = np.clip(
+            selected_offsets[index],
+            selected_offsets[index + 1] - maximum_jump,
+            selected_offsets[index + 1] + maximum_jump,
+        )
+
+    path_x = float(start_x) + along * unit_x + selected_offsets * normal_x
+    path_y = float(start_y) + along * unit_y + selected_offsets * normal_y
+    path = np.column_stack((path_x, path_y))
+    path[:, 0] = np.clip(path[:, 0], 0, width - 1)
+    path[:, 1] = np.clip(path[:, 1], 0, height - 1)
+    path[0] = (start_x, start_y)
+    path[-1] = (end_x, end_y)
     return np.rint(path).astype(np.int32)
 
 

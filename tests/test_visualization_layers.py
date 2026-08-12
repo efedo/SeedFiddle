@@ -65,6 +65,37 @@ class AnalysisLayerTests(unittest.TestCase):
         displayed = layers.background_rgba()
         self.assertLess(int(displayed[10, 10, 0]), int(displayed[48, 48, 0]))
 
+    def test_automatic_background_range_comes_from_exterior_lab_samples(self) -> None:
+        import cv2
+        import numpy as np
+        import torch
+
+        from seedvision.cuda import CudaContext
+        from seedvision.cuda.layers import background_colour_likelihood
+
+        # The crop deliberately contains no exterior-table colour. The compact
+        # prior samples represent the independently measured annulus.
+        crop = np.full((64, 64, 3), (30, 60, 180), np.uint8)
+        valid = np.full((64, 64), 255, np.uint8)
+        exterior_bgr = np.tile(
+            np.asarray((200, 214, 216), np.uint8), (128, 1)
+        )
+        exterior_lab = cv2.cvtColor(
+            exterior_bgr[:, None, :], cv2.COLOR_BGR2LAB
+        ).reshape(-1, 3).astype(np.float32)
+
+        _likelihood, mode, _count, profile = background_colour_likelihood(
+            crop,
+            valid,
+            background_prior_lab=tuple(np.median(exterior_lab, axis=0)),
+            background_prior_samples_lab=torch.from_numpy(exterior_lab),
+            cuda_context=CudaContext.resolve(requested="cpu"),
+        )
+
+        self.assertEqual(mode, "automatic")
+        self.assertEqual(profile.bgr_low, (200, 214, 216))
+        self.assertEqual(profile.bgr_high, (200, 214, 216))
+
     def test_refined_background_uses_local_noise_frequency_profile(self) -> None:
         import cv2
         import numpy as np
@@ -144,7 +175,73 @@ class AnalysisLayerTests(unittest.TestCase):
         )
         self.assertEqual(layers.foreground_noise_rgba().shape, (96, 96, 4))
 
-    def test_refined_background_exposes_24_directed_rays_and_colour_range(self) -> None:
+    def test_noise_profiles_train_directly_from_both_painted_classes(self) -> None:
+        import numpy as np
+
+        from seedvision.cuda import CudaContext
+        from seedvision.cuda.layers import (
+            noise_frequency_background_likelihood,
+            noise_frequency_foreground_likelihood,
+        )
+        from seedvision.visualization import AnalysisLayerSettings
+
+        rng = np.random.default_rng(7)
+        image = np.full((96, 96, 3), 218, np.uint8)
+        image[48:80, 48:80] = np.clip(
+            120 + rng.integers(-35, 36, (32, 32, 1)), 0, 255
+        ).astype(np.uint8)
+        valid = np.full((96, 96), 255, np.uint8)
+        # Deliberately uninformative colour evidence: only the painted masks can
+        # identify which texture belongs to which class.
+        colour = np.full((96, 96), 128, np.uint8)
+        background = np.zeros((96, 96), bool)
+        background[14:30, 14:30] = True
+        foreground = np.zeros((96, 96), bool)
+        foreground[56:72, 56:72] = True
+        settings = AnalysisLayerSettings()
+        context = CudaContext.resolve(requested="cpu")
+
+        background_result = noise_frequency_background_likelihood(
+            image,
+            valid,
+            colour,
+            32.0,
+            settings,
+            background_reference_mask=background,
+            foreground_reference_mask=foreground,
+            cuda_context=context,
+        )
+        foreground_result = noise_frequency_foreground_likelihood(
+            image,
+            valid,
+            colour,
+            32.0,
+            settings,
+            background_reference_mask=background,
+            foreground_reference_mask=foreground,
+            cuda_context=context,
+        )
+        background_profile = background_result[1]
+        foreground_profile = foreground_result[1]
+
+        self.assertEqual(background_profile.background_sample_count, 256)
+        self.assertEqual(background_profile.nonbackground_sample_count, 256)
+        self.assertEqual(foreground_profile.background_sample_count, 256)
+        self.assertEqual(foreground_profile.nonbackground_sample_count, 256)
+        self.assertLess(
+            sum(background_profile.background_log_rms),
+            sum(foreground_profile.background_log_rms),
+        )
+        # References train the probability distribution; their coordinates are
+        # not overwritten to artificial exact-zero or exact-one outputs.
+        self.assertTrue(
+            np.all(np.asarray(background_result[0])[background] < 255)
+        )
+        self.assertTrue(
+            np.all(np.asarray(foreground_result[0])[foreground] < 255)
+        )
+
+    def test_refined_background_integrates_directions_without_ray_overlays(self) -> None:
         import cv2
         import numpy as np
 
@@ -162,14 +259,14 @@ class AnalysisLayerTests(unittest.TestCase):
             offset_x=0,
             offset_y=0,
         )
-        self.assertEqual(len(layers.directional_background_likelihoods), 24)
+        self.assertEqual(layers.directional_background_likelihoods, ())
         self.assertEqual(
             layers.directional_background_angles_degrees,
             tuple(float(angle) for angle in range(0, 360, 15)),
         )
         self.assertIsNotNone(layers.background_colour_profile)
         self.assertGreater(layers.background_colour_profile.sample_count, 31)
-        self.assertEqual(layers.directional_background_rgba(0).shape, (96, 96, 4))
+        self.assertEqual(layers.refined_background_rgba().shape, (96, 96, 4))
 
     def test_manual_reference_points_override_automatic_background_colour(self) -> None:
         import cv2
@@ -259,7 +356,7 @@ class AnalysisLayerTests(unittest.TestCase):
         self.assertGreater(np.count_nonzero(layers.instance_labels == 1), 0)
         self.assertGreater(int(layers.edge_likelihood.max()), 0)
 
-    def test_manual_background_and_foreground_regions_are_hard_constraints(self) -> None:
+    def test_manual_regions_constrain_colour_and_train_noise_without_overrides(self) -> None:
         import cv2
         import numpy as np
 
@@ -287,7 +384,13 @@ class AnalysisLayerTests(unittest.TestCase):
         self.assertEqual(layers.background_reference_count, 25)
         for x, y, expected in ((12, 12, 255), (10, 14, 255), (48, 48, 0), (50, 46, 0)):
             self.assertEqual(int(layers.background_likelihood[y, x]), expected)
-            self.assertEqual(int(layers.refined_background_likelihood[y, x]), expected)
+        noise = np.asarray(layers.refined_background_likelihood)
+        self.assertGreater(float(np.mean(noise[background_mask])), 0.0)
+        self.assertLess(float(np.mean(noise[background_mask])), 255.0)
+        self.assertGreater(
+            float(np.mean(noise[background_mask])),
+            float(np.mean(noise[foreground_mask])),
+        )
 
     def test_layer_exclusions_fit_negative_evidence_without_pixel_overrides(self) -> None:
         import numpy as np

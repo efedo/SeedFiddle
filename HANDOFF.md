@@ -84,8 +84,17 @@ repository or `images/` while troubleshooting the environment.
 - Native Qt node graph with inline Blueprint-style controls, dependency-aware
   caching, node timings, progress colours, purple adjacent-node highlighting,
   manual overlap, automatic non-overlapping arrangement, zoom controls, and
-  node-driven viewer overlays/intermediates. The one-line toolbar includes an
-  unused-node toolbox; **Circle candidates**, **Distance-peak candidates**, the
+  node-driven viewer overlays/intermediates. Every authored datum has its own
+  succinct labelled and typed input/output socket; all active and toolbox
+  connections use explicit endpoints. Users can drag to restore supported
+  connections, drag a connected input into empty space to disconnect it, or
+  right-click/select-delete an edge. Disconnection bypasses enabled consumers
+  and their dependents; reconnection restores only the cards automatically
+  suspended by that missing input, leaving deliberately disabled experimental
+  nodes off. An explicit Painted seed instances input exposes annotation
+  dependencies that were previously implicit. The one-line toolbar includes an
+  unused-node toolbox; **Circle candidates**, **Distance-peak candidates**,
+  **Calibration residual risk**, the
   directional surface-darkness gradient branch and its lightening/darkening
   derivative upper cutoffs, and every distance-dependent node are preserved
   there with their authored connections but excluded from the default DAG and
@@ -93,8 +102,8 @@ repository or `images/` while troubleshooting the environment.
 - Overlay selection and opacity are compact top-toolbar controls. The main
   selector groups indented layers under disabled owning-node headings, and a
   synchronized selector directly below the selected node title lists only that
-  node's overlays. Background
-  and foreground-reference painting are top-toolbar modes that reveal one contextual control
+  node's overlays. Material-reference and boundary-reference painting are
+  top-toolbar modes that reveal one contextual control
   panel over the image; the right inspector contains only image metadata, the
   selected `Node:` controls, its local overlay selector and explanation, and
   applicable summaries.
@@ -117,35 +126,71 @@ repository or `images/` while troubleshooting the environment.
   binary colour-reference masks; applied labels become authoritative markers
   for the active procedural watershed and also constrain the dormant
   provisional instance branch without overriding foreground probability.
+  A **Start from result** selector expands any available procedural,
+  U-Net/watershed, or StarDist labels into a full corrected-image editable
+  draft. The initializing method is preserved in export notes; the draft stays
+  explicitly unreviewed and requires correction of every automated error.
 - GPU foreground/background colour probabilities, symmetric three-band noise
   profiles with directional texture continuation, shared edge gradients,
   directed/undirected tangents, ridge thinning, and oriented edge traces.
+  Directional rays are integrated on CUDA into each class noise probability but
+  are no longer materialized as individual viewer overlays.
+- **Painted material references** is an explicit active input node for one
+  mutually exclusive Background/Foreground/Other categorical layer. Painting a
+  class clears the other two at that pixel; Other supplies negative evidence to
+  both material models. It feeds both colour models and both class-specific noise
+  models, so applying a painted edit invalidates every true graph dependent.
+  Each noise classifier learns its positive and negative texture distributions
+  directly from the applicable painted areas when present, using colour
+  pseudo-labels only for an unpainted class. Painted coordinates are not forced
+  to exact noise-probability zero or one. A separate **Painted boundary
+  references** input holds mutually exclusive Physical edge/Non-edge review
+  evidence. Its smart boundary brush previews and commits either class to nearby
+  analysed edges, and learning export persists both values and their sparse
+  validity raster.
 - Active **Procedural seed separation** combines seed-material evidence,
   edge/sensor/ridge/shadow physical-boundary cost, scale-aware centre markers,
   marker-controlled watershed, and explicit per-instance confidence. Its six
   overlays expose material likelihood/mask, boundary cost, centre likelihood,
   instance identities, and confidence. GPU rasters are resized before the one
-  essential bounded CPU topology transfer, the result is node-cached, and
+  essential bounded CPU topology transfer; CPU labels and evidence stay at the
+  bounded working size and Qt scales them only for display. The compact result
+  is node-cached, and
   distinct painted instance IDs suppress nearby automatic markers.
 - **Perimeter background reference** is a separate cached active node. Its
   ruler-calibrated outer-rim buffer defaults to 0.35 cm and its independently
   adjustable median-colour band thickness defaults to 0.5 cm; both are shown
-  exactly in a dedicated overlay, with a nominal-dish scale fallback.
+  exactly in a dedicated overlay, with a nominal-dish scale fallback. The
+  overlay includes an opacity-independent swatch and hex label for the selected
+  median starting background colour.
 - A six-output active multiscale node supplies fine/medium/coarse surrounding RMS
   darkness and Lab-colour noise energy. The maximum one-sided lightening and
   darkening CIE L* surface slopes, their query-to-target directions, and the two
   dependent derivative upper cutoffs are disabled and preserved in the
   unused-node toolbox. These raw masks are intentionally distinct from the
   learned foreground/background noise profiles.
-- Painted binary foreground/background reference masks plus independent
-  negative-evidence masks for each layer. Exclusion samples fit separate
-  colour-frequency and texture distributions that downweight matching evidence
-  globally; they never hard-zero their painted coordinates. The editor includes
-  a live brush outline, direct per-layer Erase buttons, shared Paint/Eraser modes,
-  explicit Apply/Revert, a painted-overlay visibility toggle, and Lab
-  probability models shown as HSV-rendered hue/tint/shade contour projections
-  for both colour classes. The underlying projection colours are not dimmed;
-  probability is projected across saturation before contours are drawn.
+- Three annotation layers: categorical material references
+  (Background/Foreground/Other), categorical boundary references (Physical
+  edge/Non-edge), and labelled seed instances. Each categorical layer enforces
+  exclusivity while it is painted and normalizes older four-mask state when it
+  is read. Other samples fit negative colour-frequency and texture distributions
+  for both material models; they never hard-zero their painted coordinates. The
+  compact editor uses class selectors plus shared Paint/Eraser/Clear-layer,
+  Apply/Revert, brush-radius, and painted-overlay visibility controls; longer
+  explanations live in tooltips. It also retains Lab
+  probability models shown as saturation-projected chromatic HSV
+  hue/tint/shade contour slices for both colour classes, preceded by an exact
+  neutral white-to-black strip. This preserves pale tinted reference modes
+  without projecting neutral evidence across unrelated saturated hues. The
+  underlying colours are not dimmed. The contextual editor keeps natural row
+  heights and scrolls vertically when the split image viewport is short.
+- Full-image CUDA jobs use one dedicated worker and coalesce newer requests.
+  Per-image node caches are LRU-bounded to three images and 2 GiB of reachable
+  CUDA storage; eviction and failures release GPU ownership and lazy CPU mirrors.
+  Overlay downloads survive only until the next viewer render. Painted masks
+  use immutable applied arrays; categorical peers are copied lazily on the first
+  dab that can replace them, rather than when the panel merely opens. Both reference and instance freehand tools use incremental vector
+  previews rather than rebuilding the corrected base image during pointer moves.
 - **Grayscale & local lighting** estimates a valid-mask-aware broad field,
   flattens grayscale with a clipped log ratio, and maps standardized local
   deviations through separate nonlinear shadow/highlight sigmoids. All rasters
@@ -158,6 +203,14 @@ repository or `images/` while troubleshooting the environment.
 - Foreground references use a per-pixel Lab colour-frequency table, never a
   regional average or painted-pixel probability override. Automatic background
   colour is anchored to the retained outside-dish annulus distribution.
+- Automatic foreground colour is now independently anchored by the accepted
+  isolated reference-seed components above the ruler. Their individual Lab
+  frequencies are compared against the exterior-background distribution and
+  combined with seed-scale surface-lightness evidence. The former automatic
+  high-confidence self-fit remains only as an explicitly labelled fallback when
+  no isolated reference seed survives. Selecting **Foreground colour
+  probability** shows the leading starting modes as swatches, hex RGB values,
+  frequencies, source type, and source-pixel count in the inspector.
 - The independent seed-interior branch remains visible but disabled. It now
   consumes foreground colour probability, learned foreground-noise probability,
   and background evidence; an editable texture weight controls the colour/noise
@@ -170,9 +223,9 @@ repository or `images/` while troubleshooting the environment.
   required by image-backed tests. Generated diagnostics under `artifacts/` are
   ignored.
 
-The full suite passed 134 tests on Python 3.12.10 with PyTorch CUDA on an RTX
-3070 on 2026-08-11 after the learned-segmentation implementation and
-visual/performance QA.
+The full suite passed 156 tests on Python 3.12.10 with PyTorch CUDA on an RTX
+3070 on 2026-08-12 after the typed editable-node-wiring and independent
+automatic-foreground-reference implementations and visual/performance QA.
 
 ## Learned instance-segmentation implementation
 
@@ -199,7 +252,10 @@ deterministic augmentation, training/early stopping, quantitative instance and
 dense-head metrics, validation-only decoder search, frozen test evaluation,
 comparison/contact-sheet rendering, unlabelled fixture review, and an
 experimental U-Net-gated StarDist decoder. Applied complete masks can be
-exported from the File menu; new samples are deliberately marked unreviewed.
+saved and loaded at full corrected resolution, then exported from the Learning
+menu with explicit group, split, revision, author, and review metadata. The same
+menu audits datasets and launches new or checkpoint-refinement training in the
+serial CUDA worker, with epoch progress and optional checkpoint activation.
 
 The controlled 72-image/1,474-instance synthetic engineering set produced a
 locked-test U-Net F1 of 1.000, PQ 0.820, count error 0, physical-boundary F1

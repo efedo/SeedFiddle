@@ -139,6 +139,10 @@ class ProceduralInstanceTests(unittest.TestCase):
             settings=ProceduralInstanceSettings(working_maximum_dimension=256),
         )
         self.assertGreater(result.count, 0)
+        self.assertEqual(result.source_shape, (480, 480))
+        self.assertLessEqual(max(result.labels.shape), 256)
+        self.assertEqual(result.occupancy_likelihood.shape, result.labels.shape)
+        self.assertEqual(result.boundary_cost.shape, result.labels.shape)
         self.assertTrue(all(not item.is_materialized for item in inputs))
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from collections.abc import Callable
 import json
 from pathlib import Path
 import random
@@ -20,6 +21,10 @@ from seedvision.learning.data import (
 )
 from seedvision.learning.losses import multi_head_unet_loss, stardist_loss
 from seedvision.learning.models import MultiHeadSeedUNet, SeedStarDist2D
+
+
+class TrainingCancelled(RuntimeError):
+    """Raised when an interactive training run is cancelled safely."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +54,12 @@ class TrainingConfiguration:
             raise ValueError("Epoch, batch, and tile counts must be positive.")
         if self.tile_size < 32 or self.patience < 1:
             raise ValueError("Tile size must be >=32 and patience must be positive.")
+        if self.base_channels < 8:
+            raise ValueError("Base channels must be at least 8.")
+        if not 1 <= self.depth <= 5:
+            raise ValueError("Network depth must be between 1 and 5.")
+        if not 8 <= self.ray_count <= 256 or self.ray_count % 4:
+            raise ValueError("StarDist ray count must be 8-256 and divisible by four.")
         if self.learning_rate <= 0 or self.weight_decay < 0:
             raise ValueError("Learning rate must be positive and weight decay non-negative.")
         if self.device not in {"cuda", "cpu", "auto"}:
@@ -115,7 +126,18 @@ def _move_targets(targets, device):
     }
 
 
-def _epoch(model, loader, *, configuration, family, device, optimizer=None, scaler=None, mixed_precision=False):
+def _epoch(
+    model,
+    loader,
+    *,
+    configuration,
+    family,
+    device,
+    optimizer=None,
+    scaler=None,
+    mixed_precision=False,
+    cancellation_requested: Callable[[], bool] | None = None,
+):
     import torch
 
     training = optimizer is not None
@@ -125,6 +147,8 @@ def _epoch(model, loader, *, configuration, family, device, optimizer=None, scal
     context = torch.enable_grad if training else torch.no_grad
     with context():
         for batch in loader:
+            if cancellation_requested is not None and cancellation_requested():
+                raise TrainingCancelled("Learned-model training was cancelled.")
             features = batch["features"].to(device=device, dtype=torch.float32, non_blocking=True)
             targets = _move_targets(batch["targets"], device)
             if training:
@@ -154,12 +178,14 @@ def _epoch(model, loader, *, configuration, family, device, optimizer=None, scal
     return {name: value / max(1, sample_count) for name, value in totals.items()}
 
 
-def train_from_manifest(
+def _train_from_manifest_impl(
     manifest_path: Path | str,
     output_path: Path | str,
     configuration: TrainingConfiguration,
     *,
     report_path: Path | str | None = None,
+    progress_callback: Callable[[int, int, dict], None] | None = None,
+    cancellation_requested: Callable[[], bool] | None = None,
 ) -> dict:
     """Train one model and save only the best validation-loss checkpoint."""
 
@@ -245,6 +271,8 @@ def train_from_manifest(
     epochs_without_improvement = 0
     started = perf_counter()
     for epoch in range(1, configuration.epochs + 1):
+        if cancellation_requested is not None and cancellation_requested():
+            raise TrainingCancelled("Learned-model training was cancelled.")
         train_terms = _epoch(
             model,
             train_loader,
@@ -254,6 +282,7 @@ def train_from_manifest(
             optimizer=optimizer,
             scaler=scaler,
             mixed_precision=configuration.mixed_precision,
+            cancellation_requested=cancellation_requested,
         )
         validation_terms = _epoch(
             model,
@@ -262,6 +291,7 @@ def train_from_manifest(
             configuration=configuration,
             device=device,
             mixed_precision=configuration.mixed_precision,
+            cancellation_requested=cancellation_requested,
         )
         scheduler.step()
         record = {
@@ -297,6 +327,8 @@ def train_from_manifest(
             f"validation={validation_loss:.5f}; best={best_loss:.5f}",
             flush=True,
         )
+        if progress_callback is not None:
+            progress_callback(epoch, configuration.epochs, record)
         if epochs_without_improvement >= configuration.patience:
             break
     report = {
@@ -319,3 +351,31 @@ def train_from_manifest(
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     return report
+
+
+def train_from_manifest(
+    manifest_path: Path | str,
+    output_path: Path | str,
+    configuration: TrainingConfiguration,
+    *,
+    report_path: Path | str | None = None,
+    progress_callback: Callable[[int, int, dict], None] | None = None,
+    cancellation_requested: Callable[[], bool] | None = None,
+) -> dict:
+    """Train reproducibly without leaking deterministic mode into live analysis."""
+
+    import torch
+
+    deterministic = torch.are_deterministic_algorithms_enabled()
+    warn_only = torch.is_deterministic_algorithms_warn_only_enabled()
+    try:
+        return _train_from_manifest_impl(
+            manifest_path,
+            output_path,
+            configuration,
+            report_path=report_path,
+            progress_callback=progress_callback,
+            cancellation_requested=cancellation_requested,
+        )
+    finally:
+        torch.use_deterministic_algorithms(deterministic, warn_only=warn_only)

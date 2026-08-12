@@ -25,8 +25,9 @@ from seedvision.pipeline import PipelineNode
 
 
 class BackgroundColourGamut(QWidget):
-    """Compact hue/tint/shade HSV projection with fitted probabilities."""
+    """Compact neutral and hue/tint/shade slices with fitted probabilities."""
 
+    NEUTRAL_COLUMNS = 24
     CONTOURS = (
         (0.25, QColor("#11181d")),
         (0.50, QColor("#41d9ff")),
@@ -139,55 +140,95 @@ class BackgroundColourGamut(QWidget):
         rgb = cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB)
         adjusted_weights = np.maximum(weights, 1e-6) ** frequency_power
         adjusted_weights /= max(float(adjusted_weights.max()), 1e-6)
-        # The attached-style hue/tint/shade square has one hidden colour
-        # dimension. Project the fitted distribution by taking maximum
-        # membership across saturation at each hue and tone, so neutral and
-        # partially saturated learned colours are not omitted from the map.
-        hue = hsv[:, :, 0]
+        projected_lab = cv2.cvtColor(rgb, cv2.COLOR_RGB2LAB).astype(np.float32)
+        chroma_weight = max(
+            0.0,
+            float(
+                parameters.get(
+                    f"{class_name}_chroma_weight",
+                    1.25,
+                )
+            ),
+        )
+        distance_weights = np.asarray(
+            (1.0, chroma_weight, chroma_weight), np.float32
+        )
+        probability = np.zeros((height, width), np.float32)
+        excluded_probability = np.zeros((height, width), np.float32)
+
+        # Achromatic colours have no meaningful hue. Evaluate them only in the
+        # dedicated neutral strip; otherwise saturation=0 makes the same grey
+        # match every hue and produces a misleading horizontal probability band.
+        neutral_width = min(self.NEUTRAL_COLUMNS, max(1, width // 4))
+        probability[:, :neutral_width] = self._mixture_probability(
+            projected_lab[:, :neutral_width],
+            centres,
+            effective_scales,
+            adjusted_weights,
+            distance_weights,
+        )
+        excluded_probability[:, :neutral_width] = self._mixture_probability(
+            projected_lab[:, :neutral_width],
+            excluded_centres,
+            excluded_scales,
+            excluded_adjusted_weights,
+            distance_weights,
+        )
+
+        # A hue/tone map necessarily hides saturation. Project only genuinely
+        # chromatic fitted modes over that dimension. This restores contours for
+        # pale tinted annulus colours that do not lie on the single rendered HSV
+        # slice, while neutral modes remain confined to the strip above.
+        chromatic = self._chromatic_components(centres, effective_scales)
+        excluded_chromatic = self._chromatic_components(
+            excluded_centres, excluded_scales
+        )
+        hue_width = width - neutral_width
+        hue_probability = np.zeros((height, hue_width), np.float32)
+        hue_excluded_probability = np.zeros_like(hue_probability)
+        hue = np.uint8(
+            np.rint(np.linspace(0.0, 179.0, hue_width, dtype=np.float32))
+        )[None, :]
         lightness = np.uint8(
             np.rint(np.linspace(255.0, 0.0, height, dtype=np.float32))
         )[:, None]
-        probability = np.zeros((height, width), np.float32)
-        for saturation in np.linspace(0.0, 255.0, 11, dtype=np.float32):
-            hls = np.empty_like(hsv)
+        for saturation in np.linspace(8.0, 255.0, 20, dtype=np.float32):
+            hls = np.empty((height, hue_width, 3), np.uint8)
             hls[:, :, 0] = hue
             hls[:, :, 1] = lightness
             hls[:, :, 2] = np.uint8(np.rint(saturation))
-            projected_rgb = cv2.cvtColor(hls, cv2.COLOR_HLS2RGB)
-            projected_lab = cv2.cvtColor(
-                projected_rgb, cv2.COLOR_RGB2LAB
+            candidate_lab = cv2.cvtColor(
+                cv2.cvtColor(hls, cv2.COLOR_HLS2RGB),
+                cv2.COLOR_RGB2LAB,
             ).astype(np.float32)
-            plane_probability = np.zeros((height, width), np.float32)
-            for centre, scale, weight in zip(
-                centres, effective_scales, adjusted_weights, strict=True
-            ):
-                delta = (projected_lab - centre) / scale
-                distance = np.sum(
-                    (delta * delta)
-                    * np.asarray((1.0, 1.25, 1.25), np.float32),
-                    axis=2,
+            if bool(np.any(chromatic)):
+                hue_probability = np.maximum(
+                    hue_probability,
+                    self._mixture_probability(
+                        candidate_lab,
+                        centres[chromatic],
+                        effective_scales[chromatic],
+                        adjusted_weights[chromatic],
+                        distance_weights,
+                    ),
                 )
-                plane_probability += np.exp(-0.5 * distance) * weight
-            excluded_probability = np.zeros((height, width), np.float32)
-            for centre, scale, weight in zip(
-                excluded_centres,
-                excluded_scales,
-                excluded_adjusted_weights,
-                strict=True,
-            ):
-                delta = (projected_lab - centre) / scale
-                distance = np.sum(
-                    (delta * delta)
-                    * np.asarray((1.0, 1.25, 1.25), np.float32),
-                    axis=2,
+            if bool(np.any(excluded_chromatic)):
+                hue_excluded_probability = np.maximum(
+                    hue_excluded_probability,
+                    self._mixture_probability(
+                        candidate_lab,
+                        excluded_centres[excluded_chromatic],
+                        excluded_scales[excluded_chromatic],
+                        excluded_adjusted_weights[excluded_chromatic],
+                        distance_weights,
+                    ),
                 )
-                excluded_probability += np.exp(-0.5 * distance) * weight
-            plane_probability *= 1.0 - float(profile.exclusion_strength) * np.clip(
-                excluded_probability, 0.0, 1.0
-            )
-            probability = np.maximum(
-                probability, np.clip(plane_probability, 0.0, 1.0)
-            )
+        probability[:, neutral_width:] = hue_probability
+        excluded_probability[:, neutral_width:] = hue_excluded_probability
+        probability = np.clip(probability, 0.0, 1.0)
+        probability *= 1.0 - float(profile.exclusion_strength) * np.clip(
+            excluded_probability, 0.0, 1.0
+        )
 
         # Preserve the actual projected colour everywhere. Membership is
         # communicated exclusively by the high-contrast contour lines; dimming
@@ -207,64 +248,112 @@ class BackgroundColourGamut(QWidget):
         self._probability = probability
         self._centres = centres
         self._centre_points = self._project_centres(
-            centres, width, height
+            centres, effective_scales, width, height
         )
         self._weights = weights
         self.update()
 
-    def _update_tooltip(self) -> None:
-        self.setToolTip(
-            "An HSV hue/tint/shade projection. Pixel colour is the represented "
-            f"colour; contour lines show fitted {self._class_name} membership "
-            "probability projected across the unshown saturation dimension in "
-            "the model's Lab space. "
-            "Circle labels show learned colour-mode occurrence in "
-            "the references or automatic high-confidence samples."
-        )
+    @staticmethod
+    def _mixture_probability(
+        lab: np.ndarray,
+        centres: np.ndarray,
+        scales: np.ndarray,
+        weights: np.ndarray,
+        distance_weights: np.ndarray,
+    ) -> np.ndarray:
+        probability = np.zeros(lab.shape[:2], np.float32)
+        for centre, scale, weight in zip(
+            centres, scales, weights, strict=True
+        ):
+            delta = (lab - centre) / scale
+            distance = np.sum((delta * delta) * distance_weights, axis=2)
+            probability += np.exp(-0.5 * distance) * weight
+        return np.clip(probability, 0.0, 1.0)
 
     @staticmethod
-    def _hsv_projection(width: int, height: int) -> np.ndarray:
-        """Return hue across X and white-to-pure-to-black colour down Y."""
+    def _chromatic_components(
+        centres: np.ndarray, scales: np.ndarray
+    ) -> np.ndarray:
+        if not len(centres):
+            return np.zeros((0,), dtype=bool)
+        chroma = np.hypot(centres[:, 1] - 128.0, centres[:, 2] - 128.0)
+        tolerance = np.maximum(
+            2.5, 0.75 * np.minimum(scales[:, 1], scales[:, 2])
+        )
+        return chroma >= tolerance
 
-        hue = np.linspace(0.0, 179.0, width, dtype=np.float32)
+    def _update_tooltip(self) -> None:
+        self.setToolTip(
+            "A neutral-value strip followed by an HSV hue/tint/shade slice. "
+            f"Contour lines show fitted {self._class_name} membership in the "
+            "model's Lab space. Neutral modes are evaluated only in the neutral "
+            "strip; chromatic modes are projected over saturation in the hue/tone "
+            "area so pale tints remain visible without spreading grey evidence "
+            "across unrelated hues. "
+            "Circle labels show learned colour-mode occurrence in "
+            "painted references, isolated reference seeds, or the labelled fallback."
+        )
+
+    @classmethod
+    def _hsv_projection(cls, width: int, height: int) -> np.ndarray:
+        """Return a neutral strip plus white-to-pure-to-black HSV hues."""
+
+        neutral_width = min(cls.NEUTRAL_COLUMNS, max(1, width // 4))
+        hue_width = max(1, width - neutral_width)
+        hue = np.linspace(0.0, 179.0, hue_width, dtype=np.float32)
         row = np.linspace(0.0, 1.0, height, dtype=np.float32)
         saturation = np.where(row <= 0.5, row * 2.0, 1.0) * 255.0
         value = np.where(row <= 0.5, 1.0, (1.0 - row) * 2.0) * 255.0
         hsv = np.empty((height, width, 3), np.uint8)
-        hsv[:, :, 0] = np.uint8(np.rint(hue))[None, :]
-        hsv[:, :, 1] = np.uint8(np.rint(saturation))[:, None]
-        hsv[:, :, 2] = np.uint8(np.rint(value))[:, None]
+        hsv[:, neutral_width:, 0] = np.uint8(np.rint(hue))[None, :]
+        hsv[:, neutral_width:, 1] = np.uint8(np.rint(saturation))[:, None]
+        hsv[:, neutral_width:, 2] = np.uint8(np.rint(value))[:, None]
+        hsv[:, :neutral_width, 0] = 0
+        hsv[:, :neutral_width, 1] = 0
+        hsv[:, :neutral_width, 2] = np.uint8(
+            np.rint(np.linspace(255.0, 0.0, height, dtype=np.float32))
+        )[:, None]
         return hsv
 
-    @staticmethod
+    @classmethod
     def _project_centres(
-        centres: np.ndarray, width: int, height: int
+        cls,
+        centres: np.ndarray,
+        scales: np.ndarray,
+        width: int,
+        height: int,
     ) -> np.ndarray:
-        """Place learned Lab modes by their hue and HLS-equivalent tone."""
+        """Place fitted modes in the neutral strip or hue/tone projection."""
 
         import cv2
 
+        if not len(centres):
+            return np.empty((0, 2), np.float32)
         lab = np.clip(np.rint(centres), 0, 255).astype(np.uint8)[:, None, :]
-        rgb = cv2.cvtColor(lab, cv2.COLOR_LAB2RGB)
-        hls = cv2.cvtColor(rgb, cv2.COLOR_RGB2HLS)[:, 0].astype(np.float32)
-        return np.column_stack(
-            (
-                hls[:, 0] / 179.0 * max(1, width - 1),
-                (1.0 - hls[:, 1] / 255.0) * max(1, height - 1),
-            )
-        ).astype(np.float32)
+        hls = cv2.cvtColor(
+            cv2.cvtColor(lab, cv2.COLOR_LAB2RGB), cv2.COLOR_RGB2HLS
+        )[:, 0].astype(np.float32)
+        neutral_width = min(cls.NEUTRAL_COLUMNS, max(1, width // 4))
+        hue_width = max(1, width - neutral_width)
+        chromatic = cls._chromatic_components(centres, scales)
+        columns = neutral_width + hls[:, 0] / 179.0 * max(1, hue_width - 1)
+        columns[~chromatic] = neutral_width * 0.5
+        rows = (1.0 - hls[:, 1] / 255.0) * max(1, height - 1)
+        return np.column_stack((columns, rows)).astype(np.float32)
 
     @staticmethod
     def _contour_edge(probability: np.ndarray, level: float) -> np.ndarray:
-        mask = probability >= level
-        edge = np.zeros_like(mask)
-        difference = mask[1:, :] != mask[:-1, :]
-        edge[1:, :] |= difference
-        edge[:-1, :] |= difference
-        difference = mask[:, 1:] != mask[:, :-1]
-        edge[:, 1:] |= difference
-        edge[:, :-1] |= difference
-        return edge
+        import cv2
+
+        mask = np.pad(
+            np.uint8(probability >= level), 1, mode="constant"
+        )
+        edge = cv2.morphologyEx(
+            mask,
+            cv2.MORPH_GRADIENT,
+            np.ones((3, 3), np.uint8),
+        )
+        return edge[1:-1, 1:-1] > 0
 
     def paintEvent(self, event) -> None:  # noqa: N802 - Qt override
         del event
@@ -293,7 +382,7 @@ class BackgroundColourGamut(QWidget):
         painter.drawText(
             QRectF(plot.left(), plot.bottom(), plot.width(), 18.0),
             Qt.AlignmentFlag.AlignCenter,
-            "HSV hue",
+            "neutral  |  HSV hue",
         )
 
         image_width = max(1, self._image.width() - 1)
@@ -384,6 +473,23 @@ class PipelineInspector(QWidget):
         self.status_label = QLabel("", self)
         self.status_label.setWordWrap(True)
         self.status_label.setStyleSheet(f"color: {self._secondary_colour};")
+        self.foreground_start_heading = QLabel("Starting automatic colours", self)
+        self.foreground_start_heading.setStyleSheet(
+            "font-weight: 600; margin-top: 6px;"
+        )
+        self.foreground_start_heading.setVisible(False)
+        self.foreground_start_label = QLabel("", self)
+        self.foreground_start_label.setWordWrap(True)
+        self.foreground_start_label.setTextFormat(Qt.TextFormat.RichText)
+        self.foreground_start_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self.foreground_start_label.setToolTip(
+            "The highest-frequency colour modes detected in the isolated reference "
+            "seeds above the ruler. Percentages are their proportions in those "
+            "reference pixels; painted foreground references replace this automatic start."
+        )
+        self.foreground_start_label.setVisible(False)
         self.gamut_heading = QLabel("Accepted background colours", self)
         self.gamut_heading.setStyleSheet("font-weight: 600; margin-top: 6px;")
         self.gamut_heading.setVisible(False)
@@ -418,6 +524,8 @@ class PipelineInspector(QWidget):
         layout.addWidget(self.details_label)
         layout.addWidget(self.enabled_checkbox)
         layout.addWidget(self.status_label)
+        layout.addWidget(self.foreground_start_heading)
+        layout.addWidget(self.foreground_start_label)
         layout.addWidget(self.gamut_heading)
         layout.addWidget(self.gamut_widget)
         layout.addWidget(self.gamut_caption)
@@ -565,6 +673,9 @@ class PipelineInspector(QWidget):
     def _update_background_gamut(self) -> None:
         node_id = None if self._node is None else self._node.identifier
         visible = node_id in {"background_likelihood", "foreground_segmentation"}
+        foreground_visible = node_id == "foreground_segmentation"
+        self.foreground_start_heading.setVisible(foreground_visible)
+        self.foreground_start_label.setVisible(foreground_visible)
         self.gamut_heading.setVisible(visible)
         self.gamut_widget.setVisible(visible)
         self.gamut_caption.setVisible(visible)
@@ -581,6 +692,8 @@ class PipelineInspector(QWidget):
             self._node.parameters,
             class_name=class_name,
         )
+        if foreground_visible:
+            self._update_foreground_starting_colours(profile)
         if profile is None:
             self.gamut_caption.setText(
                 "No fitted distribution is available for the current image."
@@ -595,8 +708,12 @@ class PipelineInspector(QWidget):
         )
         source_description = (
             "painted-reference modes"
-            if reference_count
-            else "automatic high-confidence modes"
+            if getattr(profile, "source", "") == "painted" or reference_count
+            else "isolated-reference-seed modes"
+            if getattr(profile, "source", "") == "isolated_reference_seeds"
+            else "fallback automatic high-confidence modes"
+            if class_name == "foreground"
+            else "exterior-annulus reference modes"
         )
         exclusion_modes = len(
             getattr(profile, "excluded_component_centres_lab", ())
@@ -608,12 +725,70 @@ class PipelineInspector(QWidget):
             else ""
         )
         self.gamut_caption.setText(
-            f"Colour beneath the contours is an HSV hue/tint/shade projection "
-            f"(white through pure colour to black). Contours project the fitted "
-            f"Lab model across saturation and show 25/50/75/90% membership; "
-            f"circles are learned "
+            f"Colour beneath the contours is a neutral white-to-black strip followed "
+            f"by an HSV hue/tint/shade slice (white through pure colour to black). "
+            f"Contours show exact neutral membership and a saturation projection "
+            f"of chromatic modes at 25/50/75/90%; neutral evidence is never spread "
+            f"across unrelated hues. "
+            f"Circles are learned "
             f"{source_description} labelled by frequency. Observed 5–95% BGR: "
             f"{low}–{high}.{exclusion_description}"
+        )
+
+    def _update_foreground_starting_colours(self, profile) -> None:
+        """Render the automatic foreground anchors as explicit colour swatches."""
+
+        if profile is None:
+            self.foreground_start_label.setText(
+                "Run the foreground node to detect starting colours."
+            )
+            return
+        source = getattr(profile, "source", "unknown")
+        if source == "painted":
+            self.foreground_start_label.setText(
+                "Bypassed — applied foreground references supply the colour modes."
+            )
+            return
+        centres = np.asarray(
+            profile.component_centres_lab or (profile.centre_lab,),
+            dtype=np.float32,
+        ).reshape(-1, 3)
+        weights = np.asarray(
+            profile.component_weights or (1.0,), dtype=np.float32
+        ).reshape(-1)
+        if len(weights) != len(centres):
+            weights = np.full(
+                len(centres), 1.0 / max(1, len(centres)), np.float32
+            )
+        order = np.argsort(-weights)[:8]
+        import cv2
+
+        bgr = cv2.cvtColor(
+            centres[order]
+            .round()
+            .clip(0, 255)
+            .astype(np.uint8)
+            .reshape(-1, 1, 3),
+            cv2.COLOR_LAB2BGR,
+        ).reshape(-1, 3)
+        swatches = []
+        for colour_bgr, weight in zip(bgr, weights[order], strict=True):
+            colour = QColor(
+                int(colour_bgr[2]), int(colour_bgr[1]), int(colour_bgr[0])
+            ).name().upper()
+            swatches.append(
+                f'<span style="color:{colour}; font-size:18px;">■</span> '
+                f'{colour} ({float(weight):.0%})'
+            )
+        source_text = (
+            "Isolated reference seeds"
+            if source == "isolated_reference_seeds"
+            else "Fallback from high-confidence image pixels"
+        )
+        sample_count = int(getattr(profile, "source_sample_count", 0))
+        self.foreground_start_label.setText(
+            f"{source_text}; {sample_count:,} source pixels:<br>"
+            + " &nbsp; ".join(swatches)
         )
 
     def _enabled_toggled(self, enabled: bool) -> None:

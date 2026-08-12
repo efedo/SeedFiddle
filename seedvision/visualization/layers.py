@@ -59,6 +59,8 @@ class ForegroundColourProfile:
     excluded_component_scales_lab: tuple[tuple[float, float, float], ...] = ()
     excluded_component_weights: tuple[float, ...] = ()
     exclusion_strength: float = 0.95
+    source: str = "unknown"
+    source_sample_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -407,11 +409,6 @@ class AnalysisLayers:
             if self.foreground_noise_likelihood is None
             else np.asarray(self.foreground_noise_likelihood)
         )
-        alpha = np.uint8(np.asarray(self.valid_mask) > 0) * 255
-        return np.dstack((gray, gray, gray, alpha))
-
-    def directional_background_rgba(self, index: int) -> np.ndarray:
-        gray = 255 - np.asarray(self.directional_background_likelihoods[index])
         alpha = np.uint8(np.asarray(self.valid_mask) > 0) * 255
         return np.dstack((gray, gray, gray, alpha))
 

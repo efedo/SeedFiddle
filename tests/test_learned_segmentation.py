@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 
 import cv2
 import numpy as np
@@ -23,6 +24,7 @@ from seedvision.learning.data import (
     rotation_ray_mapping,
 )
 from seedvision.learning.features import colour_only_feature_spec
+from seedvision.learning.export import annotation_proposal_to_corrected
 from seedvision.learning.losses import multi_head_unet_loss, stardist_loss
 from seedvision.learning.metrics import evaluate_binary_probability, evaluate_instances
 from seedvision.learning.models import MultiHeadSeedUNet, SeedStarDist2D
@@ -67,6 +69,33 @@ class LearnedTargetTests(unittest.TestCase):
             int(annotated.pattern_valid.sum()), int(np.count_nonzero(reviewed))
         )
 
+        # Sparse human edge/non-edge review overrides only the inspected
+        # pixels; unreviewed physical targets still come from instance labels.
+        derived = targets.physical_boundary.copy()
+        physical = np.zeros_like(labels, dtype=np.uint8)
+        physical_valid = np.zeros_like(labels, dtype=np.uint8)
+        false_edge_y, false_edge_x = np.argwhere(derived > 0)[0]
+        physical_valid[false_edge_y, false_edge_x] = 1
+        physical[5, 5] = 1
+        physical_valid[5, 5] = 1
+        reviewed_edges = build_dense_targets(
+            labels,
+            physical_boundary=physical,
+            physical_valid=physical_valid,
+        )
+        self.assertEqual(
+            float(reviewed_edges.physical_boundary[false_edge_y, false_edge_x]),
+            0.0,
+        )
+        self.assertEqual(float(reviewed_edges.physical_boundary[5, 5]), 1.0)
+        unreviewed_y, unreviewed_x = np.argwhere(
+            (derived > 0) & (physical_valid == 0)
+        )[0]
+        self.assertEqual(
+            float(reviewed_edges.physical_boundary[unreviewed_y, unreviewed_x]),
+            1.0,
+        )
+
     def test_stardist_targets_have_radial_geometry_at_seed_centres(self) -> None:
         labels = np.zeros((65, 65), dtype=np.int32)
         cv2.circle(labels, (32, 32), 15, 1, -1)
@@ -83,6 +112,33 @@ class LearnedTargetTests(unittest.TestCase):
 
 
 class LearningDataTests(unittest.TestCase):
+    def test_pipeline_proposal_expands_to_full_corrected_annotation_coordinates(self) -> None:
+        proposal = SimpleNamespace(
+            labels=np.asarray(
+                (
+                    (0, 2, 2),
+                    (9, 9, 0),
+                ),
+                dtype=np.int32,
+            )
+        )
+        result = SimpleNamespace(
+            calibration=SimpleNamespace(
+                corrected_bgr=np.zeros((10, 14, 3), dtype=np.uint8)
+            ),
+            layers=SimpleNamespace(valid_mask=np.ones((4, 6), dtype=np.uint8)),
+            crop_offset=(3, 2),
+        )
+
+        corrected = annotation_proposal_to_corrected(result, proposal)
+
+        self.assertEqual(corrected.shape, (10, 14))
+        self.assertEqual(corrected.dtype, np.uint16)
+        self.assertEqual(set(np.unique(corrected)), {0, 1, 2})
+        self.assertEqual(int(np.count_nonzero(corrected[:2])), 0)
+        self.assertEqual(int(np.count_nonzero(corrected[:, :3])), 0)
+        self.assertGreater(int(np.count_nonzero(corrected[2:6, 3:9])), 0)
+
     def test_exported_human_sample_round_trips_and_builds_cached_targets(self) -> None:
         labels = _scene((80, 96)).astype(np.uint16)
         image = np.full((*labels.shape, 3), 180, dtype=np.uint8)
@@ -92,6 +148,11 @@ class LearningDataTests(unittest.TestCase):
         pattern = np.zeros_like(labels, dtype=np.uint8)
         pattern[35:45, 20:40] = labels[35:45, 20:40] > 0
         pattern_valid = np.uint8(labels > 0)
+        physical = np.zeros_like(labels, dtype=np.uint8)
+        physical_valid = np.zeros_like(labels, dtype=np.uint8)
+        physical[20:24, 30] = 1
+        physical_valid[20:24, 30] = 1
+        physical_valid[40:44, 50] = 1  # Explicit reviewed non-edge.
         with TemporaryDirectory() as temporary:
             manifest_path = Path(temporary) / "manifest.json"
             export_learning_sample(
@@ -108,6 +169,8 @@ class LearningDataTests(unittest.TestCase):
                 reviewed=True,
                 pattern_boundary=pattern,
                 pattern_valid=pattern_valid,
+                physical_boundary=physical,
+                physical_valid=physical_valid,
                 annotation_author="Test reviewer",
                 annotation_revision="1",
             )
@@ -129,6 +192,8 @@ class LearningDataTests(unittest.TestCase):
             )
             manifest = LearningManifest.load(manifest_path)
             self.assertEqual(len(manifest.samples), 2)
+            self.assertEqual(manifest.samples[0].physical_boundary, "capture_01.physical.png")
+            self.assertEqual(manifest.samples[0].physical_valid, "capture_01.physical_valid.png")
             audit = audit_manifest(manifest_path)
             self.assertTrue(audit["valid"], audit["errors"])
             dataset = SeedTileDataset(

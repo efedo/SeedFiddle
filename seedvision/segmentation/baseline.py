@@ -533,6 +533,7 @@ def analyze_image(
         timings.add_seconds(node_id, elapsed)
     values = {} if node_cache is None else node_cache.values
     dirty = set(dirty_nodes)
+    painted_reference_dirty = "painted_reference_layers" in dirty
     computed: list[str] = []
     reused: list[str] = []
 
@@ -596,13 +597,25 @@ def analyze_image(
     )
     if seed_scale_dirty:
         with timings.measure("seed_scale_estimation"):
-            reference_diameter, reference_count = _reference_seed_diameter(
+            (
+                reference_diameter,
+                reference_count,
+                automatic_foreground_samples_lab,
+            ) = _reference_seed_diameter(
                 analysis_image, dish, settings, cuda_context
             )
-        values["seed_scale"] = (reference_diameter, reference_count)
+        values["seed_scale"] = (
+            reference_diameter,
+            reference_count,
+            automatic_foreground_samples_lab,
+        )
         computed.append("seed_scale_estimation")
     else:
-        reference_diameter, reference_count = values["seed_scale"]
+        (
+            reference_diameter,
+            reference_count,
+            automatic_foreground_samples_lab,
+        ) = values["seed_scale"]
         reused.append("seed_scale_estimation")
     seed_diameter = (
         reference_diameter
@@ -692,6 +705,7 @@ def analyze_image(
     reference_samples_dirty = (
         crop_dirty
         or seed_scale_dirty
+        or painted_reference_dirty
         or "foreground_segmentation" in dirty
         or "background_likelihood" in dirty
         or "reference.samples" not in values
@@ -779,6 +793,7 @@ def analyze_image(
     foreground_dirty = (
         crop_dirty
         or seed_scale_dirty
+        or painted_reference_dirty
         or "foreground_segmentation" in dirty
         or "foreground" not in values
     )
@@ -824,6 +839,7 @@ def analyze_image(
             analysis_radius=float(dish.outer_radius),
             perimeter_background_lab=foreground_perimeter_prior_lab,
             perimeter_background_samples_lab=foreground_perimeter_samples_lab,
+            automatic_foreground_samples_lab=automatic_foreground_samples_lab,
             source_tensor=gpu_crop_source,
             lab_tensor=gpu_crop_lab,
         )
@@ -2007,8 +2023,8 @@ def _reference_seed_diameter(
     dish: DishCircle,
     settings: BaselineSettings,
     cuda_context: CudaContext,
-) -> tuple[float | None, int]:
-    """Estimate sample seed size from the isolated seeds above the ruler."""
+) -> tuple[float | None, int, object | None]:
+    """Estimate size and seed-colour samples from isolated ruler references."""
 
     height, width = image.shape[:2]
     x0, x1 = (
@@ -2021,7 +2037,7 @@ def _reference_seed_diameter(
     )
     crop = image[y0:y1, x0:x1]
     if crop.size == 0:
-        return None, 0
+        return None, 0, None
 
     import torch
 
@@ -2041,7 +2057,7 @@ def _reference_seed_diameter(
     labels, stats = connected_components(mask)
     component_count = int(labels.max().item()) + 1
 
-    diameters: list[float] = []
+    candidates: list[tuple[float, int]] = []
     minimum_area = max(100.0, image.shape[0] * image.shape[1] * 0.00002)
     maximum_area = crop.shape[0] * crop.shape[1] * 0.10
     for index in range(1, component_count):
@@ -2071,17 +2087,37 @@ def _reference_seed_diameter(
             and aspect <= settings.reference_max_aspect_ratio
             and plausible_for_dish
         ):
-            diameters.append(equivalent_diameter)
+            candidates.append((equivalent_diameter, index))
 
-    if not diameters:
-        return None, 0
+    if not candidates:
+        return None, 0, None
     # The layout normally contains two seeds. Limit the influence of incidental
     # small components without hard-coding exactly two.
-    diameters = sorted(diameters, reverse=True)[: settings.reference_max_components]
+    selected = sorted(candidates, reverse=True)[: settings.reference_max_components]
+    diameters = [diameter for diameter, _index in selected]
+    selected_labels = torch.as_tensor(
+        [index for _diameter, index in selected],
+        device=cuda_context.device,
+        dtype=labels.dtype,
+    )
+    sample_mask = torch.isin(labels[0, 0], selected_labels)
+    foreground_samples_lab = lab[0].permute(1, 2, 0)[sample_mask]
+    if int(foreground_samples_lab.shape[0]) > 32768:
+        indices = torch.linspace(
+            0,
+            int(foreground_samples_lab.shape[0]) - 1,
+            32768,
+            device=cuda_context.device,
+        ).round().long()
+        foreground_samples_lab = foreground_samples_lab[indices]
     # The low-contrast shadow belongs to the thresholded component and inflates
     # its equivalent diameter.  The sparse hand-counted pilot calibrates this
     # foreground-component diameter to the effective center-spacing diameter.
-    return float(np.median(diameters) * settings.reference_scale_factor), len(diameters)
+    return (
+        float(np.median(diameters) * settings.reference_scale_factor),
+        len(diameters),
+        foreground_samples_lab,
+    )
 
 
 def _foreground_feature(
@@ -2104,6 +2140,7 @@ def _foreground_feature(
     center_y: float | None = None,
     perimeter_background_lab: tuple[float, float, float] | None = None,
     perimeter_background_samples_lab=None,
+    automatic_foreground_samples_lab=None,
     source_tensor=None,
     lab_tensor=None,
 ) -> tuple[
@@ -2215,7 +2252,7 @@ def _foreground_feature(
         background_refinement_iterations = settings.foreground_refinement_iterations
     if supplied_background is not None:
         (
-            _,
+            background_membership,
             background_centres,
             _,
             background_weights,
@@ -2251,6 +2288,7 @@ def _foreground_feature(
         )
         feature = torch.sqrt(torch.min(background_distances, dim=2).values)
     else:
+        background_membership = None
         prior_distance = torch.sqrt(
             (lab[:, :, 0] - perimeter_background[0]).square()
             + settings.foreground_chroma_weight
@@ -2323,6 +2361,9 @@ def _foreground_feature(
     foreground_fitted_sample_count = 0
     foreground_refinement_rounds = 0
     foreground_profile_sample_mask = None
+    foreground_profile_lab_samples = None
+    foreground_profile_source = "unknown"
+    foreground_source_sample_count = 0
     excluded_centres = None
     excluded_scales = None
     excluded_weights = None
@@ -2365,6 +2406,103 @@ def _foreground_feature(
             * prototype_probability
         )
         foreground_profile_sample_mask = foreground_reference_tensor
+        foreground_profile_source = "painted"
+        foreground_source_sample_count = int(
+            foreground_reference_tensor.sum().item()
+        )
+
+    # The isolated seeds used for physical scale are also the only automatic
+    # pixels whose semantic class is known independently of this foreground
+    # calculation. Fit their individual Lab frequencies and compare them with
+    # the exterior-background model. This breaks the former circular behaviour
+    # in which an inverted probability map merely summarized its own brightest
+    # errors as "automatic foreground colours" without correcting anything.
+    if (
+        foreground_centres is None
+        and _sample_count(automatic_foreground_samples_lab) >= 16
+    ):
+        (
+            automatic_membership,
+            foreground_centres,
+            foreground_scales,
+            foreground_weights,
+            foreground_fitted_sample_count,
+            foreground_refinement_rounds,
+        ) = lab_colour_frequency_distribution(
+            lab,
+            automatic_foreground_samples_lab,
+            valid_pixels & ~manual_mask & ~foreground_exclusion_tensor,
+            maximum_bins=min(32, settings.foreground_reference_components),
+            refinement_iterations=0,
+            refinement_min_probability=settings.foreground_refinement_min_probability,
+            frequency_weight_power=settings.foreground_frequency_weight_power,
+            scale_multiplier=(
+                settings.foreground_distribution_scale_multiplier * 0.60
+            ),
+            scale_floors=(8.0, 4.0, 4.0),
+            distance_weights=(
+                1.0,
+                settings.foreground_chroma_weight,
+                settings.foreground_chroma_weight,
+            ),
+        )
+        if background_membership is None:
+            background_membership = torch.exp(
+                -0.5 * (feature / max(8.0, threshold)).square()
+            )
+        # A likelihood ratio prevents a pale reference seed from classifying a
+        # genuinely matching dish background as certainly foreground. Local
+        # surface lightness supplies an additional crowded-dish tie-breaker.
+        automatic_colour_probability = automatic_membership / (
+            automatic_membership + background_membership + 0.02
+        )
+        discriminative_reference_fraction = torch.mean(
+            (
+                automatic_colour_probability[valid_pixels] >= 0.70
+            ).float()
+        )
+        automatic_density_gate = torch.clamp(
+            (discriminative_reference_fraction - 0.18) / 0.25,
+            0.0,
+            1.0,
+        )
+        automatic_boost_gate = torch.maximum(
+            crowded_dish_gate, automatic_density_gate
+        )
+        surface_support = torch.sigmoid(
+            (lightness - local_lightness) / contrast_softness
+        )
+        # Reference colours that are also common in the dish still need the
+        # foreground/background relative-membership term above. A strong match
+        # to an independently sampled reference-seed colour can, however,
+        # satisfy surface support by itself: genuine dark coat markings are
+        # often local lightness minima and must not be mistaken for gaps.
+        reference_or_surface_support = torch.maximum(
+            surface_support, automatic_membership
+        )
+        automatic_probability = automatic_colour_probability * (
+            0.15 + 0.85 * reference_or_surface_support
+        )
+        automatic_relevance = torch.maximum(
+            automatic_membership, surface_support
+        )
+        probability = probability * (
+            1.0
+            - crowded_dish_gate
+            * 0.75
+            * (1.0 - automatic_relevance)
+        )
+        probability = torch.maximum(
+            probability,
+            automatic_probability
+            * settings.foreground_reference_weight
+            * (0.65 + 0.20 * automatic_boost_gate),
+        )
+        foreground_profile_lab_samples = automatic_foreground_samples_lab
+        foreground_profile_source = "isolated_reference_seeds"
+        foreground_source_sample_count = _sample_count(
+            automatic_foreground_samples_lab
+        )
 
     if foreground_exclusion_tensor.any():
         (
@@ -2451,14 +2589,44 @@ def _foreground_feature(
                 ),
             )
             foreground_profile_sample_mask = automatic_foreground
+            foreground_profile_source = "automatic_high_confidence"
+            foreground_source_sample_count = int(
+                automatic_foreground.sum().item()
+            )
 
     foreground_colour_profile = None
-    if foreground_centres is not None and foreground_profile_sample_mask is not None:
-        sample_bgr = source[0].permute(1, 2, 0)[foreground_profile_sample_mask]
-        if int(sample_bgr.shape[0]) > 200000:
-            sample_bgr = sample_bgr[:: max(1, int(sample_bgr.shape[0]) // 200000)]
-        low = torch.quantile(sample_bgr, 0.05, dim=0).round().clamp(0, 255)
-        high = torch.quantile(sample_bgr, 0.95, dim=0).round().clamp(0, 255)
+    if foreground_centres is not None and (
+        foreground_profile_sample_mask is not None
+        or foreground_profile_lab_samples is not None
+    ):
+        if foreground_profile_sample_mask is not None:
+            sample_bgr = source[0].permute(1, 2, 0)[foreground_profile_sample_mask]
+            if int(sample_bgr.shape[0]) > 200000:
+                sample_bgr = sample_bgr[
+                    :: max(1, int(sample_bgr.shape[0]) // 200000)
+                ]
+            low_values = torch.quantile(sample_bgr, 0.05, dim=0).round().clamp(0, 255)
+            high_values = torch.quantile(sample_bgr, 0.95, dim=0).round().clamp(0, 255)
+            low_bgr = tuple(int(value) for value in low_values.cpu().tolist())
+            high_bgr = tuple(int(value) for value in high_values.cpu().tolist())
+        else:
+            samples_lab = foreground_profile_lab_samples
+            if int(samples_lab.shape[0]) > 32768:
+                samples_lab = samples_lab[
+                    :: max(1, int(samples_lab.shape[0]) // 32768)
+                ]
+            samples_lab_u8 = (
+                samples_lab.round().clamp(0, 255).to(torch.uint8).cpu().numpy()
+            )
+            samples_bgr = cv2.cvtColor(
+                samples_lab_u8.reshape(-1, 1, 3), cv2.COLOR_LAB2BGR
+            ).reshape(-1, 3)
+            low_bgr = tuple(
+                int(value) for value in np.quantile(samples_bgr, 0.05, axis=0).round()
+            )
+            high_bgr = tuple(
+                int(value) for value in np.quantile(samples_bgr, 0.95, axis=0).round()
+            )
         dominant = int(torch.argmax(foreground_weights).item())
         foreground_colour_profile = ForegroundColourProfile(
             centre_lab=tuple(
@@ -2467,8 +2635,8 @@ def _foreground_feature(
             scale_lab=tuple(
                 float(value) for value in foreground_scales[dominant].cpu().tolist()
             ),
-            bgr_low=tuple(int(value) for value in low.cpu().tolist()),
-            bgr_high=tuple(int(value) for value in high.cpu().tolist()),
+            bgr_low=low_bgr,
+            bgr_high=high_bgr,
             sample_count=int(foreground_fitted_sample_count),
             sample_fraction=int(foreground_fitted_sample_count)
             / max(int(valid_pixels.sum().item()), 1),
@@ -2508,6 +2676,8 @@ def _foreground_feature(
                 )
             ),
             exclusion_strength=exclusion_strength,
+            source=foreground_profile_source,
+            source_sample_count=foreground_source_sample_count,
         )
     probability = torch.where(
         valid_pixels,

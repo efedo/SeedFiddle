@@ -5,7 +5,16 @@ from __future__ import annotations
 import math
 
 from PySide6.QtCore import QPointF, QRectF, QSignalBlocker, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QWheelEvent
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QKeyEvent,
+    QMouseEvent,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QWheelEvent,
+)
 from PySide6.QtWidgets import (
     QGraphicsObject,
     QGraphicsPathItem,
@@ -67,6 +76,7 @@ class PipelineNodeItem(QGraphicsObject):
     def __init__(
         self,
         node: PipelineNode,
+        graph: PipelineGraph,
         moved_callback,
         released_callback,
         parameter_callback,
@@ -74,6 +84,7 @@ class PipelineNodeItem(QGraphicsObject):
     ) -> None:
         super().__init__(parent)
         self.node = node
+        self.graph = graph
         self._moved_callback = moved_callback
         self._released_callback = released_callback
         self._parameter_callback = parameter_callback
@@ -106,7 +117,7 @@ class PipelineNodeItem(QGraphicsObject):
             | self.GraphicsItemFlag.ItemSendsGeometryChanges
         )
         self.setCacheMode(self.CacheMode.DeviceCoordinateCache)
-        self.setToolTip(node.description)
+        self._update_tooltip()
         self.setZValue(2)
         self._build_inline_editors()
 
@@ -119,6 +130,31 @@ class PipelineNodeItem(QGraphicsObject):
     def output_anchor(self, port_id: str = "") -> QPointF:
         return self.mapToScene(
             QPointF(self.width, self._port_y(self.node.output_ports, port_id))
+        )
+
+    def port_at_scene(
+        self, scene_position: QPointF, radius: float = 13.0
+    ) -> tuple[str, str] | None:
+        """Hit-test named connector circles in scene coordinates."""
+
+        local = self.mapFromScene(scene_position)
+        for direction, x, ports in (
+            ("input", 0.0, self.node.input_ports),
+            ("output", self.width, self.node.output_ports),
+        ):
+            for port_id, _ in ports:
+                y = self._port_y(ports, port_id)
+                if math.hypot(local.x() - x, local.y() - y) <= radius:
+                    return direction, port_id
+        return None
+
+    def _update_tooltip(self) -> None:
+        inputs = ", ".join(label for _, label in self.node.input_ports) or "None"
+        outputs = ", ".join(label for _, label in self.node.output_ports) or "None"
+        self.setToolTip(
+            f"{self.node.description}\n\nInputs: {inputs}\nOutputs: {outputs}\n\n"
+            "Drag between sockets to reconnect. Drag a connected input into empty "
+            "space, or right-click an edge, to disconnect it."
         )
 
     @staticmethod
@@ -211,6 +247,7 @@ class PipelineNodeItem(QGraphicsObject):
                 else:
                     editor.setChecked(bool(self.node.parameters[key]))
             editor.setEnabled(self.node.enabled and self.node.implemented)
+        self._update_tooltip()
         self.update()
 
     def set_adjacent(self, adjacent: bool) -> None:
@@ -314,30 +351,48 @@ class PipelineNodeItem(QGraphicsObject):
 
         port_pen = QPen(QColor("#172029"), 1.5)
         port_pen.setCosmetic(True)
-        painter.setPen(port_pen)
-        painter.setBrush(QColor("#9ba8b5"))
         if self.node.input_ports:
             for port_id, label in self.node.input_ports:
                 y = self._port_y(self.node.input_ports, port_id)
-                painter.drawEllipse(QPointF(0, y), 6, 6)
-                painter.setPen(QColor("#9ba8b5"))
-                painter.drawText(QRectF(10, y - 10, 112, 20), label)
+                connected = self.graph.connection_for_input(
+                    self.node.identifier, port_id
+                ) is not None
                 painter.setPen(port_pen)
-        else:
-            painter.drawEllipse(QPointF(0, self.PORT_Y), 6, 6)
+                painter.setBrush(
+                    QColor("#57d8ff") if connected else QColor("#ef6b73")
+                )
+                painter.drawEllipse(QPointF(0, y), 6, 6)
+                painter.setPen(
+                    QColor("#b9c5cf") if connected else QColor("#ff9da3")
+                )
+                compact_label = painter.fontMetrics().elidedText(
+                    label, Qt.TextElideMode.ElideRight, 90
+                )
+                painter.drawText(QRectF(10, y - 10, 92, 20), compact_label)
         if self.node.output_ports:
             for port_id, label in self.node.output_ports:
                 y = self._port_y(self.node.output_ports, port_id)
-                painter.drawEllipse(QPointF(self.width, y), 6, 6)
-                painter.setPen(QColor("#d6dee5"))
-                painter.drawText(
-                    QRectF(self.width - 150, y - 10, 138, 20),
-                    Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
-                    label,
+                connected = any(
+                    connection.source == self.node.identifier
+                    and connection.source_port == port_id
+                    for connection in self.graph.connections
                 )
                 painter.setPen(port_pen)
-        else:
-            painter.drawEllipse(QPointF(self.width, self.PORT_Y), 6, 6)
+                painter.setBrush(
+                    QColor("#70dfa7") if connected else QColor("#7d8995")
+                )
+                painter.drawEllipse(QPointF(self.width, y), 6, 6)
+                painter.setPen(
+                    QColor("#d6dee5") if connected else QColor("#98a4af")
+                )
+                compact_label = painter.fontMetrics().elidedText(
+                    label, Qt.TextElideMode.ElideRight, 90
+                )
+                painter.drawText(
+                    QRectF(self.width - 102, y - 10, 90, 20),
+                    Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                    compact_label,
+                )
 
     def itemChange(self, change, value):  # noqa: N802 - Qt override
         result = super().itemChange(change, value)
@@ -360,14 +415,26 @@ class PipelineEdgeItem(QGraphicsPathItem):
         connection: PipelineConnection,
         source: PipelineNodeItem,
         target: PipelineNodeItem,
+        disconnect_callback,
     ) -> None:
         super().__init__()
         self.connection = connection
         self.source = source
         self.target = target
+        self._disconnect_callback = disconnect_callback
+        self.setFlag(self.GraphicsItemFlag.ItemIsSelectable, True)
+        self.setAcceptedMouseButtons(
+            Qt.MouseButton.LeftButton | Qt.MouseButton.RightButton
+        )
         self.set_highlighted(False)
         self.setZValue(0)
-        self.setToolTip(connection.data_type)
+        source_label = dict(source.node.output_ports)[connection.source_port]
+        target_label = dict(target.node.input_ports)[connection.target_port]
+        self.setToolTip(
+            f"{source.node.title}: {source_label}\n-> "
+            f"{target.node.title}: {target_label}\n"
+            f"Type: {connection.data_type}\n\nRight-click to disconnect."
+        )
         self.update_path()
 
     def set_highlighted(self, highlighted: bool) -> None:
@@ -380,6 +447,14 @@ class PipelineEdgeItem(QGraphicsPathItem):
         pen.setCosmetic(True)
         self.setPen(pen)
         self.setZValue(1 if highlighted else 0)
+
+    def contextMenuEvent(self, event) -> None:  # noqa: N802 - Qt override
+        menu = QMenu()
+        disconnect = menu.addAction("Disconnect")
+        selected = menu.exec(event.screenPos())
+        if selected is disconnect:
+            self._disconnect_callback(self.connection)
+        event.accept()
 
     def update_path(self) -> None:
         start = self.source.output_anchor(self.connection.source_port)
@@ -401,6 +476,8 @@ class PipelineCanvas(QGraphicsView):
     unused_node_restored = Signal(str)
     unused_node_shelved = Signal(str)
     parameter_changed = Signal(str, str, object)
+    connections_changed = Signal(object)
+    connection_error = Signal(str)
     NODE_GAP = 18.0
     OPTIONAL_TOOLBOX_NODE_IDS = frozenset({"circle_candidates"})
 
@@ -414,8 +491,23 @@ class PipelineCanvas(QGraphicsView):
         self._zoom_steps = 0
         self._fit_pending = True
         self._arranging_nodes = False
+        self._connection_drag: tuple[str, str, str] | None = None
+        self._create_connection_preview()
 
         self.setBackgroundBrush(QColor("#1c2229"))
+        self._finish_initialization()
+
+    def _create_connection_preview(self) -> None:
+        self._connection_preview = QGraphicsPathItem()
+        preview_pen = QPen(QColor("#57d8ff"), 2.8, Qt.PenStyle.DashLine)
+        preview_pen.setCosmetic(True)
+        self._connection_preview.setPen(preview_pen)
+        self._connection_preview.setZValue(5)
+        self._connection_preview.hide()
+        self._scene.addItem(self._connection_preview)
+
+    def _finish_initialization(self) -> None:
+        """Kept separate only to make the canvas setup easy to scan."""
         self.setRenderHints(
             QPainter.RenderHint.Antialiasing
             | QPainter.RenderHint.TextAntialiasing
@@ -426,6 +518,7 @@ class PipelineCanvas(QGraphicsView):
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setViewportMargins(0, 38, 0, 0)
         self._build_control_bar()
         self._populate()
@@ -494,6 +587,7 @@ class PipelineCanvas(QGraphicsView):
         for node in self.graph.nodes.values():
             item = PipelineNodeItem(
                 node,
+                self.graph,
                 self._node_moved,
                 self._node_released,
                 self._inline_parameter_changed,
@@ -506,10 +600,99 @@ class PipelineCanvas(QGraphicsView):
                 connection,
                 self.node_items[connection.source],
                 self.node_items[connection.target],
+                self._disconnect_connection,
             )
             self.edge_items.append(edge)
             self._scene.addItem(edge)
         self._update_scene_rect()
+
+    def _rebuild_edges(self) -> None:
+        for edge in self.edge_items:
+            self._scene.removeItem(edge)
+        self.edge_items.clear()
+        for connection in self.graph.connections:
+            edge = PipelineEdgeItem(
+                connection,
+                self.node_items[connection.source],
+                self.node_items[connection.target],
+                self._disconnect_connection,
+            )
+            self.edge_items.append(edge)
+            self._scene.addItem(edge)
+        for item in self.node_items.values():
+            item.refresh()
+        self._update_scene_rect()
+
+    def _disconnect_connection(self, connection: PipelineConnection) -> None:
+        try:
+            affected = self.graph.disconnect(connection)
+        except ValueError as error:
+            self.connection_error.emit(str(error))
+            return
+        self._rebuild_edges()
+        self.connections_changed.emit(affected)
+
+    def _port_at(
+        self, scene_position: QPointF
+    ) -> tuple[PipelineNodeItem, str, str] | None:
+        for item in reversed(list(self.node_items.values())):
+            port = item.port_at_scene(scene_position)
+            if port is not None:
+                direction, port_id = port
+                return item, direction, port_id
+        return None
+
+    @staticmethod
+    def _connection_path(start: QPointF, end: QPointF) -> QPainterPath:
+        horizontal = max(60.0, abs(end.x() - start.x()) * 0.48)
+        path = QPainterPath(start)
+        path.cubicTo(
+            QPointF(start.x() + horizontal, start.y()),
+            QPointF(end.x() - horizontal, end.y()),
+            end,
+        )
+        return path
+
+    def _drag_endpoints(self, cursor: QPointF) -> tuple[QPointF, QPointF]:
+        assert self._connection_drag is not None
+        node_id, direction, port_id = self._connection_drag
+        item = self.node_items[node_id]
+        if direction == "output":
+            return item.output_anchor(port_id), cursor
+        return cursor, item.input_anchor(port_id)
+
+    def _finish_connection_drag(self, scene_position: QPointF) -> None:
+        assert self._connection_drag is not None
+        start_node, start_direction, start_port = self._connection_drag
+        destination = self._port_at(scene_position)
+        self._connection_drag = None
+        self._connection_preview.hide()
+        if destination is None:
+            if start_direction == "input":
+                existing = self.graph.connection_for_input(start_node, start_port)
+                if existing is not None:
+                    self._disconnect_connection(existing)
+            return
+        item, end_direction, end_port = destination
+        if end_direction == start_direction:
+            self.connection_error.emit("Join an output socket to an input socket.")
+            return
+        if start_direction == "output":
+            source, source_port = start_node, start_port
+            target, target_port = item.node.identifier, end_port
+        else:
+            source, source_port = item.node.identifier, end_port
+            target, target_port = start_node, start_port
+        try:
+            affected = self.graph.connect(
+                source, source_port, target, target_port
+            )
+        except ValueError as error:
+            self.connection_error.emit(str(error))
+            return
+        if affected:
+            self._rebuild_edges()
+            self.connections_changed.emit(affected)
 
     def _node_moved(self, node_id: str) -> None:
         del node_id
@@ -614,6 +797,7 @@ class PipelineCanvas(QGraphicsView):
         self.node_items.clear()
         self.edge_items.clear()
         self._scene.clear()
+        self._create_connection_preview()
         self._populate()
         self._refresh_unused_node_toolbox()
         self.select_node(node_id)
@@ -638,6 +822,7 @@ class PipelineCanvas(QGraphicsView):
         self.node_items.clear()
         self.edge_items.clear()
         self._scene.clear()
+        self._create_connection_preview()
         self._populate()
         self._refresh_unused_node_toolbox()
         self.move_to_unused_button.setEnabled(False)
@@ -771,6 +956,95 @@ class PipelineCanvas(QGraphicsView):
                 item.refresh()
         for edge in self.edge_items:
             edge.update_path()
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            scene_position = self.mapToScene(event.position().toPoint())
+            hit = self._port_at(scene_position)
+            if hit is not None:
+                item, direction, port_id = hit
+                self._connection_drag = (item.node.identifier, direction, port_id)
+                start, end = self._drag_endpoints(scene_position)
+                self._connection_preview.setPath(
+                    self._connection_path(start, end)
+                )
+                self._connection_preview.show()
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if self._connection_drag is not None:
+            scene_position = self.mapToScene(event.position().toPoint())
+            start, end = self._drag_endpoints(scene_position)
+            self._connection_preview.setPath(self._connection_path(start, end))
+            colour = QColor("#57d8ff")
+            destination = self._port_at(scene_position)
+            if destination is not None:
+                item, end_direction, end_port = destination
+                start_node, start_direction, start_port = self._connection_drag
+                if end_direction == start_direction:
+                    colour = QColor("#ef6b73")
+                else:
+                    if start_direction == "output":
+                        endpoints = (
+                            start_node,
+                            start_port,
+                            item.node.identifier,
+                            end_port,
+                        )
+                    else:
+                        endpoints = (
+                            item.node.identifier,
+                            end_port,
+                            start_node,
+                            start_port,
+                        )
+                    colour = (
+                        QColor("#70dfa7")
+                        if self.graph.connection_template(*endpoints) is not None
+                        else QColor("#ef6b73")
+                    )
+            pen = QPen(colour, 2.8, Qt.PenStyle.DashLine)
+            pen.setCosmetic(True)
+            self._connection_preview.setPen(pen)
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if (
+            self._connection_drag is not None
+            and event.button() == Qt.MouseButton.LeftButton
+        ):
+            self._finish_connection_drag(
+                self.mapToScene(event.position().toPoint())
+            )
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
+        if event.key() == Qt.Key.Key_Escape and self._connection_drag is not None:
+            self._connection_drag = None
+            self._connection_preview.hide()
+            event.accept()
+            return
+        if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            selected_connections = [
+                item.connection
+                for item in self._scene.selectedItems()
+                if isinstance(item, PipelineEdgeItem)
+            ]
+            if selected_connections:
+                affected: set[str] = set()
+                for connection in selected_connections:
+                    affected.update(self.graph.disconnect(connection))
+                self._rebuild_edges()
+                self.connections_changed.emit(tuple(affected))
+                event.accept()
+                return
+        super().keyPressEvent(event)
 
     def fit_graph(self) -> None:
         bounds = self._scene.itemsBoundingRect().adjusted(-45, -45, 45, 45)

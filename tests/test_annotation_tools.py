@@ -41,6 +41,22 @@ class AnnotationToolTests(unittest.TestCase):
         self.assertLess(int(path[:, 1].min()), 14)
         self.assertGreater(float(np.mean(edge[path[:, 1], path[:, 0]] > 0)), 0.75)
 
+    def test_edge_trace_long_preview_stays_interactive(self) -> None:
+        edge = np.random.default_rng(4).integers(
+            0, 256, (1400, 2400), dtype=np.uint8
+        )
+        started = perf_counter()
+        path = trace_edge_path(
+            (100, 100),
+            (2100, 1100),
+            edge,
+            EdgeTraceOptions(search_radius_px=80, tangent_mode="off"),
+        )
+        elapsed = perf_counter() - started
+
+        self.assertGreater(len(path), 500)
+        self.assertLess(elapsed, 0.35)
+
     def test_shape_snap_moves_an_ellipse_onto_nearby_edges(self) -> None:
         edge = np.zeros((120, 130), dtype=np.uint8)
         cv2.ellipse(edge, (66, 57), (31, 19), 0, 0, 360, 255, 2)

@@ -67,3 +67,22 @@ case justifies them.
 - Measure real boundary error in millimetres and relative to seed diameter. A
   one-pixel discrepancy on the canonical simulator had a disproportionate PQ
   cost and should not be interpreted without physical scale.
+
+## 2026-08-11 - annotation-bootstrap review
+
+- Record correction operations and active editing time separately for
+  procedural, U-Net, and StarDist initial drafts. Accuracy alone does not reveal
+  which proposal minimizes human annotation cost.
+- Turn corrected proposal errors into explicit hard-example tags: missing seed,
+  false object, split, merge, rim fragment, coat-pattern split, and contour
+  correction. These tags can drive balanced sampling and per-failure reporting.
+- Use the calibrated inner/outer dish geometry as a hard-negative context
+  channel and for proposal-review warnings, not as an unconditional learned-mask
+  override; seeds near the wall must remain representable.
+- Preserve the initializing method, checkpoint hash, decoder parameters, and
+  elapsed correction time in annotation revision provenance. The first desktop
+  bootstrap records the method, but complete revision history still needs a
+  durable annotation project format.
+- Add reviewer-facing pattern-boundary and pattern-validity brushes only after
+  instance-draft persistence is durable; otherwise the independent pattern
+  supervision can be lost when switching images or restarting the application.

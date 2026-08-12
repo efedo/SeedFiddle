@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
+import re
 from typing import Any, Iterable
 
 
@@ -48,6 +49,8 @@ class PipelineNode:
     parameter_specs: tuple[ParameterSpec, ...] = ()
     input_ports: tuple[tuple[str, str], ...] = ()
     output_ports: tuple[tuple[str, str], ...] = ()
+    input_port_types: dict[str, str] = field(default_factory=dict)
+    output_port_types: dict[str, str] = field(default_factory=dict)
     inline_parameters: tuple[tuple[str, str], ...] = ()
     calculation_seconds: float | None = None
     default_parameters: dict[str, Any] = field(init=False, repr=False)
@@ -58,6 +61,8 @@ class PipelineNode:
         # never mutate a shared default object.
         self.parameters = dict(self.parameters)
         self.default_parameters = dict(self.parameters)
+        self.input_port_types = dict(self.input_port_types)
+        self.output_port_types = dict(self.output_port_types)
 
     def set_parameter(self, key: str, value: Any) -> None:
         spec = next((item for item in self.parameter_specs if item.key == key), None)
@@ -95,6 +100,204 @@ class PipelineConnection:
     target_port: str = ""
 
 
+_PORT_LABELS = {
+    "ImageBatch": "Images",
+    "TaggedImages": "Tagged images",
+    "CorrectedImage": "Corrected image",
+    "SwatchGrid": "Colour swatches",
+    "RulerAxis": "Ruler axis",
+    "PixelsPerMillimetre": "Absolute scale",
+    "VesselGeometry": "Dish geometry",
+    "DishRegion": "Dish region",
+    "DishSearchRegion": "Dish search",
+    "SeedDiameter": "Seed diameter",
+    "SeedScale": "Seed scale",
+    "PaintedReferenceLayers": "Material labels",
+    "PaintedInstanceAnnotations": "Painted seed IDs",
+    "PerimeterColourSamples": "Perimeter colours",
+    "ForegroundColour": "FG colour",
+    "ForegroundEvidence": "FG evidence",
+    "ForegroundMask": "FG mask",
+    "ForegroundProbability": "FG probability",
+    "ForegroundNoise": "FG noise",
+    "ForegroundNoiseProbability": "FG noise probability",
+    "BackgroundColour": "BG colour",
+    "BackgroundLikelihood": "BG likelihood",
+    "BackgroundProbability": "BG probability",
+    "BackgroundNoise": "BG noise",
+    "DirectionalBackground": "Directional BG",
+    "DirectedBackground": "Directed BG",
+    "ColourPseudoLabels": "Colour pseudo-labels",
+    "ReferenceSeedColours": "Reference seed colours",
+    "EdgeMagnitude": "Edge magnitude",
+    "FloatGradientField": "Gradient field",
+    "AxialTangents": "Undirected tangents",
+    "DirectedTangents": "Directed tangents",
+    "ContinuousTangents": "Edge tangents",
+    "ThinnedRidges": "Thinned ridges",
+    "OrientedTraces": "Oriented traces",
+    "LocalShadow": "Local shadow",
+    "LocalLighting": "Local lighting",
+    "SensorNoise": "Sensor noise",
+    "SensorNoiseLikelihood": "Sensor/noise likelihood",
+    "SpeciesCondition": "Species",
+    "InteriorProbability": "Interior probability",
+    "BoundaryConfidence": "Boundary confidence",
+    "BoundaryNormals": "Boundary normals",
+    "ProvisionalInstances": "Provisional instances",
+    "InstanceProposals": "Instance proposals",
+    "SeedProposals": "Seed proposals",
+    "ReviewedMasks": "Reviewed masks",
+    "ReferenceConfidence": "Reference confidence",
+}
+
+_TERMINAL_OUTPUTS = {
+    "undirected_edges": ("tangents", "Undirected tangents", "AxialTangents"),
+    "procedural_instances": ("instances", "Seed instances", "SeedInstances"),
+    "seed_edge_curves": (
+        "boundaries",
+        "Confirmed boundaries",
+        "ConfirmedBoundaries",
+    ),
+    "output": ("reports", "Reports", "ExportedResults"),
+}
+
+
+def _port_identifier(value: str) -> str:
+    """Return a stable, readable connector identifier."""
+
+    words = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", value).lower()
+    words = re.sub(r"[^a-z0-9]+", "_", words).strip("_")
+    return words or "data"
+
+
+def _port_label(data_type: str) -> str:
+    """Keep connector text short without hiding the datum it carries."""
+
+    if data_type in _PORT_LABELS:
+        return _PORT_LABELS[data_type]
+    label = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", data_type).strip()
+    return label[:1].upper() + label[1:]
+
+
+def _unique_port_id(candidate: str, used: dict[str, str], data_type: str) -> str:
+    """Reuse a same-type output port, otherwise suffix a name collision."""
+
+    if candidate not in used or used[candidate] == data_type:
+        return candidate
+    index = 2
+    while f"{candidate}_{index}" in used:
+        index += 1
+    return f"{candidate}_{index}"
+
+
+def _populate_connection_ports(
+    nodes: dict[str, PipelineNode],
+    connections: tuple[PipelineConnection, ...],
+) -> tuple[PipelineConnection, ...]:
+    """Give every authored dependency a concrete labelled input/output port."""
+
+    explicit_target_counts: dict[tuple[str, str], int] = {}
+    explicit_source_by_type: dict[tuple[str, str], str] = {}
+    for connection in connections:
+        if connection.target_port:
+            key = (connection.target, connection.target_port)
+            explicit_target_counts[key] = explicit_target_counts.get(key, 0) + 1
+        if connection.source_port:
+            explicit_source_by_type.setdefault(
+                (connection.source, connection.data_type), connection.source_port
+            )
+
+    input_ports: dict[str, list[tuple[str, str]]] = {
+        node_id: [] for node_id in nodes
+    }
+    output_ports: dict[str, list[tuple[str, str]]] = {
+        node_id: list(node.output_ports) for node_id, node in nodes.items()
+    }
+    input_types: dict[str, dict[str, str]] = {
+        node_id: dict(node.input_port_types) for node_id, node in nodes.items()
+    }
+    output_types: dict[str, dict[str, str]] = {
+        node_id: dict(node.output_port_types) for node_id, node in nodes.items()
+    }
+    normalized: list[PipelineConnection] = []
+
+    for connection in connections:
+        source_used = output_types[connection.source]
+        source_candidate = connection.source_port or explicit_source_by_type.get(
+            (connection.source, connection.data_type),
+            _port_identifier(connection.data_type),
+        )
+        source_port = _unique_port_id(
+            source_candidate, source_used, connection.data_type
+        )
+        source_used[source_port] = connection.data_type
+        if source_port not in {identifier for identifier, _ in output_ports[connection.source]}:
+            output_ports[connection.source].append(
+                (source_port, _port_label(connection.data_type))
+            )
+
+        # Inputs are single-cardinality dependency sockets. Some older cards
+        # used one broad "image" name for eleven different tensors; expand
+        # those aliases so the displayed graph states the real dependency.
+        explicit_is_unique = bool(connection.target_port) and (
+            explicit_target_counts[(connection.target, connection.target_port)] == 1
+        )
+        target_candidate = (
+            connection.target_port
+            if explicit_is_unique
+            else _port_identifier(connection.data_type)
+        )
+        target_used = input_types[connection.target]
+        if target_candidate in target_used:
+            source_suffix = _port_identifier(connection.source)
+            target_candidate = f"{target_candidate}_{source_suffix}"
+        target_port = _unique_port_id(
+            target_candidate, target_used, connection.data_type
+        )
+        # Inputs may not share even when their data type is the same.
+        if target_port in target_used:
+            index = 2
+            base = target_port
+            while f"{base}_{index}" in target_used:
+                index += 1
+            target_port = f"{base}_{index}"
+        target_used[target_port] = connection.data_type
+        if target_port not in {identifier for identifier, _ in input_ports[connection.target]}:
+            input_ports[connection.target].append(
+                (target_port, _port_label(connection.data_type))
+            )
+        normalized.append(
+            PipelineConnection(
+                connection.source,
+                connection.target,
+                connection.data_type,
+                source_port,
+                target_port,
+            )
+        )
+
+    for node_id, node in nodes.items():
+        # Preserve authored generated products even if nothing currently
+        # consumes them. True terminal cards still expose their result.
+        if not output_ports[node_id]:
+            port_id, label, data_type = _TERMINAL_OUTPUTS.get(
+                node_id,
+                ("result", f"{node.title} result", "Result"),
+            )
+            output_ports[node_id].append((port_id, label))
+            output_types[node_id][port_id] = data_type
+        for port_id, label in input_ports[node_id]:
+            input_types[node_id].setdefault(port_id, label)
+        for port_id, label in output_ports[node_id]:
+            output_types[node_id].setdefault(port_id, label)
+        node.input_ports = tuple(input_ports[node_id])
+        node.output_ports = tuple(output_ports[node_id])
+        node.input_port_types = input_types[node_id]
+        node.output_port_types = output_types[node_id]
+    return tuple(normalized)
+
+
 class PipelineGraph:
     """Directed acyclic graph plus mutable node configuration and status."""
 
@@ -108,8 +311,15 @@ class PipelineGraph:
         if len(self.nodes) != len(node_list):
             raise ValueError("Pipeline node identifiers must be unique.")
         self.unused_nodes: dict[str, PipelineNode] = {}
-        self.connections = tuple(connections)
+        self.connections = _populate_connection_ports(
+            self.nodes, tuple(connections)
+        )
+        # This is the honest wiring catalogue. The calculation engine has
+        # authored consumers, so the editor accepts only these typed endpoint
+        # pairs rather than drawing substitutions the engine would ignore.
+        self.connection_templates = self.connections
         self.unused_connections: tuple[PipelineConnection, ...] = ()
+        self._connection_suspended: set[str] = set()
         self.revision = 0
         self._validate_connections()
         self.topological_order()
@@ -219,6 +429,158 @@ class PipelineGraph:
         order = self.topological_order()
         return tuple(identifier for identifier in order if identifier in visited)
 
+    def connection_for_input(
+        self, node_id: str, port_id: str
+    ) -> PipelineConnection | None:
+        """Return the active producer attached to a single input socket."""
+
+        return next(
+            (
+                connection
+                for connection in self.connections
+                if connection.target == node_id
+                and connection.target_port == port_id
+            ),
+            None,
+        )
+
+    def missing_input_ports(self, node_id: str) -> tuple[str, ...]:
+        """List disconnected authored inputs whose endpoints are active."""
+
+        self._require_active(node_id)
+        required = {
+            template.target_port
+            for template in self.connection_templates
+            if template.target == node_id and template.source in self.nodes
+        }
+        connected = {
+            connection.target_port
+            for connection in self.connections
+            if connection.target == node_id
+        }
+        return tuple(
+            port_id
+            for port_id, _ in self.node(node_id).input_ports
+            if port_id in required and port_id not in connected
+        )
+
+    def connection_template(
+        self,
+        source: str,
+        source_port: str,
+        target: str,
+        target_port: str,
+    ) -> PipelineConnection | None:
+        """Resolve one calculation-supported connector pair."""
+
+        return next(
+            (
+                template
+                for template in self.connection_templates
+                if template.source == source
+                and template.source_port == source_port
+                and template.target == target
+                and template.target_port == target_port
+            ),
+            None,
+        )
+
+    def disconnect(self, connection: PipelineConnection) -> tuple[str, ...]:
+        """Remove one active dependency and bypass its enabled consumer branch."""
+
+        if connection not in self.connections:
+            raise ValueError("That pipeline connection is not active.")
+        affected = (
+            connection.target,
+            *self.downstream(connection.target, recursive=True),
+        )
+        self.connections = tuple(
+            candidate
+            for candidate in self.connections
+            if candidate != connection
+        )
+        for node_id in affected:
+            node = self.node(node_id)
+            if node.enabled:
+                self._connection_suspended.add(node_id)
+            node.enabled = False
+            node.status = NodeStatus.BYPASSED
+            node.status_detail = "Disabled by disconnected input"
+        self.revision += 1
+        self.invalidate(affected, preserve_bypassed=True)
+        for node_id in affected:
+            node = self.node(node_id)
+            node.status = NodeStatus.BYPASSED
+            node.status_detail = "Disabled by disconnected input"
+        self._validate_connections()
+        self.topological_order()
+        return affected
+
+    def connect(
+        self,
+        source: str,
+        source_port: str,
+        target: str,
+        target_port: str,
+    ) -> tuple[str, ...]:
+        """Restore an authored typed dependency and eligible suspended nodes."""
+
+        self._require_active(source)
+        self._require_active(target)
+        template = self.connection_template(
+            source, source_port, target, target_port
+        )
+        if template is None:
+            source_type = self.node(source).output_port_types.get(source_port)
+            target_type = self.node(target).input_port_types.get(target_port)
+            if source_type != target_type:
+                raise ValueError(
+                    "These connectors carry different data types and cannot be joined."
+                )
+            raise ValueError(
+                "This typed substitution is not an authored calculation input."
+            )
+        if template in self.connections:
+            return ()
+        occupied = self.connection_for_input(target, target_port)
+        if occupied is not None:
+            raise ValueError("Disconnect the existing input before reconnecting it.")
+        self.connections = (*self.connections, template)
+        try:
+            self._validate_connections()
+            self.topological_order()
+        except Exception:
+            self.connections = tuple(
+                candidate
+                for candidate in self.connections
+                if candidate != template
+            )
+            raise
+
+        affected = (target, *self.downstream(target, recursive=True))
+        # Re-enable only cards that this editor auto-disabled. Deliberately
+        # disabled learned/experimental branches remain untouched.
+        for node_id in self.topological_order():
+            if node_id not in self._connection_suspended:
+                continue
+            if self.missing_input_ports(node_id):
+                continue
+            if any(not self.node(parent).enabled for parent in self.upstream(node_id)):
+                continue
+            node = self.node(node_id)
+            node.enabled = True
+            node.status = NodeStatus.IDLE
+            node.status_detail = "Not run"
+            self._connection_suspended.remove(node_id)
+        self.revision += 1
+        self.invalidate(affected, preserve_bypassed=True)
+        for node_id in affected:
+            if node_id in self._connection_suspended:
+                node = self.node(node_id)
+                node.status = NodeStatus.BYPASSED
+                node.status_detail = "Disabled by disconnected input"
+        return affected
+
     def topological_order(self) -> tuple[str, ...]:
         indegree = {identifier: 0 for identifier in self.nodes}
         outgoing: dict[str, list[str]] = {identifier: [] for identifier in self.nodes}
@@ -268,6 +630,11 @@ class PipelineGraph:
             return ()
         affected = (node_id, *self.downstream(node_id, recursive=True))
         if enabled:
+            missing_ports = self.missing_input_ports(node_id)
+            if missing_ports:
+                labels = dict(node.input_ports)
+                missing = ", ".join(labels[port_id] for port_id in missing_ports)
+                raise ValueError(f"Reconnect required input(s) first: {missing}.")
             disabled_upstream = tuple(
                 upstream_id
                 for upstream_id in self.upstream(node_id)
@@ -290,6 +657,7 @@ class PipelineGraph:
                 affected_node.enabled = False
                 affected_node.status = NodeStatus.BYPASSED
                 affected_node.status_detail = "Disabled by pipeline dependency"
+                self._connection_suspended.discard(affected_id)
         self.revision += 1
         self.invalidate(affected, preserve_bypassed=True)
         return affected
@@ -335,6 +703,8 @@ class PipelineGraph:
                 "parameters": dict(node.parameters),
                 "input_ports": list(node.input_ports),
                 "output_ports": list(node.output_ports),
+                "input_port_types": dict(node.input_port_types),
+                "output_port_types": dict(node.output_port_types),
                 "inline_parameters": list(node.inline_parameters),
                 "calculation_seconds": node.calculation_seconds,
             }
@@ -361,9 +731,16 @@ class PipelineGraph:
                 connection_payload(connection)
                 for connection in self.unused_connections
             ],
+            "disconnected_connections": [
+                connection_payload(connection)
+                for connection in self.connection_templates
+                if connection not in self.connections
+                and connection not in self.unused_connections
+            ],
         }
 
     def _validate_connections(self) -> None:
+        occupied_inputs: set[tuple[str, str]] = set()
         for connection in self.connections:
             if connection.source not in self.nodes:
                 raise ValueError(f"Unknown connection source {connection.source!r}.")
@@ -371,6 +748,27 @@ class PipelineGraph:
                 raise ValueError(f"Unknown connection target {connection.target!r}.")
             if connection.source == connection.target:
                 raise ValueError("A pipeline node cannot connect to itself.")
+            source = self.nodes[connection.source]
+            target = self.nodes[connection.target]
+            if connection.source_port not in dict(source.output_ports):
+                raise ValueError(
+                    f"Unknown output port {connection.source_port!r} on {source.title}."
+                )
+            if connection.target_port not in dict(target.input_ports):
+                raise ValueError(
+                    f"Unknown input port {connection.target_port!r} on {target.title}."
+                )
+            if (
+                source.output_port_types.get(connection.source_port)
+                != connection.data_type
+                or target.input_port_types.get(connection.target_port)
+                != connection.data_type
+            ):
+                raise ValueError("A pipeline connection has incompatible port types.")
+            input_key = (connection.target, connection.target_port)
+            if input_key in occupied_inputs:
+                raise ValueError("A pipeline input can have only one producer.")
+            occupied_inputs.add(input_key)
 
 
 def build_default_pipeline() -> PipelineGraph:
@@ -500,7 +898,7 @@ def build_default_pipeline() -> PipelineGraph:
         ParameterSpec("foreground_morphology_fraction", "Morphology kernel / diameter", "float", 0.01, 0.20, 0.005, "Opening/closing kernel size relative to estimated seed diameter."),
         ParameterSpec("foreground_background_prior_tolerance", "Perimeter colour tolerance", "float", 2.0, 100.0, 1.0, "Maximum weighted Lab distance from the outside-dish prior admitted when refining the automatic dish background."),
         ParameterSpec("foreground_probability_softness_fraction", "Probability softness", "float", 0.02, 1.0, 0.01, "Width of the soft probability transition around the foreground threshold, relative to that threshold."),
-        ParameterSpec("foreground_reference_weight", "Foreground reference influence", "float", 0.0, 1.0, 0.05, "How strongly colours represented in the painted foreground distribution enhance seed probability across the dish."),
+        ParameterSpec("foreground_reference_weight", "Foreground colour influence", "float", 0.0, 1.0, 0.05, "How strongly isolated-reference-seed colours, or painted foreground colours when supplied, enhance seed probability across the dish."),
         ParameterSpec("foreground_local_contrast_scale_fraction", "Local contrast scale / diameter", "float", 0.03, 0.60, 0.01, "Gaussian neighbourhood, relative to seed diameter, used to distinguish locally bright seed surfaces from darker inter-seed gaps."),
         ParameterSpec("foreground_shadow_rejection_strength", "Shadow rejection", "float", 0.0, 3.0, 0.05, "Weight of seed-scale local lightness evidence in crowded dishes. It ramps down automatically when ample true tray is visible; increase when dark gaps are mistaken for seeds."),
         ParameterSpec("foreground_reference_components", "Reference colour-frequency bins", "int", 1, 256, 4, "Maximum quantized Lab colour cells retained from individual painted foreground pixels."),
@@ -878,6 +1276,57 @@ def build_default_pipeline() -> PipelineGraph:
             status_detail="Choose species",
         ),
         PipelineNode(
+            "painted_reference_layers",
+            "Painted material references",
+            "Input",
+            "Applied mutually exclusive background, foreground and other labels",
+            1040,
+            -680,
+            details=(
+                "This input represents one applied full-resolution categorical layer: "
+                "background, foreground, or other. A pixel can belong to at most one "
+                "class. Foreground/background labels supply direct colour and texture "
+                "observations; other supplies negative evidence to both models. Automatic "
+                "colour pseudo-labels remain a fallback only where the corresponding "
+                "painted texture class has no examples."
+            ),
+            output_ports=(("layers", "Material labels"),),
+            status_detail="No applied painted references",
+        ),
+        PipelineNode(
+            "painted_instance_annotations",
+            "Painted seed instances",
+            "Input",
+            "Applied integer seed-instance identity annotations",
+            1840,
+            1040,
+            details=(
+                "This input represents the applied full-resolution integer seed-ID "
+                "layer. Distinct IDs provide authoritative interior markers to "
+                "procedural and U-Net/watershed separation, and constrain the "
+                "experimental provisional-instance branch without directly changing "
+                "foreground probability."
+            ),
+            output_ports=(("annotations", "Painted seed IDs"),),
+            status_detail="No applied seed-instance annotations",
+        ),
+        PipelineNode(
+            "painted_boundary_references",
+            "Painted boundary references",
+            "Input",
+            "Applied physical-edge and non-edge reference classes",
+            1840,
+            1240,
+            details=(
+                "This sparse categorical annotation layer contains mutually exclusive "
+                "physical seed-edge and non-edge examples. It is preserved as review "
+                "evidence for learned boundary training and does not directly overwrite "
+                "a live boundary-probability raster."
+            ),
+            output_ports=(("boundaries", "Edge/non-edge labels"),),
+            status_detail="No applied boundary references",
+        ),
+        PipelineNode(
             "colour_reference",
             "Colour-card swatches",
             "Calibration",
@@ -974,8 +1423,10 @@ def build_default_pipeline() -> PipelineGraph:
                 "opening and closing. Components touching the crop edge, with extreme "
                 "area/aspect, or implausible relative to the dish are rejected. The "
                 "median equivalent diameter of the configured number of components "
-                "is corrected for shadow inflation. If none survive, the editable "
-                "dish-radius fallback is used."
+                "is corrected for shadow inflation. The accepted component pixels also "
+                "provide independent automatic foreground-colour samples. If no component "
+                "survives, the editable dish-radius fallback is used and foreground colour "
+                "falls back to image-derived candidates."
             ),
             parameters={
                 "reference_scale_factor": 0.72,
@@ -1025,8 +1476,11 @@ def build_default_pipeline() -> PipelineGraph:
                 "define the foreground branch's background prior, preventing "
                 "pale seeds from redefining the background class. Painted background areas "
                 "override that automatic evidence. Foreground "
-                "strength is a weighted Lab distance, Otsu centres a soft grayscale "
-                "probability transition. Seed-scale local lightness then suppresses dark "
+                "strength begins with weighted Lab distance and an Otsu-centred soft "
+                "transition. When isolated ruler-reference seeds were detected, their "
+                "individual colour frequencies are compared against the exterior background "
+                "distribution and contribute a likelihood-ratio foreground estimate. "
+                "Seed-scale local lightness then suppresses dark "
                 "inter-seed gaps while retaining locally brighter seed surfaces, and a "
                 "seed-scaled kernel cleans the derived binary proposal mask. Painted "
                 "foreground pixels fit a multimodal Lab distribution; cautious refinement "
@@ -1035,9 +1489,11 @@ def build_default_pipeline() -> PipelineGraph:
                 "receive the same colour-derived probability as matching unpainted pixels. "
                 "Foreground exclusions fit separate negative colour and texture distributions; "
                 "matching evidence is downweighted globally rather than zeroing the brush path. "
-                "The inspector plots the painted distribution—or a diagnostic fit to "
-                "automatic high-confidence foreground pixels—as probability contours "
-                "over an HSV hue/tint/shade projection evaluated by the Lab model. "
+                "The inspector plots the painted distribution, or the independently "
+                "sampled isolated-reference-seed distribution, as probability contours "
+                "over a neutral strip and an exact-colour HSV hue/tint/shade slice "
+                "evaluated by the Lab model. Neutral membership is never spread across "
+                "unrelated saturated hues. "
                 "Diagnostics cover the full dish, while proposals retain an editable "
                 "inset measured from the upper/outer rim."
             ),
@@ -1179,8 +1635,10 @@ def build_default_pipeline() -> PipelineGraph:
                 "the median colour in the buffered outer dish-perimeter band, fit a multimodal "
                 "CIE Lab probability distribution with a separate centre and spread for each mode. "
                 "Optional iterative rounds admit only high-probability matches while retaining the "
-                "painted pixels as anchors. Background and foreground reference areas are enforced "
-                "as hard constraints in both colour and directional-noise maps. "
+                "painted pixels as anchors. Background and foreground reference areas remain "
+                "semantic constraints in the colour map and become direct positive/negative "
+                "texture samples in the directional-noise maps; noise probabilities are never "
+                "overwritten merely because a coordinate was painted. "
                 "Painted background exclusions instead fit separate negative colour and texture "
                 "evidence, attenuating every match without overwriting painted coordinates. If too little "
                 "matching tray is visible inside a crowded dish, the outer perimeter "
@@ -1221,7 +1679,7 @@ def build_default_pipeline() -> PipelineGraph:
             "refined_background_likelihood",
             "Background noise probability",
             "Diagnostic overlay",
-            "Directional frequency continuation learned from colour pseudo-labels",
+            "Directional frequency continuation learned from painted or automatic evidence",
             1440,
             180,
             parameters={
@@ -1238,8 +1696,11 @@ def build_default_pipeline() -> PipelineGraph:
             },
             parameter_specs=noise_parameters,
             details=(
-                "Fine, medium, and coarse texture distributions are learned from "
-                "confident colour pseudo-labels. Texture likelihood is then "
+                "Fine, medium, and coarse texture distributions are learned directly "
+                "from painted background and non-background areas when available; "
+                "confident colour pseudo-labels are used only for an unpainted class. "
+                "The painted locations are training evidence, never forced output values. "
+                "Texture likelihood is then "
                 "separately evaluated across the exact dish-surrounding sampling "
                 "annulus, without expanding unrelated downstream GPU crops. It is "
                 "also "
@@ -1252,7 +1713,7 @@ def build_default_pipeline() -> PipelineGraph:
             "foreground_noise_likelihood",
             "Foreground noise probability",
             "Diagnostic overlay",
-            "Directional frequency continuation learned from foreground colour pseudo-labels",
+            "Directional frequency continuation learned from painted or automatic evidence",
             1560,
             -20,
             parameters={
@@ -1269,8 +1730,11 @@ def build_default_pipeline() -> PipelineGraph:
             },
             parameter_specs=foreground_noise_parameters,
             details=(
-                "Fine, medium, and coarse texture distributions are learned from "
-                "confident foreground-colour and non-foreground pseudo-labels. The "
+                "Fine, medium, and coarse texture distributions are learned directly "
+                "from painted foreground and non-foreground areas when available; "
+                "confident foreground-colour pseudo-labels are used only for an "
+                "unpainted class. The painted locations are training evidence, never "
+                "forced output values. The "
                 "same one-sided ray integration used by the background-noise node "
                 "continues matching seed texture through patterned coats without "
                 "turning painted foreground pixels into forced output values."
@@ -1880,7 +2344,7 @@ def build_default_pipeline() -> PipelineGraph:
         ),
         "foreground_segmentation": (
             ("foreground_otsu_fraction", "Otsu multiplier"),
-            ("foreground_reference_weight", "Paint influence"),
+            ("foreground_reference_weight", "Colour influence"),
             ("foreground_shadow_rejection_strength", "Reject shadows"),
         ),
         "distance_candidates": (
@@ -2014,6 +2478,19 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineConnection("deskew_colour", "foreground_segmentation", "CorrectedImage"),
         PipelineConnection("layout_detection", "foreground_segmentation", "VesselGeometry"),
         PipelineConnection("seed_scale_estimation", "foreground_segmentation", "SeedDiameter"),
+        PipelineConnection(
+            "seed_scale_estimation",
+            "foreground_segmentation",
+            "ReferenceSeedColours",
+            source_port="reference_colours",
+            target_port="reference_colours",
+        ),
+        PipelineConnection(
+            "painted_reference_layers",
+            "foreground_segmentation",
+            "PaintedReferenceLayers",
+            source_port="layers",
+        ),
         PipelineConnection("foreground_segmentation", "distance_candidates", "ForegroundMask"),
         PipelineConnection("seed_scale_estimation", "distance_candidates", "SeedDiameter"),
         PipelineConnection(
@@ -2057,6 +2534,12 @@ def build_default_pipeline() -> PipelineGraph:
             "background_likelihood",
             "PerimeterColourSamples",
         ),
+        PipelineConnection(
+            "painted_reference_layers",
+            "background_likelihood",
+            "PaintedReferenceLayers",
+            source_port="layers",
+        ),
         PipelineConnection("identification", "instance_masks", "SeedProposals"),
         PipelineConnection(
             "background_likelihood", "instance_masks", "BackgroundLikelihood"
@@ -2075,6 +2558,12 @@ def build_default_pipeline() -> PipelineGraph:
             "SeedDiameter",
         ),
         PipelineConnection(
+            "painted_reference_layers",
+            "refined_background_likelihood",
+            "PaintedReferenceLayers",
+            source_port="layers",
+        ),
+        PipelineConnection(
             "foreground_segmentation",
             "foreground_noise_likelihood",
             "ColourPseudoLabels",
@@ -2083,6 +2572,12 @@ def build_default_pipeline() -> PipelineGraph:
             "seed_scale_estimation",
             "foreground_noise_likelihood",
             "SeedDiameter",
+        ),
+        PipelineConnection(
+            "painted_reference_layers",
+            "foreground_noise_likelihood",
+            "PaintedReferenceLayers",
+            source_port="layers",
         ),
         PipelineConnection(
             "deskew_colour", "edge_gradients", "CorrectedImage", target_port="image"
@@ -2211,6 +2706,12 @@ def build_default_pipeline() -> PipelineGraph:
             "SensorNoise",
             source_port="sensor_noise",
         ),
+        PipelineConnection(
+            "painted_instance_annotations",
+            "procedural_instances",
+            "PaintedInstanceAnnotations",
+            source_port="annotations",
+        ),
         PipelineConnection("metadata", "unet_instances", "SpeciesCondition", target_port="image"),
         PipelineConnection("deskew_colour", "unet_instances", "CorrectedImage", target_port="image"),
         PipelineConnection("layout_detection", "unet_instances", "DishRegion", target_port="image"),
@@ -2222,6 +2723,13 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineConnection("edge_gradients", "unet_instances", "EdgeMagnitude", target_port="image"),
         PipelineConnection("illumination_decomposition", "unet_instances", "LocalLighting", target_port="image"),
         PipelineConnection("image_quality", "unet_instances", "SensorNoise", target_port="image"),
+        PipelineConnection(
+            "painted_instance_annotations",
+            "unet_instances",
+            "PaintedInstanceAnnotations",
+            source_port="annotations",
+            target_port="annotations",
+        ),
         PipelineConnection("metadata", "stardist_instances", "SpeciesCondition", target_port="image"),
         PipelineConnection("deskew_colour", "stardist_instances", "CorrectedImage", target_port="image"),
         PipelineConnection("layout_detection", "stardist_instances", "DishRegion", target_port="image"),
@@ -2233,6 +2741,12 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineConnection("edge_gradients", "stardist_instances", "EdgeMagnitude", target_port="image"),
         PipelineConnection("illumination_decomposition", "stardist_instances", "LocalLighting", target_port="image"),
         PipelineConnection("image_quality", "stardist_instances", "SensorNoise", target_port="image"),
+        PipelineConnection(
+            "painted_instance_annotations",
+            "instance_masks",
+            "PaintedInstanceAnnotations",
+            source_port="annotations",
+        ),
         PipelineConnection("instance_masks", "radial_profile", "ProvisionalInstances"),
         PipelineConnection("seed_scale_estimation", "radial_profile", "SeedDiameter"),
         PipelineConnection("seed_interior", "radial_profile", "InteriorProbability"),
@@ -2279,6 +2793,7 @@ def build_default_pipeline() -> PipelineGraph:
         "instance_masks",
         "seed_interior",
         "surface_darkness_gradients",
+        "calibration_residuals",
     )
     disabled = set(disabled_roots)
     for root in disabled_roots:
@@ -2302,4 +2817,5 @@ def build_default_pipeline() -> PipelineGraph:
     )
     for node_id in distance_branch:
         graph.shelve_node(node_id, record_revision=False)
+    graph.shelve_node("calibration_residuals", record_revision=False)
     return graph

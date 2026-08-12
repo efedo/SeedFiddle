@@ -79,6 +79,8 @@ def build_dense_targets(
     valid_mask: np.ndarray | None = None,
     pattern_boundary: np.ndarray | None = None,
     pattern_valid: np.ndarray | None = None,
+    physical_boundary: np.ndarray | None = None,
+    physical_valid: np.ndarray | None = None,
     boundary_width: int = 2,
 ) -> DenseSeedTargets:
     """Derive dense U-Net targets without inventing missing pattern labels."""
@@ -113,6 +115,22 @@ def build_dense_targets(
 
     interior = (labels > 0).astype(np.float32)
     boundary = physical_boundary_mask(labels, width=boundary_width)
+    if physical_boundary is not None or physical_valid is not None:
+        if physical_boundary is None or physical_valid is None:
+            raise ValueError(
+                "Physical-boundary values and their validity mask are required together."
+            )
+        painted_physical = np.asarray(physical_boundary, dtype=bool)
+        painted_valid = np.asarray(physical_valid, dtype=bool)
+        if painted_physical.shape != shape or painted_valid.shape != shape:
+            raise ValueError("Physical-boundary annotations must match the labels.")
+        if np.any(painted_physical & ~painted_valid):
+            raise ValueError(
+                "Physical-boundary positives must lie inside their validity mask."
+            )
+        boundary = np.where(painted_valid, painted_physical, boundary).astype(
+            np.float32
+        )
     centre = np.zeros(shape, dtype=np.float32)
     distance = np.zeros(shape, dtype=np.float32)
     for identifier in range(1, int(labels.max(initial=0)) + 1):

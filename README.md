@@ -50,12 +50,38 @@ python .\seed_vision.py --offline
 
 ## Learned instance models
 
-Applied, complete seed-instance masks can be exported from **File > Export
-applied seed labels for learningâ€¦**. The export stores the exact corrected,
-canonical-scale feature stack, display image, labels, species condition, and an
-unreviewed manifest record. Interior marks or partly filled seeds are not valid
-training masks; update reviewer, capture/lot group, split, and revision metadata
-before training.
+The complete desktop workflow is under **Learning**:
+
+1. Run the image analysis, choose **Annotate seed instances**, optionally
+   initialize the draft from a procedural/U-Net/StarDist result, and correct
+   every seed. Every visible seed must have one ID; interior scribbles and
+   partly filled seeds are not training masks.
+2. **Save applied seed-label maskâ€¦** preserves the full corrected-coordinate
+   `uint16` mask so annotation can be resumed with **Load seed-label mask as
+   draftâ€¦** in a later session.
+3. **Export applied labels to learning datasetâ€¦** stores the canonical-scale
+   feature stack, display image, labels, species condition, lot/capture group,
+   train/validation/test split, annotation revision, reviewer, and review state
+   in a versioned manifest. Seed Fiddle prevents one group from crossing
+   splits. Unreviewed exports are retained for correction but rejected by the
+   trainer.
+4. **Audit learning datasetâ€¦** checks files, dimensions, IDs, disconnected
+   masks, review coverage, and group leakage.
+5. **Train or refine U-Net / StarDistâ€¦** trains a new checkpoint or continues
+   from an explicitly selected compatible checkpoint on the serial CUDA
+   worker. It requires reviewed training and independently grouped validation
+   samples, saves the best validation-loss checkpoint plus its JSON report,
+   can be cancelled between batches, and can activate that checkpoint in the
+   corresponding pipeline node.
+
+The U-Net's interior, physical boundary, centre, distance, and uncertainty
+targets are derived from the reviewed instance masks. Its additional apparent
+coat-pattern boundary target remains optional: without a separate boundary plus
+reviewed-validity mask it receives zero loss, rather than fabricated labels.
+StarDist object and radial targets are derived directly from the same reviewed
+instance masks. Neither architecture learns from the painted foreground or
+background reference layers as labels; those are inputs to the exported feature
+stack.
 
 The launcher provides reproducible headless actions. For example:
 
@@ -106,8 +132,8 @@ After analysis, the top-bar **Overlay** chooser groups indented image layers
 beneath their owning pipeline-node names and selects the calibrated image and scale bar,
 detected swatches, detected ruler, foreground colour probability, background
 colour probability, foreground/background noise probability, image-quality
-products, 24 directional background texture rays
-at the default 15° spacing, their merged likelihood, or undirected/directed
+products, the background texture model's directionally integrated likelihood,
+or undirected/directed
 edge tangents. Instance colours are unique
 within the image and assigned to make spatial neighbours contrast strongly.
 Background match is deliberately
@@ -152,30 +178,38 @@ instance-assignment confidence; an occlusion/contact graph; simple flattened
 grayscale plus local-lighting-aware nonlinear shadow/highlight maps; broad
 illumination, reflectance, and glare decomposition; image-quality diagnostics;
 per-seed radial profiles; wrinkling; coat damage; broad pattern probabilities;
-broad colour probabilities; and calibration residual risk. Independent
-illumination, image-quality, calibration-residual, foreground/noise, and edge
-diagnostics remain in the active graph. Products that depend on the removed
-distance branch are retained in the toolbox for future development.
+broad colour probabilities; and calibration residual risk. Calibration residual
+risk and products that depend on the removed distance branch are retained in
+the unused-node toolbox for future development. Independent illumination,
+image-quality, foreground/noise, and edge diagnostics remain active.
 
-To override the automatic class estimates, run an image once and use the
-top-bar **Paint background** and/or **Paint foreground references** controls. Either command
-opens a contextual panel over the image with both reference summaries, separate
-**Exclude from background** and **Exclude from foreground** masks, clear
-buttons, brush controls, and confirmation actions. Exclusion strokes are
-negative training examples: separate colour-frequency and texture distributions
-are fitted from them and matching evidence is downweighted throughout the image.
-The painted coordinates are not overwritten or forced to zero, and exclusions
-do not force pixels into the opposite class. Left-drag paints a full-resolution
-binary mask. Every painted layer has a direct **Erase** button; the shared
-Paint/Eraser buttons select the left-drag operation, while right-drag remains a
-temporary eraser shortcut. A
-live image-coordinate outline shows the exact brush footprint set by the
-radius slider. Painting is only a draft and performs no image analysis.
-Choose **Apply reference masks** once both masks are complete to rerun only the
-affected nodes and their dependents, or **Revert edits** to restore the last
-confirmed masks. **Clear** also edits only the draft until it is applied. Turn
-off **Show painted reference/exclusion areas** to inspect an analysis overlay
-without the painted colours; seed-instance annotation colours remain visible.
+Reference annotation is divided into three independent full-resolution layers:
+
+1. **Material references** is one categorical mask with mutually exclusive
+   **Background**, **Foreground**, and **Other** classes. Painting one class at
+   a pixel removes either of the other two there. Other means neither ordinary
+   dish background nor seed foreground; it supplies negative examples to both
+   fitted colour/texture models instead of hard-setting their output pixels.
+2. **Boundary references** contains mutually exclusive **Physical edge** and
+   **Non-edge** review marks. Non-edge is suitable for strong coat-pattern or
+   lighting transitions that are not a physical seed boundary. The optional
+   **Snap** brush previews and commits either class at the strongest nearby
+   analysed edge. These sparse labels are exported with an explicit reviewed
+   validity raster for the U-Net physical-boundary target.
+3. **Seed instance annotations** is the separate labelled integer layer
+   described below; every seed receives its own stable colour ID.
+
+The top-bar **Material references**, **Boundary references**, and **Annotate
+seed instances** commands open the applicable compact contextual controls over
+the image. Repeated explanatory text is kept in tooltips. Shared **Paint**,
+**Eraser**, **Clear layer**, brush-radius, **Apply**, and **Revert** controls
+replace per-class editing rows; right-drag remains a temporary eraser. A live
+image-coordinate outline shows the exact brush footprint, and boundary
+snapping moves this preview to the position that will be committed. Freehand
+reference strokes use lightweight vector previews and rebuild their mask
+overlays only once on release. Painting remains a draft and performs no image
+analysis until **Apply**. Turn off **Show marks** to inspect analysis overlays
+without material or boundary paint; seed-instance colours remain visible.
 
 Use the separate **Annotate seed instances** mode to give each known seed a
 stable, distinct colour ID. Freehand **Brush** and **Eraser** drags show an
@@ -197,6 +231,13 @@ not an absolute initial colour.
 This locally adaptive rule can cross gradual light/dark seed pattern changes;
 tunnelling progressively relaxes the local edge and colour barriers while the
 configured radius and pixel limits keep growth bounded.
+The **Start from result** selector can expand any available **Procedural seed
+separation**, **U-Net + watershed**, or **StarDist** label result into a
+full-resolution editable draft. This is an annotation bootstrap, never an
+automatic review decision: every omission, duplicate, split, merge, rim
+fragment, and contour must still be corrected by a person. The selected method
+is retained as draft provenance and written into the unreviewed learning-export
+notes.
 Each seed ID is shown in a stable, distinct colour;
 **New seed** advances to another identity, while the selector permits revising
 an existing one. These integer labels are stored independently from foreground
@@ -224,12 +265,29 @@ Selecting either the **Background colour probability** or **Foreground colour
 probability** node
 displays its fitted multimodal membership contours over an HSV-rendered
 hue/tint/shade projection like a colour-picker square: white at the top, pure
-hues through the middle, and black at the bottom. Contours project across the
-unshown saturation dimension, then evaluate every sampled colour with the
-unchanged CIE Lab mixture model. The underlying colours are never dimmed by
-membership probability.
-The foreground diagnostic uses painted modes when supplied and otherwise
-summarizes the current automatic high-confidence foreground colours.
+hues through the middle, and black at the bottom. A separate white-to-black
+neutral strip retains achromatic modes. Neutral colours are evaluated exactly
+in that strip. Chromatic modes are maximized over the projection's hidden
+saturation dimension, so pale tinted references remain visible without
+repeating neutral evidence across unrelated hues. Both views use the unchanged
+CIE Lab mixture model. The underlying colours are never dimmed by membership
+probability.
+The foreground diagnostic uses painted modes when supplied. Otherwise it uses
+the independently detected isolated reference seeds above the ruler as its
+starting colour-frequency samples. The foreground inspector lists the eight
+most frequent starting modes as colour swatches, hexadecimal RGB values, and
+frequencies. If no reference seed survives detection, the inspector explicitly
+labels the older high-confidence-image-pixel diagnostic fit as a fallback.
+
+The active graph exposes the categorical material mask through the **Painted
+material references** input node. It connects directly to both colour-probability
+nodes and both class-specific noise-probability nodes. Painted foreground and
+background areas are the actual positive texture samples, while Other is direct
+negative evidence for both; colour-probability pseudo-labels are only a fallback
+for a class with no painted samples. Painting never overwrites the resulting
+probability at the brush coordinates. A separate **Painted boundary references**
+input node makes sparse edge/non-edge supervision explicit in the graph and
+learning export without pretending that it is a live probability calculation.
 
 ## Visual pipeline
 
@@ -253,6 +311,14 @@ so timing does not serialize the pipeline at every node; reused nodes retain
 their most recent measured time. During a run, nodes begin blue and independently
 turn green as their worker stage completes; progress messages are scoped to the
 current image and pipeline revision.
+
+Full-image CUDA jobs are serialized through a dedicated one-worker queue and
+new requests are coalesced while a job is running. Completed node caches use a
+least-recently-used limit of three images and a 2 GiB reachable-CUDA budget;
+failed and evicted jobs explicitly release lazy CPU mirrors. Overlay downloads
+are retained only until the next overlay is rendered. Applied annotations are
+immutable analysis inputs, while copy-on-write drafts allocate only the layer
+currently being edited.
 
 Selecting any node identifies it with a compact **Node:** heading in the right
 inspector, offers a collapsed **How it works** explanation, and selects its
@@ -289,24 +355,32 @@ The active layout-to-diagnostic span is represented by these live pipeline nodes
    pixels per millimetre, with the nominal 48 mm dish radius as a fallback when
    ruler scale is unavailable. The dedicated overlay shows the exact buffer and
    band; if too little outer annulus is visible, an orange inside-rim fallback
-   preserves both configured distances.
+   preserves both configured distances. An undimmed swatch and hexadecimal
+   label show the median starting background colour selected from that band.
 3. **Seed scale estimate** examines the fixed isolated-reference region above
    the ruler in CIE Lab. Colour-difference components are morphologically
    cleaned and filtered by edge contact, area, aspect ratio, and size relative
    to the dish. The corrected median equivalent diameter of up to three accepted
    components becomes the global seed diameter; if none survive, the fallback
-   is 16% of dish radius.
+   is 16% of dish radius. Pixels belonging to the accepted isolated components
+   also provide the independent automatic foreground colour samples.
 4. **Foreground colour probability** retains individual Lab samples from its compact
    rim-adjacent prior and fits a multimodal background distribution without
    allowing in-dish seed colours to redefine it. Weighted Lab distance supplies
-   foreground strength. The applied threshold is
+   the initial foreground strength. The isolated reference-seed samples are
+   quantized into individual colour-frequency modes rather than averaged, then
+   compared with the background distribution using normalized relative
+   membership. Seed-scale local lightness favours coat surfaces over dark gaps,
+   while unsupported colours are reduced in crowded dishes. Painted foreground
+   references replace the automatic colour start. The applied threshold is
    `max(8, Otsu threshold × Foreground threshold)`, followed by seed-scale
    elliptical opening and closing.
    The **Background colour probability** diagnostic consumes the separately
    controlled perimeter reference and also outlines that exact buffered annulus
    (or the inside-rim fallback when necessary).
    Its node inspector shows 25%, 50%, 75%, and 90% fitted membership contours
-   over an HSV-rendered hue/tint/shade projection, with learned mode frequencies.
+   over an exact neutral strip and saturation-projected chromatic HSV
+   hue/tint/shade slice, with learned mode frequencies.
    The **Background noise probability** applies its learned three-band texture
    classifier to that same surrounding annulus and displays the resulting noise
    likelihood alongside the dish-resident refined map.
@@ -325,8 +399,9 @@ The active layout-to-diagnostic span is represented by these live pipeline nodes
    nearby automatic markers. OpenCV marker-controlled watershed performs the
    bounded topological partition, and marker/boundary/area evidence supplies a
    per-instance confidence. Six owned overlays expose every stage. GPU inputs
-   are resized before this topology-only CPU transfer, and the result is cached
-   at the node.
+   are resized before this topology-only CPU transfer. Labels and diagnostic
+   rasters remain at that bounded working resolution and are scaled by Qt only
+   for display, then the compact result is cached at the node.
 8. The disabled **Directional surface darkness gradients** toolbox node searches
    independent one-sided rays and emits lightening/darkening magnitude and
    direction products. Its lightening and darkening derivative cutoff nodes

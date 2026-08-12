@@ -89,6 +89,7 @@ class ProceduralInstanceResult:
     occupancy_mask: np.ndarray
     boundary_cost: np.ndarray
     centre_likelihood: np.ndarray
+    source_shape: tuple[int, int]
     working_scale: float
 
     @property
@@ -490,19 +491,10 @@ def procedural_seed_instances(
         marker_scores = np.empty(0, np.float32)
         confidences = np.empty(0, np.float32)
 
-    if (height, width) != (source_height, source_width):
-        labels = cv2.resize(labels, (source_width, source_height), interpolation=cv2.INTER_NEAREST)
-        occupancy_likelihood = cv2.resize(
-            occupancy_likelihood, (source_width, source_height), interpolation=cv2.INTER_LINEAR
-        )
-        occupancy = cv2.resize(
-            np.uint8(occupancy), (source_width, source_height), interpolation=cv2.INTER_NEAREST
-        ) > 0
-        boundary = cv2.resize(boundary, (source_width, source_height), interpolation=cv2.INTER_LINEAR)
-        centre = cv2.resize(centre, (source_width, source_height), interpolation=cv2.INTER_LINEAR)
-
+    maximum_label = int(np.max(labels, initial=0))
+    label_dtype = np.uint16 if maximum_label <= np.iinfo(np.uint16).max else np.uint32
     return ProceduralInstanceResult(
-        labels=np.asarray(labels, dtype=np.int32),
+        labels=np.asarray(labels, dtype=label_dtype),
         centres_xy=np.asarray(centres, dtype=np.float32).reshape(-1, 2),
         marker_scores=np.asarray(marker_scores, dtype=np.float32),
         instance_confidences=np.asarray(confidences, dtype=np.float32),
@@ -510,5 +502,6 @@ def procedural_seed_instances(
         occupancy_mask=np.uint8(occupancy) * 255,
         boundary_cost=np.uint8(np.clip(np.rint(boundary * 255.0), 0, 255)),
         centre_likelihood=np.uint8(np.clip(np.rint(centre * 255.0), 0, 255)),
+        source_shape=(source_height, source_width),
         working_scale=float(scale),
     )
