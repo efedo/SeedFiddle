@@ -75,6 +75,8 @@ def assemble_feature_stack(
         "foreground_colour": "foreground_colour",
         "foreground_noise": "foreground_noise",
         "edge_magnitude": "edge_magnitude",
+        "physical_edge_probability": "physical_edge_probability",
+        "non_edge_probability": "non_edge_probability",
         "sensor_noise": "sensor_noise",
         "flattened_grayscale": "flattened_grayscale",
         "shadow": "shadow",

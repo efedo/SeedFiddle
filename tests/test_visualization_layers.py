@@ -4,6 +4,59 @@ import unittest
 
 
 class AnalysisLayerTests(unittest.TestCase):
+    def test_adding_diverse_foreground_references_cannot_evict_existing_colour(self) -> None:
+        import torch
+
+        from seedvision.cuda import lab_colour_frequency_distribution
+
+        height = width = 128
+        lab = torch.full((height, width, 3), 128.0, dtype=torch.float32)
+        lab[:, :, 0] = 220.0
+        original_colour = torch.tensor((60.0, 155.0, 145.0))
+        lab[0, 0] = original_colour
+        original = torch.zeros((height, width), dtype=torch.bool)
+        original[0, 0] = True
+        expanded = original.clone()
+        colour_index = 0
+        for top in range(1, 121, 12):
+            for left in range(1, 121, 12):
+                if colour_index >= 80:
+                    break
+                colour = torch.tensor(
+                    (
+                        160.0 + (colour_index % 5) * 12.0,
+                        70.0 + ((colour_index // 5) % 4) * 30.0,
+                        70.0 + ((colour_index // 20) % 4) * 30.0,
+                    )
+                )
+                lab[top : top + 8, left : left + 8] = colour
+                expanded[top : top + 8, left : left + 8] = True
+                colour_index += 1
+            if colour_index >= 80:
+                break
+
+        eligible = torch.ones((height, width), dtype=torch.bool)
+        initial, *_ = lab_colour_frequency_distribution(
+            lab,
+            lab[original],
+            eligible,
+            maximum_bins=64,
+            refinement_iterations=0,
+            frequency_weight_power=0.0,
+        )
+        enlarged, *_ = lab_colour_frequency_distribution(
+            lab,
+            lab[expanded],
+            eligible,
+            maximum_bins=64,
+            refinement_iterations=0,
+            frequency_weight_power=0.0,
+        )
+
+        self.assertGreater(float(initial[0, 0]), 0.85)
+        self.assertGreater(float(enlarged[0, 0]), 0.85)
+        self.assertGreaterEqual(float(enlarged[0, 0]), float(initial[0, 0]) - 0.05)
+
     def test_colour_distribution_uses_painted_mode_frequencies(self) -> None:
         import torch
 
@@ -64,6 +117,49 @@ class AnalysisLayerTests(unittest.TestCase):
         )
         displayed = layers.background_rgba()
         self.assertLess(int(displayed[10, 10, 0]), int(displayed[48, 48, 0]))
+
+    def test_reference_edge_probabilities_use_sparse_classes_without_forcing(self) -> None:
+        import cv2
+        import numpy as np
+
+        from seedvision.visualization import build_analysis_layers
+
+        image = np.full((96, 96, 3), 220, dtype=np.uint8)
+        cv2.circle(image, (48, 48), 25, (65, 105, 165), -1)
+        cv2.line(image, (48, 28), (48, 68), (25, 55, 95), 3)
+        valid = np.full((96, 96), 255, dtype=np.uint8)
+        physical = np.zeros((96, 96), dtype=bool)
+        physical[46:51, 22:28] = True
+        non_edge = np.zeros((96, 96), dtype=bool)
+        non_edge[43:54, 46:51] = True
+        layers = build_analysis_layers(
+            image,
+            valid,
+            np.empty((0, 2), np.float32),
+            np.empty((0,), np.float32),
+            50.0,
+            offset_x=0,
+            offset_y=0,
+            physical_edge_reference_mask=physical,
+            non_edge_reference_mask=non_edge,
+            instance_masks_enabled=False,
+            seed_edge_curves_enabled=False,
+        )
+
+        physical_probability = np.asarray(layers.physical_edge_probability)
+        non_edge_probability = np.asarray(layers.non_edge_probability)
+        self.assertEqual(physical_probability.shape, image.shape[:2])
+        self.assertEqual(non_edge_probability.shape, image.shape[:2])
+        self.assertFalse(np.array_equal(physical_probability, non_edge_probability))
+        self.assertGreater(int(physical_probability.max()), 0)
+        self.assertGreater(int(non_edge_probability.max()), 0)
+        # Painted coordinates are samples, not hard output assignments.
+        self.assertLess(int(physical_probability[48, 24]), 255)
+        self.assertLess(int(non_edge_probability[48, 48]), 255)
+        self.assertEqual(
+            layers.reference_edge_probability_rgba(True).shape,
+            (96, 96, 4),
+        )
 
     def test_automatic_background_range_comes_from_exterior_lab_samples(self) -> None:
         import cv2
@@ -382,8 +478,9 @@ class AnalysisLayerTests(unittest.TestCase):
         )
 
         self.assertEqual(layers.background_reference_count, 25)
-        for x, y, expected in ((12, 12, 255), (10, 14, 255), (48, 48, 0), (50, 46, 0)):
-            self.assertEqual(int(layers.background_likelihood[y, x]), expected)
+        self.assertGreater(int(layers.background_likelihood[12, 12]), 220)
+        self.assertGreater(int(layers.background_likelihood[14, 10]), 220)
+        self.assertLess(int(layers.background_likelihood[48, 48]), 80)
         noise = np.asarray(layers.refined_background_likelihood)
         self.assertGreater(float(np.mean(noise[background_mask])), 0.0)
         self.assertLess(float(np.mean(noise[background_mask])), 255.0)
@@ -391,6 +488,30 @@ class AnalysisLayerTests(unittest.TestCase):
             float(np.mean(noise[background_mask])),
             float(np.mean(noise[foreground_mask])),
         )
+
+        # A foreground mark on a colour identical to the background sample is
+        # still evaluated by the fitted model; its coordinate is not forced to
+        # zero merely because it was painted.
+        uniform = np.full((48, 48, 3), 225, dtype=np.uint8)
+        uniform_valid = np.full((48, 48), 255, dtype=np.uint8)
+        positive = np.zeros((48, 48), dtype=bool)
+        positive[5:10, 5:10] = True
+        negative = np.zeros((48, 48), dtype=bool)
+        negative[30:35, 30:35] = True
+        uniform_layers = build_analysis_layers(
+            uniform,
+            uniform_valid,
+            np.empty((0, 2), np.float32),
+            np.empty((0,), np.float32),
+            24.0,
+            offset_x=0,
+            offset_y=0,
+            background_reference_mask=positive,
+            foreground_reference_mask=negative,
+            instance_masks_enabled=False,
+            seed_edge_curves_enabled=False,
+        )
+        self.assertGreater(int(uniform_layers.background_likelihood[32, 32]), 220)
 
     def test_layer_exclusions_fit_negative_evidence_without_pixel_overrides(self) -> None:
         import numpy as np

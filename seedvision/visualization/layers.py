@@ -141,6 +141,10 @@ class AnalysisLayerSettings:
     ridge_low_threshold: float = 0.10
     ridge_high_threshold: float = 0.24
     ridge_hysteresis_iterations: int = 8
+    reference_edge_context_fraction: float = 0.04
+    reference_edge_similarity_scale: float = 1.0
+    reference_edge_ridge_weight: float = 0.35
+    reference_edge_working_maximum_dimension: int = 1280
     trace_tangent_tolerance_degrees: float = 24.0
     trace_maximum_gap_px: int = 2
     trace_window_fraction: float = 0.20
@@ -161,6 +165,8 @@ class AnalysisLayerSettings:
     boundary_center_vote_weight: float = 0.35
     boundary_center_vote_blur_fraction: float = 0.08
     boundary_semantic_weight: float = 0.25
+    boundary_reference_influence: float = 0.35
+    boundary_reference_nonedge_discount: float = 0.80
     boundary_polarity_boost: float = 0.20
     boundary_minimum_confidence: float = 0.12
     boundary_geometry_max_candidates: int = 256
@@ -303,6 +309,14 @@ class AnalysisLayerSettings:
             raise ValueError("Trace maximum gap must be between 1 and 5 pixels.")
         if not 1 <= self.trace_junction_max_neighbors <= 8:
             raise ValueError("Trace junction neighbour limit must be between 1 and 8.")
+        if not 0.005 <= self.reference_edge_context_fraction <= 0.25:
+            raise ValueError("Reference-edge context must be between 0.005 and 0.25 diameter.")
+        if not 0.25 <= self.reference_edge_similarity_scale <= 4.0:
+            raise ValueError("Reference-edge tolerance must be between 0.25 and 4.")
+        if not 0.0 <= self.reference_edge_ridge_weight <= 1.0:
+            raise ValueError("Reference-edge ridge support must be between 0 and 1.")
+        if not 256 <= self.reference_edge_working_maximum_dimension <= 4096:
+            raise ValueError("Reference-edge working dimension must be between 256 and 4096.")
         if not 0.05 <= self.boundary_radius_min_fraction < self.boundary_radius_max_fraction <= 1.5:
             raise ValueError("Boundary radius fractions are invalid.")
         if not 3 <= self.boundary_radius_sample_count <= 25:
@@ -318,6 +332,8 @@ class AnalysisLayerSettings:
         for name, value in (
             ("boundary_center_vote_weight", self.boundary_center_vote_weight),
             ("boundary_semantic_weight", self.boundary_semantic_weight),
+            ("boundary_reference_influence", self.boundary_reference_influence),
+            ("boundary_reference_nonedge_discount", self.boundary_reference_nonedge_discount),
             ("boundary_polarity_boost", self.boundary_polarity_boost),
             ("boundary_minimum_confidence", self.boundary_minimum_confidence),
         ):
@@ -359,6 +375,8 @@ class AnalysisLayers:
     colour_frequency_noise_masks: tuple[object, ...] = ()
     foreground_noise_likelihood: object | None = None
     foreground_noise_frequency_profile: NoiseFrequencyProfile | None = None
+    physical_edge_probability: object | None = None
+    non_edge_probability: object | None = None
     undirected_edge_likelihood: object | None = None
     background_mode: str = "automatic"
     background_reference_count: int = 0
@@ -411,6 +429,27 @@ class AnalysisLayers:
         )
         alpha = np.uint8(np.asarray(self.valid_mask) > 0) * 255
         return np.dstack((gray, gray, gray, alpha))
+
+    def reference_edge_probability_rgba(self, physical: bool = True) -> np.ndarray:
+        raster = (
+            self.physical_edge_probability if physical else self.non_edge_probability
+        )
+        values = (
+            np.zeros_like(np.asarray(self.valid_mask), dtype=np.uint8)
+            if raster is None
+            else np.asarray(raster, dtype=np.uint8)
+        )
+        normalized = values.astype(np.float32) / 255.0
+        if physical:
+            red = np.uint8(normalized * 255.0)
+            green = np.uint8(normalized * 210.0)
+            blue = np.uint8(normalized * 45.0)
+        else:
+            red = np.uint8(normalized * 75.0)
+            green = np.uint8(normalized * 150.0)
+            blue = np.uint8(normalized * 255.0)
+        alpha = np.uint8(np.asarray(self.valid_mask) > 0) * 255
+        return np.dstack((red, green, blue, alpha))
 
     def surrounding_noise_rgba(self) -> np.ndarray | None:
         if (
@@ -543,6 +582,8 @@ def build_analysis_layers(
     foreground_reference_mask: np.ndarray | None = None,
     background_exclusion_mask: np.ndarray | None = None,
     foreground_exclusion_mask: np.ndarray | None = None,
+    physical_edge_reference_mask: np.ndarray | None = None,
+    non_edge_reference_mask: np.ndarray | None = None,
     seed_instance_annotations: np.ndarray | None = None,
     background_reference_samples: np.ndarray | None = None,
     background_reference_sample_count: int = 0,
@@ -550,6 +591,7 @@ def build_analysis_layers(
     background_prior_samples_lab=None,
     background_colour_enabled: bool = True,
     foreground_noise_enabled: bool = True,
+    reference_edge_probability_enabled: bool = True,
     surface_darkness_gradients_enabled: bool = True,
     lightening_gradient_ceiling_enabled: bool = True,
     darkening_gradient_ceiling_enabled: bool = True,
@@ -584,6 +626,8 @@ def build_analysis_layers(
         foreground_reference_mask=foreground_reference_mask,
         background_exclusion_mask=background_exclusion_mask,
         foreground_exclusion_mask=foreground_exclusion_mask,
+        physical_edge_reference_mask=physical_edge_reference_mask,
+        non_edge_reference_mask=non_edge_reference_mask,
         seed_instance_annotations=seed_instance_annotations,
         background_reference_samples=background_reference_samples,
         background_reference_sample_count=background_reference_sample_count,
@@ -591,6 +635,7 @@ def build_analysis_layers(
         background_prior_samples_lab=background_prior_samples_lab,
         background_colour_enabled=background_colour_enabled,
         foreground_noise_enabled=foreground_noise_enabled,
+        reference_edge_probability_enabled=reference_edge_probability_enabled,
         surface_darkness_gradients_enabled=surface_darkness_gradients_enabled,
         lightening_gradient_ceiling_enabled=lightening_gradient_ceiling_enabled,
         darkening_gradient_ceiling_enabled=darkening_gradient_ceiling_enabled,

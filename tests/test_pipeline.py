@@ -14,8 +14,8 @@ class PipelineModelTests(unittest.TestCase):
         order = graph.topological_order()
         self.assertEqual(order[0], "raw_images")
         self.assertEqual(set(order), set(graph.nodes))
-        self.assertEqual(len(graph.nodes), 32)
-        self.assertEqual(len(graph.connections), 86)
+        self.assertEqual(len(graph.nodes), 31)
+        self.assertEqual(len(graph.connections), 107)
         self.assertEqual(
             graph.upstream("perimeter_background_reference"),
             ("deskew_colour", "layout_detection", "scale_calibration"),
@@ -31,7 +31,7 @@ class PipelineModelTests(unittest.TestCase):
         graph = build_default_pipeline()
         all_nodes = {**graph.nodes, **graph.unused_nodes}
         all_connections = (*graph.connections, *graph.unused_connections)
-        self.assertEqual(len(graph.connection_templates), 151)
+        self.assertEqual(len(graph.connection_templates), 174)
         self.assertTrue(all(node.output_ports for node in all_nodes.values()))
         self.assertEqual(
             len(all_connections),
@@ -154,7 +154,7 @@ class PipelineModelTests(unittest.TestCase):
                 "background_likelihood",
                 "refined_background_likelihood",
                 "seed_scale_estimation",
-                "painted_instance_annotations",
+                "reference_layers",
             ),
         )
         self.assertEqual(
@@ -162,7 +162,7 @@ class PipelineModelTests(unittest.TestCase):
             (
                 "background_likelihood",
                 "seed_scale_estimation",
-                "painted_reference_layers",
+                "reference_layers",
             ),
         )
         self.assertEqual(
@@ -170,7 +170,7 @@ class PipelineModelTests(unittest.TestCase):
             (
                 "foreground_segmentation",
                 "seed_scale_estimation",
-                "painted_reference_layers",
+                "reference_layers",
             ),
         )
         self.assertEqual(
@@ -179,7 +179,7 @@ class PipelineModelTests(unittest.TestCase):
                 "deskew_colour",
                 "seed_scale_estimation",
                 "perimeter_background_reference",
-                "painted_reference_layers",
+                "reference_layers",
             ),
         )
         self.assertEqual(graph.upstream("edge_gradients"), ("deskew_colour",))
@@ -233,6 +233,7 @@ class PipelineModelTests(unittest.TestCase):
                 "seed_scale_estimation",
                 "background_likelihood",
                 "foreground_segmentation",
+                "reference_edge_probability",
                 "instance_masks",
             },
         )
@@ -295,9 +296,10 @@ class PipelineModelTests(unittest.TestCase):
                 "refined_background_likelihood",
                 "edge_gradients",
                 "edge_ridges",
+                "reference_edge_probability",
                 "illumination_decomposition",
                 "image_quality",
-                "painted_instance_annotations",
+                "reference_layers",
             ),
         )
         graph.set_status("procedural_instances", NodeStatus.COMPLETE, "Calculated")
@@ -332,7 +334,7 @@ class PipelineModelTests(unittest.TestCase):
                 "deskew_colour",
                 "layout_detection",
                 "seed_scale_estimation",
-                "painted_reference_layers",
+                "reference_layers",
             ),
         )
         affected = graph.set_parameter(
@@ -353,7 +355,7 @@ class PipelineModelTests(unittest.TestCase):
         self.assertIn("circle_candidates", graph.unused_nodes)
         self.assertEqual(graph.node("circle_candidates").title, "Circle candidates")
         self.assertEqual(len(graph.unused_nodes), 21)
-        self.assertEqual(len(graph.unused_connections), 65)
+        self.assertEqual(len(graph.unused_connections), 67)
         restored = graph.restore_unused_node("circle_candidates")
         self.assertEqual(len(restored), 7)
         self.assertIn("circle_candidates", graph.nodes)
@@ -420,33 +422,77 @@ class PipelineModelTests(unittest.TestCase):
         self.assertIn("calculation_seconds", payload["nodes"][0])
         self.assertEqual(len(payload["unused_nodes"]), 21)
 
-    def test_painted_reference_input_feeds_every_direct_model_consumer(self) -> None:
+    def test_reference_input_exposes_every_sublayer_and_model_consumer(self) -> None:
         graph = build_default_pipeline()
-        node = graph.node("painted_reference_layers")
+        node = graph.node("reference_layers")
         self.assertEqual(node.category, "Input")
         self.assertEqual(
             tuple(port for port, _label in node.output_ports),
-            ("layers",),
+            (
+                "background",
+                "foreground",
+                "other",
+                "physical_edge",
+                "non_edge",
+                "annotated_seeds",
+            ),
         )
         self.assertEqual(
-            set(graph.downstream("painted_reference_layers")),
+            set(graph.downstream("reference_layers")),
             {
                 "foreground_segmentation",
                 "background_likelihood",
                 "refined_background_likelihood",
                 "foreground_noise_likelihood",
+                "reference_edge_probability",
+                "procedural_instances",
+                "unet_instances",
             },
         )
-        self.assertTrue(
-            all(
-                connection.source_port == "layers"
+        expected_ports = {
+            "background",
+            "foreground",
+            "other",
+            "physical_edge",
+            "non_edge",
+            "annotated_seeds",
+        }
+        self.assertEqual(
+            {
+                connection.source_port
                 for connection in graph.connections
-                if connection.source == "painted_reference_layers"
-            )
+                if connection.source == "reference_layers"
+            },
+            expected_ports,
+        )
+        for node_id in tuple(graph.unused_nodes):
+            graph.restore_unused_node(node_id)
+        consumers_by_port = {
+            port_id: set(graph.downstream_from_port("reference_layers", port_id))
+            for port_id in expected_ports
+        }
+        material_consumers = {
+            "foreground_segmentation",
+            "background_likelihood",
+            "refined_background_likelihood",
+            "foreground_noise_likelihood",
+        }
+        self.assertEqual(consumers_by_port["background"], material_consumers)
+        self.assertEqual(consumers_by_port["foreground"], material_consumers)
+        self.assertEqual(consumers_by_port["other"], material_consumers)
+        self.assertEqual(
+            consumers_by_port["physical_edge"], {"reference_edge_probability"}
+        )
+        self.assertEqual(
+            consumers_by_port["non_edge"], {"reference_edge_probability"}
+        )
+        self.assertEqual(
+            consumers_by_port["annotated_seeds"],
+            {"instance_masks", "procedural_instances", "unet_instances"},
         )
         affected = {
-            "painted_reference_layers",
-            *graph.downstream("painted_reference_layers", recursive=True),
+            "reference_layers",
+            *graph.downstream("reference_layers", recursive=True),
         }
         self.assertTrue(
             {
@@ -454,6 +500,7 @@ class PipelineModelTests(unittest.TestCase):
                 "background_likelihood",
                 "refined_background_likelihood",
                 "foreground_noise_likelihood",
+                "reference_edge_probability",
                 "procedural_instances",
             }.issubset(affected)
         )

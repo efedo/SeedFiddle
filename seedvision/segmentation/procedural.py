@@ -28,6 +28,8 @@ class ProceduralInstanceSettings:
     boundary_sensor_weight: float = 0.24
     boundary_ridge_weight: float = 0.12
     boundary_shadow_weight: float = 0.08
+    boundary_reference_weight: float = 0.35
+    boundary_nonedge_discount: float = 0.85
     strong_boundary_quantile: float = 0.67
     centre_ring_inner_fraction: float = 0.27
     centre_ring_outer_fraction: float = 0.58
@@ -54,6 +56,10 @@ class ProceduralInstanceSettings:
         )
         if any(value < 0.0 for value in weights) or sum(weights) <= 0.0:
             raise ValueError("Boundary evidence weights must be non-negative and non-zero.")
+        if not 0.0 <= self.boundary_reference_weight <= 1.0:
+            raise ValueError("Reference-edge weight must be between zero and one.")
+        if not 0.0 <= self.boundary_nonedge_discount <= 1.0:
+            raise ValueError("Non-edge discount must be between zero and one.")
         centre_weights = (
             self.centre_material_weight,
             self.centre_distance_weight,
@@ -195,6 +201,8 @@ def procedural_seed_instances(
     refined_background_probability,
     edge_magnitude,
     edge_ridges,
+    physical_edge_probability=None,
+    non_edge_probability=None,
     sensor_noise,
     shadow_likelihood,
     seed_instance_annotations=None,
@@ -221,6 +229,16 @@ def procedural_seed_instances(
     ridges = _working_u8(edge_ridges, size, cv2.INTER_AREA) / 255.0
     sensor = _working_u8(sensor_noise, size, cv2.INTER_AREA) / 255.0
     shadow = _working_u8(shadow_likelihood, size, cv2.INTER_AREA) / 255.0
+    physical_reference = (
+        edge
+        if physical_edge_probability is None
+        else _working_u8(physical_edge_probability, size, cv2.INTER_AREA) / 255.0
+    )
+    non_edge_reference = (
+        np.zeros_like(edge)
+        if non_edge_probability is None
+        else _working_u8(non_edge_probability, size, cv2.INTER_AREA) / 255.0
+    )
 
     inverse_background = 1.0 - np.minimum(background, refined_background)
     occupancy_likelihood = np.maximum(foreground, foreground_noise)
@@ -285,6 +303,13 @@ def procedural_seed_instances(
         + boundary_weights[1] * sensor
         + boundary_weights[2] * ridges
         + boundary_weights[3] * shadow
+    )
+    reference_boundary = physical_reference * (
+        1.0 - settings.boundary_nonedge_discount * non_edge_reference
+    )
+    boundary = (
+        (1.0 - settings.boundary_reference_weight) * boundary
+        + settings.boundary_reference_weight * reference_boundary
     )
     boundary = cv2.GaussianBlur(boundary, (0, 0), sigmaX=max(0.45, diameter * 0.012))
     boundary *= valid

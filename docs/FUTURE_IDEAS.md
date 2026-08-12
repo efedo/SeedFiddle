@@ -86,3 +86,10 @@ case justifies them.
 - Add reviewer-facing pattern-boundary and pattern-validity brushes only after
   instance-draft persistence is durable; otherwise the independent pattern
   supervision can be lost when switching images or restarting the application.
+- Replace the separately scaled foreground/background colour heuristics with a
+  shared paired or multiclass colour-evidence model. It should use the same
+  adjustable perimeter annulus, retain the foreground's high-capacity frequency
+  representation for patterned coats, incorporate Other as negative evidence,
+  and emit calibrated comparable scores. Retune against locked fixtures: merely
+  substituting the current annulus into the foreground start changed the sparse
+  pilot count from 16 to 19.

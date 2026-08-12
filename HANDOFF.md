@@ -91,8 +91,9 @@ repository or `images/` while troubleshooting the environment.
   right-click/select-delete an edge. Disconnection bypasses enabled consumers
   and their dependents; reconnection restores only the cards automatically
   suspended by that missing input, leaving deliberately disabled experimental
-  nodes off. An explicit Painted seed instances input exposes annotation
-  dependencies that were previously implicit. The one-line toolbar includes an
+  nodes off. One **Reference layers** input exposes separately typed Background,
+  Foreground, Other, Physical edge, Non-edge, and Annotated seeds outputs, with
+  explicit connections to every calculation that consumes them. The one-line toolbar includes an
   unused-node toolbox; **Circle candidates**, **Distance-peak candidates**,
   **Calibration residual risk**, the
   directional surface-darkness gradient branch and its lightening/darkening
@@ -135,19 +136,21 @@ repository or `images/` while troubleshooting the environment.
   directed/undirected tangents, ridge thinning, and oriented edge traces.
   Directional rays are integrated on CUDA into each class noise probability but
   are no longer materialized as individual viewer overlays.
-- **Painted material references** is an explicit active input node for one
-  mutually exclusive Background/Foreground/Other categorical layer. Painting a
+- **Reference layers** is an explicit active input node for the mutually exclusive
+  Background/Foreground/Other material layer, the mutually exclusive
+  Physical-edge/Non-edge boundary layer, and integer annotated seed instances. Painting a
   class clears the other two at that pixel; Other supplies negative evidence to
   both material models. It feeds both colour models and both class-specific noise
   models, so applying a painted edit invalidates every true graph dependent.
   Each noise classifier learns its positive and negative texture distributions
   directly from the applicable painted areas when present, using colour
   pseudo-labels only for an unpainted class. Painted coordinates are not forced
-  to exact noise-probability zero or one. A separate **Painted boundary
-  references** input holds mutually exclusive Physical edge/Non-edge review
-  evidence. Its smart boundary brush previews and commits either class to nearby
-  analysed edges, and learning export persists both values and their sparse
-  validity raster.
+  to exact colour- or noise-probability zero or one. Physical edge/Non-edge review
+  evidence fits an image-local **Reference edge probabilities** classifier from
+  corrected Lab values, edge magnitude, tangent coherence, and thinned ridges.
+  Its physical/non-edge outputs feed boundary confirmation and procedural
+  watershed, while the boundary brush has an adjustable snap-strength preview.
+  Learning export persists both boundary classes and their sparse validity raster.
 - Active **Procedural seed separation** combines seed-material evidence,
   edge/sensor/ridge/shadow physical-boundary cost, scale-aware centre markers,
   marker-controlled watershed, and explicit per-instance confidence. Its six
@@ -203,6 +206,13 @@ repository or `images/` while troubleshooting the environment.
 - Foreground references use a per-pixel Lab colour-frequency table, never a
   regional average or painted-pixel probability override. Automatic background
   colour is anchored to the retained outside-dish annulus distribution.
+- Painted foreground colour modes are capped with coverage-preserving selection,
+  not a top-frequency truncation. The former truncation allowed a larger varied
+  reference mask to evict an existing smaller colour mode and collapse its
+  membership. The HSV diagnostic now projects each chromatic mode at its own
+  measured saturation, keeps visually neutral modes in the neutral strip, and
+  labels only the leading twelve modes instead of covering the plot with every
+  retained frequency cell.
 - Automatic foreground colour is now independently anchored by the accepted
   isolated reference-seed components above the ruler. Their individual Lab
   frequencies are compared against the exterior-background distribution and
@@ -211,6 +221,14 @@ repository or `images/` while troubleshooting the environment.
   no isolated reference seed survives. Selecting **Foreground colour
   probability** shows the leading starting modes as swatches, hex RGB values,
   frequencies, source type, and source-pixel count in the inspector.
+- Foreground and background colour rasters are evidence scores, not calibrated
+  complements. Background uses a compact robust Lab mixture anchored by the
+  adjustable perimeter band or painted examples; foreground combines a separate
+  background-distance/Otsu model, local lightness support, and a higher-capacity
+  individual-colour frequency table. Its automatic branch still uses the legacy
+  compact rim prior. A direct substitution of the adjustable perimeter samples
+  changed the locked sparse-fixture count from 16 to 19, so that unification was
+  not shipped without a dedicated retuning/evaluation pass.
 - The independent seed-interior branch remains visible but disabled. It now
   consumes foreground colour probability, learned foreground-noise probability,
   and background evidence; an editable texture weight controls the colour/noise
@@ -223,9 +241,11 @@ repository or `images/` while troubleshooting the environment.
   required by image-backed tests. Generated diagnostics under `artifacts/` are
   ignored.
 
-The full suite passed 156 tests on Python 3.12.10 with PyTorch CUDA on an RTX
-3070 on 2026-08-12 after the typed editable-node-wiring and independent
-automatic-foreground-reference implementations and visual/performance QA.
+The full suite passed 159 tests on Python 3.12.10 with PyTorch CUDA on an RTX
+3070 on 2026-08-12 after the unified six-output reference input, adjustable
+boundary snap strength, reference-trained physical/non-edge probability branch,
+colour-reference no-forcing correction, coverage-preserving painted-foreground
+colour modes, and measured-saturation HSV diagnostics.
 
 ## Learned instance-segmentation implementation
 

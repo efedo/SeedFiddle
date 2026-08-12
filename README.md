@@ -279,15 +279,21 @@ most frequent starting modes as colour swatches, hexadecimal RGB values, and
 frequencies. If no reference seed survives detection, the inspector explicitly
 labels the older high-confidence-image-pixel diagnostic fit as a fallback.
 
-The active graph exposes the categorical material mask through the **Painted
-material references** input node. It connects directly to both colour-probability
-nodes and both class-specific noise-probability nodes. Painted foreground and
-background areas are the actual positive texture samples, while Other is direct
-negative evidence for both; colour-probability pseudo-labels are only a fallback
-for a class with no painted samples. Painting never overwrites the resulting
-probability at the brush coordinates. A separate **Painted boundary references**
-input node makes sparse edge/non-edge supervision explicit in the graph and
-learning export without pretending that it is a live probability calculation.
+The active graph exposes one **Reference layers** input node with distinct typed
+outputs for Background, Foreground, Other, Physical edge, Non-edge, and Annotated
+seeds. Every calculation that consumes one of these sublayers has a corresponding
+connector. Painted material areas supply direct colour/texture evidence;
+colour-probability pseudo-labels remain only a fallback where a class has no
+painted samples. Painting never overwrites the resulting probability at the
+brush coordinates.
+
+Physical-edge and non-edge marks now fit a separate image-local probability
+classifier using the corrected Lab image, continuous edge magnitude,
+directed/undirected tangent coherence, and thinned ridges. Its yellow physical-edge
+and blue non-edge overlays feed final curve confirmation and procedural watershed
+boundary cost, and are available as optional channels to compatible learned-model
+checkpoints. The boundary brush exposes both a Snap switch and an adjustable
+snap-strength slider.
 
 ## Visual pipeline
 
@@ -375,6 +381,14 @@ The active layout-to-diagnostic span is represented by these live pipeline nodes
    references replace the automatic colour start. The applied threshold is
    `max(8, Otsu threshold × Foreground threshold)`, followed by seed-scale
    elliptical opening and closing.
+   When painted samples occupy more quantized cells than the configured mode
+   budget, retained modes are selected for Lab-space coverage rather than raw
+   frequency alone. Adding a large, varied affirmative region therefore cannot
+   evict an earlier colour merely because that earlier patch is smaller. The
+   HSV diagnostic evaluates each chromatic mode at its measured saturation,
+   confines visually neutral modes to the neutral strip, and labels only the
+   leading frequencies; near-neutral dark evidence no longer appears as an
+   unrelated all-hue band.
    The **Background colour probability** diagnostic consumes the separately
    controlled perimeter reference and also outlines that exact buffered annulus
    (or the inside-rim fallback when necessary).
@@ -384,6 +398,18 @@ The active layout-to-diagnostic span is represented by these live pipeline nodes
    The **Background noise probability** applies its learned three-band texture
    classifier to that same surrounding annulus and displays the resulting noise
    likelihood alongside the dish-resident refined map.
+
+   The foreground and background colour maps are related evidence scores, not
+   complementary or mutually calibrated posteriors. Background colour uses a
+   compact robust multimodal Lab fit anchored by painted background examples or
+   the adjustable perimeter annulus. Foreground colour instead combines distance
+   from an independently fitted background model, an Otsu-derived cutoff,
+   seed-scale lightness support, and a higher-capacity Lab frequency table for
+   painted or isolated-reference-seed colours. This extra capacity is intentional
+   for patterned seed coats, but it means equal numeric values in the two maps do
+   not imply equal confidence. The automatic foreground path also retains its
+   older compact rim prior rather than consuming the adjustable perimeter band;
+   unifying and recalibrating those starts requires fixture-level retuning.
 5. **Foreground noise probability** learns a matching three-band profile from
    foreground-colour pseudo-labels. It continues texture evidence across
    patterned coats without hard-forcing painted reference pixels.

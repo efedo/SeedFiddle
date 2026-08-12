@@ -89,6 +89,8 @@ OVERLAY_MODES = {
     "undirected_edges",
     "directed_edges",
     "edge_ridges",
+    "physical_edge_probability",
+    "non_edge_probability",
     "edge_traces",
     "edge_trace_continuity",
     "edge_trace_gap_confidence",
@@ -187,6 +189,7 @@ class ImageView(QGraphicsView):
         self._reference_brush_radius = 12.0
         self._reference_erase_enabled = False
         self._edge_reference_snap_enabled = True
+        self._edge_reference_snap_strength = 0.70
         self._reference_paint_button: Qt.MouseButton | None = None
         self._reference_stroke_erases = False
         self._last_reference_paint_point: QPointF | None = None
@@ -538,6 +541,11 @@ class ImageView(QGraphicsView):
 
     def set_edge_reference_snap(self, enabled: bool) -> None:
         self._edge_reference_snap_enabled = bool(enabled)
+
+    def set_edge_reference_snap_strength(self, strength: float) -> None:
+        self._edge_reference_snap_strength = max(0.0, min(1.0, float(strength)))
+        if self._last_reference_hover_point is not None:
+            self._update_reference_brush_outline(self._last_reference_hover_point)
 
     def set_instance_annotations(
         self,
@@ -974,6 +982,10 @@ class ImageView(QGraphicsView):
             rgba = layers.frequency_noise_rgba(channel, band_index)
         elif self._overlay_mode == "edge_ridges":
             rgba = layers.edge_ridges_rgba()
+        elif self._overlay_mode == "physical_edge_probability":
+            rgba = layers.reference_edge_probability_rgba(True)
+        elif self._overlay_mode == "non_edge_probability":
+            rgba = layers.reference_edge_probability_rgba(False)
         elif self._overlay_mode == "edge_traces":
             rgba = layers.edge_traces_rgba()
         elif self._overlay_mode == "edge_trace_continuity":
@@ -2570,7 +2582,11 @@ class ImageView(QGraphicsView):
                 edge,
                 max(3.0, self._reference_brush_radius * 1.5),
             )
-            return QPointF(float(snapped_x), float(snapped_y))
+            strength = self._edge_reference_snap_strength
+            return QPointF(
+                float(scene_point.x() + strength * (snapped_x - scene_point.x())),
+                float(scene_point.y() + strength * (snapped_y - scene_point.y())),
+            )
         except (RuntimeError, ValueError):
             return scene_point
 

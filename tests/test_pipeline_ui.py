@@ -30,8 +30,8 @@ class PipelineCanvasTests(unittest.TestCase):
         self.application.processEvents()
         canvas.fit_graph()
         self.assertGreater(canvas.horizontalScrollBar().maximum(), 0)
-        self.assertEqual(len(canvas.node_items), 32)
-        self.assertEqual(len(canvas.edge_items), 86)
+        self.assertEqual(len(canvas.node_items), 31)
+        self.assertEqual(len(canvas.edge_items), 107)
         self.assertNotIn("circle_candidates", canvas.node_items)
         self.assertEqual(canvas.unused_nodes_button.text(), "Unused nodes (21)")
         unused_actions = [
@@ -265,8 +265,8 @@ class PipelineCanvasTests(unittest.TestCase):
         self.application.processEvents()
         self.assertEqual(restored, ["circle_candidates"])
         self.assertIn("circle_candidates", canvas.node_items)
-        self.assertEqual(len(canvas.node_items), 33)
-        self.assertEqual(len(canvas.edge_items), 93)
+        self.assertEqual(len(canvas.node_items), 32)
+        self.assertEqual(len(canvas.edge_items), 114)
         self.assertEqual(canvas.unused_nodes_button.text(), "Unused nodes (20)")
         self.assertTrue(canvas.unused_nodes_button.isEnabled())
         self.assertTrue(canvas.node_items["circle_candidates"].isSelected())
@@ -279,7 +279,7 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertNotIn("circle_candidates", canvas.node_items)
         self.assertIn("circle_candidates", graph.unused_nodes)
         self.assertFalse(graph.node("circle_candidates").enabled)
-        self.assertEqual(len(canvas.edge_items), 86)
+        self.assertEqual(len(canvas.edge_items), 107)
         self.assertEqual(canvas.unused_nodes_button.text(), "Unused nodes (21)")
         restore_action = next(
             action
@@ -348,7 +348,7 @@ class PipelineCanvasTests(unittest.TestCase):
             and edge.target == "foreground_noise_likelihood"
         )
         canvas._disconnect_connection(connection)
-        self.assertEqual(len(canvas.edge_items), 85)
+        self.assertEqual(len(canvas.edge_items), 106)
         self.assertFalse(graph.node(connection.target).enabled)
         self.assertIsNone(
             graph.connection_for_input(connection.target, connection.target_port)
@@ -365,7 +365,7 @@ class PipelineCanvasTests(unittest.TestCase):
                 connection.source_port
             )
         )
-        self.assertEqual(len(canvas.edge_items), 86)
+        self.assertEqual(len(canvas.edge_items), 107)
         self.assertTrue(graph.node(connection.target).enabled)
         self.assertIsNotNone(
             graph.connection_for_input(connection.target, connection.target_port)
@@ -585,7 +585,9 @@ class PipelineCanvasTests(unittest.TestCase):
 
         probability = gamut._probability
         assert probability is not None
-        self.assertGreater(float(probability.max()), 0.99)
+        # The measured-saturation projection is sampled on integer HLS tone
+        # rows, so the closest displayed colour can sit just below an exact 1.0.
+        self.assertGreater(float(probability.max()), 0.98)
         for level, _colour in gamut.CONTOURS:
             self.assertGreater(
                 int(np.count_nonzero(gamut._contour_edge(probability, level))),
@@ -660,6 +662,40 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertIn("#", inspector.foreground_start_label.text())
         self.assertIn("1,800", inspector.foreground_start_label.text())
         inspector.close()
+
+    def test_nearly_neutral_dark_mode_does_not_span_every_hsv_hue(self) -> None:
+        import numpy as np
+
+        from seedvision.pipeline import build_default_pipeline
+        from seedvision.ui.pipeline_inspector import BackgroundColourGamut
+        from seedvision.visualization import ForegroundColourProfile
+
+        profile = ForegroundColourProfile(
+            centre_lab=(50.0, 134.0, 124.0),
+            scale_lab=(10.0, 6.0, 6.0),
+            bgr_low=(40, 42, 46),
+            bgr_high=(50, 52, 56),
+            sample_count=800,
+            sample_fraction=0.10,
+            component_centres_lab=((50.0, 134.0, 124.0),),
+            component_scales_lab=((10.0, 6.0, 6.0),),
+            component_weights=(1.0,),
+            source="painted",
+            source_sample_count=800,
+        )
+        gamut = BackgroundColourGamut()
+        gamut.set_profile(
+            profile,
+            build_default_pipeline().node("foreground_segmentation").parameters,
+            class_name="foreground",
+        )
+
+        probability = gamut._probability
+        assert probability is not None
+        self.assertGreater(float(probability[:, : gamut.NEUTRAL_COLUMNS].max()), 0.50)
+        self.assertLess(float(probability[:, gamut.NEUTRAL_COLUMNS :].max()), 0.25)
+        self.assertTrue(np.all(gamut._centre_points[:, 0] < gamut.NEUTRAL_COLUMNS))
+        gamut.close()
 
     def test_colour_gamut_does_not_project_neutral_membership_across_hues(self) -> None:
         from seedvision.ui.pipeline_inspector import BackgroundColourGamut
@@ -1009,6 +1045,9 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertFalse(window.background_point_button.isChecked())
         self.assertTrue(window.physical_edge_button.isChecked())
         self.assertEqual(window.image_view._reference_point_mode, "physical_edge")
+        self.assertEqual(window.edge_snap_strength_slider.value(), 70)
+        window.edge_snap_strength_slider.setValue(35)
+        self.assertAlmostEqual(window.image_view._edge_reference_snap_strength, 0.35)
 
         window.non_edge_button.setChecked(True)
         self.application.processEvents()
@@ -1472,6 +1511,12 @@ class PipelineCanvasTests(unittest.TestCase):
             view._full_annotation_evidence = lambda _name: edge_strength
             view.set_physical_edge_reference_editing(True)
             view.set_edge_reference_snap(True)
+            view.set_edge_reference_snap_strength(0.5)
+            view._update_reference_brush_outline(QPointF(50.0, 50.0))
+            self.assertAlmostEqual(
+                view._reference_brush_outline_item.rect().center().x(), 55.0
+            )
+            view.set_edge_reference_snap_strength(1.0)
             view._update_reference_brush_outline(QPointF(50.0, 50.0))
             self.assertAlmostEqual(
                 view._reference_brush_outline_item.rect().center().x(), 60.0
@@ -1928,7 +1973,7 @@ class PipelineCanvasTests(unittest.TestCase):
             )
         )
         self.assertIs(
-            window.pipeline.node("painted_reference_layers").status,
+            window.pipeline.node("reference_layers").status,
             NodeStatus.COMPLETE,
         )
         self.assertIn(
@@ -1982,8 +2027,11 @@ class PipelineCanvasTests(unittest.TestCase):
         window._reference_mask_edited("physical_edge", physical)
         window._reference_mask_edited("non_edge", non_edge)
         window._apply_reference_masks()
-        # Boundary references are annotation evidence, not live calculation inputs.
-        self.assertEqual(analyses, [True, True, True])
+        # Boundary references now retrain the live physical/non-edge classifier.
+        self.assertEqual(analyses, [True, True, True, True])
+        self.assertIn(
+            "reference_edge_probability", window._cache_dirty_nodes[key]
+        )
         self.assertFalse(
             np.any(
                 window._applied_physical_edge_reference_masks[key]
@@ -1991,7 +2039,7 @@ class PipelineCanvasTests(unittest.TestCase):
             )
         )
         self.assertIs(
-            window.pipeline.node("painted_boundary_references").status,
+            window.pipeline.node("reference_layers").status,
             NodeStatus.COMPLETE,
         )
         window.close()

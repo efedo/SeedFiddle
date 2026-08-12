@@ -547,9 +547,12 @@ def lab_colour_frequency_distribution(
 
     Unlike the compact regional mixture used for automatic estimates, this
     model never averages light and dark painted patterns into one prototype.
-    Reference pixels are quantized into small Lab cells, each cell retains its
-    measured occurrence, and cautious refinement may widen only those original
-    cells.  It cannot create an unsupported colour mode.
+    Reference pixels are quantized into small Lab cells. If a reference spans
+    more cells than the configured budget, representative observed cells are
+    selected to preserve Lab-space coverage rather than frequency alone, and
+    all observed occurrences are reassigned to those representatives. Cautious
+    refinement may widen only anchored cells; it cannot create an unsupported
+    colour mode.
     """
 
     import torch
@@ -559,14 +562,6 @@ def lab_colour_frequency_distribution(
     )
     if not int(samples.shape[0]):
         raise ValueError("At least one Lab reference pixel is required.")
-    if int(samples.shape[0]) > maximum_fit_samples:
-        indices = torch.linspace(
-            0,
-            int(samples.shape[0]) - 1,
-            maximum_fit_samples,
-            device=lab.device,
-        ).round().long()
-        samples = samples[indices]
     eligible = eligible_mask.bool()
     floors = torch.as_tensor(scale_floors, device=lab.device, dtype=lab.dtype)
     metric_weights = torch.as_tensor(
@@ -579,22 +574,64 @@ def lab_colour_frequency_distribution(
     cells, counts = torch.unique(
         quantized, dim=0, return_counts=True
     )
+    observed_cells = cells
     maximum_bins = max(1, int(maximum_bins))
     if int(cells.shape[0]) > maximum_bins:
-        selected = torch.topk(counts, maximum_bins, sorted=True).indices
+        # Keeping only the most frequent cells makes affirmative evidence
+        # non-monotonic: painting a larger, more varied foreground region can
+        # evict an earlier colour completely.  Retain the dominant cell first,
+        # then greedily cover Lab space with observed cells.  Occurrence still
+        # influences selection and the fitted weights, but cannot consume all
+        # slots with many neighbouring shades from one large painted patch.
+        candidate_centres = cells.to(dtype=lab.dtype) * steps
+        normalized = candidate_centres / floors
+        normalized = normalized * torch.sqrt(metric_weights)[None, :]
+        selected = torch.empty(
+            maximum_bins, device=lab.device, dtype=torch.long
+        )
+        selected[0] = torch.argmax(counts)
+        selected_mask = torch.zeros(
+            int(cells.shape[0]), device=lab.device, dtype=torch.bool
+        )
+        selected_mask[selected[0]] = True
+        minimum_distance = torch.sum(
+            (normalized - normalized[selected[0]]).square(), dim=1
+        )
+        relative_frequency = torch.sqrt(
+            counts.to(dtype=lab.dtype)
+            / counts.max().to(dtype=lab.dtype).clamp_min(1.0)
+        )
+        coverage_weight = 0.25 + 0.75 * relative_frequency
+        for index in range(1, maximum_bins):
+            score = minimum_distance * coverage_weight
+            score = score.masked_fill(selected_mask, -1.0)
+            next_item = torch.argmax(score)
+            selected[index] = next_item
+            selected_mask[next_item] = True
+            distance = torch.sum(
+                (normalized - normalized[next_item]).square(), dim=1
+            )
+            minimum_distance = torch.minimum(minimum_distance, distance)
         cells = cells[selected]
     centres = cells.to(dtype=lab.dtype) * steps
 
-    # Reassign every immutable reference pixel to its nearest retained colour
-    # cell. These counts remain authoritative through all refinement rounds.
-    sample_delta = (samples[:, None, :] - centres[None, :, :]) / floors
-    sample_distance = torch.sum(
-        sample_delta.square() * metric_weights[None, None, :], dim=2
+    # Reassign every observed colour cell to the nearest retained representative
+    # while preserving its full occurrence count. This avoids spatial-stride
+    # sampling dropping a small but valid painted seed colour when the total
+    # reference mask grows beyond the refinement sample budget.
+    observed_centres = observed_cells.to(dtype=lab.dtype) * steps
+    observed_counts = counts.to(dtype=lab.dtype)
+    observed_delta = (
+        observed_centres[:, None, :] - centres[None, :, :]
+    ) / floors
+    observed_distance = torch.sum(
+        observed_delta.square() * metric_weights[None, None, :], dim=2
     )
-    sample_assignment = torch.argmin(sample_distance, dim=1)
-    anchor_counts = torch.bincount(
-        sample_assignment, minlength=int(centres.shape[0])
-    ).to(dtype=lab.dtype)
+    observed_assignment = torch.argmin(observed_distance, dim=1)
+    anchor_counts = torch.zeros(
+        int(centres.shape[0]), device=lab.device, dtype=lab.dtype
+    )
+    anchor_counts.scatter_add_(0, observed_assignment, observed_counts)
     component_weights = anchor_counts / anchor_counts.sum().clamp_min(1.0)
     scales = floors[None].repeat(int(centres.shape[0]), 1)
 

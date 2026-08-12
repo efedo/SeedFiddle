@@ -92,6 +92,7 @@ OVERLAY_NODE_IDS = (
     "undirected_edges",
     "directed_edges",
     "edge_ridges",
+    "reference_edge_probability",
     "edge_traces",
     "seed_edge_curves",
     "procedural_instances",
@@ -136,6 +137,7 @@ VIEWER_NODE_MODES.update(
         "lightening_gradient_ceiling": "weak_lightening_gradient",
         "darkening_gradient_ceiling": "weak_darkening_gradient",
         "frequency_noise_masks": "darkness_noise_fine",
+        "reference_edge_probability": "physical_edge_probability",
     }
 )
 
@@ -177,6 +179,8 @@ OVERLAY_NODE_OWNERS = {
     "undirected_edges": "undirected_edges",
     "directed_edges": "directed_edges",
     "edge_ridges": "edge_ridges",
+    "physical_edge_probability": "reference_edge_probability",
+    "non_edge_probability": "reference_edge_probability",
     "edge_traces": "edge_traces",
     "edge_trace_continuity": "edge_traces",
     "edge_trace_gap_confidence": "edge_traces",
@@ -266,6 +270,8 @@ class _AnalysisTask(QRunnable):
         foreground_reference_mask: np.ndarray | None,
         background_exclusion_mask: np.ndarray | None,
         foreground_exclusion_mask: np.ndarray | None,
+        physical_edge_reference_mask: np.ndarray | None,
+        non_edge_reference_mask: np.ndarray | None,
         seed_instance_annotations: np.ndarray | None,
         background_colour_enabled: bool,
         enabled_nodes: frozenset[str],
@@ -307,6 +313,16 @@ class _AnalysisTask(QRunnable):
             if foreground_exclusion_mask is None
             else np.asarray(foreground_exclusion_mask, dtype=bool)
         )
+        self.physical_edge_reference_mask = (
+            None
+            if physical_edge_reference_mask is None
+            else np.asarray(physical_edge_reference_mask, dtype=bool)
+        )
+        self.non_edge_reference_mask = (
+            None
+            if non_edge_reference_mask is None
+            else np.asarray(non_edge_reference_mask, dtype=bool)
+        )
         self.seed_instance_annotations = (
             None
             if seed_instance_annotations is None
@@ -340,6 +356,8 @@ class _AnalysisTask(QRunnable):
                 foreground_reference_mask=self.foreground_reference_mask,
                 background_exclusion_mask=self.background_exclusion_mask,
                 foreground_exclusion_mask=self.foreground_exclusion_mask,
+                physical_edge_reference_mask=self.physical_edge_reference_mask,
+                non_edge_reference_mask=self.non_edge_reference_mask,
                 seed_instance_annotations=self.seed_instance_annotations,
                 background_colour_enabled=self.background_colour_enabled,
                 enabled_nodes=self.enabled_nodes,
@@ -692,6 +710,8 @@ class MainWindow(QMainWindow):
             ("Edge tangent (undirected)", "undirected_edges"),
             ("Edge tangent (directed)", "directed_edges"),
             ("Thinned edge ridges", "edge_ridges"),
+            ("Physical-edge probability", "physical_edge_probability"),
+            ("Non-edge probability", "non_edge_probability"),
             ("Oriented edge traces", "edge_traces"),
             ("Trace continuity", "edge_trace_continuity"),
             ("Trace gap confidence", "edge_trace_gap_confidence"),
@@ -1051,6 +1071,35 @@ class MainWindow(QMainWindow):
         boundary_layout.addWidget(self.non_edge_button)
         boundary_layout.addWidget(self.edge_snap_checkbox)
         reference_layout.addWidget(boundary_buttons)
+
+        snap_strength_widget = QWidget(self.reference_controls)
+        snap_strength_layout = QHBoxLayout(snap_strength_widget)
+        snap_strength_layout.setContentsMargins(0, 0, 0, 0)
+        snap_strength_layout.addWidget(QLabel("Snap strength", snap_strength_widget))
+        self.edge_snap_strength_slider = QSlider(
+            Qt.Orientation.Horizontal, snap_strength_widget
+        )
+        self.edge_snap_strength_slider.setRange(0, 100)
+        self.edge_snap_strength_slider.setValue(70)
+        self.edge_snap_strength_slider.setToolTip(
+            "How far each boundary-reference dab moves toward the strongest nearby "
+            "analysed edge: 0% keeps the cursor position and 100% snaps exactly."
+        )
+        self.edge_snap_strength_slider.valueChanged.connect(
+            lambda value: self.image_view.set_edge_reference_snap_strength(
+                float(value) / 100.0
+            )
+        )
+        self.edge_snap_strength_label = QLabel("70%", snap_strength_widget)
+        self.edge_snap_strength_slider.valueChanged.connect(
+            lambda value: self.edge_snap_strength_label.setText(f"{value}%")
+        )
+        self.edge_snap_checkbox.toggled.connect(
+            self.edge_snap_strength_slider.setEnabled
+        )
+        snap_strength_layout.addWidget(self.edge_snap_strength_slider, 1)
+        snap_strength_layout.addWidget(self.edge_snap_strength_label)
+        reference_layout.addWidget(snap_strength_widget)
 
         brush_widget = QWidget(self.reference_controls)
         brush_layout = QHBoxLayout(brush_widget)
@@ -1828,6 +1877,7 @@ class MainWindow(QMainWindow):
             "darkening_gradient_ceiling",
             "frequency_noise_masks",
             "edge_ridges",
+            "reference_edge_probability",
             "edge_traces",
             "instance_masks",
             "seed_edge_curves",
@@ -1930,6 +1980,8 @@ class MainWindow(QMainWindow):
             self._applied_foreground_reference_masks.get(key),
             self._applied_background_exclusion_masks.get(key),
             self._applied_foreground_exclusion_masks.get(key),
+            self._applied_physical_edge_reference_masks.get(key),
+            self._applied_non_edge_reference_masks.get(key),
             self._applied_instance_annotations.get(key),
             self.pipeline.node("background_likelihood").enabled,
             frozenset(
@@ -2536,6 +2588,9 @@ class MainWindow(QMainWindow):
         self.physical_edge_button.setEnabled(has_result and not running)
         self.non_edge_button.setEnabled(has_result and not running)
         self.edge_snap_checkbox.setEnabled(has_result and not running)
+        self.edge_snap_strength_slider.setEnabled(
+            has_result and not running and self.edge_snap_checkbox.isChecked()
+        )
         self.erase_background_points_button.setEnabled(can_edit)
         self.erase_foreground_points_button.setEnabled(has_result and not running)
         self.erase_background_exclusion_button.setEnabled(has_result and not running)
@@ -3513,19 +3568,18 @@ class MainWindow(QMainWindow):
         )
         self._instance_annotations_dirty.discard(key)
         affected = {
-            "painted_instance_annotations",
+            "reference_layers",
             "instance_masks",
-            *self.pipeline.downstream(
-                "painted_instance_annotations", recursive=True
+            *self.pipeline.downstream_from_port(
+                "reference_layers", "annotated_seeds", recursive=True
             ),
-            *self.pipeline.downstream("instance_masks", recursive=True),
         }
         self.pipeline.invalidate(affected)
         count = len(self._instance_ids(self._applied_instance_annotations.get(key)))
         self.pipeline.set_status(
-            "painted_instance_annotations",
+            "reference_layers",
             NodeStatus.COMPLETE,
-            f"{count:,} applied seed ID(s)" if count else "No applied seed IDs",
+            f"{count:,} applied seed ID(s)" if count else "No applied references",
         )
         if self.pipeline.node("instance_masks").enabled:
             self.pipeline.set_status(
@@ -3935,18 +3989,21 @@ class MainWindow(QMainWindow):
         boundary_changed = bool(
             dirty_classes & {"physical_edge", "non_edge"}
         )
-        affected = (
-            {
-                "painted_reference_layers",
-                *self.pipeline.downstream(
-                    "painted_reference_layers", recursive=True
-                ),
-            }
-            if material_changed or not dirty_classes
-            else set()
-        )
-        if boundary_changed:
-            affected.add("painted_boundary_references")
+        affected = {"reference_layers"}
+        if material_changed or not dirty_classes:
+            for port_id in ("background", "foreground", "other"):
+                affected.update(
+                    self.pipeline.downstream_from_port(
+                        "reference_layers", port_id, recursive=True
+                    )
+                )
+        if boundary_changed or not dirty_classes:
+            for port_id in ("physical_edge", "non_edge"):
+                affected.update(
+                    self.pipeline.downstream_from_port(
+                        "reference_layers", port_id, recursive=True
+                    )
+                )
         self.pipeline.invalidate(affected)
         background_count = self._mask_pixel_count(
             self._applied_background_reference_masks.get(key)
@@ -3967,15 +4024,11 @@ class MainWindow(QMainWindow):
             self._applied_non_edge_reference_masks.get(key)
         )
         self.pipeline.set_status(
-            "painted_reference_layers",
+            "reference_layers",
             NodeStatus.COMPLETE,
             f"BG {background_count:,}; FG {foreground_count:,}; "
-            f"Other {max(background_exclusion_count, foreground_exclusion_count):,}",
-        )
-        self.pipeline.set_status(
-            "painted_boundary_references",
-            NodeStatus.COMPLETE,
-            f"Edges {physical_edge_count:,}; non-edges {non_edge_count:,}",
+            f"Other {max(background_exclusion_count, foreground_exclusion_count):,}; "
+            f"edges {physical_edge_count:,}; non-edges {non_edge_count:,}",
         )
         detail = (
             f"{background_count:,} confirmed reference pixels; updating"
@@ -4001,7 +4054,7 @@ class MainWindow(QMainWindow):
             )
         self.pipeline_canvas.refresh(affected)
         self.pipeline_inspector.refresh_status()
-        computational = affected - {"painted_boundary_references"}
+        computational = affected - {"reference_layers"}
         if computational:
             self._cache_dirty_nodes.setdefault(key, set()).update(computational)
             self._analyses.pop(key, None)
@@ -4231,6 +4284,14 @@ class MainWindow(QMainWindow):
             "edge_ridges": (
                 "Non-maximum-suppressed one-pixel ridges after high/low GPU "
                 "hysteresis. Brightness is retained continuous edge strength."
+            ),
+            "physical_edge_probability": (
+                "Yellow brightness is the probability that a transition is a true "
+                "physical seed boundary, learned from painted edge/non-edge examples."
+            ),
+            "non_edge_probability": (
+                "Blue brightness is the probability that a transition is an apparent "
+                "coat-pattern or lighting boundary rather than a physical edge."
             ),
             "edge_traces": (
                 "Unique colours identify tangent-compatible connected traces. "
@@ -4629,6 +4690,18 @@ class MainWindow(QMainWindow):
         self.pipeline.set_status(
             "edge_ridges", NodeStatus.COMPLETE, "Float NMS and hysteresis cached on GPU"
         )
+        current_key = self._current_image_key() or ""
+        physical_samples = self._mask_pixel_count(
+            self._applied_physical_edge_reference_masks.get(current_key)
+        )
+        non_edge_samples = self._mask_pixel_count(
+            self._applied_non_edge_reference_masks.get(current_key)
+        )
+        self.pipeline.set_status(
+            "reference_edge_probability",
+            NodeStatus.COMPLETE,
+            f"{physical_samples:,} physical-edge; {non_edge_samples:,} non-edge reference pixels",
+        )
         self.pipeline.set_status(
             "edge_traces", NodeStatus.COMPLETE, f"{trace_pixels:,} oriented trace pixels"
         )
@@ -4711,15 +4784,24 @@ class MainWindow(QMainWindow):
             self._mask_pixel_count(
                 self._applied_foreground_exclusion_masks.get(key)
             ),
+            self._mask_pixel_count(
+                self._applied_physical_edge_reference_masks.get(key)
+            ),
+            self._mask_pixel_count(
+                self._applied_non_edge_reference_masks.get(key)
+            ),
+            len(self._instance_ids(self._applied_instance_annotations.get(key))),
         )
         self.pipeline.set_status(
-            "painted_reference_layers",
+            "reference_layers",
             NodeStatus.COMPLETE,
             (
                 f"BG {reference_counts[0]:,}; FG {reference_counts[1]:,}; "
-                f"Other {max(reference_counts[2], reference_counts[3]):,}"
+                f"Other {max(reference_counts[2], reference_counts[3]):,}; "
+                f"edges {reference_counts[4]:,}; non-edges {reference_counts[5]:,}; "
+                f"seeds {reference_counts[6]:,}"
                 if any(reference_counts)
-                else "No applied painted references"
+                else "No applied references"
             ),
         )
         for node_id in (*CALIBRATION_NODE_IDS, "layout_detection"):
@@ -4738,6 +4820,7 @@ class MainWindow(QMainWindow):
             "undirected_edges",
             "directed_edges",
             "edge_ridges",
+            "reference_edge_probability",
             "edge_traces",
             "procedural_instances",
             "unet_instances",
@@ -4815,6 +4898,7 @@ class MainWindow(QMainWindow):
             "undirected_edges": "Encoding axial edge tangents",
             "directed_edges": "Resolving edge polarity",
             "edge_ridges": "Thinning float edges and reconstructing hysteresis",
+            "reference_edge_probability": "Classifying physical and apparent edges from reviewed examples",
             "edge_traces": "Linking orientation-compatible ridge fragments",
             "seed_edge_curves": "Confirming radii, circles, ellipses, centres, and semantic sides",
             "background_likelihood": "Estimating the likely colour range",
@@ -4997,6 +5081,7 @@ class MainWindow(QMainWindow):
             "darkening_gradient_ceiling",
             "frequency_noise_masks",
             "edge_ridges",
+            "reference_edge_probability",
             "edge_traces",
             "instance_masks",
             "seed_edge_curves",

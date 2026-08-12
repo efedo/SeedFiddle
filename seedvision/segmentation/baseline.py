@@ -411,6 +411,8 @@ def analyze_path(
     foreground_reference_mask: np.ndarray | None = None,
     background_exclusion_mask: np.ndarray | None = None,
     foreground_exclusion_mask: np.ndarray | None = None,
+    physical_edge_reference_mask: np.ndarray | None = None,
+    non_edge_reference_mask: np.ndarray | None = None,
     seed_instance_annotations: np.ndarray | None = None,
     background_colour_enabled: bool = True,
     enabled_nodes: set[str] | frozenset[str] | None = None,
@@ -469,6 +471,8 @@ def analyze_path(
         foreground_reference_mask=foreground_reference_mask,
         background_exclusion_mask=background_exclusion_mask,
         foreground_exclusion_mask=foreground_exclusion_mask,
+        physical_edge_reference_mask=physical_edge_reference_mask,
+        non_edge_reference_mask=non_edge_reference_mask,
         seed_instance_annotations=seed_instance_annotations,
         background_colour_enabled=background_colour_enabled,
         enabled_nodes=enabled_nodes,
@@ -503,6 +507,8 @@ def analyze_image(
     foreground_reference_mask: np.ndarray | None = None,
     background_exclusion_mask: np.ndarray | None = None,
     foreground_exclusion_mask: np.ndarray | None = None,
+    physical_edge_reference_mask: np.ndarray | None = None,
+    non_edge_reference_mask: np.ndarray | None = None,
     seed_instance_annotations: np.ndarray | None = None,
     background_colour_enabled: bool = True,
     enabled_nodes: set[str] | frozenset[str] | None = None,
@@ -533,7 +539,7 @@ def analyze_image(
         timings.add_seconds(node_id, elapsed)
     values = {} if node_cache is None else node_cache.values
     dirty = set(dirty_nodes)
-    painted_reference_dirty = "painted_reference_layers" in dirty
+    painted_reference_dirty = "reference_layers" in dirty
     computed: list[str] = []
     reused: list[str] = []
 
@@ -568,6 +574,12 @@ def analyze_image(
     )
     foreground_exclusion_mask = _aligned_reference_mask(
         foreground_exclusion_mask, analysis_image.shape[:2]
+    )
+    physical_edge_reference_mask = _aligned_reference_mask(
+        physical_edge_reference_mask, analysis_image.shape[:2]
+    )
+    non_edge_reference_mask = _aligned_reference_mask(
+        non_edge_reference_mask, analysis_image.shape[:2]
     )
     seed_instance_annotations = _aligned_instance_annotations(
         seed_instance_annotations, analysis_image.shape[:2]
@@ -690,6 +702,22 @@ def analyze_image(
         None
         if foreground_exclusion_mask is None
         else foreground_exclusion_mask[
+            offset_y : offset_y + crop_height,
+            offset_x : offset_x + crop_width,
+        ]
+    )
+    local_physical_edge_reference_mask = (
+        None
+        if physical_edge_reference_mask is None
+        else physical_edge_reference_mask[
+            offset_y : offset_y + crop_height,
+            offset_x : offset_x + crop_width,
+        ]
+    )
+    local_non_edge_reference_mask = (
+        None
+        if non_edge_reference_mask is None
+        else non_edge_reference_mask[
             offset_y : offset_y + crop_height,
             offset_x : offset_x + crop_width,
         ]
@@ -1177,6 +1205,7 @@ def analyze_image(
                 "directed_edges",
                 "undirected_edges",
                 "edge_ridges",
+                "reference_edge_probability",
                 "edge_traces",
                 "seed_edge_curves",
             }
@@ -1192,6 +1221,7 @@ def analyze_image(
                 "darkening_gradient_ceiling",
                 "frequency_noise_masks",
                 "instance_masks",
+                "reference_edge_probability",
                 "seed_edge_curves",
             }
         )
@@ -1205,6 +1235,7 @@ def analyze_image(
                 "background_likelihood",
                 "refined_background_likelihood",
                 "instance_masks",
+                "reference_edge_probability",
                 "seed_edge_curves",
             }
         )
@@ -1214,6 +1245,7 @@ def analyze_image(
                 "directed_edges",
                 "undirected_edges",
                 "edge_ridges",
+                "reference_edge_probability",
                 "edge_traces",
                 "seed_edge_curves",
             }
@@ -1223,7 +1255,11 @@ def analyze_image(
             {"lightening_gradient_ceiling", "darkening_gradient_ceiling"}
         )
     if "edge_ridges" in layer_dirty:
-        layer_dirty.update({"edge_traces", "seed_edge_curves"})
+        layer_dirty.update(
+            {"reference_edge_probability", "edge_traces", "seed_edge_curves"}
+        )
+    if "reference_edge_probability" in layer_dirty:
+        layer_dirty.add("seed_edge_curves")
     if "edge_traces" in layer_dirty:
         layer_dirty.add("seed_edge_curves")
     if "background_likelihood" in layer_dirty:
@@ -1256,6 +1292,7 @@ def analyze_image(
         "directed_edges": "layer.directed_edges",
         "undirected_edges": "layer.undirected_edges",
         "edge_ridges": "layer.edge_ridges",
+        "reference_edge_probability": "layer.reference_edge_probability",
         "edge_traces": "layer.edge_traces",
         "seed_edge_curves": "layer.seed_edge_curves",
     }
@@ -1311,6 +1348,8 @@ def analyze_image(
         foreground_reference_mask=local_foreground_reference_mask,
         background_exclusion_mask=local_background_exclusion_mask,
         foreground_exclusion_mask=local_foreground_exclusion_mask,
+        physical_edge_reference_mask=local_physical_edge_reference_mask,
+        non_edge_reference_mask=local_non_edge_reference_mask,
         seed_instance_annotations=local_seed_instance_annotations,
         background_reference_samples=background_samples,
         background_reference_sample_count=accepted_background_points,
@@ -1318,6 +1357,9 @@ def analyze_image(
         background_prior_samples_lab=perimeter_background_samples_lab,
         background_colour_enabled=background_colour_enabled,
         foreground_noise_enabled=node_enabled("foreground_noise_likelihood"),
+        reference_edge_probability_enabled=node_enabled(
+            "reference_edge_probability"
+        ),
         surface_darkness_gradients_enabled=node_enabled(
             "surface_darkness_gradients"
         ),
@@ -1498,6 +1540,7 @@ def analyze_image(
                 "foreground_noise_likelihood",
                 "edge_gradients",
                 "edge_ridges",
+                "reference_edge_probability",
             }
         )
         or "procedural_instances" in dirty
@@ -1514,6 +1557,8 @@ def analyze_image(
                 refined_background_probability=layers.refined_background_likelihood,
                 edge_magnitude=layers.edge_likelihood,
                 edge_ridges=layers.edge_ridges,
+                physical_edge_probability=layers.physical_edge_probability,
+                non_edge_probability=layers.non_edge_probability,
                 sensor_noise=advanced.rasters["sensor_noise"],
                 shadow_likelihood=advanced.rasters["shadow_likelihood"],
                 seed_instance_annotations=local_seed_instance_annotations,
@@ -1534,6 +1579,8 @@ def analyze_image(
         "background_colour": layers.background_likelihood,
         "background_noise": layers.refined_background_likelihood,
         "edge_magnitude": layers.edge_likelihood,
+        "physical_edge_probability": layers.physical_edge_probability,
+        "non_edge_probability": layers.non_edge_probability,
         "sensor_noise": advanced.rasters["sensor_noise"],
         "flattened_grayscale": advanced.rasters["flattened_grayscale"],
         "shadow": advanced.rasters["shadow_likelihood"],
@@ -1552,6 +1599,7 @@ def analyze_image(
                 "refined_background_likelihood",
                 "foreground_noise_likelihood",
                 "edge_gradients",
+                "reference_edge_probability",
             }
         )
     )

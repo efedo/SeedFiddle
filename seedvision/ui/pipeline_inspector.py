@@ -175,54 +175,32 @@ class BackgroundColourGamut(QWidget):
             distance_weights,
         )
 
-        # A hue/tone map necessarily hides saturation. Project only genuinely
-        # chromatic fitted modes over that dimension. This restores contours for
-        # pale tinted annulus colours that do not lie on the single rendered HSV
-        # slice, while neutral modes remain confined to the strip above.
+        # A hue/tone map necessarily hides saturation. Evaluate each chromatic
+        # fitted mode at its own measured saturation. Maximizing the complete
+        # mixture over every possible saturation allowed a nearly neutral dark
+        # mode to match the low-saturation candidate at every hue, producing a
+        # false horizontal band across the entire picker.
         chromatic = self._chromatic_components(centres, effective_scales)
         excluded_chromatic = self._chromatic_components(
             excluded_centres, excluded_scales
         )
         hue_width = width - neutral_width
-        hue_probability = np.zeros((height, hue_width), np.float32)
-        hue_excluded_probability = np.zeros_like(hue_probability)
-        hue = np.uint8(
-            np.rint(np.linspace(0.0, 179.0, hue_width, dtype=np.float32))
-        )[None, :]
-        lightness = np.uint8(
-            np.rint(np.linspace(255.0, 0.0, height, dtype=np.float32))
-        )[:, None]
-        for saturation in np.linspace(8.0, 255.0, 20, dtype=np.float32):
-            hls = np.empty((height, hue_width, 3), np.uint8)
-            hls[:, :, 0] = hue
-            hls[:, :, 1] = lightness
-            hls[:, :, 2] = np.uint8(np.rint(saturation))
-            candidate_lab = cv2.cvtColor(
-                cv2.cvtColor(hls, cv2.COLOR_HLS2RGB),
-                cv2.COLOR_RGB2LAB,
-            ).astype(np.float32)
-            if bool(np.any(chromatic)):
-                hue_probability = np.maximum(
-                    hue_probability,
-                    self._mixture_probability(
-                        candidate_lab,
-                        centres[chromatic],
-                        effective_scales[chromatic],
-                        adjusted_weights[chromatic],
-                        distance_weights,
-                    ),
-                )
-            if bool(np.any(excluded_chromatic)):
-                hue_excluded_probability = np.maximum(
-                    hue_excluded_probability,
-                    self._mixture_probability(
-                        candidate_lab,
-                        excluded_centres[excluded_chromatic],
-                        excluded_scales[excluded_chromatic],
-                        excluded_adjusted_weights[excluded_chromatic],
-                        distance_weights,
-                    ),
-                )
+        hue_probability = self._hue_tone_probability(
+            centres[chromatic],
+            effective_scales[chromatic],
+            adjusted_weights[chromatic],
+            distance_weights,
+            hue_width,
+            height,
+        )
+        hue_excluded_probability = self._hue_tone_probability(
+            excluded_centres[excluded_chromatic],
+            excluded_scales[excluded_chromatic],
+            excluded_adjusted_weights[excluded_chromatic],
+            distance_weights,
+            hue_width,
+            height,
+        )
         probability[:, neutral_width:] = hue_probability
         excluded_probability[:, neutral_width:] = hue_excluded_probability
         probability = np.clip(probability, 0.0, 1.0)
@@ -270,27 +248,98 @@ class BackgroundColourGamut(QWidget):
             probability += np.exp(-0.5 * distance) * weight
         return np.clip(probability, 0.0, 1.0)
 
+    @classmethod
+    def _hue_tone_probability(
+        cls,
+        centres: np.ndarray,
+        scales: np.ndarray,
+        weights: np.ndarray,
+        distance_weights: np.ndarray,
+        width: int,
+        height: int,
+    ) -> np.ndarray:
+        """Project modes at measured saturation onto hue and tone.
+
+        Each component has its own colour plane. Summing those component
+        memberships preserves the fitted mixture while avoiding a maximization
+        over unrelated, nearly neutral saturation slices.
+        """
+
+        import cv2
+
+        probability = np.zeros((height, width), np.float32)
+        if not len(centres):
+            return probability
+        centre_lab = np.clip(np.rint(centres), 0, 255).astype(np.uint8)[:, None, :]
+        centre_hls = cv2.cvtColor(
+            cv2.cvtColor(centre_lab, cv2.COLOR_LAB2RGB),
+            cv2.COLOR_RGB2HLS,
+        )[:, 0]
+        hue = np.uint8(
+            np.rint(np.linspace(0.0, 179.0, width, dtype=np.float32))
+        )[None, :]
+        lightness = np.uint8(
+            np.rint(np.linspace(255.0, 0.0, height, dtype=np.float32))
+        )[:, None]
+        for centre, scale, weight, hls_centre in zip(
+            centres, scales, weights, centre_hls, strict=True
+        ):
+            hls = np.empty((height, width, 3), np.uint8)
+            hls[:, :, 0] = hue
+            hls[:, :, 1] = lightness
+            hls[:, :, 2] = hls_centre[2]
+            candidate_rgb = cv2.cvtColor(hls, cv2.COLOR_HLS2RGB)
+            candidate_lab = cv2.cvtColor(
+                candidate_rgb, cv2.COLOR_RGB2LAB
+            ).astype(np.float32)
+            delta = (candidate_lab - centre) / scale
+            distance = np.sum((delta * delta) * distance_weights, axis=2)
+            membership = np.exp(-0.5 * distance) * weight
+            # At black and white every hue collapses to the same RGB value.
+            # Keep those achromatic endpoints in the neutral strip instead of
+            # drawing a semantically meaningless all-hue contour.
+            visible_chroma = (
+                candidate_rgb.max(axis=2).astype(np.int16)
+                - candidate_rgb.min(axis=2).astype(np.int16)
+            ) >= 4
+            probability += membership * visible_chroma
+        return np.clip(probability, 0.0, 1.0)
+
     @staticmethod
     def _chromatic_components(
         centres: np.ndarray, scales: np.ndarray
     ) -> np.ndarray:
         if not len(centres):
             return np.zeros((0,), dtype=bool)
+        import cv2
+
         chroma = np.hypot(centres[:, 1] - 128.0, centres[:, 2] - 128.0)
         tolerance = np.maximum(
             2.5, 0.75 * np.minimum(scales[:, 1], scales[:, 2])
         )
-        return chroma >= tolerance
+        lab = np.clip(np.rint(centres), 0, 255).astype(np.uint8)[:, None, :]
+        rgb = cv2.cvtColor(lab, cv2.COLOR_LAB2RGB)[:, 0]
+        hls = cv2.cvtColor(rgb[:, None, :], cv2.COLOR_RGB2HLS)[:, 0]
+        rgb_range = (
+            rgb.max(axis=1).astype(np.int16) - rgb.min(axis=1).astype(np.int16)
+        )
+        # Tiny channel differences in a dark or pale neutral sample can have a
+        # nominal Lab hue even though hue is not visually meaningful. Keep such
+        # modes in the neutral strip. A pale tint remains chromatic when either
+        # its HLS saturation or its visible channel separation is substantial.
+        hue_is_visible = (hls[:, 2] >= 32) | (rgb_range >= 12)
+        return (chroma >= tolerance) & hue_is_visible
 
     def _update_tooltip(self) -> None:
         self.setToolTip(
             "A neutral-value strip followed by an HSV hue/tint/shade slice. "
             f"Contour lines show fitted {self._class_name} membership in the "
             "model's Lab space. Neutral modes are evaluated only in the neutral "
-            "strip; chromatic modes are projected over saturation in the hue/tone "
-            "area so pale tints remain visible without spreading grey evidence "
+            "strip; each chromatic mode is projected at its measured saturation "
+            "in the hue/tone area so pale tints remain visible without spreading "
+            "grey evidence or near-neutral evidence "
             "across unrelated hues. "
-            "Circle labels show learned colour-mode occurrence in "
+            "Circle labels show the leading learned colour-mode occurrences in "
             "painted references, isolated reference seeds, or the labelled fallback."
         )
 
@@ -387,9 +436,14 @@ class BackgroundColourGamut(QWidget):
 
         image_width = max(1, self._image.width() - 1)
         image_height = max(1, self._image.height() - 1)
-        for point, weight in zip(
-            self._centre_points, self._weights, strict=False
-        ):
+        # Dense painted references can retain dozens of colour modes. Drawing
+        # every circle and percentage makes the diagnostic unreadable, while
+        # the contours already include every fitted mode. Label only the twelve
+        # most frequent modes.
+        displayed_modes = np.argsort(self._weights)[::-1][:12]
+        for index in displayed_modes:
+            point = self._centre_points[index]
+            weight = self._weights[index]
             x = plot.left() + float(point[0]) / image_width * plot.width()
             y = plot.top() + float(point[1]) / image_height * plot.height()
             painter.setPen(QPen(QColor("#101418"), 3.0))
@@ -727,8 +781,9 @@ class PipelineInspector(QWidget):
         self.gamut_caption.setText(
             f"Colour beneath the contours is a neutral white-to-black strip followed "
             f"by an HSV hue/tint/shade slice (white through pure colour to black). "
-            f"Contours show exact neutral membership and a saturation projection "
-            f"of chromatic modes at 25/50/75/90%; neutral evidence is never spread "
+            f"Contours show exact neutral membership and each chromatic mode "
+            f"projected at its measured saturation at 25/50/75/90%; neutral "
+            f"evidence is never spread "
             f"across unrelated hues. "
             f"Circles are learned "
             f"{source_description} labelled by frequency. Observed 5–95% BGR: "
