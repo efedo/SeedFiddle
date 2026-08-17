@@ -23,6 +23,7 @@ class EdgeTraceOptions:
     tangent_mode: str = "undirected"
     tangent_weight: float = 0.45
     smoothing: int = 2
+    edge_source: str = "magnitude"
 
     def __post_init__(self) -> None:
         if not 2 <= self.search_radius_px <= 200:
@@ -35,6 +36,18 @@ class EdgeTraceOptions:
             raise ValueError("Tangent weight must be between zero and one.")
         if not 0 <= self.smoothing <= 8:
             raise ValueError("Path smoothing must be between zero and eight.")
+        if self.edge_source not in {
+            "adaptive",
+            "ridges",
+            "reference_ridges",
+            "traces",
+            "magnitude",
+            "physical",
+        }:
+            raise ValueError(
+                "Edge source must be adaptive, ridges, reference_ridges, traces, "
+                "magnitude, or physical."
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +89,7 @@ class SmartFillOptions:
     maximum_radius_px: int = 160
     maximum_added_pixels: int = 150_000
     connectivity: int = 8
+    edge_source: str = "magnitude"
 
     def __post_init__(self) -> None:
         if not 1.0 <= self.colour_tolerance_lab <= 100.0:
@@ -90,6 +104,18 @@ class SmartFillOptions:
             raise ValueError("Maximum added pixels must be positive.")
         if self.connectivity not in {4, 8}:
             raise ValueError("Connectivity must be four or eight.")
+        if self.edge_source not in {
+            "adaptive",
+            "ridges",
+            "reference_ridges",
+            "traces",
+            "magnitude",
+            "physical",
+        }:
+            raise ValueError(
+                "Edge source must be adaptive, ridges, reference_ridges, traces, "
+                "magnitude, or physical."
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,6 +135,64 @@ def _normalized_strength(values: np.ndarray) -> np.ndarray:
     if result.size and float(np.nanmax(result)) > 1.0:
         result = result / 255.0
     return np.nan_to_num(result, nan=0.0, posinf=1.0, neginf=0.0).clip(0.0, 1.0)
+
+
+def _edge_evidence(values: np.ndarray, source: str) -> np.ndarray:
+    """Return comparable edge confidence without treating trace IDs as strength.
+
+    Oriented traces are categorical component labels.  Normalizing their raw
+    integer IDs would make early components artificially weak and late
+    components artificially strong, so every positive trace is structural
+    support.  The remaining sources are genuine scalar confidence rasters.
+    """
+
+    raster = np.asarray(values)
+    if source == "traces":
+        if raster.ndim != 2:
+            raise ValueError("Edge strength must be a two-dimensional raster.")
+        return (raster > 0).astype(np.float32)
+    if source == "adaptive" and np.issubdtype(raster.dtype, np.integer):
+        maximum = int(np.max(raster, initial=0))
+        # Values outside an 8-bit confidence range can only be categorical
+        # labels in the current pipeline contract.
+        if maximum > 255:
+            return (raster > 0).astype(np.float32)
+    return _normalized_strength(raster)
+
+
+def _anchored_support_component(
+    edge_strip: np.ndarray,
+    centre_row: int,
+    source: str,
+) -> np.ndarray | None:
+    """Find thin support continuously joining both clicked anchors."""
+
+    positive = edge_strip[edge_strip > 0.0]
+    if not positive.size:
+        return None
+    if source == "traces":
+        threshold = 0.5
+    elif source in {"ridges", "reference_ridges"}:
+        threshold = max(0.04, min(0.35, float(np.quantile(positive, 0.20))))
+    else:
+        threshold = max(0.08, min(0.55, float(np.quantile(positive, 0.55))))
+    support = np.ascontiguousarray(edge_strip >= threshold, dtype=np.uint8)
+    _count, labels = cv2.connectedComponents(support, connectivity=8)
+
+    def endpoint_label(column: int) -> int:
+        candidates = labels[:, column]
+        distances = np.abs(np.arange(len(candidates)) - centre_row)
+        valid = candidates > 0
+        if not np.any(valid):
+            return 0
+        distances = np.where(valid, distances, len(candidates) + 1)
+        return int(candidates[int(np.argmin(distances))])
+
+    start_label = endpoint_label(0)
+    end_label = endpoint_label(edge_strip.shape[1] - 1)
+    if start_label <= 0 or start_label != end_label:
+        return None
+    return labels == start_label
 
 
 def snap_edge_point(
@@ -131,11 +215,16 @@ def snap_edge_point(
     yy, xx = np.mgrid[y0:y1, x0:x1]
     distance = np.hypot(xx - x, yy - y)
     inside = distance <= radius
-    score = roi - 0.18 * distance / max(1.0, float(radius))
-    score[~inside] = -np.inf
-    snapped_y, snapped_x = np.unravel_index(int(np.argmax(score)), score.shape)
-    if float(roi[snapped_y, snapped_x]) <= 0.0:
+    peak = float(np.max(roi[inside])) if np.any(inside) else 0.0
+    if peak <= 0.0:
         return x, y
+    # Prefer the nearest credible edge.  Maximising strength with only a weak
+    # distance bias made a cursor placed directly on one seed edge jump to a
+    # slightly stronger parallel edge several pixels away.
+    credible = inside & (roi >= max(0.04, peak * 0.30))
+    score = -distance + 0.35 * roi
+    score[~credible] = -np.inf
+    snapped_y, snapped_x = np.unravel_index(int(np.argmax(score)), score.shape)
     return int(snapped_x + x0), int(snapped_y + y0)
 
 
@@ -146,12 +235,13 @@ def trace_edge_path(
     options: EdgeTraceOptions = EdgeTraceOptions(),
     tangent_hue: np.ndarray | None = None,
 ) -> np.ndarray:
-    """Return a fast magnetic path sampled across a bounded line corridor.
+    """Return a fast continuity-aware magnetic path between two anchors.
 
-    OpenCV samples the complete perpendicular search strip in native code. A
-    smoothed maximum-support track then supplies the preview path. This avoids
-    the former Python heap search whose latency grew to seconds for long paths
-    or wide search radii, while retaining edge and tangent evidence.
+    Evidence is sampled in a bounded perpendicular corridor, then a banded
+    dynamic program finds one continuous seam.  A ridge component that reaches
+    both clicked anchors is locked preferentially, preventing a stronger nearby
+    parallel ridge from stealing the middle of the path.  Tangent evidence is
+    evaluated against each local transition and is gated by edge support.
     """
 
     edge_values = np.asarray(edge_strength)
@@ -188,18 +278,34 @@ def trace_edge_path(
         + along[None, :] * unit_y
         + offsets[:, None] * normal_y
     ).astype(np.float32, copy=False)
+    interpolation = (
+        cv2.INTER_NEAREST
+        if options.edge_source == "traces"
+        else cv2.INTER_LINEAR
+    )
     edge_strip = cv2.remap(
         edge_values,
         map_x,
         map_y,
-        cv2.INTER_LINEAR,
+        interpolation,
         borderMode=cv2.BORDER_CONSTANT,
         borderValue=0,
     )
-    edge_strip = _normalized_strength(edge_strip)
+    edge_strip = _edge_evidence(edge_strip, options.edge_source)
     attraction = float(options.edge_attraction)
-    score = attraction * edge_strip
+    row_count, column_count = edge_strip.shape
+    centre_row = int(np.argmin(np.abs(offsets)))
+    locked_component = _anchored_support_component(
+        edge_strip, centre_row, options.edge_source
+    )
+    straightness = np.abs(offsets[:, None]) / max(1.0, padding)
+    score = attraction * edge_strip - (1.0 - attraction) * 0.32 * straightness
+    if locked_component is not None:
+        # A component touching both anchors is stronger topological evidence
+        # than an unrelated parallel ridge, even if that ridge is brighter.
+        score += np.where(locked_component, 0.72, -0.72).astype(np.float32)
 
+    hue_strip = None
     if hue_values is not None and options.tangent_mode != "off":
         hue_strip = cv2.remap(
             hue_values,
@@ -209,43 +315,63 @@ def trace_edge_path(
             borderMode=cv2.BORDER_CONSTANT,
             borderValue=0,
         ).astype(np.float32)
-        path_angle = atan2(delta_y, delta_x)
-        if options.tangent_mode == "undirected":
-            tangent_angle = hue_strip * pi / 180.0
-            alignment = np.abs(np.cos(path_angle - tangent_angle))
-        else:
-            tangent_angle = hue_strip * 2.0 * pi / 180.0
-            alignment = 0.5 + 0.5 * np.cos(path_angle - tangent_angle)
-        score += float(options.tangent_weight) * alignment
-
-    score -= 0.10 * np.abs(offsets[:, None]) / max(1.0, padding)
-    selected_offsets = offsets[np.argmax(score, axis=0)]
-    sigma = 0.65 + 0.55 * float(options.smoothing)
-    selected_offsets = cv2.GaussianBlur(
-        selected_offsets[None, :],
-        (0, 0),
-        sigmaX=sigma,
-        borderType=cv2.BORDER_REPLICATE,
-    )[0]
-
-    # Anchor both clicks and limit lateral jumps so adjacent strong coat edges
-    # cannot make the preview teleport between unrelated boundaries.
+    # Banded Viterbi seam.  Keeping the transition band narrow makes long live
+    # previews deterministic and interactive while prohibiting teleports.
     step_length = length / max(1, sample_count - 1)
     maximum_jump = max(1.0, step_length * 1.8)
-    selected_offsets[0] = 0.0
-    for index in range(1, sample_count):
-        selected_offsets[index] = np.clip(
-            selected_offsets[index],
-            selected_offsets[index - 1] - maximum_jump,
-            selected_offsets[index - 1] + maximum_jump,
-        )
-    selected_offsets[-1] = 0.0
-    for index in range(sample_count - 2, -1, -1):
-        selected_offsets[index] = np.clip(
-            selected_offsets[index],
-            selected_offsets[index + 1] - maximum_jump,
-            selected_offsets[index + 1] + maximum_jump,
-        )
+    offset_step = max(1e-6, float(abs(offsets[1] - offsets[0])))
+    maximum_shift = max(1, int(np.ceil(maximum_jump / offset_step)))
+    previous_score = np.full(row_count, -np.inf, dtype=np.float32)
+    previous_score[centre_row] = score[centre_row, 0]
+    predecessors = np.full((column_count, row_count), -1, dtype=np.int16)
+    smoothness = 0.07 + 0.045 * float(options.smoothing)
+    rows = np.arange(row_count)
+    for column in range(1, column_count):
+        best = np.full(row_count, -np.inf, dtype=np.float32)
+        best_predecessor = np.full(row_count, -1, dtype=np.int16)
+        for shift in range(-maximum_shift, maximum_shift + 1):
+            current_start = max(0, shift)
+            current_stop = min(row_count, row_count + shift)
+            if current_start >= current_stop:
+                continue
+            current_rows = rows[current_start:current_stop]
+            prior_rows = current_rows - shift
+            candidate = previous_score[prior_rows] - smoothness * abs(shift)
+            if hue_strip is not None:
+                lateral = float(shift) * offset_step
+                move_x = unit_x * step_length + normal_x * lateral
+                move_y = unit_y * step_length + normal_y * lateral
+                move_angle = atan2(move_y, move_x)
+                encoded = hue_strip[current_rows, column]
+                if options.tangent_mode == "undirected":
+                    tangent_angle = encoded * pi / 180.0
+                    alignment = np.abs(np.cos(move_angle - tangent_angle))
+                else:
+                    tangent_angle = encoded * 2.0 * pi / 180.0
+                    alignment = 0.5 + 0.5 * np.cos(move_angle - tangent_angle)
+                candidate = candidate + (
+                    float(options.tangent_weight)
+                    * alignment
+                    * edge_strip[current_rows, column]
+                )
+            improved = candidate > best[current_rows]
+            if np.any(improved):
+                selected_rows = current_rows[improved]
+                best[selected_rows] = candidate[improved]
+                best_predecessor[selected_rows] = prior_rows[improved]
+        previous_score = best + score[:, column]
+        predecessors[column] = best_predecessor
+
+    selected_rows = np.empty(column_count, dtype=np.int32)
+    selected_rows[-1] = centre_row
+    if not np.isfinite(previous_score[centre_row]):
+        selected_rows[-1] = int(np.argmax(previous_score))
+    for column in range(column_count - 1, 0, -1):
+        prior = int(predecessors[column, selected_rows[column]])
+        selected_rows[column - 1] = centre_row if prior < 0 else prior
+    selected_rows[0] = centre_row
+    selected_rows[-1] = centre_row
+    selected_offsets = offsets[selected_rows]
 
     path_x = float(start_x) + along * unit_x + selected_offsets * normal_x
     path_y = float(start_y) + along * unit_y + selected_offsets * normal_y
@@ -362,6 +488,166 @@ def snap_shape_polygon(
     return np.rint(best_polygon).astype(np.int32)
 
 
+def _star_convex_edge_fill(
+    edge_strength: np.ndarray,
+    lab_image: np.ndarray,
+    anchor_xy: tuple[int, int],
+    radius: int,
+    options: SmartFillOptions,
+) -> np.ndarray:
+    """Recover one closed, locally edge-supported seed around an interior click.
+
+    Flood fill is ideal when a calculated barrier is closed.  Touching seeds
+    often leave one- or two-pixel gaps, however, and neighbour-relative colour
+    comparison can then legitimately walk into another seed of the same coat
+    colour.  This bounded fallback follows a smooth star-convex edge contour;
+    it is deliberately used only after the ordinary flood reaches the outer
+    growth limit.
+    """
+
+    edge = _normalized_strength(edge_strength)
+    lab = np.asarray(lab_image)
+    height, width = edge.shape
+    anchor_x, anchor_y = int(anchor_xy[0]), int(anchor_xy[1])
+    maximum_radius = max(4, int(radius))
+    expected_radius = max(4.0, maximum_radius / 2.4)
+    angular_samples = int(
+        np.clip(round(2.0 * pi * expected_radius * 0.65), 72, 160)
+    )
+    angles = np.linspace(
+        0.0, 2.0 * pi, angular_samples, endpoint=False, dtype=np.float32
+    )
+    radial_values = np.arange(
+        3, max(4, int(round(maximum_radius * 0.82))) + 1, dtype=np.float32
+    )
+    cosine = np.cos(angles)
+    sine = np.sin(angles)
+    map_x = anchor_x + cosine[:, None] * radial_values[None, :]
+    map_y = anchor_y + sine[:, None] * radial_values[None, :]
+    edge_samples = cv2.remap(
+        edge,
+        map_x,
+        map_y,
+        cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=0,
+    ).astype(np.float32)
+
+    luminance = np.asarray(lab[:, :, 0], dtype=np.uint8)
+    gradient_x = cv2.Sobel(luminance, cv2.CV_32F, 1, 0, ksize=3)
+    gradient_y = cv2.Sobel(luminance, cv2.CV_32F, 0, 1, ksize=3)
+    gradient = cv2.magnitude(gradient_x, gradient_y)
+    nonzero_gradient = gradient[gradient > 0.0]
+    gradient_scale = (
+        float(np.quantile(nonzero_gradient, 0.98))
+        if nonzero_gradient.size
+        else 1.0
+    )
+    gradient = np.clip(gradient / max(1.0, gradient_scale), 0.0, 1.0)
+    gradient_samples = cv2.remap(
+        gradient,
+        map_x,
+        map_y,
+        cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=0,
+    ).astype(np.float32)
+
+    threshold_floor = float(options.edge_stop_threshold) * 0.45
+    structural = np.clip(
+        (edge_samples - threshold_floor) / max(0.05, 1.0 - threshold_floor),
+        0.0,
+        1.0,
+    )
+    boundary_evidence = np.maximum(structural, gradient_samples)
+    angular_coverage = float(
+        np.mean(np.max(boundary_evidence, axis=1) >= 0.12)
+    )
+    if angular_coverage < 0.25:
+        # With no plausible enclosing edge, returning a shape-prior circle
+        # would be less honest than retaining the visibly radius-limited flood.
+        return np.zeros((height, width), dtype=bool)
+    edge_weight = 1.35 * (1.0 - 0.35 * float(options.tunnel_strength))
+    contrast_weight = 0.65 * max(
+        0.20, 1.0 - float(options.colour_tolerance_lab) / 120.0
+    )
+    deviation = np.abs(radial_values[None, :] - expected_radius) / expected_radius
+    unary = edge_weight * structural + contrast_weight * gradient_samples
+    unary -= 0.18 * deviation
+    unary -= 0.35 * np.exp(-radial_values[None, :] / 6.0)
+
+    state_count = len(radial_values)
+    state_indices = np.arange(state_count, dtype=np.int32)
+    transition_steps = np.arange(-4, 5, dtype=np.int32)
+    transition_cost = 0.14 * (1.0 - 0.35 * float(options.tunnel_strength))
+    best_score = -np.inf
+    best_path: np.ndarray | None = None
+    # Trying a handful of plausible first-angle states makes the seam cyclic:
+    # the final state must return close to the same radius.
+    start_candidates = np.argsort(unary[0])[-10:]
+    for start_state in start_candidates:
+        previous = np.full(state_count, -np.inf, dtype=np.float32)
+        previous[int(start_state)] = unary[0, int(start_state)]
+        predecessors = np.full(
+            (angular_samples, state_count), -1, dtype=np.int16
+        )
+        for angle_index in range(1, angular_samples):
+            candidates = np.full(
+                (len(transition_steps), state_count),
+                -np.inf,
+                dtype=np.float32,
+            )
+            for transition_index, step in enumerate(transition_steps):
+                source_indices = state_indices - step
+                valid = (source_indices >= 0) & (source_indices < state_count)
+                targets = state_indices[valid]
+                candidates[transition_index, targets] = (
+                    previous[source_indices[valid]]
+                    - transition_cost * abs(int(step))
+                )
+            chosen = np.argmax(candidates, axis=0)
+            predecessors[angle_index] = (
+                state_indices - transition_steps[chosen]
+            ).astype(np.int16)
+            previous = candidates[chosen, state_indices] + unary[angle_index]
+        close_to_start = np.abs(state_indices - int(start_state)) <= 4
+        end_state = int(
+            np.argmax(np.where(close_to_start, previous, -np.inf))
+        )
+        total = float(
+            previous[end_state]
+            - transition_cost * abs(end_state - int(start_state))
+        )
+        if total <= best_score:
+            continue
+        path = np.empty(angular_samples, dtype=np.int32)
+        path[-1] = end_state
+        for angle_index in range(angular_samples - 1, 0, -1):
+            predecessor = int(predecessors[angle_index, path[angle_index]])
+            path[angle_index - 1] = (
+                int(start_state) if predecessor < 0 else predecessor
+            )
+        best_score = total
+        best_path = path
+
+    mask = np.zeros((height, width), dtype=np.uint8)
+    if best_path is None:
+        return mask.astype(bool)
+    selected_radii = radial_values[best_path]
+    polygon = np.rint(
+        np.column_stack(
+            (
+                anchor_x + cosine * selected_radii,
+                anchor_y + sine * selected_radii,
+            )
+        )
+    ).astype(np.int32)
+    polygon[:, 0] = np.clip(polygon[:, 0], 0, width - 1)
+    polygon[:, 1] = np.clip(polygon[:, 1], 0, height - 1)
+    cv2.fillPoly(mask, [polygon], 1)
+    return mask.astype(bool)
+
+
 def smart_fill_region(
     labels: np.ndarray,
     corrected_bgr: np.ndarray,
@@ -417,21 +703,40 @@ def smart_fill_region(
         > radius * radius
     )
     other_instance = (roi_labels != 0) & (roi_labels != int(instance_id))
-    edge_limit = min(
-        1.0,
-        float(options.edge_stop_threshold) + 0.32 * options.tunnel_strength,
-    )
-    edge_barrier = roi_edge > edge_limit
+    edge_limit = float(options.edge_stop_threshold)
+    edge_barrier = roi_edge >= edge_limit
     edge_barrier &= roi_labels != int(instance_id)
+    # Tunnelling opens one bounded passage through the nearest weak barrier.
+    # The former implementation raised the threshold everywhere, weakening
+    # every seed boundary in the ROI and also changing the colour tolerance.
+    if options.tunnel_strength > 0.0 and np.any(edge_barrier):
+        weak_limit = min(
+            1.0, edge_limit + 0.32 * float(options.tunnel_strength)
+        )
+        weak = edge_barrier & (roi_edge <= weak_limit)
+        weak_y, weak_x = np.nonzero(weak)
+        if len(weak_y):
+            weak_distance = (
+                (weak_x - local_anchor[0]) ** 2
+                + (weak_y - local_anchor[1]) ** 2
+            )
+            nearest = int(np.argmin(weak_distance))
+            passage_radius = max(
+                1, int(round(1.0 + 3.0 * float(options.tunnel_strength)))
+            )
+            passage = (
+                (xx - int(weak_x[nearest])) ** 2
+                + (yy - int(weak_y[nearest])) ** 2
+                <= passage_radius * passage_radius
+            )
+            edge_barrier &= ~(weak & passage)
     blocked = outside_radius | other_instance | edge_barrier
     blocked[local_anchor[1], local_anchor[0]] = False
     flood_mask = np.zeros(
         (roi_labels.shape[0] + 2, roi_labels.shape[1] + 2), dtype=np.uint8
     )
     flood_mask[1:-1, 1:-1][blocked] = 1
-    tolerance = float(options.colour_tolerance_lab) * (
-        1.0 + 0.85 * options.tunnel_strength
-    )
+    tolerance = float(options.colour_tolerance_lab)
     differences = (tolerance, tolerance * 0.72, tolerance * 0.72)
     flags = (
         int(options.connectivity)
@@ -448,6 +753,41 @@ def smart_fill_region(
         flags=flags,
     )
     accepted = flood_mask[1:-1, 1:-1] == 255
+    # Include the first barrier pixel touching the accepted interior.  With a
+    # thinned-ridge or trace source the visible annotation now meets that exact
+    # one-pixel centreline, while the flood itself still cannot cross it.
+    frontier = cv2.dilate(
+        accepted.astype(np.uint8),
+        np.ones((3, 3), dtype=np.uint8),
+        iterations=1,
+    ).astype(bool)
+    accepted |= frontier & edge_barrier & ~other_instance
+    roi_is_unclipped = (
+        x0 > 0 and y0 > 0 and x1 < width and y1 < height
+    )
+    radial_distance_squared = (
+        (xx - local_anchor[0]) ** 2 + (yy - local_anchor[1]) ** 2
+    )
+    outer_ring = (
+        radial_distance_squared >= (0.92 * radius) ** 2
+    ) & ~outside_radius
+    outer_reached = (
+        roi_is_unclipped
+        and np.any(outer_ring)
+        and float(np.mean(accepted[outer_ring])) > 0.12
+    )
+    if outer_reached:
+        recovered = _star_convex_edge_fill(
+            roi_edge,
+            roi_lab,
+            local_anchor,
+            radius,
+            options,
+        )
+        if np.any(recovered):
+            accepted = recovered
+            accepted |= roi_labels == int(instance_id)
+            accepted &= ~other_instance
     accepted |= roi_labels == int(instance_id)
     added_mask = accepted & (roi_labels != int(instance_id))
     added = int(np.count_nonzero(added_mask))

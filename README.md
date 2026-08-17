@@ -149,7 +149,11 @@ brighter side of an edge lies on their right. Directed polarity is naturally
 less stable for edges whose two sides have nearly equal perceptual lightness.
 The active edge branch retains continuous shared gradients on CUDA, thins
 them with non-maximum suppression and hysteresis, and links compatible pixels
-into oriented traces while bridging short gaps and splitting junctions. The
+into oriented traces while bridging short gaps and splitting junctions. Its
+convexity policy can leave legacy tangent-only links unchanged, prefer
+single-turn C-shaped gap continuations, or require every non-ambiguous gap
+link to avoid an S-shaped inflection. Both clockwise and counter-clockwise
+curvature are accepted. The
 preserved **Directional surface darkness gradients** node samples one-sided
 rays over a seed-relative radius and retains separate maximum lightening and
 darkening CIE L* slopes plus their query-to-target directions. Its two optional
@@ -188,8 +192,10 @@ Reference annotation is divided into three independent full-resolution layers:
 1. **Material references** is one categorical mask with mutually exclusive
    **Background**, **Foreground**, and **Other** classes. Painting one class at
    a pixel removes either of the other two there. Other means neither ordinary
-   dish background nor seed foreground; it supplies negative examples to both
-   fitted colour/texture models instead of hard-setting their output pixels.
+   dish background nor seed foreground; it supplies a competing learned model
+   to both fitted colour/texture classes instead of hard-setting their output
+   pixels. It reduces a class only where Other fits better, so glass or neutral
+   colours shared with a positive class cannot veto legitimate evidence.
 2. **Boundary references** contains mutually exclusive **Physical edge** and
    **Non-edge** review marks. Non-edge is suitable for strong coat-pattern or
    lighting transitions that are not a physical seed boundary. The optional
@@ -199,9 +205,35 @@ Reference annotation is divided into three independent full-resolution layers:
 3. **Seed instance annotations** is the separate labelled integer layer
    described below; every seed receives its own stable colour ID.
 
+The active **Reference texture prototypes** node turns those reviewed examples
+into an image-local, non-neural pattern matcher. It fits up to 64 independent
+coverage-preserving medoids for each of Background, Foreground, Other, Physical
+edge, and Non-edge instead of averaging a class into one texture. Material
+prototypes combine Lab colour, fine/medium/coarse darkness and colour energy,
+local residuals, edge magnitude, ridges, and local edge density. Boundary
+prototypes add tangent coherence and cross-edge contrast; their source patches
+are rotated to a common tangent for review. The node evaluates every prototype
+throughout the dish on CUDA and publishes Foreground/seed-surface, Background,
+Other, Physical-edge, and Non-edge likelihoods. Competing classes attenuate a
+positive match only when they fit more specifically, and painted coordinates
+are never assigned an output probability directly.
+
+Selecting the node exposes a full-image-pane **Reference texture prototype
+collage** containing every retained medoid, grouped and colour-coded by class,
+with cluster support percentages and source reference counts. Its three material
+likelihood overlays remain available beside the existing physical/non-edge
+overlays. Maximum prototypes, minimum cluster support, fit iterations,
+similarity tolerance, seed-relative context, thumbnail size, ridge influence,
+and working dimension are editable and computationally active. With no applied
+references the expensive feature fit is skipped and the physical-edge output
+uses generic edge/ridge support. This is per-image procedural adaptation, not a
+trained cross-image model; it is intended to improve annotation bootstrapping
+and provide inspectable evidence for later learned-model training.
+
 The top-bar **Material references**, **Boundary references**, and **Annotate
 seed instances** commands open the applicable compact contextual controls over
-the image. Repeated explanatory text is kept in tooltips. Shared **Paint**,
+the image. Drag the **Move painting controls** bar to reposition this panel.
+Repeated explanatory text is kept in tooltips. Shared **Paint**,
 **Eraser**, **Clear layer**, brush-radius, **Apply**, and **Revert** controls
 replace per-class editing rows; right-drag remains a temporary eraser. A live
 image-coordinate outline shows the exact brush footprint, and boundary
@@ -210,6 +242,25 @@ reference strokes use lightweight vector previews and rebuild their mask
 overlays only once on release. Painting remains a draft and performs no image
 analysis until **Apply**. Turn off **Show marks** to inspect analysis overlays
 without material or boundary paint; seed-instance colours remain visible.
+Clearing the selected class returns the shared tool to Paint so the empty layer
+can immediately be redrawn.
+
+The fixed panel header also provides a context-aware **Undo** button
+(`Ctrl+Z`). Seed Fiddle retains the latest 20 unapplied commands for each image,
+independently for the categorical reference layers and seed-instance labels.
+One freehand drag, assisted-tool click, clear command, imported label map, or
+automatic starting draft is one undo step. Undo restores mutually exclusive
+peer classes together (Background/Foreground/Other or Physical edge/Non-edge),
+including the previous seed-label provenance. **Apply** and **Revert** establish
+a new history boundary; disk-restored references begin with an empty queue.
+
+**Save applied references** stores all three applied annotation layers together
+in the ignored `projects/reference-regions/` workspace area. Seed Fiddle
+automatically restores that archive the next time the same image is opened, but
+only after its stored SHA-256 fingerprint and dimensions match the current
+image. A changed, corrupt, or incompatible image/archive produces a warning and
+no reference pixels are loaded. Unapplied drafts must be applied or reverted
+before saving, so a saved archive is always an exact analysis input.
 
 Use the separate **Annotate seed instances** mode to give each known seed a
 stable, distinct colour ID. Freehand **Brush** and **Eraser** drags show an
@@ -220,17 +271,32 @@ sets an initial anchor, previews a magnetic path as the cursor moves, and applie
 each segment on the next click; **Snap shape** shows both a nominal reference
 cursor and its nearest edge-supported circle/ellipse fit; **Smart fill** previews
 its proposed region and can start from an unmarked seed or extend a partial
-annotation. Trace and shape tools can ignore tangents or
-incorporate the calculated directed or undirected edge tangents with an
-adjustable influence. Smart fill compares each candidate with already accepted
-touching pixels rather than a fixed starting colour, stops at calculated edges,
-never overwrites another seed ID, and offers bounded growth, four/eight-neighbour
-connectivity, colour tolerance, edge threshold, and five tunnelling strengths.
-Its native floating-range flood compares candidates with accepted neighbours,
-not an absolute initial colour.
-This locally adaptive rule can cross gradual light/dark seed pattern changes;
-tunnelling progressively relaxes the local edge and colour barriers while the
-configured radius and pixel limits keep growth bounded.
+annotation. **Show selected seed only** hides every other instance mark; choosing
+another Seed ID recentres the image on that seed without changing zoom. Hidden
+neighbouring IDs are protected from both the brush and eraser.
+
+Trace edge and Smart fill each expose the exact **Edge evidence** they consume:
+**Thinned edge ridges** (the precise default), **Thinned reference edge ridge**,
+**Oriented edge traces**, **Adaptive combined**, **Physical-edge probability**,
+or the broader **Edge magnitude** raster. The reference-ridge choice applies
+independently adjustable normal-direction non-maximum suppression and CUDA
+high/low hysteresis to the broad, reference-trained physical-edge probability;
+it therefore retains reference classification while placing the barrier on a
+local edge centreline. Trace edge uses a bounded continuity-aware live-wire seam,
+locks to support connecting its two anchors when available, and evaluates
+directed/undirected tangent evidence against each local move. It therefore does
+not jump from the selected boundary to a stronger parallel one. Smart fill
+compares each candidate with already accepted touching pixels rather than a
+fixed starting colour, stops at the selected edge raster, never overwrites
+another seed ID, and offers bounded growth, four/eight-neighbour connectivity,
+colour tolerance, edge threshold, and five tunnelling strengths. A one-pixel
+barrier frontier lets the annotation meet a selected thinned ridge instead of
+stopping on the shoulder of a blurred magnitude band. Tunnelling opens one
+bounded passage through the nearest admissible weak barrier; it does not weaken
+every edge or broaden the colour tolerance. If a small contact gap nevertheless
+lets the neighbour-relative flood reach its growth limit, a local smooth
+star-convex edge contour recovers one seed instead of accepting the leaked
+radius-sized region.
 The **Start from result** selector can expand any available **Procedural seed
 separation**, **U-Net + watershed**, or **StarDist** label result into a
 full-resolution editable draft. This is an annotation bootstrap, never an
@@ -261,17 +327,29 @@ background reference is available. Independent foreground-noise, image-quality,
 and edge diagnostics still run; the colour and noise-frequency background maps
 are omitted.
 
+Both colour-probability nodes call their capacity control **Maximum reference
+colour modes**, but this shared name does not imply identical estimators.
+Foreground modes are coverage-preserving quantized colour-frequency cells;
+background modes are adaptively fitted robust Lab mixture components. The
+background default is 32 modes and can be increased to 256 when unusually
+complex reference colours justify the additional calculation time. Background
+membership is evaluated in small mode groups so increasing this capacity does
+not create a full image-by-mode GPU tensor. Adaptive background components are
+combined as a strongest-weighted-mode fuzzy union rather than added together;
+consequently, allowing more representatives cannot inflate probability merely
+because several fitted modes overlap.
+
 Selecting either the **Background colour probability** or **Foreground colour
-probability** node
-displays its fitted multimodal membership contours over an HSV-rendered
-hue/tint/shade projection like a colour-picker square: white at the top, pure
-hues through the middle, and black at the bottom. A separate white-to-black
-neutral strip retains achromatic modes. Neutral colours are evaluated exactly
-in that strip. Chromatic modes are maximized over the projection's hidden
-saturation dimension, so pale tinted references remain visible without
-repeating neutral evidence across unrelated hues. Both views use the unchanged
-CIE Lab mixture model. The underlying colours are never dimmed by membership
-probability.
+probability** node offers an **Accepted ... colours (HSV)** overlay. It replaces
+the image temporarily with a full-size, exact HSV slice: hue runs horizontally,
+saturation vertically, and the toolbar **HSV value** slider scans brightness.
+The initial slice follows the strongest visible fitted colour mode; **Peak**
+returns to it after manual scanning. A separate neutral swatch reports the exact
+achromatic probability at the selected value, since neutral colours have no
+meaningful hue. The 25%, 50%, 75%, and 90% contours are still evaluated by the
+unchanged CIE Lab mixture model, and the represented colours are never dimmed by
+membership probability. This exact three-coordinate view avoids the ambiguous
+hidden-saturation projection used by the former miniature inspector plot.
 The foreground diagnostic uses painted modes when supplied. Otherwise it uses
 the independently detected isolated reference seeds above the ruler as its
 starting colour-frequency samples. The foreground inspector lists the eight
@@ -307,7 +385,10 @@ barycentric ordering to reduce crossings. Its **Unused nodes** toolbox preserves
 experimental nodes outside the executable DAG and can explicitly restore one
 with its authored wiring. The image viewer has its own fit,
 100%, zoom, and percentage controls. Both canvases can be panned and zoomed,
-and node colours report idle, running,
+including when a node-graph pan begins over a connection path. Connections use
+right-click to disconnect or Ctrl-click followed by Delete/Backspace; ordinary
+left-drag is reserved for navigation unless it begins on a node or socket.
+Node colours report idle, running,
 complete, warning, planned, bypassed, and failed states.
 The inspector's **How it works** explanation starts collapsed whenever a node is
 selected and can be expanded with its disclosure button.
@@ -317,6 +398,16 @@ so timing does not serialize the pipeline at every node; reused nodes retain
 their most recent measured time. During a run, nodes begin blue and independently
 turn green as their worker stage completes; progress messages are scoped to the
 current image and pipeline revision.
+
+The active and restorable graph is audited against a separate 53-node
+direct-input contract rather than testing only the connectors that happen to
+exist. Dish-region, corrected-image, physical-scale, seed-diameter, mask,
+proposal, and reference inputs are therefore shown on every calculation that
+directly reads them. For example, **Edge gradients** is connected to **Layout
+detection**, and **Oriented edge traces** is connected to **Seed scale
+estimate**. A seed-scale change invalidates the trace calculation but preserves
+its reusable ridge field. Generated products such as sensor noise and local
+shadow use one consistently typed output socket instead of duplicate aliases.
 
 Full-image CUDA jobs are serialized through a dedicated one-worker queue and
 new requests are coalesced while a job is running. Completed node caches use a
@@ -385,16 +476,18 @@ The active layout-to-diagnostic span is represented by these live pipeline nodes
    budget, retained modes are selected for Lab-space coverage rather than raw
    frequency alone. Adding a large, varied affirmative region therefore cannot
    evict an earlier colour merely because that earlier patch is smaller. The
-   HSV diagnostic evaluates each chromatic mode at its measured saturation,
-   confines visually neutral modes to the neutral strip, and labels only the
-   leading frequencies; near-neutral dark evidence no longer appears as an
-   unrelated all-hue band.
+   full-pane HSV diagnostic evaluates one exact Value slice at a time,
+   confines visually neutral membership to a separate swatch, and labels only
+   the leading frequencies; near-neutral dark evidence therefore cannot appear
+   as an unrelated all-hue band.
    The **Background colour probability** diagnostic consumes the separately
-   controlled perimeter reference and also outlines that exact buffered annulus
-   (or the inside-rim fallback when necessary).
-   Its node inspector shows 25%, 50%, 75%, and 90% fitted membership contours
-   over an exact neutral strip and saturation-projected chromatic HSV
-   hue/tint/shade slice, with learned mode frequencies.
+   controlled perimeter reference, evaluates the same fitted colour model over
+   that exact buffered annulus, and shows the resulting probability beside the
+   dish-resident raster. The annulus remains outlined without an opaque colour
+   tint (or uses the inside-rim fallback when necessary).
+   Its node-owned full-pane overlay shows 25%, 50%, 75%, and 90% fitted
+   membership contours over the exact HSV hue/saturation slice selected by the
+   toolbar Value control, with learned mode frequencies and a neutral swatch.
    The **Background noise probability** applies its learned three-band texture
    classifier to that same surrounding annulus and displays the resulting noise
    likelihood alongside the dish-resident refined map.
@@ -413,11 +506,27 @@ The active layout-to-diagnostic span is represented by these live pipeline nodes
 5. **Foreground noise probability** learns a matching three-band profile from
    foreground-colour pseudo-labels. It continues texture evidence across
    patterned coats without hard-forcing painted reference pixels.
-6. **Edge gradients**, **Thinned edge ridges**, and **Oriented edge traces**
+6. **Edge gradients**, **Thinned edge ridges**, **Thinned reference edge
+   ridge**, and **Oriented edge traces**
    retain the strongest current evidence for visible seed boundaries without
-   depending on an unvalidated centre proposal.
-7. **Procedural seed separation** fuses foreground colour/noise and inverse
-   background into a material likelihood, fills only enclosed seed-sized coat
+   depending on an unvalidated centre proposal. The reference ridge is a
+   separately cached GPU node fed by broad physical-edge probability and the
+   continuous edge normals; it preserves peak probability after NMS and exposes
+   its own step, low/high threshold, hysteresis-reach, and working-size controls.
+   Non-adjacent trace-gap links
+   require a tight chord/tangent match, consistent directed gradient side, and
+   an open directional endpoint. An additional **Convexity bias** defaults to
+   **prefer**: it compares the tangent-to-chord bend at both endpoints and
+   rejects confident S-shaped bridges while retaining either winding of a
+   convex C-shaped continuation. **Require** applies the editable angular
+   ambiguity tolerance strictly, while **off** preserves tangent-only linking.
+   This is an honest local rule for initial gap assignments; the later
+   circle/ellipse model remains responsible for global convexity. Raising the
+   gap can therefore reconnect a broken rim without linking the interiors of
+   adjacent parallel seed rims.
+7. **Procedural seed separation** fuses foreground colour/noise, the optional
+   many-prototype seed-surface likelihood, and inverse background into a material
+   likelihood, fills only enclosed seed-sized coat
    holes, and excludes a seed-relative dish margin. Shared edge magnitude,
    sensor/noise transitions, thinned ridges, and local shadow form a physical
    boundary cost. Smoothed material, boundary depth, and annular boundary
@@ -449,7 +558,8 @@ node remains disabled until explicitly enabled. If **Circle candidates** is
 restored, its CUDA ring bank now consumes the cached **Edge gradients** magnitude
 and boundary transitions from **Image-quality diagnostics**' sensor/noise map,
 flattened grayscale, local shadow, and local highlight likelihoods through
-separate editable weights; it no longer hides a private grayscale-edge
+separate editable weights. Its dish geometry and the distance-candidate density
+that adjusts its threshold are explicit inputs; it no longer hides a private grayscale-edge
 calculation behind those graph inputs. Select a restored **Circle candidates**
 node and choose **Move to unused** to remove it and all incident connections;
 it can be added again from **Unused nodes** later.
@@ -492,7 +602,8 @@ The inspector exposes the implemented settings on their owning nodes, including:
 - procedural material threshold/morphology, dish margin, boundary fusion,
   centre-evidence weights and spacing, marker acceptance, topology resolution,
   and calibrated area confidence limits;
-- ridge NMS/hysteresis, oriented trace linking and gap controls, dense radius
+- ridge NMS/hysteresis, oriented trace linking, gap and local-convexity
+  controls, dense radius
   and arc sampling, circle/ellipse fits, centre voting, semantic sides,
   optional lightness boost, and rejection confidence; and
 - CUDA working resolution/device policy plus seed-relative controls for all
@@ -505,6 +616,9 @@ cannot cross. Changing a setting invalidates cached results on the affected
 downstream branch. Directed and undirected tangents share one continuous
 gradient computation. Final-fit changes reuse cached GPU ridges and traces;
 trace changes reuse cached GPU ridges.
+Changing only the trace convexity policy or its angular ambiguity likewise
+rebuilds trace assignments and their dependents without recalculating ridge
+NMS/hysteresis.
 
 The calibration path is represented by separate **Colour-card swatches**,
 **Ruler detection**, **Deskew & colour balance**, and **Absolute ruler scale**

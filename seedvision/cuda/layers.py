@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from seedvision.cuda.ops import (
+    apply_contrastive_negative_evidence,
     CudaContext,
     GpuRaster,
     bgr_to_lab,
@@ -51,8 +52,40 @@ class ReferenceEdgeProducts:
 
     physical_probability: GpuRaster
     non_edge_probability: GpuRaster
+    physical_field: GpuRaster
     physical_sample_count: int
     non_edge_sample_count: int
+
+
+@dataclass(slots=True)
+class ReferenceTextureProducts:
+    """Multi-prototype material and boundary evidence learned per image."""
+
+    seed_surface_probability: GpuRaster | None
+    background_probability: GpuRaster | None
+    other_probability: GpuRaster | None
+    physical_edge_probability: GpuRaster
+    non_edge_probability: GpuRaster
+    physical_edge_field: GpuRaster
+    profile: object
+    foreground_sample_count: int
+    background_sample_count: int
+    other_sample_count: int
+    physical_sample_count: int
+    non_edge_sample_count: int
+
+
+@dataclass(slots=True)
+class _FeaturePrototypeBank:
+    """GPU-resident diagonal feature prototypes for one painted class."""
+
+    class_name: str
+    centres: object
+    scales: object
+    weights: object
+    sample_counts: object
+    positions_yx: object
+    sample_count: int
 
 
 @dataclass(slots=True)
@@ -269,6 +302,8 @@ def build_cuda_analysis_layers(
     background_colour_enabled: bool = True,
     foreground_noise_enabled: bool = True,
     reference_edge_probability_enabled: bool = True,
+    reference_edge_ridges_enabled: bool = True,
+    reference_texture_prototypes_enabled: bool = True,
     surface_darkness_gradients_enabled: bool = True,
     lightening_gradient_ceiling_enabled: bool = True,
     darkening_gradient_ceiling_enabled: bool = True,
@@ -364,6 +399,35 @@ def build_cuda_analysis_layers(
     else:
         background_result = values["layer.background"]
     background, background_mode, reference_count, colour_profile = background_result
+
+    surrounding_background_dirty = (
+        background_dirty
+        or "layer.surrounding_background" not in values
+    )
+    if (
+        surrounding_background_dirty
+        and background_colour_enabled
+        and colour_profile is not None
+        and surrounding_noise_source_tensor is not None
+        and surrounding_noise_valid_tensor is not None
+    ):
+        surrounding_background_result = background_colour_profile_likelihood(
+            surrounding_noise_source_tensor,
+            surrounding_noise_valid_tensor,
+            colour_profile,
+            settings,
+            cuda_context=context,
+        )
+        values["layer.surrounding_background"] = surrounding_background_result
+    elif surrounding_background_dirty:
+        surrounding_background_result = (None, None)
+        values["layer.surrounding_background"] = surrounding_background_result
+    else:
+        surrounding_background_result = values["layer.surrounding_background"]
+    (
+        surrounding_background,
+        surrounding_background_valid,
+    ) = surrounding_background_result
 
     refined_dirty = (
         background_dirty
@@ -798,10 +862,76 @@ def build_cuda_analysis_layers(
     else:
         trace_products = previous_curve_result
 
-    reference_edge_dirty = (
+    reference_texture_dirty = (
         painted_reference_dirty
         or gradients_dirty
+        or frequency_noise_dirty
         or ridges_dirty
+        or "reference_texture_prototypes" in dirty
+        or "layer.reference_texture_prototypes" not in values
+    )
+    if reference_texture_dirty and reference_texture_prototypes_enabled:
+        texture_timing = (
+            None
+            if timing_recorder is None
+            else timing_recorder.start("reference_texture_prototypes")
+        )
+        if background_exclusion_mask is None:
+            other_reference_mask = foreground_exclusion_mask
+        elif foreground_exclusion_mask is None:
+            other_reference_mask = background_exclusion_mask
+        else:
+            other_reference_mask = np.logical_or(
+                background_exclusion_mask, foreground_exclusion_mask
+            )
+        reference_textures = reference_texture_probabilities(
+            crop,
+            gradient_result,
+            trace_products.ridges,
+            frequency_noise,
+            seed_diameter,
+            settings,
+            background_reference_mask=background_reference_mask,
+            foreground_reference_mask=foreground_reference_mask,
+            other_reference_mask=other_reference_mask,
+            physical_reference_mask=physical_edge_reference_mask,
+            non_edge_reference_mask=non_edge_reference_mask,
+            seed_instance_annotations=seed_instance_annotations,
+            cuda_context=context,
+        )
+        if texture_timing is not None:
+            timing_recorder.stop(texture_timing)
+        values["layer.reference_texture_prototypes"] = reference_textures
+    elif reference_texture_dirty:
+        from seedvision.visualization.layers import ReferenceTextureProfile
+
+        zero = _lazy_u8(
+            valid_tensor.float() * 0.0,
+            "disabled reference texture prototypes",
+        )
+        reference_textures = ReferenceTextureProducts(
+            seed_surface_probability=None,
+            background_probability=None,
+            other_probability=None,
+            physical_edge_probability=zero,
+            non_edge_probability=zero,
+            physical_edge_field=_lazy_float(
+                valid_tensor.float() * 0.0,
+                "disabled continuous physical edge probability",
+            ),
+            profile=ReferenceTextureProfile(),
+            foreground_sample_count=0,
+            background_sample_count=0,
+            other_sample_count=0,
+            physical_sample_count=0,
+            non_edge_sample_count=0,
+        )
+        values["layer.reference_texture_prototypes"] = reference_textures
+    else:
+        reference_textures = values["layer.reference_texture_prototypes"]
+
+    reference_edge_dirty = (
+        reference_texture_dirty
         or "reference_edge_probability" in dirty
         or "layer.reference_edge_probability" not in values
     )
@@ -811,15 +941,12 @@ def build_cuda_analysis_layers(
             if timing_recorder is None
             else timing_recorder.start("reference_edge_probability")
         )
-        reference_edges = reference_edge_probabilities(
-            gradient_result,
-            trace_products.ridges,
-            seed_diameter,
-            settings,
-            source_tensor=source_tensor,
-            physical_reference_mask=physical_edge_reference_mask,
-            non_edge_reference_mask=non_edge_reference_mask,
-            cuda_context=context,
+        reference_edges = ReferenceEdgeProducts(
+            reference_textures.physical_edge_probability,
+            reference_textures.non_edge_probability,
+            reference_textures.physical_edge_field,
+            reference_textures.physical_sample_count,
+            reference_textures.non_edge_sample_count,
         )
         if reference_timing is not None:
             timing_recorder.stop(reference_timing)
@@ -828,10 +955,49 @@ def build_cuda_analysis_layers(
         zero = _lazy_u8(
             valid_tensor.float() * 0.0, "disabled reference edge probability"
         )
-        reference_edges = ReferenceEdgeProducts(zero, zero, 0, 0)
+        reference_edges = ReferenceEdgeProducts(
+            zero,
+            zero,
+            _lazy_float(
+                valid_tensor.float() * 0.0,
+                "disabled continuous reference edge probability",
+            ),
+            0,
+            0,
+        )
         values["layer.reference_edge_probability"] = reference_edges
     else:
         reference_edges = values["layer.reference_edge_probability"]
+
+    reference_ridges_dirty = (
+        reference_edge_dirty
+        or gradients_dirty
+        or "reference_edge_ridges" in dirty
+        or "layer.reference_edge_ridges" not in values
+    )
+    if reference_ridges_dirty and reference_edge_ridges_enabled:
+        reference_ridge_timing = (
+            None
+            if timing_recorder is None
+            else timing_recorder.start("reference_edge_ridges")
+        )
+        reference_edge_ridge = reference_probability_ridges(
+            reference_edges.physical_field,
+            gradient_result,
+            settings,
+            cuda_context=context,
+        )
+        if reference_ridge_timing is not None:
+            timing_recorder.stop(reference_ridge_timing)
+        values["layer.reference_edge_ridges"] = reference_edge_ridge
+    elif reference_ridges_dirty:
+        reference_edge_ridge = _lazy_u8(
+            valid_tensor.float() * 0.0,
+            "disabled thinned reference edge ridge",
+        )
+        values["layer.reference_edge_ridges"] = reference_edge_ridge
+    else:
+        reference_edge_ridge = values["layer.reference_edge_ridges"]
 
     curve_dirty = (
         traces_dirty
@@ -876,8 +1042,17 @@ def build_cuda_analysis_layers(
         noise_frequency_profile=noise_profile,
         foreground_noise_likelihood=foreground_noise,
         foreground_noise_frequency_profile=foreground_noise_profile,
+        reference_seed_surface_probability=(
+            reference_textures.seed_surface_probability
+        ),
+        reference_background_texture_probability=(
+            reference_textures.background_probability
+        ),
+        reference_other_texture_probability=reference_textures.other_probability,
+        reference_texture_profile=reference_textures.profile,
         physical_edge_probability=reference_edges.physical_probability,
         non_edge_probability=reference_edges.non_edge_probability,
+        reference_edge_ridges=reference_edge_ridge,
         edge_likelihood=edge_likelihood,
         directed_edge_hue=directed_edge_hue,
         undirected_edge_hue=undirected_edge_hue,
@@ -916,6 +1091,8 @@ def build_cuda_analysis_layers(
         edge_rejection_hue=curve_result.rejection_hue,
         edge_rejection_strength=curve_result.rejection_strength,
         edge_fit_geometry=curve_result.geometry,
+        surrounding_background_likelihood=surrounding_background,
+        surrounding_background_valid_mask=surrounding_background_valid,
         surrounding_noise_likelihood=surrounding_noise,
         surrounding_noise_valid_mask=surrounding_noise_valid,
         surrounding_noise_offset_x=int(surrounding_noise_offset_x),
@@ -1120,6 +1297,7 @@ def background_colour_likelihood(
         refinement_min_probability=settings.background_refinement_min_probability,
         frequency_weight_power=settings.background_frequency_weight_power,
         scale_multiplier=settings.background_distribution_scale_multiplier,
+        combine_modes="maximum",
         scale_floors=(
             settings.background_lightness_scale_floor,
             settings.background_chroma_scale_floor,
@@ -1149,7 +1327,13 @@ def background_colour_likelihood(
             lab,
             lab[background_exclusion],
             valid,
-            maximum_bins=max(16, settings.background_colour_components * 16),
+            # Keep the competing Other model expressive without multiplying a
+            # now high-capacity positive-model control into hundreds of costly
+            # full-image frequency passes. Sixty-four preserves the previous
+            # default Other capacity when the positive default was four.
+            maximum_bins=max(
+                16, min(64, settings.background_colour_components * 16)
+            ),
             refinement_iterations=0,
             frequency_weight_power=0.0,
             scale_multiplier=settings.background_distribution_scale_multiplier,
@@ -1159,12 +1343,13 @@ def background_colour_likelihood(
                 settings.background_chroma_scale_floor,
             ),
         )
-        # Exclusions are learned negative colours, not output-mask overrides.
-        # Every matching pixel receives the same attenuation, including pixels
-        # outside the user's brush. The bounded factor prevents a painted
-        # coordinate from becoming an artificial exact zero.
-        likelihood = likelihood * (
-            1.0 - exclusion_strength * excluded_membership
+        # Other is a competing learned colour model, not a global veto. Glass
+        # and seed/background colours can overlap, so suppress background only
+        # where Other fits better than the positive background distribution.
+        likelihood = apply_contrastive_negative_evidence(
+            likelihood,
+            excluded_membership,
+            strength=exclusion_strength,
         )
 
     if source_values is None:
@@ -1263,6 +1448,116 @@ def empty_noise_frequency_profile(seed_diameter, settings):
 
     scales = _noise_scales(seed_diameter, settings)
     return NoiseFrequencyProfile(scales, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), 0, 0, 0.0)
+
+
+def background_colour_profile_likelihood(
+    source_tensor,
+    valid_tensor,
+    profile,
+    settings,
+    *,
+    cuda_context=None,
+):
+    """Evaluate an existing background colour model over a bounded GPU crop.
+
+    This intentionally reuses the exact fitted positive and contrastive
+    exclusion components from :func:`background_colour_likelihood`. It does
+    not refit the model from the surrounding band or expand the canonical dish
+    crop used by downstream calculations.
+    """
+
+    import torch
+
+    context = cuda_context or CudaContext.resolve()
+    source = source_tensor.to(device=context.device, dtype=torch.float32)
+    valid = valid_tensor.to(device=context.device).bool()
+    if source.ndim != 4 or source.shape[0] != 1 or source.shape[1] < 3:
+        raise ValueError("source_tensor must be one NCHW BGR image.")
+    if valid.shape != (1, 1, source.shape[-2], source.shape[-1]):
+        raise ValueError("valid_tensor must be an NCHW mask matching the source.")
+    lab = bgr_to_lab(source)[0].permute(1, 2, 0)
+    metric_weights = torch.as_tensor(
+        (1.0, 1.25, 1.25), device=context.device, dtype=lab.dtype
+    )
+
+    def evaluate(
+        centres_values,
+        scales_values,
+        weights_values,
+        frequency_power,
+        *,
+        combine_modes: str,
+    ):
+        centres = torch.as_tensor(
+            centres_values, device=context.device, dtype=lab.dtype
+        ).reshape(-1, 3)
+        scales = torch.as_tensor(
+            scales_values, device=context.device, dtype=lab.dtype
+        ).reshape(-1, 3)
+        weights = torch.as_tensor(
+            weights_values, device=context.device, dtype=lab.dtype
+        ).reshape(-1)
+        if not int(centres.shape[0]):
+            return torch.zeros(lab.shape[:2], device=context.device, dtype=lab.dtype)
+        if scales.shape != centres.shape or weights.shape[0] != centres.shape[0]:
+            raise ValueError("Background colour profile components are inconsistent.")
+        adjusted = weights.clamp_min(1e-6).pow(max(0.0, float(frequency_power)))
+        adjusted /= adjusted.max().clamp_min(1e-6)
+        probability = torch.zeros(
+            lab.shape[:2], device=context.device, dtype=lab.dtype
+        )
+        for start in range(0, int(centres.shape[0]), 4):
+            stop = min(start + 4, int(centres.shape[0]))
+            effective_scales = scales[start:stop] * max(
+                0.05, float(settings.background_distribution_scale_multiplier)
+            )
+            delta = (
+                lab[:, :, None, :] - centres[None, None, start:stop, :]
+            ) / effective_scales[None, None, :, :]
+            distance = torch.sum(
+                delta.square() * metric_weights[None, None, None, :], dim=3
+            )
+            membership = torch.exp(-0.5 * distance)
+            weighted = membership * adjusted[None, None, start:stop]
+            if combine_modes == "maximum":
+                probability = torch.maximum(
+                    probability, torch.max(weighted, dim=2).values
+                )
+            else:
+                probability += torch.sum(weighted, dim=2)
+        return probability.clamp(0.0, 1.0)
+
+    probability = evaluate(
+        profile.component_centres_lab,
+        profile.component_scales_lab,
+        profile.component_weights,
+        settings.background_frequency_weight_power,
+        combine_modes="maximum",
+    )
+    if profile.excluded_component_centres_lab:
+        excluded = evaluate(
+            profile.excluded_component_centres_lab,
+            profile.excluded_component_scales_lab,
+            profile.excluded_component_weights,
+            0.0,
+            combine_modes="sum",
+        )
+        probability = apply_contrastive_negative_evidence(
+            probability,
+            excluded,
+            strength=profile.exclusion_strength,
+        )
+    probability *= valid[0, 0].float()
+    return (
+        _lazy_u8(
+            probability[None, None] * 255.0,
+            "surrounding-band background colour likelihood",
+        ),
+        _lazy_u8(
+            valid.float() * 255.0,
+            "surrounding-band background colour valid mask",
+        ),
+    )
 
 
 def noise_frequency_background_likelihood(
@@ -2099,6 +2394,786 @@ def directional_edges(
     )
 
 
+def _fit_feature_prototype_bank(
+    features,
+    mask,
+    *,
+    class_name: str,
+    maximum_prototypes: int,
+    minimum_support: int,
+    iterations: int,
+    scale_floor: float,
+) -> _FeaturePrototypeBank | None:
+    """Fit deterministic coverage-preserving robust prototypes on the GPU."""
+
+    import torch
+
+    locations = torch.nonzero(mask[0, 0], as_tuple=False)
+    sample_count = int(locations.shape[0])
+    if sample_count == 0:
+        return None
+    if sample_count > 32768:
+        step = max(1, sample_count // 32768)
+        locations = locations[::step][:32768]
+    samples = features[0, :, locations[:, 0], locations[:, 1]].T
+    centre = torch.median(samples, dim=0).values
+    spread = (
+        1.4826 * torch.median(torch.abs(samples - centre), dim=0).values
+    ).clamp_min(float(scale_floor))
+    standardized = (samples - centre) / spread
+    prototype_count = min(
+        int(maximum_prototypes),
+        max(1, int(samples.shape[0]) // max(1, int(minimum_support))),
+    )
+
+    first = int(torch.argmax(standardized.square().mean(dim=1)).item())
+    selected = [first]
+    nearest = torch.sum(
+        (standardized - standardized[first]).square(), dim=1
+    )
+    for _ in range(1, prototype_count):
+        if float(nearest.max().item()) <= 1e-8:
+            break
+        candidate = int(torch.argmax(nearest).item())
+        selected.append(candidate)
+        distance = torch.sum(
+            (standardized - standardized[candidate]).square(), dim=1
+        )
+        nearest = torch.minimum(nearest, distance)
+    normalized_centres = standardized[
+        torch.as_tensor(selected, device=samples.device)
+    ].clone()
+    assignments = torch.zeros(
+        samples.shape[0], device=samples.device, dtype=torch.long
+    )
+    for _ in range(max(1, int(iterations))):
+        distances = torch.cdist(standardized, normalized_centres).square()
+        assignments = torch.argmin(distances, dim=1)
+        updated = []
+        for index in range(normalized_centres.shape[0]):
+            members = standardized[assignments == index]
+            updated.append(
+                normalized_centres[index]
+                if not len(members)
+                else torch.median(members, dim=0).values
+            )
+        normalized_centres = torch.stack(updated)
+    # Associate samples with the final robust centres, rather than the centres
+    # from the start of the last refinement pass.
+    distances = torch.cdist(standardized, normalized_centres).square()
+    assignments = torch.argmin(distances, dim=1)
+
+    final_centres = []
+    final_scales = []
+    final_weights = []
+    final_counts = []
+    final_positions = []
+    for index in range(normalized_centres.shape[0]):
+        member_indices = torch.nonzero(
+            assignments == index, as_tuple=False
+        ).flatten()
+        if not len(member_indices):
+            continue
+        members = samples[member_indices]
+        local_centre = torch.median(members, dim=0).values
+        local_scale = (
+            1.4826
+            * torch.median(torch.abs(members - local_centre), dim=0).values
+        ).clamp_min(float(scale_floor))
+        normalized_distance = torch.mean(
+            ((members - local_centre) / local_scale).square(), dim=1
+        )
+        medoid = member_indices[torch.argmin(normalized_distance)]
+        count = int(member_indices.shape[0])
+        final_centres.append(local_centre)
+        final_scales.append(local_scale)
+        final_weights.append(count / max(1, int(samples.shape[0])))
+        final_counts.append(count)
+        final_positions.append(locations[medoid])
+    if not final_centres:
+        return None
+    return _FeaturePrototypeBank(
+        class_name=class_name,
+        centres=torch.stack(final_centres),
+        scales=torch.stack(final_scales),
+        weights=torch.as_tensor(
+            final_weights, device=samples.device, dtype=torch.float32
+        ),
+        sample_counts=torch.as_tensor(
+            final_counts, device=samples.device, dtype=torch.int32
+        ),
+        positions_yx=torch.stack(final_positions),
+        sample_count=sample_count,
+    )
+
+
+def _prototype_bank_similarity(features, bank, tolerance: float):
+    """Evaluate nearest diagonal prototype distance without a KxFxHxW tensor."""
+
+    import torch
+    import torch.nn.functional as functional
+
+    if bank is None:
+        return torch.zeros_like(features[:, :1])
+    feature_count = max(1, int(features.shape[1]))
+    best = torch.zeros_like(features[:, :1])
+    squared = features.square()
+    for start in range(0, int(bank.centres.shape[0]), 12):
+        centres = bank.centres[start : start + 12]
+        scales = (
+            bank.scales[start : start + 12] * float(tolerance)
+        ).clamp_min(1e-4)
+        inverse_variance = scales.reciprocal().square()
+        quadratic = functional.conv2d(
+            squared, inverse_variance[:, :, None, None]
+        )
+        linear = functional.conv2d(
+            features,
+            (-2.0 * centres * inverse_variance)[:, :, None, None],
+        )
+        constant = torch.sum(
+            centres.square() * inverse_variance, dim=1
+        )[None, :, None, None]
+        distance = ((quadratic + linear + constant) / feature_count).clamp(
+            0.0, 30.0
+        )
+        similarity = torch.exp(-0.5 * distance)
+        # Preserve rare, genuinely different prototypes while giving strongly
+        # supported modes a modest preference.
+        support = bank.weights[start : start + 12]
+        support = 0.78 + 0.22 * torch.sqrt(
+            support / support.max().clamp_min(1e-6)
+        )
+        similarity *= support[None, :, None, None]
+        best = torch.maximum(best, similarity.max(dim=1, keepdim=True).values)
+    return best
+
+
+def thin_probability_ridges(
+    probability,
+    normal_x,
+    normal_y,
+    valid,
+    *,
+    normal_sampling_step_px: float,
+    low_threshold: float,
+    high_threshold: float,
+    hysteresis_iterations: int,
+):
+    """Thin a continuous probability field along its local edge normal on GPU.
+
+    This is the probability-map analogue of the shared edge-ridge operation:
+    subpixel non-maximum suppression preserves the original peak confidence,
+    then high-confidence maxima seed a bounded reconstruction through connected
+    weak maxima.  An asymmetric equality test gives plateaus one deterministic
+    side instead of leaving a two-pixel-wide ridge.
+    """
+
+    import torch
+    import torch.nn.functional as functional
+
+    values = probability.float().clamp(0.0, 1.0)
+    if values.ndim == 2:
+        values = values[None, None]
+    elif values.ndim == 3:
+        values = values[None]
+    nx = normal_x.float()
+    ny = normal_y.float()
+    if nx.ndim == 2:
+        nx = nx[None, None]
+    elif nx.ndim == 3:
+        nx = nx[None]
+    if ny.ndim == 2:
+        ny = ny[None, None]
+    elif ny.ndim == 3:
+        ny = ny[None]
+    support = valid.bool()
+    if support.ndim == 2:
+        support = support[None, None]
+    elif support.ndim == 3:
+        support = support[None]
+    if not (
+        values.shape == nx.shape == ny.shape == support.shape
+        and values.shape[0] == values.shape[1] == 1
+    ):
+        raise ValueError(
+            "Probability, normals, and valid mask must be matching 1-channel rasters."
+        )
+    if not 0.0 <= float(low_threshold) < float(high_threshold) <= 1.0:
+        raise ValueError("Ridge thresholds must satisfy 0 <= low < high <= 1.")
+    if int(hysteresis_iterations) < 1:
+        raise ValueError("Ridge hysteresis must run for at least one iteration.")
+
+    length = torch.sqrt(nx.square() + ny.square()).clamp_min(1e-6)
+    nx, ny = nx / length, ny / length
+    height, width = values.shape[-2:]
+    yy, xx = torch.meshgrid(
+        torch.arange(height, device=values.device, dtype=torch.float32),
+        torch.arange(width, device=values.device, dtype=torch.float32),
+        indexing="ij",
+    )
+    step = max(0.05, float(normal_sampling_step_px))
+    forward = bilinear_sample(
+        values,
+        xx + nx[0, 0] * step,
+        yy + ny[0, 0] * step,
+    )
+    backward = bilinear_sample(
+        values,
+        xx - nx[0, 0] * step,
+        yy - ny[0, 0] * step,
+    )
+    centre = values[0, 0]
+    nms = (
+        centre
+        * (centre >= forward)
+        * (centre > backward)
+        * support[0, 0]
+    )
+    weak = nms >= float(low_threshold)
+    accepted = nms >= float(high_threshold)
+    for _ in range(int(hysteresis_iterations)):
+        reached = functional.max_pool2d(
+            accepted.float()[None, None], 3, stride=1, padding=1
+        )[0, 0] > 0
+        accepted = weak & reached
+    return (nms * accepted)[None, None]
+
+
+def _reference_patch(
+    crop: np.ndarray,
+    centre_xy: tuple[float, float],
+    size: int,
+    tangent_degrees: float | None,
+) -> np.ndarray:
+    """Extract an axis- or tangent-aligned compact BGR prototype thumbnail."""
+
+    import cv2
+
+    size = max(12, int(size))
+    if tangent_degrees is None:
+        return np.ascontiguousarray(
+            cv2.getRectSubPix(crop, (size, size), centre_xy)
+        )
+    outer = max(size + 4, int(np.ceil(size * 1.45)))
+    local = cv2.getRectSubPix(crop, (outer, outer), centre_xy)
+    centre = ((outer - 1) * 0.5, (outer - 1) * 0.5)
+    matrix = cv2.getRotationMatrix2D(centre, -float(tangent_degrees), 1.0)
+    aligned = cv2.warpAffine(
+        local,
+        matrix,
+        (outer, outer),
+        flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_REFLECT_101,
+    )
+    return np.ascontiguousarray(
+        cv2.getRectSubPix(aligned, (size, size), centre)
+    )
+
+
+def reference_texture_probabilities(
+    crop,
+    gradients: EdgeGradientProducts,
+    ridges,
+    frequency_noise: FrequencyNoiseMaskProducts,
+    seed_diameter,
+    settings,
+    *,
+    background_reference_mask=None,
+    foreground_reference_mask=None,
+    other_reference_mask=None,
+    physical_reference_mask=None,
+    non_edge_reference_mask=None,
+    seed_instance_annotations=None,
+    cuda_context=None,
+) -> ReferenceTextureProducts:
+    """Learn many material and edge prototypes from painted references.
+
+    Every prototype represents a medoid patch in a robust feature cluster. The
+    banks are evaluated globally; painted coordinates are never overwritten.
+    """
+
+    import torch
+    import torch.nn.functional as functional
+
+    from seedvision.visualization.layers import (
+        ReferenceTextureProfile,
+        ReferenceTexturePrototype,
+    )
+
+    context = cuda_context or CudaContext.resolve()
+    source_height, source_width = gradients.strength.shape[-2:]
+    material_feature_names = (
+        "Lab lightness",
+        "Lab a*",
+        "Lab b*",
+        "fine darkness noise",
+        "medium darkness noise",
+        "coarse darkness noise",
+        "fine colour noise",
+        "medium colour noise",
+        "coarse colour noise",
+        "edge magnitude",
+        "ridge support",
+        "local lightness residual",
+        "local colour residual",
+        "local edge density",
+    )
+    edge_feature_names = material_feature_names + (
+        "axial tangent coherence",
+        "directed tangent coherence",
+        "cross-normal lightness contrast",
+        "cross-normal colour contrast",
+    )
+
+    def source_count(mask) -> int:
+        return 0 if mask is None else int(np.count_nonzero(mask))
+
+    if foreground_reference_mask is None:
+        foreground_source_count = source_count(seed_instance_annotations)
+    elif seed_instance_annotations is None:
+        foreground_source_count = source_count(foreground_reference_mask)
+    else:
+        foreground_source_count = int(
+            np.count_nonzero(
+                np.logical_or(
+                    np.asarray(foreground_reference_mask, dtype=bool),
+                    np.asarray(seed_instance_annotations) > 0,
+                )
+            )
+        )
+
+    source_counts = (
+        ("background", source_count(background_reference_mask)),
+        ("foreground", foreground_source_count),
+        ("other", source_count(other_reference_mask)),
+        ("physical_edge", source_count(physical_reference_mask)),
+        ("non_edge", source_count(non_edge_reference_mask)),
+    )
+    patch_size = max(
+        12,
+        min(
+            128,
+            round(
+                float(seed_diameter)
+                * float(settings.reference_texture_patch_fraction)
+            ),
+        ),
+    )
+    maximum = int(settings.reference_texture_working_maximum_dimension)
+    work_scale = min(1.0, maximum / max(source_height, source_width))
+    height = max(16, round(source_height * work_scale))
+    width = max(16, round(source_width * work_scale))
+
+    def resized(values, *, mode="bilinear"):
+        tensor = values.float()
+        if tensor.ndim == 2:
+            tensor = tensor[None, None]
+        elif tensor.ndim == 3:
+            tensor = tensor[None]
+        if tensor.shape[-2:] == (height, width):
+            return tensor
+        arguments = {} if mode in {"nearest", "area"} else {"align_corners": False}
+        return functional.interpolate(
+            tensor, (height, width), mode=mode, **arguments
+        )
+
+    valid = resized(gradients.valid.float(), mode="nearest") > 0.5
+    edge = resized(gradients.strength).clamp(0.0, 1.0)
+    ridge = resized(
+        _raster_tensor(ridges, context, normalized=True)
+    ).clamp(0.0, 1.0)
+    if not any(count for _class_name, count in source_counts):
+        ridge_weight = float(settings.reference_edge_ridge_weight)
+        edge_support = (
+            (1.0 - ridge_weight) * edge
+            + ridge_weight * ridge
+        ).clamp(0.0, 1.0) * valid
+        physical_field = _lazy_float(
+            edge_support,
+            "continuous generic physical edge probability",
+        )
+        if edge_support.shape[-2:] != (source_height, source_width):
+            edge_support = functional.interpolate(
+                edge_support,
+                (source_height, source_width),
+                mode="bilinear",
+                align_corners=False,
+            )
+        physical = _lazy_u8(
+            edge_support * 255.0,
+            "generic physical edge probability",
+        )
+        zero = _lazy_u8(
+            edge_support * 0.0,
+            "empty reference non-edge probability",
+        )
+        return ReferenceTextureProducts(
+            seed_surface_probability=None,
+            background_probability=None,
+            other_probability=None,
+            physical_edge_probability=physical,
+            non_edge_probability=zero,
+            physical_edge_field=physical_field,
+            profile=ReferenceTextureProfile(
+                class_sample_counts=source_counts,
+                material_feature_names=material_feature_names,
+                edge_feature_names=edge_feature_names,
+                working_scale=work_scale,
+                patch_size_px=patch_size,
+            ),
+            foreground_sample_count=0,
+            background_sample_count=0,
+            other_sample_count=0,
+            physical_sample_count=0,
+            non_edge_sample_count=0,
+        )
+
+    lab = resized(gradients.lab)
+    tangent_x = resized(gradients.tangent_x)
+    tangent_y = resized(gradients.tangent_y)
+    tangent_length = torch.sqrt(
+        tangent_x.square() + tangent_y.square()
+    ).clamp_min(1e-6)
+    tangent_x /= tangent_length
+    tangent_y /= tangent_length
+    normal_x = -tangent_y
+    normal_y = tangent_x
+    diameter = max(6.0, float(seed_diameter) * work_scale)
+    sigma = max(
+        0.7,
+        diameter * float(settings.reference_texture_context_fraction),
+    )
+    local_lab = gaussian_blur(lab, sigma)
+    lab_residual = lab - local_lab
+    colour_residual = torch.sqrt(
+        lab_residual[:, 1:2].square() + lab_residual[:, 2:3].square()
+    )
+    local_edge = gaussian_blur(edge, sigma).clamp(0.0, 1.0)
+    noise_channels = tuple(
+        resized(_raster_tensor(raster, context, normalized=True))
+        for raster in (
+            *frequency_noise.darkness_masks,
+            *frequency_noise.colour_masks,
+        )
+    )
+    material_features = torch.cat(
+        (
+            lab[:, 0:1] / 255.0,
+            (lab[:, 1:2] - 128.0) / 128.0,
+            (lab[:, 2:3] - 128.0) / 128.0,
+            *noise_channels,
+            edge,
+            ridge,
+            lab_residual[:, 0:1].abs() / 40.0,
+            colour_residual / 55.0,
+            local_edge,
+        ),
+        dim=1,
+    )
+
+    axial_x = tangent_x.square() - tangent_y.square()
+    axial_y = 2.0 * tangent_x * tangent_y
+    axial_coherence = torch.sqrt(
+        gaussian_blur(axial_x, sigma).square()
+        + gaussian_blur(axial_y, sigma).square()
+    ).clamp(0.0, 1.0)
+    directed_coherence = torch.sqrt(
+        gaussian_blur(tangent_x, sigma).square()
+        + gaussian_blur(tangent_y, sigma).square()
+    ).clamp(0.0, 1.0)
+    yy, xx = torch.meshgrid(
+        torch.arange(height, device=context.device, dtype=torch.float32),
+        torch.arange(width, device=context.device, dtype=torch.float32),
+        indexing="ij",
+    )
+    cross_distance = max(1.0, diameter * 0.025)
+    plus_x = xx + normal_x[0, 0] * cross_distance
+    plus_y = yy + normal_y[0, 0] * cross_distance
+    minus_x = xx - normal_x[0, 0] * cross_distance
+    minus_y = yy - normal_y[0, 0] * cross_distance
+    cross_lab = []
+    for channel in range(3):
+        positive = bilinear_sample(lab[:, channel : channel + 1], plus_x, plus_y)
+        negative = bilinear_sample(lab[:, channel : channel + 1], minus_x, minus_y)
+        cross_lab.append((positive - negative).abs()[None, None])
+    cross_chroma = torch.sqrt(
+        cross_lab[1].square() + cross_lab[2].square()
+    )
+    edge_features = torch.cat(
+        (
+            material_features,
+            axial_coherence,
+            directed_coherence,
+            cross_lab[0] / 55.0,
+            cross_chroma / 70.0,
+        ),
+        dim=1,
+    )
+
+    def reference_mask(values):
+        if values is None:
+            return torch.zeros_like(valid)
+        source = image_to_tensor(np.asarray(values, dtype=np.uint8), context)
+        return resized(source, mode="area") > 0.001
+
+    background_mask = reference_mask(background_reference_mask) & valid
+    foreground_mask = reference_mask(foreground_reference_mask) & valid
+    other_mask = reference_mask(other_reference_mask) & valid
+    physical_mask = reference_mask(physical_reference_mask) & valid
+    non_edge_mask = reference_mask(non_edge_reference_mask) & valid
+    if seed_instance_annotations is not None and np.any(seed_instance_annotations):
+        annotation_mask = reference_mask(
+            np.asarray(seed_instance_annotations) > 0
+        ) & valid
+        erosion = max(1, round(diameter * 0.06))
+        kernel = erosion * 2 + 1
+        eroded = 1.0 - functional.max_pool2d(
+            1.0 - annotation_mask.float(),
+            kernel,
+            stride=1,
+            padding=erosion,
+        )
+        if bool((eroded > 0.999).any().item()):
+            foreground_mask |= eroded > 0.999
+        else:
+            foreground_mask |= annotation_mask
+    material_overlap = (
+        background_mask.to(torch.uint8)
+        + foreground_mask.to(torch.uint8)
+        + other_mask.to(torch.uint8)
+    ) > 1
+    background_mask &= ~material_overlap
+    foreground_mask &= ~material_overlap
+    other_mask &= ~material_overlap
+    edge_overlap = physical_mask & non_edge_mask
+    physical_mask &= ~edge_overlap
+    non_edge_mask &= ~edge_overlap
+
+    fit_arguments = dict(
+        maximum_prototypes=int(settings.reference_texture_prototypes_per_class),
+        minimum_support=int(
+            settings.reference_texture_minimum_samples_per_prototype
+        ),
+        iterations=int(settings.reference_texture_fit_iterations),
+        scale_floor=0.045,
+    )
+    banks = {
+        "background": _fit_feature_prototype_bank(
+            material_features,
+            background_mask,
+            class_name="background",
+            **fit_arguments,
+        ),
+        "foreground": _fit_feature_prototype_bank(
+            material_features,
+            foreground_mask,
+            class_name="foreground",
+            **fit_arguments,
+        ),
+        "other": _fit_feature_prototype_bank(
+            material_features,
+            other_mask,
+            class_name="other",
+            **fit_arguments,
+        ),
+    }
+    edge_fit_arguments = dict(fit_arguments)
+    edge_fit_arguments["scale_floor"] = 0.055
+    edge_banks = {
+        "physical_edge": _fit_feature_prototype_bank(
+            edge_features,
+            physical_mask,
+            class_name="physical_edge",
+            **edge_fit_arguments,
+        ),
+        "non_edge": _fit_feature_prototype_bank(
+            edge_features,
+            non_edge_mask,
+            class_name="non_edge",
+            **edge_fit_arguments,
+        ),
+    }
+    tolerance = float(settings.reference_texture_similarity_scale)
+    material_scores = {
+        name: (
+            None
+            if bank is None
+            else _prototype_bank_similarity(material_features, bank, tolerance)
+        )
+        for name, bank in banks.items()
+    }
+
+    def class_probability(name, competitors):
+        score = material_scores[name]
+        if score is None:
+            return None
+        available = [
+            material_scores[competitor]
+            for competitor in competitors
+            if material_scores[competitor] is not None
+        ]
+        if not available:
+            return score * valid
+        competing = torch.stack(available, dim=0).max(dim=0).values
+        return apply_contrastive_negative_evidence(
+            score, competing, strength=0.95
+        ) * valid
+
+    foreground_probability = class_probability(
+        "foreground", ("background", "other")
+    )
+    background_probability = class_probability(
+        "background", ("foreground", "other")
+    )
+    other_probability = class_probability(
+        "other", ("foreground", "background")
+    )
+    physical_similarity = (
+        None
+        if edge_banks["physical_edge"] is None
+        else _prototype_bank_similarity(
+            edge_features, edge_banks["physical_edge"], tolerance
+        )
+    )
+    non_edge_similarity = (
+        None
+        if edge_banks["non_edge"] is None
+        else _prototype_bank_similarity(
+            edge_features, edge_banks["non_edge"], tolerance
+        )
+    )
+    ridge_weight = float(settings.reference_edge_ridge_weight)
+    edge_support = (
+        (1.0 - ridge_weight) * edge
+        + ridge_weight * ridge
+    ).clamp(0.0, 1.0)
+    if physical_similarity is not None and non_edge_similarity is not None:
+        normalizer = physical_similarity + non_edge_similarity + 0.10
+        physical_probability = edge_support * physical_similarity / normalizer
+        non_edge_probability = edge_support * non_edge_similarity / normalizer
+    elif physical_similarity is not None:
+        physical_probability = edge_support * (
+            0.25 + 0.75 * physical_similarity
+        )
+        non_edge_probability = edge_support * (1.0 - physical_similarity) * 0.35
+    elif non_edge_similarity is not None:
+        non_edge_probability = edge_support * non_edge_similarity
+        physical_probability = edge_support * (
+            1.0 - 0.85 * non_edge_similarity
+        )
+    else:
+        physical_probability = edge_support
+        non_edge_probability = torch.zeros_like(edge_support)
+    physical_probability *= valid
+    non_edge_probability *= valid
+    physical_edge_field = _lazy_float(
+        physical_probability,
+        "continuous multi-prototype physical edge probability",
+    )
+
+    def restored(values, name):
+        if values is None:
+            return None
+        if values.shape[-2:] != (source_height, source_width):
+            values = functional.interpolate(
+                values,
+                (source_height, source_width),
+                mode="bilinear",
+                align_corners=False,
+            )
+        return _lazy_u8(values * 255.0, name)
+
+    prototypes = []
+    all_banks = {**banks, **edge_banks}
+    tangent_degrees = torch.rad2deg(
+        torch.atan2(tangent_y[0, 0], tangent_x[0, 0])
+    )
+    for class_name in (
+        "background",
+        "foreground",
+        "other",
+        "physical_edge",
+        "non_edge",
+    ):
+        bank = all_banks[class_name]
+        if bank is None:
+            continue
+        bank_positions = bank.positions_yx
+        positions = bank_positions.detach().cpu().numpy()
+        weights = bank.weights.detach().cpu().numpy()
+        counts = bank.sample_counts.detach().cpu().numpy()
+        angles = (
+            tangent_degrees[
+                bank_positions[:, 0], bank_positions[:, 1]
+            ].detach().cpu().numpy()
+            if class_name in {"physical_edge", "non_edge"}
+            else np.full(len(positions), np.nan, np.float32)
+        )
+        for position, weight, count, raw_angle in zip(
+            positions, weights, counts, angles, strict=True
+        ):
+            y_work, x_work = int(position[0]), int(position[1])
+            centre_xy = (
+                float(x_work) / max(work_scale, 1e-8),
+                float(y_work) / max(work_scale, 1e-8),
+            )
+            angle = (
+                float(raw_angle)
+                if class_name in {"physical_edge", "non_edge"}
+                else None
+            )
+            patch = _reference_patch(crop, centre_xy, patch_size, angle)
+            patch.flags.writeable = False
+            prototypes.append(
+                ReferenceTexturePrototype(
+                    class_name=class_name,
+                    patch_bgr=patch,
+                    weight=float(weight),
+                    sample_count=int(count),
+                    centre_xy=centre_xy,
+                    tangent_degrees=angle,
+                )
+            )
+    profile = ReferenceTextureProfile(
+        prototypes=tuple(prototypes),
+        class_sample_counts=source_counts,
+        material_feature_names=material_feature_names,
+        edge_feature_names=edge_feature_names,
+        working_scale=work_scale,
+        patch_size_px=patch_size,
+    )
+    return ReferenceTextureProducts(
+        seed_surface_probability=restored(
+            foreground_probability,
+            "reference prototype seed-surface probability",
+        ),
+        background_probability=restored(
+            background_probability,
+            "reference prototype background probability",
+        ),
+        other_probability=restored(
+            other_probability,
+            "reference prototype other probability",
+        ),
+        physical_edge_probability=restored(
+            physical_probability,
+            "multi-prototype physical edge probability",
+        ),
+        non_edge_probability=restored(
+            non_edge_probability,
+            "multi-prototype non-edge probability",
+        ),
+        physical_edge_field=physical_edge_field,
+        profile=profile,
+        foreground_sample_count=dict(source_counts)["foreground"],
+        background_sample_count=dict(source_counts)["background"],
+        other_sample_count=dict(source_counts)["other"],
+        physical_sample_count=dict(source_counts)["physical_edge"],
+        non_edge_sample_count=dict(source_counts)["non_edge"],
+    )
+
+
 def reference_edge_probabilities(
     gradients: EdgeGradientProducts,
     ridges,
@@ -2222,7 +3297,7 @@ def reference_edge_probabilities(
 
     ridge_weight = float(settings.reference_edge_ridge_weight)
     edge_support = (
-        (1.0 - ridge_weight) * edge + ridge_weight * torch.maximum(edge, ridge)
+        (1.0 - ridge_weight) * edge + ridge_weight * ridge
     ).clamp(0.0, 1.0)
     if physical_count and non_edge_count:
         physical_similarity = similarity(physical_mask)
@@ -2261,8 +3336,80 @@ def reference_edge_probabilities(
         non_edge_probability=restored(
             non_edge, "reference-trained non-edge probability"
         ),
+        physical_field=_lazy_float(
+            physical,
+            "continuous reference-trained physical edge probability",
+        ),
         physical_sample_count=physical_count,
         non_edge_sample_count=non_edge_count,
+    )
+
+
+def reference_probability_ridges(
+    physical_probability_field,
+    gradients: EdgeGradientProducts,
+    settings,
+    *,
+    cuda_context=None,
+) -> GpuRaster:
+    """Thin reference-trained physical-edge probability without a CPU round trip."""
+
+    import torch.nn.functional as functional
+
+    context = cuda_context or CudaContext.resolve()
+    source_height, source_width = gradients.strength.shape[-2:]
+    maximum = int(settings.reference_ridge_working_maximum_dimension)
+    scale = min(1.0, maximum / max(source_height, source_width))
+    height = max(8, round(source_height * scale))
+    width = max(8, round(source_width * scale))
+
+    def resized(values, *, mode="bilinear"):
+        tensor = values.float()
+        if tensor.ndim == 2:
+            tensor = tensor[None, None]
+        elif tensor.ndim == 3:
+            tensor = tensor[None]
+        if tensor.shape[-2:] == (height, width):
+            return tensor
+        arguments = {} if mode in {"nearest", "area"} else {"align_corners": False}
+        return functional.interpolate(
+            tensor,
+            (height, width),
+            mode=mode,
+            **arguments,
+        )
+
+    probability = resized(
+        _raster_tensor(physical_probability_field, context)
+    ).clamp(0.0, 1.0)
+    normal_x = resized(gradients.normal_x)
+    normal_y = resized(gradients.normal_y)
+    valid = resized(gradients.valid.float(), mode="nearest") > 0.5
+    ridge = thin_probability_ridges(
+        probability,
+        normal_x,
+        normal_y,
+        valid,
+        normal_sampling_step_px=(
+            float(settings.reference_ridge_nms_step_px) * scale
+        ),
+        low_threshold=float(settings.reference_ridge_low_threshold),
+        high_threshold=float(settings.reference_ridge_high_threshold),
+        hysteresis_iterations=int(
+            settings.reference_ridge_hysteresis_iterations
+        ),
+    )
+    if ridge.shape[-2:] != (source_height, source_width):
+        ridge = functional.interpolate(
+            ridge,
+            (source_height, source_width),
+            mode="bilinear",
+            align_corners=False,
+        )
+    ridge *= gradients.valid.float()
+    return _lazy_u8(
+        ridge * 255.0,
+        "thinned reference edge ridge",
     )
 
 
@@ -2438,6 +3585,8 @@ def seed_boundary_tracing(
         float(diameter),
         float(settings.trace_tangent_tolerance_degrees),
         int(settings.trace_maximum_gap_px),
+        str(settings.trace_curvature_policy),
+        float(settings.trace_curvature_tolerance_degrees),
         float(settings.trace_window_fraction),
         int(settings.trace_sample_count),
         float(settings.trace_minimum_length_fraction),
@@ -2476,6 +3625,10 @@ def seed_boundary_tracing(
             tangent_y,
             maximum_gap=settings.trace_maximum_gap_px,
             tangent_tolerance_degrees=settings.trace_tangent_tolerance_degrees,
+            curvature_policy=settings.trace_curvature_policy,
+            curvature_tolerance_degrees=(
+                settings.trace_curvature_tolerance_degrees
+            ),
         ).long()
         component_area = torch.bincount(trace_labels.reshape(-1))
         minimum_trace_length = max(

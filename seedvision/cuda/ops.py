@@ -13,6 +13,33 @@ from threading import RLock
 import numpy as np
 
 
+def apply_contrastive_negative_evidence(
+    positive_probability,
+    negative_probability,
+    *,
+    strength: float = 0.95,
+):
+    """Suppress a class only where negative evidence is more specific.
+
+    Positive and negative colour models can both match glass, pale seeds, or
+    neutral backgrounds. A direct multiplicative negative mask destroys valid
+    class evidence in those ambiguous regions. This contrastive form leaves an
+    equally good positive match intact and scales suppression with the negative
+    model's relative advantage. Painted coordinates receive no special case.
+    """
+
+    import torch
+
+    positive = positive_probability.clamp(0.0, 1.0)
+    negative = negative_probability.clamp(0.0, 1.0)
+    contradiction = torch.relu(negative - positive) / (
+        negative + positive + 1e-6
+    )
+    return positive * (
+        1.0 - max(0.0, min(1.0, float(strength))) * contradiction
+    )
+
+
 class GpuRaster:
     """GPU-resident raster downloaded only by an explicit CPU consumer."""
 
@@ -361,6 +388,7 @@ def lab_colour_distribution(
     refinement_min_probability: float = 0.82,
     frequency_weight_power: float = 0.35,
     scale_multiplier: float = 1.0,
+    combine_modes: str = "sum",
     scale_floors=(8.0, 3.0, 3.0),
     distance_weights=(1.0, 1.25, 1.25),
     maximum_fit_samples: int = 32768,
@@ -382,6 +410,8 @@ def lab_colour_distribution(
     eligible = eligible_mask.bool()
     floors = torch.as_tensor(scale_floors, device=lab.device, dtype=lab.dtype)
     weights = torch.as_tensor(distance_weights, device=lab.device, dtype=lab.dtype)
+    if combine_modes not in {"sum", "maximum"}:
+        raise ValueError("combine_modes must be 'sum' or 'maximum'.")
 
     def limited(samples, limit: int = maximum_fit_samples):
         count = int(samples.shape[0])
@@ -411,11 +441,20 @@ def lab_colour_distribution(
             floors,
         )
         centres = [global_centre]
+        minimum_distance = torch.sum(
+            ((samples - global_centre) / global_scale).square() * weights,
+            dim=1,
+        )
         for _ in range(1, component_count):
-            centre_tensor = torch.stack(centres)
-            delta = (samples[:, None, :] - centre_tensor[None, :, :]) / global_scale
-            distance = torch.sum(delta.square() * weights, dim=2)
-            centres.append(samples[torch.argmax(torch.min(distance, dim=1).values)])
+            next_centre = samples[torch.argmax(minimum_distance)]
+            centres.append(next_centre)
+            next_distance = torch.sum(
+                ((samples - next_centre) / global_scale).square() * weights,
+                dim=1,
+            )
+            minimum_distance = torch.minimum(
+                minimum_distance, next_distance
+            )
         centre_tensor = torch.stack(centres)
         assignments = torch.zeros(sample_count, device=lab.device, dtype=torch.long)
         for _ in range(max(1, int(fit_iterations))):
@@ -454,12 +493,6 @@ def lab_colour_distribution(
         )
 
     def membership(centres, scales, component_weights):
-        effective_scales = scales * max(0.05, float(scale_multiplier))
-        delta = (lab[:, :, None, :] - centres[None, None, :, :]) / effective_scales[
-            None, None, :, :
-        ]
-        distance = torch.sum(delta.square() * weights, dim=3)
-        component_membership = torch.exp(-0.5 * distance)
         # Frequency zero makes every represented colour mode equally strong;
         # frequency one applies the measured painted-area occurrence directly.
         # Normalizing by the largest weight keeps the dominant mode's centre at
@@ -468,11 +501,44 @@ def lab_colour_distribution(
             max(0.0, float(frequency_weight_power))
         )
         adjusted_weights /= adjusted_weights.max().clamp_min(1e-6)
-        weighted_probability = torch.sum(
-            component_membership * adjusted_weights[None, None, :], dim=2
-        ).clamp(0.0, 1.0)
-        maximum_membership = torch.max(component_membership, dim=2).values
-        return weighted_probability, maximum_membership
+        weighted_probability = torch.zeros(
+            lab.shape[:2], device=lab.device, dtype=lab.dtype
+        )
+        maximum_membership = torch.zeros_like(weighted_probability)
+        # A full H×W×mode tensor becomes prohibitive once a reference is allowed
+        # to retain dozens of colours. Evaluate a few modes at a time so the
+        # control scales computation rather than peak raster memory. A fuzzy
+        # union (the strongest weighted mode) also makes capacity independent:
+        # splitting one colour cloud into more overlapping fitted modes must not
+        # mechanically increase its probability.
+        for start in range(0, int(centres.shape[0]), 4):
+            stop = min(start + 4, int(centres.shape[0]))
+            effective_scales = scales[start:stop] * max(
+                0.05, float(scale_multiplier)
+            )
+            delta = (
+                lab[:, :, None, :] - centres[None, None, start:stop, :]
+            ) / effective_scales[None, None, :, :]
+            distance = torch.sum(
+                delta.square() * weights[None, None, None, :], dim=3
+            )
+            component_membership = torch.exp(-0.5 * distance)
+            weighted = (
+                component_membership
+                * adjusted_weights[None, None, start:stop]
+            )
+            if combine_modes == "maximum":
+                weighted_probability = torch.maximum(
+                    weighted_probability,
+                    torch.max(weighted, dim=2).values,
+                )
+            else:
+                weighted_probability += torch.sum(weighted, dim=2)
+            maximum_membership = torch.maximum(
+                maximum_membership,
+                torch.max(component_membership, dim=2).values,
+            )
+        return weighted_probability.clamp(0.0, 1.0), maximum_membership
 
     def painted_component_weights(centres, scales):
         """Measure mode occurrence from the user's immutable anchor pixels."""
@@ -824,13 +890,30 @@ def oriented_connected_components(
     *,
     maximum_gap: int = 2,
     tangent_tolerance_degrees: float = 24.0,
+    curvature_policy: str = "prefer",
+    curvature_tolerance_degrees: float = 6.0,
 ):
     """Link ridge pixels on-device using tangent-compatible adjacency.
 
     Unlike ordinary connected components, this does not join crossing edges
-    merely because their pixels touch. Short gaps are bridged only when the
-    displacement follows both endpoint tangents. No component raster or
+    merely because their pixels touch. Short gaps are bridged only between two
+    facing trace endpoints when the displacement follows both endpoint
+    tangents and the signed tangent orientation preserves the same gradient
+    side.  The endpoint rule is important: without it, increasing
+    ``maximum_gap`` can connect two uninterrupted parallel ridges through a
+    diagonal pair of otherwise compatible pixels. No component raster or
     statistics are transferred to the CPU.
+
+    Optional curvature gating classifies every non-adjacent candidate bridge
+    from its endpoint tangents.  After orienting both axial tangents towards
+    the bridge chord, equal-signed tangent-to-chord bends describe a C-shaped
+    (single-turn) continuation while opposite signs describe an S-shaped
+    continuation through an inflection.  ``prefer`` rejects only confident
+    S-bends, whereas ``require`` rejects every S-bend outside the configured
+    angular ambiguity.  Immediate pixel neighbours are deliberately exempt:
+    a one-pixel staircase chord is too quantized to support a curvature test.
+    This is a local convexity constraint on initial assignments, not a claim
+    that an arbitrarily long component has been globally proven convex.
     """
 
     import torch
@@ -839,6 +922,32 @@ def oriented_connected_components(
     tx = tangent_x[0, 0] if tangent_x.ndim == 4 else tangent_x
     ty = tangent_y[0, 0] if tangent_y.ndim == 4 else tangent_y
     height, width = binary.shape
+    curvature_policy = str(curvature_policy).strip().lower()
+    if curvature_policy not in {"off", "prefer", "require"}:
+        raise ValueError(
+            "Curvature policy must be 'off', 'prefer', or 'require'."
+        )
+    curvature_tolerance_degrees = float(curvature_tolerance_degrees)
+    if not 0.0 <= curvature_tolerance_degrees <= 45.0:
+        raise ValueError(
+            "Curvature tolerance must be between 0 and 45 degrees."
+        )
+    required_curvature_deadband = float(
+        np.sin(np.deg2rad(curvature_tolerance_degrees))
+    )
+    preferred_curvature_deadband = float(
+        np.sin(
+            np.deg2rad(
+                min(
+                    60.0,
+                    max(
+                        2.0 * curvature_tolerance_degrees,
+                        0.5 * float(tangent_tolerance_degrees),
+                    ),
+                )
+            )
+        )
+    )
     count = height * width
     index = torch.arange(
         1, count + 1, device=binary.device, dtype=torch.int64
@@ -850,12 +959,78 @@ def oriented_connected_components(
     orientation_limit = float(
         np.cos(np.deg2rad(tangent_tolerance_degrees))
     )
-    direction_limit = float(
+    adjacent_direction_limit = float(
         np.cos(np.deg2rad(min(75.0, tangent_tolerance_degrees * 1.6)))
     )
+    # A long bridge is less constrained by the pixel grid than immediate
+    # 8-neighbour adjacency, so do not give it the former broad (up to 75
+    # degree) directional allowance.  Twenty-five degrees still admits a
+    # four-pixel chord across a realistically curved seed rim, while rejecting
+    # the diagonal cross-links that merge close parallel rims.
+    bridge_direction_limit = float(
+        np.cos(
+            np.deg2rad(
+                max(2.0, min(25.0, float(tangent_tolerance_degrees)))
+            )
+        )
+    )
+
+    maximum_gap = max(1, int(maximum_gap))
+    neighbour_bits = None
+    neighbour_offsets = (
+        (-1, -1),
+        (-1, 0),
+        (-1, 1),
+        (0, -1),
+        (0, 1),
+        (1, -1),
+        (1, 0),
+        (1, 1),
+    )
+    if maximum_gap > 1:
+        # Encode the eight-neighbour occupancy once.  Gap candidates can then
+        # test whether each ridge pixel is a genuine endpoint without eight
+        # additional full-raster comparisons per candidate displacement.
+        neighbour_bits = torch.zeros_like(binary, dtype=torch.int16)
+        for bit, (neighbour_dy, neighbour_dx) in enumerate(neighbour_offsets):
+            source_y0 = max(0, -neighbour_dy)
+            source_y1 = min(height, height - neighbour_dy)
+            source_x0 = max(0, -neighbour_dx)
+            source_x1 = min(width, width - neighbour_dx)
+            target_y0, target_y1 = (
+                source_y0 + neighbour_dy,
+                source_y1 + neighbour_dy,
+            )
+            target_x0, target_x1 = (
+                source_x0 + neighbour_dx,
+                source_x1 + neighbour_dx,
+            )
+            occupied = binary[
+                target_y0:target_y1, target_x0:target_x1
+            ].to(torch.int16)
+            neighbour_bits[
+                source_y0:source_y1, source_x0:source_x1
+            ] |= occupied << bit
+
+    def neighbour_cone_bits(ux: float, uy: float) -> tuple[int, int]:
+        """Return narrow forward/backward endpoint-occupancy cones."""
+
+        forward = 0
+        backward = 0
+        for bit, (neighbour_dy, neighbour_dx) in enumerate(neighbour_offsets):
+            neighbour_length = float(np.hypot(neighbour_dx, neighbour_dy))
+            projection = (
+                neighbour_dx * ux + neighbour_dy * uy
+            ) / neighbour_length
+            if projection >= 0.9:
+                forward |= 1 << bit
+            elif projection <= -0.9:
+                backward |= 1 << bit
+        return forward, backward
+
     edge_a = []
     edge_b = []
-    for gap in range(1, max(1, int(maximum_gap)) + 1):
+    for gap in range(1, maximum_gap + 1):
         offsets = []
         for dy in range(-gap, gap + 1):
             for dx in range(-gap, gap + 1):
@@ -871,11 +1046,17 @@ def oriented_connected_components(
             x0b, x1b = x0a + dx, x1a + dx
             tx_a, ty_a = tx[y0a:y1a, x0a:x1a], ty[y0a:y1a, x0a:x1a]
             tx_b, ty_b = tx[y0b:y1b, x0b:x1b], ty[y0b:y1b, x0b:x1b]
-            axial_agreement = torch.abs(tx_a * tx_b + ty_a * ty_b)
+            signed_agreement = tx_a * tx_b + ty_a * ty_b
+            axial_agreement = torch.abs(signed_agreement)
             length = float(np.hypot(dx, dy))
             ux, uy = dx / length, dy / length
             follows_a = torch.abs(tx_a * ux + ty_a * uy)
             follows_b = torch.abs(tx_b * ux + ty_b * uy)
+            direction_limit = (
+                adjacent_direction_limit
+                if gap == 1
+                else bridge_direction_limit
+            )
             connected = (
                 binary[y0a:y1a, x0a:x1a]
                 & binary[y0b:y1b, x0b:x1b]
@@ -883,6 +1064,55 @@ def oriented_connected_components(
                 & (follows_a >= direction_limit)
                 & (follows_b >= direction_limit)
             )
+            if gap > 1:
+                if curvature_policy != "off":
+                    # Tangents are axial for this geometric test.  Orient
+                    # each towards the A->B chord so the result is invariant
+                    # to endpoint order, tangent sign and curve winding.
+                    dot_a = tx_a * ux + ty_a * uy
+                    dot_b = tx_b * ux + ty_b * uy
+                    sign_a = torch.where(
+                        dot_a >= 0.0,
+                        torch.ones_like(dot_a),
+                        -torch.ones_like(dot_a),
+                    )
+                    sign_b = torch.where(
+                        dot_b >= 0.0,
+                        torch.ones_like(dot_b),
+                        -torch.ones_like(dot_b),
+                    )
+                    bend_a = sign_a * (tx_a * uy - ty_a * ux)
+                    bend_b = sign_b * (ux * ty_b - uy * tx_b)
+                    opposite_bends = bend_a * bend_b < 0.0
+                    deadband = (
+                        preferred_curvature_deadband
+                        if curvature_policy == "prefer"
+                        else required_curvature_deadband
+                    )
+                    resolved_bends = torch.minimum(
+                        torch.abs(bend_a), torch.abs(bend_b)
+                    ) > deadband
+                    connected &= ~(opposite_bends & resolved_bends)
+
+                # The tangent sign is inherited from the directed image
+                # gradient. Facing boundaries of adjacent seeds therefore
+                # have opposite signs even though their *axial* tangents are
+                # parallel. Do not bridge across that semantic side change.
+                connected &= signed_agreement >= orientation_limit
+
+                # Require at least one end of the proposed bridge to be open
+                # in its narrow chord direction. Requiring both ends to be
+                # topological one-pixel endpoints is too brittle after ridge
+                # thinning and junction removal: a harmless staircase pixel
+                # can sit beside one end. Two uninterrupted parallel traces,
+                # however, have continuation at both sampled pixels and are
+                # therefore never eligible for a gap bridge.
+                forward_bits, backward_bits = neighbour_cone_bits(ux, uy)
+                bits_a = neighbour_bits[y0a:y1a, x0a:x1a]
+                bits_b = neighbour_bits[y0b:y1b, x0b:x1b]
+                a_is_facing_endpoint = (bits_a & forward_bits) == 0
+                b_is_facing_endpoint = (bits_b & backward_bits) == 0
+                connected &= a_is_facing_endpoint | b_is_facing_endpoint
             edge_a.append(index[y0a:y1a, x0a:x1a][connected])
             edge_b.append(index[y0b:y1b, x0b:x1b][connected])
     if edge_a:

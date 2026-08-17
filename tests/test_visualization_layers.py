@@ -4,6 +4,24 @@ import unittest
 
 
 class AnalysisLayerTests(unittest.TestCase):
+    def test_contrastive_other_evidence_preserves_equal_positive_matches(self) -> None:
+        import torch
+
+        from seedvision.cuda import apply_contrastive_negative_evidence
+
+        positive = torch.tensor((0.90, 0.20, 0.60), dtype=torch.float32)
+        negative = torch.tensor((0.90, 0.90, 0.30), dtype=torch.float32)
+        result = apply_contrastive_negative_evidence(
+            positive, negative, strength=0.95
+        )
+
+        # A colour shared by a positive class and Other is ambiguous, not a
+        # reason to erase otherwise strong foreground/background evidence.
+        self.assertAlmostEqual(float(result[0]), 0.90, delta=1e-5)
+        # Other still rejects colours where its learned fit is clearly better.
+        self.assertLess(float(result[1]), 0.10)
+        self.assertAlmostEqual(float(result[2]), 0.60, delta=1e-5)
+
     def test_adding_diverse_foreground_references_cannot_evict_existing_colour(self) -> None:
         import torch
 
@@ -84,6 +102,61 @@ class AnalysisLayerTests(unittest.TestCase):
         self.assertLess(float(probability[0, 1]), 0.30)
         self.assertLess(float(probability[0, 2]), 0.01)
 
+    def test_colour_distribution_evaluates_many_modes_in_bounded_chunks(self) -> None:
+        from unittest.mock import patch
+
+        import torch
+
+        from seedvision.cuda import lab_colour_distribution
+
+        mode_index = torch.arange(32, dtype=torch.float32)
+        mode_colours = torch.stack(
+            (
+                20.0 + (mode_index % 8.0) * 25.0,
+                30.0 + torch.floor(mode_index / 8.0) * 50.0,
+                45.0 + ((mode_index * 3.0) % 8.0) * 22.0,
+            ),
+            dim=1,
+        )
+        samples = mode_colours.repeat_interleave(64, dim=0)
+        lab = mode_colours.repeat_interleave(2, dim=0).reshape(8, 8, 3)
+        eligible = torch.ones((8, 8), dtype=torch.bool)
+        exp_shapes = []
+        original_exp = torch.exp
+
+        def recording_exp(value):
+            exp_shapes.append(tuple(value.shape))
+            return original_exp(value)
+
+        with patch.object(torch, "exp", side_effect=recording_exp):
+            probability, centres, scales, weights, *_ = lab_colour_distribution(
+                lab,
+                samples,
+                eligible,
+                maximum_components=32,
+                fit_iterations=1,
+                refinement_iterations=0,
+                combine_modes="maximum",
+            )
+
+        self.assertEqual(tuple(probability.shape), (8, 8))
+        self.assertEqual(int(centres.shape[0]), 32)
+        self.assertEqual(len(exp_shapes), 8)
+        self.assertTrue(all(shape[-1] <= 4 for shape in exp_shapes))
+        adjusted = weights.clamp_min(1e-6).pow(0.35)
+        adjusted /= adjusted.max().clamp_min(1e-6)
+        distance = torch.sum(
+            ((lab[:, :, None, :] - centres[None, None, :, :])
+             / scales[None, None, :, :]).square()
+            * torch.tensor((1.0, 1.25, 1.25))[None, None, None, :],
+            dim=3,
+        )
+        expected = torch.max(
+            torch.exp(-0.5 * distance) * adjusted[None, None, :],
+            dim=2,
+        ).values
+        torch.testing.assert_close(probability, expected)
+
     @classmethod
     def setUpClass(cls) -> None:
         try:
@@ -148,11 +221,19 @@ class AnalysisLayerTests(unittest.TestCase):
 
         physical_probability = np.asarray(layers.physical_edge_probability)
         non_edge_probability = np.asarray(layers.non_edge_probability)
+        self.assertFalse(layers.reference_edge_ridges.is_materialized)
+        reference_ridges = np.asarray(layers.reference_edge_ridges)
         self.assertEqual(physical_probability.shape, image.shape[:2])
         self.assertEqual(non_edge_probability.shape, image.shape[:2])
+        self.assertEqual(reference_ridges.shape, image.shape[:2])
         self.assertFalse(np.array_equal(physical_probability, non_edge_probability))
         self.assertGreater(int(physical_probability.max()), 0)
         self.assertGreater(int(non_edge_probability.max()), 0)
+        self.assertGreater(int(reference_ridges.max()), 0)
+        self.assertLess(
+            int(np.count_nonzero(reference_ridges)),
+            int(np.count_nonzero(physical_probability)),
+        )
         # Painted coordinates are samples, not hard output assignments.
         self.assertLess(int(physical_probability[48, 24]), 255)
         self.assertLess(int(non_edge_probability[48, 48]), 255)
@@ -160,6 +241,177 @@ class AnalysisLayerTests(unittest.TestCase):
             layers.reference_edge_probability_rgba(True).shape,
             (96, 96, 4),
         )
+        self.assertEqual(layers.reference_edge_ridges_rgba().shape, (96, 96, 4))
+
+        disabled = build_analysis_layers(
+            image,
+            valid,
+            np.empty((0, 2), np.float32),
+            np.empty((0,), np.float32),
+            50.0,
+            offset_x=0,
+            offset_y=0,
+            physical_edge_reference_mask=physical,
+            non_edge_reference_mask=non_edge,
+            reference_edge_ridges_enabled=False,
+            instance_masks_enabled=False,
+            seed_edge_curves_enabled=False,
+        )
+        self.assertEqual(int(np.asarray(disabled.reference_edge_ridges).max()), 0)
+
+    def test_probability_ridge_thinning_centres_and_hysteretically_connects(self) -> None:
+        import torch
+
+        from seedvision.cuda.layers import thin_probability_ridges
+
+        height, width = 32, 41
+        x = torch.arange(width, dtype=torch.float32)
+        cross_section = torch.exp(-0.5 * ((x - 20.0) / 2.8).square())
+        amplitude = torch.zeros(height, dtype=torch.float32)
+        amplitude[3:9] = 0.80
+        amplitude[9:20] = 0.18
+        amplitude[24:29] = 0.18
+        probability = amplitude[:, None] * cross_section[None, :]
+        normal_x = torch.ones_like(probability)
+        normal_y = torch.zeros_like(probability)
+        valid = torch.ones_like(probability, dtype=torch.bool)
+        valid[3, 20] = False
+
+        ridge = thin_probability_ridges(
+            probability,
+            normal_x,
+            normal_y,
+            valid,
+            normal_sampling_step_px=1.0,
+            low_threshold=0.10,
+            high_threshold=0.40,
+            hysteresis_iterations=16,
+        )[0, 0]
+
+        self.assertEqual(float(ridge[3, 20]), 0.0)
+        self.assertGreater(float(ridge[8, 20]), 0.7)
+        self.assertGreater(float(ridge[19, 20]), 0.1)
+        self.assertEqual(float(ridge[24:29].max()), 0.0)
+        retained_x = torch.nonzero(ridge > 0, as_tuple=False)[:, 1]
+        self.assertTrue(torch.all(retained_x == 20).item())
+        self.assertLess(int(torch.count_nonzero(ridge)), int(torch.count_nonzero(probability)))
+
+    def test_reference_texture_bank_preserves_many_material_and_edge_modes(self) -> None:
+        import cv2
+        import numpy as np
+
+        from seedvision.visualization import AnalysisLayerSettings, build_analysis_layers
+
+        height = width = 192
+        yy, xx = np.indices((height, width))
+        image = np.full((height, width, 3), (210, 220, 225), np.uint8)
+        image[:, :, 0] = np.clip(
+            image[:, :, 0].astype(np.int16)
+            + (((xx // 7 + yy // 9) % 2) * 6),
+            0,
+            255,
+        ).astype(np.uint8)
+        seeds = (
+            (55, 65, 32, (45, 80, 135)),
+            (135, 62, 31, (85, 125, 175)),
+            (95, 137, 34, (40, 62, 88)),
+        )
+        for centre_x, centre_y, radius, colour in seeds:
+            cv2.circle(image, (centre_x, centre_y), radius, colour, -1)
+            interior = (
+                (xx - centre_x) ** 2 + (yy - centre_y) ** 2
+            ) <= radius**2
+            stripe = ((xx + 2 * yy) // 6) % 3 == 0
+            image[interior & stripe] = np.clip(
+                image[interior & stripe].astype(np.int16)
+                + np.asarray((35, 45, 55), np.int16),
+                0,
+                255,
+            ).astype(np.uint8)
+            cv2.circle(image, (centre_x, centre_y), radius, (20, 30, 45), 2)
+        image[8:50, 145:185] = (190, 80, 35)
+
+        background = np.zeros((height, width), bool)
+        background[4:22, 4:80] = True
+        background[165:188, 110:188] = True
+        foreground = np.zeros((height, width), bool)
+        foreground[48:82, 40:70] = True
+        foreground[48:78, 122:150] = True
+        foreground[122:154, 80:110] = True
+        other = np.zeros((height, width), bool)
+        other[12:45, 150:180] = True
+        physical = np.zeros((height, width), bool)
+        physical[60:70, 20:30] = True
+        physical[55:70, 163:172] = True
+        non_edge = np.zeros((height, width), bool)
+        non_edge[48:78, 54:60] = True
+
+        settings = AnalysisLayerSettings(
+            reference_texture_prototypes_per_class=16,
+            reference_texture_minimum_samples_per_prototype=8,
+            reference_texture_fit_iterations=3,
+            reference_texture_working_maximum_dimension=512,
+        )
+        layers = build_analysis_layers(
+            image,
+            np.full((height, width), 255, np.uint8),
+            np.empty((0, 2), np.float32),
+            np.empty((0,), np.float32),
+            60.0,
+            offset_x=0,
+            offset_y=0,
+            settings=settings,
+            background_reference_mask=background,
+            foreground_reference_mask=foreground,
+            background_exclusion_mask=other,
+            foreground_exclusion_mask=other,
+            physical_edge_reference_mask=physical,
+            non_edge_reference_mask=non_edge,
+            instance_masks_enabled=False,
+            seed_edge_curves_enabled=False,
+        )
+
+        profile = layers.reference_texture_profile
+        self.assertIsNotNone(profile)
+        self.assertEqual(
+            {name: profile.count_for(name) for name in (
+                "background",
+                "foreground",
+                "other",
+                "physical_edge",
+                "non_edge",
+            )},
+            {
+                "background": 16,
+                "foreground": 16,
+                "other": 16,
+                "physical_edge": 16,
+                "non_edge": 16,
+            },
+        )
+        self.assertTrue(
+            all(not prototype.patch_bgr.flags.writeable for prototype in profile.prototypes)
+        )
+        self.assertTrue(
+            all(
+                prototype.tangent_degrees is not None
+                for prototype in profile.prototypes
+                if prototype.class_name in {"physical_edge", "non_edge"}
+            )
+        )
+
+        seed_surface = np.asarray(layers.reference_seed_surface_probability)
+        background_probability = np.asarray(
+            layers.reference_background_texture_probability
+        )
+        other_probability = np.asarray(layers.reference_other_texture_probability)
+        self.assertGreater(float(seed_surface[foreground].mean()), 180.0)
+        self.assertGreater(float(background_probability[background].mean()), 220.0)
+        self.assertGreater(float(other_probability[other].mean()), 210.0)
+        self.assertLess(float(seed_surface[background].mean()), 10.0)
+        self.assertLess(float(seed_surface[other].mean()), 10.0)
+        # Reference pixels are classifier examples, never hard-assigned output.
+        self.assertLess(int(seed_surface[foreground].max()), 255)
 
     def test_automatic_background_range_comes_from_exterior_lab_samples(self) -> None:
         import cv2
@@ -191,6 +443,118 @@ class AnalysisLayerTests(unittest.TestCase):
         self.assertEqual(mode, "automatic")
         self.assertEqual(profile.bgr_low, (200, 214, 216))
         self.assertEqual(profile.bgr_high, (200, 214, 216))
+
+    def test_surrounding_background_reuses_exact_fitted_colour_profile(self) -> None:
+        import numpy as np
+
+        from seedvision.cuda import CudaContext, GpuRaster
+        from seedvision.cuda.layers import (
+            background_colour_likelihood,
+            background_colour_profile_likelihood,
+        )
+        from seedvision.cuda.ops import image_to_tensor
+        from seedvision.visualization import AnalysisLayerSettings
+
+        image = np.full((48, 48, 3), (210, 218, 222), np.uint8)
+        image[:, 24:] = (75, 120, 175)
+        valid = np.full((48, 48), 255, np.uint8)
+        background = np.zeros((48, 48), np.uint8)
+        background[4:20, 4:20] = 255
+        background[4:10, 28:34] = 255
+        excluded = np.zeros((48, 48), np.uint8)
+        excluded[28:44, 28:44] = 255
+        settings = AnalysisLayerSettings(background_refinement_iterations=0)
+        context = CudaContext.resolve(requested="cpu")
+        source = image_to_tensor(image, context)
+        valid_tensor = image_to_tensor(valid, context) > 0
+
+        canonical, _mode, _count, profile = background_colour_likelihood(
+            image,
+            valid,
+            background_reference_mask=background,
+            background_exclusion_mask=excluded,
+            settings=settings,
+            cuda_context=context,
+            source_tensor=source,
+            valid_tensor=valid_tensor,
+        )
+        surrounding, surrounding_valid = background_colour_profile_likelihood(
+            source,
+            valid_tensor,
+            profile,
+            settings,
+            cuda_context=context,
+        )
+
+        self.assertIsInstance(surrounding, GpuRaster)
+        self.assertIsInstance(surrounding_valid, GpuRaster)
+        self.assertFalse(surrounding.is_materialized)
+        self.assertFalse(surrounding_valid.is_materialized)
+        np.testing.assert_allclose(
+            np.asarray(surrounding).astype(np.int16),
+            np.asarray(canonical).astype(np.int16),
+            atol=1,
+        )
+
+    def test_surrounding_background_layer_is_lazy_and_cached(self) -> None:
+        import numpy as np
+
+        from seedvision.cuda import CudaContext, GpuRaster
+        from seedvision.cuda.ops import image_to_tensor
+        from seedvision.visualization import build_analysis_layers
+
+        image = np.full((48, 48, 3), (210, 218, 222), np.uint8)
+        valid = np.full((48, 48), 255, np.uint8)
+        context = CudaContext.resolve(requested="cpu")
+        surrounding_image = np.full((24, 24, 3), (210, 218, 222), np.uint8)
+        surrounding_source = image_to_tensor(surrounding_image, context)
+        surrounding_valid = image_to_tensor(
+            np.full((24, 24), 255, np.uint8), context
+        ) > 0
+        cache: dict[str, object] = {}
+        common = dict(
+            offset_x=0,
+            offset_y=0,
+            surrounding_noise_source_tensor=surrounding_source,
+            surrounding_noise_valid_tensor=surrounding_valid,
+            instance_masks_enabled=False,
+            seed_edge_curves_enabled=False,
+            cuda_context=context,
+            cache_values=cache,
+        )
+
+        first_layers = build_analysis_layers(
+            image,
+            valid,
+            np.empty((0, 2), np.float32),
+            np.empty((0,), np.float32),
+            16.0,
+            **common,
+        )
+        first = first_layers.surrounding_background_likelihood
+        self.assertIsInstance(first, GpuRaster)
+        self.assertFalse(first.is_materialized)
+
+        second_layers = build_analysis_layers(
+            image,
+            valid,
+            np.empty((0, 2), np.float32),
+            np.empty((0,), np.float32),
+            16.0,
+            **common,
+        )
+        self.assertIs(second_layers.surrounding_background_likelihood, first)
+
+        changed_layers = build_analysis_layers(
+            image,
+            valid,
+            np.empty((0, 2), np.float32),
+            np.empty((0,), np.float32),
+            16.0,
+            dirty_nodes={"background_likelihood"},
+            **common,
+        )
+        self.assertIsNot(changed_layers.surrounding_background_likelihood, first)
 
     def test_refined_background_uses_local_noise_frequency_profile(self) -> None:
         import cv2
@@ -513,7 +877,7 @@ class AnalysisLayerTests(unittest.TestCase):
         )
         self.assertGreater(int(uniform_layers.background_likelihood[32, 32]), 220)
 
-    def test_layer_exclusions_fit_negative_evidence_without_pixel_overrides(self) -> None:
+    def test_other_evidence_is_contrastive_without_pixel_overrides(self) -> None:
         import numpy as np
 
         from seedvision.cuda import CudaContext
@@ -559,7 +923,8 @@ class AnalysisLayerTests(unittest.TestCase):
         background_noise = np.asarray(layers.refined_background_likelihood)
         foreground_noise = np.asarray(layers.foreground_noise_likelihood)
         # The brush coordinates are not overwritten. A same-colour unpainted
-        # patch receives the same fitted negative-colour response.
+        # patch receives the same response, and an Other sample whose colour is
+        # also an excellent background match cannot veto the positive model.
         remote_background = np.s_[8:16, 70:78]
         self.assertGreater(float(np.mean(background_colour[background_exclusion])), 0.0)
         self.assertAlmostEqual(
@@ -567,9 +932,10 @@ class AnalysisLayerTests(unittest.TestCase):
             float(np.mean(background_colour[remote_background])),
             delta=2.0,
         )
-        self.assertLess(
+        self.assertGreaterEqual(
             float(np.mean(background_colour[remote_background])),
-            float(np.mean(np.asarray(baseline_layers.background_likelihood)[remote_background])),
+            float(np.mean(np.asarray(baseline_layers.background_likelihood)[remote_background]))
+            - 2.0,
         )
         self.assertGreater(float(np.mean(background_noise[background_exclusion])), 0.0)
         self.assertGreater(float(np.mean(foreground_noise[foreground_exclusion])), 0.0)
@@ -598,9 +964,10 @@ class AnalysisLayerTests(unittest.TestCase):
             float(np.mean(foreground_colour[remote_foreground])),
             delta=2.0,
         )
-        self.assertLess(
+        self.assertGreaterEqual(
             float(np.mean(foreground_colour[remote_foreground])),
-            float(np.mean(np.asarray(baseline_foreground[1])[remote_foreground])),
+            float(np.mean(np.asarray(baseline_foreground[1])[remote_foreground]))
+            - 2.0,
         )
 
     def test_vertical_edge_encodes_a_directed_vertical_tangent(self) -> None:
@@ -1043,6 +1410,7 @@ class AnalysisLayerTests(unittest.TestCase):
             *layers.darkness_frequency_noise_masks,
             *layers.colour_frequency_noise_masks,
             layers.edge_ridges,
+            layers.reference_edge_ridges,
             layers.edge_trace_labels,
             layers.edge_trace_continuity,
             layers.edge_trace_gap_confidence,
@@ -1084,6 +1452,8 @@ class AnalysisLayerTests(unittest.TestCase):
         )
         first = cache["layer.seed_edge_curves"]
         first_gradients = cache["layer.edge_gradients"]
+        first_reference_probability = cache["layer.reference_edge_probability"]
+        first_reference_ridge = cache["layer.reference_edge_ridges"]
 
         build_analysis_layers(
             image,
@@ -1101,6 +1471,43 @@ class AnalysisLayerTests(unittest.TestCase):
         self.assertIs(final_only.ridge_state, first.ridge_state)
         self.assertIs(final_only.trace_state, first.trace_state)
         self.assertIs(cache["layer.edge_gradients"], first_gradients)
+        self.assertIs(cache["layer.reference_edge_ridges"], first_reference_ridge)
+
+        build_analysis_layers(
+            image,
+            valid,
+            centers,
+            radii,
+            46.0,
+            offset_x=0,
+            offset_y=0,
+            cache_values=cache,
+            dirty_nodes={"reference_edge_ridges"},
+            settings=AnalysisLayerSettings(reference_ridge_high_threshold=0.30),
+        )
+        self.assertIs(
+            cache["layer.reference_edge_probability"],
+            first_reference_probability,
+        )
+        self.assertIsNot(
+            cache["layer.reference_edge_ridges"], first_reference_ridge
+        )
+        self.assertIs(cache["layer.seed_edge_curves"], final_only)
+
+        build_analysis_layers(
+            image,
+            valid,
+            centers,
+            radii,
+            52.0,
+            offset_x=0,
+            offset_y=0,
+            cache_values=cache,
+            dirty_nodes={"edge_traces", "seed_edge_curves"},
+        )
+        scale_changed = cache["layer.seed_edge_curves"]
+        self.assertIs(scale_changed.ridge_state, final_only.ridge_state)
+        self.assertIsNot(scale_changed.trace_state, final_only.trace_state)
 
         build_analysis_layers(
             image,
@@ -1115,8 +1522,30 @@ class AnalysisLayerTests(unittest.TestCase):
             settings=AnalysisLayerSettings(trace_tangent_tolerance_degrees=30.0),
         )
         trace_changed = cache["layer.seed_edge_curves"]
-        self.assertIs(trace_changed.ridge_state, final_only.ridge_state)
-        self.assertIsNot(trace_changed.trace_state, final_only.trace_state)
+        self.assertIs(trace_changed.ridge_state, scale_changed.ridge_state)
+        self.assertIsNot(trace_changed.trace_state, scale_changed.trace_state)
+
+        build_analysis_layers(
+            image,
+            valid,
+            centers,
+            radii,
+            46.0,
+            offset_x=0,
+            offset_y=0,
+            cache_values=cache,
+            dirty_nodes={"edge_traces", "seed_edge_curves"},
+            settings=AnalysisLayerSettings(
+                trace_tangent_tolerance_degrees=30.0,
+                trace_curvature_policy="require",
+                trace_curvature_tolerance_degrees=4.0,
+            ),
+        )
+        curvature_changed = cache["layer.seed_edge_curves"]
+        self.assertIs(curvature_changed.ridge_state, trace_changed.ridge_state)
+        self.assertIsNot(
+            curvature_changed.trace_state, trace_changed.trace_state
+        )
 
         build_analysis_layers(
             image,
@@ -1131,8 +1560,12 @@ class AnalysisLayerTests(unittest.TestCase):
             settings=AnalysisLayerSettings(ridge_high_threshold=0.30),
         )
         ridge_changed = cache["layer.seed_edge_curves"]
-        self.assertIsNot(ridge_changed.ridge_state, trace_changed.ridge_state)
-        self.assertIsNot(ridge_changed.trace_state, trace_changed.trace_state)
+        self.assertIsNot(
+            ridge_changed.ridge_state, curvature_changed.ridge_state
+        )
+        self.assertIsNot(
+            ridge_changed.trace_state, curvature_changed.trace_state
+        )
 
 
 if __name__ == "__main__":

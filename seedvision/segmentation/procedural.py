@@ -30,6 +30,7 @@ class ProceduralInstanceSettings:
     boundary_shadow_weight: float = 0.08
     boundary_reference_weight: float = 0.35
     boundary_nonedge_discount: float = 0.85
+    reference_texture_weight: float = 0.35
     strong_boundary_quantile: float = 0.67
     centre_ring_inner_fraction: float = 0.27
     centre_ring_outer_fraction: float = 0.58
@@ -60,6 +61,8 @@ class ProceduralInstanceSettings:
             raise ValueError("Reference-edge weight must be between zero and one.")
         if not 0.0 <= self.boundary_nonedge_discount <= 1.0:
             raise ValueError("Non-edge discount must be between zero and one.")
+        if not 0.0 <= self.reference_texture_weight <= 1.0:
+            raise ValueError("Reference texture weight must be between zero and one.")
         centre_weights = (
             self.centre_material_weight,
             self.centre_distance_weight,
@@ -203,6 +206,7 @@ def procedural_seed_instances(
     edge_ridges,
     physical_edge_probability=None,
     non_edge_probability=None,
+    reference_surface_probability=None,
     sensor_noise,
     shadow_likelihood,
     seed_instance_annotations=None,
@@ -239,9 +243,22 @@ def procedural_seed_instances(
         if non_edge_probability is None
         else _working_u8(non_edge_probability, size, cv2.INTER_AREA) / 255.0
     )
+    reference_surface = (
+        None
+        if reference_surface_probability is None
+        else _working_u8(
+            reference_surface_probability, size, cv2.INTER_AREA
+        )
+        / 255.0
+    )
 
     inverse_background = 1.0 - np.minimum(background, refined_background)
     occupancy_likelihood = np.maximum(foreground, foreground_noise)
+    if reference_surface is not None:
+        occupancy_likelihood = (
+            occupancy_likelihood * (1.0 - settings.reference_texture_weight)
+            + reference_surface * settings.reference_texture_weight
+        )
     occupancy_likelihood *= 0.30 + 0.70 * inverse_background
     occupancy_likelihood *= valid
     occupancy_u8 = np.uint8(np.clip(np.rint(occupancy_likelihood * 255.0), 0, 255))

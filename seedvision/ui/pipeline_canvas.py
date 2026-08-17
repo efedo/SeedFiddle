@@ -423,9 +423,12 @@ class PipelineEdgeItem(QGraphicsPathItem):
         self.target = target
         self._disconnect_callback = disconnect_callback
         self.setFlag(self.GraphicsItemFlag.ItemIsSelectable, True)
-        self.setAcceptedMouseButtons(
-            Qt.MouseButton.LeftButton | Qt.MouseButton.RightButton
-        )
+        # A connection's stroked hit area can cover much of a dense graph. If
+        # it accepts ordinary left presses, QGraphicsView selects the Bezier
+        # (and draws its large bounding box) instead of starting hand-drag
+        # panning. The canvas handles the deliberate Ctrl-click selection
+        # gesture; the item itself only needs right-click context menus.
+        self.setAcceptedMouseButtons(Qt.MouseButton.RightButton)
         self.set_highlighted(False)
         self.setZValue(0)
         source_label = dict(source.node.output_ports)[connection.source_port]
@@ -434,6 +437,7 @@ class PipelineEdgeItem(QGraphicsPathItem):
             f"{source.node.title}: {source_label}\n-> "
             f"{target.node.title}: {target_label}\n"
             f"Type: {connection.data_type}\n\nRight-click to disconnect."
+            " Ctrl-click to select for Delete/Backspace."
         )
         self.update_path()
 
@@ -492,6 +496,7 @@ class PipelineCanvas(QGraphicsView):
         self._fit_pending = True
         self._arranging_nodes = False
         self._connection_drag: tuple[str, str, str] | None = None
+        self._connection_selection_click = False
         self._create_connection_preview()
 
         self.setBackgroundBrush(QColor("#1c2229"))
@@ -971,6 +976,18 @@ class PipelineCanvas(QGraphicsView):
                 self._connection_preview.show()
                 event.accept()
                 return
+            if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+                graphics_item = self.itemAt(event.position().toPoint())
+                if isinstance(graphics_item, PipelineEdgeItem):
+                    if not (
+                        event.modifiers() & Qt.KeyboardModifier.ShiftModifier
+                    ):
+                        self._scene.clearSelection()
+                    graphics_item.setSelected(True)
+                    self._connection_selection_click = True
+                    self.setFocus(Qt.FocusReason.MouseFocusReason)
+                    event.accept()
+                    return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
@@ -1013,6 +1030,13 @@ class PipelineCanvas(QGraphicsView):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if (
+            self._connection_selection_click
+            and event.button() == Qt.MouseButton.LeftButton
+        ):
+            self._connection_selection_click = False
+            event.accept()
+            return
         if (
             self._connection_drag is not None
             and event.button() == Qt.MouseButton.LeftButton

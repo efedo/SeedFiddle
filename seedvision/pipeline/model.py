@@ -131,6 +131,7 @@ _PORT_LABELS = {
     "BackgroundLikelihood": "BG likelihood",
     "BackgroundProbability": "BG probability",
     "BackgroundNoise": "BG noise",
+    "BackgroundNoiseProbability": "BG noise probability",
     "DirectionalBackground": "Directional BG",
     "DirectedBackground": "Directed BG",
     "ColourPseudoLabels": "Colour pseudo-labels",
@@ -146,15 +147,38 @@ _PORT_LABELS = {
     "LocalLighting": "Local lighting",
     "SensorNoise": "Sensor noise",
     "SensorNoiseLikelihood": "Sensor/noise likelihood",
+    "FlattenedGrayscale": "Flattened grayscale",
+    "ShadowLikelihood": "Shadow likelihood",
+    "HighlightLikelihood": "Highlight likelihood",
+    "GlareLikelihood": "Glare likelihood",
+    "ImageQualityRisk": "Quality risk",
+    "FocusQuality": "Focus quality",
+    "ClippedHighlights": "Clipped highlights",
+    "Underexposure": "Underexposure",
     "SpeciesCondition": "Species",
     "InteriorProbability": "Interior probability",
     "BoundaryConfidence": "Boundary confidence",
     "BoundaryNormals": "Boundary normals",
+    "ContestedPixels": "Contested pixels",
     "ProvisionalInstances": "Provisional instances",
     "InstanceProposals": "Instance proposals",
     "SeedProposals": "Seed proposals",
     "ReviewedMasks": "Reviewed masks",
     "ReferenceConfidence": "Reference confidence",
+    "MaterialLikelihood": "Material likelihood",
+    "MaterialMask": "Material mask",
+    "BoundaryCost": "Boundary cost",
+    "CentreLikelihood": "Centre likelihood",
+    "SeedInstances": "Seed instances",
+    "InstanceConfidence": "Instance confidence",
+    "CentreProbability": "Centre probability",
+    "DistancePrediction": "Distance prediction",
+    "ModelUncertainty": "Model uncertainty",
+    "ObjectProbability": "Object probability",
+    "RadialResidual": "Radial residual",
+    "RadialCoordinate": "Radial coordinate",
+    "PatternConfidence": "Pattern confidence",
+    "ColourUncertainty": "Colour uncertainty",
 }
 
 _TERMINAL_OUTPUTS = {
@@ -928,7 +952,7 @@ def build_default_pipeline() -> PipelineGraph:
         ParameterSpec("foreground_reference_weight", "Foreground colour influence", "float", 0.0, 1.0, 0.05, "How strongly isolated-reference-seed colours, or painted foreground colours when supplied, enhance seed probability across the dish."),
         ParameterSpec("foreground_local_contrast_scale_fraction", "Local contrast scale / diameter", "float", 0.03, 0.60, 0.01, "Gaussian neighbourhood, relative to seed diameter, used to distinguish locally bright seed surfaces from darker inter-seed gaps."),
         ParameterSpec("foreground_shadow_rejection_strength", "Shadow rejection", "float", 0.0, 3.0, 0.05, "Weight of seed-scale local lightness evidence in crowded dishes. It ramps down automatically when ample true tray is visible; increase when dark gaps are mistaken for seeds."),
-        ParameterSpec("foreground_reference_components", "Reference colour-frequency bins", "int", 1, 256, 4, "Maximum coverage-preserving quantized Lab colour representatives retained from individual painted foreground pixels."),
+        ParameterSpec("foreground_reference_components", "Maximum reference colour modes", "int", 1, 256, 4, "Maximum coverage-preserving quantized Lab colour modes retained from individual painted foreground pixels."),
         ParameterSpec("foreground_distribution_fit_iterations", "Automatic summary fit rounds", "int", 1, 20, 1, "Robust clustering rounds used only for the diagnostic automatic foreground-colour summary when no painted reference exists."),
         ParameterSpec("foreground_refinement_iterations", "Reference refinement rounds", "int", 0, 8, 1, "Number of cautious self-refinement rounds after fitting the painted foreground pixels."),
         ParameterSpec("foreground_refinement_min_probability", "Refinement acceptance", "float", 0.50, 0.99, 0.01, "Only pixels at or above this foreground colour-membership probability can enter a refinement round."),
@@ -1044,7 +1068,7 @@ def build_default_pipeline() -> PipelineGraph:
         ParameterSpec("background_prior_tolerance", "Perimeter colour tolerance", "float", 2.0, 100.0, 1.0, "Maximum weighted Lab distance from the outside-dish median admitted to the automatic background training set."),
         ParameterSpec("background_lightness_scale_floor", "Lightness range floor", "float", 1.0, 40.0, 0.5, "Minimum robust Lab lightness spread used by the colour probability model."),
         ParameterSpec("background_chroma_scale_floor", "Chroma range floor", "float", 0.5, 30.0, 0.5, "Minimum robust Lab a/b spread used by the colour probability model."),
-        ParameterSpec("background_colour_components", "Reference colour modes", "int", 1, 8, 1, "Maximum robust Lab mixture components fitted to the painted or automatic background samples."),
+        ParameterSpec("background_colour_components", "Maximum reference colour modes", "int", 1, 256, 4, "Maximum robust Lab colour modes fitted to painted or automatic background samples. Higher values preserve more colour variation but increase calculation time."),
         ParameterSpec("background_distribution_fit_iterations", "Distribution fit rounds", "int", 1, 20, 1, "Robust clustering rounds used to fit the background colour distribution."),
         ParameterSpec("background_refinement_iterations", "Reference refinement rounds", "int", 0, 8, 1, "Number of cautious high-confidence expansion and refit rounds after the initial background distribution."),
         ParameterSpec("background_refinement_min_probability", "Refinement acceptance", "float", 0.50, 0.99, 0.01, "Only pixels at or above this background membership probability can enter a refinement round."),
@@ -1165,9 +1189,18 @@ def build_default_pipeline() -> PipelineGraph:
         ParameterSpec("ridge_high_threshold", "Hysteresis high", "float", 0.01, 1.0, 0.01, "Strong thinned-edge threshold that seeds hysteresis reconstruction."),
         ParameterSpec("ridge_hysteresis_iterations", "Hysteresis reach", "int", 1, 32, 1, "Maximum GPU morphology steps through which connected weak ridges can be retained."),
     )
+    reference_ridge_parameters = (
+        ParameterSpec("reference_ridge_nms_step_px", "Normal sampling step", "float", 0.25, 3.0, 0.05, "Distance sampled on both sides of reference-trained physical-edge probability during subpixel non-maximum suppression."),
+        ParameterSpec("reference_ridge_low_threshold", "Hysteresis low", "float", 0.0, 0.95, 0.01, "Weak reference maxima retained only when connected to a strong reference ridge."),
+        ParameterSpec("reference_ridge_high_threshold", "Hysteresis high", "float", 0.01, 1.0, 0.01, "Strong reference-edge threshold that seeds hysteresis reconstruction."),
+        ParameterSpec("reference_ridge_hysteresis_iterations", "Hysteresis reach", "int", 1, 32, 1, "Maximum GPU morphology steps through which connected weak reference ridges can be retained."),
+        ParameterSpec("reference_ridge_working_maximum_dimension", "GPU working dimension", "int", 256, 4096, 64, "Maximum tensor dimension used for reference-probability thinning before the result is restored to source resolution."),
+    )
     trace_parameters = (
         ParameterSpec("trace_tangent_tolerance_degrees", "Link tangent tolerance", "float", 2.0, 60.0, 1.0, "Maximum axial tangent disagreement used to join ridge pixels into one trace."),
         ParameterSpec("trace_maximum_gap_px", "Maximum trace gap", "int", 1, 5, 1, "Largest tangent-aligned pixel gap bridged by the oriented GPU component linker."),
+        ParameterSpec("trace_curvature_policy", "Convexity bias", "choice", choices=("off", "prefer", "require"), description="Curvature rule for initial non-adjacent links. Prefer rejects confident S-shaped bridges; require rejects every resolved S-shaped bridge; off preserves tangent-only linking."),
+        ParameterSpec("trace_curvature_tolerance_degrees", "Curvature ambiguity", "float", 0.0, 45.0, 1.0, "Endpoint bend angles at or below this value are treated as too nearly straight to classify reliably. Prefer uses at least twice this deadband."),
         ParameterSpec("trace_window_fraction", "Continuity window / diameter", "float", 0.03, 0.75, 0.01, "Distance followed in each tangent direction when measuring trace continuity."),
         ParameterSpec("trace_sample_count", "Continuity samples", "int", 2, 32, 1, "Number of tangent-following samples taken on each side of a ridge pixel."),
         ParameterSpec("trace_minimum_length_fraction", "Minimum trace length / diameter", "float", 0.02, 2.0, 0.01, "Oriented components with fewer pixels than this seed-relative length are rejected."),
@@ -1203,6 +1236,7 @@ def build_default_pipeline() -> PipelineGraph:
         ParameterSpec("interior_smoothing_fraction", "Interior smoothing / diameter", "float", 0.005, 0.30, 0.005, "Gaussian smoothing scale applied to foreground evidence relative to the global seed diameter."),
         ParameterSpec("interior_background_weight", "Background-evidence weight", "float", 0.0, 1.0, 0.05, "Blend between the foreground-strength model and inverse background evidence."),
         ParameterSpec("interior_foreground_noise_weight", "Foreground-noise weight", "float", 0.0, 1.0, 0.05, "Blend between foreground colour probability and the learned foreground-noise probability before inverse background evidence is incorporated."),
+        ParameterSpec("interior_reference_texture_weight", "Reference-texture weight", "float", 0.0, 1.0, 0.05, "Blend of the many-prototype painted-reference seed-surface likelihood into the interior estimate; it has no effect until foreground or annotated-seed references exist."),
     )
     boundary_normal_parameters = (
         ParameterSpec("boundary_width_fraction", "Boundary width / diameter", "float", 0.005, 0.20, 0.005, "Width of the probability morphology band combined with colour/lightness gradients."),
@@ -1230,11 +1264,15 @@ def build_default_pipeline() -> PipelineGraph:
         ParameterSpec("highlight_z_threshold", "Highlight deviation threshold", "float", 0.05, 5.0, 0.05, "Standardized positive local-lighting deviation at which highlight probability reaches its nonlinear transition."),
         ParameterSpec("lighting_extreme_softness", "Extreme transition softness", "float", 0.05, 2.0, 0.05, "Width of the sigmoid transition used for both shadow and highlight likelihoods."),
     )
-    reference_edge_parameters = (
-        ParameterSpec("reference_edge_context_fraction", "Feature context / diameter", "float", 0.005, 0.25, 0.005, "Seed-relative neighbourhood used to measure local Lab residuals and tangent coherence around every candidate edge."),
-        ParameterSpec("reference_edge_similarity_scale", "Reference tolerance", "float", 0.25, 4.0, 0.05, "Scales the robust per-feature spread learned from physical-edge and non-edge painted examples."),
+    reference_texture_parameters = (
+        ParameterSpec("reference_texture_prototypes_per_class", "Maximum prototypes / class", "int", 8, 256, 8, "Maximum coverage-preserving feature medoids retained independently for Background, Foreground, Other, Physical edge, and Non-edge references."),
+        ParameterSpec("reference_texture_minimum_samples_per_prototype", "Minimum support / prototype", "int", 4, 512, 4, "Minimum working-resolution painted samples per retained prototype; diverse classes can still use fewer prototypes when evidence is sparse."),
+        ParameterSpec("reference_texture_fit_iterations", "Prototype fit iterations", "int", 1, 12, 1, "Robust farthest-first clustering iterations used to refine each image-local prototype bank."),
+        ParameterSpec("reference_texture_similarity_scale", "Prototype tolerance", "float", 0.25, 4.0, 0.05, "Scales each prototype's robust diagonal feature spread when evaluating matching pixels throughout the dish."),
+        ParameterSpec("reference_texture_context_fraction", "Feature context / diameter", "float", 0.005, 0.30, 0.005, "Seed-relative neighbourhood used for local Lab residuals, edge density, and tangent coherence."),
+        ParameterSpec("reference_texture_patch_fraction", "Collage patch / diameter", "float", 0.10, 0.80, 0.02, "Side length of the source-image thumbnail retained for each prototype in the collage."),
+        ParameterSpec("reference_texture_working_maximum_dimension", "GPU working dimension", "int", 256, 2048, 64, "Maximum dimension for prototype fitting and global feature matching; full-resolution probability outputs are restored on the GPU."),
         ParameterSpec("reference_edge_ridge_weight", "Ridge support", "float", 0.0, 1.0, 0.05, "Blend between continuous edge magnitude and thinned-ridge support before the reference classifier is applied."),
-        ParameterSpec("reference_edge_working_maximum_dimension", "GPU working dimension", "int", 256, 4096, 128, "Maximum dimension for the reference-edge feature classifier; output probabilities are restored on the GPU."),
     )
     procedural_instance_parameters = (
         ParameterSpec("working_maximum_dimension", "Topology working dimension", "int", 256, 4096, 128, "Maximum raster dimension downloaded after GPU resizing for CPU marker-controlled watershed."),
@@ -1248,6 +1286,7 @@ def build_default_pipeline() -> PipelineGraph:
         ParameterSpec("boundary_shadow_weight", "Local-shadow weight", "float", 0.0, 1.0, 0.02, "Contribution of local-shadow transitions to physical boundary cost."),
         ParameterSpec("boundary_reference_weight", "Reference-edge weight", "float", 0.0, 1.0, 0.02, "Contribution of the painted-reference physical-edge classifier to watershed boundary cost."),
         ParameterSpec("boundary_nonedge_discount", "Non-edge discount", "float", 0.0, 1.0, 0.02, "How strongly reference-derived non-edge probability suppresses apparent coat-pattern boundaries."),
+        ParameterSpec("reference_texture_weight", "Reference-texture material weight", "float", 0.0, 1.0, 0.02, "Blend of the many-prototype reference seed-surface likelihood into the procedural material gate; it is ignored when no foreground prototypes exist."),
         ParameterSpec("strong_boundary_quantile", "Strong-boundary quantile", "float", 0.05, 0.95, 0.01, "Boundary-cost quantile treated as a barrier when measuring seed-core depth."),
         ParameterSpec("centre_material_weight", "Centre material weight", "float", 0.0, 1.0, 0.02, "Contribution of seed-scale smoothed material evidence to marker likelihood."),
         ParameterSpec("centre_distance_weight", "Centre depth weight", "float", 0.0, 1.0, 0.02, "Contribution of distance from strong physical boundaries to marker likelihood."),
@@ -1499,13 +1538,14 @@ def build_default_pipeline() -> PipelineGraph:
                 "rounds widen the anchored colour bins across the dish without moving "
                 "their centres. Painted pixels are never forced into the result; they "
                 "receive the same colour-derived probability as matching unpainted pixels. "
-                "Foreground exclusions fit separate negative colour and texture distributions; "
-                "matching evidence is downweighted globally rather than zeroing the brush path. "
-                "The inspector plots the painted distribution, or the independently "
-                "sampled isolated-reference-seed distribution, as probability contours "
-                "over a neutral strip and an exact-colour HSV hue/tint/shade slice "
-                "evaluated by the Lab model. Neutral membership is never spread across "
-                "unrelated saturated hues. "
+                "Other areas fit separate competing colour and texture distributions; "
+                "they downweight foreground only where Other is a better fit, so shared "
+                "colours cannot erase legitimate positive evidence. "
+                "A node-owned full-pane overlay plots the painted distribution, or the "
+                "independently sampled isolated-reference-seed distribution, as "
+                "probability contours over an exact HSV hue/saturation slice at the "
+                "toolbar-selected Value. Neutral membership is reported in a separate "
+                "swatch and is never spread across unrelated saturated hues. "
                 "Diagnostics cover the full dish, while proposals retain an editable "
                 "inset measured from the upper/outer rim."
             ),
@@ -1555,7 +1595,7 @@ def build_default_pipeline() -> PipelineGraph:
             "Circle candidates",
             "Segmentation",
             "Find seed-like circular edges in the dish crop",
-            1680,
+            1800,
             -100,
             details=(
                 "The shared Lab/Scharr edge magnitude plus boundaries in sensor/noise, "
@@ -1634,7 +1674,7 @@ def build_default_pipeline() -> PipelineGraph:
                 "background_prior_tolerance": 24.0,
                 "background_lightness_scale_floor": 8.0,
                 "background_chroma_scale_floor": 3.0,
-                "background_colour_components": 4,
+                "background_colour_components": 32,
                 "background_distribution_fit_iterations": 6,
                 "background_refinement_iterations": 2,
                 "background_refinement_min_probability": 0.82,
@@ -1651,13 +1691,15 @@ def build_default_pipeline() -> PipelineGraph:
                 "semantic constraints in the colour map and become direct positive/negative "
                 "texture samples in the directional-noise maps; noise probabilities are never "
                 "overwritten merely because a coordinate was painted. "
-                "Painted background exclusions instead fit separate negative colour and texture "
-                "evidence, attenuating every match without overwriting painted coordinates. If too little "
+                "Painted Other areas instead fit separate competing colour and texture "
+                "evidence, attenuating background only where Other fits better and never "
+                "overwriting painted coordinates. If too little "
                 "matching tray is visible inside a crowded dish, the outer perimeter "
                 "measurement remains authoritative instead of admitting seed colours. The node "
                 "overlay outlines the exact annulus used for that initial estimate. The node "
-                "inspector plots fitted membership contours over an HSV hue/tint/shade "
-                "projection, including learned mode locations and reference frequencies. Its status "
+                "node-owned full-pane overlay plots fitted membership contours over an "
+                "exact HSV hue/saturation slice at the toolbar-selected Value, including "
+                "learned mode locations and reference frequencies. Its status "
                 "reports the BGR range, selected area, and a warning when the final estimate "
                 "deviates substantially from the perimeter prior."
             ),
@@ -1928,7 +1970,7 @@ def build_default_pipeline() -> PipelineGraph:
             "Thinned edge ridges",
             "GPU diagnostic",
             "Non-maximum suppression and hysteresis on continuous gradients",
-            1740,
+            1440,
             430,
             parameters={
                 "ridge_nms_step_px": 1.0,
@@ -1950,47 +1992,113 @@ def build_default_pipeline() -> PipelineGraph:
             ),
         ),
         PipelineNode(
+            "reference_texture_prototypes",
+            "Reference texture prototypes",
+            "GPU diagnostic",
+            "Learn many image-local material and boundary feature prototypes",
+            1560,
+            690,
+            parameters={
+                "reference_texture_prototypes_per_class": 64,
+                "reference_texture_minimum_samples_per_prototype": 16,
+                "reference_texture_fit_iterations": 4,
+                "reference_texture_similarity_scale": 1.0,
+                "reference_texture_context_fraction": 0.04,
+                "reference_texture_patch_fraction": 0.28,
+                "reference_texture_working_maximum_dimension": 960,
+                "reference_edge_ridge_weight": 0.35,
+            },
+            parameter_specs=reference_texture_parameters,
+            details=(
+                "Painted Background, Foreground, Other, Physical-edge and Non-edge "
+                "samples are represented by separate coverage-preserving banks rather "
+                "than one class average. Corrected Lab, six multiscale noise bands, "
+                "local residuals, edge/ridge density, tangent coherence, and "
+                "cross-normal contrast form rotation-tolerant features. Farthest-first "
+                "robust clustering retains up to 64 medoid patches per class by default. "
+                "Every bank is evaluated across the full dish with the same equation at "
+                "painted and unpainted pixels. Edge thumbnails are tangent-aligned in the "
+                "full-pane prototype collage."
+            ),
+            output_ports=(
+                ("seed_surface", "Seed surface"),
+                ("background_texture", "Background texture"),
+                ("other_texture", "Other texture"),
+                ("physical_probability", "Physical edge"),
+                ("non_edge_probability", "Non-edge"),
+                ("prototype_profile", "Prototype collage"),
+            ),
+            inline_parameters=(
+                ("reference_texture_prototypes_per_class", "Max / class"),
+                ("reference_texture_similarity_scale", "Tolerance"),
+                ("reference_texture_context_fraction", "Context xD"),
+            ),
+        ),
+        PipelineNode(
             "reference_edge_probability",
             "Reference edge probabilities",
             "GPU diagnostic",
-            "Estimate physical-edge and non-edge probability from reviewed examples",
-            1980,
+            "Publish multi-prototype physical-edge and non-edge probabilities",
+            1860,
             690,
-            parameters={
-                "reference_edge_context_fraction": 0.04,
-                "reference_edge_similarity_scale": 1.0,
-                "reference_edge_ridge_weight": 0.35,
-                "reference_edge_working_maximum_dimension": 1280,
-            },
-            parameter_specs=reference_edge_parameters,
             details=(
-                "Sparse physical-edge and non-edge marks fit separate robust feature "
-                "profiles. Features come from the corrected Lab image, continuous edge "
-                "strength, thinned ridges, and directed/undirected tangent coherence. "
-                "The profiles are evaluated everywhere without forcing painted pixels "
-                "to zero or one. With no reviewed examples, the physical output falls "
-                "back to generic edge/ridge support and reports no non-edge evidence."
+                "The upstream reference-texture node fits and globally evaluates many "
+                "tangent-normalized Physical-edge and Non-edge prototypes. This node "
+                "publishes those two typed probability rasters for boundary confirmation "
+                "and procedural watershed. With no reviewed edge examples, physical "
+                "probability falls back to generic edge/ridge support and Non-edge is zero."
             ),
             output_ports=(
                 ("physical_probability", "Physical edge"),
                 ("non_edge_probability", "Non-edge"),
             ),
+        ),
+        PipelineNode(
+            "reference_edge_ridges",
+            "Thinned reference edge ridge",
+            "GPU diagnostic",
+            "Thin reference-trained physical-edge probability into precise ridges",
+            2100,
+            1440,
+            parameters={
+                "reference_ridge_nms_step_px": 1.0,
+                "reference_ridge_low_threshold": 0.10,
+                "reference_ridge_high_threshold": 0.24,
+                "reference_ridge_hysteresis_iterations": 8,
+                "reference_ridge_working_maximum_dimension": 1280,
+            },
+            parameter_specs=reference_ridge_parameters,
+            input_ports=(
+                ("physical_probability", "Physical-edge probability"),
+                ("normals", "Continuous edge normals"),
+            ),
+            output_ports=(("reference_ridges", "Reference ridge"),),
             inline_parameters=(
-                ("reference_edge_context_fraction", "Context ×D"),
-                ("reference_edge_similarity_scale", "Tolerance"),
-                ("reference_edge_ridge_weight", "Ridge weight"),
+                ("reference_ridge_nms_step_px", "NMS step"),
+                ("reference_ridge_low_threshold", "Low"),
+                ("reference_ridge_high_threshold", "High"),
+                ("reference_ridge_hysteresis_iterations", "Reach"),
+            ),
+            details=(
+                "The broad reference-trained physical-edge probability is sampled on "
+                "both sides of the continuous image-gradient normal. A deterministic "
+                "non-maximum suppression leaves local probability peaks, then CUDA "
+                "high/low hysteresis retains connected weak peaks. Confidence remains "
+                "continuous, and painted pixels are evidence rather than forced output."
             ),
         ),
         PipelineNode(
             "edge_traces",
             "Oriented edge traces",
             "GPU diagnostic",
-            "Link tangent-compatible ridges, bridge short gaps and split junctions",
+            "Link tangent/curvature-compatible ridges, bridge gaps and split junctions",
             1980,
             430,
             parameters={
                 "trace_tangent_tolerance_degrees": 24.0,
                 "trace_maximum_gap_px": 2,
+                "trace_curvature_policy": "prefer",
+                "trace_curvature_tolerance_degrees": 6.0,
                 "trace_window_fraction": 0.20,
                 "trace_sample_count": 7,
                 "trace_minimum_length_fraction": 0.18,
@@ -2000,14 +2108,18 @@ def build_default_pipeline() -> PipelineGraph:
             inline_parameters=(
                 ("trace_tangent_tolerance_degrees", "Angle Â±Â°"),
                 ("trace_maximum_gap_px", "Gap px"),
-                ("trace_window_fraction", "Window Ã—D"),
-                ("trace_minimum_length_fraction", "Min len Ã—D"),
+                ("trace_curvature_policy", "Convexity"),
+                ("trace_curvature_tolerance_degrees", "Curve Â±Â°"),
             ),
             details=(
                 "A GPU union/find graph joins ridge pixels only when endpoint tangents "
-                "and their displacement agree. Configurable short gaps are bridged, "
+                "and their displacement agree. Optional winding-independent convexity "
+                "gating rejects S-shaped candidate gap links, with tolerant preference "
+                "and stricter local-requirement modes. Configurable short gaps are bridged, "
                 "over-connected junction pixels are split, and tangent-following samples "
-                "measure continuity and missing-edge support on both sides."
+                "measure continuity and missing-edge support on both sides. The curvature "
+                "test constrains each initial bridge; global convexity is confirmed later "
+                "by the circle/ellipse boundary model."
             ),
         ),
         PipelineNode(
@@ -2060,8 +2172,8 @@ def build_default_pipeline() -> PipelineGraph:
             "seed_interior", "Seed-interior probability", "GPU diagnostic",
             "Fuse foreground colour, foreground noise, and background evidence into a soft seed-interior map",
             1680, 180,
-            details="CUDA PyTorch smooths colour-derived foreground probability and learned foreground-noise probability, blends them with an adjustable texture weight, then incorporates inverse background evidence while retaining a continuous probability instead of an early hard threshold.",
-            parameters={"compute_device": "cuda", "allow_cpu_fallback": False, "maximum_dimension": 1024, "interior_smoothing_fraction": 0.055, "interior_background_weight": 0.55, "interior_foreground_noise_weight": 0.35},
+            details="CUDA PyTorch smooths colour-derived foreground probability and learned foreground-noise probability, blends in the many-prototype painted-reference seed-surface likelihood when available, then incorporates inverse background evidence while retaining a continuous probability instead of an early hard threshold.",
+            parameters={"compute_device": "cuda", "allow_cpu_fallback": False, "maximum_dimension": 1024, "interior_smoothing_fraction": 0.055, "interior_background_weight": 0.55, "interior_foreground_noise_weight": 0.35, "interior_reference_texture_weight": 0.35},
             parameter_specs=seed_interior_parameters,
         ),
         PipelineNode(
@@ -2083,7 +2195,7 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineNode(
             "ellipse_likelihood", "Multiscale ellipse likelihood", "GPU diagnostic",
             "Score seed-radius boundary support and local elliptical orientation",
-            2160, 270,
+            2280, 270,
             details="Structure-tensor anisotropy is combined with boundary evidence near each proposal radius. Hue shows axial ellipse orientation and brightness shows support.",
             parameters={"ellipse_radial_tolerance": 0.22},
             parameter_specs=ellipse_parameters,
@@ -2103,6 +2215,14 @@ def build_default_pipeline() -> PipelineGraph:
             details="Interior confidence is discounted at strong boundaries and where neighbouring provisional labels meet. A separate contested-pixel intermediate is viewable.",
             parameters={"assignment_boundary_penalty": 0.70},
             parameter_specs=assignment_parameters,
+            output_ports=(
+                ("confidence", "Assignment confidence"),
+                ("contested_pixels", "Contested pixels"),
+            ),
+            output_port_types={
+                "confidence": "AssignmentConfidence",
+                "contested_pixels": "ContestedPixels",
+            },
         ),
         PipelineNode(
             "contact_graph", "Occlusion/contact graph", "GPU diagnostic",
@@ -2142,7 +2262,16 @@ def build_default_pipeline() -> PipelineGraph:
                 ("shadow", "Local shadow likelihood"),
                 ("highlight", "Local highlight likelihood"),
                 ("reflectance", "Reflectance"),
+                ("glare", "Glare likelihood"),
             ),
+            output_port_types={
+                "illumination": "IlluminationField",
+                "flattened": "FlattenedGrayscale",
+                "shadow": "ShadowLikelihood",
+                "highlight": "HighlightLikelihood",
+                "reflectance": "Reflectance",
+                "glare": "GlareLikelihood",
+            },
         ),
         PipelineNode(
             "image_quality", "Image-quality diagnostics", "GPU diagnostic",
@@ -2151,7 +2280,20 @@ def build_default_pipeline() -> PipelineGraph:
             details="The composite risk map is backed by separately viewable focus, clipped-highlight, underexposure, and sensor-noise maps.",
             parameters={"quality_noise_scale_fraction": 0.025},
             parameter_specs=image_quality_parameters,
-            output_ports=(("sensor_noise", "Sensor/noise likelihood"),),
+            output_ports=(
+                ("quality_risk", "Quality risk"),
+                ("focus", "Focus quality"),
+                ("clipped_highlights", "Clipped highlights"),
+                ("underexposure", "Underexposure"),
+                ("sensor_noise", "Sensor/noise likelihood"),
+            ),
+            output_port_types={
+                "quality_risk": "ImageQualityRisk",
+                "focus": "FocusQuality",
+                "clipped_highlights": "ClippedHighlights",
+                "underexposure": "Underexposure",
+                "sensor_noise": "SensorNoiseLikelihood",
+            },
         ),
         PipelineNode(
             "procedural_instances",
@@ -2161,8 +2303,9 @@ def build_default_pipeline() -> PipelineGraph:
             2100,
             820,
             details=(
-                "Foreground colour/noise and inverse background evidence first define a "
-                "seed-material gate. Seed-sized enclosed coat-pattern holes are filled, but "
+                "Foreground colour/noise, optional many-prototype reference texture, and "
+                "inverse background evidence first define a seed-material gate. Seed-sized "
+                "enclosed coat-pattern holes are filled, but "
                 "the detected dish margin is excluded. Shared edges, thinned ridges, local "
                 "shadow and sensor/noise transitions form a physical boundary cost. "
                 "Seed-scale material, boundary depth and annular support propose centres; "
@@ -2184,6 +2327,7 @@ def build_default_pipeline() -> PipelineGraph:
                 "boundary_shadow_weight": 0.08,
                 "boundary_reference_weight": 0.35,
                 "boundary_nonedge_discount": 0.85,
+                "reference_texture_weight": 0.35,
                 "strong_boundary_quantile": 0.67,
                 "centre_material_weight": 0.30,
                 "centre_distance_weight": 0.40,
@@ -2200,6 +2344,22 @@ def build_default_pipeline() -> PipelineGraph:
                 ("centre_minimum_separation_fraction", "Marker spacing"),
                 ("minimum_marker_score", "Marker minimum"),
             ),
+            output_ports=(
+                ("material_likelihood", "Material likelihood"),
+                ("material_mask", "Material mask"),
+                ("boundary_cost", "Boundary cost"),
+                ("centre_likelihood", "Centre likelihood"),
+                ("instances", "Seed instances"),
+                ("confidence", "Instance confidence"),
+            ),
+            output_port_types={
+                "material_likelihood": "MaterialLikelihood",
+                "material_mask": "MaterialMask",
+                "boundary_cost": "BoundaryCost",
+                "centre_likelihood": "CentreLikelihood",
+                "instances": "SeedInstances",
+                "confidence": "InstanceConfidence",
+            },
         ),
         PipelineNode(
             "unet_instances",
@@ -2242,11 +2402,25 @@ def build_default_pipeline() -> PipelineGraph:
                 ("annotations", "Painted IDs"),
             ),
             output_ports=(
+                ("interior", "Interior probability"),
                 ("instances", "Instance identities"),
                 ("physical", "Physical boundaries"),
                 ("pattern", "Pattern boundaries"),
+                ("centre", "Centre probability"),
+                ("distance", "Distance prediction"),
                 ("uncertainty", "Uncertainty"),
+                ("confidence", "Instance confidence"),
             ),
+            output_port_types={
+                "interior": "InteriorProbability",
+                "instances": "SeedInstances",
+                "physical": "PhysicalEdgeProbability",
+                "pattern": "PatternBoundaryProbability",
+                "centre": "CentreProbability",
+                "distance": "DistancePrediction",
+                "uncertainty": "ModelUncertainty",
+                "confidence": "InstanceConfidence",
+            },
             inline_parameters=(
                 ("interior_threshold", "Interior minimum"),
                 ("centre_threshold", "Centre minimum"),
@@ -2291,7 +2465,14 @@ def build_default_pipeline() -> PipelineGraph:
                 ("instances", "Instance identities"),
                 ("object", "Object probability"),
                 ("uncertainty", "Radial uncertainty"),
+                ("confidence", "Instance confidence"),
             ),
+            output_port_types={
+                "instances": "SeedInstances",
+                "object": "ObjectProbability",
+                "uncertainty": "ModelUncertainty",
+                "confidence": "InstanceConfidence",
+            },
             inline_parameters=(
                 ("object_threshold", "Object minimum"),
                 ("nms_iou_threshold", "NMS overlap"),
@@ -2304,6 +2485,14 @@ def build_default_pipeline() -> PipelineGraph:
             details="Pixels are normalized by their assigned proposal radius and accumulated into a configurable global radial profile. The residual highlights unusual edge darkening or internal structure.",
             parameters={"radial_bin_count": 24},
             parameter_specs=radial_parameters,
+            output_ports=(
+                ("residual", "Radial residual"),
+                ("coordinate", "Radial coordinate"),
+            ),
+            output_port_types={
+                "residual": "RadialResidual",
+                "coordinate": "RadialCoordinate",
+            },
         ),
         PipelineNode(
             "wrinkling", "Wrinkling likelihood", "GPU trait analysis",
@@ -2328,6 +2517,14 @@ def build_default_pipeline() -> PipelineGraph:
             details="Fine, medium, and coarse seed-relative frequency responses plus directional structure produce transparent heuristic class probabilities. Each class probability is available as an intermediate overlay.",
             parameters={"pattern_scale_fraction": 0.18},
             parameter_specs=pattern_parameters,
+            output_ports=(
+                ("probabilities", "Pattern probabilities"),
+                ("confidence", "Pattern confidence"),
+            ),
+            output_port_types={
+                "probabilities": "PatternProbabilities",
+                "confidence": "PatternConfidence",
+            },
         ),
         PipelineNode(
             "colour_probabilities", "Broad colour probabilities", "GPU trait analysis",
@@ -2336,6 +2533,14 @@ def build_default_pipeline() -> PipelineGraph:
             details="Colour-balanced RGB is compared with broad prototype colours using a softmax. The winning class, uncertainty, and every class probability are viewable independently.",
             parameters={"colour_temperature": 18.0},
             parameter_specs=colour_probability_parameters,
+            output_ports=(
+                ("probabilities", "Colour probabilities"),
+                ("uncertainty", "Colour uncertainty"),
+            ),
+            output_port_types={
+                "probabilities": "ColourProbabilities",
+                "uncertainty": "ColourUncertainty",
+            },
         ),
         PipelineNode(
             "calibration_residuals", "Calibration residual risk", "GPU diagnostic",
@@ -2409,7 +2614,7 @@ def build_default_pipeline() -> PipelineGraph:
             ("distance_confidence", "Distance weight"),
         ),
         "background_likelihood": (
-            ("background_colour_components", "Colour modes"),
+            ("background_colour_components", "Reference modes"),
             ("background_distribution_scale_multiplier", "Colour tolerance"),
             ("background_refinement_iterations", "Refine rounds"),
         ),
@@ -2463,8 +2668,8 @@ def build_default_pipeline() -> PipelineGraph:
         "edge_traces": (
             ("trace_tangent_tolerance_degrees", "Angle +/-"),
             ("trace_maximum_gap_px", "Gap px"),
-            ("trace_window_fraction", "Window xD"),
-            ("trace_minimum_length_fraction", "Min length xD"),
+            ("trace_curvature_policy", "Convexity"),
+            ("trace_curvature_tolerance_degrees", "Curve +/-"),
         ),
         "seed_edge_curves": (
             ("curve_diameter_multiplier", "Diameter x"),
@@ -2473,10 +2678,10 @@ def build_default_pipeline() -> PipelineGraph:
             ("boundary_minimum_confidence", "Accept min"),
         ),
         "seed_interior": (
-            ("compute_device", "Device"),
             ("maximum_dimension", "GPU dimension"),
             ("interior_background_weight", "Background weight"),
             ("interior_foreground_noise_weight", "FG noise weight"),
+            ("interior_reference_texture_weight", "Reference texture"),
         ),
         "boundary_normals": (("boundary_width_fraction", "Boundary width"),),
         "touching_split": (("split_neck_fraction", "Neck depth"),),
@@ -2504,6 +2709,9 @@ def build_default_pipeline() -> PipelineGraph:
     connections = (
         PipelineConnection("raw_images", "metadata", "ImageBatch"),
         PipelineConnection("metadata", "colour_reference", "TaggedImages"),
+        PipelineConnection(
+            "metadata", "deskew_colour", "TaggedImages", target_port="image"
+        ),
         PipelineConnection("colour_reference", "deskew_colour", "SwatchGrid"),
         PipelineConnection("deskew_colour", "ruler_detection", "CorrectedImage"),
         PipelineConnection("deskew_colour", "layout_detection", "CorrectedImage"),
@@ -2525,6 +2733,12 @@ def build_default_pipeline() -> PipelineGraph:
         ),
         PipelineConnection("deskew_colour", "foreground_segmentation", "CorrectedImage"),
         PipelineConnection("layout_detection", "foreground_segmentation", "VesselGeometry"),
+        PipelineConnection(
+            "scale_calibration",
+            "foreground_segmentation",
+            "PixelsPerMillimetre",
+            target_port="absolute_scale",
+        ),
         PipelineConnection("seed_scale_estimation", "foreground_segmentation", "SeedDiameter"),
         PipelineConnection(
             "seed_scale_estimation",
@@ -2539,8 +2753,16 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineConnection("foreground_segmentation", "distance_candidates", "ForegroundMask"),
         PipelineConnection("seed_scale_estimation", "distance_candidates", "SeedDiameter"),
         PipelineConnection(
-            "foreground_segmentation", "circle_candidates", "DishSearchRegion",
-            target_port="region",
+            "deskew_colour", "circle_candidates", "CorrectedImage",
+            target_port="image",
+        ),
+        PipelineConnection(
+            "layout_detection", "circle_candidates", "VesselGeometry",
+            source_port="vessel_geometry", target_port="region",
+        ),
+        PipelineConnection(
+            "distance_candidates", "circle_candidates", "DistancePeaks",
+            target_port="distance_candidates",
         ),
         PipelineConnection(
             "seed_scale_estimation", "circle_candidates", "SeedDiameter",
@@ -2569,7 +2791,15 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineConnection("distance_candidates", "identification", "DistancePeaks"),
         PipelineConnection("circle_candidates", "identification", "CudaRings"),
         PipelineConnection(
+            "seed_scale_estimation", "identification", "SeedDiameter",
+            source_port="seed_diameter", target_port="scale",
+        ),
+        PipelineConnection(
             "deskew_colour", "background_likelihood", "CorrectedImage"
+        ),
+        PipelineConnection(
+            "layout_detection", "background_likelihood", "DishRegion",
+            source_port="dish_region", target_port="region",
         ),
         PipelineConnection(
             "seed_scale_estimation", "background_likelihood", "SeedDiameter"
@@ -2584,20 +2814,42 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineConnection("reference_layers", "background_likelihood", "OtherReferences", source_port="other", target_port="other_reference"),
         PipelineConnection("identification", "instance_masks", "SeedProposals"),
         PipelineConnection(
-            "background_likelihood", "instance_masks", "BackgroundLikelihood"
+            "layout_detection", "instance_masks", "DishRegion",
+            source_port="dish_region", target_port="region",
         ),
         PipelineConnection(
-            "refined_background_likelihood", "instance_masks", "DirectedBackground"
+            "background_likelihood", "instance_masks", "BackgroundProbability",
+            source_port="background_probability",
+        ),
+        PipelineConnection(
+            "refined_background_likelihood", "instance_masks", "BackgroundNoiseProbability",
+            source_port="background_noise_probability",
         ),
         PipelineConnection(
             "background_likelihood",
             "refined_background_likelihood",
-            "ColourPseudoLabels",
+            "BackgroundProbability",
+            source_port="background_probability",
+            target_port="background_probability",
+        ),
+        PipelineConnection(
+            "deskew_colour", "refined_background_likelihood", "CorrectedImage",
+            target_port="image",
+        ),
+        PipelineConnection(
+            "layout_detection", "refined_background_likelihood", "DishRegion",
+            source_port="dish_region", target_port="region",
         ),
         PipelineConnection(
             "seed_scale_estimation",
             "refined_background_likelihood",
             "SeedDiameter",
+        ),
+        PipelineConnection(
+            "perimeter_background_reference",
+            "refined_background_likelihood",
+            "PerimeterColourSamples",
+            target_port="perimeter_band",
         ),
         PipelineConnection("reference_layers", "refined_background_likelihood", "BackgroundReferences", source_port="background", target_port="background_reference"),
         PipelineConnection("reference_layers", "refined_background_likelihood", "ForegroundReferences", source_port="foreground", target_port="foreground_reference"),
@@ -2605,7 +2857,17 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineConnection(
             "foreground_segmentation",
             "foreground_noise_likelihood",
-            "ColourPseudoLabels",
+            "ForegroundProbability",
+            source_port="foreground_probability",
+            target_port="foreground_probability",
+        ),
+        PipelineConnection(
+            "deskew_colour", "foreground_noise_likelihood", "CorrectedImage",
+            target_port="image",
+        ),
+        PipelineConnection(
+            "layout_detection", "foreground_noise_likelihood", "DishRegion",
+            source_port="dish_region", target_port="region",
         ),
         PipelineConnection(
             "seed_scale_estimation",
@@ -2619,10 +2881,21 @@ def build_default_pipeline() -> PipelineGraph:
             "deskew_colour", "edge_gradients", "CorrectedImage", target_port="image"
         ),
         PipelineConnection(
+            "layout_detection", "edge_gradients", "DishRegion",
+            source_port="dish_region", target_port="region",
+        ),
+        PipelineConnection(
             "deskew_colour",
             "surface_darkness_gradients",
             "CorrectedImage",
             target_port="image",
+        ),
+        PipelineConnection(
+            "layout_detection",
+            "surface_darkness_gradients",
+            "DishRegion",
+            source_port="dish_region",
+            target_port="region",
         ),
         PipelineConnection(
             "seed_scale_estimation",
@@ -2665,6 +2938,13 @@ def build_default_pipeline() -> PipelineGraph:
             target_port="image",
         ),
         PipelineConnection(
+            "layout_detection",
+            "frequency_noise_masks",
+            "DishRegion",
+            source_port="dish_region",
+            target_port="region",
+        ),
+        PipelineConnection(
             "seed_scale_estimation",
             "frequency_noise_masks",
             "SeedDiameter",
@@ -2683,41 +2963,178 @@ def build_default_pipeline() -> PipelineGraph:
             source_port="directed",
         ),
         PipelineConnection("edge_gradients", "edge_ridges", "FloatGradientField"),
-        PipelineConnection("deskew_colour", "reference_edge_probability", "CorrectedImage", target_port="image"),
-        PipelineConnection("reference_layers", "reference_edge_probability", "PhysicalEdgeReferences", source_port="physical_edge", target_port="physical_reference"),
-        PipelineConnection("reference_layers", "reference_edge_probability", "NonEdgeReferences", source_port="non_edge", target_port="non_edge_reference"),
-        PipelineConnection("edge_gradients", "reference_edge_probability", "EdgeMagnitude", source_port="magnitude", target_port="edge"),
-        PipelineConnection("edge_gradients", "reference_edge_probability", "AxialTangents", source_port="undirected", target_port="undirected"),
-        PipelineConnection("edge_gradients", "reference_edge_probability", "DirectedTangents", source_port="directed", target_port="directed"),
-        PipelineConnection("edge_ridges", "reference_edge_probability", "ThinnedRidges", target_port="ridges"),
+        PipelineConnection("deskew_colour", "reference_texture_prototypes", "CorrectedImage", target_port="image"),
+        PipelineConnection(
+            "layout_detection", "reference_texture_prototypes", "DishRegion",
+            source_port="dish_region", target_port="region",
+        ),
+        PipelineConnection("seed_scale_estimation", "reference_texture_prototypes", "SeedDiameter", target_port="scale"),
+        PipelineConnection("reference_layers", "reference_texture_prototypes", "BackgroundReferences", source_port="background", target_port="background_reference"),
+        PipelineConnection("reference_layers", "reference_texture_prototypes", "ForegroundReferences", source_port="foreground", target_port="foreground_reference"),
+        PipelineConnection("reference_layers", "reference_texture_prototypes", "OtherReferences", source_port="other", target_port="other_reference"),
+        PipelineConnection("reference_layers", "reference_texture_prototypes", "PhysicalEdgeReferences", source_port="physical_edge", target_port="physical_reference"),
+        PipelineConnection("reference_layers", "reference_texture_prototypes", "NonEdgeReferences", source_port="non_edge", target_port="non_edge_reference"),
+        PipelineConnection("reference_layers", "reference_texture_prototypes", "PaintedInstanceAnnotations", source_port="annotated_seeds", target_port="annotations"),
+        PipelineConnection("edge_gradients", "reference_texture_prototypes", "EdgeMagnitude", source_port="magnitude", target_port="edge"),
+        PipelineConnection("edge_gradients", "reference_texture_prototypes", "AxialTangents", source_port="undirected", target_port="undirected"),
+        PipelineConnection("edge_gradients", "reference_texture_prototypes", "DirectedTangents", source_port="directed", target_port="directed"),
+        PipelineConnection("edge_ridges", "reference_texture_prototypes", "ThinnedRidges", target_port="ridges"),
+        PipelineConnection("frequency_noise_masks", "reference_texture_prototypes", "FineDarknessNoise", source_port="darkness_fine", target_port="darkness_fine"),
+        PipelineConnection("frequency_noise_masks", "reference_texture_prototypes", "MediumDarknessNoise", source_port="darkness_medium", target_port="darkness_medium"),
+        PipelineConnection("frequency_noise_masks", "reference_texture_prototypes", "CoarseDarknessNoise", source_port="darkness_coarse", target_port="darkness_coarse"),
+        PipelineConnection("frequency_noise_masks", "reference_texture_prototypes", "FineColourNoise", source_port="colour_fine", target_port="colour_fine"),
+        PipelineConnection("frequency_noise_masks", "reference_texture_prototypes", "MediumColourNoise", source_port="colour_medium", target_port="colour_medium"),
+        PipelineConnection("frequency_noise_masks", "reference_texture_prototypes", "CoarseColourNoise", source_port="colour_coarse", target_port="colour_coarse"),
+        PipelineConnection("reference_texture_prototypes", "reference_edge_probability", "PhysicalPrototypeProbability", source_port="physical_probability", target_port="physical_probability"),
+        PipelineConnection("reference_texture_prototypes", "reference_edge_probability", "NonEdgePrototypeProbability", source_port="non_edge_probability", target_port="non_edge_probability"),
+        PipelineConnection("reference_edge_probability", "reference_edge_ridges", "PhysicalEdgeProbability", source_port="physical_probability", target_port="physical_probability"),
+        PipelineConnection("edge_gradients", "reference_edge_ridges", "ContinuousEdgeNormals", source_port="directed", target_port="normals"),
         PipelineConnection("edge_ridges", "edge_traces", "ThinnedRidges"),
         PipelineConnection("edge_gradients", "edge_traces", "ContinuousTangents"),
+        PipelineConnection(
+            "seed_scale_estimation", "edge_traces", "SeedDiameter",
+            source_port="seed_diameter", target_port="scale",
+        ),
         PipelineConnection("edge_traces", "seed_edge_curves", "OrientedTraces"),
         PipelineConnection("edge_gradients", "seed_edge_curves", "FloatGradientField"),
-        PipelineConnection("seed_scale_estimation", "seed_edge_curves", "SeedScale"),
-        PipelineConnection("background_likelihood", "seed_edge_curves", "BackgroundProbability"),
-        PipelineConnection("foreground_segmentation", "seed_edge_curves", "ForegroundProbability"),
+        PipelineConnection(
+            "seed_scale_estimation", "seed_edge_curves", "SeedDiameter",
+            source_port="seed_diameter", target_port="scale",
+        ),
+        PipelineConnection(
+            "background_likelihood", "seed_edge_curves", "BackgroundProbability",
+            source_port="background_probability",
+        ),
+        PipelineConnection(
+            "foreground_segmentation", "seed_edge_curves", "ForegroundProbability",
+            source_port="foreground_probability",
+        ),
         PipelineConnection("reference_edge_probability", "seed_edge_curves", "PhysicalEdgeProbability", source_port="physical_probability", target_port="physical_reference"),
         PipelineConnection("reference_edge_probability", "seed_edge_curves", "NonEdgeProbability", source_port="non_edge_probability", target_port="non_edge_reference"),
         PipelineConnection("instance_masks", "seed_edge_curves", "ProvisionalInstances"),
-        PipelineConnection("seed_scale_estimation", "instance_masks", "SeedScale"),
-        PipelineConnection("foreground_segmentation", "seed_interior", "ForegroundEvidence"),
-        PipelineConnection("background_likelihood", "seed_interior", "BackgroundProbability"),
-        PipelineConnection("refined_background_likelihood", "seed_interior", "DirectionalBackground"),
-        PipelineConnection("foreground_noise_likelihood", "seed_interior", "ForegroundNoiseProbability"),
+        PipelineConnection(
+            "identification", "seed_edge_curves", "SeedProposals",
+            target_port="proposals",
+        ),
+        PipelineConnection(
+            "seed_scale_estimation", "instance_masks", "SeedDiameter",
+            source_port="seed_diameter", target_port="scale",
+        ),
+        PipelineConnection(
+            "foreground_segmentation", "seed_interior", "ForegroundProbability",
+            source_port="foreground_probability", target_port="foreground_probability",
+        ),
+        PipelineConnection(
+            "background_likelihood", "seed_interior", "BackgroundProbability",
+            source_port="background_probability",
+        ),
+        PipelineConnection(
+            "refined_background_likelihood", "seed_interior", "BackgroundNoiseProbability",
+            source_port="background_noise_probability", target_port="background_noise",
+        ),
+        PipelineConnection(
+            "foreground_noise_likelihood", "seed_interior", "ForegroundNoiseProbability",
+            source_port="foreground_noise_probability",
+        ),
+        PipelineConnection("reference_texture_prototypes", "seed_interior", "ReferenceSeedSurface", source_port="seed_surface", target_port="reference_surface"),
+        PipelineConnection(
+            "layout_detection", "seed_interior", "DishRegion",
+            source_port="dish_region", target_port="region",
+        ),
+        PipelineConnection(
+            "seed_scale_estimation", "seed_interior", "SeedDiameter",
+            source_port="seed_diameter", target_port="scale",
+        ),
         PipelineConnection("seed_interior", "boundary_normals", "InteriorProbability"),
-        PipelineConnection("directed_edges", "boundary_normals", "ColourGradient"),
+        PipelineConnection(
+            "deskew_colour", "boundary_normals", "CorrectedImage",
+            target_port="image",
+        ),
+        PipelineConnection(
+            "layout_detection", "boundary_normals", "DishRegion",
+            source_port="dish_region", target_port="region",
+        ),
+        PipelineConnection(
+            "seed_scale_estimation", "boundary_normals", "SeedDiameter",
+            source_port="seed_diameter", target_port="scale",
+        ),
         PipelineConnection("boundary_normals", "touching_split", "BoundaryConfidence"),
         PipelineConnection("distance_candidates", "touching_split", "DistanceTransform"),
-        PipelineConnection("boundary_normals", "ellipse_likelihood", "BoundaryNormals"),
+        PipelineConnection(
+            "foreground_segmentation", "touching_split", "ForegroundMask",
+            source_port="foreground_mask", target_port="foreground_mask",
+        ),
+        PipelineConnection(
+            "layout_detection", "touching_split", "DishRegion",
+            source_port="dish_region", target_port="region",
+        ),
+        PipelineConnection(
+            "seed_scale_estimation", "touching_split", "SeedDiameter",
+            source_port="seed_diameter", target_port="scale",
+        ),
+        PipelineConnection(
+            "boundary_normals", "ellipse_likelihood", "BoundaryConfidence",
+            target_port="boundary_confidence",
+        ),
         PipelineConnection("seed_scale_estimation", "ellipse_likelihood", "SeedDiameter"),
+        PipelineConnection(
+            "deskew_colour", "ellipse_likelihood", "CorrectedImage",
+            target_port="image",
+        ),
+        PipelineConnection(
+            "layout_detection", "ellipse_likelihood", "DishRegion",
+            source_port="dish_region", target_port="region",
+        ),
+        PipelineConnection(
+            "identification", "ellipse_likelihood", "SeedProposals",
+            target_port="proposals",
+        ),
+        PipelineConnection(
+            "instance_masks", "ellipse_likelihood", "ProvisionalInstances",
+            target_port="instances",
+        ),
         PipelineConnection("circle_candidates", "proposal_disagreement", "CircleEvidence"),
         PipelineConnection("distance_candidates", "proposal_disagreement", "DistanceEvidence"),
         PipelineConnection("ellipse_likelihood", "proposal_disagreement", "EllipseEvidence"),
+        PipelineConnection(
+            "seed_interior", "proposal_disagreement", "InteriorProbability",
+            target_port="interior",
+        ),
+        PipelineConnection(
+            "seed_scale_estimation", "proposal_disagreement", "SeedDiameter",
+            source_port="seed_diameter", target_port="scale",
+        ),
+        PipelineConnection(
+            "layout_detection", "proposal_disagreement", "DishRegion",
+            source_port="dish_region", target_port="region",
+        ),
         PipelineConnection("instance_masks", "assignment_confidence", "ProvisionalInstances"),
         PipelineConnection("boundary_normals", "assignment_confidence", "BoundaryConfidence"),
-        PipelineConnection("assignment_confidence", "contact_graph", "AssignmentConfidence"),
+        PipelineConnection(
+            "seed_interior", "assignment_confidence", "InteriorProbability",
+            target_port="interior",
+        ),
+        PipelineConnection(
+            "foreground_segmentation", "assignment_confidence", "ForegroundMask",
+            source_port="foreground_mask", target_port="foreground_mask",
+        ),
+        PipelineConnection(
+            "layout_detection", "assignment_confidence", "DishRegion",
+            source_port="dish_region", target_port="region",
+        ),
+        PipelineConnection(
+            "identification", "assignment_confidence", "SeedProposals",
+            target_port="proposals",
+        ),
+        PipelineConnection(
+            "assignment_confidence", "contact_graph", "ContestedPixels",
+            source_port="contested_pixels", target_port="contested_pixels",
+        ),
         PipelineConnection("identification", "contact_graph", "SeedProposals"),
+        PipelineConnection(
+            "boundary_normals", "contact_graph", "BoundaryConfidence",
+            target_port="boundary_confidence",
+        ),
         PipelineConnection(
             "deskew_colour", "illumination_decomposition", "CorrectedImage",
             target_port="image",
@@ -2727,86 +3144,162 @@ def build_default_pipeline() -> PipelineGraph:
             target_port="scale",
         ),
         PipelineConnection(
-            "illumination_decomposition", "image_quality", "IlluminationProducts",
-            source_port="illumination",
+            "layout_detection", "illumination_decomposition", "DishRegion",
+            source_port="dish_region", target_port="region",
         ),
-        PipelineConnection("directed_edges", "image_quality", "ImageGradients"),
+        PipelineConnection(
+            "deskew_colour", "image_quality", "CorrectedImage",
+            target_port="image",
+        ),
+        PipelineConnection(
+            "layout_detection", "image_quality", "DishRegion",
+            source_port="dish_region", target_port="region",
+        ),
+        PipelineConnection(
+            "seed_scale_estimation", "image_quality", "SeedDiameter",
+            source_port="seed_diameter", target_port="scale",
+        ),
         PipelineConnection("layout_detection", "procedural_instances", "DishRegion"),
         PipelineConnection("seed_scale_estimation", "procedural_instances", "SeedDiameter"),
-        PipelineConnection("foreground_segmentation", "procedural_instances", "ForegroundColour"),
-        PipelineConnection("foreground_noise_likelihood", "procedural_instances", "ForegroundNoise"),
-        PipelineConnection("background_likelihood", "procedural_instances", "BackgroundColour"),
-        PipelineConnection("refined_background_likelihood", "procedural_instances", "BackgroundNoise"),
+        PipelineConnection("foreground_segmentation", "procedural_instances", "ForegroundProbability", source_port="foreground_probability"),
+        PipelineConnection("foreground_noise_likelihood", "procedural_instances", "ForegroundNoiseProbability", source_port="foreground_noise_probability"),
+        PipelineConnection("background_likelihood", "procedural_instances", "BackgroundProbability", source_port="background_probability"),
+        PipelineConnection("refined_background_likelihood", "procedural_instances", "BackgroundNoiseProbability", source_port="background_noise_probability"),
         PipelineConnection("edge_gradients", "procedural_instances", "EdgeMagnitude"),
         PipelineConnection("edge_ridges", "procedural_instances", "ThinnedRidges"),
         PipelineConnection("reference_edge_probability", "procedural_instances", "PhysicalEdgeProbability", source_port="physical_probability", target_port="physical_reference"),
         PipelineConnection("reference_edge_probability", "procedural_instances", "NonEdgeProbability", source_port="non_edge_probability", target_port="non_edge_reference"),
+        PipelineConnection("reference_texture_prototypes", "procedural_instances", "ReferenceSeedSurface", source_port="seed_surface", target_port="reference_surface"),
         PipelineConnection(
             "illumination_decomposition",
             "procedural_instances",
-            "LocalShadow",
+            "ShadowLikelihood",
             source_port="shadow",
+            target_port="shadow",
         ),
         PipelineConnection(
             "image_quality",
             "procedural_instances",
-            "SensorNoise",
+            "SensorNoiseLikelihood",
             source_port="sensor_noise",
+            target_port="sensor_noise",
         ),
         PipelineConnection("reference_layers", "procedural_instances", "PaintedInstanceAnnotations", source_port="annotated_seeds", target_port="annotations"),
         PipelineConnection("metadata", "unet_instances", "SpeciesCondition", target_port="image"),
         PipelineConnection("deskew_colour", "unet_instances", "CorrectedImage", target_port="image"),
         PipelineConnection("layout_detection", "unet_instances", "DishRegion", target_port="image"),
         PipelineConnection("seed_scale_estimation", "unet_instances", "SeedDiameter", target_port="scale"),
-        PipelineConnection("foreground_segmentation", "unet_instances", "ForegroundColour", target_port="image"),
-        PipelineConnection("foreground_noise_likelihood", "unet_instances", "ForegroundNoise", target_port="image"),
-        PipelineConnection("background_likelihood", "unet_instances", "BackgroundColour", target_port="image"),
-        PipelineConnection("refined_background_likelihood", "unet_instances", "BackgroundNoise", target_port="image"),
+        PipelineConnection("foreground_segmentation", "unet_instances", "ForegroundProbability", source_port="foreground_probability", target_port="foreground_probability"),
+        PipelineConnection("foreground_noise_likelihood", "unet_instances", "ForegroundNoiseProbability", source_port="foreground_noise_probability", target_port="foreground_noise"),
+        PipelineConnection("background_likelihood", "unet_instances", "BackgroundProbability", source_port="background_probability", target_port="background_probability"),
+        PipelineConnection("refined_background_likelihood", "unet_instances", "BackgroundNoiseProbability", source_port="background_noise_probability", target_port="background_noise"),
         PipelineConnection("edge_gradients", "unet_instances", "EdgeMagnitude", target_port="image"),
         PipelineConnection("reference_edge_probability", "unet_instances", "PhysicalEdgeProbability", source_port="physical_probability", target_port="physical_reference"),
         PipelineConnection("reference_edge_probability", "unet_instances", "NonEdgeProbability", source_port="non_edge_probability", target_port="non_edge_reference"),
-        PipelineConnection("illumination_decomposition", "unet_instances", "LocalLighting", target_port="image"),
-        PipelineConnection("image_quality", "unet_instances", "SensorNoise", target_port="image"),
+        PipelineConnection("illumination_decomposition", "unet_instances", "FlattenedGrayscale", source_port="flattened", target_port="flattened"),
+        PipelineConnection("illumination_decomposition", "unet_instances", "ShadowLikelihood", source_port="shadow", target_port="shadow"),
+        PipelineConnection("illumination_decomposition", "unet_instances", "HighlightLikelihood", source_port="highlight", target_port="highlight"),
+        PipelineConnection("image_quality", "unet_instances", "SensorNoiseLikelihood", source_port="sensor_noise", target_port="sensor_noise"),
         PipelineConnection("reference_layers", "unet_instances", "PaintedInstanceAnnotations", source_port="annotated_seeds", target_port="annotations"),
         PipelineConnection("metadata", "stardist_instances", "SpeciesCondition", target_port="image"),
         PipelineConnection("deskew_colour", "stardist_instances", "CorrectedImage", target_port="image"),
         PipelineConnection("layout_detection", "stardist_instances", "DishRegion", target_port="image"),
         PipelineConnection("seed_scale_estimation", "stardist_instances", "SeedDiameter", target_port="scale"),
-        PipelineConnection("foreground_segmentation", "stardist_instances", "ForegroundColour", target_port="image"),
-        PipelineConnection("foreground_noise_likelihood", "stardist_instances", "ForegroundNoise", target_port="image"),
-        PipelineConnection("background_likelihood", "stardist_instances", "BackgroundColour", target_port="image"),
-        PipelineConnection("refined_background_likelihood", "stardist_instances", "BackgroundNoise", target_port="image"),
+        PipelineConnection("foreground_segmentation", "stardist_instances", "ForegroundProbability", source_port="foreground_probability", target_port="foreground_probability"),
+        PipelineConnection("foreground_noise_likelihood", "stardist_instances", "ForegroundNoiseProbability", source_port="foreground_noise_probability", target_port="foreground_noise"),
+        PipelineConnection("background_likelihood", "stardist_instances", "BackgroundProbability", source_port="background_probability", target_port="background_probability"),
+        PipelineConnection("refined_background_likelihood", "stardist_instances", "BackgroundNoiseProbability", source_port="background_noise_probability", target_port="background_noise"),
         PipelineConnection("edge_gradients", "stardist_instances", "EdgeMagnitude", target_port="image"),
         PipelineConnection("reference_edge_probability", "stardist_instances", "PhysicalEdgeProbability", source_port="physical_probability", target_port="physical_reference"),
         PipelineConnection("reference_edge_probability", "stardist_instances", "NonEdgeProbability", source_port="non_edge_probability", target_port="non_edge_reference"),
-        PipelineConnection("illumination_decomposition", "stardist_instances", "LocalLighting", target_port="image"),
-        PipelineConnection("image_quality", "stardist_instances", "SensorNoise", target_port="image"),
+        PipelineConnection("illumination_decomposition", "stardist_instances", "FlattenedGrayscale", source_port="flattened", target_port="flattened"),
+        PipelineConnection("illumination_decomposition", "stardist_instances", "ShadowLikelihood", source_port="shadow", target_port="shadow"),
+        PipelineConnection("illumination_decomposition", "stardist_instances", "HighlightLikelihood", source_port="highlight", target_port="highlight"),
+        PipelineConnection("image_quality", "stardist_instances", "SensorNoiseLikelihood", source_port="sensor_noise", target_port="sensor_noise"),
         PipelineConnection("reference_layers", "instance_masks", "PaintedInstanceAnnotations", source_port="annotated_seeds", target_port="annotations"),
         PipelineConnection("instance_masks", "radial_profile", "ProvisionalInstances"),
-        PipelineConnection("seed_scale_estimation", "radial_profile", "SeedDiameter"),
-        PipelineConnection("seed_interior", "radial_profile", "InteriorProbability"),
-        PipelineConnection("radial_profile", "wrinkling", "RadialResidual"),
+        PipelineConnection(
+            "identification", "radial_profile", "SeedProposals",
+            target_port="proposals",
+        ),
+        PipelineConnection(
+            "deskew_colour", "radial_profile", "CorrectedImage",
+            target_port="image",
+        ),
+        PipelineConnection(
+            "layout_detection", "radial_profile", "DishRegion",
+            source_port="dish_region", target_port="region",
+        ),
         PipelineConnection("seed_interior", "wrinkling", "InteriorProbability"),
-        PipelineConnection("image_quality", "wrinkling", "ImageQuality"),
-        PipelineConnection("radial_profile", "coat_damage", "RadialResidual"),
+        PipelineConnection(
+            "boundary_normals", "wrinkling", "BoundaryConfidence",
+            target_port="boundary_confidence",
+        ),
+        PipelineConnection(
+            "deskew_colour", "wrinkling", "CorrectedImage",
+            target_port="image",
+        ),
+        PipelineConnection(
+            "layout_detection", "wrinkling", "DishRegion",
+            source_port="dish_region", target_port="region",
+        ),
+        PipelineConnection(
+            "seed_scale_estimation", "wrinkling", "SeedDiameter",
+            source_port="seed_diameter", target_port="scale",
+        ),
+        PipelineConnection(
+            "radial_profile", "coat_damage", "RadialResidual",
+            source_port="residual",
+        ),
         PipelineConnection("boundary_normals", "coat_damage", "BoundaryConfidence"),
-        PipelineConnection("image_quality", "coat_damage", "ImageQuality"),
+        PipelineConnection("seed_interior", "coat_damage", "InteriorProbability"),
+        PipelineConnection(
+            "deskew_colour", "coat_damage", "CorrectedImage",
+            target_port="image",
+        ),
+        PipelineConnection(
+            "layout_detection", "coat_damage", "DishRegion",
+            source_port="dish_region", target_port="region",
+        ),
+        PipelineConnection(
+            "seed_scale_estimation", "coat_damage", "SeedDiameter",
+            source_port="seed_diameter", target_port="scale",
+        ),
         PipelineConnection("seed_interior", "pattern_decomposition", "InteriorProbability"),
         PipelineConnection(
-            "illumination_decomposition", "pattern_decomposition", "Reflectance",
-            source_port="reflectance",
+            "deskew_colour", "pattern_decomposition", "CorrectedImage",
+            target_port="image",
+        ),
+        PipelineConnection(
+            "layout_detection", "pattern_decomposition", "DishRegion",
+            source_port="dish_region", target_port="region",
+        ),
+        PipelineConnection(
+            "seed_scale_estimation", "pattern_decomposition", "SeedDiameter",
+            source_port="seed_diameter", target_port="scale",
         ),
         PipelineConnection("seed_interior", "colour_probabilities", "InteriorProbability"),
         PipelineConnection(
-            "illumination_decomposition", "colour_probabilities", "Reflectance",
-            source_port="reflectance",
+            "deskew_colour", "colour_probabilities", "CorrectedImage",
+            target_port="image",
+        ),
+        PipelineConnection(
+            "layout_detection", "colour_probabilities", "DishRegion",
+            source_port="dish_region", target_port="region",
         ),
         PipelineConnection("colour_reference", "calibration_residuals", "ReferenceConfidence"),
         PipelineConnection("ruler_detection", "calibration_residuals", "ReferenceConfidence"),
         PipelineConnection("deskew_colour", "calibration_residuals", "CalibrationTransform"),
+        PipelineConnection(
+            "layout_detection", "calibration_residuals", "DishRegion",
+            source_port="dish_region", target_port="region",
+        ),
         PipelineConnection("touching_split", "review", "SplitSuggestions"),
         PipelineConnection("proposal_disagreement", "review", "UncertainRegions"),
-        PipelineConnection("assignment_confidence", "review", "AssignmentConfidence"),
+        PipelineConnection(
+            "assignment_confidence", "review", "AssignmentConfidence",
+            source_port="confidence",
+        ),
         PipelineConnection("contact_graph", "review", "ContactGraph"),
         PipelineConnection("instance_masks", "review", "InstanceProposals"),
         PipelineConnection("review", "measurements", "ReviewedMasks"),
@@ -2814,8 +3307,8 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineConnection("review", "classification", "ReviewedMasks"),
         PipelineConnection("wrinkling", "classification", "WrinkleEvidence"),
         PipelineConnection("coat_damage", "classification", "DamageEvidence"),
-        PipelineConnection("pattern_decomposition", "classification", "PatternProbabilities"),
-        PipelineConnection("colour_probabilities", "classification", "ColourProbabilities"),
+        PipelineConnection("pattern_decomposition", "classification", "PatternProbabilities", source_port="probabilities"),
+        PipelineConnection("colour_probabilities", "classification", "ColourProbabilities", source_port="probabilities"),
         PipelineConnection("calibration_residuals", "classification", "CalibrationRisk"),
         PipelineConnection("measurements", "aggregation", "MeasurementTable"),
         PipelineConnection("classification", "aggregation", "TraitTable"),

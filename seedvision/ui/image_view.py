@@ -6,7 +6,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from PySide6.QtCore import QLineF, QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QLineF, QPoint, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QBrush,
     QColor,
@@ -62,6 +62,7 @@ OVERLAY_MODES = {
     "seed_scale_estimation",
     "foreground_feature",
     "foreground_mask",
+    "foreground_colour_gamut",
     "foreground_binary_mask",
     "distance_transform",
     "distance_candidates",
@@ -69,8 +70,13 @@ OVERLAY_MODES = {
     "proposals",
     "instance_masks",
     "background_likelihood",
+    "background_colour_gamut",
     "refined_background_likelihood",
     "foreground_noise_likelihood",
+    "reference_texture_prototypes",
+    "reference_seed_surface_probability",
+    "reference_background_texture_probability",
+    "reference_other_texture_probability",
     "edge_gradients",
     "surface_lightening_gradient",
     "surface_lightening_magnitude",
@@ -91,6 +97,7 @@ OVERLAY_MODES = {
     "edge_ridges",
     "physical_edge_probability",
     "non_edge_probability",
+    "reference_edge_ridges",
     "edge_traces",
     "edge_trace_continuity",
     "edge_trace_gap_confidence",
@@ -144,6 +151,15 @@ class ImageView(QGraphicsView):
         self._source_pixmap: QPixmap | None = None
         self._corrected_pixmap: QPixmap | None = None
         self._corrected_base_key: tuple[int, tuple[int, ...], tuple[int, ...]] | None = None
+        self._gamut_pixmap: QPixmap | None = None
+        self._gamut_base_key = None
+        self._prototype_collage_pixmap: QPixmap | None = None
+        self._prototype_collage_key = None
+        self._hsv_gamut_value = 0.75
+        self._colour_gamut_parameters: dict[str, dict[str, object]] = {
+            "background": {},
+            "foreground": {},
+        }
         self._displayed_base = "source"
         self._overlay_items = []
         self._analysis_result = None
@@ -159,7 +175,11 @@ class ImageView(QGraphicsView):
         self._non_edge_reference_mask: np.ndarray | None = None
         self._reference_annotations_visible = True
         self._instance_annotations: np.ndarray | None = None
+        self._instance_bounds_cache: dict[
+            int, tuple[int, int, int, int] | None
+        ] = {}
         self._active_instance_id = 1
+        self._show_selected_instance_only = False
         self._instance_annotation_tool = "brush"
         self._edge_trace_options = EdgeTraceOptions()
         self._shape_snap_options = ShapeSnapOptions()
@@ -185,6 +205,10 @@ class ImageView(QGraphicsView):
         self._instance_preview_timer.timeout.connect(
             self._update_pending_instance_preview
         )
+        self._gamut_render_timer = QTimer(self)
+        self._gamut_render_timer.setSingleShot(True)
+        self._gamut_render_timer.setInterval(90)
+        self._gamut_render_timer.timeout.connect(self._render_analysis)
         self._reference_point_mode: str | None = None
         self._reference_brush_radius = 12.0
         self._reference_erase_enabled = False
@@ -196,6 +220,10 @@ class ImageView(QGraphicsView):
         self._last_reference_hover_point: QPointF | None = None
         self._reference_brush_outline_item = None
         self._context_panel: QFrame | None = None
+        self._context_panel_drag_handle = None
+        self._context_panel_user_position: QPoint | None = None
+        self._context_panel_drag_global: QPointF | None = None
+        self._context_panel_drag_origin: QPoint | None = None
 
         self.setAcceptDrops(True)
         self.setMouseTracking(True)
@@ -254,6 +282,46 @@ class ImageView(QGraphicsView):
         self._layout_context_panel()
         self.zoom_controls.raise_()
 
+    def set_context_panel_drag_handle(self, handle) -> None:
+        """Let a dedicated handle reposition the contextual panel."""
+
+        if self._context_panel_drag_handle is not None:
+            self._context_panel_drag_handle.removeEventFilter(self)
+        self._context_panel_drag_handle = handle
+        handle.installEventFilter(self)
+        handle.setCursor(Qt.CursorShape.OpenHandCursor)
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802 - Qt override
+        if watched is self._context_panel_drag_handle and self._context_panel is not None:
+            if (
+                event.type() == QEvent.Type.MouseButtonPress
+                and event.button() == Qt.MouseButton.LeftButton
+            ):
+                self._context_panel_drag_global = event.globalPosition()
+                self._context_panel_drag_origin = self._context_panel.pos()
+                watched.setCursor(Qt.CursorShape.ClosedHandCursor)
+                event.accept()
+                return True
+            if (
+                event.type() == QEvent.Type.MouseMove
+                and self._context_panel_drag_global is not None
+                and event.buttons() & Qt.MouseButton.LeftButton
+            ):
+                delta = (event.globalPosition() - self._context_panel_drag_global).toPoint()
+                self._move_context_panel_to(
+                    self._context_panel_drag_origin + delta,
+                    remember=True,
+                )
+                event.accept()
+                return True
+            if event.type() == QEvent.Type.MouseButtonRelease:
+                self._context_panel_drag_global = None
+                self._context_panel_drag_origin = None
+                watched.setCursor(Qt.CursorShape.OpenHandCursor)
+                event.accept()
+                return True
+        return super().eventFilter(watched, event)
+
     def set_context_panel_visible(self, visible: bool) -> None:
         if self._context_panel is None:
             return
@@ -271,7 +339,25 @@ class ImageView(QGraphicsView):
         available_height = max(140, self.height() - 58)
         width = min(max(360, hint.width()), available_width)
         height = min(hint.height(), available_height)
-        self._context_panel.setGeometry(12, 46, width, height)
+        self._context_panel.resize(width, height)
+        requested = self._context_panel_user_position or QPoint(12, 46)
+        self._move_context_panel_to(requested, remember=False)
+
+    def _move_context_panel_to(
+        self, position: QPoint, *, remember: bool
+    ) -> None:
+        if self._context_panel is None:
+            return
+        minimum_y = self.zoom_controls.height()
+        maximum_x = max(0, self.width() - self._context_panel.width())
+        maximum_y = max(minimum_y, self.height() - self._context_panel.height())
+        clamped = QPoint(
+            max(0, min(int(position.x()), maximum_x)),
+            max(minimum_y, min(int(position.y()), maximum_y)),
+        )
+        self._context_panel.move(clamped)
+        if remember:
+            self._context_panel_user_position = clamped
 
     @property
     def image_path(self) -> Path | None:
@@ -281,7 +367,15 @@ class ImageView(QGraphicsView):
     def image_size(self) -> tuple[int, int] | None:
         if self._image_item is None:
             return None
-        pixmap = self._image_item.pixmap()
+        # A diagnostic chart temporarily replaces the displayed pixmap, but
+        # editable masks remain in corrected-image coordinates.
+        pixmap = (
+            self._corrected_pixmap or self._source_pixmap
+            if self._displayed_base in {"gamut", "prototype_collage"}
+            else self._image_item.pixmap()
+        )
+        if pixmap is None:
+            return None
         return pixmap.width(), pixmap.height()
 
     def _show_placeholder(self) -> None:
@@ -292,6 +386,10 @@ class ImageView(QGraphicsView):
         self._source_pixmap = None
         self._corrected_pixmap = None
         self._corrected_base_key = None
+        self._gamut_pixmap = None
+        self._gamut_base_key = None
+        self._prototype_collage_pixmap = None
+        self._prototype_collage_key = None
         self._displayed_base = "source"
         self._reference_brush_outline_item = None
         self._instance_annotation_overlay_item = None
@@ -322,6 +420,10 @@ class ImageView(QGraphicsView):
         self._source_pixmap = pixmap
         self._corrected_pixmap = None
         self._corrected_base_key = None
+        self._gamut_pixmap = None
+        self._gamut_base_key = None
+        self._prototype_collage_pixmap = None
+        self._prototype_collage_key = None
         self._displayed_base = "source"
         release_host_caches(self._analysis_result)
         self._scene.clear()
@@ -334,6 +436,7 @@ class ImageView(QGraphicsView):
         self._physical_edge_reference_mask = None
         self._non_edge_reference_mask = None
         self._instance_annotations = None
+        self._instance_bounds_cache.clear()
         self._instance_tool_points.clear()
         self._annotation_evidence_cache.clear()
         self._reference_brush_outline_item = None
@@ -392,6 +495,10 @@ class ImageView(QGraphicsView):
             release_host_caches(self._analysis_result)
             self._corrected_pixmap = None
             self._corrected_base_key = None
+            self._gamut_pixmap = None
+            self._gamut_base_key = None
+            self._prototype_collage_pixmap = None
+            self._prototype_collage_key = None
             self._displayed_base = "stale"
         self._analysis_result = result
         self._annotation_evidence_cache.clear()
@@ -573,6 +680,7 @@ class ImageView(QGraphicsView):
                         f"image {(height, width)}."
                     )
             self._instance_annotations = values.astype(np.uint16, copy=copy)
+        self._instance_bounds_cache.clear()
         self._instance_trace_anchor = None
         self._clear_instance_preview()
         self._clear_instance_live_stroke()
@@ -618,12 +726,77 @@ class ImageView(QGraphicsView):
         identifier = int(identifier)
         if not 1 <= identifier <= np.iinfo(np.uint16).max:
             raise ValueError("Seed instance IDs must be between 1 and 65,535.")
+        changed = identifier != self._active_instance_id
         self._active_instance_id = identifier
         self._instance_trace_anchor = None
         self._clear_instance_preview()
         self._clear_instance_live_stroke()
+        if changed:
+            if self._show_selected_instance_only:
+                self._refresh_instance_annotation_overlay()
+            self.focus_instance(identifier)
         if self._last_reference_hover_point is not None:
             self._update_reference_brush_outline(self._last_reference_hover_point)
+
+    def set_show_selected_instance_only(self, enabled: bool) -> None:
+        """Filter the annotation overlay to the active seed identity."""
+
+        enabled = bool(enabled)
+        if enabled == self._show_selected_instance_only:
+            return
+        self._show_selected_instance_only = enabled
+        self._refresh_instance_annotation_overlay()
+        if enabled:
+            self.focus_instance(self._active_instance_id)
+
+    def focus_instance(self, identifier: int | None = None) -> bool:
+        """Centre the existing view on one annotated seed without changing zoom."""
+
+        labels = self._instance_annotations
+        target = self._active_instance_id if identifier is None else int(identifier)
+        if labels is None:
+            return False
+        bounds = self._instance_bounds(target)
+        if bounds is None:
+            return False
+        x0, y0, x1, y1 = bounds
+        centre_x = (float(x0) + float(x1 - 1)) * 0.5
+        centre_y = (float(y0) + float(y1 - 1)) * 0.5
+        self.centerOn(centre_x, centre_y)
+        return True
+
+    def _instance_bounds(
+        self, identifier: int
+    ) -> tuple[int, int, int, int] | None:
+        """Return a cached exclusive bbox without allocating full-image indices."""
+
+        identifier = int(identifier)
+        if identifier in self._instance_bounds_cache:
+            return self._instance_bounds_cache[identifier]
+        labels = self._instance_annotations
+        if labels is None:
+            self._instance_bounds_cache[identifier] = None
+            return None
+        minimum_x = labels.shape[1]
+        minimum_y = labels.shape[0]
+        maximum_x = -1
+        maximum_y = -1
+        for row_start in range(0, labels.shape[0], 512):
+            row_end = min(labels.shape[0], row_start + 512)
+            rows, columns = np.nonzero(labels[row_start:row_end] == identifier)
+            if not len(rows):
+                continue
+            minimum_x = min(minimum_x, int(columns.min()))
+            maximum_x = max(maximum_x, int(columns.max()))
+            minimum_y = min(minimum_y, row_start + int(rows.min()))
+            maximum_y = max(maximum_y, row_start + int(rows.max()))
+        bounds = (
+            None
+            if maximum_x < 0
+            else (minimum_x, minimum_y, maximum_x + 1, maximum_y + 1)
+        )
+        self._instance_bounds_cache[identifier] = bounds
+        return bounds
 
     def set_reference_brush_radius(self, radius: float) -> None:
         """Set the corrected-image radius of the visibly painted sample area."""
@@ -741,8 +914,59 @@ class ImageView(QGraphicsView):
             raise ValueError(f"Unknown viewer overlay: {mode}")
         if mode == self._overlay_mode:
             return
+        full_pane_modes = {
+            "background_colour_gamut",
+            "foreground_colour_gamut",
+            "reference_texture_prototypes",
+        }
+        was_full_pane = self._overlay_mode in full_pane_modes
         self._overlay_mode = mode
         self._render_analysis()
+        if was_full_pane or mode in full_pane_modes:
+            QTimer.singleShot(0, self.fit_image)
+
+    def set_colour_gamut_parameters(
+        self, class_name: str, parameters: dict[str, object]
+    ) -> None:
+        if class_name not in self._colour_gamut_parameters:
+            raise ValueError(f"Unknown colour-gamut class {class_name!r}.")
+        values = dict(parameters)
+        if values == self._colour_gamut_parameters[class_name]:
+            return
+        self._colour_gamut_parameters[class_name] = values
+        self._gamut_base_key = None
+        if self._overlay_mode == f"{class_name}_colour_gamut":
+            self._render_analysis()
+
+    def set_hsv_gamut_value(self, value: float) -> None:
+        value = max(0.0, min(1.0, float(value)))
+        if abs(value - self._hsv_gamut_value) < 1e-6:
+            return
+        self._hsv_gamut_value = value
+        self._gamut_base_key = None
+        if self._overlay_mode in {
+            "background_colour_gamut",
+            "foreground_colour_gamut",
+        }:
+            # Slider drags can emit dozens of values. Coalesce them so a dense
+            # multimodal foreground fit renders only the final requested slice.
+            self._gamut_render_timer.start()
+
+    def dominant_hsv_gamut_value(self, class_name: str) -> float | None:
+        """Return the brightness of the strongest fitted colour mode."""
+
+        if class_name not in self._colour_gamut_parameters:
+            raise ValueError(f"Unknown colour-gamut class {class_name!r}.")
+        if self._analysis_result is None:
+            return None
+        profile = getattr(
+            self._analysis_result.layers,
+            f"{class_name}_colour_profile",
+            None,
+        )
+        from seedvision.ui.pipeline_inspector import BackgroundColourGamut
+
+        return BackgroundColourGamut.dominant_hsv_value(profile)
 
     def set_overlay_opacity(self, opacity: float) -> None:
         self._overlay_opacity = max(0.0, min(1.0, float(opacity)))
@@ -766,6 +990,15 @@ class ImageView(QGraphicsView):
             self._set_bgr_base_image(calibration.corrected_bgr)
         else:
             self._restore_source_image()
+        if self._overlay_mode in {
+            "background_colour_gamut",
+            "foreground_colour_gamut",
+        }:
+            self._render_colour_gamut(result)
+            return
+        if self._overlay_mode == "reference_texture_prototypes":
+            self._render_reference_texture_collage(result)
+            return
         if self._overlay_mode == "calibrated_image":
             self._render_context_annotations(result, include_scale=True)
             return
@@ -937,6 +1170,12 @@ class ImageView(QGraphicsView):
             rgba = layers.refined_background_rgba()
         elif self._overlay_mode == "foreground_noise_likelihood":
             rgba = layers.foreground_noise_rgba()
+        elif self._overlay_mode == "reference_seed_surface_probability":
+            rgba = layers.reference_seed_surface_rgba()
+        elif self._overlay_mode == "reference_background_texture_probability":
+            rgba = layers.reference_material_probability_rgba("background")
+        elif self._overlay_mode == "reference_other_texture_probability":
+            rgba = layers.reference_material_probability_rgba("other")
         elif self._overlay_mode == "edge_gradients":
             rgba = layers.edge_magnitude_rgba()
         elif self._overlay_mode in {
@@ -986,6 +1225,8 @@ class ImageView(QGraphicsView):
             rgba = layers.reference_edge_probability_rgba(True)
         elif self._overlay_mode == "non_edge_probability":
             rgba = layers.reference_edge_probability_rgba(False)
+        elif self._overlay_mode == "reference_edge_ridges":
+            rgba = layers.reference_edge_ridges_rgba()
         elif self._overlay_mode == "edge_traces":
             rgba = layers.edge_traces_rgba()
         elif self._overlay_mode == "edge_trace_continuity":
@@ -1026,7 +1267,14 @@ class ImageView(QGraphicsView):
                     layers.surrounding_noise_offset_y,
                 )
         if self._overlay_mode == "background_likelihood":
-            self._render_background_sampling_band(result)
+            surrounding = layers.surrounding_background_rgba()
+            if surrounding is not None:
+                self._render_rgba_overlay(
+                    surrounding,
+                    layers.surrounding_noise_offset_x,
+                    layers.surrounding_noise_offset_y,
+                )
+            self._render_background_sampling_band(result, fill=False)
         self._render_context_annotations(result)
 
     def _render_edge_fit_geometry(self, result) -> None:
@@ -1266,7 +1514,7 @@ class ImageView(QGraphicsView):
             item.setZValue(10)
             self._overlay_items.append(item)
 
-    def _render_background_sampling_band(self, result) -> None:
+    def _render_background_sampling_band(self, result, *, fill: bool = True) -> None:
         """Show the exact annulus sampled for the initial background prior."""
 
         band = getattr(result, "perimeter_background_band", None)
@@ -1295,11 +1543,12 @@ class ImageView(QGraphicsView):
             )
         )
         colour = QColor("#41d9ff") if band.outside_vessel else QColor("#ffb84a")
-        fill = QColor(colour)
-        fill.setAlpha(105)
+        fill_colour = QColor(colour)
+        fill_colour.setAlpha(105)
         pen = QPen(colour, 3)
         pen.setCosmetic(True)
-        item = self._scene.addPath(path, pen, QBrush(fill))
+        brush = QBrush(fill_colour) if fill else QBrush(Qt.BrushStyle.NoBrush)
+        item = self._scene.addPath(path, pen, brush)
         item.setOpacity(self._overlay_opacity)
         item.setZValue(13)
         item.setToolTip(
@@ -1398,7 +1647,26 @@ class ImageView(QGraphicsView):
                 self._scene.removeItem(item)
             self._instance_annotation_overlay_item = None
         labels = self._instance_annotations
-        if labels is None or not np.any(labels):
+        if labels is None:
+            return
+        origin_x = 0
+        origin_y = 0
+        if self._show_selected_instance_only:
+            bounds = self._instance_bounds(self._active_instance_id)
+            if bounds is None:
+                return
+            selected_x0, selected_y0, selected_x1, selected_y1 = bounds
+            origin_y = max(0, selected_y0 - 1)
+            origin_x = max(0, selected_x0 - 1)
+            end_y = min(labels.shape[0], selected_y1 + 1)
+            end_x = min(labels.shape[1], selected_x1 + 1)
+            selected_labels = labels[origin_y:end_y, origin_x:end_x]
+            labels = np.where(
+                selected_labels == self._active_instance_id,
+                selected_labels,
+                0,
+            )
+        elif not np.any(labels):
             return
         source_height, source_width = labels.shape
         maximum_display_dimension = 2048
@@ -1435,6 +1703,7 @@ class ImageView(QGraphicsView):
         ).copy()
         item = self._scene.addPixmap(QPixmap.fromImage(image))
         item.setTransformationMode(Qt.TransformationMode.FastTransformation)
+        item.setPos(float(origin_x), float(origin_y))
         item.setTransform(
             QTransform.fromScale(source_width / width, source_height / height)
         )
@@ -1513,6 +1782,7 @@ class ImageView(QGraphicsView):
             self._overlay_items.append(item)
 
     def _refresh_instance_annotation_overlay(self) -> None:
+        self._instance_bounds_cache.clear()
         self._render_instance_annotations()
         self._raise_instance_preview_items()
 
@@ -1670,6 +1940,162 @@ class ImageView(QGraphicsView):
             self._image_item.setPixmap(self._corrected_pixmap)
             self._scene.setSceneRect(self._image_item.boundingRect())
             self._displayed_base = "corrected"
+
+    def _render_colour_gamut(self, result) -> None:
+        """Replace the image temporarily with a full-size HSV value slice."""
+
+        from seedvision.ui.pipeline_inspector import BackgroundColourGamut
+
+        if self._image_item is None:
+            return
+        class_name = (
+            "foreground"
+            if self._overlay_mode == "foreground_colour_gamut"
+            else "background"
+        )
+        profile = getattr(
+            result.layers, f"{class_name}_colour_profile", None
+        )
+        if profile is None:
+            return
+        parameters = self._colour_gamut_parameters[class_name]
+        key = (
+            id(profile),
+            class_name,
+            round(self._hsv_gamut_value, 3),
+            tuple(sorted((str(key), repr(value)) for key, value in parameters.items())),
+        )
+        if self._gamut_pixmap is None or self._gamut_base_key != key:
+            image, _probability, _centres = (
+                BackgroundColourGamut.render_hsv_value_slice(
+                    profile,
+                    parameters,
+                    class_name=class_name,
+                    value=self._hsv_gamut_value,
+                )
+            )
+            self._gamut_pixmap = QPixmap.fromImage(image)
+            self._gamut_base_key = key
+        self._image_item.setPixmap(self._gamut_pixmap)
+        self._scene.setSceneRect(self._image_item.boundingRect())
+        self._displayed_base = "gamut"
+
+    def _render_reference_texture_collage(self, result) -> None:
+        """Replace the image with every retained material and edge medoid."""
+
+        if self._image_item is None:
+            return
+        profile = getattr(result.layers, "reference_texture_profile", None)
+        if profile is None:
+            return
+        key = (id(profile), len(profile.prototypes), profile.patch_size_px)
+        if (
+            self._prototype_collage_pixmap is None
+            or self._prototype_collage_key != key
+        ):
+            class_details = (
+                ("background", "Background", QColor("#5ab7ff")),
+                ("foreground", "Foreground / seed surface", QColor("#49e6a7")),
+                ("other", "Other material", QColor("#ffad55")),
+                ("physical_edge", "Physical edge", QColor("#ffe25c")),
+                ("non_edge", "Non-edge / coat pattern", QColor("#ba8cff")),
+            )
+            groups = {
+                name: [
+                    prototype
+                    for prototype in profile.prototypes
+                    if prototype.class_name == name
+                ]
+                for name, _label, _colour in class_details
+            }
+            columns = 14
+            tile_width = 82
+            tile_height = 98
+            left = 30
+            top = 86
+            canvas_width = max(960, left * 2 + columns * tile_width)
+            canvas_height = top + 30
+            for name, _label, _colour in class_details:
+                count = len(groups[name])
+                rows = max(1, int(np.ceil(count / columns)))
+                canvas_height += 34 + rows * tile_height + 18
+            canvas_height = max(640, canvas_height)
+            image = QImage(
+                canvas_width, canvas_height, QImage.Format.Format_RGB32
+            )
+            image.fill(QColor("#20262d"))
+            painter = QPainter(image)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            title_font = QFont("Segoe UI", 18)
+            title_font.setBold(True)
+            painter.setFont(title_font)
+            painter.setPen(QColor("#f3f6f9"))
+            painter.drawText(
+                QRectF(20, 16, canvas_width - 40, 30),
+                Qt.AlignmentFlag.AlignCenter,
+                "Reference texture prototypes",
+            )
+            painter.setFont(QFont("Segoe UI", 10))
+            painter.setPen(QColor("#c8d1da"))
+            painter.drawText(
+                QRectF(20, 49, canvas_width - 40, 24),
+                Qt.AlignmentFlag.AlignCenter,
+                "Coverage-preserving medoid patches; edge patches are tangent-aligned.",
+            )
+            sample_counts = dict(profile.class_sample_counts)
+            y = top
+            for class_name, label, colour in class_details:
+                prototypes = groups[class_name]
+                painter.setPen(colour)
+                heading_font = QFont("Segoe UI", 12)
+                heading_font.setBold(True)
+                painter.setFont(heading_font)
+                painter.drawText(
+                    QRectF(left, y, canvas_width - left * 2, 26),
+                    Qt.AlignmentFlag.AlignVCenter,
+                    f"{label} — {len(prototypes)} prototypes from "
+                    f"{sample_counts.get(class_name, 0):,} reference pixels",
+                )
+                y += 32
+                painter.setFont(QFont("Segoe UI", 8))
+                rows = max(1, int(np.ceil(len(prototypes) / columns)))
+                for index, prototype in enumerate(prototypes):
+                    column = index % columns
+                    row = index // columns
+                    x = left + column * tile_width
+                    tile_y = y + row * tile_height
+                    patch = prototype.patch_bgr
+                    patch_image = QImage(
+                        patch.data,
+                        patch.shape[1],
+                        patch.shape[0],
+                        int(patch.strides[0]),
+                        QImage.Format.Format_BGR888,
+                    ).copy()
+                    patch_rect = QRectF(x + 5, tile_y + 3, 68, 68)
+                    painter.drawImage(patch_rect, patch_image)
+                    painter.setBrush(Qt.BrushStyle.NoBrush)
+                    painter.setPen(QPen(colour, 2.0))
+                    painter.drawRect(patch_rect)
+                    painter.setPen(QColor("#e8edf2"))
+                    painter.drawText(
+                        QRectF(x, tile_y + 73, tile_width - 4, 18),
+                        Qt.AlignmentFlag.AlignCenter,
+                        f"{index + 1} · {prototype.weight:.0%}",
+                    )
+                if not prototypes:
+                    painter.setPen(QColor("#7f8a95"))
+                    painter.drawText(
+                        QRectF(left + 5, y + 10, canvas_width - 80, 24),
+                        "No applied references for this class.",
+                    )
+                y += rows * tile_height + 18
+            painter.end()
+            self._prototype_collage_pixmap = QPixmap.fromImage(image)
+            self._prototype_collage_key = key
+        self._image_item.setPixmap(self._prototype_collage_pixmap)
+        self._scene.setSceneRect(self._image_item.boundingRect())
+        self._displayed_base = "prototype_collage"
 
     def _restore_source_image(self) -> None:
         if self._image_item is None or self._source_pixmap is None:
@@ -2039,13 +2465,15 @@ class ImageView(QGraphicsView):
             self._clear_instance_preview()
             return
         try:
-            edge = self._full_annotation_evidence("edge_likelihood")
             self._instance_preview_point = QPointF(scene_point)
             self._instance_preview_geometry = None
             self._instance_shape_reference_geometry = None
             self._instance_preview_region = None
             self._instance_preview_endpoint = QPointF(scene_point)
             if self._instance_annotation_tool == "edge_trace":
+                edge = self._annotation_edge_evidence(
+                    self._edge_trace_options.edge_source
+                )
                 snapped = snap_edge_point(
                     (scene_point.x(), scene_point.y()),
                     edge,
@@ -2072,6 +2500,7 @@ class ImageView(QGraphicsView):
                         tangent,
                     )
             elif self._instance_annotation_tool == "shape_snap":
+                edge = self._full_annotation_evidence("edge_likelihood")
                 tangent = self._annotation_tangent(
                     self._shape_snap_options.tangent_mode
                 )
@@ -2095,6 +2524,9 @@ class ImageView(QGraphicsView):
                 )
                 self._instance_preview_endpoint = None
             else:
+                edge = self._annotation_edge_evidence(
+                    self._smart_fill_options.edge_source
+                )
                 labels = self._ensure_instance_labels()
                 corrected = np.asarray(self._analysis_result.calibration.corrected_bgr)
                 self._instance_preview_region = smart_fill_region(
@@ -2138,6 +2570,7 @@ class ImageView(QGraphicsView):
             geometry = self._instance_preview_geometry
             if geometry is None or len(geometry) < 2:
                 return False
+            self._detach_active_reference_buffers()
             changed = self._paint_instance_geometry(geometry, filled=False)
             self._instance_trace_anchor = QPointF(endpoint)
             self._instance_preview_point = None
@@ -2149,6 +2582,7 @@ class ImageView(QGraphicsView):
             geometry = self._instance_preview_geometry
             if geometry is None or len(geometry) < 3:
                 return False
+            self._detach_active_reference_buffers()
             changed = self._paint_instance_geometry(geometry, filled=True)
             self.instance_tool_status.emit(
                 f"Shape snap added {changed:,} pixels to seed "
@@ -2161,6 +2595,7 @@ class ImageView(QGraphicsView):
                     "Smart fill found no reachable pixels at this cursor position."
                 )
                 return False
+            self._detach_active_reference_buffers()
             labels = self._ensure_instance_labels()
             height, width = region.mask.shape
             roi = labels[
@@ -2230,6 +2665,73 @@ class ImageView(QGraphicsView):
         self._annotation_evidence_cache[attribute] = full
         return full
 
+    def _annotation_edge_evidence(self, source: str) -> np.ndarray:
+        """Return the exact user-selected edge raster for assisted tools."""
+
+        source = str(source)
+        cache_key = f"edge_source:{source}"
+        cached = self._annotation_evidence_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        attributes = {
+            "magnitude": "edge_likelihood",
+            "ridges": "edge_ridges",
+            "reference_ridges": "reference_edge_ridges",
+            "traces": "edge_trace_labels",
+            "physical": "physical_edge_probability",
+        }
+
+        def display_u8(attribute: str, *, binary: bool = False) -> np.ndarray:
+            values = np.asarray(self._full_annotation_evidence(attribute))
+            if binary:
+                return np.where(values > 0, 255, 0).astype(np.uint8)
+            if values.dtype == np.uint8:
+                return values
+            result = np.asarray(values, dtype=np.float32)
+            maximum = float(np.nanmax(result)) if result.size else 0.0
+            if maximum <= 1.0:
+                result = result * 255.0
+            return np.nan_to_num(
+                result, nan=0.0, posinf=255.0, neginf=0.0
+            ).clip(0.0, 255.0).astype(np.uint8)
+
+        if source in attributes:
+            result = display_u8(
+                attributes[source], binary=source == "traces"
+            )
+        elif source == "adaptive":
+            precise = []
+            for attribute, binary in (
+                ("edge_ridges", False),
+                ("edge_trace_labels", True),
+            ):
+                try:
+                    precise.append(display_u8(attribute, binary=binary))
+                except RuntimeError:
+                    pass
+            broad = []
+            for attribute in ("physical_edge_probability", "edge_likelihood"):
+                try:
+                    broad.append(display_u8(attribute))
+                except RuntimeError:
+                    pass
+            available = precise or broad
+            if not available:
+                raise RuntimeError(
+                    "The analysis did not produce usable annotation edge evidence."
+                )
+            result = np.maximum.reduce(available)
+            if precise and broad:
+                result = np.maximum(
+                    np.maximum.reduce(precise),
+                    np.rint(np.maximum.reduce(broad) * 0.45).astype(np.uint8),
+                )
+        else:
+            raise ValueError(f"Unknown annotation edge source {source!r}.")
+        self._annotation_evidence_cache[cache_key] = result
+        return result
+
     def _annotation_tangent(self, mode: str) -> np.ndarray | None:
         if mode == "off":
             return None
@@ -2245,7 +2747,38 @@ class ImageView(QGraphicsView):
         width, height = image_size
         if self._instance_annotations is None or self._instance_annotations.shape != (height, width):
             self._instance_annotations = np.zeros((height, width), dtype=np.uint16)
+            self._instance_bounds_cache.clear()
         return self._instance_annotations
+
+    def _detach_active_reference_buffers(self) -> None:
+        """Copy the active categorical group once before an atomic edit.
+
+        MainWindow retains the previous arrays until the completed stroke or
+        assisted click is emitted. This copy-on-write boundary lets it build a
+        compact undo delta without taking full-resolution snapshots per dab.
+        """
+
+        image_size = self.image_size
+        if image_size is None:
+            return
+        width, height = image_size
+        mode = self._reference_point_mode
+        if mode == "instance":
+            self._instance_annotations = self._ensure_instance_labels().copy()
+            return
+        if mode in {"background", "foreground", "other"}:
+            background, foreground, other = self._ensure_material_reference_masks(
+                height, width
+            )
+            self._background_reference_mask = background.copy()
+            self._foreground_reference_mask = foreground.copy()
+            self._background_exclusion_mask = other.copy()
+            self._foreground_exclusion_mask = self._background_exclusion_mask
+            return
+        if mode in {"physical_edge", "non_edge"}:
+            physical, non_edge = self._ensure_edge_reference_masks(height, width)
+            self._physical_edge_reference_mask = physical.copy()
+            self._non_edge_reference_mask = non_edge.copy()
 
     def _paint_instance_geometry(self, geometry: np.ndarray, *, filled: bool) -> int:
         labels = self._ensure_instance_labels()
@@ -2274,13 +2807,16 @@ class ImageView(QGraphicsView):
         """Apply the current image-aware tool and report whether labels changed."""
 
         try:
-            edge = self._full_annotation_evidence("edge_likelihood")
             if self._instance_annotation_tool == "edge_trace":
+                edge = self._annotation_edge_evidence(
+                    self._edge_trace_options.edge_source
+                )
                 points = [*self._instance_tool_points]
                 if not points or QLineF(points[-1], end_point).length() > 0.5:
                     points.append(QPointF(end_point))
                 if len(points) < 2:
                     return False
+                self._detach_active_reference_buffers()
                 tangent = self._annotation_tangent(
                     self._edge_trace_options.tangent_mode
                 )
@@ -2299,8 +2835,10 @@ class ImageView(QGraphicsView):
                 )
                 return changed > 0
             if self._instance_annotation_tool == "shape_snap":
+                edge = self._full_annotation_evidence("edge_likelihood")
                 if not self._instance_tool_points:
                     return False
+                self._detach_active_reference_buffers()
                 tangent = self._annotation_tangent(
                     self._shape_snap_options.tangent_mode
                 )
@@ -2322,6 +2860,10 @@ class ImageView(QGraphicsView):
                 )
                 return changed > 0
             if self._instance_annotation_tool == "smart_fill":
+                edge = self._annotation_edge_evidence(
+                    self._smart_fill_options.edge_source
+                )
+                self._detach_active_reference_buffers()
                 labels = self._ensure_instance_labels()
                 corrected = np.asarray(self._analysis_result.calibration.corrected_bgr)
                 filled, changed = smart_fill_instance(
@@ -2364,6 +2906,7 @@ class ImageView(QGraphicsView):
                 self._commit_instance_assisted_preview(scene_point)
                 event.accept()
                 return
+            self._detach_active_reference_buffers()
             self._reference_paint_button = event.button()
             self._reference_stroke_erases = (
                 self._reference_erase_enabled
@@ -2522,7 +3065,15 @@ class ImageView(QGraphicsView):
                 exclusive_masks = self._ensure_edge_reference_masks(height, width)
             # The helper may have lazily copied an immutable applied array.
             mask = getattr(self, attribute)
-        self._paint_mask_circle(mask, scene_point.x(), scene_point.y(), value)
+        if (
+            self._reference_point_mode == "instance"
+            and self._show_selected_instance_only
+        ):
+            self._paint_selected_instance_circle(
+                mask, scene_point.x(), scene_point.y(), erase=erase
+            )
+        else:
+            self._paint_mask_circle(mask, scene_point.x(), scene_point.y(), value)
         if self._reference_point_mode != "instance" and not erase:
             for other_mask in exclusive_masks:
                 if other_mask is mask:
@@ -2610,6 +3161,37 @@ class ImageView(QGraphicsView):
         circle = (xx - center_x) ** 2 + (yy - center_y) ** 2 <= radius**2
         region = mask[y0:y1, x0:x1]
         region[circle] = value
+
+    def _paint_selected_instance_circle(
+        self,
+        labels: np.ndarray,
+        point_x: float,
+        point_y: float,
+        *,
+        erase: bool,
+    ) -> None:
+        """Edit the active ID without damaging hidden neighbouring seeds."""
+
+        radius = max(1, int(round(self._reference_brush_radius)))
+        center_x = int(round(point_x))
+        center_y = int(round(point_y))
+        x0 = max(0, center_x - radius)
+        x1 = min(labels.shape[1], center_x + radius + 1)
+        y0 = max(0, center_y - radius)
+        y1 = min(labels.shape[0], center_y + radius + 1)
+        if x0 >= x1 or y0 >= y1:
+            return
+        yy, xx = np.ogrid[y0:y1, x0:x1]
+        circle = (xx - center_x) ** 2 + (yy - center_y) ** 2 <= radius**2
+        region = labels[y0:y1, x0:x1]
+        if erase:
+            writable = circle & (region == self._active_instance_id)
+            region[writable] = 0
+        else:
+            writable = circle & (
+                (region == 0) | (region == self._active_instance_id)
+            )
+            region[writable] = np.uint16(self._active_instance_id)
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # noqa: N802
         urls = event.mimeData().urls()

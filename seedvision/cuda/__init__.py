@@ -1,6 +1,7 @@
 """Shared CUDA tensor operations used by Seed Fiddle's analysis pipeline."""
 
 from seedvision.cuda.ops import (
+    apply_contrastive_negative_evidence,
     CudaContext,
     GpuRaster,
     binary_close,
@@ -25,6 +26,7 @@ from seedvision.cuda.ops import (
 )
 
 __all__ = [
+    "apply_contrastive_negative_evidence",
     "CudaContext",
     "GpuRaster",
     "binary_close",

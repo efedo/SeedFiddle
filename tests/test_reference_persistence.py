@@ -1,0 +1,349 @@
+from __future__ import annotations
+
+import os
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+import numpy as np
+
+from seedvision.persistence import (
+    ImageFingerprintMismatch,
+    InvalidReferenceArchive,
+    ReferenceRegionBundle,
+    ReferenceRegionStore,
+)
+
+
+class ReferenceRegionStoreTests(unittest.TestCase):
+    def test_round_trip_preserves_all_six_reference_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image_path = root / "images" / "sample.jpg"
+            image_path.parent.mkdir()
+            image_path.write_bytes(b"unchanged source image bytes")
+            shape = (18, 24)
+            background = np.zeros(shape, dtype=bool)
+            foreground = np.zeros(shape, dtype=bool)
+            other = np.zeros(shape, dtype=bool)
+            physical = np.zeros(shape, dtype=bool)
+            non_edge = np.zeros(shape, dtype=bool)
+            instances = np.zeros(shape, dtype=np.uint16)
+            background[1:4, 2:7] = True
+            foreground[6:11, 3:9] = True
+            other[12:16, 15:20] = True
+            physical[5, 12:18] = True
+            non_edge[10, 12:18] = True
+            instances[6:9, 3:7] = 17
+            instances[12:16, 15:20] = 42
+            store = ReferenceRegionStore(root)
+
+            destination = store.save(
+                image_path,
+                ReferenceRegionBundle(
+                    shape=shape,
+                    background=background,
+                    foreground=foreground,
+                    other=other,
+                    physical_edge=physical,
+                    non_edge=non_edge,
+                    annotated_seeds=instances,
+                    annotation_origin="pipeline:procedural_instances",
+                ),
+            )
+            loaded = store.load_if_present(image_path, shape)
+
+            self.assertIsNotNone(loaded)
+            assert loaded is not None
+            self.assertTrue(destination.is_relative_to(root / "projects"))
+            self.assertTrue(np.array_equal(loaded.background, background))
+            self.assertTrue(np.array_equal(loaded.foreground, foreground))
+            self.assertTrue(np.array_equal(loaded.other, other))
+            self.assertTrue(np.array_equal(loaded.physical_edge, physical))
+            self.assertTrue(np.array_equal(loaded.non_edge, non_edge))
+            self.assertTrue(np.array_equal(loaded.annotated_seeds, instances))
+            self.assertEqual(
+                loaded.annotation_origin, "pipeline:procedural_instances"
+            )
+            with np.load(destination, allow_pickle=False) as archive:
+                self.assertEqual(archive["material"].dtype, np.uint8)
+                self.assertEqual(archive["boundary"].dtype, np.uint8)
+                self.assertEqual(archive["annotated_seeds"].dtype, np.uint16)
+            self.assertEqual(tuple(destination.parent.glob("*.tmp")), ())
+
+    def test_changed_image_is_rejected_before_reference_rasters_are_used(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image_path = root / "capture.png"
+            image_path.write_bytes(b"first image")
+            store = ReferenceRegionStore(root)
+            store.save(
+                image_path,
+                ReferenceRegionBundle(shape=(4, 5)),
+            )
+            image_path.write_bytes(b"modified image")
+
+            with self.assertRaises(ImageFingerprintMismatch) as raised:
+                store.load_if_present(image_path, (4, 5))
+
+            self.assertNotEqual(
+                raised.exception.expected_sha256,
+                raised.exception.actual_sha256,
+            )
+
+    def test_invalid_categorical_archive_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image_path = root / "capture.png"
+            image_path.write_bytes(b"source")
+            store = ReferenceRegionStore(root)
+            destination = store.save(
+                image_path,
+                ReferenceRegionBundle(shape=(4, 5)),
+            )
+            with np.load(destination, allow_pickle=False) as archive:
+                payload = {name: np.array(archive[name]) for name in archive.files}
+            payload["material"][2, 3] = 9
+            with destination.open("wb") as stream:
+                np.savez_compressed(stream, **payload)
+
+            with self.assertRaises(InvalidReferenceArchive):
+                store.load_if_present(image_path, (4, 5))
+
+    def test_corrupt_archive_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image_path = root / "capture.png"
+            image_path.write_bytes(b"source")
+            store = ReferenceRegionStore(root)
+            archive = store.path_for(image_path)
+            archive.parent.mkdir(parents=True)
+            archive.write_bytes(b"not a zip archive")
+
+            with self.assertRaises(InvalidReferenceArchive):
+                store.load_if_present(image_path, (4, 5))
+
+    def test_same_named_external_images_receive_distinct_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "project"
+            first = Path(temporary) / "one" / "capture.png"
+            second = Path(temporary) / "two" / "capture.png"
+            first.parent.mkdir(parents=True)
+            second.parent.mkdir(parents=True)
+            first.write_bytes(b"one")
+            second.write_bytes(b"two")
+            store = ReferenceRegionStore(root)
+            self.assertNotEqual(store.path_for(first), store.path_for(second))
+
+
+class ReferenceRegionMainWindowTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        try:
+            from PySide6.QtWidgets import QApplication
+        except ImportError as error:
+            raise unittest.SkipTest(f"PySide6 unavailable: {error}")
+        cls.application = QApplication.instance() or QApplication([])
+
+    @staticmethod
+    def _write_image(path: Path, colour: str) -> None:
+        from PySide6.QtGui import QColor, QImage
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        image = QImage(64, 48, QImage.Format.Format_RGB888)
+        image.fill(QColor(colour))
+        if not image.save(str(path)):
+            raise RuntimeError(f"Could not write test image {path}.")
+
+    def _save_complete_snapshot(self, root: Path, image_path: Path) -> None:
+        from seedvision.ui.main_window import MainWindow
+
+        window = MainWindow(root)
+        key = window._current_image_key()
+        self.assertIsNotNone(key)
+        assert key is not None
+        shape = (48, 64)
+        background = np.zeros(shape, dtype=bool)
+        foreground = np.zeros(shape, dtype=bool)
+        other = np.zeros(shape, dtype=bool)
+        physical = np.zeros(shape, dtype=bool)
+        non_edge = np.zeros(shape, dtype=bool)
+        instances = np.zeros(shape, dtype=np.uint16)
+        background[2:7, 3:9] = True
+        foreground[10:18, 12:22] = True
+        other[30:35, 50:55] = True
+        physical[20, 25:36] = True
+        non_edge[22, 25:36] = True
+        instances[10:18, 12:22] = 7
+        window._applied_background_reference_masks[key] = background
+        window._applied_foreground_reference_masks[key] = foreground
+        window._applied_background_exclusion_masks[key] = other
+        window._applied_foreground_exclusion_masks[key] = other
+        window._applied_physical_edge_reference_masks[key] = physical
+        window._applied_non_edge_reference_masks[key] = non_edge
+        window._applied_instance_annotations[key] = instances
+        window._applied_instance_annotation_origins[key] = "manual:test"
+        window._save_reference_regions()
+        self.assertTrue(window._reference_region_store.path_for(image_path).is_file())
+        window.close()
+
+    def test_saved_snapshot_automatically_loads_as_immutable_applied_state(self) -> None:
+        from seedvision.ui.main_window import MainWindow
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image_path = root / "images" / "capture.png"
+            self._write_image(image_path, "#38684a")
+            self._save_complete_snapshot(root, image_path)
+
+            restored = MainWindow(root)
+            key = restored._current_image_key()
+            self.assertIsNotNone(key)
+            assert key is not None
+            self.assertTrue(restored._applied_background_reference_masks[key][3, 4])
+            self.assertTrue(restored._applied_foreground_reference_masks[key][12, 15])
+            self.assertTrue(restored._applied_background_exclusion_masks[key][32, 52])
+            self.assertIs(
+                restored._applied_background_exclusion_masks[key],
+                restored._applied_foreground_exclusion_masks[key],
+            )
+            self.assertTrue(restored._applied_physical_edge_reference_masks[key][20, 30])
+            self.assertTrue(restored._applied_non_edge_reference_masks[key][22, 30])
+            self.assertEqual(restored._applied_instance_annotations[key][12, 15], 7)
+            self.assertEqual(
+                restored._applied_instance_annotation_origins[key], "manual:test"
+            )
+            self.assertFalse(
+                restored._applied_foreground_reference_masks[key].flags.writeable
+            )
+            self.assertFalse(
+                restored._applied_instance_annotations[key].flags.writeable
+            )
+            self.assertIs(
+                restored.image_view.reference_mask("foreground", copy=False),
+                restored._applied_foreground_reference_masks[key],
+            )
+            self.assertIs(
+                restored.image_view._instance_annotations,
+                restored._applied_instance_annotations[key],
+            )
+            self.assertNotIn(key, restored._reference_masks_dirty)
+            self.assertNotIn(key, restored._instance_annotations_dirty)
+            restored.close()
+
+    def test_switching_images_keeps_newer_unsaved_in_memory_applied_state(self) -> None:
+        from seedvision.ui.main_window import MainWindow
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            first_path = root / "images" / "a.png"
+            second_path = root / "images" / "b.png"
+            self._write_image(first_path, "#38684a")
+            self._write_image(second_path, "#4a3868")
+            old = np.zeros((48, 64), dtype=bool)
+            old[2:5, 2:5] = True
+            ReferenceRegionStore(root).save(
+                first_path,
+                ReferenceRegionBundle(shape=(48, 64), background=old),
+            )
+            window = MainWindow(root)
+            key = window._current_image_key()
+            self.assertIsNotNone(key)
+            assert key is not None
+            newer = np.zeros((48, 64), dtype=bool)
+            newer[30:36, 40:47] = True
+            newer.flags.writeable = False
+            window._applied_background_reference_masks[key] = newer
+
+            window._open_path(second_path)
+            window._open_path(first_path)
+
+            self.assertIs(window._applied_background_reference_masks[key], newer)
+            self.assertFalse(window.image_view.reference_mask("background")[3, 3])
+            self.assertTrue(window.image_view.reference_mask("background")[32, 42])
+            window.close()
+
+    def test_empty_applied_snapshot_overwrites_an_older_nonempty_archive(self) -> None:
+        from seedvision.ui.main_window import MainWindow
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image_path = root / "images" / "capture.png"
+            self._write_image(image_path, "#38684a")
+            self._save_complete_snapshot(root, image_path)
+            window = MainWindow(root)
+            key = window._current_image_key()
+            self.assertIsNotNone(key)
+            assert key is not None
+            for store in (
+                window._applied_background_reference_masks,
+                window._applied_foreground_reference_masks,
+                window._applied_background_exclusion_masks,
+                window._applied_foreground_exclusion_masks,
+                window._applied_physical_edge_reference_masks,
+                window._applied_non_edge_reference_masks,
+                window._applied_instance_annotations,
+            ):
+                store.pop(key, None)
+            window._applied_instance_annotation_origins.pop(key, None)
+
+            window._save_reference_regions()
+            loaded = window._reference_region_store.load_if_present(
+                image_path, (48, 64)
+            )
+
+            self.assertIsNotNone(loaded)
+            assert loaded is not None
+            self.assertIsNone(loaded.background)
+            self.assertIsNone(loaded.foreground)
+            self.assertIsNone(loaded.other)
+            self.assertIsNone(loaded.physical_edge)
+            self.assertIsNone(loaded.non_edge)
+            self.assertIsNone(loaded.annotated_seeds)
+            window.close()
+
+    def test_modified_image_warns_and_loads_no_saved_regions(self) -> None:
+        from seedvision.ui.main_window import MainWindow
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image_path = root / "images" / "capture.png"
+            self._write_image(image_path, "#38684a")
+            self._save_complete_snapshot(root, image_path)
+            self._write_image(image_path, "#8b4038")
+
+            with patch("seedvision.ui.main_window.QMessageBox.warning") as warning:
+                rejected = MainWindow(root)
+            key = rejected._current_image_key()
+            self.assertIsNotNone(key)
+            assert key is not None
+            warning.assert_called_once()
+            self.assertIn("changed", warning.call_args.args[2])
+            self.assertNotIn(key, rejected._applied_background_reference_masks)
+            self.assertNotIn(key, rejected._applied_foreground_reference_masks)
+            self.assertNotIn(key, rejected._applied_instance_annotations)
+            rejected.close()
+
+    def test_dirty_draft_blocks_save_without_replacing_archive(self) -> None:
+        from seedvision.ui.main_window import MainWindow
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image_path = root / "images" / "capture.png"
+            self._write_image(image_path, "#38684a")
+            window = MainWindow(root)
+            key = window._current_image_key()
+            self.assertIsNotNone(key)
+            assert key is not None
+            window._reference_masks_dirty.add(key)
+            with patch("seedvision.ui.main_window.QMessageBox.warning") as warning:
+                window._save_reference_regions()
+            warning.assert_called_once()
+            self.assertFalse(window._reference_region_store.path_for(image_path).exists())
+            window.close()
+
+
+if __name__ == "__main__":
+    unittest.main()

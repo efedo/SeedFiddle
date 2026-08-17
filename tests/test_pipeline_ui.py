@@ -30,8 +30,8 @@ class PipelineCanvasTests(unittest.TestCase):
         self.application.processEvents()
         canvas.fit_graph()
         self.assertGreater(canvas.horizontalScrollBar().maximum(), 0)
-        self.assertEqual(len(canvas.node_items), 31)
-        self.assertEqual(len(canvas.edge_items), 107)
+        self.assertEqual(len(canvas.node_items), 33)
+        self.assertEqual(len(canvas.edge_items), 152)
         self.assertNotIn("circle_candidates", canvas.node_items)
         self.assertEqual(canvas.unused_nodes_button.text(), "Unused nodes (21)")
         unused_actions = [
@@ -80,9 +80,9 @@ class PipelineCanvasTests(unittest.TestCase):
         for advanced_node_id in (
             "seed_interior",
             "boundary_normals",
-            "ellipse_likelihood",
             "illumination_decomposition",
             "image_quality",
+            "wrinkling",
             "pattern_decomposition",
             "colour_probabilities",
         ):
@@ -93,6 +93,7 @@ class PipelineCanvasTests(unittest.TestCase):
             "calibration_residuals",
             "identification",
             "instance_masks",
+            "ellipse_likelihood",
             "seed_edge_curves",
             "touching_split",
             "review",
@@ -265,8 +266,8 @@ class PipelineCanvasTests(unittest.TestCase):
         self.application.processEvents()
         self.assertEqual(restored, ["circle_candidates"])
         self.assertIn("circle_candidates", canvas.node_items)
-        self.assertEqual(len(canvas.node_items), 32)
-        self.assertEqual(len(canvas.edge_items), 114)
+        self.assertEqual(len(canvas.node_items), 34)
+        self.assertEqual(len(canvas.edge_items), 160)
         self.assertEqual(canvas.unused_nodes_button.text(), "Unused nodes (20)")
         self.assertTrue(canvas.unused_nodes_button.isEnabled())
         self.assertTrue(canvas.node_items["circle_candidates"].isSelected())
@@ -279,7 +280,7 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertNotIn("circle_candidates", canvas.node_items)
         self.assertIn("circle_candidates", graph.unused_nodes)
         self.assertFalse(graph.node("circle_candidates").enabled)
-        self.assertEqual(len(canvas.edge_items), 107)
+        self.assertEqual(len(canvas.edge_items), 152)
         self.assertEqual(canvas.unused_nodes_button.text(), "Unused nodes (21)")
         restore_action = next(
             action
@@ -330,7 +331,7 @@ class PipelineCanvasTests(unittest.TestCase):
         )
         self.assertTrue(canvas.node_items["edge_gradients"].isSelected())
         self.assertTrue(all(canvas.node_items[node_id]._adjacent for node_id in adjacent))
-        self.assertFalse(canvas.node_items["layout_detection"]._adjacent)
+        self.assertFalse(canvas.node_items["ruler_detection"]._adjacent)
         canvas.close()
 
     def test_canvas_disconnects_and_reconnects_authored_ports(self) -> None:
@@ -348,7 +349,7 @@ class PipelineCanvasTests(unittest.TestCase):
             and edge.target == "foreground_noise_likelihood"
         )
         canvas._disconnect_connection(connection)
-        self.assertEqual(len(canvas.edge_items), 106)
+        self.assertEqual(len(canvas.edge_items), 151)
         self.assertFalse(graph.node(connection.target).enabled)
         self.assertIsNone(
             graph.connection_for_input(connection.target, connection.target_port)
@@ -365,12 +366,93 @@ class PipelineCanvasTests(unittest.TestCase):
                 connection.source_port
             )
         )
-        self.assertEqual(len(canvas.edge_items), 107)
+        self.assertEqual(len(canvas.edge_items), 152)
         self.assertTrue(graph.node(connection.target).enabled)
         self.assertIsNotNone(
             graph.connection_for_input(connection.target, connection.target_port)
         )
         self.assertEqual(len(changes), 2)
+        canvas.close()
+
+    def test_connection_paths_do_not_block_plain_left_drag_panning(self) -> None:
+        from PySide6.QtCore import QPoint, Qt
+        from PySide6.QtTest import QTest
+
+        from seedvision.pipeline import build_default_pipeline
+        from seedvision.ui.pipeline_canvas import PipelineCanvas, PipelineEdgeItem
+
+        canvas = PipelineCanvas(build_default_pipeline())
+        canvas.resize(900, 500)
+        canvas.show()
+        canvas.resetTransform()
+        horizontal = canvas.horizontalScrollBar()
+        vertical = canvas.verticalScrollBar()
+        horizontal.setValue((horizontal.minimum() + horizontal.maximum()) // 2)
+        vertical.setValue((vertical.minimum() + vertical.maximum()) // 2)
+        self.application.processEvents()
+
+        def visible_edge_point():
+            for edge in canvas.edge_items:
+                self.assertEqual(
+                    edge.acceptedMouseButtons(), Qt.MouseButton.RightButton
+                )
+                for fraction in (0.2, 0.35, 0.5, 0.65, 0.8):
+                    point = canvas.mapFromScene(
+                        edge.path().pointAtPercent(fraction)
+                    )
+                    if (
+                        canvas.viewport()
+                        .rect()
+                        .adjusted(20, 20, -20, -20)
+                        .contains(point)
+                        and isinstance(canvas.itemAt(point), PipelineEdgeItem)
+                        and canvas._port_at(canvas.mapToScene(point)) is None
+                    ):
+                        return point
+            return None
+
+        hit_point = visible_edge_point()
+        self.assertIsNotNone(hit_point)
+
+        canvas.scene().clearSelection()
+        start_scroll = (horizontal.value(), vertical.value())
+        QTest.mousePress(
+            canvas.viewport(), Qt.MouseButton.LeftButton, pos=hit_point
+        )
+        QTest.mouseMove(canvas.viewport(), hit_point + QPoint(70, 35), delay=10)
+        QTest.mouseRelease(
+            canvas.viewport(),
+            Qt.MouseButton.LeftButton,
+            pos=hit_point + QPoint(70, 35),
+        )
+        self.application.processEvents()
+        self.assertNotEqual(
+            (horizontal.value(), vertical.value()), start_scroll
+        )
+        self.assertFalse(
+            any(
+                isinstance(item, PipelineEdgeItem)
+                for item in canvas.scene().selectedItems()
+            )
+        )
+
+        # Selection remains available as an explicit gesture for keyboard
+        # disconnection without making ordinary navigation fragile.
+        hit_point = visible_edge_point()
+        self.assertIsNotNone(hit_point)
+        QTest.mouseClick(
+            canvas.viewport(),
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.ControlModifier,
+            pos=hit_point,
+        )
+        self.application.processEvents()
+        self.assertTrue(
+            any(
+                isinstance(item, PipelineEdgeItem)
+                for item in canvas.scene().selectedItems()
+            )
+        )
         canvas.close()
 
     def test_image_and_graph_zoom_controls_report_scale(self) -> None:
@@ -488,7 +570,8 @@ class PipelineCanvasTests(unittest.TestCase):
             "directed_edges": 0,
             "instance_masks": 3,
             "edge_ridges": 4,
-            "edge_traces": 6,
+            "reference_edge_ridges": 5,
+            "edge_traces": 8,
             "seed_edge_curves": 19,
         }.items():
             inspector.set_node(graph.node(node_id))
@@ -497,9 +580,14 @@ class PipelineCanvasTests(unittest.TestCase):
             )
         inspector.close()
 
-    def test_background_node_shows_probability_contours_over_colour_gamut(self) -> None:
+    def test_background_colour_gamut_renders_as_full_hsv_value_slice(self) -> None:
+        import numpy as np
+
         from seedvision.pipeline import build_default_pipeline
-        from seedvision.ui.pipeline_inspector import PipelineInspector
+        from seedvision.ui.pipeline_inspector import (
+            BackgroundColourGamut,
+            PipelineInspector,
+        )
         from seedvision.visualization import BackgroundColourProfile
 
         profile = BackgroundColourProfile(
@@ -525,24 +613,19 @@ class PipelineCanvasTests(unittest.TestCase):
         )
         inspector.set_node(build_default_pipeline().node("background_likelihood"))
 
-        self.assertTrue(inspector.gamut_heading.isVisibleTo(inspector))
-        self.assertFalse(inspector.gamut_widget._image.isNull())
-        # Neutral modes stay in the neutral strip; chromatic modes project over
-        # hidden saturation so pale tints still reach their fitted maximum.
-        self.assertGreater(float(inspector.gamut_widget._probability.max()), 0.75)
-        self.assertLess(float(inspector.gamut_widget._probability.min()), 0.25)
-        self.assertIn("25/50/75/90%", inspector.gamut_caption.text())
-        self.assertIn("HSV hue/tint/shade", inspector.gamut_caption.text())
-        self.assertIn(
-            "exterior-annulus reference modes", inspector.gamut_caption.text()
+        self.assertFalse(hasattr(inspector, "gamut_widget"))
+        image, probability, centres = BackgroundColourGamut.render_hsv_value_slice(
+            profile,
+            build_default_pipeline().node("background_likelihood").parameters,
+            class_name="background",
+            value=0.90,
         )
-        projection = inspector.gamut_widget._image
-        top = projection.pixelColor(projection.width() // 2, 0)
-        bottom = projection.pixelColor(
-            projection.width() // 2, projection.height() - 1
-        )
-        self.assertGreater(min(top.red(), top.green(), top.blue()), 245)
-        self.assertLess(max(bottom.red(), bottom.green(), bottom.blue()), 10)
+        self.assertEqual((image.width(), image.height()), (960, 640))
+        self.assertGreater(float(probability.max()), 0.50)
+        self.assertLess(float(probability.min()), 0.25)
+        self.assertTrue(np.all(probability[0] == 0.0))
+        self.assertEqual(centres.shape, (2, 2))
+        self.assertGreater(BackgroundColourGamut.dominant_hsv_value(profile), 0.0)
         inspector.close()
 
     def test_real_exterior_annulus_profile_retains_all_gamut_contours(self) -> None:
@@ -577,27 +660,26 @@ class PipelineCanvasTests(unittest.TestCase):
             component_weights=(0.8633118, 0.0293884, 0.0072937, 0.1000061),
             refinement_iterations=0,
         )
-        gamut = BackgroundColourGamut()
-        gamut.set_profile(
-            profile,
-            build_default_pipeline().node("background_likelihood").parameters,
+        _image, probability, centre_points = (
+            BackgroundColourGamut.render_hsv_value_slice(
+                profile,
+                build_default_pipeline().node("background_likelihood").parameters,
+                class_name="background",
+                value=0.89,
+            )
         )
-
-        probability = gamut._probability
-        assert probability is not None
-        # The measured-saturation projection is sampled on integer HLS tone
-        # rows, so the closest displayed colour can sit just below an exact 1.0.
-        self.assertGreater(float(probability.max()), 0.98)
-        for level, _colour in gamut.CONTOURS:
+        self.assertGreater(float(probability.max()), 0.90)
+        for level, _colour in BackgroundColourGamut.CONTOURS:
             self.assertGreater(
-                int(np.count_nonzero(gamut._contour_edge(probability, level))),
+                int(
+                    np.count_nonzero(
+                        BackgroundColourGamut._contour_edge(probability, level)
+                    )
+                ),
                 0,
                 level,
             )
-        self.assertGreater(
-            float(gamut._centre_points[0, 0]), gamut.NEUTRAL_COLUMNS
-        )
-        gamut.close()
+        self.assertEqual(centre_points.shape, (4, 2))
 
     def test_foreground_node_shows_its_probability_colour_gamut(self) -> None:
         from seedvision.pipeline import build_default_pipeline
@@ -627,11 +709,7 @@ class PipelineCanvasTests(unittest.TestCase):
         )
         inspector.set_node(build_default_pipeline().node("foreground_segmentation"))
 
-        self.assertTrue(inspector.gamut_heading.isVisibleTo(inspector))
-        self.assertEqual(inspector.gamut_heading.text(), "Accepted foreground colours")
-        self.assertEqual(inspector.gamut_widget._class_name, "foreground")
-        self.assertFalse(inspector.gamut_widget._image.isNull())
-        self.assertIn("painted-reference", inspector.gamut_caption.text())
+        self.assertFalse(hasattr(inspector, "gamut_widget"))
         self.assertTrue(inspector.foreground_start_heading.isVisibleTo(inspector))
         self.assertIn("Bypassed", inspector.foreground_start_label.text())
 
@@ -664,8 +742,6 @@ class PipelineCanvasTests(unittest.TestCase):
         inspector.close()
 
     def test_nearly_neutral_dark_mode_does_not_span_every_hsv_hue(self) -> None:
-        import numpy as np
-
         from seedvision.pipeline import build_default_pipeline
         from seedvision.ui.pipeline_inspector import BackgroundColourGamut
         from seedvision.visualization import ForegroundColourProfile
@@ -683,19 +759,16 @@ class PipelineCanvasTests(unittest.TestCase):
             source="painted",
             source_sample_count=800,
         )
-        gamut = BackgroundColourGamut()
-        gamut.set_profile(
-            profile,
-            build_default_pipeline().node("foreground_segmentation").parameters,
-            class_name="foreground",
+        _image, probability, centre_points = (
+            BackgroundColourGamut.render_hsv_value_slice(
+                profile,
+                build_default_pipeline().node("foreground_segmentation").parameters,
+                class_name="foreground",
+                value=0.20,
+            )
         )
-
-        probability = gamut._probability
-        assert probability is not None
-        self.assertGreater(float(probability[:, : gamut.NEUTRAL_COLUMNS].max()), 0.50)
-        self.assertLess(float(probability[:, gamut.NEUTRAL_COLUMNS :].max()), 0.25)
-        self.assertTrue(np.all(gamut._centre_points[:, 0] < gamut.NEUTRAL_COLUMNS))
-        gamut.close()
+        self.assertLess(float(probability.max()), 0.25)
+        self.assertEqual(centre_points.shape, (1, 2))
 
     def test_colour_gamut_does_not_project_neutral_membership_across_hues(self) -> None:
         from seedvision.ui.pipeline_inspector import BackgroundColourGamut
@@ -713,29 +786,19 @@ class PipelineCanvasTests(unittest.TestCase):
             component_weights=(1.0,),
             refinement_iterations=0,
         )
-        gamut = BackgroundColourGamut()
-        gamut.set_profile(
-            neutral_profile,
-            {
-                "foreground_chroma_weight": 1.8,
-                "foreground_distribution_scale_multiplier": 1.0,
-                "foreground_frequency_weight_power": 0.0,
-            },
-            class_name="foreground",
+        _image, probability, _centre_points = (
+            BackgroundColourGamut.render_hsv_value_slice(
+                neutral_profile,
+                {
+                    "foreground_chroma_weight": 1.8,
+                    "foreground_distribution_scale_multiplier": 1.0,
+                    "foreground_frequency_weight_power": 0.0,
+                },
+                class_name="foreground",
+                value=0.50,
+            )
         )
-
-        probability = gamut._probability
-        self.assertIsNotNone(probability)
-        assert probability is not None
-        neutral_width = gamut.NEUTRAL_COLUMNS
-        self.assertGreater(float(probability[:, :neutral_width].max()), 0.90)
-        saturated_mid_tone = probability[
-            probability.shape[0] // 2, neutral_width:
-        ]
-        self.assertLess(float(saturated_mid_tone.max()), 0.25)
-        self.assertIn("Neutral modes", gamut.toolTip())
-        self.assertIn("without spreading grey evidence", gamut.toolTip())
-        gamut.close()
+        self.assertTrue((probability == 0.0).all())
 
     def test_overlay_node_selection_updates_the_viewer_layer(self) -> None:
         from seedvision.ui.main_window import MainWindow
@@ -969,6 +1032,33 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertEqual(node_selector.currentData(), "procedural_instances")
         self.assertGreaterEqual(node_selector.findData("procedural_confidence"), 0)
 
+        window.pipeline_canvas.select_node("reference_texture_prototypes")
+        self.application.processEvents()
+        self.assertEqual(node_selector.count(), 4)
+        self.assertGreaterEqual(
+            node_selector.findData("reference_texture_prototypes"), 0
+        )
+        self.assertGreaterEqual(
+            node_selector.findData("reference_seed_surface_probability"), 0
+        )
+        self.assertGreaterEqual(
+            node_selector.findData("reference_background_texture_probability"), 0
+        )
+        self.assertGreaterEqual(
+            node_selector.findData("reference_other_texture_probability"), 0
+        )
+
+        window.pipeline_canvas.select_node("reference_edge_ridges")
+        self.application.processEvents()
+        self.assertEqual(node_selector.count(), 1)
+        self.assertEqual(node_selector.currentData(), "reference_edge_ridges")
+        reference_index = window.overlay_combo.findData("reference_edge_ridges")
+        self.assertGreater(reference_index, 0)
+        self.assertEqual(
+            window.overlay_combo.itemText(reference_index).strip(),
+            "Thinned reference edge ridge",
+        )
+
         window.pipeline_canvas.select_node("metadata")
         self.application.processEvents()
         self.assertEqual(node_selector.itemText(0), "No image overlays")
@@ -976,6 +1066,8 @@ class PipelineCanvasTests(unittest.TestCase):
         window.close()
 
     def test_compact_toolbar_and_contextual_paint_panel(self) -> None:
+        from PySide6.QtCore import QPoint, Qt
+        from PySide6.QtTest import QTest
         from PySide6.QtWidgets import QLabel
 
         from seedvision.ui.main_window import MainWindow
@@ -995,6 +1087,41 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertEqual(
             window.annotate_instances_action.text(), "Annotate seed instances"
         )
+        foreground_gamut = window.overlay_combo.findData(
+            "foreground_colour_gamut"
+        )
+        background_gamut = window.overlay_combo.findData(
+            "background_colour_gamut"
+        )
+        self.assertGreaterEqual(foreground_gamut, 0)
+        self.assertGreaterEqual(background_gamut, 0)
+        window.overlay_combo.setCurrentIndex(foreground_gamut)
+        self.application.processEvents()
+        self.assertTrue(window.hsv_value_slider_action.isVisible())
+        self.assertTrue(window.hsv_peak_button_action.isVisible())
+        self.assertFalse(window.overlay_opacity_slider_action.isVisible())
+        self.assertEqual(
+            window.pipeline_inspector.overlay_combo.findData(
+                "foreground_colour_gamut"
+            ),
+            window.pipeline_inspector.overlay_combo.currentIndex(),
+        )
+        window.hsv_value_slider.setValue(42)
+        self.assertEqual(window.hsv_value_label.text(), "42%")
+        self.assertAlmostEqual(window.image_view._hsv_gamut_value, 0.42)
+        raw_overlay = window.overlay_combo.findData("raw_image")
+        window.overlay_combo.setCurrentIndex(raw_overlay)
+        self.application.processEvents()
+        self.assertFalse(window.hsv_value_slider_action.isVisible())
+        self.assertFalse(window.hsv_peak_button_action.isVisible())
+        self.assertTrue(window.overlay_opacity_slider_action.isVisible())
+        prototype_collage = window.overlay_combo.findData(
+            "reference_texture_prototypes"
+        )
+        self.assertGreaterEqual(prototype_collage, 0)
+        window.overlay_combo.setCurrentIndex(prototype_collage)
+        self.application.processEvents()
+        self.assertFalse(window.overlay_opacity_slider_action.isVisible())
 
         detail_labels = {
             label.text()
@@ -1037,6 +1164,34 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertLessEqual(
             window.reference_panel_contents.width(),
             window.reference_panel_scroll.viewport().width(),
+        )
+        initial_panel_position = window.reference_panel.pos()
+        drag_center = window.reference_panel_drag_handle.rect().center()
+        QTest.mousePress(
+            window.reference_panel_drag_handle,
+            Qt.MouseButton.LeftButton,
+            pos=drag_center,
+        )
+        QTest.mouseMove(
+            window.reference_panel_drag_handle,
+            drag_center + QPoint(60, 30),
+            delay=10,
+        )
+        QTest.mouseRelease(
+            window.reference_panel_drag_handle,
+            Qt.MouseButton.LeftButton,
+            pos=drag_center + QPoint(60, 30),
+        )
+        self.application.processEvents()
+        self.assertNotEqual(window.reference_panel.pos(), initial_panel_position)
+        window.image_view._move_context_panel_to(QPoint(180, 90), remember=True)
+        self.application.processEvents()
+        moved_panel_position = window.reference_panel.pos()
+        window.image_view._layout_context_panel()
+        self.assertEqual(window.reference_panel.pos(), moved_panel_position)
+        self.assertEqual(
+            window.reference_panel_drag_handle.toolTip(),
+            "Drag this bar to reposition the painting controls over the image.",
         )
 
         window.paint_foreground_action.setChecked(True)
@@ -1099,6 +1254,41 @@ class PipelineCanvasTests(unittest.TestCase):
         self.application.processEvents()
         self.assertTrue(window.reference_panel.isHidden())
         self.assertIsNone(window.image_view._reference_point_mode)
+        window.close()
+
+    def test_cleared_reference_layer_returns_to_paint_and_accepts_dabs(self) -> None:
+        import numpy as np
+        from PySide6.QtCore import QPointF
+
+        from seedvision.ui.main_window import MainWindow
+
+        window = MainWindow(ROOT)
+        key = window._current_image_key()
+        if key is None or window.image_view.image_size is None:
+            window.close()
+            self.skipTest("No workspace image is present")
+        width, height = window.image_view.image_size
+        window.foreground_point_button.setEnabled(True)
+        window.foreground_point_button.setChecked(True)
+        window.reference_eraser_button.setEnabled(True)
+        window.reference_eraser_button.setChecked(True)
+        self.assertTrue(window.image_view._reference_erase_enabled)
+
+        window._clear_foreground_points()
+
+        self.assertTrue(window.reference_paint_mode_button.isChecked())
+        self.assertFalse(window.reference_eraser_button.isChecked())
+        self.assertFalse(window.image_view._reference_erase_enabled)
+        self.assertFalse(
+            np.any(window.image_view.reference_mask("foreground", copy=False))
+        )
+        point = QPointF(float(min(40, width - 1)), float(min(40, height - 1)))
+        window.image_view._emit_reference_brush_dab(
+            point, erase=window.image_view._reference_erase_enabled
+        )
+        self.assertTrue(
+            np.any(window.image_view.reference_mask("foreground", copy=False))
+        )
         window.close()
 
     def test_pipeline_instance_result_becomes_editable_draft_with_provenance(self) -> None:
@@ -1193,7 +1383,13 @@ class PipelineCanvasTests(unittest.TestCase):
         )
         window.pipeline.set_parameter("edge_gradients", "edge_chroma_weight", 1.8)
         window.pipeline.set_parameter(
-            "background_likelihood", "background_colour_components", 3
+            "edge_traces", "trace_curvature_policy", "require"
+        )
+        window.pipeline.set_parameter(
+            "edge_traces", "trace_curvature_tolerance_degrees", 4.0
+        )
+        window.pipeline.set_parameter(
+            "background_likelihood", "background_colour_components", 64
         )
         window.pipeline.set_parameter(
             "perimeter_background_reference",
@@ -1218,7 +1414,15 @@ class PipelineCanvasTests(unittest.TestCase):
             window._layer_settings().edge_chroma_weight,
             1.8,
         )
-        self.assertEqual(window._layer_settings().background_colour_components, 3)
+        self.assertEqual(
+            window._layer_settings().trace_curvature_policy,
+            "require",
+        )
+        self.assertAlmostEqual(
+            window._layer_settings().trace_curvature_tolerance_degrees,
+            4.0,
+        )
+        self.assertEqual(window._layer_settings().background_colour_components, 64)
         self.assertAlmostEqual(
             window._layer_settings().perimeter_background_buffer_cm,
             0.45,
@@ -1274,6 +1478,7 @@ class PipelineCanvasTests(unittest.TestCase):
             "undirected_edges",
             "directed_edges",
             "edge_ridges",
+            "reference_texture_prototypes",
             "edge_traces",
         ):
             window.pipeline.set_status(node_id, NodeStatus.COMPLETE, "Ready")
@@ -1329,6 +1534,18 @@ class PipelineCanvasTests(unittest.TestCase):
                 nonbackground_sample_count=100,
                 separation=1.2,
             ),
+            reference_seed_surface_probability=np.full(
+                (12, 12), 135, np.uint8
+            ),
+            reference_background_texture_probability=np.full(
+                (12, 12), 115, np.uint8
+            ),
+            reference_other_texture_probability=np.full(
+                (12, 12), 95, np.uint8
+            ),
+            physical_edge_probability=np.full((12, 12), 105, np.uint8),
+            non_edge_probability=np.full((12, 12), 85, np.uint8),
+            reference_edge_ridges=np.full((12, 12), 125, np.uint8),
             edge_likelihood=np.full((12, 12), 120, np.uint8),
             directed_edge_hue=np.full((12, 12), 45, np.uint8),
             undirected_edge_hue=np.full((12, 12), 90, np.uint8),
@@ -1354,6 +1571,12 @@ class PipelineCanvasTests(unittest.TestCase):
             "background_likelihood",
             "refined_background_likelihood",
             "foreground_noise_likelihood",
+            "reference_seed_surface_probability",
+            "reference_background_texture_probability",
+            "reference_other_texture_probability",
+            "physical_edge_probability",
+            "non_edge_probability",
+            "reference_edge_ridges",
             "undirected_edges",
             "directed_edges",
             "seed_edge_curves",
@@ -1378,6 +1601,155 @@ class PipelineCanvasTests(unittest.TestCase):
         view.set_reference_annotations_visible(True)
         self.assertEqual(len(view._overlay_items), 1)
         view.close()
+
+    def test_image_view_displays_full_size_gamut_without_changing_mask_size(self) -> None:
+        import numpy as np
+
+        from PySide6.QtGui import QColor, QImage
+        from PySide6.QtTest import QTest
+
+        from seedvision.pipeline import build_default_pipeline
+        from seedvision.ui.image_view import ImageView
+        from seedvision.visualization import ForegroundColourProfile
+
+        profile = ForegroundColourProfile(
+            centre_lab=(152.0, 141.0, 118.0),
+            scale_lab=(18.0, 9.0, 8.0),
+            bgr_low=(36, 62, 80),
+            bgr_high=(211, 218, 224),
+            sample_count=1800,
+            sample_fraction=0.34,
+            component_centres_lab=((152.0, 141.0, 118.0),),
+            component_scales_lab=((18.0, 9.0, 8.0),),
+            component_weights=(1.0,),
+            refinement_iterations=0,
+            source="painted",
+            source_sample_count=1800,
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "gamut-source.png"
+            source = QImage(320, 200, QImage.Format.Format_RGB32)
+            source.fill(QColor("white"))
+            self.assertTrue(source.save(str(path)))
+            corrected = np.full((180, 300, 3), 210, np.uint8)
+            result = SimpleNamespace(
+                calibration=SimpleNamespace(corrected_bgr=corrected),
+                layers=SimpleNamespace(
+                    foreground_colour_profile=profile,
+                    background_colour_profile=None,
+                ),
+            )
+            view = ImageView()
+            succeeded, error = view.load_image(path)
+            self.assertTrue(succeeded, error)
+            view.set_colour_gamut_parameters(
+                "foreground",
+                build_default_pipeline().node(
+                    "foreground_segmentation"
+                ).parameters,
+            )
+            view.set_overlay_mode("foreground_colour_gamut")
+            view.show_analysis(result)
+
+            self.assertEqual(view._displayed_base, "gamut")
+            self.assertEqual(
+                (view._image_item.pixmap().width(), view._image_item.pixmap().height()),
+                (960, 640),
+            )
+            self.assertEqual(view.image_size, (300, 180))
+            self.assertGreater(
+                view.dominant_hsv_gamut_value("foreground"), 0.0
+            )
+            original_key = view._gamut_base_key
+            view.set_hsv_gamut_value(0.35)
+            QTest.qWait(130)
+            self.application.processEvents()
+            self.assertNotEqual(view._gamut_base_key, original_key)
+            self.assertEqual(view.image_size, (300, 180))
+            view.set_overlay_mode("raw_image")
+            self.application.processEvents()
+            self.assertEqual(view.image_size, (320, 200))
+            view.close()
+
+    def test_image_view_displays_every_reference_prototype_in_a_full_pane_collage(self) -> None:
+        import numpy as np
+
+        from PySide6.QtGui import QColor, QImage
+
+        from seedvision.ui.image_view import ImageView
+        from seedvision.visualization import (
+            ReferenceTextureProfile,
+            ReferenceTexturePrototype,
+        )
+
+        class_names = (
+            "background",
+            "foreground",
+            "other",
+            "physical_edge",
+            "non_edge",
+        )
+        prototypes = []
+        for class_index, class_name in enumerate(class_names):
+            for prototype_index in range(17):
+                patch = np.full(
+                    (18, 18, 3),
+                    (
+                        25 + class_index * 35,
+                        30 + prototype_index * 7,
+                        190 - class_index * 20,
+                    ),
+                    np.uint8,
+                )
+                patch.flags.writeable = False
+                prototypes.append(
+                    ReferenceTexturePrototype(
+                        class_name=class_name,
+                        patch_bgr=patch,
+                        weight=1.0 / 17.0,
+                        sample_count=24,
+                        centre_xy=(20.0 + prototype_index, 30.0 + class_index),
+                        tangent_degrees=(
+                            25.0
+                            if class_name in {"physical_edge", "non_edge"}
+                            else None
+                        ),
+                    )
+                )
+        profile = ReferenceTextureProfile(
+            prototypes=tuple(prototypes),
+            class_sample_counts=tuple((name, 408) for name in class_names),
+            material_feature_names=("Lab lightness", "fine darkness noise"),
+            edge_feature_names=("edge magnitude", "tangent coherence"),
+            working_scale=0.5,
+            patch_size_px=18,
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "prototype-source.png"
+            source = QImage(320, 200, QImage.Format.Format_RGB32)
+            source.fill(QColor("white"))
+            self.assertTrue(source.save(str(path)))
+            result = SimpleNamespace(
+                calibration=SimpleNamespace(
+                    corrected_bgr=np.full((180, 300, 3), 210, np.uint8)
+                ),
+                layers=SimpleNamespace(reference_texture_profile=profile),
+            )
+            view = ImageView()
+            succeeded, error = view.load_image(path)
+            self.assertTrue(succeeded, error)
+            view.set_overlay_mode("reference_texture_prototypes")
+            view.show_analysis(result)
+
+            self.assertEqual(view._displayed_base, "prototype_collage")
+            self.assertEqual(view.image_size, (300, 180))
+            self.assertGreaterEqual(view._image_item.pixmap().width(), 960)
+            self.assertGreater(view._image_item.pixmap().height(), 1200)
+            self.assertEqual(len(profile.prototypes), 85)
+            view.set_overlay_mode("raw_image")
+            self.application.processEvents()
+            self.assertEqual(view.image_size, (320, 200))
+            view.close()
 
     def test_image_view_edits_full_resolution_binary_reference_masks(self) -> None:
         import numpy as np
@@ -2087,6 +2459,7 @@ class PipelineCanvasTests(unittest.TestCase):
         window.close()
 
     def test_calibration_nodes_render_references_and_metric_scale(self) -> None:
+        from PySide6.QtCore import Qt
         from PySide6.QtWidgets import (
             QGraphicsEllipseItem,
             QGraphicsPathItem,
@@ -2169,6 +2542,9 @@ class PipelineCanvasTests(unittest.TestCase):
             if isinstance(item, QGraphicsPathItem)
         ]
         self.assertEqual(len(perimeter_bands), 1)
+        self.assertNotEqual(
+            perimeter_bands[0].brush().style(), Qt.BrushStyle.NoBrush
+        )
         self.assertIn("0.35 cm buffer", perimeter_bands[0].toolTip())
         self.assertIn("0.50 cm thickness", perimeter_bands[0].toolTip())
         lab = np.clip(
@@ -2223,6 +2599,15 @@ class PipelineCanvasTests(unittest.TestCase):
         ]
         self.assertEqual(len(sampling_bands), 1)
         self.assertIn("Initial background sampling band", sampling_bands[0].toolTip())
+        self.assertEqual(
+            sampling_bands[0].brush().style(), Qt.BrushStyle.NoBrush
+        )
+        background_rasters = [
+            item
+            for item in view._overlay_items
+            if isinstance(item, QGraphicsPixmapItem)
+        ]
+        self.assertEqual(len(background_rasters), 2)
         view.set_overlay_mode("refined_background_likelihood")
         noise_rasters = [
             item

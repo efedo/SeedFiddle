@@ -93,3 +93,27 @@ case justifies them.
   and emit calibrated comparable scores. Retune against locked fixtures: merely
   substituting the current annulus into the foreground start changed the sparse
   pilot count from 16 to 19.
+
+## 2026-08-13 - image-local prototype matching
+
+- Measure each prototype's marginal contribution on reviewed pixels outside its
+  source cluster, then merge or retire redundant medoids instead of relying only
+  on a fixed maximum count.
+- Add spatial co-occurrence or a small prototype-neighbour graph only after the
+  independent-prototype baseline is evaluated; this could distinguish a seed
+  pattern made of several valid local modes from unrelated pixels that happen to
+  match one mode.
+- Preserve boundary-side ordering in a future directed prototype: physical
+  contacts may be better distinguished by seed-to-gap-to-seed transitions than
+  by orientation-normalized unsigned contrast alone.
+- Compare the per-image prototype likelihoods as explicit U-Net input channels
+  versus using them only in the procedural material gate. This would retain
+  human-reviewed image-specific evidence while allowing the network to learn
+  when it is misleading.
+- Explore species- and capture-normalized prototype libraries across images only
+  after colour calibration and reviewed train/validation splits are reliable.
+  Cross-image libraries must be versioned training artifacts, never silently
+  accumulated from test images.
+- Rank uncertain regions by disagreement among colour probability, frequency
+  noise, reference prototypes, U-Net, and StarDist. Such regions are strong
+  candidates for targeted material/boundary painting or instance correction.

@@ -88,7 +88,9 @@ repository or `images/` while troubleshooting the environment.
   succinct labelled and typed input/output socket; all active and toolbox
   connections use explicit endpoints. Users can drag to restore supported
   connections, drag a connected input into empty space to disconnect it, or
-  right-click/select-delete an edge. Disconnection bypasses enabled consumers
+  right-click an edge. Plain left-drag over a connection pans instead of
+  selecting its large path bounds; Ctrl-click explicitly selects an edge for
+  Delete/Backspace. Disconnection bypasses enabled consumers
   and their dependents; reconnection restores only the cards automatically
   suspended by that missing input, leaving deliberately disabled experimental
   nodes off. One **Reference layers** input exposes separately typed Background,
@@ -100,6 +102,23 @@ repository or `images/` while troubleshooting the environment.
   derivative upper cutoffs, and every distance-dependent node are preserved
   there with their authored connections but excluded from the default DAG and
   calculations.
+- The complete 53-node active/toolbox catalogue has an independent direct-input
+  contract test. Corrected-image, dish-region, absolute-scale, seed-diameter,
+  mask, proposal, and reference dependencies are explicit wherever the runtime
+  reads them. In particular, **Edge gradients** consumes **Layout detection**'s
+  dish region and **Oriented edge traces** consumes **Seed scale estimate**;
+  scale-only changes rebuild traces while retaining cached ridges. Trace-gap
+  bridges additionally require tight tangent alignment, the same directed
+  gradient side, and a facing endpoint, preventing the former gap-4 collapse of
+  adjacent parallel seed rims into one component. An explicit `off | prefer |
+  require` convexity policy now rejects S-shaped candidate bridges using an
+  editable angular ambiguity tolerance while accepting either C-shaped
+  winding. It is intentionally a local initial-link constraint rather than a
+  false claim of globally proving arbitrary trace components convex; policy or
+  tolerance changes rebuild only trace state and dependents. Legacy wires
+  to unused illumination, tangent, reflectance, radial, and image-quality data
+  were removed, and the U-Net/StarDist lighting input is represented as separate
+  flattened-grayscale, shadow, and highlight channels.
 - Overlay selection and opacity are compact top-toolbar controls. The main
   selector groups indented layers under disabled owning-node headings, and a
   synchronized selector directly below the selected node title lists only that
@@ -114,11 +133,20 @@ repository or `images/` while troubleshooting the environment.
   eraser. Assisted tools now show debounced live previews and commit on click:
   edge trace uses click anchors and a magnetic path preview, shape snap shows a
   nominal shape cursor plus the fitted boundary, and smart fill previews its
-  region even when the active seed has no prior marks. Trace/shape tools
-  optionally use directed or undirected edge tangents. Smart fill uses OpenCV's
-  native floating-range neighbour comparison, preserves other IDs,
-  stops at edges, and exposes bounded tunnelling/tolerance/growth options for
-  patterned seeds. Freehand drags use a lightweight vector stroke preview and
+  region even when the active seed has no prior marks. A **Show selected seed
+  only** checkbox filters the display to one cropped ID and changing the ID
+  recentres without altering zoom; invisible neighbouring labels are protected
+  from paint and erase. Trace edge and Smart fill independently select thinned
+  ridges (default), oriented traces, adaptive combined evidence, physical-edge
+  probability, or broad edge magnitude. Trace uses a banded continuity-aware
+  live-wire seam, local optional directed/undirected tangents, and anchored
+  component support so it cannot switch to a stronger parallel boundary. Smart
+  fill uses OpenCV's native floating-range neighbour comparison, preserves other
+  IDs, reaches the chosen one-pixel edge frontier, and exposes bounded
+  tunnelling/tolerance/growth options for patterned seeds. Tunnelling carves one
+  local weak-edge passage rather than globally weakening the ROI. A leaked flood
+  that reaches its radius limit is replaced by a smooth local star-convex edge
+  contour. Freehand drags use a lightweight vector stroke preview and
   rebuild the annotation raster once on release; they never rebuild the
   analysis overlays. Assisted algorithms crop edge work to their local cursor
   region instead of rebuilding or normalizing full-resolution rasters on every
@@ -139,8 +167,10 @@ repository or `images/` while troubleshooting the environment.
 - **Reference layers** is an explicit active input node for the mutually exclusive
   Background/Foreground/Other material layer, the mutually exclusive
   Physical-edge/Non-edge boundary layer, and integer annotated seed instances. Painting a
-  class clears the other two at that pixel; Other supplies negative evidence to
-  both material models. It feeds both colour models and both class-specific noise
+  class clears the other two at that pixel; Other supplies a competing learned
+  distribution to both material models and attenuates a class only where it fits
+  better, preserving colours shared with legitimate positive evidence. It feeds
+  both colour models and both class-specific noise
   models, so applying a painted edit invalidates every true graph dependent.
   Each noise classifier learns its positive and negative texture distributions
   directly from the applicable painted areas when present, using colour
@@ -149,7 +179,13 @@ repository or `images/` while troubleshooting the environment.
   evidence fits an image-local **Reference edge probabilities** classifier from
   corrected Lab values, edge magnitude, tangent coherence, and thinned ridges.
   Its physical/non-edge outputs feed boundary confirmation and procedural
-  watershed, while the boundary brush has an adjustable snap-strength preview.
+  watershed. A separately cached **Thinned reference edge ridge** node applies
+  normal-direction NMS and CUDA hysteresis to the continuous physical-edge
+  field. Its yellow overlay and explicit Trace Edge/Smart Fill evidence choice
+  place reference-trained support on a narrow local maximum without replacing
+  the broad probability output. It owns independent NMS step, low/high
+  threshold, hysteresis-reach, and working-size controls. The boundary brush
+  has an adjustable snap-strength preview.
   Learning export persists both boundary classes and their sparse validity raster.
 - Active **Procedural seed separation** combines seed-material evidence,
   edge/sensor/ridge/shadow physical-boundary cost, scale-aware centre markers,
@@ -165,7 +201,10 @@ repository or `images/` while troubleshooting the environment.
   adjustable median-colour band thickness defaults to 0.5 cm; both are shown
   exactly in a dedicated overlay, with a nominal-dish scale fallback. The
   overlay includes an opacity-independent swatch and hex label for the selected
-  median starting background colour.
+  median starting background colour. The Background colour probability overlay
+  also evaluates the exact fitted positive/Other-contrastive Lab model across
+  this bounded GPU annulus and displays it beside the unchanged dish crop; its
+  annulus is outline-only so the probability values remain legible.
 - A six-output active multiscale node supplies fine/medium/coarse surrounding RMS
   darkness and Lab-colour noise energy. The maximum one-sided lightening and
   darkening CIE L* surface slopes, their query-to-target directions, and the two
@@ -176,17 +215,48 @@ repository or `images/` while troubleshooting the environment.
   (Background/Foreground/Other), categorical boundary references (Physical
   edge/Non-edge), and labelled seed instances. Each categorical layer enforces
   exclusivity while it is painted and normalizes older four-mask state when it
-  is read. Other samples fit negative colour-frequency and texture distributions
-  for both material models; they never hard-zero their painted coordinates. The
+  is read. Other samples fit competing colour-frequency and texture distributions
+  for both material models; they never hard-zero their painted coordinates or
+  veto colours that fit a positive class equally well. The
   compact editor uses class selectors plus shared Paint/Eraser/Clear-layer,
   Apply/Revert, brush-radius, and painted-overlay visibility controls; longer
-  explanations live in tooltips. It also retains Lab
-  probability models shown as saturation-projected chromatic HSV
-  hue/tint/shade contour slices for both colour classes, preceded by an exact
-  neutral white-to-black strip. This preserves pale tinted reference modes
-  without projecting neutral evidence across unrelated saturated hues. The
+  explanations live in tooltips. Its drag handle repositions the panel, and
+  clearing a class restores Paint mode so that it can immediately be redrawn.
+  A context-aware **Undo** button and `Ctrl+Z` retain 20 unapplied commands per
+  image in separate reference and seed-instance histories. Each drag, assisted
+  click, clear, imported label map, or calculated starting draft is atomic;
+  categorical peers and instance provenance are restored together. Histories
+  use compressed changed tiles rather than full-resolution snapshots and are
+  rebased by Apply, Revert, or validated disk restoration.
+  The Lab probability models now have node-owned, full-image-pane HSV
+  diagnostics for both colour classes. Hue and saturation are the visible axes;
+  a toolbar Value slider scans exact brightness slices, starts at the dominant
+  visible fitted mode, and has a **Peak** reset. Achromatic membership is shown
+  once in a neutral swatch rather than projected across every hue. The
   underlying colours are not dimmed. The contextual editor keeps natural row
   heights and scrolls vertically when the split image viewport is short.
+  **Save applied reference regions** (`Ctrl+S`) writes all six reference outputs
+  to one atomic, versioned categorical NPZ under ignored
+  `projects/reference-regions/`. First opening an image in a window restores the
+  immutable applied snapshot only after its stored SHA-256 and dimensions match
+  the current source; mismatch/corruption warns and installs nothing. Switching
+  away and back preserves newer in-memory applied state, and an empty snapshot
+  can intentionally replace an older nonempty archive.
+- **Reference texture prototypes** is an active CUDA-first, image-local
+  procedural classifier fed by the corrected image, detected dish region, seed scale, all six
+  reference sublayers, shared gradient/ridge/tangent fields, and all six raw
+  frequency-noise masks. It retains up to 64 robust coverage medoids per class
+  for Background, Foreground, Other, Physical edge, and Non-edge. Material
+  features combine Lab, multiscale energy, local residual, edge, ridge, and
+  density evidence; boundary features add tangent coherence and cross-normal
+  contrast. It produces Foreground/seed-surface, Background, Other,
+  Physical-edge, and Non-edge likelihoods without hard-writing reviewed pixels.
+  The seed-surface result has adjustable inputs to the active procedural
+  watershed and the dormant seed-interior branch. The image pane can replace
+  the photograph with a scrollable, zoomable collage of every medoid, grouped
+  by class with source counts and support percentages; edge patches are
+  tangent-aligned. When no references exist, prototype feature fitting is
+  skipped and physical-edge probability falls back to shared edge/ridge support.
 - Full-image CUDA jobs use one dedicated worker and coalesce newer requests.
   Per-image node caches are LRU-bounded to three images and 2 GiB of reachable
   CUDA storage; eviction and failures release GPU ownership and lazy CPU mirrors.
@@ -206,13 +276,24 @@ repository or `images/` while troubleshooting the environment.
 - Foreground references use a per-pixel Lab colour-frequency table, never a
   regional average or painted-pixel probability override. Automatic background
   colour is anchored to the retained outside-dish annulus distribution.
+- Both probability nodes expose **Maximum reference colour modes** as the
+  user-facing capacity control. Foreground retains coverage-preserving quantized
+  Lab frequency cells, whereas background fits adaptive robust Lab mixture
+  components. The background default is 32, its supported range is 1--256, and
+  full-image membership is evaluated four modes at a time to keep peak CUDA
+  memory bounded. Positive components use the strongest weighted membership,
+  not an additive clamp: an 11-fixture check caught the additive implementation
+  pathologically saturating seed surfaces when capacity rose from 4 to 32. The
+  auxiliary competing Other distribution remains capped at 64 modes so raising
+  positive background capacity cannot multiply it into an unexpectedly
+  expensive model.
 - Painted foreground colour modes are capped with coverage-preserving selection,
   not a top-frequency truncation. The former truncation allowed a larger varied
   reference mask to evict an existing smaller colour mode and collapse its
-  membership. The HSV diagnostic now projects each chromatic mode at its own
-  measured saturation, keeps visually neutral modes in the neutral strip, and
-  labels only the leading twelve modes instead of covering the plot with every
-  retained frequency cell.
+  membership. The HSV diagnostic now uses an exact full-pane hue/saturation
+  slice at the selected Value, keeps visually neutral membership in a separate
+  swatch, and labels only the leading modes near the selected Value instead of
+  covering the plot with unrelated frequency cells.
 - Automatic foreground colour is now independently anchored by the accepted
   isolated reference-seed components above the ruler. Their individual Lab
   frequencies are compared against the exterior-background distribution and
@@ -231,21 +312,29 @@ repository or `images/` while troubleshooting the environment.
   not shipped without a dedicated retuning/evaluation pass.
 - The independent seed-interior branch remains visible but disabled. It now
   consumes foreground colour probability, learned foreground-noise probability,
-  and background evidence; an editable texture weight controls the colour/noise
-  blend before background support is incorporated. The
+  reference-prototype seed-surface probability, and background evidence;
+  independent editable weights control both learned texture and reference
+  texture before background support is incorporated. The
   distance, instance, final boundary, review, measurement, classification,
   aggregation, and output branch is outside the active DAG in **Unused nodes**.
-- The application is branded **Seed Fiddle** and uses the seed-and-fiddle-bow
-  icon under `seedvision/assets/seed_vision_icon.png`.
+- The application is branded **Seed Fiddle** and uses a tightly framed rounded
+  soybean plus a high-contrast, separately readable fiddle bow under
+  `seedvision/assets/seed_vision_icon.png`; a 32-pixel occupancy regression test
+  prevents the taskbar mark from shrinking back into excess transparent space.
 - The 11 low-resolution test photographs under `images/` are committed and are
   required by image-backed tests. Generated diagnostics under `artifacts/` are
   ignored.
 
-The full suite passed 159 tests on Python 3.12.10 with PyTorch CUDA on an RTX
-3070 on 2026-08-12 after the unified six-output reference input, adjustable
-boundary snap strength, reference-trained physical/non-edge probability branch,
-colour-reference no-forcing correction, coverage-preserving painted-foreground
-colour modes, and measured-saturation HSV diagnostics.
+The full suite passed 222 tests on Python 3.12.10 with PyTorch CUDA on an RTX
+3070 on 2026-08-16. This includes the comprehensive graph-contract correction,
+exact perimeter-band background-probability display, SHA-bound six-layer
+reference persistence, full-canvas soybean/bow icon replacement, unified
+32-mode default background-colour capacity with bounded-memory evaluation,
+selected-seed-only annotation display, selectable assisted-tool edge evidence,
+continuity-aware Trace Edge, leak-recovering Smart Fill, parallel-safe
+oriented trace-gap linking, and winding-independent local convexity preference
+and requirement modes. It also covers the independently cached, selectable
+Thinned reference edge ridge and its CUDA NMS/hysteresis controls.
 
 ## Learned instance-segmentation implementation
 

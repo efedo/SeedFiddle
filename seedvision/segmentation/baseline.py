@@ -15,6 +15,7 @@ import cv2
 import numpy as np
 
 from seedvision.cuda import (
+    apply_contrastive_negative_evidence,
     CudaContext,
     GpuRaster,
     bgr_to_gray,
@@ -1099,6 +1100,7 @@ def analyze_image(
     circle_dirty = (
         crop_dirty
         or seed_scale_dirty
+        or distance_dirty
         or circle_evidence_dirty
         or "circle_candidates" in dirty
         or "circles" not in values
@@ -1189,6 +1191,19 @@ def analyze_image(
         for index, candidate in enumerate(ordered_candidates, start=1)
     )
     layer_dirty = set(dirty)
+    if painted_reference_dirty:
+        layer_dirty.update(
+            {
+                "background_likelihood",
+                "refined_background_likelihood",
+                "foreground_noise_likelihood",
+                "instance_masks",
+                "reference_texture_prototypes",
+                "reference_edge_probability",
+                "reference_edge_ridges",
+                "seed_edge_curves",
+            }
+        )
     if crop_dirty:
         values.pop("layer.gpu_inputs", None)
         layer_dirty.update(
@@ -1205,7 +1220,9 @@ def analyze_image(
                 "directed_edges",
                 "undirected_edges",
                 "edge_ridges",
+                "reference_texture_prototypes",
                 "reference_edge_probability",
+                "reference_edge_ridges",
                 "edge_traces",
                 "seed_edge_curves",
             }
@@ -1221,7 +1238,10 @@ def analyze_image(
                 "darkening_gradient_ceiling",
                 "frequency_noise_masks",
                 "instance_masks",
+                "reference_texture_prototypes",
                 "reference_edge_probability",
+                "reference_edge_ridges",
+                "edge_traces",
                 "seed_edge_curves",
             }
         )
@@ -1235,7 +1255,6 @@ def analyze_image(
                 "background_likelihood",
                 "refined_background_likelihood",
                 "instance_masks",
-                "reference_edge_probability",
                 "seed_edge_curves",
             }
         )
@@ -1245,7 +1264,9 @@ def analyze_image(
                 "directed_edges",
                 "undirected_edges",
                 "edge_ridges",
+                "reference_texture_prototypes",
                 "reference_edge_probability",
+                "reference_edge_ridges",
                 "edge_traces",
                 "seed_edge_curves",
             }
@@ -1256,10 +1277,26 @@ def analyze_image(
         )
     if "edge_ridges" in layer_dirty:
         layer_dirty.update(
-            {"reference_edge_probability", "edge_traces", "seed_edge_curves"}
+            {
+                "reference_texture_prototypes",
+                "reference_edge_probability",
+                "reference_edge_ridges",
+                "edge_traces",
+                "seed_edge_curves",
+            }
+        )
+    if "frequency_noise_masks" in layer_dirty:
+        layer_dirty.add("reference_texture_prototypes")
+    if "reference_texture_prototypes" in layer_dirty:
+        layer_dirty.update(
+            {
+                "reference_edge_probability",
+                "reference_edge_ridges",
+                "seed_edge_curves",
+            }
         )
     if "reference_edge_probability" in layer_dirty:
-        layer_dirty.add("seed_edge_curves")
+        layer_dirty.update({"reference_edge_ridges", "seed_edge_curves"})
     if "edge_traces" in layer_dirty:
         layer_dirty.add("seed_edge_curves")
     if "background_likelihood" in layer_dirty:
@@ -1292,7 +1329,9 @@ def analyze_image(
         "directed_edges": "layer.directed_edges",
         "undirected_edges": "layer.undirected_edges",
         "edge_ridges": "layer.edge_ridges",
+        "reference_texture_prototypes": "layer.reference_texture_prototypes",
         "reference_edge_probability": "layer.reference_edge_probability",
+        "reference_edge_ridges": "layer.reference_edge_ridges",
         "edge_traces": "layer.edge_traces",
         "seed_edge_curves": "layer.seed_edge_curves",
     }
@@ -1360,6 +1399,10 @@ def analyze_image(
         reference_edge_probability_enabled=node_enabled(
             "reference_edge_probability"
         ),
+        reference_edge_ridges_enabled=node_enabled("reference_edge_ridges"),
+        reference_texture_prototypes_enabled=node_enabled(
+            "reference_texture_prototypes"
+        ),
         surface_darkness_gradients_enabled=node_enabled(
             "surface_darkness_gradients"
         ),
@@ -1425,9 +1468,11 @@ def analyze_image(
         or bool(
             layer_dirty
             & {
+                "background_likelihood",
+                "refined_background_likelihood",
                 "foreground_noise_likelihood",
                 "instance_masks",
-                "directed_edges",
+                "reference_texture_prototypes",
             }
         )
     )
@@ -1492,6 +1537,9 @@ def analyze_image(
             offset_y=offset_y,
             foreground_probability=foreground_probability,
             foreground_noise_probability=layers.foreground_noise_likelihood,
+            reference_surface_probability=(
+                layers.reference_seed_surface_probability
+            ),
             background_colour_probability=layers.background_likelihood,
             background_noise_probability=layers.refined_background_likelihood,
             full_image_shape=analysis_image.shape[:2],
@@ -1530,8 +1578,13 @@ def analyze_image(
     )
     procedural_dirty = (
         calibration_dirty
+        or layout_dirty
+        or seed_scale_dirty
         or foreground_dirty
-        or advanced_dirty
+        or bool(
+            requested_advanced_nodes
+            & {"illumination_decomposition", "image_quality"}
+        )
         or bool(
             layer_dirty
             & {
@@ -1541,6 +1594,7 @@ def analyze_image(
                 "edge_gradients",
                 "edge_ridges",
                 "reference_edge_probability",
+                "reference_texture_prototypes",
             }
         )
         or "procedural_instances" in dirty
@@ -1559,6 +1613,9 @@ def analyze_image(
                 edge_ridges=layers.edge_ridges,
                 physical_edge_probability=layers.physical_edge_probability,
                 non_edge_probability=layers.non_edge_probability,
+                reference_surface_probability=(
+                    layers.reference_seed_surface_probability
+                ),
                 sensor_noise=advanced.rasters["sensor_noise"],
                 shadow_likelihood=advanced.rasters["shadow_likelihood"],
                 seed_instance_annotations=local_seed_instance_annotations,
@@ -1591,7 +1648,10 @@ def analyze_image(
         or layout_dirty
         or seed_scale_dirty
         or foreground_dirty
-        or advanced_dirty
+        or bool(
+            requested_advanced_nodes
+            & {"illumination_decomposition", "image_quality"}
+        )
         or bool(
             layer_dirty
             & {
@@ -1637,9 +1697,13 @@ def analyze_image(
         decoder_signature = (
             *branch_settings.decoder_signature,
             round(float(seed_diameter), 5),
-            None
-            if local_seed_instance_annotations is None
-            else hash(local_seed_instance_annotations.tobytes()),
+            (
+                None
+                if local_seed_instance_annotations is None
+                else hash(local_seed_instance_annotations.tobytes())
+            )
+            if family is ModelFamily.UNET_WATERSHED
+            else None,
         )
         decoder_dirty = (
             inference_dirty
@@ -2575,11 +2639,13 @@ def _foreground_feature(
                 settings.foreground_chroma_weight,
             ),
         )
-        # Painted exclusions define a negative colour-frequency model. Apply
-        # it identically at every matching colour rather than zeroing pixels
-        # merely because the brush passed over their coordinates.
-        probability = probability * (
-            1.0 - exclusion_strength * excluded_membership
+        # Other is a competing learned colour model, not a global veto. A glass
+        # rim can share pale or neutral colours with seed coats, so it should
+        # suppress foreground only where its fit exceeds the positive evidence.
+        probability = apply_contrastive_negative_evidence(
+            probability,
+            excluded_membership,
+            strength=exclusion_strength,
         )
 
     # Without a painted anchor, summarize the colours that the current

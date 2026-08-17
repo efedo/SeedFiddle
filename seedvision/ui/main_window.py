@@ -44,11 +44,19 @@ from PySide6.QtWidgets import (
     QSplitter,
     QStackedWidget,
     QToolBar,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
 from seedvision.pipeline import NodeStatus, build_default_pipeline
+from seedvision.persistence import (
+    ImageFingerprintMismatch,
+    InvalidReferenceArchive,
+    ReferenceRegionBundle,
+    ReferenceRegionError,
+    ReferenceRegionStore,
+)
 from seedvision.resources import release_host_caches, resident_bytes
 from seedvision.learning.pipeline import StarDistPipelineSettings, UNetPipelineSettings
 from seedvision.annotation import EdgeTraceOptions, ShapeSnapOptions, SmartFillOptions
@@ -63,6 +71,7 @@ from seedvision.segmentation import (
 )
 from seedvision.visualization import ADVANCED_NODE_MODES, ADVANCED_OVERLAY_LABELS
 from seedvision.ui.image_view import ImageView, SUPPORTED_SUFFIXES
+from seedvision.ui.reference_history import RasterUndoHistory
 from seedvision.ui.learning_workflow import (
     LearningExportDialog,
     LearningTrainingDialog,
@@ -92,7 +101,9 @@ OVERLAY_NODE_IDS = (
     "undirected_edges",
     "directed_edges",
     "edge_ridges",
+    "reference_texture_prototypes",
     "reference_edge_probability",
+    "reference_edge_ridges",
     "edge_traces",
     "seed_edge_curves",
     "procedural_instances",
@@ -137,6 +148,7 @@ VIEWER_NODE_MODES.update(
         "lightening_gradient_ceiling": "weak_lightening_gradient",
         "darkening_gradient_ceiling": "weak_darkening_gradient",
         "frequency_noise_masks": "darkness_noise_fine",
+        "reference_texture_prototypes": "reference_texture_prototypes",
         "reference_edge_probability": "physical_edge_probability",
     }
 )
@@ -152,6 +164,7 @@ OVERLAY_NODE_OWNERS = {
     "seed_scale_estimation": "seed_scale_estimation",
     "foreground_feature": "foreground_segmentation",
     "foreground_mask": "foreground_segmentation",
+    "foreground_colour_gamut": "foreground_segmentation",
     "foreground_binary_mask": "foreground_segmentation",
     "distance_transform": "distance_candidates",
     "distance_candidates": "distance_candidates",
@@ -159,6 +172,7 @@ OVERLAY_NODE_OWNERS = {
     "proposals": "identification",
     "instance_masks": "instance_masks",
     "background_likelihood": "background_likelihood",
+    "background_colour_gamut": "background_likelihood",
     "refined_background_likelihood": "refined_background_likelihood",
     "foreground_noise_likelihood": "foreground_noise_likelihood",
     "edge_gradients": "edge_gradients",
@@ -179,8 +193,13 @@ OVERLAY_NODE_OWNERS = {
     "undirected_edges": "undirected_edges",
     "directed_edges": "directed_edges",
     "edge_ridges": "edge_ridges",
+    "reference_texture_prototypes": "reference_texture_prototypes",
+    "reference_seed_surface_probability": "reference_texture_prototypes",
+    "reference_background_texture_probability": "reference_texture_prototypes",
+    "reference_other_texture_probability": "reference_texture_prototypes",
     "physical_edge_probability": "reference_edge_probability",
     "non_edge_probability": "reference_edge_probability",
+    "reference_edge_ridges": "reference_edge_ridges",
     "edge_traces": "edge_traces",
     "edge_trace_continuity": "edge_traces",
     "edge_trace_gap_confidence": "edge_traces",
@@ -428,10 +447,13 @@ class MainWindow(QMainWindow):
 
     ANALYSIS_CACHE_CUDA_BUDGET_BYTES = 2 * 1024**3
     ANALYSIS_CACHE_MAX_IMAGES = 3
+    REFERENCE_UNDO_LIMIT = 20
 
     def __init__(self, root: Path, parent=None) -> None:
         super().__init__(parent)
         self._root = root
+        self._reference_region_store = ReferenceRegionStore(root)
+        self._reference_region_autoload_attempted: set[str] = set()
         self._image_paths: dict[str, Path] = {}
         self._analyses: dict[str, object] = {}
         self._analysis_caches: OrderedDict[str, PipelineAnalysisCache] = OrderedDict()
@@ -457,6 +479,8 @@ class MainWindow(QMainWindow):
         self._draft_instance_annotation_origins: dict[str, str] = {}
         self._applied_instance_annotation_origins: dict[str, str] = {}
         self._instance_annotations_dirty: set[str] = set()
+        self._reference_undo_histories: dict[str, RasterUndoHistory] = {}
+        self._instance_undo_histories: dict[str, RasterUndoHistory] = {}
         self._active_tasks: dict[str, _AnalysisTask] = {}
         self._learning_training_task: _LearningTrainingTask | None = None
         self._learning_training_progress: QProgressDialog | None = None
@@ -545,6 +569,31 @@ class MainWindow(QMainWindow):
         self.open_action = QAction("Open images…", self)
         self.open_action.setShortcut(QKeySequence.StandardKey.Open)
         self.open_action.triggered.connect(self._choose_images)
+
+        self.save_reference_regions_action = QAction(
+            "Save applied reference regions", self
+        )
+        self.save_reference_regions_action.setShortcut(QKeySequence.StandardKey.Save)
+        self.save_reference_regions_action.setEnabled(False)
+        self.save_reference_regions_action.setToolTip(
+            "Save all applied material, boundary, and seed-instance reference "
+            "layers for automatic restoration with this unchanged image."
+        )
+        self.save_reference_regions_action.triggered.connect(
+            self._save_reference_regions
+        )
+
+        self.undo_reference_edit_action = QAction("Undo reference edit", self)
+        self.undo_reference_edit_action.setShortcut(
+            QKeySequence.StandardKey.Undo
+        )
+        self.undo_reference_edit_action.setShortcutContext(
+            Qt.ShortcutContext.WindowShortcut
+        )
+        self.undo_reference_edit_action.setEnabled(False)
+        self.undo_reference_edit_action.triggered.connect(
+            self._undo_active_reference_edit
+        )
 
         self.analyze_action = QAction("Run active pipeline", self)
         self.analyze_action.setShortcut("Ctrl+R")
@@ -643,8 +692,12 @@ class MainWindow(QMainWindow):
     def _build_menu(self) -> None:
         file_menu = self.menuBar().addMenu("&File")
         file_menu.addAction(self.open_action)
+        file_menu.addAction(self.save_reference_regions_action)
         file_menu.addSeparator()
         file_menu.addAction(self.exit_action)
+
+        edit_menu = self.menuBar().addMenu("&Edit")
+        edit_menu.addAction(self.undo_reference_edit_action)
 
         analysis_menu = self.menuBar().addMenu("&Analysis")
         analysis_menu.addAction(self.analyze_action)
@@ -683,6 +736,7 @@ class MainWindow(QMainWindow):
             ("Reference seed scale", "seed_scale_estimation"),
             ("Foreground strength", "foreground_feature"),
             ("Foreground colour probability", "foreground_mask"),
+            ("Accepted foreground colours (HSV)", "foreground_colour_gamut"),
             ("Foreground binary proposal mask", "foreground_binary_mask"),
             ("Distance transform", "distance_transform"),
             ("Distance-peak candidates", "distance_candidates"),
@@ -690,6 +744,7 @@ class MainWindow(QMainWindow):
             ("Seed proposals", "proposals"),
             ("Instance colour masks", "instance_masks"),
             ("Background colour probability", "background_likelihood"),
+            ("Accepted background colours (HSV)", "background_colour_gamut"),
             ("Background noise probability", "refined_background_likelihood"),
             ("Foreground noise probability", "foreground_noise_likelihood"),
             ("Shared edge magnitude", "edge_gradients"),
@@ -707,11 +762,16 @@ class MainWindow(QMainWindow):
             ("Fine colour noise", "colour_noise_fine"),
             ("Medium colour noise", "colour_noise_medium"),
             ("Coarse colour noise", "colour_noise_coarse"),
+            ("Reference texture prototype collage", "reference_texture_prototypes"),
+            ("Reference seed-surface probability", "reference_seed_surface_probability"),
+            ("Reference background-texture probability", "reference_background_texture_probability"),
+            ("Reference Other-material probability", "reference_other_texture_probability"),
             ("Edge tangent (undirected)", "undirected_edges"),
             ("Edge tangent (directed)", "directed_edges"),
             ("Thinned edge ridges", "edge_ridges"),
             ("Physical-edge probability", "physical_edge_probability"),
             ("Non-edge probability", "non_edge_probability"),
+            ("Thinned reference edge ridge", "reference_edge_ridges"),
             ("Oriented edge traces", "edge_traces"),
             ("Trace continuity", "edge_trace_continuity"),
             ("Trace gap confidence", "edge_trace_gap_confidence"),
@@ -758,6 +818,27 @@ class MainWindow(QMainWindow):
         )
         self.overlay_opacity_label = QLabel("68%", self)
         self.overlay_opacity_label.setMinimumWidth(36)
+
+        self.hsv_value_slider = QSlider(Qt.Orientation.Horizontal, self)
+        self.hsv_value_slider.setRange(0, 100)
+        self.hsv_value_slider.setValue(75)
+        self.hsv_value_slider.setToolTip(
+            "Brightness of the exact HSV hue/saturation slice. Lower values "
+            "scan darker colours; higher values scan brighter colours."
+        )
+        self.hsv_value_slider.valueChanged.connect(self._hsv_value_changed)
+        self.hsv_value_label = QLabel("75%", self)
+        self.hsv_value_label.setMinimumWidth(36)
+        self.hsv_peak_button = QToolButton(self)
+        self.hsv_peak_button.setText("Peak")
+        self.hsv_peak_button.setToolTip(
+            "Jump to the HSV Value of the most frequent visible fitted colour mode."
+        )
+        self.hsv_peak_button.clicked.connect(self._hsv_peak_requested)
+        self._hsv_gamut_values: dict[str, int | None] = {
+            "background": None,
+            "foreground": None,
+        }
 
         # The owning node remains available to tests and accessibility tools,
         # but is no longer repeated as a visible field in the detail panel.
@@ -839,6 +920,38 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(self.reference_panel)
         layout.setContentsMargins(10, 8, 10, 8)
         layout.setSpacing(4)
+
+        reference_panel_header = QWidget(self.reference_panel)
+        reference_panel_header_layout = QHBoxLayout(reference_panel_header)
+        reference_panel_header_layout.setContentsMargins(0, 0, 0, 0)
+        reference_panel_header_layout.setSpacing(4)
+        self.reference_panel_drag_handle = QLabel(
+            "Move painting controls", reference_panel_header
+        )
+        self.reference_panel_drag_handle.setAlignment(
+            Qt.AlignmentFlag.AlignCenter
+        )
+        self.reference_panel_drag_handle.setToolTip(
+            "Drag this bar to reposition the painting controls over the image."
+        )
+        self.reference_panel_drag_handle.setStyleSheet(
+            "padding: 3px; font-weight: 600; background: palette(midlight); "
+            "border: 1px solid palette(mid); border-radius: 2px;"
+        )
+        self.reference_undo_button = QPushButton("Undo", reference_panel_header)
+        self.reference_undo_button.setEnabled(False)
+        self.reference_undo_button.setToolTip(
+            "Undo the latest painting command for this image (Ctrl+Z). "
+            f"Seed Fiddle retains the latest {self.REFERENCE_UNDO_LIMIT} edits."
+        )
+        self.reference_undo_button.clicked.connect(
+            self._undo_active_reference_edit
+        )
+        reference_panel_header_layout.addWidget(
+            self.reference_panel_drag_handle, 1
+        )
+        reference_panel_header_layout.addWidget(self.reference_undo_button)
+        layout.addWidget(reference_panel_header)
 
         self.reference_panel_scroll = QScrollArea(self.reference_panel)
         self.reference_panel_scroll.setWidgetResizable(True)
@@ -929,7 +1042,9 @@ class MainWindow(QMainWindow):
         self.background_exclusion_button.setCheckable(True)
         self.background_exclusion_button.setToolTip(
             "Mark neither seed foreground nor ordinary dish background. This is an "
-            "exclusive third material class and supplies negative evidence to both models."
+            "exclusive third material class. Its learned colour distribution competes "
+            "with foreground and background where it is a better match; it does not "
+            "veto colours shared with either class."
         )
         self.background_exclusion_button.toggled.connect(
             self._background_exclusion_editing_changed
@@ -1184,8 +1299,21 @@ class MainWindow(QMainWindow):
         self.revert_reference_masks_button.clicked.connect(
             self._revert_reference_masks
         )
+        self.save_reference_regions_button = QPushButton(
+            "Save", confirmation_buttons
+        )
+        self.save_reference_regions_button.setEnabled(False)
+        self.save_reference_regions_button.setToolTip(
+            "Save all applied material, boundary, and seed-instance reference "
+            "layers. Seed Fiddle automatically restores them only while the source "
+            "image SHA-256 remains unchanged."
+        )
+        self.save_reference_regions_button.clicked.connect(
+            self._save_reference_regions
+        )
         confirmation_layout.addWidget(self.apply_reference_masks_button, 1)
         confirmation_layout.addWidget(self.revert_reference_masks_button)
+        confirmation_layout.addWidget(self.save_reference_regions_button)
         reference_layout.addWidget(confirmation_buttons)
         self.reference_confirmation_label = self._muted_label("")
         reference_layout.addWidget(self.reference_confirmation_label)
@@ -1220,6 +1348,18 @@ class MainWindow(QMainWindow):
         selector_layout.addWidget(self.instance_id_spin, 1)
         selector_layout.addWidget(self.new_instance_button)
         instance_layout.addWidget(instance_selector)
+
+        self.show_selected_instance_checkbox = QCheckBox(
+            "Show selected seed only", self.instance_annotation_controls
+        )
+        self.show_selected_instance_checkbox.setToolTip(
+            "Hide the coloured marks for every other seed. Changing the Seed ID "
+            "centres the image on that seed without changing the current zoom."
+        )
+        self.show_selected_instance_checkbox.toggled.connect(
+            self._show_selected_instance_toggled
+        )
+        instance_layout.addWidget(self.show_selected_instance_checkbox)
 
         instance_edit_buttons = QWidget(self.instance_annotation_controls)
         instance_edit_layout = QHBoxLayout(instance_edit_buttons)
@@ -1383,6 +1523,9 @@ class MainWindow(QMainWindow):
         self.edge_trace_smoothing_spin = QSpinBox(edge_page)
         self.edge_trace_smoothing_spin.setRange(0, 8)
         self.edge_trace_smoothing_spin.setValue(2)
+        self.edge_trace_evidence_combo = QComboBox(edge_page)
+        self._populate_annotation_edge_sources(self.edge_trace_evidence_combo)
+        edge_form.addRow("Edge evidence", self.edge_trace_evidence_combo)
         edge_form.addRow("Edge search", self.edge_trace_search_spin)
         edge_form.addRow("Edge attraction", self.edge_trace_attraction_spin)
         edge_form.addRow("Edge tangents", self.edge_trace_tangent_combo)
@@ -1479,6 +1622,9 @@ class MainWindow(QMainWindow):
         self.smart_fill_connectivity_combo = QComboBox(fill_page)
         self.smart_fill_connectivity_combo.addItem("8 neighbours", 8)
         self.smart_fill_connectivity_combo.addItem("4 neighbours", 4)
+        self.smart_fill_evidence_combo = QComboBox(fill_page)
+        self._populate_annotation_edge_sources(self.smart_fill_evidence_combo)
+        fill_form.addRow("Edge evidence", self.smart_fill_evidence_combo)
         fill_form.addRow("Local Lab tolerance", self.smart_fill_colour_tolerance_spin)
         fill_form.addRow("Stop at edge", self.smart_fill_edge_stop_spin)
         fill_form.addRow("Tunnelling", self.smart_fill_tunnel_combo)
@@ -1499,6 +1645,7 @@ class MainWindow(QMainWindow):
         instance_layout.addWidget(self.instance_tool_options_stack)
 
         for control in (
+            self.edge_trace_evidence_combo,
             self.edge_trace_search_spin,
             self.edge_trace_attraction_spin,
             self.edge_trace_tangent_combo,
@@ -1512,6 +1659,7 @@ class MainWindow(QMainWindow):
             self.shape_snap_tangent_combo,
             self.shape_snap_tangent_weight_spin,
             self.smart_fill_colour_tolerance_spin,
+            self.smart_fill_evidence_combo,
             self.smart_fill_edge_stop_spin,
             self.smart_fill_tunnel_combo,
             self.smart_fill_radius_spin,
@@ -1580,6 +1728,9 @@ class MainWindow(QMainWindow):
 
         self.reference_panel.hide()
         self.image_view.set_context_panel(self.reference_panel)
+        self.image_view.set_context_panel_drag_handle(
+            self.reference_panel_drag_handle
+        )
 
     def _build_toolbar(self) -> None:
         self.workflow_toolbar = QToolBar("Workflow", self)
@@ -1604,13 +1755,43 @@ class MainWindow(QMainWindow):
         self.workflow_toolbar.addWidget(self.overlay_combo)
         self.workflow_toolbar.addSeparator()
 
-        opacity_label = QLabel("Opacity:", self.workflow_toolbar)
-        opacity_label.setObjectName("opacityToolbarLabel")
+        self.opacity_toolbar_label = QLabel("Opacity:", self.workflow_toolbar)
+        self.opacity_toolbar_label.setObjectName("opacityToolbarLabel")
         self.overlay_opacity_slider.setMinimumWidth(90)
         self.overlay_opacity_slider.setMaximumWidth(170)
-        self.workflow_toolbar.addWidget(opacity_label)
-        self.workflow_toolbar.addWidget(self.overlay_opacity_slider)
-        self.workflow_toolbar.addWidget(self.overlay_opacity_label)
+        self.opacity_toolbar_label_action = self.workflow_toolbar.addWidget(
+            self.opacity_toolbar_label
+        )
+        self.overlay_opacity_slider_action = self.workflow_toolbar.addWidget(
+            self.overlay_opacity_slider
+        )
+        self.overlay_opacity_label_action = self.workflow_toolbar.addWidget(
+            self.overlay_opacity_label
+        )
+
+        self.hsv_value_toolbar_label = QLabel("HSV value:", self.workflow_toolbar)
+        self.hsv_value_toolbar_label.setObjectName("hsvValueToolbarLabel")
+        self.hsv_value_slider.setMinimumWidth(90)
+        self.hsv_value_slider.setMaximumWidth(170)
+        self.hsv_value_toolbar_label_action = self.workflow_toolbar.addWidget(
+            self.hsv_value_toolbar_label
+        )
+        self.hsv_value_slider_action = self.workflow_toolbar.addWidget(
+            self.hsv_value_slider
+        )
+        self.hsv_value_label_action = self.workflow_toolbar.addWidget(
+            self.hsv_value_label
+        )
+        self.hsv_peak_button_action = self.workflow_toolbar.addWidget(
+            self.hsv_peak_button
+        )
+        for action in (
+            self.hsv_value_toolbar_label_action,
+            self.hsv_value_slider_action,
+            self.hsv_value_label_action,
+            self.hsv_peak_button_action,
+        ):
+            action.setVisible(False)
         self.workflow_toolbar.addSeparator()
         self.workflow_toolbar.addAction(self.paint_background_action)
         self.workflow_toolbar.addAction(self.paint_foreground_action)
@@ -1810,9 +1991,26 @@ class MainWindow(QMainWindow):
         self.filename_label.setText(path.name)
         width, height = self.image_view.image_size or (0, 0)
         self.dimensions_label.setText(f"{width:,} × {height:,} px")
+        key = str(path.resolve()).casefold()
+        references_loaded = False
+        if key not in self._reference_region_autoload_attempted:
+            self._reference_region_autoload_attempted.add(key)
+            references_loaded = self._auto_load_reference_regions(
+                path, (height, width)
+            )
+        # load_image() intentionally clears all graphics-scene annotation
+        # buffers. Restore the current per-image draft/applied state even when
+        # this window already attempted disk auto-load on an earlier visit.
+        self._sync_reference_masks_to_view(key, render=False)
+        self.image_view.set_instance_annotations(
+            self._draft_instance_annotations.get(
+                key, self._applied_instance_annotations.get(key)
+            ),
+            copy=False,
+            render=False,
+        )
         self._pipeline_image_loaded(path)
         self._update_analysis_availability()
-        key = str(path.resolve()).casefold()
         cached = self._analyses.get(key)
         if cached is None:
             self._show_pending_result()
@@ -1822,7 +2020,10 @@ class MainWindow(QMainWindow):
             self._mark_analysis_complete(cached)
             self._show_analysis_result(cached)
         self._sync_background_controls()
-        self.statusBar().showMessage(f"Loaded {path}")
+        self.statusBar().showMessage(
+            f"Loaded {path}"
+            + (" with saved reference regions." if references_loaded else "")
+        )
 
     def _show_pending_result(self) -> None:
         self._stop_reference_point_editing()
@@ -1877,7 +2078,9 @@ class MainWindow(QMainWindow):
             "darkening_gradient_ceiling",
             "frequency_noise_masks",
             "edge_ridges",
+            "reference_texture_prototypes",
             "reference_edge_probability",
+            "reference_edge_ridges",
             "edge_traces",
             "instance_masks",
             "seed_edge_curves",
@@ -2255,11 +2458,13 @@ class MainWindow(QMainWindow):
         )
         self.overlay_combo.setEnabled(True)
         self.overlay_opacity_slider.setEnabled(True)
-        self.image_view.set_overlay_mode(str(self.overlay_combo.currentData()))
+        selected_overlay = str(self.overlay_combo.currentData())
+        self._sync_overlay_display_controls(selected_overlay)
+        self.image_view.set_overlay_mode(selected_overlay)
         self.image_view.set_overlay_opacity(
             self.overlay_opacity_slider.value() / 100.0
         )
-        self._update_overlay_legend(str(self.overlay_combo.currentData()))
+        self._update_overlay_legend(selected_overlay)
         dish = result.dish
         self.dish_status_label.setText(
             f"Petri dish; lower {dish.inner_radius:,} px, upper "
@@ -2330,6 +2535,454 @@ class MainWindow(QMainWindow):
         if path is None:
             return None
         return str(path.resolve()).casefold()
+
+    def _reference_group_state(
+        self, key: str, context: str
+    ) -> tuple[np.ndarray, ...]:
+        empty = self._empty_current_image_mask()
+
+        def current(draft, applied):
+            value = draft.get(key, applied.get(key))
+            return empty if value is None else np.asarray(value, dtype=bool)
+
+        if context == "material":
+            return (
+                current(
+                    self._draft_background_reference_masks,
+                    self._applied_background_reference_masks,
+                ),
+                current(
+                    self._draft_foreground_reference_masks,
+                    self._applied_foreground_reference_masks,
+                ),
+                current(
+                    self._draft_background_exclusion_masks,
+                    self._applied_background_exclusion_masks,
+                ),
+            )
+        if context == "boundary":
+            return (
+                current(
+                    self._draft_physical_edge_reference_masks,
+                    self._applied_physical_edge_reference_masks,
+                ),
+                current(
+                    self._draft_non_edge_reference_masks,
+                    self._applied_non_edge_reference_masks,
+                ),
+            )
+        raise ValueError(f"Unknown reference history context {context!r}.")
+
+    def _instance_reference_state(self, key: str) -> tuple[np.ndarray, ...]:
+        values = self._draft_instance_annotations.get(
+            key, self._applied_instance_annotations.get(key)
+        )
+        if values is None:
+            values = self._empty_current_instance_annotations()
+        return (np.asarray(values, dtype=np.uint16),)
+
+    def _instance_reference_origin(self, key: str) -> str:
+        return self._draft_instance_annotation_origins.get(
+            key,
+            self._applied_instance_annotation_origins.get(key, "manual"),
+        )
+
+    def _record_reference_undo(
+        self,
+        key: str,
+        label: str,
+        context: str,
+        before: tuple[np.ndarray, ...],
+        after: tuple[np.ndarray, ...],
+    ) -> bool:
+        history = self._reference_undo_histories.setdefault(
+            key, RasterUndoHistory(self.REFERENCE_UNDO_LIMIT)
+        )
+        changed = history.record(label, context, before, after)
+        if not changed and not len(history):
+            self._reference_undo_histories.pop(key, None)
+        return changed
+
+    def _record_instance_undo(
+        self,
+        key: str,
+        label: str,
+        before: tuple[np.ndarray, ...],
+        after: tuple[np.ndarray, ...],
+        *,
+        before_origin: str,
+    ) -> bool:
+        history = self._instance_undo_histories.setdefault(
+            key, RasterUndoHistory(self.REFERENCE_UNDO_LIMIT)
+        )
+        changed = history.record(
+            label,
+            "instances",
+            before,
+            after,
+            metadata=before_origin,
+        )
+        if not changed and not len(history):
+            self._instance_undo_histories.pop(key, None)
+        return changed
+
+    @staticmethod
+    def _matches_applied_raster(
+        current: np.ndarray | None, applied: np.ndarray | None
+    ) -> bool:
+        if current is None:
+            return applied is None or not bool(np.any(applied))
+        values = np.asarray(current)
+        if applied is None:
+            return not bool(np.any(values))
+        return np.array_equal(values, np.asarray(applied))
+
+    def _set_reference_draft_state(
+        self,
+        key: str,
+        context: str,
+        rasters: tuple[np.ndarray, ...],
+    ) -> None:
+        if context == "material":
+            if len(rasters) != 3:
+                raise ValueError("Material undo state must contain three classes.")
+            background, foreground, other = (
+                np.asarray(value, dtype=bool) for value in rasters
+            )
+            self._draft_background_reference_masks[key] = background
+            self._draft_foreground_reference_masks[key] = foreground
+            self._draft_background_exclusion_masks[key] = other
+            self._draft_foreground_exclusion_masks[key] = other
+        elif context == "boundary":
+            if len(rasters) != 2:
+                raise ValueError("Boundary undo state must contain two classes.")
+            physical, non_edge = (
+                np.asarray(value, dtype=bool) for value in rasters
+            )
+            self._draft_physical_edge_reference_masks[key] = physical
+            self._draft_non_edge_reference_masks[key] = non_edge
+        else:
+            raise ValueError(f"Unknown reference history context {context!r}.")
+
+    def _reconcile_reference_draft(self, key: str) -> None:
+        dirty_classes: set[str] = set()
+        singles = (
+            (
+                "background",
+                self._draft_background_reference_masks,
+                self._applied_background_reference_masks,
+            ),
+            (
+                "foreground",
+                self._draft_foreground_reference_masks,
+                self._applied_foreground_reference_masks,
+            ),
+            (
+                "physical_edge",
+                self._draft_physical_edge_reference_masks,
+                self._applied_physical_edge_reference_masks,
+            ),
+            (
+                "non_edge",
+                self._draft_non_edge_reference_masks,
+                self._applied_non_edge_reference_masks,
+            ),
+        )
+        for class_name, draft, applied in singles:
+            current = draft.get(key, applied.get(key))
+            if self._matches_applied_raster(current, applied.get(key)):
+                draft.pop(key, None)
+            else:
+                dirty_classes.add(class_name)
+
+        other = self._draft_background_exclusion_masks.get(
+            key, self._applied_background_exclusion_masks.get(key)
+        )
+        if self._matches_applied_raster(
+            other, self._applied_background_exclusion_masks.get(key)
+        ):
+            self._draft_background_exclusion_masks.pop(key, None)
+            self._draft_foreground_exclusion_masks.pop(key, None)
+        else:
+            other_values = np.asarray(other, dtype=bool)
+            self._draft_background_exclusion_masks[key] = other_values
+            self._draft_foreground_exclusion_masks[key] = other_values
+            dirty_classes.add("other")
+
+        if dirty_classes:
+            self._reference_masks_dirty.add(key)
+            self._reference_dirty_classes[key] = dirty_classes
+        else:
+            self._reference_masks_dirty.discard(key)
+            self._reference_dirty_classes.pop(key, None)
+
+    def _set_instance_draft_state(
+        self, key: str, values: np.ndarray, origin: str | None
+    ) -> None:
+        labels = np.asarray(values, dtype=np.uint16)
+        applied = self._applied_instance_annotations.get(key)
+        if self._matches_applied_raster(labels, applied):
+            self._draft_instance_annotations.pop(key, None)
+            self._draft_instance_annotation_origins.pop(key, None)
+            self._instance_annotations_dirty.discard(key)
+        else:
+            self._draft_instance_annotations[key] = labels
+            self._draft_instance_annotation_origins[key] = origin or "manual"
+            self._instance_annotations_dirty.add(key)
+
+    def _sync_reference_undo_controls(
+        self, key: str | None, *, has_result: bool, running: bool
+    ) -> None:
+        instance_mode = self.annotate_instances_action.isChecked()
+        reference_mode = (
+            self.paint_background_action.isChecked()
+            or self.paint_foreground_action.isChecked()
+        )
+        histories = (
+            self._instance_undo_histories
+            if instance_mode
+            else self._reference_undo_histories
+        )
+        history = None if key is None else histories.get(key)
+        count = 0 if history is None else len(history)
+        active = instance_mode or reference_mode
+        available = active and has_result and not running and count > 0
+        self.reference_undo_button.setEnabled(available)
+        self.reference_undo_button.setText(
+            "Undo" if not count else f"Undo ({count})"
+        )
+        next_label = None if history is None else history.next_label
+        tooltip = (
+            f"Undo {next_label} (Ctrl+Z). "
+            if next_label
+            else "No painting commands to undo. "
+        ) + f"The latest {self.REFERENCE_UNDO_LIMIT} edits are retained per image."
+        self.reference_undo_button.setToolTip(tooltip)
+        self.undo_reference_edit_action.setEnabled(available)
+        self.undo_reference_edit_action.setText(
+            "Undo reference edit" if next_label is None else f"Undo {next_label}"
+        )
+
+    @Slot()
+    def _undo_active_reference_edit(self) -> None:
+        if self.annotate_instances_action.isChecked():
+            self._undo_instance_reference_edit()
+        elif (
+            self.paint_background_action.isChecked()
+            or self.paint_foreground_action.isChecked()
+        ):
+            self._undo_reference_mask_edit()
+
+    def _undo_reference_mask_edit(self) -> None:
+        key = self._current_image_key()
+        history = None if key is None else self._reference_undo_histories.get(key)
+        if key is None or history is None or not len(history):
+            return
+        context = history.next_context
+        if context is None:
+            return
+        result = history.undo(self._reference_group_state(key, context))
+        if result is None:
+            return
+        self._set_reference_draft_state(key, result.context, result.rasters)
+        self._reconcile_reference_draft(key)
+        self._sync_reference_masks_to_view(key)
+        if not len(history):
+            self._reference_undo_histories.pop(key, None)
+        self._sync_background_controls()
+        self.statusBar().showMessage(f"Undid {result.label}.")
+
+    def _undo_instance_reference_edit(self) -> None:
+        key = self._current_image_key()
+        history = None if key is None else self._instance_undo_histories.get(key)
+        if key is None or history is None or not len(history):
+            return
+        result = history.undo(self._instance_reference_state(key))
+        if result is None:
+            return
+        self._set_instance_draft_state(key, result.rasters[0], result.metadata)
+        self.image_view.set_instance_annotations(
+            self._draft_instance_annotations.get(
+                key, self._applied_instance_annotations.get(key)
+            ),
+            copy=False,
+        )
+        if not len(history):
+            self._instance_undo_histories.pop(key, None)
+        self._sync_background_controls()
+        self.statusBar().showMessage(f"Undid {result.label}.")
+
+    def _auto_load_reference_regions(
+        self, path: Path, image_shape: tuple[int, int]
+    ) -> bool:
+        """Restore an all-or-nothing applied snapshot for an unchanged image."""
+
+        try:
+            bundle = self._reference_region_store.load_if_present(path, image_shape)
+        except ImageFingerprintMismatch as error:
+            QMessageBox.warning(
+                self,
+                "Saved reference regions not loaded",
+                f"Saved reference regions exist for {path.name}, but the image "
+                "contents have changed since they were saved. Seed Fiddle did not "
+                "load any of those regions.\n\n"
+                f"Saved SHA-256: {error.expected_sha256}\n"
+                f"Current SHA-256: {error.actual_sha256}\n\n"
+                f"The saved archive was left unchanged at:\n{error.archive_path}",
+            )
+            return False
+        except (InvalidReferenceArchive, ReferenceRegionError, OSError) as error:
+            QMessageBox.warning(
+                self,
+                "Saved reference regions not loaded",
+                f"Seed Fiddle could not safely load the saved reference regions "
+                f"for {path.name}. No saved regions were applied.\n\n{error}\n\n"
+                "The saved archive was left unchanged at:\n"
+                f"{self._reference_region_store.path_for(path)}",
+            )
+            return False
+        if bundle is None:
+            return False
+
+        key = str(path.resolve()).casefold()
+        self._install_reference_region_bundle(key, bundle)
+        self._discard_analysis_cache(key)
+        affected = {"reference_layers"}
+        for port_id in (
+            "background",
+            "foreground",
+            "other",
+            "physical_edge",
+            "non_edge",
+            "annotated_seeds",
+        ):
+            affected.update(
+                self.pipeline.downstream_from_port(
+                    "reference_layers", port_id, recursive=True
+                )
+            )
+        self.pipeline.invalidate(affected)
+        self._cache_dirty_nodes.setdefault(key, set()).update(
+            affected - {"reference_layers"}
+        )
+        return True
+
+    def _install_reference_region_bundle(
+        self, key: str, bundle: ReferenceRegionBundle
+    ) -> None:
+        """Commit one fully validated persistent snapshot to controller state."""
+
+        for draft in (
+            self._draft_background_reference_masks,
+            self._draft_foreground_reference_masks,
+            self._draft_background_exclusion_masks,
+            self._draft_foreground_exclusion_masks,
+            self._draft_physical_edge_reference_masks,
+            self._draft_non_edge_reference_masks,
+        ):
+            draft.pop(key, None)
+        self._draft_instance_annotations.pop(key, None)
+        self._draft_instance_annotation_origins.pop(key, None)
+        self._reference_masks_dirty.discard(key)
+        self._reference_dirty_classes.pop(key, None)
+        self._instance_annotations_dirty.discard(key)
+        self._reference_undo_histories.pop(key, None)
+        self._instance_undo_histories.pop(key, None)
+
+        def install(
+            store: dict[str, np.ndarray], values: np.ndarray | None, dtype
+        ) -> np.ndarray | None:
+            if values is None or not np.any(values):
+                store.pop(key, None)
+                return None
+            stored = np.asarray(values, dtype=dtype)
+            stored.flags.writeable = False
+            store[key] = stored
+            return stored
+
+        install(
+            self._applied_background_reference_masks, bundle.background, bool
+        )
+        install(
+            self._applied_foreground_reference_masks, bundle.foreground, bool
+        )
+        other = install(
+            self._applied_background_exclusion_masks, bundle.other, bool
+        )
+        if other is None:
+            self._applied_foreground_exclusion_masks.pop(key, None)
+        else:
+            self._applied_foreground_exclusion_masks[key] = other
+        install(
+            self._applied_physical_edge_reference_masks,
+            bundle.physical_edge,
+            bool,
+        )
+        install(
+            self._applied_non_edge_reference_masks, bundle.non_edge, bool
+        )
+        annotations = install(
+            self._applied_instance_annotations,
+            bundle.annotated_seeds,
+            np.uint16,
+        )
+        if annotations is None:
+            self._applied_instance_annotation_origins.pop(key, None)
+        else:
+            self._applied_instance_annotation_origins[key] = (
+                bundle.annotation_origin or "manual"
+            )
+        self._sync_reference_masks_to_view(key, render=False)
+        self.image_view.set_instance_annotations(
+            self._applied_instance_annotations.get(key),
+            copy=False,
+            render=False,
+        )
+
+    @Slot()
+    def _save_reference_regions(self) -> None:
+        """Persist all applied Reference layers outputs for the current image."""
+
+        key = self._current_image_key()
+        path = self.image_view.image_path
+        image_size = self.image_view.image_size
+        if key is None or path is None or image_size is None:
+            return
+        if key in self._reference_masks_dirty or key in self._instance_annotations_dirty:
+            QMessageBox.warning(
+                self,
+                "Apply or revert edits first",
+                "Reference-region files contain applied evidence only. Apply or "
+                "revert the current material, boundary, and seed-instance drafts "
+                "before saving.",
+            )
+            return
+        width, height = image_size
+        bundle = ReferenceRegionBundle(
+            shape=(height, width),
+            background=self._applied_background_reference_masks.get(key),
+            foreground=self._applied_foreground_reference_masks.get(key),
+            other=self._applied_background_exclusion_masks.get(key),
+            physical_edge=self._applied_physical_edge_reference_masks.get(key),
+            non_edge=self._applied_non_edge_reference_masks.get(key),
+            annotated_seeds=self._applied_instance_annotations.get(key),
+            annotation_origin=self._applied_instance_annotation_origins.get(
+                key, "manual"
+            ),
+        )
+        try:
+            destination = self._reference_region_store.save(path, bundle)
+        except (ReferenceRegionError, OSError) as error:
+            QMessageBox.critical(
+                self,
+                "Could not save reference regions",
+                f"No reference-region archive was replaced.\n\n{error}",
+            )
+            return
+        self._reference_region_autoload_attempted.add(key)
+        self.statusBar().showMessage(
+            f"Saved applied reference regions for {path.name} to {destination}."
+        )
 
     def _ensure_reference_draft(self, mask_kind: str) -> None:
         """Create the selected draft; opposing classes become writable on first dab."""
@@ -2536,6 +3189,13 @@ class MainWindow(QMainWindow):
         self.reference_controls.setVisible(active and not instance_mode)
         self.instance_annotation_controls.setVisible(instance_mode)
         self.image_view.set_context_panel_visible(active)
+        if hasattr(self, "reference_undo_button"):
+            key = self._current_image_key()
+            self._sync_reference_undo_controls(
+                key,
+                has_result=self.image_view._analysis_result is not None,
+                running=key is not None and key in self._active_tasks,
+            )
 
     def _sync_annotation_proposal_choices(self, result, *, enabled: bool) -> None:
         """Expose only calculated instance outputs as annotation starting points."""
@@ -2631,6 +3291,11 @@ class MainWindow(QMainWindow):
         annotations_dirty = (
             key in self._instance_annotations_dirty if key is not None else False
         )
+        can_save_references = (
+            key is not None and not running and not dirty and not annotations_dirty
+        )
+        self.save_reference_regions_action.setEnabled(can_save_references)
+        self.save_reference_regions_button.setEnabled(can_save_references)
         self.export_learning_sample_action.setEnabled(
             has_result
             and not running
@@ -2672,6 +3337,7 @@ class MainWindow(QMainWindow):
         self.reference_eraser_button.setEnabled(has_result and not running)
         self.clear_reference_layer_button.setEnabled(has_result and not running)
         self.instance_id_spin.setEnabled(has_result and not running)
+        self.show_selected_instance_checkbox.setEnabled(has_result and not running)
         self.new_instance_button.setEnabled(has_result and not running)
         self.instance_brush_slider.setEnabled(has_result and not running)
         for button in (
@@ -2772,6 +3438,9 @@ class MainWindow(QMainWindow):
             "instance calculations still use the previous annotations."
             if annotations_dirty
             else "Annotations constrain the instance branch only after they are applied."
+        )
+        self._sync_reference_undo_controls(
+            key, has_result=has_result, running=running
         )
 
     @staticmethod
@@ -2963,8 +3632,8 @@ class MainWindow(QMainWindow):
             if overlay_index >= 0:
                 self.overlay_combo.setCurrentIndex(overlay_index)
             self.statusBar().showMessage(
-                "Foreground exclusion brush: painted colours and textures become "
-                "negative evidence that downweights matching regions throughout the image."
+                "Other material: its learned colours and textures compete with "
+                "foreground/background only where they are a better fit."
             )
         self._sync_reference_panel_visibility()
 
@@ -3081,6 +3750,27 @@ class MainWindow(QMainWindow):
         self.instance_brush_label.setText(f"{radius} px")
         self.image_view.set_reference_brush_radius(float(radius))
 
+    @staticmethod
+    def _populate_annotation_edge_sources(combo: QComboBox) -> None:
+        """Expose the actual calculated raster used by an assisted tool."""
+
+        for label, source in (
+            ("Thinned edge ridges", "ridges"),
+            ("Thinned reference edge ridge", "reference_ridges"),
+            ("Oriented edge traces", "traces"),
+            ("Adaptive combined", "adaptive"),
+            ("Physical-edge probability", "physical"),
+            ("Edge magnitude (broad)", "magnitude"),
+        ):
+            combo.addItem(label, source)
+        combo.setToolTip(
+            "Select the exact edge raster used for snapping or as the fill "
+            "barrier. Generic thinned ridges are the precise default; the "
+            "reference-ridge option similarly thins learned physical-edge "
+            "probability. Edge magnitude is broader and can stop short of the "
+            "visible ridge."
+        )
+
     def _current_instance_tool(self) -> str:
         for button, tool in (
             (self.instance_paint_mode_button, "brush"),
@@ -3121,6 +3811,7 @@ class MainWindow(QMainWindow):
             return
         self.image_view.set_edge_trace_options(
             EdgeTraceOptions(
+                edge_source=str(self.edge_trace_evidence_combo.currentData()),
                 search_radius_px=self.edge_trace_search_spin.value(),
                 edge_attraction=self.edge_trace_attraction_spin.value() / 100.0,
                 tangent_mode=str(self.edge_trace_tangent_combo.currentData()),
@@ -3151,6 +3842,7 @@ class MainWindow(QMainWindow):
         )
         self.image_view.set_smart_fill_options(
             SmartFillOptions(
+                edge_source=str(self.smart_fill_evidence_combo.currentData()),
                 colour_tolerance_lab=self.smart_fill_colour_tolerance_spin.value(),
                 edge_stop_threshold=self.smart_fill_edge_stop_spin.value() / 100.0,
                 tunnel_strength=float(self.smart_fill_tunnel_combo.currentData()),
@@ -3199,26 +3891,58 @@ class MainWindow(QMainWindow):
     @Slot()
     def _clear_active_reference_layer(self) -> None:
         mode = self.image_view._reference_point_mode
-        actions = {
-            "background": self._clear_background_points,
-            "foreground": self._clear_foreground_points,
-            "other": self._clear_background_exclusion,
-        }
-        if mode in actions:
-            actions[mode]()
+        if mode not in {
+            "background",
+            "foreground",
+            "other",
+            "physical_edge",
+            "non_edge",
+        }:
             return
-        stores = {
-            "physical_edge": self._draft_physical_edge_reference_masks,
-            "non_edge": self._draft_non_edge_reference_masks,
-        }
+        self._clear_reference_class(mode)
+
+    def _clear_reference_class(self, mode: str) -> None:
         key = self._current_image_key()
-        if key is None or mode not in stores:
+        material_modes = ("background", "foreground", "other")
+        boundary_modes = ("physical_edge", "non_edge")
+        if key is None or mode not in {*material_modes, *boundary_modes}:
             return
-        stores[mode][key] = self._empty_current_image_mask()
-        self._reference_masks_dirty.add(key)
-        self._reference_dirty_classes.setdefault(key, set()).add(mode)
+        context = "material" if mode in material_modes else "boundary"
+        names = material_modes if context == "material" else boundary_modes
+        before = self._reference_group_state(key, context)
+        after = list(before)
+        after[names.index(mode)] = self._empty_current_image_mask()
+        after_state = tuple(after)
+        if not self._record_reference_undo(
+            key,
+            f"clear {mode.replace('_', ' ')}",
+            context,
+            before,
+            after_state,
+        ):
+            self._sync_background_controls()
+            self._restore_reference_paint_mode(mode)
+            return
+        self._set_reference_draft_state(key, context, after_state)
+        self._reconcile_reference_draft(key)
         self._sync_reference_masks_to_view(key)
         self._sync_background_controls()
+        self._restore_reference_paint_mode(mode)
+
+    def _restore_reference_paint_mode(self, mode: str | None = None) -> None:
+        """Make an emptied reference layer immediately drawable again."""
+
+        self.reference_paint_mode_button.setChecked(True)
+        self.image_view.set_reference_erase_mode(False)
+        if mode is not None:
+            setters = {
+                "background": self.image_view.set_background_point_editing,
+                "foreground": self.image_view.set_foreground_point_editing,
+                "other": self.image_view.set_other_reference_editing,
+                "physical_edge": self.image_view.set_physical_edge_reference_editing,
+                "non_edge": self.image_view.set_non_edge_reference_editing,
+            }
+            setters[mode](True)
 
     @Slot(bool)
     def _instance_eraser_toggled(self, enabled: bool) -> None:
@@ -3230,6 +3954,10 @@ class MainWindow(QMainWindow):
         self.image_view.set_active_instance_id(identifier)
         self._update_instance_colour_swatch()
         self._sync_background_controls()
+
+    @Slot(bool)
+    def _show_selected_instance_toggled(self, enabled: bool) -> None:
+        self.image_view.set_show_selected_instance_only(enabled)
 
     def _update_instance_colour_swatch(self) -> None:
         if not hasattr(self, "instance_colour_swatch"):
@@ -3254,7 +3982,10 @@ class MainWindow(QMainWindow):
         }
         if key is None or class_name not in targets:
             return
-        if class_name in {"background", "foreground", "other"}:
+        material = class_name in {"background", "foreground", "other"}
+        context = "material" if material else "boundary"
+        before = self._reference_group_state(key, context)
+        if material:
             background = self.image_view.reference_mask("background", copy=False)
             foreground = self.image_view.reference_mask("foreground", copy=False)
             other = self.image_view.reference_mask("other", copy=False)
@@ -3275,10 +4006,7 @@ class MainWindow(QMainWindow):
                 other_values = provided
                 foreground_values = foreground_values & ~other_values
                 background_values = background_values & ~other_values
-            self._draft_background_reference_masks[key] = background_values
-            self._draft_foreground_reference_masks[key] = foreground_values
-            self._draft_background_exclusion_masks[key] = other_values
-            self._draft_foreground_exclusion_masks[key] = other_values
+            after = (background_values, foreground_values, other_values)
         else:
             empty = self._empty_current_image_mask()
             physical = self.image_view.reference_mask("physical_edge", copy=False)
@@ -3292,14 +4020,20 @@ class MainWindow(QMainWindow):
             else:
                 non_edge_values = provided
                 physical_values = physical_values & ~non_edge_values
-            self._draft_physical_edge_reference_masks[key] = physical_values
-            self._draft_non_edge_reference_masks[key] = non_edge_values
+            after = (physical_values, non_edge_values)
+        label = f"{class_name.replace('_', ' ')} stroke"
+        if not self._record_reference_undo(
+            key, label, context, before, after
+        ):
+            self._sync_reference_masks_to_view(key, render=False)
+            self._sync_background_controls()
+            return
+        self._set_reference_draft_state(key, context, after)
+        self._reconcile_reference_draft(key)
         # The view emitted a stable stroke snapshot.  Rebind it to that same
         # array so the just-finished draft has one owner rather than retaining
         # both the view's drawing buffer and a second controller snapshot.
         self._sync_reference_masks_to_view(key, render=False)
-        self._reference_masks_dirty.add(key)
-        self._reference_dirty_classes.setdefault(key, set()).add(class_name)
         self._sync_background_controls()
         self.statusBar().showMessage(
             f"{class_name.replace('_', ' ').capitalize()} references edited; "
@@ -3311,14 +4045,36 @@ class MainWindow(QMainWindow):
         key = self._current_image_key()
         if key is None:
             return
+        before = self._instance_reference_state(key)
+        before_origin = self._instance_reference_origin(key)
         values = (
             self._empty_current_instance_annotations()
             if annotations is None
             else np.asarray(annotations, dtype=np.uint16)
         )
-        self._draft_instance_annotations[key] = values
-        self._draft_instance_annotation_origins.setdefault(key, "manual")
-        self._instance_annotations_dirty.add(key)
+        tool_labels = {
+            "brush": "seed-instance brush stroke",
+            "eraser": "seed-instance eraser stroke",
+            "edge_trace": "edge-trace segment",
+            "shape_snap": "snapped shape",
+            "smart_fill": "smart fill",
+        }
+        label = tool_labels.get(
+            self._current_instance_tool(), "seed-instance edit"
+        )
+        if not self._record_instance_undo(
+            key,
+            label,
+            before,
+            (values,),
+            before_origin=before_origin,
+        ):
+            self.image_view.set_instance_annotations(
+                before[0], copy=False, render=False
+            )
+            self._sync_background_controls()
+            return
+        self._set_instance_draft_state(key, values, before_origin)
         self._sync_background_controls()
         self.statusBar().showMessage(
             "Seed instance marks edited; foreground references are unchanged. "
@@ -3337,6 +4093,8 @@ class MainWindow(QMainWindow):
         )
         if key is None or proposal is None:
             return
+        before = self._instance_reference_state(key)
+        before_origin = self._instance_reference_origin(key)
         current = self._draft_instance_annotations.get(
             key, self._applied_instance_annotations.get(key)
         )
@@ -3359,15 +4117,29 @@ class MainWindow(QMainWindow):
                 self, "Could not use instance result", str(error)
             )
             return
-        self._draft_instance_annotations[key] = labels
-        self._draft_instance_annotation_origins[key] = f"pipeline:{attribute}"
-        self._instance_annotations_dirty.add(key)
-        self.image_view.set_instance_annotations(labels, copy=False)
+        if not self._record_instance_undo(
+            key,
+            "automatic instance draft",
+            before,
+            (labels,),
+            before_origin=before_origin,
+        ):
+            self._sync_background_controls()
+            return
+        origin = f"pipeline:{attribute}"
+        self._set_instance_draft_state(key, labels, origin)
+        self.image_view.set_instance_annotations(
+            self._draft_instance_annotations.get(
+                key, self._applied_instance_annotations.get(key)
+            ),
+            copy=False,
+        )
         next_identifier = min(
             np.iinfo(np.uint16).max, int(labels.max(initial=0)) + 1
         )
         with QSignalBlocker(self.instance_id_spin):
             self.instance_id_spin.setValue(max(1, next_identifier))
+        self.image_view.set_active_instance_id(self.instance_id_spin.value())
         self._update_instance_colour_swatch()
         self._sync_background_controls()
         self.statusBar().showMessage(
@@ -3403,12 +4175,25 @@ class MainWindow(QMainWindow):
         )
         if source is None:
             return
+        before = self._instance_reference_state(key)
+        before_origin = self._instance_reference_origin(key)
         values = np.asarray(source, dtype=np.uint16).copy()
         values[values == self.instance_id_spin.value()] = 0
-        self._draft_instance_annotations[key] = values
-        self._draft_instance_annotation_origins.setdefault(key, "manual")
-        self._instance_annotations_dirty.add(key)
-        self.image_view.set_instance_annotations(values, copy=False)
+        if not self._record_instance_undo(
+            key,
+            f"clear seed {self.instance_id_spin.value()}",
+            before,
+            (values,),
+            before_origin=before_origin,
+        ):
+            return
+        self._set_instance_draft_state(key, values, before_origin)
+        self.image_view.set_instance_annotations(
+            self._draft_instance_annotations.get(
+                key, self._applied_instance_annotations.get(key)
+            ),
+            copy=False,
+        )
         self._sync_background_controls()
 
     @Slot()
@@ -3416,11 +4201,24 @@ class MainWindow(QMainWindow):
         key = self._current_image_key()
         if key is None:
             return
+        before = self._instance_reference_state(key)
+        before_origin = self._instance_reference_origin(key)
         values = self._empty_current_instance_annotations()
-        self._draft_instance_annotations[key] = values
-        self._draft_instance_annotation_origins[key] = "manual"
-        self._instance_annotations_dirty.add(key)
-        self.image_view.set_instance_annotations(values, copy=False)
+        if not self._record_instance_undo(
+            key,
+            "clear all seed instances",
+            before,
+            (values,),
+            before_origin=before_origin,
+        ):
+            return
+        self._set_instance_draft_state(key, values, "manual")
+        self.image_view.set_instance_annotations(
+            self._draft_instance_annotations.get(
+                key, self._applied_instance_annotations.get(key)
+            ),
+            copy=False,
+        )
         self._sync_background_controls()
 
     @Slot()
@@ -3432,54 +4230,26 @@ class MainWindow(QMainWindow):
         self._draft_instance_annotations.pop(key, None)
         self._draft_instance_annotation_origins.pop(key, None)
         self._instance_annotations_dirty.discard(key)
+        self._instance_undo_histories.pop(key, None)
         self.image_view.set_instance_annotations(applied, copy=False)
         self._sync_background_controls()
         self.statusBar().showMessage("Discarded unapplied instance-annotation edits.")
 
     @Slot()
     def _clear_background_points(self) -> None:
-        key = self._current_image_key()
-        if key is None:
-            return
-        self._draft_background_reference_masks[key] = self._empty_current_image_mask()
-        self._reference_masks_dirty.add(key)
-        self._reference_dirty_classes.setdefault(key, set()).add("background")
-        self._sync_reference_masks_to_view(key)
-        self._sync_background_controls()
+        self._clear_reference_class("background")
 
     @Slot()
     def _clear_foreground_points(self) -> None:
-        key = self._current_image_key()
-        if key is None:
-            return
-        self._draft_foreground_reference_masks[key] = self._empty_current_image_mask()
-        self._reference_masks_dirty.add(key)
-        self._reference_dirty_classes.setdefault(key, set()).add("foreground")
-        self._sync_reference_masks_to_view(key)
-        self._sync_background_controls()
+        self._clear_reference_class("foreground")
 
     @Slot()
     def _clear_background_exclusion(self) -> None:
-        key = self._current_image_key()
-        if key is None:
-            return
-        self._draft_background_exclusion_masks[key] = self._empty_current_image_mask()
-        self._draft_foreground_exclusion_masks[key] = self._draft_background_exclusion_masks[key]
-        self._reference_masks_dirty.add(key)
-        self._reference_dirty_classes.setdefault(key, set()).add("other")
-        self._sync_reference_masks_to_view(key)
-        self._sync_background_controls()
+        self._clear_reference_class("other")
 
     @Slot()
     def _clear_foreground_exclusion(self) -> None:
-        key = self._current_image_key()
-        if key is None:
-            return
-        self._draft_foreground_exclusion_masks[key] = self._empty_current_image_mask()
-        self._reference_masks_dirty.add(key)
-        self._reference_dirty_classes.setdefault(key, set()).add("other")
-        self._sync_reference_masks_to_view(key)
-        self._sync_background_controls()
+        self._clear_reference_class("other")
 
     @Slot()
     def _revert_reference_masks(self) -> None:
@@ -3497,6 +4267,7 @@ class MainWindow(QMainWindow):
             draft.pop(key, None)
         self._reference_masks_dirty.discard(key)
         self._reference_dirty_classes.pop(key, None)
+        self._reference_undo_histories.pop(key, None)
         self._sync_reference_masks_to_view(key)
         self._sync_background_controls()
         self.statusBar().showMessage("Discarded unapplied reference-mask edits.")
@@ -3561,6 +4332,7 @@ class MainWindow(QMainWindow):
             )
         self._draft_instance_annotations.pop(key, None)
         self._draft_instance_annotation_origins.pop(key, None)
+        self._instance_undo_histories.pop(key, None)
         self.image_view.set_instance_annotations(
             self._applied_instance_annotations.get(key),
             copy=False,
@@ -3762,11 +4534,25 @@ class MainWindow(QMainWindow):
         except Exception as error:  # noqa: BLE001 - user-facing file boundary
             QMessageBox.critical(self, "Could not load seed labels", str(error))
             return
-        self._draft_instance_annotations[key] = labels.astype(np.uint16, copy=False)
-        self._draft_instance_annotation_origins[key] = f"import:{Path(selected).resolve()}"
-        self._instance_annotations_dirty.add(key)
+        before = self._instance_reference_state(key)
+        before_origin = self._instance_reference_origin(key)
+        labels = labels.astype(np.uint16, copy=False)
+        if not self._record_instance_undo(
+            key,
+            "imported seed-label draft",
+            before,
+            (labels,),
+            before_origin=before_origin,
+        ):
+            self._sync_background_controls()
+            return
+        origin = f"import:{Path(selected).resolve()}"
+        self._set_instance_draft_state(key, labels, origin)
         self.image_view.set_instance_annotations(
-            self._draft_instance_annotations[key], copy=False
+            self._draft_instance_annotations.get(
+                key, self._applied_instance_annotations.get(key)
+            ),
+            copy=False,
         )
         self.annotate_instances_action.setChecked(True)
         self._sync_background_controls()
@@ -3980,6 +4766,7 @@ class MainWindow(QMainWindow):
                 stored.flags.writeable = False
                 applied[key] = stored
         self._normalize_applied_reference_classes(key)
+        self._reference_undo_histories.pop(key, None)
         self._sync_reference_masks_to_view(key, render=False)
         self._reference_masks_dirty.discard(key)
         material_changed = bool(
@@ -4115,6 +4902,7 @@ class MainWindow(QMainWindow):
     def _overlay_changed(self, index: int) -> None:
         del index
         mode = str(self.overlay_combo.currentData())
+        self._sync_overlay_display_controls(mode)
         self.image_view.set_overlay_mode(mode)
         self._update_overlay_legend(mode)
         owner = _overlay_node_owner(mode)
@@ -4149,6 +4937,88 @@ class MainWindow(QMainWindow):
     def _overlay_opacity_changed(self, value: int) -> None:
         self.overlay_opacity_label.setText(f"{value}%")
         self.image_view.set_overlay_opacity(value / 100.0)
+
+    @Slot(int)
+    def _hsv_value_changed(self, value: int) -> None:
+        self.hsv_value_label.setText(f"{value}%")
+        mode = str(self.overlay_combo.currentData())
+        if mode == "background_colour_gamut":
+            self._hsv_gamut_values["background"] = value
+        elif mode == "foreground_colour_gamut":
+            self._hsv_gamut_values["foreground"] = value
+        self.image_view.set_hsv_gamut_value(value / 100.0)
+
+    @Slot()
+    def _hsv_peak_requested(self) -> None:
+        mode = str(self.overlay_combo.currentData())
+        class_name = {
+            "background_colour_gamut": "background",
+            "foreground_colour_gamut": "foreground",
+        }.get(mode)
+        if class_name is None:
+            return
+        peak = self.image_view.dominant_hsv_gamut_value(class_name)
+        if peak is None:
+            return
+        self.hsv_value_slider.setValue(round(peak * 100.0))
+
+    def _sync_overlay_display_controls(self, mode: str) -> None:
+        gamut_modes = {
+            "background_colour_gamut": (
+                "background",
+                "background_likelihood",
+            ),
+            "foreground_colour_gamut": (
+                "foreground",
+                "foreground_segmentation",
+            ),
+        }
+        gamut = mode in gamut_modes
+        full_pane = gamut or mode == "reference_texture_prototypes"
+        for action in (
+            self.opacity_toolbar_label_action,
+            self.overlay_opacity_slider_action,
+            self.overlay_opacity_label_action,
+        ):
+            action.setVisible(not full_pane)
+        for control in (
+            self.opacity_toolbar_label,
+            self.overlay_opacity_slider,
+            self.overlay_opacity_label,
+        ):
+            control.setVisible(not full_pane)
+        for action in (
+            self.hsv_value_toolbar_label_action,
+            self.hsv_value_slider_action,
+            self.hsv_value_label_action,
+            self.hsv_peak_button_action,
+        ):
+            action.setVisible(gamut)
+        for control in (
+            self.hsv_value_toolbar_label,
+            self.hsv_value_slider,
+            self.hsv_value_label,
+            self.hsv_peak_button,
+        ):
+            control.setVisible(gamut)
+        if gamut:
+            class_name, node_id = gamut_modes[mode]
+            self.image_view.set_colour_gamut_parameters(
+                class_name, self.pipeline.node(node_id).parameters
+            )
+            peak = self.image_view.dominant_hsv_gamut_value(class_name)
+            stored_value = self._hsv_gamut_values[class_name]
+            if stored_value is None and peak is not None:
+                stored_value = round(peak * 100.0)
+                self._hsv_gamut_values[class_name] = stored_value
+            if stored_value is not None:
+                with QSignalBlocker(self.hsv_value_slider):
+                    self.hsv_value_slider.setValue(stored_value)
+                self.hsv_value_label.setText(f"{stored_value}%")
+            self.hsv_peak_button.setEnabled(peak is not None)
+            self.image_view.set_hsv_gamut_value(
+                self.hsv_value_slider.value() / 100.0
+            )
 
     def _update_overlay_legend(self, mode: str) -> None:
         if (
@@ -4194,6 +5064,12 @@ class MainWindow(QMainWindow):
             "seed_scale_estimation": "Cyan: isolated-reference search region. Yellow: the image-specific master seed diameter.",
             "foreground_feature": "Brightness is Lab colour distance from the estimated dish background before thresholding.",
             "foreground_mask": "Soft foreground probability: black is tray, rim, or dark inter-seed gap; white is seed-surface evidence. The binary proposal mask is available separately.",
+            "foreground_colour_gamut": (
+                "Full-size exact HSV hue/saturation slice of the fitted foreground "
+                "Lab probability model. Adjust HSV value to scan brightness; contour "
+                "lines show 25/50/75/90% membership and the neutral swatch reports "
+                "achromatic membership without repeating undefined hue."
+            ),
             "foreground_binary_mask": "Binary, morphologically cleaned foreground supplied to the distance-transform proposal branch.",
             "distance_transform": "Brightness is distance from the nearest foreground boundary; local maxima can become seed centres.",
             "distance_candidates": "Yellow circles are the centres/radii proposed by distance-transform peaks before fusion.",
@@ -4220,11 +5096,35 @@ class MainWindow(QMainWindow):
                 "learned texture classifier is also displayed across the initial "
                 "dish-surrounding sampling annulus."
             ),
+            "background_colour_gamut": (
+                "Full-size exact HSV hue/saturation slice of the fitted background "
+                "Lab probability model. Adjust HSV value to scan brightness; contour "
+                "lines show 25/50/75/90% membership and the neutral swatch reports "
+                "achromatic membership without repeating undefined hue."
+            ),
             "foreground_noise_likelihood": (
                 "Foreground texture probability: black = non-foreground-like local "
                 "frequency; white = foreground-like texture. Fine, medium, and coarse "
                 "profiles are learned from foreground-colour pseudo-labels without "
                 "forcing painted reference pixels to one."
+            ),
+            "reference_texture_prototypes": (
+                "Full-pane collage of every retained image-local material and boundary "
+                "feature medoid. Edge patches are rotated to a common tangent; percentages "
+                "report cluster support, not forced probability."
+            ),
+            "reference_seed_surface_probability": (
+                "Seed-surface likelihood from the nearest supported Foreground prototype "
+                "relative to Background and Other prototype banks. Painted and unpainted "
+                "pixels are evaluated identically."
+            ),
+            "reference_background_texture_probability": (
+                "Background-texture likelihood from the many reviewed Background prototypes, "
+                "attenuated only where Foreground or Other prototypes fit more specifically."
+            ),
+            "reference_other_texture_probability": (
+                "Other-material likelihood from reviewed glass, rim, ruler, or other neither-"
+                "seed-nor-background examples. It is classifier evidence, not a painted override."
             ),
             "edge_gradients": (
                 "Brightness is the shared CUDA multichannel edge magnitude. "
@@ -4292,6 +5192,11 @@ class MainWindow(QMainWindow):
             "non_edge_probability": (
                 "Blue brightness is the probability that a transition is an apparent "
                 "coat-pattern or lighting boundary rather than a physical edge."
+            ),
+            "reference_edge_ridges": (
+                "Reference-trained physical-edge probability after normal-direction "
+                "non-maximum suppression and CUDA high/low hysteresis. Yellow "
+                "brightness preserves the retained continuous probability."
             ),
             "edge_traces": (
                 "Unique colours identify tangent-compatible connected traces. "
@@ -4697,10 +5602,34 @@ class MainWindow(QMainWindow):
         non_edge_samples = self._mask_pixel_count(
             self._applied_non_edge_reference_masks.get(current_key)
         )
+        texture_profile = getattr(
+            result.layers, "reference_texture_profile", None
+        )
+        self.pipeline.set_status(
+            "reference_texture_prototypes",
+            NodeStatus.COMPLETE,
+            (
+                f"{len(texture_profile.prototypes):,} "
+                "prototypes from applied material and boundary references"
+                if texture_profile is not None and texture_profile.prototypes
+                else "No applied prototype references; edge output uses generic support"
+            ),
+        )
         self.pipeline.set_status(
             "reference_edge_probability",
             NodeStatus.COMPLETE,
             f"{physical_samples:,} physical-edge; {non_edge_samples:,} non-edge reference pixels",
+        )
+        reference_ridge_raster = result.layers.reference_edge_ridges
+        reference_ridge_pixels = (
+            reference_ridge_raster.count_above(1)
+            if hasattr(reference_ridge_raster, "count_above")
+            else int((reference_ridge_raster >= 1).sum())
+        )
+        self.pipeline.set_status(
+            "reference_edge_ridges",
+            NodeStatus.COMPLETE,
+            f"{reference_ridge_pixels:,} thinned reference-edge pixels",
         )
         self.pipeline.set_status(
             "edge_traces", NodeStatus.COMPLETE, f"{trace_pixels:,} oriented trace pixels"
@@ -4820,7 +5749,9 @@ class MainWindow(QMainWindow):
             "undirected_edges",
             "directed_edges",
             "edge_ridges",
+            "reference_texture_prototypes",
             "reference_edge_probability",
+            "reference_edge_ridges",
             "edge_traces",
             "procedural_instances",
             "unet_instances",
@@ -4898,7 +5829,9 @@ class MainWindow(QMainWindow):
             "undirected_edges": "Encoding axial edge tangents",
             "directed_edges": "Resolving edge polarity",
             "edge_ridges": "Thinning float edges and reconstructing hysteresis",
+            "reference_texture_prototypes": "Fitting many material and edge prototypes from reviewed examples",
             "reference_edge_probability": "Classifying physical and apparent edges from reviewed examples",
+            "reference_edge_ridges": "Thinning reference-trained physical-edge probability",
             "edge_traces": "Linking orientation-compatible ridge fragments",
             "seed_edge_curves": "Confirming radii, circles, ellipses, centres, and semantic sides",
             "background_likelihood": "Estimating the likely colour range",
@@ -5081,7 +6014,9 @@ class MainWindow(QMainWindow):
             "darkening_gradient_ceiling",
             "frequency_noise_masks",
             "edge_ridges",
+            "reference_texture_prototypes",
             "reference_edge_probability",
+            "reference_edge_ridges",
             "edge_traces",
             "instance_masks",
             "seed_edge_curves",

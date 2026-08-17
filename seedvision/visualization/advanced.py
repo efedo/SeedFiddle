@@ -83,6 +83,7 @@ class AdvancedAnalysisSettings:
     interior_smoothing_fraction: float = 0.055
     interior_background_weight: float = 0.55
     interior_foreground_noise_weight: float = 0.35
+    interior_reference_texture_weight: float = 0.35
     boundary_width_fraction: float = 0.025
     split_neck_fraction: float = 0.36
     ellipse_radial_tolerance: float = 0.22
@@ -115,6 +116,10 @@ class AdvancedAnalysisSettings:
         if not 0.0 <= self.interior_foreground_noise_weight <= 1.0:
             raise ValueError(
                 "interior_foreground_noise_weight must be between 0 and 1."
+            )
+        if not 0.0 <= self.interior_reference_texture_weight <= 1.0:
+            raise ValueError(
+                "interior_reference_texture_weight must be between 0 and 1."
             )
         positive = (
             self.interior_smoothing_fraction,
@@ -433,6 +438,7 @@ def build_advanced_analysis_layers(
     full_image_shape: tuple[int, int],
     foreground_probability: object | None = None,
     foreground_noise_probability: object | None = None,
+    reference_surface_probability: object | None = None,
     background_colour_probability: object | None = None,
     background_noise_probability: object | None = None,
     calibration_anchors: tuple[tuple[float, float, float], ...] = (),
@@ -544,6 +550,19 @@ def build_advanced_analysis_layers(
             "bilinear",
         ).clamp(0.0, 1.0)
     )
+    reference_probability = (
+        None
+        if reference_surface_probability is None or not active("seed_interior")
+        else _resize_numpy(
+            torch,
+            functional,
+            reference_surface_probability,
+            device,
+            height,
+            width,
+            "bilinear",
+        ).clamp(0.0, 1.0)
+    )
     background_probabilities = tuple(
         _resize_numpy(
             torch,
@@ -625,6 +644,15 @@ def build_advanced_analysis_layers(
             * (1.0 - settings.interior_foreground_noise_weight)
             + noise_probability * settings.interior_foreground_noise_weight
         )
+        if reference_probability is not None:
+            reference_weight = settings.interior_reference_texture_weight
+            foreground_evidence = (
+                foreground_evidence * (1.0 - reference_weight)
+                + _gaussian(
+                    torch, functional, reference_probability, smoothing
+                )
+                * reference_weight
+            )
         if background_probabilities:
             background_probability = torch.stack(
                 background_probabilities, dim=0

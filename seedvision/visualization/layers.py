@@ -64,6 +64,36 @@ class ForegroundColourProfile:
 
 
 @dataclass(frozen=True, slots=True)
+class ReferenceTexturePrototype:
+    """One medoid patch retained from a painted reference feature cluster."""
+
+    class_name: str
+    patch_bgr: np.ndarray
+    weight: float
+    sample_count: int
+    centre_xy: tuple[float, float]
+    tangent_degrees: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ReferenceTextureProfile:
+    """Compact display metadata for the GPU-resident prototype banks."""
+
+    prototypes: tuple[ReferenceTexturePrototype, ...] = ()
+    class_sample_counts: tuple[tuple[str, int], ...] = ()
+    material_feature_names: tuple[str, ...] = ()
+    edge_feature_names: tuple[str, ...] = ()
+    working_scale: float = 1.0
+    patch_size_px: int = 0
+
+    def count_for(self, class_name: str) -> int:
+        return sum(
+            prototype.class_name == class_name
+            for prototype in self.prototypes
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class AnalysisLayerSettings:
     """User-adjustable settings for diagnostic and provisional mask layers."""
 
@@ -76,7 +106,7 @@ class AnalysisLayerSettings:
     background_prior_tolerance: float = 24.0
     background_lightness_scale_floor: float = 8.0
     background_chroma_scale_floor: float = 3.0
-    background_colour_components: int = 4
+    background_colour_components: int = 32
     background_distribution_fit_iterations: int = 6
     background_refinement_iterations: int = 2
     background_refinement_min_probability: float = 0.82
@@ -145,8 +175,22 @@ class AnalysisLayerSettings:
     reference_edge_similarity_scale: float = 1.0
     reference_edge_ridge_weight: float = 0.35
     reference_edge_working_maximum_dimension: int = 1280
+    reference_ridge_nms_step_px: float = 1.0
+    reference_ridge_low_threshold: float = 0.10
+    reference_ridge_high_threshold: float = 0.24
+    reference_ridge_hysteresis_iterations: int = 8
+    reference_ridge_working_maximum_dimension: int = 1280
+    reference_texture_prototypes_per_class: int = 64
+    reference_texture_minimum_samples_per_prototype: int = 16
+    reference_texture_fit_iterations: int = 4
+    reference_texture_similarity_scale: float = 1.0
+    reference_texture_context_fraction: float = 0.04
+    reference_texture_patch_fraction: float = 0.28
+    reference_texture_working_maximum_dimension: int = 960
     trace_tangent_tolerance_degrees: float = 24.0
     trace_maximum_gap_px: int = 2
+    trace_curvature_policy: str = "prefer"
+    trace_curvature_tolerance_degrees: float = 6.0
     trace_window_fraction: float = 0.20
     trace_sample_count: int = 7
     trace_minimum_length_fraction: float = 0.18
@@ -244,6 +288,20 @@ class AnalysisLayerSettings:
             raise ValueError("Noise working dimension must be between 512 and 4096.")
         if not 512 <= self.foreground_noise_working_maximum_dimension <= 4096:
             raise ValueError("Foreground-noise working dimension must be between 512 and 4096.")
+        if not 8 <= self.reference_texture_prototypes_per_class <= 256:
+            raise ValueError("Reference texture prototypes per class must be between 8 and 256.")
+        if not 4 <= self.reference_texture_minimum_samples_per_prototype <= 512:
+            raise ValueError("Reference texture prototype support must be between 4 and 512 pixels.")
+        if not 1 <= self.reference_texture_fit_iterations <= 12:
+            raise ValueError("Reference texture fit iterations must be between 1 and 12.")
+        if not 0.25 <= self.reference_texture_similarity_scale <= 4.0:
+            raise ValueError("Reference texture tolerance must be between 0.25 and 4.")
+        if not 0.005 <= self.reference_texture_context_fraction <= 0.30:
+            raise ValueError("Reference texture context must be between 0.005 and 0.30 seed diameters.")
+        if not 0.10 <= self.reference_texture_patch_fraction <= 0.80:
+            raise ValueError("Reference texture patch size must be between 0.10 and 0.80 seed diameters.")
+        if not 256 <= self.reference_texture_working_maximum_dimension <= 2048:
+            raise ValueError("Reference texture working dimension must be between 256 and 2048.")
         if not 0.10 <= self.noise_vector_decay <= 1.0:
             raise ValueError("Noise vector decay must be between 0.10 and 1.")
         if not 0.10 <= self.foreground_noise_vector_decay <= 1.0:
@@ -252,8 +310,10 @@ class AnalysisLayerSettings:
             raise ValueError("Background lightness scale floor must be positive.")
         if self.background_chroma_scale_floor <= 0.0:
             raise ValueError("Background chroma scale floor must be positive.")
-        if not 1 <= self.background_colour_components <= 8:
-            raise ValueError("Background colour components must be between 1 and 8.")
+        if not 1 <= self.background_colour_components <= 256:
+            raise ValueError(
+                "Background colour modes must be between 1 and 256."
+            )
         if not 1 <= self.background_distribution_fit_iterations <= 20:
             raise ValueError("Background distribution fit iterations must be between 1 and 20.")
         if not 0 <= self.background_refinement_iterations <= 8:
@@ -307,6 +367,14 @@ class AnalysisLayerSettings:
             raise ValueError("Trace sample count must be between 2 and 32.")
         if not 1 <= self.trace_maximum_gap_px <= 5:
             raise ValueError("Trace maximum gap must be between 1 and 5 pixels.")
+        if self.trace_curvature_policy not in {"off", "prefer", "require"}:
+            raise ValueError(
+                "Trace curvature policy must be 'off', 'prefer', or 'require'."
+            )
+        if not 0.0 <= self.trace_curvature_tolerance_degrees <= 45.0:
+            raise ValueError(
+                "Trace curvature tolerance must be between 0 and 45 degrees."
+            )
         if not 1 <= self.trace_junction_max_neighbors <= 8:
             raise ValueError("Trace junction neighbour limit must be between 1 and 8.")
         if not 0.005 <= self.reference_edge_context_fraction <= 0.25:
@@ -317,6 +385,27 @@ class AnalysisLayerSettings:
             raise ValueError("Reference-edge ridge support must be between 0 and 1.")
         if not 256 <= self.reference_edge_working_maximum_dimension <= 4096:
             raise ValueError("Reference-edge working dimension must be between 256 and 4096.")
+        if not 0.25 <= self.reference_ridge_nms_step_px <= 3.0:
+            raise ValueError(
+                "Reference-ridge NMS step must be between 0.25 and 3 pixels."
+            )
+        if not (
+            0.0
+            <= self.reference_ridge_low_threshold
+            < self.reference_ridge_high_threshold
+            <= 1.0
+        ):
+            raise ValueError(
+                "Reference-ridge thresholds must satisfy 0 <= low < high <= 1."
+            )
+        if not 1 <= self.reference_ridge_hysteresis_iterations <= 32:
+            raise ValueError(
+                "Reference-ridge hysteresis iterations must be between 1 and 32."
+            )
+        if not 256 <= self.reference_ridge_working_maximum_dimension <= 4096:
+            raise ValueError(
+                "Reference-ridge working dimension must be between 256 and 4096."
+            )
         if not 0.05 <= self.boundary_radius_min_fraction < self.boundary_radius_max_fraction <= 1.5:
             raise ValueError("Boundary radius fractions are invalid.")
         if not 3 <= self.boundary_radius_sample_count <= 25:
@@ -375,8 +464,13 @@ class AnalysisLayers:
     colour_frequency_noise_masks: tuple[object, ...] = ()
     foreground_noise_likelihood: object | None = None
     foreground_noise_frequency_profile: NoiseFrequencyProfile | None = None
+    reference_seed_surface_probability: object | None = None
+    reference_background_texture_probability: object | None = None
+    reference_other_texture_probability: object | None = None
+    reference_texture_profile: ReferenceTextureProfile | None = None
     physical_edge_probability: object | None = None
     non_edge_probability: object | None = None
+    reference_edge_ridges: object | None = None
     undirected_edge_likelihood: object | None = None
     background_mode: str = "automatic"
     background_reference_count: int = 0
@@ -398,6 +492,8 @@ class AnalysisLayers:
     edge_rejection_hue: object | None = None
     edge_rejection_strength: object | None = None
     edge_fit_geometry: object | None = None
+    surrounding_background_likelihood: object | None = None
+    surrounding_background_valid_mask: object | None = None
     surrounding_noise_likelihood: object | None = None
     surrounding_noise_valid_mask: object | None = None
     surrounding_noise_offset_x: int = 0
@@ -430,6 +526,28 @@ class AnalysisLayers:
         alpha = np.uint8(np.asarray(self.valid_mask) > 0) * 255
         return np.dstack((gray, gray, gray, alpha))
 
+    def reference_seed_surface_rgba(self) -> np.ndarray:
+        return self.reference_material_probability_rgba("foreground")
+
+    def reference_material_probability_rgba(
+        self, class_name: str
+    ) -> np.ndarray:
+        rasters = {
+            "foreground": self.reference_seed_surface_probability,
+            "background": self.reference_background_texture_probability,
+            "other": self.reference_other_texture_probability,
+        }
+        if class_name not in rasters:
+            raise ValueError(f"Unknown reference material class {class_name!r}.")
+        raster = rasters[class_name]
+        values = (
+            np.zeros_like(np.asarray(self.valid_mask), dtype=np.uint8)
+            if raster is None
+            else np.asarray(raster, dtype=np.uint8)
+        )
+        alpha = np.uint8(np.asarray(self.valid_mask) > 0) * 255
+        return np.dstack((values, values, values, alpha))
+
     def reference_edge_probability_rgba(self, physical: bool = True) -> np.ndarray:
         raster = (
             self.physical_edge_probability if physical else self.non_edge_probability
@@ -451,6 +569,19 @@ class AnalysisLayers:
         alpha = np.uint8(np.asarray(self.valid_mask) > 0) * 255
         return np.dstack((red, green, blue, alpha))
 
+    def reference_edge_ridges_rgba(self) -> np.ndarray:
+        values = (
+            np.zeros_like(np.asarray(self.valid_mask), dtype=np.uint8)
+            if self.reference_edge_ridges is None
+            else np.asarray(self.reference_edge_ridges, dtype=np.uint8)
+        )
+        normalized = values.astype(np.float32) / 255.0
+        red = np.uint8(normalized * 255.0)
+        green = np.uint8(normalized * 210.0)
+        blue = np.uint8(normalized * 45.0)
+        alpha = np.uint8(np.asarray(self.valid_mask) > 0) * 255
+        return np.dstack((red, green, blue, alpha))
+
     def surrounding_noise_rgba(self) -> np.ndarray | None:
         if (
             self.surrounding_noise_likelihood is None
@@ -459,6 +590,19 @@ class AnalysisLayers:
             return None
         gray = 255 - np.asarray(self.surrounding_noise_likelihood)
         alpha = np.uint8(np.asarray(self.surrounding_noise_valid_mask) > 0) * 255
+        return np.dstack((gray, gray, gray, alpha))
+
+    def surrounding_background_rgba(self) -> np.ndarray | None:
+        if (
+            self.surrounding_background_likelihood is None
+            or self.surrounding_background_valid_mask is None
+        ):
+            return None
+        gray = 255 - np.asarray(self.surrounding_background_likelihood)
+        alpha = (
+            np.uint8(np.asarray(self.surrounding_background_valid_mask) > 0)
+            * 255
+        )
         return np.dstack((gray, gray, gray, alpha))
 
     def directed_edge_rgba(self) -> np.ndarray:
@@ -592,6 +736,8 @@ def build_analysis_layers(
     background_colour_enabled: bool = True,
     foreground_noise_enabled: bool = True,
     reference_edge_probability_enabled: bool = True,
+    reference_edge_ridges_enabled: bool = True,
+    reference_texture_prototypes_enabled: bool = True,
     surface_darkness_gradients_enabled: bool = True,
     lightening_gradient_ceiling_enabled: bool = True,
     darkening_gradient_ceiling_enabled: bool = True,
@@ -636,6 +782,8 @@ def build_analysis_layers(
         background_colour_enabled=background_colour_enabled,
         foreground_noise_enabled=foreground_noise_enabled,
         reference_edge_probability_enabled=reference_edge_probability_enabled,
+        reference_edge_ridges_enabled=reference_edge_ridges_enabled,
+        reference_texture_prototypes_enabled=reference_texture_prototypes_enabled,
         surface_darkness_gradients_enabled=surface_darkness_gradients_enabled,
         lightening_gradient_ceiling_enabled=lightening_gradient_ceiling_enabled,
         darkening_gradient_ceiling_enabled=darkening_gradient_ceiling_enabled,

@@ -160,9 +160,17 @@ desktop shell.
 - Native Qt visual pipeline from raw images to final output
 - Typed node parameters, status, per-node CUDA/CPU calculation timing, and
   downstream cache invalidation
+- Independent direct-input contracts for all 53 active/toolbox nodes, with
+  corrected-image, dish-region, physical/seed scale, mask, proposal, and
+  reference dependencies represented explicitly and cache invalidation verified
+  against the graph
 - Explicit dish-layout, seed-scale, symmetric foreground/background colour and
   noise-probability stages, plus shared edge-gradient/ridge/trace diagnostics
   with visible method explanations and per-run diagnostics
+- Image-local multi-prototype pattern matching from all material, boundary, and
+  instance-reference sublayers, with separate Background, Foreground, Other,
+  Physical-edge, and Non-edge banks; global probability rasters; and a full-pane
+  grouped collage of every retained prototype
 - Toolbox-preserved, disabled one-sided maximum lightening/darkening
   surface-slope diagnostics and derivative upper cutoffs, plus active raw
   fine/medium/coarse surrounding RMS masks for darkness and Lab colour noise
