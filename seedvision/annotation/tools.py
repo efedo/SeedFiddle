@@ -8,7 +8,7 @@ returned path, polygon, or label map as one undoable annotation draft change.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import atan2, cos, hypot, pi
+from math import atan2, hypot, pi
 
 import cv2
 import numpy as np
@@ -24,6 +24,7 @@ class EdgeTraceOptions:
     tangent_weight: float = 0.45
     smoothing: int = 2
     edge_source: str = "magnitude"
+    fill_closed_loops: bool = True
 
     def __post_init__(self) -> None:
         if not 2 <= self.search_radius_px <= 200:
@@ -48,35 +49,8 @@ class EdgeTraceOptions:
                 "Edge source must be adaptive, ridges, reference_ridges, traces, "
                 "magnitude, or physical."
             )
-
-
-@dataclass(frozen=True, slots=True)
-class ShapeSnapOptions:
-    """Controls for fitting an edge-supported circle or ellipse."""
-
-    shape: str = "ellipse"
-    edge_search_radius_px: int = 14
-    centre_search_radius_px: int = 5
-    angular_samples: int = 96
-    rotation_degrees: float = 0.0
-    tangent_mode: str = "undirected"
-    tangent_weight: float = 0.35
-
-    def __post_init__(self) -> None:
-        if self.shape not in {"circle", "ellipse"}:
-            raise ValueError("Shape must be circle or ellipse.")
-        if not 1 <= self.edge_search_radius_px <= 200:
-            raise ValueError("Shape edge search must be between 1 and 200 pixels.")
-        if not 0 <= self.centre_search_radius_px <= 100:
-            raise ValueError("Shape centre search must be between 0 and 100 pixels.")
-        if not 24 <= self.angular_samples <= 360:
-            raise ValueError("Shape samples must be between 24 and 360.")
-        if not -180.0 <= self.rotation_degrees <= 180.0:
-            raise ValueError("Shape rotation must be between -180 and 180 degrees.")
-        if self.tangent_mode not in {"off", "undirected", "directed"}:
-            raise ValueError("Tangent mode must be off, undirected, or directed.")
-        if not 0.0 <= self.tangent_weight <= 1.0:
-            raise ValueError("Tangent weight must be between zero and one.")
+        if not isinstance(self.fill_closed_loops, bool):
+            raise ValueError("Fill closed loops must be enabled or disabled.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,7 +60,8 @@ class SmartFillOptions:
     colour_tolerance_lab: float = 18.0
     edge_stop_threshold: float = 0.58
     tunnel_strength: float = 0.0
-    maximum_radius_px: int = 160
+    maximum_distance_from_cursor_px: int = 60
+    falloff_half_life_px: float = 40.0
     maximum_added_pixels: int = 150_000
     connectivity: int = 8
     edge_source: str = "magnitude"
@@ -98,8 +73,14 @@ class SmartFillOptions:
             raise ValueError("Edge stop threshold must be between zero and one.")
         if not 0.0 <= self.tunnel_strength <= 1.0:
             raise ValueError("Tunnel strength must be between zero and one.")
-        if not 4 <= self.maximum_radius_px <= 4096:
-            raise ValueError("Maximum fill radius must be between 4 and 4096 pixels.")
+        if not 4 <= self.maximum_distance_from_cursor_px <= 4096:
+            raise ValueError(
+                "Maximum distance from cursor must be between 4 and 4096 pixels."
+            )
+        if not 1.0 <= self.falloff_half_life_px <= 4096.0:
+            raise ValueError(
+                "Fall-off half-life must be between 1 and 4096 pixels."
+            )
         if not 1 <= self.maximum_added_pixels <= 10_000_000:
             raise ValueError("Maximum added pixels must be positive.")
         if self.connectivity not in {4, 8}:
@@ -111,10 +92,11 @@ class SmartFillOptions:
             "traces",
             "magnitude",
             "physical",
+            "net_physical",
         }:
             raise ValueError(
                 "Edge source must be adaptive, ridges, reference_ridges, traces, "
-                "magnitude, or physical."
+                "magnitude, physical, or net_physical."
             )
 
 
@@ -135,6 +117,17 @@ def _normalized_strength(values: np.ndarray) -> np.ndarray:
     if result.size and float(np.nanmax(result)) > 1.0:
         result = result / 255.0
     return np.nan_to_num(result, nan=0.0, posinf=1.0, neginf=0.0).clip(0.0, 1.0)
+
+
+def _smart_fill_extension_pressure(
+    distance_px: np.ndarray | float,
+    half_life_px: float,
+) -> np.ndarray:
+    """Return the exact radial Smart Fill pressure ``2**(-d / h)``."""
+
+    return np.exp2(
+        -np.asarray(distance_px, dtype=np.float32) / float(half_life_px)
+    )
 
 
 def _edge_evidence(values: np.ndarray, source: str) -> np.ndarray:
@@ -383,111 +376,6 @@ def trace_edge_path(
     return np.rint(path).astype(np.int32)
 
 
-def snap_shape_polygon(
-    centre_xy: tuple[float, float],
-    edge_xy: tuple[float, float],
-    edge_strength: np.ndarray,
-    options: ShapeSnapOptions = ShapeSnapOptions(),
-    tangent_hue: np.ndarray | None = None,
-    *,
-    fallback_radius_px: float = 30.0,
-) -> np.ndarray:
-    """Fit the closest locally edge-supported circle or ellipse."""
-
-    edge = np.asarray(edge_strength)
-    if edge.ndim != 2:
-        raise ValueError("Edge strength must be a two-dimensional raster.")
-    edge_scale = 255.0 if np.issubdtype(edge.dtype, np.integer) else 1.0
-    height, width = edge.shape
-    hue = None if tangent_hue is None else np.asarray(tangent_hue)
-    if hue is not None and hue.shape != edge.shape:
-        raise ValueError("Tangent hue and edge strength must have the same shape.")
-    cx, cy = float(centre_xy[0]), float(centre_xy[1])
-    drag_x, drag_y = float(edge_xy[0]) - cx, float(edge_xy[1]) - cy
-    using_fallback = hypot(drag_x, drag_y) < 3.0
-    if using_fallback:
-        drag_x = max(3.0, float(fallback_radius_px))
-        drag_y = (
-            drag_x
-            if options.shape == "circle"
-            else max(3.0, drag_x * 0.72)
-        )
-    if options.shape == "circle":
-        radius_x = radius_y = max(3.0, hypot(drag_x, drag_y))
-    else:
-        radius_x = max(3.0, abs(drag_x))
-        radius_y = max(3.0, abs(drag_y))
-        if radius_x <= 3.0 or radius_y <= 3.0:
-            radius_x = max(radius_x, float(fallback_radius_px))
-            radius_y = max(radius_y, float(fallback_radius_px) * 0.72)
-    rotation = float(options.rotation_degrees) * pi / 180.0
-    angles = np.linspace(0.0, 2.0 * pi, options.angular_samples, endpoint=False)
-    cosine, sine = np.cos(angles), np.sin(angles)
-    cos_r, sin_r = cos(rotation), np.sin(rotation)
-    centre_radius = int(options.centre_search_radius_px)
-    centre_offsets = sorted({-centre_radius, 0, centre_radius})
-    edge_radius = float(options.edge_search_radius_px)
-    radial_offsets = np.linspace(-edge_radius, edge_radius, 7)
-    best_score = -np.inf
-    best_polygon: np.ndarray | None = None
-    for offset_y in centre_offsets:
-        for offset_x in centre_offsets:
-            candidate_cx, candidate_cy = cx + offset_x, cy + offset_y
-            for radial_offset in radial_offsets:
-                candidate_rx = max(3.0, radius_x + radial_offset)
-                candidate_ry = max(3.0, radius_y + radial_offset)
-                local_x = candidate_rx * cosine
-                local_y = candidate_ry * sine
-                xs = candidate_cx + local_x * cos_r - local_y * sin_r
-                ys = candidate_cy + local_x * sin_r + local_y * cos_r
-                ix = np.rint(xs).astype(np.int32)
-                iy = np.rint(ys).astype(np.int32)
-                valid = (ix >= 0) & (ix < width) & (iy >= 0) & (iy < height)
-                if np.count_nonzero(valid) < options.angular_samples * 0.75:
-                    continue
-                support = float(edge[iy[valid], ix[valid]].mean()) / edge_scale
-                if hue is not None and options.tangent_mode != "off":
-                    dx_dt = -candidate_rx * sine
-                    dy_dt = candidate_ry * cosine
-                    tangent_angles = np.arctan2(
-                        dx_dt * sin_r + dy_dt * cos_r,
-                        dx_dt * cos_r - dy_dt * sin_r,
-                    )
-                    encoded = hue[iy[valid], ix[valid]].astype(np.float32)
-                    if options.tangent_mode == "undirected":
-                        encoded_angles = encoded * pi / 180.0
-                        alignment = np.abs(np.cos(tangent_angles[valid] - encoded_angles))
-                    else:
-                        encoded_angles = encoded * 2.0 * pi / 180.0
-                        alignment = 0.5 + 0.5 * np.cos(
-                            tangent_angles[valid] - encoded_angles
-                        )
-                    support = (
-                        support * (1.0 - options.tangent_weight)
-                        + float(np.mean(alignment)) * options.tangent_weight
-                    )
-                displacement_penalty = (
-                    hypot(offset_x, offset_y) / max(1.0, centre_radius) * 0.04
-                    if centre_radius
-                    else 0.0
-                )
-                radius_penalty = abs(radial_offset) / max(1.0, edge_radius) * 0.04
-                score = support - displacement_penalty - radius_penalty
-                if score > best_score:
-                    best_score = score
-                    best_polygon = np.column_stack((xs, ys))
-    if best_polygon is None:
-        local_x = radius_x * cosine
-        local_y = radius_y * sine
-        best_polygon = np.column_stack(
-            (
-                cx + local_x * cos_r - local_y * sin_r,
-                cy + local_x * sin_r + local_y * cos_r,
-            )
-        )
-    return np.rint(best_polygon).astype(np.int32)
-
-
 def _star_convex_edge_fill(
     edge_strength: np.ndarray,
     lab_image: np.ndarray,
@@ -502,7 +390,7 @@ def _star_convex_edge_fill(
     comparison can then legitimately walk into another seed of the same coat
     colour.  This bounded fallback follows a smooth star-convex edge contour;
     it is deliberately used only after the ordinary flood reaches the outer
-    growth limit.
+    cursor-distance limit.
     """
 
     edge = _normalized_strength(edge_strength)
@@ -553,9 +441,18 @@ def _star_convex_edge_fill(
         borderValue=0,
     ).astype(np.float32)
 
-    threshold_floor = float(options.edge_stop_threshold) * 0.45
+    # The radial pressure prior makes weak structural evidence increasingly
+    # able to stop outward growth. At one half-life the effective edge barrier
+    # threshold is exactly half its value at the cursor.
+    radial_pressure = _smart_fill_extension_pressure(
+        radial_values[None, :], options.falloff_half_life_px
+    )
+    threshold_floor = (
+        float(options.edge_stop_threshold) * radial_pressure * 0.45
+    )
     structural = np.clip(
-        (edge_samples - threshold_floor) / max(0.05, 1.0 - threshold_floor),
+        (edge_samples - threshold_floor)
+        / np.maximum(0.05, 1.0 - threshold_floor),
         0.0,
         1.0,
     )
@@ -657,6 +554,10 @@ def smart_fill_region(
     options: SmartFillOptions = SmartFillOptions(),
     *,
     corrected_lab: np.ndarray | None = None,
+    allowed_mask: np.ndarray | None = None,
+    allowed_origin_xy: tuple[int, int] = (0, 0),
+    extension_pressure_mask: np.ndarray | None = None,
+    extension_pressure_origin_xy: tuple[int, int] = (0, 0),
 ) -> SmartFillRegion:
     """Return a fast locally adaptive fill region suitable for live preview.
 
@@ -664,7 +565,13 @@ def smart_fill_region(
     accepted neighbour rather than the original click colour. That preserves
     gradual traversal across patterned coats while running in native code fast
     enough for a debounced hover preview. Existing marks are optional: an empty
-    instance starts directly at the clicked pixel.
+    instance starts directly at the clicked pixel. ``allowed_mask`` optionally
+    supplies a compact full-image-coordinate envelope. It is used by Shape fill
+    to reuse this exact growth method without allocating a full-resolution mask.
+    ``extension_pressure_mask`` can replace the ordinary cursor-radial pressure
+    with a compact caller-authored pressure field; Shape fill uses this for its
+    one-sided outside-the-ellipse decay while keeping unit pressure everywhere
+    inside the fitted prior.
     """
 
     source_labels = np.asarray(labels)
@@ -676,10 +583,33 @@ def smart_fill_region(
         raise ValueError("Smart fill requires a three-channel corrected BGR image.")
     if not 1 <= int(instance_id) <= np.iinfo(np.uint16).max:
         raise ValueError("Instance ID must fit in an unsigned 16-bit label map.")
+    compact_allowed = None
+    if allowed_mask is not None:
+        compact_allowed = np.asarray(allowed_mask, dtype=bool)
+        if compact_allowed.ndim != 2:
+            raise ValueError("Smart-fill allowed mask must be two-dimensional.")
+    compact_pressure = None
+    if extension_pressure_mask is not None:
+        compact_pressure = np.asarray(
+            extension_pressure_mask, dtype=np.float32
+        )
+        if compact_pressure.ndim != 2:
+            raise ValueError(
+                "Smart-fill extension pressure mask must be two-dimensional."
+            )
+        if not np.all(np.isfinite(compact_pressure)):
+            raise ValueError("Smart-fill extension pressure must be finite.")
+        if np.any(compact_pressure < 0.0) or np.any(compact_pressure > 1.0):
+            raise ValueError(
+                "Smart-fill extension pressure must lie between zero and one."
+            )
     height, width = source_labels.shape
     click_x = int(np.clip(round(click_xy[0]), 0, width - 1))
     click_y = int(np.clip(round(click_xy[1]), 0, height - 1))
-    radius = int(options.maximum_radius_px)
+    # This is deliberately a distance from the click, not an instance width.
+    # The circular guard therefore permits at most twice this value from one
+    # side of a newly filled region to the other when the cursor is central.
+    radius = int(options.maximum_distance_from_cursor_px)
     anchor_x, anchor_y = click_x, click_y
 
     x0, x1 = max(0, anchor_x - radius), min(width, anchor_x + radius + 1)
@@ -697,20 +627,123 @@ def smart_fill_region(
             raise ValueError("Precomputed Lab image must match corrected BGR.")
         roi_lab = np.ascontiguousarray(lab[y0:y1, x0:x1], dtype=np.uint8)
     local_anchor = (anchor_x - x0, anchor_y - y0)
+    allowed_roi = np.ones(roi_labels.shape, dtype=bool)
+    if compact_allowed is not None:
+        allowed_roi.fill(False)
+        allowed_x0, allowed_y0 = map(int, allowed_origin_xy)
+        allowed_x1 = allowed_x0 + compact_allowed.shape[1]
+        allowed_y1 = allowed_y0 + compact_allowed.shape[0]
+        overlap_x0 = max(x0, allowed_x0)
+        overlap_y0 = max(y0, allowed_y0)
+        overlap_x1 = min(x1, allowed_x1)
+        overlap_y1 = min(y1, allowed_y1)
+        if overlap_x0 < overlap_x1 and overlap_y0 < overlap_y1:
+            allowed_roi[
+                overlap_y0 - y0 : overlap_y1 - y0,
+                overlap_x0 - x0 : overlap_x1 - x0,
+            ] = compact_allowed[
+                overlap_y0 - allowed_y0 : overlap_y1 - allowed_y0,
+                overlap_x0 - allowed_x0 : overlap_x1 - allowed_x0,
+            ]
+        if not allowed_roi[local_anchor[1], local_anchor[0]]:
+            return SmartFillRegion(
+                x0, y0, np.zeros(roi_labels.shape, dtype=bool), 0
+            )
     yy, xx = np.ogrid[: roi_labels.shape[0], : roi_labels.shape[1]]
-    outside_radius = (
+    radial_distance_squared = (
         (xx - local_anchor[0]) ** 2 + (yy - local_anchor[1]) ** 2
-        > radius * radius
     )
+    radial_distance = np.sqrt(radial_distance_squared.astype(np.float32))
+    outside_radius = radial_distance_squared > radius * radius
     other_instance = (roi_labels != 0) & (roi_labels != int(instance_id))
-    edge_limit = float(options.edge_stop_threshold)
-    edge_barrier = roi_edge >= edge_limit
+    if compact_pressure is None:
+        radial_pressure = _smart_fill_extension_pressure(
+            radial_distance, options.falloff_half_life_px
+        )
+    else:
+        radial_pressure = np.zeros(roi_labels.shape, dtype=np.float32)
+        pressure_x0, pressure_y0 = map(int, extension_pressure_origin_xy)
+        pressure_x1 = pressure_x0 + compact_pressure.shape[1]
+        pressure_y1 = pressure_y0 + compact_pressure.shape[0]
+        overlap_x0 = max(x0, pressure_x0)
+        overlap_y0 = max(y0, pressure_y0)
+        overlap_x1 = min(x1, pressure_x1)
+        overlap_y1 = min(y1, pressure_y1)
+        if overlap_x0 < overlap_x1 and overlap_y0 < overlap_y1:
+            radial_pressure[
+                overlap_y0 - y0 : overlap_y1 - y0,
+                overlap_x0 - x0 : overlap_x1 - x0,
+            ] = compact_pressure[
+                overlap_y0 - pressure_y0 : overlap_y1 - pressure_y0,
+                overlap_x0 - pressure_x0 : overlap_x1 - pressure_x0,
+            ]
+    edge_limit = float(options.edge_stop_threshold) * radial_pressure
+    # Empty edge evidence remains passable even at very small pressure; for
+    # continuous evidence the decaying threshold makes weaker edges sufficient
+    # to stop growth farther from the cursor. Binary ridges remain hard edges.
+    edge_barrier = (roi_edge > 0.0) & (roi_edge >= edge_limit)
     edge_barrier &= roi_labels != int(instance_id)
+    # OpenCV's fast floating-range fill uses one fixed neighbour tolerance.
+    # Add an exact, vectorized radial prior over the selected connectivity. For
+    # each candidate, find the smallest normalized Lab step to any touching
+    # neighbour that is strictly closer to the cursor. A candidate is blocked
+    # when even that easiest inward step exceeds 2**(-distance / half_life).
+    # The ordinary floating-range check below remains the connected-growth
+    # engine and handles local continuity in every direction.
+    lab_int = roi_lab.astype(np.int16)
+    minimum_inward_step = np.full(roi_labels.shape, np.inf, dtype=np.float32)
+    neighbour_offsets = [(-1, 0), (0, -1), (0, 1), (1, 0)]
+    if options.connectivity == 8:
+        neighbour_offsets.extend(((-1, -1), (-1, 1), (1, -1), (1, 1)))
+    roi_height, roi_width = roi_labels.shape
+    base_tolerance = float(options.colour_tolerance_lab)
+    for delta_y, delta_x in neighbour_offsets:
+        candidate_y0 = max(0, -delta_y)
+        candidate_y1 = min(roi_height, roi_height - delta_y)
+        candidate_x0 = max(0, -delta_x)
+        candidate_x1 = min(roi_width, roi_width - delta_x)
+        candidate_slice = (
+            slice(candidate_y0, candidate_y1),
+            slice(candidate_x0, candidate_x1),
+        )
+        neighbour_slice = (
+            slice(candidate_y0 + delta_y, candidate_y1 + delta_y),
+            slice(candidate_x0 + delta_x, candidate_x1 + delta_x),
+        )
+        candidate_lab = lab_int[candidate_slice]
+        neighbour_lab = lab_int[neighbour_slice]
+        normalized_step = np.abs(
+            candidate_lab[:, :, 0] - neighbour_lab[:, :, 0]
+        ).astype(np.float32)
+        np.maximum(
+            normalized_step,
+            np.abs(candidate_lab[:, :, 1] - neighbour_lab[:, :, 1]) / 0.72,
+            out=normalized_step,
+        )
+        np.maximum(
+            normalized_step,
+            np.abs(candidate_lab[:, :, 2] - neighbour_lab[:, :, 2]) / 0.72,
+            out=normalized_step,
+        )
+        normalized_step /= base_tolerance
+        inward = (
+            radial_distance_squared[neighbour_slice]
+            < radial_distance_squared[candidate_slice]
+        )
+        normalized_step[~inward] = np.inf
+        np.minimum(
+            minimum_inward_step[candidate_slice],
+            normalized_step,
+            out=minimum_inward_step[candidate_slice],
+        )
+    radial_colour_barrier = minimum_inward_step > radial_pressure
+    radial_colour_barrier[local_anchor[1], local_anchor[0]] = False
+    radial_colour_barrier &= roi_labels != int(instance_id)
     # Tunnelling opens one bounded passage through the nearest weak barrier.
     # The former implementation raised the threshold everywhere, weakening
     # every seed boundary in the ROI and also changing the colour tolerance.
     if options.tunnel_strength > 0.0 and np.any(edge_barrier):
-        weak_limit = min(
+        weak_limit = np.minimum(
             1.0, edge_limit + 0.32 * float(options.tunnel_strength)
         )
         weak = edge_barrier & (roi_edge <= weak_limit)
@@ -730,7 +763,13 @@ def smart_fill_region(
                 <= passage_radius * passage_radius
             )
             edge_barrier &= ~(weak & passage)
-    blocked = outside_radius | other_instance | edge_barrier
+    blocked = (
+        outside_radius
+        | ~allowed_roi
+        | other_instance
+        | edge_barrier
+        | radial_colour_barrier
+    )
     blocked[local_anchor[1], local_anchor[0]] = False
     flood_mask = np.zeros(
         (roi_labels.shape[0] + 2, roi_labels.shape[1] + 2), dtype=np.uint8
@@ -765,9 +804,6 @@ def smart_fill_region(
     roi_is_unclipped = (
         x0 > 0 and y0 > 0 and x1 < width and y1 < height
     )
-    radial_distance_squared = (
-        (xx - local_anchor[0]) ** 2 + (yy - local_anchor[1]) ** 2
-    )
     outer_ring = (
         radial_distance_squared >= (0.92 * radius) ** 2
     ) & ~outside_radius
@@ -776,7 +812,7 @@ def smart_fill_region(
         and np.any(outer_ring)
         and float(np.mean(accepted[outer_ring])) > 0.12
     )
-    if outer_reached:
+    if outer_reached and compact_pressure is None:
         recovered = _star_convex_edge_fill(
             roi_edge,
             roi_lab,
@@ -788,7 +824,10 @@ def smart_fill_region(
             accepted = recovered
             accepted |= roi_labels == int(instance_id)
             accepted &= ~other_instance
+    accepted &= allowed_roi
     accepted |= roi_labels == int(instance_id)
+    if compact_allowed is not None:
+        accepted &= allowed_roi
     added_mask = accepted & (roi_labels != int(instance_id))
     added = int(np.count_nonzero(added_mask))
     if added > options.maximum_added_pixels:

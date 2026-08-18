@@ -8,13 +8,12 @@ import numpy as np
 
 from seedvision.annotation import (
     EdgeTraceOptions,
-    ShapeSnapOptions,
     SmartFillOptions,
     smart_fill_instance,
     snap_edge_point,
-    snap_shape_polygon,
     trace_edge_path,
 )
+from seedvision.annotation.tools import _smart_fill_extension_pressure
 
 
 class AnnotationToolTests(unittest.TestCase):
@@ -86,28 +85,14 @@ class AnnotationToolTests(unittest.TestCase):
         self.assertGreater(float(np.mean(path[:, 1] == 20)), 0.95)
         self.assertFalse(np.any(path[:, 1] == 24))
 
-    def test_shape_snap_moves_an_ellipse_onto_nearby_edges(self) -> None:
-        edge = np.zeros((120, 130), dtype=np.uint8)
-        cv2.ellipse(edge, (66, 57), (31, 19), 0, 0, 360, 255, 2)
-        polygon = snap_shape_polygon(
-            (63, 55),
-            (90, 70),
-            edge,
-            ShapeSnapOptions(
-                shape="ellipse",
-                edge_search_radius_px=7,
-                centre_search_radius_px=3,
-                angular_samples=120,
-                tangent_mode="off",
-            ),
-        )
-        support = edge[
-            np.clip(polygon[:, 1], 0, edge.shape[0] - 1),
-            np.clip(polygon[:, 0], 0, edge.shape[1] - 1),
-        ]
-        self.assertGreater(float(np.mean(support > 0)), 0.55)
-        self.assertAlmostEqual(float(polygon[:, 0].mean()), 66.0, delta=3.0)
-        self.assertAlmostEqual(float(polygon[:, 1].mean()), 57.0, delta=3.0)
+    def test_retired_plain_shape_snap_has_no_core_api(self) -> None:
+        import seedvision.annotation as annotation
+        import seedvision.annotation.tools as tools
+
+        self.assertFalse(hasattr(annotation, "ShapeSnapOptions"))
+        self.assertFalse(hasattr(annotation, "snap_shape_polygon"))
+        self.assertFalse(hasattr(tools, "ShapeSnapOptions"))
+        self.assertFalse(hasattr(tools, "snap_shape_polygon"))
 
     def test_smart_fill_adapts_to_touching_colours_and_stops_at_edge(self) -> None:
         height, width = 50, 70
@@ -129,7 +114,7 @@ class AnnotationToolTests(unittest.TestCase):
             SmartFillOptions(
                 colour_tolerance_lab=10.0,
                 edge_stop_threshold=0.45,
-                maximum_radius_px=38,
+                maximum_distance_from_cursor_px=38,
                 maximum_added_pixels=10_000,
             ),
         )
@@ -149,7 +134,7 @@ class AnnotationToolTests(unittest.TestCase):
         options = dict(
             colour_tolerance_lab=8.0,
             edge_stop_threshold=0.58,
-            maximum_radius_px=38,
+            maximum_distance_from_cursor_px=38,
             maximum_added_pixels=10_000,
         )
 
@@ -185,7 +170,7 @@ class AnnotationToolTests(unittest.TestCase):
         base_options = dict(
             colour_tolerance_lab=8.0,
             edge_stop_threshold=0.20,
-            maximum_radius_px=25,
+            maximum_distance_from_cursor_px=25,
             maximum_added_pixels=5_000,
         )
         stopped, _ = smart_fill_instance(
@@ -219,9 +204,94 @@ class AnnotationToolTests(unittest.TestCase):
             edge,
             (10, 17),
             1,
-            SmartFillOptions(maximum_radius_px=30, maximum_added_pixels=5_000),
+            SmartFillOptions(
+                maximum_distance_from_cursor_px=30,
+                maximum_added_pixels=5_000,
+            ),
         )
         self.assertTrue(np.all(filled[10:25, 28:34] == 9))
+
+    def test_smart_fill_enforces_maximum_distance_from_cursor(self) -> None:
+        image = np.full((81, 81, 3), 120, dtype=np.uint8)
+        edge = np.zeros((81, 81), dtype=np.uint8)
+        labels = np.zeros((81, 81), dtype=np.uint16)
+        cursor = (40, 40)
+        maximum_distance = 12
+
+        filled, _added = smart_fill_instance(
+            labels,
+            image,
+            edge,
+            cursor,
+            6,
+            SmartFillOptions(
+                maximum_distance_from_cursor_px=maximum_distance,
+                maximum_added_pixels=5_000,
+            ),
+        )
+
+        yy, xx = np.nonzero(filled == 6)
+        distances = np.hypot(xx - cursor[0], yy - cursor[1])
+        self.assertGreater(len(distances), 300)
+        self.assertLessEqual(float(np.max(distances)), maximum_distance)
+        self.assertEqual(int(filled[40, 52]), 6)
+        self.assertEqual(int(filled[40, 53]), 0)
+
+    def test_smart_fill_falloff_half_life_limits_repeated_colour_steps(self) -> None:
+        self.assertAlmostEqual(
+            float(_smart_fill_extension_pressure(10.0, 10.0)),
+            0.5,
+            places=7,
+        )
+        height = width = 61
+        cursor = (20, 30)
+        yy, xx = np.indices((height, width))
+        manhattan_distance = np.abs(xx - cursor[0]) + np.abs(yy - cursor[1])
+        corrected_lab = np.zeros((height, width, 3), dtype=np.uint8)
+        corrected_lab[:, :, 0] = 100
+        corrected_lab[:, :, 1:] = 128
+        corrected_lab[:, :, 0][manhattan_distance >= 2] += 8
+        corrected_lab[:, :, 0][manhattan_distance >= 10] += 8
+        image = cv2.cvtColor(corrected_lab, cv2.COLOR_LAB2BGR)
+        edge = np.zeros((height, width), dtype=np.float32)
+        labels = np.zeros((height, width), dtype=np.uint16)
+        common = dict(
+            colour_tolerance_lab=10.0,
+            edge_stop_threshold=0.58,
+            maximum_distance_from_cursor_px=20,
+            maximum_added_pixels=5_000,
+            connectivity=4,
+        )
+
+        decayed, _ = smart_fill_instance(
+            labels,
+            image,
+            edge,
+            cursor,
+            4,
+            SmartFillOptions(falloff_half_life_px=10.0, **common),
+            corrected_lab=corrected_lab,
+        )
+        nearly_constant, _ = smart_fill_instance(
+            labels,
+            image,
+            edge,
+            cursor,
+            4,
+            SmartFillOptions(falloff_half_life_px=4096.0, **common),
+            corrected_lab=corrected_lab,
+        )
+
+        # The eight-unit step passes close to the cursor. At one half-life its
+        # normalized size (0.8) exceeds the exact pressure (0.5), so the colour
+        # transition itself and everything beyond it remain excluded. Unlike a
+        # selected physical ridge, a colour-change barrier is not added as a
+        # one-pixel boundary frontier.
+        self.assertEqual(int(decayed[30, 22]), 4)
+        self.assertEqual(int(decayed[30, 29]), 4)
+        self.assertEqual(int(decayed[30, 30]), 0)
+        self.assertEqual(int(decayed[30, 31]), 0)
+        self.assertEqual(int(nearly_constant[30, 31]), 4)
 
     def test_smart_fill_recovers_one_seed_when_a_boundary_gap_leaks(self) -> None:
         image = np.full((130, 180, 3), 120, dtype=np.uint8)
@@ -229,7 +299,7 @@ class AnnotationToolTests(unittest.TestCase):
         cv2.circle(edge, (70, 65), 20, 255, 1)
         cv2.circle(edge, (109, 65), 20, 255, 1)
         # Reproduce a small contact gap through which an ordinary flood would
-        # merge both same-coloured seeds and reach its maximum-radius limit.
+        # merge both same-coloured seeds and reach its cursor-distance limit.
         edge[62:69, 89:92] = 0
         labels = np.zeros((130, 180), dtype=np.uint16)
 
@@ -241,7 +311,7 @@ class AnnotationToolTests(unittest.TestCase):
             5,
             SmartFillOptions(
                 edge_source="ridges",
-                maximum_radius_px=48,
+                maximum_distance_from_cursor_px=48,
                 maximum_added_pixels=10_000,
             ),
         )
@@ -264,7 +334,7 @@ class AnnotationToolTests(unittest.TestCase):
             (450, 450),
             7,
             SmartFillOptions(
-                maximum_radius_px=150,
+                maximum_distance_from_cursor_px=150,
                 maximum_added_pixels=100_000,
             ),
         )

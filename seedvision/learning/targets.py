@@ -120,15 +120,15 @@ def build_dense_targets(
             raise ValueError(
                 "Physical-boundary values and their validity mask are required together."
             )
-        painted_physical = np.asarray(physical_boundary, dtype=bool)
-        painted_valid = np.asarray(physical_valid, dtype=bool)
-        if painted_physical.shape != shape or painted_valid.shape != shape:
+        supplied_physical = np.asarray(physical_boundary, dtype=bool)
+        supplied_valid = np.asarray(physical_valid, dtype=bool)
+        if supplied_physical.shape != shape or supplied_valid.shape != shape:
             raise ValueError("Physical-boundary annotations must match the labels.")
-        if np.any(painted_physical & ~painted_valid):
+        if np.any(supplied_physical & ~supplied_valid):
             raise ValueError(
                 "Physical-boundary positives must lie inside their validity mask."
             )
-        boundary = np.where(painted_valid, painted_physical, boundary).astype(
+        boundary = np.where(supplied_valid, supplied_physical, boundary).astype(
             np.float32
         )
     centre = np.zeros(shape, dtype=np.float32)

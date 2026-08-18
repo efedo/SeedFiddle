@@ -116,4 +116,5 @@ case justifies them.
   accumulated from test images.
 - Rank uncertain regions by disagreement among colour probability, frequency
   noise, reference prototypes, U-Net, and StarDist. Such regions are strong
-  candidates for targeted material/boundary painting or instance correction.
+  candidates for targeted material painting or focused instance-boundary
+  correction in the authoritative seed-ID layer.

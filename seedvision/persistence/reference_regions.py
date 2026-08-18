@@ -13,7 +13,7 @@ from zipfile import BadZipFile
 import numpy as np
 
 
-REFERENCE_REGION_VERSION = 1
+REFERENCE_REGION_VERSION = 2
 _MATERIAL_CLASSES = frozenset((0, 1, 2, 3))
 _BOUNDARY_CLASSES = frozenset((0, 1, 2))
 
@@ -48,7 +48,13 @@ class InvalidReferenceArchive(ReferenceRegionError):
 
 @dataclass(frozen=True, slots=True)
 class ReferenceRegionBundle:
-    """All six outputs of the Reference layers node in image coordinates."""
+    """The active reference layers in full image coordinates.
+
+    ``physical_edge`` and ``non_edge`` are retained only as a source-compatible
+    bridge for version-one callers.  Version-two archives do not persist them:
+    physical and non-physical edge supervision is derived deterministically
+    from ``annotated_seeds``.
+    """
 
     shape: tuple[int, int]
     background: np.ndarray | None = None
@@ -101,7 +107,7 @@ class ReferenceRegionStore:
     def save(
         self, image_path: Path | str, bundle: ReferenceRegionBundle
     ) -> Path:
-        """Atomically save an exclusive categorical representation of all layers."""
+        """Atomically save material references and annotated seed identities."""
 
         image = Path(image_path).resolve()
         if not image.is_file():
@@ -116,24 +122,12 @@ class ReferenceRegionStore:
             raise ReferenceRegionError(
                 "Background, foreground, and other reference regions must be exclusive."
             )
-        physical = _binary_mask(
-            bundle.physical_edge, (height, width), "physical edge"
-        )
-        non_edge = _binary_mask(bundle.non_edge, (height, width), "non-edge")
-        if np.any(physical & non_edge):
-            raise ReferenceRegionError(
-                "Physical-edge and non-edge reference regions must be exclusive."
-            )
         instances = _instance_labels(bundle.annotated_seeds, (height, width))
 
         material = np.zeros((height, width), dtype=np.uint8)
         material[background] = 1
         material[foreground] = 2
         material[other] = 3
-        boundary = np.zeros((height, width), dtype=np.uint8)
-        boundary[physical] = 1
-        boundary[non_edge] = 2
-
         destination = self.path_for(image)
         destination.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temporary_name = tempfile.mkstemp(
@@ -153,7 +147,6 @@ class ReferenceRegionStore:
                     height=np.asarray(height, dtype=np.int64),
                     width=np.asarray(width, dtype=np.int64),
                     material=material,
-                    boundary=boundary,
                     annotated_seeds=instances,
                     annotation_origin=np.asarray(str(bundle.annotation_origin)),
                 )
@@ -177,26 +170,32 @@ class ReferenceRegionStore:
         expected_height, expected_width = _validated_shape(expected_shape)
         try:
             with np.load(source, allow_pickle=False) as archive:
-                for name in (
+                if "version" not in archive.files:
+                    raise InvalidReferenceArchive(
+                        f"Saved reference archive is missing 'version': {source}"
+                    )
+                version = _scalar_int(archive["version"], "version")
+                if version not in {1, REFERENCE_REGION_VERSION}:
+                    raise InvalidReferenceArchive(
+                        f"Unsupported reference-region version {version} in {source}."
+                    )
+                required = [
                     "version",
                     "image_identity",
                     "image_sha256",
                     "height",
                     "width",
                     "material",
-                    "boundary",
                     "annotated_seeds",
                     "annotation_origin",
-                ):
+                ]
+                if version == 1:
+                    required.append("boundary")
+                for name in required:
                     if name not in archive.files:
                         raise InvalidReferenceArchive(
                             f"Saved reference archive is missing {name!r}: {source}"
                         )
-                version = _scalar_int(archive["version"], "version")
-                if version != REFERENCE_REGION_VERSION:
-                    raise InvalidReferenceArchive(
-                        f"Unsupported reference-region version {version} in {source}."
-                    )
                 saved_identity = _scalar_text(
                     archive["image_identity"], "image identity"
                 )
@@ -228,7 +227,11 @@ class ReferenceRegionStore:
                         f"{expected_width}×{expected_height}: {source}"
                     )
                 material = np.asarray(archive["material"])
-                boundary = np.asarray(archive["boundary"])
+                legacy_boundary = (
+                    np.asarray(archive["boundary"])
+                    if version == 1
+                    else None
+                )
                 instances = np.asarray(archive["annotated_seeds"])
                 annotation_origin = _scalar_text(
                     archive["annotation_origin"], "annotation origin"
@@ -246,9 +249,12 @@ class ReferenceRegionStore:
         material = _categorical_raster(
             material, shape, _MATERIAL_CLASSES, "material", source
         )
-        boundary = _categorical_raster(
-            boundary, shape, _BOUNDARY_CLASSES, "boundary", source
-        )
+        if legacy_boundary is not None:
+            # Validate old data so a corrupt version-one file is not silently
+            # accepted, but intentionally discard the retired painted layer.
+            _categorical_raster(
+                legacy_boundary, shape, _BOUNDARY_CLASSES, "boundary", source
+            )
         try:
             instances = _instance_labels(instances, shape)
         except ReferenceRegionError as error:
@@ -260,8 +266,8 @@ class ReferenceRegionStore:
             background=_nonempty(material == 1),
             foreground=_nonempty(material == 2),
             other=_nonempty(material == 3),
-            physical_edge=_nonempty(boundary == 1),
-            non_edge=_nonempty(boundary == 2),
+            physical_edge=None,
+            non_edge=None,
             annotated_seeds=_nonempty(instances),
             annotation_origin=annotation_origin or "manual",
         )

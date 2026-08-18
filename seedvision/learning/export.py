@@ -99,13 +99,15 @@ def export_analysis_sample(
     annotation_revision: str | None = None,
     notes: str | None = None,
     feature_spec: FeatureStackSpec = FeatureStackSpec(),
-    corrected_pattern_boundary: np.ndarray | None = None,
-    corrected_pattern_valid: np.ndarray | None = None,
-    corrected_physical_boundary: np.ndarray | None = None,
-    corrected_physical_valid: np.ndarray | None = None,
     replace_existing: bool = False,
 ):
-    """Export one dish crop normalized to the checkpoint's nominal seed scale."""
+    """Export one dish crop normalized to the checkpoint's nominal seed scale.
+
+    Applied instance masks provide the physical contours and constrain sparse
+    internal generic edge/ridge candidates to non-physical pattern targets.
+    No independently painted boundary raster can override the authoritative
+    seed identities.
+    """
 
     import torch
     import torch.nn.functional as functional
@@ -150,51 +152,40 @@ def export_analysis_sample(
         interpolation = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_CUBIC
         image = cv2.resize(image, (target_width, target_height), interpolation=interpolation)
 
-    pattern = None
-    pattern_valid = None
-    if corrected_pattern_boundary is not None or corrected_pattern_valid is not None:
-        if corrected_pattern_boundary is None or corrected_pattern_valid is None:
-            raise ValueError("Pattern boundary and validity masks are required together.")
-        full_pattern = np.asarray(corrected_pattern_boundary)
-        full_valid = np.asarray(corrected_pattern_valid)
-        if full_pattern.shape != corrected_shape or full_valid.shape != corrected_shape:
-            raise ValueError("Pattern annotations must use corrected-image coordinates.")
-        pattern = full_pattern[crop_slice]
-        pattern_valid = full_valid[crop_slice]
-        if pattern.shape != (target_height, target_width):
-            pattern = cv2.resize(
-                np.uint8(pattern > 0),
-                (target_width, target_height),
-                interpolation=cv2.INTER_NEAREST,
-            )
-            pattern_valid = cv2.resize(
-                np.uint8(pattern_valid > 0),
-                (target_width, target_height),
-                interpolation=cv2.INTER_NEAREST,
-            )
+    from seedvision.annotation import (
+        instance_boundary_references_from_edge_evidence,
+    )
 
-    physical = None
-    physical_valid = None
-    if corrected_physical_boundary is not None or corrected_physical_valid is not None:
-        if corrected_physical_boundary is None or corrected_physical_valid is None:
-            raise ValueError("Physical-boundary and validity masks are required together.")
-        full_physical = np.asarray(corrected_physical_boundary)
-        full_physical_valid = np.asarray(corrected_physical_valid)
-        if full_physical.shape != corrected_shape or full_physical_valid.shape != corrected_shape:
-            raise ValueError("Physical-boundary annotations must use corrected-image coordinates.")
-        physical = full_physical[crop_slice]
-        physical_valid = full_physical_valid[crop_slice]
-        if physical.shape != (target_height, target_width):
-            physical = cv2.resize(
-                np.uint8(physical > 0),
-                (target_width, target_height),
-                interpolation=cv2.INTER_NEAREST,
-            )
-            physical_valid = cv2.resize(
-                np.uint8(physical_valid > 0),
-                (target_width, target_height),
-                interpolation=cv2.INTER_NEAREST,
-            )
+    edge = np.asarray(result.layers.edge_likelihood, dtype=np.uint8)
+    ridges_source = result.layers.edge_ridges
+    ridges = (
+        np.zeros(edge.shape, np.uint8)
+        if ridges_source is None
+        else np.asarray(ridges_source, dtype=np.uint8)
+    )
+    if edge.shape != (crop_height, crop_width) or ridges.shape != edge.shape:
+        raise ValueError(
+            "Analysis edge evidence must share the exported dish-crop dimensions."
+        )
+    if edge.shape != (target_height, target_width):
+        edge = cv2.resize(
+            edge,
+            (target_width, target_height),
+            interpolation=cv2.INTER_AREA,
+        )
+        ridges = cv2.resize(
+            ridges,
+            (target_width, target_height),
+            interpolation=cv2.INTER_AREA,
+        )
+    derived = instance_boundary_references_from_edge_evidence(
+        labels,
+        float(feature_spec.nominal_seed_diameter_px),
+        edge,
+        ridges,
+    )
+    pattern = derived.non_edge
+    pattern_valid = derived.safe_interior
 
     feature_values = features[0].detach().to(device="cpu", dtype=torch.float32).numpy()
     return export_learning_sample(
@@ -211,8 +202,6 @@ def export_analysis_sample(
         reviewed=reviewed,
         pattern_boundary=pattern,
         pattern_valid=pattern_valid,
-        physical_boundary=physical,
-        physical_valid=physical_valid,
         annotation_author=annotation_author,
         annotation_revision=annotation_revision,
         notes=notes,

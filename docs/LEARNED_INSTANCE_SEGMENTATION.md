@@ -34,9 +34,6 @@ Each sample consists of:
 - the original image;
 - a `uint16` or `int32` instance-label raster of the same dimensions, where
   zero is background and each visible seed has one positive identifier;
-- optional sparse physical-edge/non-edge review labels encoded as a physical
-  positive raster plus a separate reviewed-validity raster;
-- optional pattern-boundary labels with separate positive and validity masks;
 - image metadata including species, lot/capture group, annotation author,
   review state, and revision;
 - optional per-instance flags for partial occlusion, truncation, damage, and
@@ -48,11 +45,13 @@ never cross partitions. Empty or partial instance annotations are excluded from
 supervised loss unless their validity region explicitly identifies reviewed
 pixels.
 
-Pattern-boundary supervision is deliberately independent from physical
-boundaries. A missing pattern annotation is unknown and receives zero loss
-weight. A weak pseudo-target may be generated from strong within-instance image
-gradients, away from physical boundaries, but remains flagged as weak and is
-never used in the locked test set.
+Every complete instance mask generates both edge classes without a separately
+painted boundary layer. Its one-pixel inner contour is physical-edge
+supervision. Strong gradient/ridge candidates safely inset from that contour
+are sparse non-physical pattern-edge positives; flat interior and the contour
+uncertainty band remain unlabelled for that head. The generated target and
+validity masks are exported with the reviewed instance raster so their exact
+derivation remains reproducible.
 
 To reduce correction time, the desktop annotation editor can initialize a
 full-resolution draft from the current procedural, U-Net/watershed, or StarDist
@@ -69,10 +68,9 @@ The **Learning** menu makes the ordinary workflow self-contained:
 1. Analyse an image and use **Annotate seed instances**. Start from the
    procedural, U-Net/watershed, or StarDist proposal if useful, but treat it as
    an unreviewed draft. Correct all false splits, merges, omissions, background
-   objects, and edge placement errors, then apply the labels. Use **Boundary
-   references** to add sparse Physical edge/Non-edge review marks where the
-   instance-derived boundary target is ambiguous; its Snap option previews and
-   commits marks at nearby analysed edges.
+   objects, and edge placement errors, then apply the complete labels. The
+   physical contour and safely inset non-physical candidates are regenerated
+   automatically from those IDs and the current edge evidence.
 2. Save the full-resolution seed-label PNG when annotation will span sessions.
    Loading that PNG restores it as a draft for the same corrected image; a
    dimension mismatch is rejected rather than resampled silently.
@@ -91,16 +89,14 @@ The **Learning** menu makes the ordinary workflow self-contained:
 6. Tune decoder settings on validation data and evaluate exactly once on the
    frozen test set using the launcher commands documented in the README.
 
-Instance masks generate all StarDist targets and the U-Net interior, default
-physical-boundary, centre, distance, and auxiliary-error targets. Explicit
-physical edge/non-edge marks override that default only at pixels selected by
-their validity raster; unreviewed pixels retain the instance-derived target.
-The apparent-pattern head has a stricter contract: it is supervised only where a separate
-pattern-boundary raster and validity raster are present. Missing pattern labels
-are unknown and contribute zero pattern loss. The current desktop editor covers
-instance and physical-boundary masks; pattern-boundary raster import/export is supported by the data
-API but still requires a dedicated annotation surface before that head can be
-curated entirely inside Seed Fiddle.
+Instance masks generate all StarDist targets and the U-Net interior, physical
+boundary, centre, distance, apparent-pattern, validity, and auxiliary-error
+targets. Physical contours are exact consequences of the reviewed IDs.
+Apparent-pattern positives are limited to strong internal edge candidates beyond
+the seed-relative uncertainty buffer; other safe-interior pixels provide valid
+negative context, while the uncertainty band contributes zero loss. Seed Fiddle
+therefore has one authoritative instance annotation rather than two boundary
+sources that can disagree.
 
 ## Shared model inputs
 

@@ -879,16 +879,26 @@ class BackgroundColourGamut(QWidget):
 class PipelineInspector(QWidget):
     """Edit node enablement and typed parameter values."""
 
+    PROCEDURAL_FIT_ACTION = "fit_procedural_to_annotations"
+
     parameter_changed = Signal(str, str, object)
     enabled_changed = Signal(str, bool)
     parameters_reset = Signal(str)
     overlay_selected = Signal(str)
+    node_action_requested = Signal(str, str, object)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._node: PipelineNode | None = None
         self._analysis_result = None
         self._parameter_widgets: list[QWidget] = []
+        self._procedural_fit_eligible = False
+        self._procedural_fit_eligibility_text = (
+            "Apply complete seed-instance annotations to enable fitting."
+        )
+        self._procedural_fit_busy = False
+        self._procedural_fit_busy_text = ""
+        self._procedural_fit_result_summary = ""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         self.title_label = QLabel("Select a pipeline node", self)
@@ -936,6 +946,143 @@ class PipelineInspector(QWidget):
         self.status_label = QLabel("", self)
         self.status_label.setWordWrap(True)
         self.status_label.setStyleSheet(f"color: {self._secondary_colour};")
+        self.procedural_fit_container = QWidget(self)
+        procedural_fit_layout = QVBoxLayout(self.procedural_fit_container)
+        procedural_fit_layout.setContentsMargins(0, 4, 0, 2)
+        procedural_fit_layout.setSpacing(4)
+        self.procedural_fit_heading = QLabel(
+            "Annotation-guided parameter fit", self.procedural_fit_container
+        )
+        self.procedural_fit_heading.setStyleSheet("font-weight: 600;")
+        procedural_fit_layout.addWidget(self.procedural_fit_heading)
+        self.procedural_fit_description_label = QLabel(
+            "Search a small bounded set of procedural settings against the applied "
+            "seed-instance masks. This is an image-local fit, not validation.",
+            self.procedural_fit_container,
+        )
+        self.procedural_fit_description_label.setWordWrap(True)
+        self.procedural_fit_description_label.setStyleSheet(
+            f"color: {self._secondary_colour};"
+        )
+        procedural_fit_layout.addWidget(self.procedural_fit_description_label)
+
+        self.procedural_fit_complete_annotations_checkbox = QCheckBox(
+            "Annotations cover whole dish", self.procedural_fit_container
+        )
+        self.procedural_fit_complete_annotations_checkbox.setChecked(False)
+        self.procedural_fit_complete_annotations_checkbox.setToolTip(
+            "Leave this off when only some seeds have been annotated: wholly disjoint "
+            "predictions that never overlap an annotated seed are then outside the "
+            "reviewed subset and are not scored. Turn it on only when every seed in "
+            "the detected dish has a complete applied instance mask; then every "
+            "predicted object, including a standalone background false object, "
+            "contributes to the false-positive penalty."
+        )
+        self.procedural_fit_complete_annotations_checkbox.toggled.connect(
+            self._procedural_fit_coverage_changed
+        )
+        procedural_fit_layout.addWidget(
+            self.procedural_fit_complete_annotations_checkbox
+        )
+
+        procedural_fit_penalty_row = QWidget(self.procedural_fit_container)
+        procedural_fit_penalty_layout = QHBoxLayout(procedural_fit_penalty_row)
+        procedural_fit_penalty_layout.setContentsMargins(0, 0, 0, 0)
+        procedural_fit_penalty_layout.setSpacing(6)
+        procedural_fit_penalty_label = QLabel(
+            "Overreach penalty", procedural_fit_penalty_row
+        )
+        penalty_tooltip = (
+            "Amplitude of the distance-weighted overreach cost. At one overreach "
+            "distance scale, an outside pixel carries this multiple of the fixed "
+            "1.0 missing-area cost. Closer pixels cost less and farther pixels cost "
+            "exponentially more."
+        )
+        procedural_fit_penalty_label.setToolTip(penalty_tooltip)
+        self.procedural_fit_overreach_penalty_spin = QDoubleSpinBox(
+            procedural_fit_penalty_row
+        )
+        self.procedural_fit_overreach_penalty_spin.setRange(1.01, 10.0)
+        self.procedural_fit_overreach_penalty_spin.setDecimals(2)
+        self.procedural_fit_overreach_penalty_spin.setSingleStep(0.10)
+        self.procedural_fit_overreach_penalty_spin.setValue(2.0)
+        self.procedural_fit_overreach_penalty_spin.setSuffix(" ×")
+        self.procedural_fit_overreach_penalty_spin.setToolTip(penalty_tooltip)
+        self.procedural_fit_missing_penalty_label = QLabel(
+            "Missing: 1.0×", procedural_fit_penalty_row
+        )
+        self.procedural_fit_missing_penalty_label.setToolTip(
+            "Every missing annotated seed pixel retains the fixed unit penalty; "
+            "only outside/overreach pixels are distance weighted."
+        )
+        procedural_fit_penalty_layout.addWidget(procedural_fit_penalty_label)
+        procedural_fit_penalty_layout.addWidget(
+            self.procedural_fit_overreach_penalty_spin
+        )
+        procedural_fit_penalty_layout.addWidget(
+            self.procedural_fit_missing_penalty_label
+        )
+        procedural_fit_penalty_layout.addStretch(1)
+        procedural_fit_layout.addWidget(procedural_fit_penalty_row)
+
+        procedural_fit_distance_row = QWidget(self.procedural_fit_container)
+        procedural_fit_distance_layout = QHBoxLayout(procedural_fit_distance_row)
+        procedural_fit_distance_layout.setContentsMargins(0, 0, 0, 0)
+        procedural_fit_distance_layout.setSpacing(6)
+        procedural_fit_distance_label = QLabel(
+            "Overreach distance scale", procedural_fit_distance_row
+        )
+        distance_tooltip = (
+            "Distance over which an outside pixel's exponential multiplier rises "
+            "from zero at the reviewed seed to one, expressed as a fraction of "
+            "the estimated seed diameter. Immediately adjacent leakage therefore "
+            "costs very little; every additional scale increases the penalty "
+            "exponentially. Distances for a matched result are measured from its "
+            "own annotated seed, so merging into an adjacent seed remains costly."
+        )
+        procedural_fit_distance_label.setToolTip(distance_tooltip)
+        self.procedural_fit_overreach_distance_scale_spin = QDoubleSpinBox(
+            procedural_fit_distance_row
+        )
+        self.procedural_fit_overreach_distance_scale_spin.setRange(0.05, 2.0)
+        self.procedural_fit_overreach_distance_scale_spin.setDecimals(2)
+        self.procedural_fit_overreach_distance_scale_spin.setSingleStep(0.05)
+        self.procedural_fit_overreach_distance_scale_spin.setValue(0.50)
+        self.procedural_fit_overreach_distance_scale_spin.setSuffix(" × diameter")
+        self.procedural_fit_overreach_distance_scale_spin.setToolTip(
+            distance_tooltip
+        )
+        procedural_fit_distance_layout.addWidget(procedural_fit_distance_label)
+        procedural_fit_distance_layout.addWidget(
+            self.procedural_fit_overreach_distance_scale_spin
+        )
+        procedural_fit_distance_layout.addStretch(1)
+        procedural_fit_layout.addWidget(procedural_fit_distance_row)
+
+        self.procedural_fit_button = QPushButton(
+            "Fit settings to applied annotations…", self.procedural_fit_container
+        )
+        self.procedural_fit_button.setToolTip(
+            "Evaluate bounded procedural-setting proposals without changing the "
+            "active node, then offer the best improvement for explicit acceptance."
+        )
+        self.procedural_fit_button.clicked.connect(
+            self._procedural_fit_requested
+        )
+        procedural_fit_layout.addWidget(self.procedural_fit_button)
+        self.procedural_fit_status_label = QLabel(
+            self._procedural_fit_eligibility_text,
+            self.procedural_fit_container,
+        )
+        self.procedural_fit_status_label.setWordWrap(True)
+        self.procedural_fit_status_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self.procedural_fit_status_label.setStyleSheet(
+            f"color: {self._secondary_colour};"
+        )
+        procedural_fit_layout.addWidget(self.procedural_fit_status_label)
+        self.procedural_fit_container.setVisible(False)
         self.foreground_start_heading = QLabel("Starting automatic colours", self)
         self.foreground_start_heading.setStyleSheet(
             "font-weight: 600; margin-top: 6px;"
@@ -978,6 +1125,7 @@ class PipelineInspector(QWidget):
         layout.addWidget(self.details_label)
         layout.addWidget(self.enabled_checkbox)
         layout.addWidget(self.status_label)
+        layout.addWidget(self.procedural_fit_container)
         layout.addWidget(self.foreground_start_heading)
         layout.addWidget(self.foreground_start_label)
         layout.addWidget(self.parameters_header)
@@ -1056,7 +1204,107 @@ class PipelineInspector(QWidget):
             self._parameter_widgets.append(editor)
         self.parameter_container.setVisible(bool(node.parameter_specs))
         self.parameters_header.setVisible(bool(node.parameter_specs))
+        self._refresh_procedural_fit_action()
         self._update_colour_summary()
+
+    def set_procedural_fit_eligibility(
+        self, eligible: bool, reason: str = ""
+    ) -> None:
+        """Enable the fit request only when the controller has valid supervision."""
+
+        self._procedural_fit_eligible = bool(eligible)
+        self._procedural_fit_eligibility_text = str(reason).strip()
+        self._refresh_procedural_fit_action()
+
+    def set_procedural_fit_busy(self, busy: bool, status: str = "") -> None:
+        """Show fit progress state without giving the inspector worker ownership."""
+
+        self._procedural_fit_busy = bool(busy)
+        self._procedural_fit_busy_text = str(status).strip()
+        self._refresh_procedural_fit_action()
+
+    def set_procedural_fit_result_summary(self, summary: str | None) -> None:
+        """Show the latest accepted, rejected, or non-improving fit summary."""
+
+        self._procedural_fit_result_summary = str(summary or "").strip()
+        self._refresh_procedural_fit_action()
+
+    def _refresh_procedural_fit_action(self) -> None:
+        node = self._node
+        visible = node is not None and node.identifier == "procedural_instances"
+        self.procedural_fit_container.setVisible(visible)
+        if not visible:
+            return
+        runnable = bool(node.enabled and node.implemented)
+        self.procedural_fit_button.setEnabled(
+            runnable and self._procedural_fit_eligible and not self._procedural_fit_busy
+        )
+        self.procedural_fit_overreach_penalty_spin.setEnabled(
+            runnable and not self._procedural_fit_busy
+        )
+        self.procedural_fit_overreach_distance_scale_spin.setEnabled(
+            runnable and not self._procedural_fit_busy
+        )
+        self.procedural_fit_complete_annotations_checkbox.setEnabled(
+            runnable and not self._procedural_fit_busy
+        )
+        self.procedural_fit_button.setText(
+            "Fitting…"
+            if self._procedural_fit_busy
+            else "Fit settings to applied annotations…"
+        )
+        if self._procedural_fit_busy:
+            status = self._procedural_fit_busy_text or "Evaluating parameter proposals…"
+        elif not runnable:
+            status = "Enable the procedural node before fitting its settings."
+        elif not self._procedural_fit_eligible:
+            status = self._procedural_fit_eligibility_text or (
+                "Apply complete seed-instance annotations to enable fitting."
+            )
+        elif self._procedural_fit_result_summary:
+            status = self._procedural_fit_result_summary
+        else:
+            coverage = (
+                "Whole-dish scoring: every predicted object is evaluated."
+                if self.procedural_fit_complete_annotations_checkbox.isChecked()
+                else "Partial-review scoring: wholly disjoint predictions are unscored."
+            )
+            status = coverage + (
+                " Proposed settings are not applied until you explicitly accept them."
+            )
+        self.procedural_fit_status_label.setText(status)
+
+    @Slot(bool)
+    def _procedural_fit_coverage_changed(self, checked: bool) -> None:
+        del checked
+        self._procedural_fit_result_summary = ""
+        self._refresh_procedural_fit_action()
+
+    @Slot()
+    def _procedural_fit_requested(self) -> None:
+        node = self._node
+        if (
+            node is None
+            or node.identifier != "procedural_instances"
+            or not self.procedural_fit_button.isEnabled()
+        ):
+            return
+        self.node_action_requested.emit(
+            node.identifier,
+            self.PROCEDURAL_FIT_ACTION,
+            {
+                "false_positive_weight": float(
+                    self.procedural_fit_overreach_penalty_spin.value()
+                ),
+                "false_negative_weight": 1.0,
+                "overreach_distance_scale_fraction": float(
+                    self.procedural_fit_overreach_distance_scale_spin.value()
+                ),
+                "annotations_are_complete": bool(
+                    self.procedural_fit_complete_annotations_checkbox.isChecked()
+                ),
+            },
+        )
 
     def set_overlay_options(
         self,

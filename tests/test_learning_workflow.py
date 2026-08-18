@@ -5,6 +5,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -111,6 +112,86 @@ class LearningWorkflowTests(unittest.TestCase):
         self.assertEqual(progress, [(1, 2, 0.4, 0.3)])
         self.assertEqual(completed[0]["best_epoch"], 1)
         self.assertEqual(failures, [])
+
+    def test_analysis_export_derives_nonphysical_targets_from_instance_interiors(self) -> None:
+        import cv2
+        import torch
+
+        from seedvision.learning.contracts import FeatureStackSpec
+        from seedvision.learning.export import export_analysis_sample
+
+        shape = (96, 96)
+        labels = np.zeros(shape, np.uint16)
+        cv2.circle(labels, (48, 48), 30, 1, -1)
+        edge = np.zeros(shape, np.uint8)
+        ridges = np.zeros(shape, np.uint8)
+        cv2.line(edge, (28, 48), (68, 48), 220, 3)
+        cv2.line(ridges, (28, 48), (68, 48), 255, 1)
+        layers = SimpleNamespace(
+            valid_mask=np.full(shape, 255, np.uint8),
+            gpu_source=object(),
+            gpu_valid=object(),
+            edge_likelihood=edge,
+            edge_ridges=ridges,
+            foreground_noise_likelihood=np.zeros(shape, np.uint8),
+            background_likelihood=np.zeros(shape, np.uint8),
+            refined_background_likelihood=np.zeros(shape, np.uint8),
+        )
+        result = SimpleNamespace(
+            calibration=SimpleNamespace(
+                corrected_bgr=np.full((*shape, 3), 127, np.uint8)
+            ),
+            crop_offset=(0, 0),
+            layers=layers,
+            foreground_probability=np.zeros(shape, np.uint8),
+            advanced=SimpleNamespace(
+                rasters={
+                    "sensor_noise": np.zeros(shape, np.uint8),
+                    "flattened_grayscale": np.zeros(shape, np.uint8),
+                    "shadow_likelihood": np.zeros(shape, np.uint8),
+                    "highlight_likelihood": np.zeros(shape, np.uint8),
+                }
+            ),
+            estimated_seed_diameter_px=64.0,
+        )
+        spec = FeatureStackSpec(
+            nominal_seed_diameter_px=64.0,
+            include_species_planes=False,
+        )
+        feature_stack = torch.zeros(
+            (1, spec.input_channels, *shape), dtype=torch.float32
+        )
+        with TemporaryDirectory() as temporary, patch(
+            "seedvision.learning.export.assemble_feature_stack",
+            return_value=feature_stack,
+        ):
+            manifest = Path(temporary) / "manifest.json"
+            sample = export_analysis_sample(
+                result,
+                labels,
+                manifest,
+                dataset_id="derived-boundaries",
+                identifier="sample",
+                species="soybean",
+                group="capture-a",
+                feature_spec=spec,
+            )
+            self.assertIsNotNone(sample.pattern_boundary)
+            self.assertIsNotNone(sample.pattern_valid)
+            pattern = cv2.imread(
+                str(manifest.parent / sample.pattern_boundary),
+                cv2.IMREAD_UNCHANGED,
+            )
+            pattern_valid = cv2.imread(
+                str(manifest.parent / sample.pattern_valid),
+                cv2.IMREAD_UNCHANGED,
+            )
+            self.assertGreater(int(np.count_nonzero(pattern)), 0)
+            self.assertTrue(np.all(pattern[pattern_valid == 0] == 0))
+            self.assertLess(
+                int(np.count_nonzero(pattern)),
+                int(np.count_nonzero(pattern_valid)),
+            )
 
     def test_reviewed_manifest_trains_and_refines_a_real_checkpoint(self) -> None:
         import torch

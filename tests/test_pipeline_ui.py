@@ -31,7 +31,7 @@ class PipelineCanvasTests(unittest.TestCase):
         canvas.fit_graph()
         self.assertGreater(canvas.horizontalScrollBar().maximum(), 0)
         self.assertEqual(len(canvas.node_items), 33)
-        self.assertEqual(len(canvas.edge_items), 152)
+        self.assertEqual(len(canvas.edge_items), 151)
         self.assertNotIn("circle_candidates", canvas.node_items)
         self.assertEqual(canvas.unused_nodes_button.text(), "Unused nodes (21)")
         unused_actions = [
@@ -210,6 +210,16 @@ class PipelineCanvasTests(unittest.TestCase):
             ],
             QComboBox,
         )
+        foreground_integration = canvas.node_items[
+            "foreground_noise_likelihood"
+        ]._inline_editors["foreground_noise_direction_integration"]
+        background_integration = canvas.node_items[
+            "refined_background_likelihood"
+        ]._inline_editors["noise_direction_integration"]
+        self.assertIsInstance(foreground_integration, QComboBox)
+        self.assertEqual(foreground_integration.currentText(), "1st tertile")
+        self.assertGreaterEqual(foreground_integration.findText("1st tertile"), 0)
+        self.assertEqual(background_integration.findText("1st tertile"), -1)
         edge_item = canvas.node_items["edge_gradients"]
         controls_bottom = (
             edge_item._controls_y
@@ -267,7 +277,7 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertEqual(restored, ["circle_candidates"])
         self.assertIn("circle_candidates", canvas.node_items)
         self.assertEqual(len(canvas.node_items), 34)
-        self.assertEqual(len(canvas.edge_items), 160)
+        self.assertEqual(len(canvas.edge_items), 159)
         self.assertEqual(canvas.unused_nodes_button.text(), "Unused nodes (20)")
         self.assertTrue(canvas.unused_nodes_button.isEnabled())
         self.assertTrue(canvas.node_items["circle_candidates"].isSelected())
@@ -280,7 +290,7 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertNotIn("circle_candidates", canvas.node_items)
         self.assertIn("circle_candidates", graph.unused_nodes)
         self.assertFalse(graph.node("circle_candidates").enabled)
-        self.assertEqual(len(canvas.edge_items), 152)
+        self.assertEqual(len(canvas.edge_items), 151)
         self.assertEqual(canvas.unused_nodes_button.text(), "Unused nodes (21)")
         restore_action = next(
             action
@@ -349,7 +359,7 @@ class PipelineCanvasTests(unittest.TestCase):
             and edge.target == "foreground_noise_likelihood"
         )
         canvas._disconnect_connection(connection)
-        self.assertEqual(len(canvas.edge_items), 151)
+        self.assertEqual(len(canvas.edge_items), 150)
         self.assertFalse(graph.node(connection.target).enabled)
         self.assertIsNone(
             graph.connection_for_input(connection.target, connection.target_port)
@@ -366,7 +376,7 @@ class PipelineCanvasTests(unittest.TestCase):
                 connection.source_port
             )
         )
-        self.assertEqual(len(canvas.edge_items), 152)
+        self.assertEqual(len(canvas.edge_items), 151)
         self.assertTrue(graph.node(connection.target).enabled)
         self.assertIsNotNone(
             graph.connection_for_input(connection.target, connection.target_port)
@@ -1048,6 +1058,39 @@ class PipelineCanvasTests(unittest.TestCase):
             node_selector.findData("reference_other_texture_probability"), 0
         )
 
+        window.pipeline_canvas.select_node("reference_edge_probability")
+        self.application.processEvents()
+        self.assertEqual(node_selector.count(), 4)
+        self.assertEqual(node_selector.currentData(), "physical_edge_probability")
+        self.assertEqual(
+            window.pipeline.node("reference_edge_probability").parameters[
+                "net_physical_edge_internal_scale"
+            ],
+            0.5,
+        )
+        self.assertEqual(len(window.pipeline_inspector._parameter_widgets), 1)
+        comparison_index = node_selector.findData("reference_edge_comparison")
+        net_index = node_selector.findData("net_physical_edge_probability")
+        self.assertGreaterEqual(comparison_index, 0)
+        self.assertGreaterEqual(net_index, 0)
+        self.assertEqual(
+            node_selector.itemText(comparison_index),
+            "Physical blue / non-physical red",
+        )
+        node_selector.setCurrentIndex(comparison_index)
+        self.application.processEvents()
+        self.assertEqual(
+            window.overlay_combo.currentData(), "reference_edge_comparison"
+        )
+        self.assertIn("Magenta", window.overlay_legend_label.text())
+        node_selector.setCurrentIndex(net_index)
+        self.application.processEvents()
+        self.assertEqual(
+            window.image_view._overlay_mode, "net_physical_edge_probability"
+        )
+        self.assertIn("black floor", window.overlay_legend_label.text())
+        self.assertIn("0.5 × internal edge", window.overlay_legend_label.text())
+
         window.pipeline_canvas.select_node("reference_edge_ridges")
         self.application.processEvents()
         self.assertEqual(node_selector.count(), 1)
@@ -1083,9 +1126,13 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertIn("Overlay:", toolbar_labels)
         self.assertIn("Opacity:", toolbar_labels)
         self.assertEqual(window.paint_background_action.text(), "Material references")
-        self.assertEqual(window.paint_foreground_action.text(), "Boundary references")
         self.assertEqual(
             window.annotate_instances_action.text(), "Annotate seed instances"
+        )
+        self.assertFalse(hasattr(window, "paint_foreground_action"))
+        self.assertFalse(hasattr(window, "show_boundary_references_checkbox"))
+        self.assertFalse(
+            hasattr(window, "use_annotated_instance_boundaries_checkbox")
         )
         foreground_gamut = window.overlay_combo.findData(
             "foreground_colour_gamut"
@@ -1135,13 +1182,10 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertTrue(window.reference_panel.isHidden())
 
         window.paint_background_action.setEnabled(True)
-        window.paint_foreground_action.setEnabled(True)
         window.annotate_instances_action.setEnabled(True)
         window.background_point_button.setEnabled(True)
         window.foreground_point_button.setEnabled(True)
         window.background_exclusion_button.setEnabled(True)
-        window.physical_edge_button.setEnabled(True)
-        window.non_edge_button.setEnabled(True)
         window.erase_background_points_button.setEnabled(True)
         window.erase_foreground_points_button.setEnabled(True)
         window.erase_background_exclusion_button.setEnabled(True)
@@ -1194,26 +1238,20 @@ class PipelineCanvasTests(unittest.TestCase):
             "Drag this bar to reposition the painting controls over the image.",
         )
 
-        window.paint_foreground_action.setChecked(True)
-        self.application.processEvents()
-        self.assertFalse(window.paint_background_action.isChecked())
-        self.assertFalse(window.background_point_button.isChecked())
-        self.assertTrue(window.physical_edge_button.isChecked())
-        self.assertEqual(window.image_view._reference_point_mode, "physical_edge")
-        self.assertEqual(window.edge_snap_strength_slider.value(), 70)
-        window.edge_snap_strength_slider.setValue(35)
-        self.assertAlmostEqual(window.image_view._edge_reference_snap_strength, 0.35)
-
-        window.non_edge_button.setChecked(True)
-        self.application.processEvents()
-        self.assertFalse(window.physical_edge_button.isChecked())
-        self.assertEqual(window.image_view._reference_point_mode, "non_edge")
         window.background_exclusion_button.setChecked(True)
         self.application.processEvents()
-        self.assertFalse(window.non_edge_button.isChecked())
         self.assertEqual(window.image_view._reference_point_mode, "other")
-        window.show_reference_areas_checkbox.setChecked(False)
+        self.assertFalse(window.reference_visibility_controls.isHidden())
+        window.show_material_references_checkbox.setChecked(False)
+        self.assertFalse(
+            window.image_view._material_reference_annotations_visible
+        )
+        self.assertFalse(window.image_view._boundary_reference_annotations_visible)
         self.assertFalse(window.image_view._reference_annotations_visible)
+        window.show_material_references_checkbox.setChecked(True)
+        self.assertTrue(
+            window.image_view._material_reference_annotations_visible
+        )
 
         window.reference_eraser_button.setChecked(True)
         self.assertTrue(window.reference_eraser_button.isChecked())
@@ -1222,10 +1260,16 @@ class PipelineCanvasTests(unittest.TestCase):
         window.annotate_instances_action.setChecked(True)
         self.application.processEvents()
         self.assertFalse(window.paint_background_action.isChecked())
-        self.assertFalse(window.paint_foreground_action.isChecked())
         self.assertEqual(window.image_view._reference_point_mode, "instance")
         self.assertTrue(window.reference_controls.isHidden())
         self.assertFalse(window.instance_annotation_controls.isHidden())
+        self.assertFalse(window.reference_visibility_controls.isHidden())
+        self.assertIn(
+            "automatically supply physical contours",
+            window.instance_boundary_supervision_label.text(),
+        )
+        window.show_instance_annotations_checkbox.setChecked(False)
+        self.assertFalse(window.image_view._instance_annotations_visible)
         self.assertEqual(
             window.instance_proposal_combo.itemText(0),
             "No instance result available",
@@ -1502,6 +1546,146 @@ class PipelineCanvasTests(unittest.TestCase):
         )
         window.close()
 
+    def test_net_edge_subtraction_refreshes_display_without_analysis_work(self) -> None:
+        from dataclasses import dataclass, replace
+        from unittest.mock import patch
+
+        import numpy as np
+        from PySide6.QtWidgets import QMessageBox
+
+        from seedvision.pipeline import NodeStatus
+        from seedvision.segmentation import PipelineAnalysisCache
+        from seedvision.ui.main_window import MainWindow
+        from seedvision.visualization import AnalysisLayers, NoiseFrequencyProfile
+
+        @dataclass(frozen=True)
+        class CachedResult:
+            layers: AnalysisLayers
+
+        shape = (3, 3)
+        layers = AnalysisLayers(
+            offset_x=0,
+            offset_y=0,
+            instance_labels=np.zeros(shape, np.uint16),
+            instance_colours=np.zeros((1, 3), np.uint8),
+            background_likelihood=np.zeros(shape, np.uint8),
+            refined_background_likelihood=np.zeros(shape, np.uint8),
+            noise_frequency_profile=NoiseFrequencyProfile(
+                band_scales_px=(1.0, 2.0, 3.0),
+                background_log_rms=(0.0, 0.0, 0.0),
+                nonbackground_log_rms=(0.0, 0.0, 0.0),
+                background_sample_count=0,
+                nonbackground_sample_count=0,
+                separation=0.0,
+            ),
+            edge_likelihood=np.zeros(shape, np.uint8),
+            directed_edge_hue=np.zeros(shape, np.uint8),
+            undirected_edge_hue=np.zeros(shape, np.uint8),
+            seed_edge_curve_likelihood=np.zeros(shape, np.uint8),
+            seed_edge_curve_radius_px=np.zeros(shape, np.float32),
+            valid_mask=np.full(shape, 255, np.uint8),
+            physical_edge_probability=np.full(shape, 200, np.uint8),
+            non_edge_probability=np.full(shape, 100, np.uint8),
+        )
+        warning_patcher = patch.object(
+            QMessageBox,
+            "warning",
+            return_value=QMessageBox.StandardButton.No,
+        )
+        warning_patcher.start()
+        self.addCleanup(warning_patcher.stop)
+        window = MainWindow(ROOT)
+        path = ROOT / "images" / "IMG_0002c.JPG"
+        key = str(path.resolve()).casefold()
+        window.image_view._image_path = path
+        window._analyses[key] = CachedResult(layers)
+        sentinel = object()
+        window._analysis_caches[key] = PipelineAnalysisCache(
+            values={"sentinel": sentinel}
+        )
+        window._cache_dirty_nodes[key] = set()
+        net_index = window.overlay_combo.findData("net_physical_edge_probability")
+        self.assertGreaterEqual(net_index, 0)
+        window.overlay_combo.setCurrentIndex(net_index)
+        node = window.pipeline.node("reference_edge_probability")
+        node.status = NodeStatus.COMPLETE
+        window.pipeline.node("reference_edge_ridges").status = NodeStatus.COMPLETE
+        window.pipeline.node("procedural_instances").status = NodeStatus.COMPLETE
+        revision = window.pipeline.revision
+
+        with (
+            patch.object(window, "_analyze_current_image") as analyze,
+            patch.object(window.image_view, "show_analysis") as show_analysis,
+            patch.object(window.image_view, "refresh_analysis") as refresh_analysis,
+            patch.object(window.pipeline_inspector, "set_analysis_result"),
+        ):
+            window._pipeline_parameter_changed(
+                "reference_edge_probability",
+                "net_physical_edge_internal_scale",
+                1.25,
+            )
+            analyze.assert_not_called()
+            show_analysis.assert_called_once()
+            refresh_analysis.assert_called_once()
+            updated = window._analyses[key]
+            self.assertEqual(
+                updated.layers.net_physical_edge_internal_scale,
+                1.25,
+            )
+            self.assertTrue(
+                np.all(updated.layers.net_physical_edge_probability_rgba()[..., 2] == 75)
+            )
+            self.assertIn("1.25 × internal edge", window.overlay_legend_label.text())
+            self.assertEqual(window.pipeline.revision, revision)
+            self.assertEqual(window._cache_dirty_nodes[key], set())
+            self.assertIs(window._analysis_caches[key].values["sentinel"], sentinel)
+            self.assertEqual(node.status, NodeStatus.COMPLETE)
+            self.assertEqual(
+                window.pipeline.node("reference_edge_ridges").status,
+                NodeStatus.COMPLETE,
+            )
+            self.assertEqual(
+                window.pipeline.node("procedural_instances").status,
+                NodeStatus.COMPLETE,
+            )
+
+            # A calculation already in flight may still carry the value that
+            # was current when its immutable result wrapper was created. The
+            # completion path must normalize that wrapper without rerunning
+            # any analysis or replacing its raster products.
+            stale_result = CachedResult(
+                replace(
+                    updated.layers,
+                    net_physical_edge_internal_scale=0.5,
+                )
+            )
+            normalized_result = (
+                window._normalize_display_only_analysis_result(stale_result)
+            )
+            self.assertEqual(
+                normalized_result.layers.net_physical_edge_internal_scale,
+                1.25,
+            )
+            self.assertIs(
+                normalized_result.layers.physical_edge_probability,
+                stale_result.layers.physical_edge_probability,
+            )
+
+            window._pipeline_parameters_reset("reference_edge_probability")
+            analyze.assert_not_called()
+            self.assertEqual(show_analysis.call_count, 2)
+            self.assertEqual(refresh_analysis.call_count, 2)
+            reset_layers = window._analyses[key].layers
+            self.assertEqual(reset_layers.net_physical_edge_internal_scale, 0.5)
+            self.assertTrue(
+                np.all(reset_layers.net_physical_edge_probability_rgba()[..., 2] == 150)
+            )
+            self.assertIn("0.5 × internal edge", window.overlay_legend_label.text())
+            self.assertEqual(window.pipeline.revision, revision)
+            self.assertEqual(window._cache_dirty_nodes[key], set())
+
+        window.close()
+
     def test_image_view_switches_between_analysis_layers(self) -> None:
         import numpy as np
 
@@ -1576,6 +1760,8 @@ class PipelineCanvasTests(unittest.TestCase):
             "reference_other_texture_probability",
             "physical_edge_probability",
             "non_edge_probability",
+            "reference_edge_comparison",
+            "net_physical_edge_probability",
             "reference_edge_ridges",
             "undirected_edges",
             "directed_edges",
@@ -1591,15 +1777,63 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertEqual(len(view._overlay_items), 0)
         view.set_overlay_mode("none")
         self.assertEqual(len(view._overlay_items), 0)
-        reference = np.zeros((12, 12), dtype=bool)
-        reference[4:8, 4:8] = True
-        view.set_reference_masks(reference, reference, reference, reference)
-        # Legacy independent masks migrate to one exclusive Other class.
+        background = np.zeros((12, 12), dtype=bool)
+        foreground = np.zeros_like(background)
+        other = np.zeros_like(background)
+        physical_edge = np.zeros_like(background)
+        non_edge = np.zeros_like(background)
+        instances = np.zeros((12, 12), dtype=np.uint16)
+        background[1:3, 1:3] = True
+        foreground[4:6, 1:3] = True
+        other[7:9, 1:3] = True
+        physical_edge[1:3, 7:9] = True
+        non_edge[4:6, 7:9] = True
+        instances[8:10, 8:10] = 4
+        view.set_reference_masks(
+            background,
+            foreground,
+            other,
+            other,
+            physical_edge_mask=physical_edge,
+            non_edge_mask=non_edge,
+            normalize_material=False,
+            render=False,
+        )
+        view.set_instance_annotations(instances, render=False)
+        view.refresh_analysis()
+        # Legacy edge/non-edge arrays can be loaded but are never presented.
+        self.assertEqual(len(view._overlay_items), 4)
+        self.assertIsNotNone(view._instance_annotation_overlay_item)
+
+        view.set_material_reference_annotations_visible(False)
         self.assertEqual(len(view._overlay_items), 1)
-        view.set_reference_annotations_visible(False)
+        view.set_boundary_reference_annotations_visible(False)
+        self.assertEqual(len(view._overlay_items), 1)
+        view.set_instance_annotations_visible(False)
         self.assertEqual(len(view._overlay_items), 0)
-        view.set_reference_annotations_visible(True)
+        # A draft refresh must not resurrect a hidden instance overlay.
+        view.set_instance_annotations(instances)
+        self.assertEqual(len(view._overlay_items), 0)
+        view.set_material_reference_annotations_visible(True)
+        self.assertEqual(len(view._overlay_items), 3)
+        view.set_instance_annotations_visible(True)
+        self.assertEqual(len(view._overlay_items), 4)
+        view.set_boundary_reference_annotations_visible(True)
+        self.assertEqual(len(view._overlay_items), 4)
+        self.assertFalse(view._boundary_reference_annotations_visible)
+        self.assertTrue(np.array_equal(view.reference_mask("other"), other))
+        self.assertTrue(
+            np.array_equal(view.reference_mask("physical_edge"), physical_edge)
+        )
+        self.assertTrue(np.array_equal(view.reference_mask("non_edge"), non_edge))
+        self.assertTrue(np.array_equal(view.instance_annotations(), instances))
+
+        # Compatibility API changes material display only and leaves labelled
+        # seed instances alone; legacy boundaries remain hidden.
+        view.set_reference_annotations_visible(False)
         self.assertEqual(len(view._overlay_items), 1)
+        view.set_reference_annotations_visible(True)
+        self.assertEqual(len(view._overlay_items), 4)
         view.close()
 
     def test_image_view_displays_full_size_gamut_without_changing_mask_size(self) -> None:
@@ -1786,6 +2020,7 @@ class PipelineCanvasTests(unittest.TestCase):
             # to be at the requested point after an earlier GUI test.
             QTest.mouseMove(view.viewport(), view.viewport().rect().topLeft())
             QTest.mouseMove(view.viewport(), position)
+            view._update_reference_brush_outline(QPointF(50.0, 50.0))
             self.application.processEvents()
             self.assertIsNotNone(view._reference_brush_outline_item)
             self.assertTrue(view._reference_brush_outline_item.isVisible())
@@ -2067,7 +2302,7 @@ class PipelineCanvasTests(unittest.TestCase):
 
         from seedvision.annotation import (
             EdgeTraceOptions,
-            ShapeSnapOptions,
+            ShapeGuidedFillOptions,
             SmartFillOptions,
         )
         from seedvision.ui.image_view import ImageView
@@ -2115,17 +2350,12 @@ class PipelineCanvasTests(unittest.TestCase):
             self.assertGreater(np.count_nonzero(view._instance_annotations == 1), 40)
 
             view.set_active_instance_id(2)
-            view.set_instance_annotation_tool("shape_snap")
-            view.set_shape_snap_options(
-                ShapeSnapOptions(
-                    shape="ellipse",
-                    edge_search_radius_px=5,
-                    centre_search_radius_px=2,
-                    tangent_mode="off",
-                )
+            view.set_instance_annotation_tool("shape_guided_fill")
+            view.set_shape_guided_fill_options(
+                ShapeGuidedFillOptions(shape="ellipse"),
+                edge_source="magnitude",
             )
-            view._instance_tool_points = [QPointF(88, 52)]
-            self.assertTrue(view._apply_instance_assisted_tool(QPointF(106, 64)))
+            self.assertTrue(view._apply_instance_assisted_tool(QPointF(88, 52)))
             self.assertEqual(int(view._instance_annotations[52, 88]), 2)
 
             view.set_active_instance_id(3)
@@ -2135,14 +2365,14 @@ class PipelineCanvasTests(unittest.TestCase):
             view.set_instance_annotation_tool("smart_fill")
             view.set_smart_fill_options(
                 SmartFillOptions(
-                    maximum_radius_px=14,
+                    maximum_distance_from_cursor_px=14,
                     maximum_added_pixels=2_000,
                 )
             )
             self.assertTrue(view._apply_instance_assisted_tool(QPointF(26, 78)))
             self.assertGreater(np.count_nonzero(view._instance_annotations == 3), 200)
             self.assertTrue(any("Edge trace" in status for status in statuses))
-            self.assertTrue(any("Shape snap" in status for status in statuses))
+            self.assertTrue(any("Shape-guided fill" in status for status in statuses))
             self.assertTrue(any("Smart fill" in status for status in statuses))
             view.close()
 
@@ -2156,7 +2386,7 @@ class PipelineCanvasTests(unittest.TestCase):
 
         from seedvision.annotation import (
             EdgeTraceOptions,
-            ShapeSnapOptions,
+            ShapeGuidedFillOptions,
             SmartFillOptions,
         )
         from seedvision.ui.image_view import ImageView
@@ -2221,21 +2451,23 @@ class PipelineCanvasTests(unittest.TestCase):
             self.assertGreater(np.count_nonzero(edits[-1] == 1), 40)
 
             view.set_active_instance_id(2)
-            view.set_instance_annotation_tool("shape_snap")
-            view.set_shape_snap_options(
-                ShapeSnapOptions(
-                    shape="ellipse",
-                    edge_search_radius_px=5,
-                    centre_search_radius_px=2,
-                    tangent_mode="off",
-                )
+            view.set_instance_annotation_tool("shape_guided_fill")
+            view.set_shape_guided_fill_options(
+                ShapeGuidedFillOptions(shape="ellipse"),
+                edge_source="magnitude",
             )
             shape_centre = view.mapFromScene(QPointF(112, 58))
             QTest.mouseMove(view.viewport(), view.viewport().rect().topLeft())
             QTest.mouseMove(view.viewport(), shape_centre)
             QTest.qWait(55)
-            self.assertIsNotNone(view._instance_preview_geometry)
-            self.assertIsNotNone(view._instance_shape_reference_geometry)
+            self.assertIsNotNone(view._instance_shape_guided_region)
+            assert view._instance_shape_guided_region is not None
+            self.assertIsNotNone(
+                view._instance_shape_guided_region.prior_polygon
+            )
+            self.assertIsNotNone(
+                view._instance_shape_guided_region.boundary_polygon
+            )
             self.assertGreater(len(view._instance_preview_items), 0)
             QTest.mouseClick(
                 view.viewport(), Qt.MouseButton.LeftButton, pos=shape_centre
@@ -2246,7 +2478,7 @@ class PipelineCanvasTests(unittest.TestCase):
             view.set_instance_annotation_tool("smart_fill")
             view.set_smart_fill_options(
                 SmartFillOptions(
-                    maximum_radius_px=14,
+                    maximum_distance_from_cursor_px=14,
                     maximum_added_pixels=2_000,
                 )
             )
@@ -2277,10 +2509,26 @@ class PipelineCanvasTests(unittest.TestCase):
             view.close()
 
     def test_instance_annotation_panel_exposes_advanced_tool_options(self) -> None:
+        import numpy as np
+        from PySide6.QtCore import QPoint, QPointF, Qt
+        from PySide6.QtGui import QColor, QImage, QWheelEvent
+
         from seedvision.ui.main_window import MainWindow
 
-        window = MainWindow(ROOT)
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        project_root = Path(temporary.name)
+        image_path = project_root / "images" / "seed.png"
+        image_path.parent.mkdir(parents=True)
+        image = QImage(80, 60, QImage.Format.Format_RGB32)
+        image.fill(QColor("white"))
+        self.assertTrue(image.save(str(image_path)))
+        window = MainWindow(project_root)
         self.assertEqual(window.instance_tool_options_stack.count(), 5)
+        self.assertNotIn("shape_snap", window.instance_tool_pages)
+        self.assertFalse(hasattr(window, "instance_shape_snap_button"))
+        with self.assertRaises(ValueError):
+            window.image_view.set_instance_annotation_tool("shape_snap")
         window.instance_edge_trace_button.setChecked(True)
         self.application.processEvents()
         self.assertEqual(window.image_view._instance_annotation_tool, "edge_trace")
@@ -2293,17 +2541,211 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertEqual(window.image_view._edge_trace_options.tangent_mode, "directed")
         self.assertAlmostEqual(window.image_view._edge_trace_options.edge_attraction, 0.72)
 
-        window.instance_shape_snap_button.setChecked(True)
-        window.shape_snap_shape_combo.setCurrentIndex(1)
-        window.shape_snap_rotation_spin.setValue(22.5)
-        self.assertEqual(window.image_view._shape_snap_options.shape, "circle")
-        self.assertAlmostEqual(window.image_view._shape_snap_options.rotation_degrees, 22.5)
+        window.instance_shape_guided_fill_button.setChecked(True)
+        self.application.processEvents()
+        self.assertEqual(
+            window.image_view._instance_annotation_tool, "shape_guided_fill"
+        )
+        self.assertIs(
+            window.instance_tool_options_stack.currentWidget(),
+            window.instance_tool_pages["shape_guided_fill"],
+        )
+        self.assertAlmostEqual(
+            window.shape_fill_outward_half_life_spin.value(), 0.05
+        )
+        self.assertAlmostEqual(
+            window.shape_fill_outward_cutoff_spin.value(), 0.10
+        )
+        self.assertAlmostEqual(
+            window.shape_fill_outward_cutoff_spin.maximum(), 0.50
+        )
+        window.shape_fill_outward_half_life_spin.setValue(0.14)
+        self.assertAlmostEqual(
+            window.shape_fill_outward_cutoff_spin.value(), 0.14
+        )
+        self.assertAlmostEqual(
+            window.image_view._shape_guided_fill_options.outward_hard_cutoff_fraction,
+            0.14,
+        )
+        window.shape_fill_outward_cutoff_spin.setValue(0.08)
+        self.assertAlmostEqual(
+            window.shape_fill_outward_half_life_spin.value(), 0.08
+        )
+        self.assertAlmostEqual(
+            window.image_view._shape_guided_fill_options.outward_penalty_half_life_fraction,
+            0.08,
+        )
+        window.shape_fill_axis_ratio_spin.setValue(2.6)
+        window.shape_fill_rotation_spin.setValue(22.5)
+        window.shape_fill_preferred_scale_spin.setValue(1.25)
+        window.shape_fill_colour_step_spin.setValue(21.0)
+        window.shape_fill_barrier_spin.setValue(46)
+        window.shape_fill_outward_half_life_spin.setValue(0.06)
+        window.shape_fill_outward_cutoff_spin.setValue(0.12)
+        self.assertAlmostEqual(
+            window.image_view._shape_guided_fill_options.maximum_axis_ratio,
+            2.6,
+        )
+        shape_options = window.image_view._shape_guided_fill_options
+        self.assertAlmostEqual(shape_options.preferred_scale, 1.25)
+        self.assertAlmostEqual(shape_options.initial_rotation_degrees, 22.5)
+        self.assertAlmostEqual(shape_options.colour_tolerance_lab, 21.0)
+        self.assertAlmostEqual(shape_options.edge_barrier_threshold, 0.46)
+        self.assertAlmostEqual(
+            shape_options.outward_penalty_half_life_fraction,
+            0.06,
+        )
+        self.assertAlmostEqual(shape_options.outward_hard_cutoff_fraction, 0.12)
+        for removed_control in (
+            "shape_fill_tangent_combo",
+            "shape_fill_tangent_weight_spin",
+            "shape_fill_tunnel_combo",
+            "shape_fill_radius_spin",
+            "shape_fill_falloff_spin",
+            "shape_fill_connectivity_combo",
+            "shape_fill_boundary_search_spin",
+            "shape_fill_shape_adherence_spin",
+        ):
+            self.assertFalse(hasattr(window, removed_control), removed_control)
+        shape_form = window.instance_tool_pages["shape_guided_fill"].layout()
+        self.assertEqual(
+            shape_form.labelForField(window.shape_fill_preferred_scale_spin).text(),
+            "Oval size preference",
+        )
+        self.assertEqual(
+            shape_form.labelForField(
+                window.shape_fill_outward_half_life_spin
+            ).text(),
+            "Outward soft half-life",
+        )
+        self.assertEqual(
+            shape_form.labelForField(window.shape_fill_outward_cutoff_spin).text(),
+            "Outward hard cutoff",
+        )
+        self.assertEqual(window.image_view._shape_guided_edge_source, "adaptive")
+        window.image_view.set_instance_annotation_editing(True)
+        before_zoom = window.image_view.transform().m11()
+        window.image_view.wheelEvent(
+            QWheelEvent(
+                QPointF(100.0, 100.0),
+                QPointF(100.0, 100.0),
+                QPoint(),
+                QPoint(0, 120),
+                Qt.MouseButton.NoButton,
+                Qt.KeyboardModifier.NoModifier,
+                Qt.ScrollPhase.NoScrollPhase,
+                False,
+            )
+        )
+        self.assertAlmostEqual(window.shape_fill_preferred_scale_spin.value(), 1.30)
+        self.assertAlmostEqual(
+            window.image_view._shape_guided_fill_options.preferred_scale, 1.30
+        )
+        self.assertAlmostEqual(window.image_view.transform().m11(), before_zoom)
 
         window.instance_smart_fill_button.setChecked(True)
+        fill_form = window.instance_tool_pages["smart_fill"].layout()
+        self.assertEqual(
+            fill_form.labelForField(
+                window.smart_fill_colour_tolerance_spin
+            ).text(),
+            "Neighbour colour step",
+        )
+        self.assertEqual(
+            fill_form.labelForField(window.smart_fill_edge_stop_spin).text(),
+            "Edge barrier threshold",
+        )
+        self.assertEqual(
+            fill_form.labelForField(window.smart_fill_radius_spin).text(),
+            "Maximum distance from cursor",
+        )
+        self.assertAlmostEqual(window.smart_fill_radius_spin.value(), 0.60)
+        self.assertIn(
+            "not the seed's side-to-side width",
+            window.smart_fill_radius_spin.toolTip(),
+        )
+        self.assertEqual(
+            fill_form.labelForField(window.smart_fill_falloff_spin).text(),
+            "Fall-off half-life",
+        )
+        self.assertAlmostEqual(window.smart_fill_falloff_spin.value(), 0.40)
+        self.assertIn(
+            "p(d) = 2^(-d / h)",
+            window.smart_fill_falloff_spin.toolTip(),
+        )
+        diameter = float(
+            getattr(window.image_view._analysis_result, "estimated_seed_diameter_px", 100.0)
+        )
+        window.smart_fill_falloff_spin.setValue(0.55)
+        self.assertAlmostEqual(
+            window.image_view._smart_fill_options.falloff_half_life_px,
+            np.clip(diameter * 0.55, 1.0, 4096.0),
+        )
+        self.assertIn(
+            "touching candidate pixel",
+            window.smart_fill_colour_tolerance_spin.toolTip(),
+        )
+        self.assertIn(
+            "Lower values stop at weaker edges",
+            window.smart_fill_edge_stop_spin.toolTip(),
+        )
         window.smart_fill_tunnel_combo.setCurrentIndex(3)
         window.smart_fill_connectivity_combo.setCurrentIndex(1)
         self.assertAlmostEqual(window.image_view._smart_fill_options.tunnel_strength, 0.75)
         self.assertEqual(window.image_view._smart_fill_options.connectivity, 4)
+        window.close()
+
+    def test_new_seed_preserves_the_selected_instance_tool(self) -> None:
+        from PySide6.QtGui import QColor, QImage
+
+        from seedvision.ui.main_window import MainWindow
+
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        project_root = Path(temporary.name)
+        image_path = project_root / "images" / "seed.png"
+        image_path.parent.mkdir(parents=True)
+        image = QImage(80, 60, QImage.Format.Format_RGB32)
+        image.fill(QColor("white"))
+        self.assertTrue(image.save(str(image_path)))
+        window = MainWindow(project_root)
+        if window._current_image_key() is None:
+            window.close()
+            self.skipTest("No workspace image is present")
+        window.new_instance_button.setEnabled(True)
+        window._instance_ids = lambda _annotations: (7,)
+        window.smart_fill_colour_tolerance_spin.setValue(17.25)
+        smart_tolerance = window.smart_fill_colour_tolerance_spin.value()
+        for button, expected_tool in (
+            (window.instance_paint_mode_button, "brush"),
+            (window.instance_edge_trace_button, "edge_trace"),
+            (window.instance_shape_guided_fill_button, "shape_guided_fill"),
+            (window.instance_smart_fill_button, "smart_fill"),
+            (window.instance_eraser_button, "eraser"),
+        ):
+            with self.subTest(tool=expected_tool):
+                button.setChecked(True)
+                window.instance_id_spin.setValue(1)
+                self.application.processEvents()
+                selected_page = window.instance_tool_options_stack.currentWidget()
+                window.new_instance_button.setEnabled(True)
+
+                window.new_instance_button.click()
+                self.application.processEvents()
+
+                self.assertTrue(button.isChecked())
+                self.assertEqual(window.instance_id_spin.value(), 8)
+                self.assertEqual(window._current_instance_tool(), expected_tool)
+                self.assertEqual(
+                    window.image_view._instance_annotation_tool, expected_tool
+                )
+                self.assertIs(
+                    window.instance_tool_options_stack.currentWidget(), selected_page
+                )
+                if expected_tool == "smart_fill":
+                    self.assertAlmostEqual(
+                        window.smart_fill_colour_tolerance_spin.value(), smart_tolerance
+                    )
         window.close()
 
     def test_reference_masks_run_analysis_only_after_explicit_apply(self) -> None:
@@ -2313,6 +2755,11 @@ class PipelineCanvasTests(unittest.TestCase):
         from seedvision.ui.main_window import MainWindow
 
         window = MainWindow(ROOT)
+        # This controller test uses the real repository fixtures. Persistence is
+        # covered against an isolated project root in test_reference_persistence.
+        window._persist_applied_reference_regions = (
+            lambda **_kwargs: ROOT / "test-reference-autosave.npz"
+        )
         key = window._current_image_key()
         if key is None or window.image_view.image_size is None:
             window.close()
@@ -2399,17 +2846,13 @@ class PipelineCanvasTests(unittest.TestCase):
         window._reference_mask_edited("physical_edge", physical)
         window._reference_mask_edited("non_edge", non_edge)
         window._apply_reference_masks()
-        # Boundary references now retrain the live physical/non-edge classifier.
-        self.assertEqual(analyses, [True, True, True, True])
-        self.assertIn(
-            "reference_edge_probability", window._cache_dirty_nodes[key]
-        )
-        self.assertFalse(
-            np.any(
-                window._applied_physical_edge_reference_masks[key]
-                & window._applied_non_edge_reference_masks[key]
-            )
-        )
+        # Retired boundary-class edit signals are ignored. Boundary learning is
+        # driven solely by applied seed-instance labels.
+        self.assertEqual(analyses, [True, True, True])
+        self.assertNotIn(key, window._draft_physical_edge_reference_masks)
+        self.assertNotIn(key, window._draft_non_edge_reference_masks)
+        self.assertNotIn(key, window._applied_physical_edge_reference_masks)
+        self.assertNotIn(key, window._applied_non_edge_reference_masks)
         self.assertIs(
             window.pipeline.node("reference_layers").status,
             NodeStatus.COMPLETE,
@@ -2422,6 +2865,10 @@ class PipelineCanvasTests(unittest.TestCase):
         from seedvision.ui.main_window import MainWindow
 
         window = MainWindow(ROOT)
+        # Do not let this controller test overwrite a developer's local archive.
+        window._persist_applied_reference_regions = (
+            lambda **_kwargs: ROOT / "test-reference-autosave.npz"
+        )
         key = window._current_image_key()
         if key is None or window.image_view.image_size is None:
             window.close()
@@ -2432,6 +2879,11 @@ class PipelineCanvasTests(unittest.TestCase):
         labels[60:68, 70:78] = 2
         analyses: list[bool] = []
         window._analyze_current_image = lambda **_kwargs: analyses.append(True)
+        # Instance-derived reference textures/edges must refresh even when no
+        # instance decoder itself is enabled.
+        window.pipeline.node("instance_masks").enabled = False
+        window.pipeline.node("procedural_instances").enabled = False
+        window.pipeline.node("unet_instances").enabled = False
 
         window._instance_annotations_edited(labels)
         self.assertIn(key, window._instance_annotations_dirty)
@@ -2456,7 +2908,59 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertIn(
             "procedural_instances", window._cache_dirty_nodes.get(key, set())
         )
+        self.assertIn(
+            "reference_texture_prototypes",
+            window._cache_dirty_nodes.get(key, set()),
+        )
+        self.assertIn(
+            "reference_edge_probability",
+            window._cache_dirty_nodes.get(key, set()),
+        )
         window.close()
+
+    def test_reference_seed_scale_overlay_uses_a_thin_labelled_diameter(self) -> None:
+        from PySide6.QtWidgets import QGraphicsEllipseItem, QGraphicsTextItem
+
+        from seedvision.ui.image_view import ImageView
+
+        view = ImageView()
+        view.set_overlay_opacity(0.43)
+        view._render_seed_scale(
+            SimpleNamespace(
+                reference_roi=(100, 150, 500, 450),
+                estimated_seed_diameter_px=80.0,
+            )
+        )
+
+        circles = [
+            item
+            for item in view._overlay_items
+            if isinstance(item, QGraphicsEllipseItem)
+        ]
+        labels = [
+            item
+            for item in view._overlay_items
+            if isinstance(item, QGraphicsTextItem)
+            and item.toPlainText() == "80 px"
+        ]
+        self.assertEqual(len(circles), 1)
+        self.assertEqual(len(labels), 1)
+        circle = circles[0]
+        label = labels[0]
+        self.assertTrue(circle.pen().isCosmetic())
+        self.assertLessEqual(circle.pen().widthF(), 1.0)
+        self.assertAlmostEqual(circle.opacity(), 0.43)
+        self.assertAlmostEqual(label.opacity(), 0.43)
+        self.assertGreaterEqual(
+            label.sceneBoundingRect().top(), circle.sceneBoundingRect().bottom()
+        )
+        self.assertAlmostEqual(
+            label.sceneBoundingRect().center().x(),
+            circle.sceneBoundingRect().center().x(),
+            delta=1.0,
+        )
+        self.assertIn("80.0 pixels", label.toolTip())
+        view.close()
 
     def test_calibration_nodes_render_references_and_metric_scale(self) -> None:
         from PySide6.QtCore import Qt
@@ -2535,6 +3039,32 @@ class PipelineCanvasTests(unittest.TestCase):
         layout_diameters = {round(item.rect().width()) for item in dish_edges}
         self.assertIn(result.dish.inner_radius * 2, layout_diameters)
         self.assertIn(result.dish.outer_radius * 2, layout_diameters)
+        view.set_overlay_mode("seed_scale_estimation")
+        scale_circles = [
+            item
+            for item in view._overlay_items
+            if isinstance(item, QGraphicsEllipseItem)
+        ]
+        self.assertEqual(len(scale_circles), 1)
+        self.assertAlmostEqual(
+            scale_circles[0].rect().width(), result.estimated_seed_diameter_px
+        )
+        self.assertLessEqual(scale_circles[0].pen().widthF(), 1.0)
+        expected_diameter_text = (
+            f"{result.estimated_seed_diameter_px:.1f}".rstrip("0").rstrip(".")
+            + " px"
+        )
+        scale_labels = [
+            item
+            for item in view._overlay_items
+            if isinstance(item, QGraphicsTextItem)
+            and item.toPlainText() == expected_diameter_text
+        ]
+        self.assertEqual(len(scale_labels), 1)
+        self.assertGreaterEqual(
+            scale_labels[0].sceneBoundingRect().top(),
+            scale_circles[0].sceneBoundingRect().bottom(),
+        )
         view.set_overlay_mode("perimeter_background_reference")
         perimeter_bands = [
             item

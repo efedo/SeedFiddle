@@ -91,13 +91,8 @@ class ReferenceUndoUiTests(unittest.TestCase):
             else np.asarray(values, dtype=bool)
         )
 
-    def _activate_reference_mode(self, *, boundary: bool = False) -> None:
-        action = (
-            self.window.paint_foreground_action
-            if boundary
-            else self.window.paint_background_action
-        )
-        action.setChecked(True)
+    def _activate_reference_mode(self) -> None:
+        self.window.paint_background_action.setChecked(True)
         self.window._sync_background_controls()
         self.application.processEvents()
 
@@ -218,40 +213,22 @@ class ReferenceUndoUiTests(unittest.TestCase):
         self.assertFalse(self.window.apply_reference_masks_button.isEnabled())
         self.assertFalse(self.window.revert_reference_masks_button.isEnabled())
 
-    def test_boundary_peer_and_clear_layer_are_restored_atomically(self) -> None:
-        self._activate_reference_mode(boundary=True)
+    def test_retired_boundary_reference_edits_are_ignored(self) -> None:
         height, width = self._shape()
         region = np.zeros((height, width), dtype=bool)
         region[31:35, 35:57] = True
+        key = self._key()
 
-        self._commit_reference("physical_edge", region)
-        self._commit_reference("non_edge", region)
-        self.assertTrue(
-            np.all(self._reference_mask("non_edge")[region])
-        )
-        self.assertFalse(
-            np.any(self._reference_mask("physical_edge")[region])
-        )
+        self.window._reference_mask_edited("physical_edge", region)
+        self.window._reference_mask_edited("non_edge", region)
 
+        self.assertNotIn(key, self.window._reference_masks_dirty)
+        self.assertNotIn(key, self.window._reference_undo_histories)
+        self.assertNotIn(key, self.window._draft_physical_edge_reference_masks)
+        self.assertNotIn(key, self.window._draft_non_edge_reference_masks)
+        self.assertFalse(np.any(self._reference_mask("physical_edge")))
         self.window._undo_active_reference_edit()
-        self.assertTrue(
-            np.all(self._reference_mask("physical_edge")[region])
-        )
-        self.assertFalse(
-            np.any(self._reference_mask("non_edge")[region])
-        )
-
-        self.window.image_view.set_physical_edge_reference_editing(True)
-        self.window._clear_active_reference_layer()
-        self.assertFalse(
-            np.any(self._reference_mask("physical_edge"))
-        )
-        self.window._undo_active_reference_edit()
-        self.assertTrue(
-            np.all(self._reference_mask("physical_edge")[region])
-        )
-        self.window._undo_active_reference_edit()
-        self.assertNotIn(self._key(), self.window._reference_masks_dirty)
+        self.assertNotIn(key, self.window._reference_masks_dirty)
 
     def test_instance_history_restores_labels_origin_and_clear_commands(self) -> None:
         key = self._key()
@@ -452,18 +429,6 @@ class ReferenceUndoUiTests(unittest.TestCase):
         )
         self.assertTrue(view._commit_instance_assisted_preview(second))
         self.assertEqual(len(self.window._instance_undo_histories[key]), 1)
-        self.window._undo_active_reference_edit()
-        self.assertFalse(np.any(view._instance_annotations))
-
-        view.set_instance_annotation_tool("shape_snap")
-        centre = QPointF(48.0, 42.0)
-        view._instance_preview_point = QPointF(centre)
-        view._instance_preview_geometry = np.asarray(
-            ((40, 36), (56, 36), (58, 46), (40, 48)), dtype=np.float32
-        )
-        self.assertTrue(view._commit_instance_assisted_preview(centre))
-        shaped = view.instance_annotations()
-        self.assertTrue(np.any(shaped))
         self.window._undo_active_reference_edit()
         self.assertFalse(np.any(view._instance_annotations))
 

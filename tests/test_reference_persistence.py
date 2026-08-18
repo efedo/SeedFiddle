@@ -17,7 +17,7 @@ from seedvision.persistence import (
 
 
 class ReferenceRegionStoreTests(unittest.TestCase):
-    def test_round_trip_preserves_all_six_reference_outputs(self) -> None:
+    def test_round_trip_preserves_material_and_instance_outputs_only(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             image_path = root / "images" / "sample.jpg"
@@ -27,14 +27,10 @@ class ReferenceRegionStoreTests(unittest.TestCase):
             background = np.zeros(shape, dtype=bool)
             foreground = np.zeros(shape, dtype=bool)
             other = np.zeros(shape, dtype=bool)
-            physical = np.zeros(shape, dtype=bool)
-            non_edge = np.zeros(shape, dtype=bool)
             instances = np.zeros(shape, dtype=np.uint16)
             background[1:4, 2:7] = True
             foreground[6:11, 3:9] = True
             other[12:16, 15:20] = True
-            physical[5, 12:18] = True
-            non_edge[10, 12:18] = True
             instances[6:9, 3:7] = 17
             instances[12:16, 15:20] = 42
             store = ReferenceRegionStore(root)
@@ -46,8 +42,6 @@ class ReferenceRegionStoreTests(unittest.TestCase):
                     background=background,
                     foreground=foreground,
                     other=other,
-                    physical_edge=physical,
-                    non_edge=non_edge,
                     annotated_seeds=instances,
                     annotation_origin="pipeline:procedural_instances",
                 ),
@@ -60,17 +54,46 @@ class ReferenceRegionStoreTests(unittest.TestCase):
             self.assertTrue(np.array_equal(loaded.background, background))
             self.assertTrue(np.array_equal(loaded.foreground, foreground))
             self.assertTrue(np.array_equal(loaded.other, other))
-            self.assertTrue(np.array_equal(loaded.physical_edge, physical))
-            self.assertTrue(np.array_equal(loaded.non_edge, non_edge))
+            self.assertIsNone(loaded.physical_edge)
+            self.assertIsNone(loaded.non_edge)
             self.assertTrue(np.array_equal(loaded.annotated_seeds, instances))
             self.assertEqual(
                 loaded.annotation_origin, "pipeline:procedural_instances"
             )
             with np.load(destination, allow_pickle=False) as archive:
+                self.assertEqual(int(archive["version"]), 2)
                 self.assertEqual(archive["material"].dtype, np.uint8)
-                self.assertEqual(archive["boundary"].dtype, np.uint8)
+                self.assertNotIn("boundary", archive.files)
                 self.assertEqual(archive["annotated_seeds"].dtype, np.uint16)
             self.assertEqual(tuple(destination.parent.glob("*.tmp")), ())
+
+    def test_version_one_boundary_layer_is_validated_but_retired(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image_path = root / "capture.png"
+            image_path.write_bytes(b"legacy source")
+            shape = (7, 9)
+            store = ReferenceRegionStore(root)
+            destination = store.save(
+                image_path,
+                ReferenceRegionBundle(shape=shape),
+            )
+            with np.load(destination, allow_pickle=False) as archive:
+                payload = {name: np.array(archive[name]) for name in archive.files}
+            boundary = np.zeros(shape, dtype=np.uint8)
+            boundary[2, 3] = 1
+            boundary[4, 5] = 2
+            payload["version"] = np.asarray(1, dtype=np.uint16)
+            payload["boundary"] = boundary
+            with destination.open("wb") as stream:
+                np.savez_compressed(stream, **payload)
+
+            loaded = store.load_if_present(image_path, shape)
+
+            self.assertIsNotNone(loaded)
+            assert loaded is not None
+            self.assertIsNone(loaded.physical_edge)
+            self.assertIsNone(loaded.non_edge)
 
     def test_changed_image_is_rejected_before_reference_rasters_are_used(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -168,21 +191,15 @@ class ReferenceRegionMainWindowTests(unittest.TestCase):
         background = np.zeros(shape, dtype=bool)
         foreground = np.zeros(shape, dtype=bool)
         other = np.zeros(shape, dtype=bool)
-        physical = np.zeros(shape, dtype=bool)
-        non_edge = np.zeros(shape, dtype=bool)
         instances = np.zeros(shape, dtype=np.uint16)
         background[2:7, 3:9] = True
         foreground[10:18, 12:22] = True
         other[30:35, 50:55] = True
-        physical[20, 25:36] = True
-        non_edge[22, 25:36] = True
         instances[10:18, 12:22] = 7
         window._applied_background_reference_masks[key] = background
         window._applied_foreground_reference_masks[key] = foreground
         window._applied_background_exclusion_masks[key] = other
         window._applied_foreground_exclusion_masks[key] = other
-        window._applied_physical_edge_reference_masks[key] = physical
-        window._applied_non_edge_reference_masks[key] = non_edge
         window._applied_instance_annotations[key] = instances
         window._applied_instance_annotation_origins[key] = "manual:test"
         window._save_reference_regions()
@@ -209,8 +226,8 @@ class ReferenceRegionMainWindowTests(unittest.TestCase):
                 restored._applied_background_exclusion_masks[key],
                 restored._applied_foreground_exclusion_masks[key],
             )
-            self.assertTrue(restored._applied_physical_edge_reference_masks[key][20, 30])
-            self.assertTrue(restored._applied_non_edge_reference_masks[key][22, 30])
+            self.assertNotIn(key, restored._applied_physical_edge_reference_masks)
+            self.assertNotIn(key, restored._applied_non_edge_reference_masks)
             self.assertEqual(restored._applied_instance_annotations[key][12, 15], 7)
             self.assertEqual(
                 restored._applied_instance_annotation_origins[key], "manual:test"
@@ -342,6 +359,97 @@ class ReferenceRegionMainWindowTests(unittest.TestCase):
                 window._save_reference_regions()
             warning.assert_called_once()
             self.assertFalse(window._reference_region_store.path_for(image_path).exists())
+            window.close()
+
+    def test_applying_seed_instances_automatically_saves_and_reloads_them(self) -> None:
+        from seedvision.ui.main_window import MainWindow
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image_path = root / "images" / "capture.png"
+            self._write_image(image_path, "#38684a")
+            window = MainWindow(root)
+            key = window._current_image_key()
+            self.assertIsNotNone(key)
+            assert key is not None
+            labels = np.zeros((48, 64), dtype=np.uint16)
+            labels[7:15, 9:18] = 3
+            labels[28:39, 42:54] = 11
+            window._analyze_current_image = lambda **_kwargs: None
+
+            window._instance_annotations_edited(labels)
+            self.assertFalse(
+                window._reference_region_store.path_for(image_path).exists()
+            )
+            window._apply_instance_annotations()
+
+            archive = window._reference_region_store.path_for(image_path)
+            self.assertTrue(archive.is_file())
+            self.assertEqual(
+                window.apply_instance_annotations_button.text(), "Apply + save"
+            )
+            loaded = window._reference_region_store.load_if_present(
+                image_path, (48, 64)
+            )
+            self.assertIsNotNone(loaded)
+            assert loaded is not None
+            self.assertTrue(np.array_equal(loaded.annotated_seeds, labels))
+            self.assertEqual(loaded.annotation_origin, "manual")
+            window.close()
+
+            restored = MainWindow(root)
+            restored_key = restored._current_image_key()
+            self.assertIsNotNone(restored_key)
+            assert restored_key is not None
+            self.assertTrue(
+                np.array_equal(
+                    restored._applied_instance_annotations[restored_key], labels
+                )
+            )
+            restored.close()
+
+    def test_seed_instance_autosave_failure_warns_but_keeps_applied_state(self) -> None:
+        from seedvision.ui.main_window import MainWindow
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image_path = root / "images" / "capture.png"
+            self._write_image(image_path, "#38684a")
+            window = MainWindow(root)
+            key = window._current_image_key()
+            self.assertIsNotNone(key)
+            assert key is not None
+            labels = np.zeros((48, 64), dtype=np.uint16)
+            labels[12:22, 15:27] = 5
+            window._analyze_current_image = lambda **_kwargs: None
+            window._instance_annotations_edited(labels)
+
+            with (
+                patch.object(
+                    window._reference_region_store,
+                    "save",
+                    side_effect=OSError("disk full"),
+                ),
+                patch("seedvision.ui.main_window.QMessageBox.critical") as critical,
+            ):
+                window._apply_instance_annotations()
+
+            critical.assert_called_once()
+            self.assertEqual(
+                critical.call_args.args[1], "Automatic reference save failed"
+            )
+            self.assertIn("remain available", critical.call_args.args[2])
+            self.assertTrue(
+                np.array_equal(window._applied_instance_annotations[key], labels)
+            )
+            self.assertNotIn(key, window._instance_annotations_dirty)
+            self.assertNotIn(key, window._draft_instance_annotations)
+            self.assertIn(
+                "Automatic disk save failed", window.statusBar().currentMessage()
+            )
+            self.assertFalse(
+                window._reference_region_store.path_for(image_path).exists()
+            )
             window.close()
 
 

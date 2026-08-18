@@ -4,6 +4,7 @@ import json
 import unittest
 import ast
 from pathlib import Path
+from unittest.mock import Mock
 
 from seedvision.pipeline import NodeStatus, build_default_pipeline
 
@@ -15,7 +16,7 @@ class PipelineModelTests(unittest.TestCase):
         self.assertEqual(order[0], "raw_images")
         self.assertEqual(set(order), set(graph.nodes))
         self.assertEqual(len(graph.nodes), 33)
-        self.assertEqual(len(graph.connections), 152)
+        self.assertEqual(len(graph.connections), 151)
         self.assertEqual(
             graph.upstream("perimeter_background_reference"),
             ("deskew_colour", "layout_detection", "scale_calibration"),
@@ -31,7 +32,7 @@ class PipelineModelTests(unittest.TestCase):
         graph = build_default_pipeline()
         all_nodes = {**graph.nodes, **graph.unused_nodes}
         all_connections = (*graph.connections, *graph.unused_connections)
-        self.assertEqual(len(graph.connection_templates), 244)
+        self.assertEqual(len(graph.connection_templates), 243)
         self.assertTrue(all(node.output_ports for node in all_nodes.values()))
         self.assertEqual(
             len(all_connections),
@@ -188,8 +189,8 @@ class PipelineModelTests(unittest.TestCase):
                 "foreground_segmentation", "foreground_noise_likelihood",
                 "background_likelihood", "refined_background_likelihood",
                 "edge_gradients", "edge_ridges", "reference_edge_probability",
-                "reference_texture_prototypes", "illumination_decomposition",
-                "image_quality", "reference_layers",
+                "reference_edge_ridges", "edge_traces",
+                "reference_texture_prototypes", "reference_layers",
             },
             "unet_instances": {
                 "metadata", "deskew_colour", "layout_detection",
@@ -483,7 +484,7 @@ class PipelineModelTests(unittest.TestCase):
                 "reference_ridge_high_threshold",
                 0.30,
             ),
-            ("reference_edge_ridges",),
+            ("reference_edge_ridges", "procedural_instances"),
         )
         self.assertEqual(
             graph.upstream("edge_traces"),
@@ -553,9 +554,9 @@ class PipelineModelTests(unittest.TestCase):
                 "edge_gradients",
                 "edge_ridges",
                 "reference_edge_probability",
+                "reference_edge_ridges",
+                "edge_traces",
                 "reference_texture_prototypes",
-                "illumination_decomposition",
-                "image_quality",
                 "reference_layers",
             ),
         )
@@ -565,6 +566,88 @@ class PipelineModelTests(unittest.TestCase):
         )
         self.assertEqual(affected, ("procedural_instances",))
         self.assertEqual(graph.node("procedural_instances").status, NodeStatus.IDLE)
+
+    def test_parameter_batch_is_one_revision_and_one_invalidation(self) -> None:
+        graph = build_default_pipeline()
+        graph.set_status("procedural_instances", NodeStatus.COMPLETE, "Calculated")
+        starting_revision = graph.revision
+        original_invalidate = graph.invalidate
+        graph.invalidate = Mock(wraps=original_invalidate)
+
+        affected = graph.set_parameters(
+            "procedural_instances",
+            {
+                "marker_count_multiplier": 1.17,
+                "minimum_marker_score": 0.19,
+            },
+        )
+
+        self.assertEqual(affected, ("procedural_instances",))
+        self.assertEqual(graph.revision, starting_revision + 1)
+        self.assertEqual(
+            graph.node("procedural_instances").parameters["marker_count_multiplier"],
+            1.17,
+        )
+        self.assertEqual(
+            graph.node("procedural_instances").parameters["minimum_marker_score"],
+            0.19,
+        )
+        graph.invalidate.assert_called_once_with(affected)
+        self.assertEqual(graph.node("procedural_instances").status, NodeStatus.IDLE)
+
+        self.assertEqual(
+            graph.set_parameters(
+                "procedural_instances",
+                {
+                    "marker_count_multiplier": 1.17,
+                    "minimum_marker_score": 0.19,
+                },
+            ),
+            (),
+        )
+        self.assertEqual(graph.revision, starting_revision + 1)
+        self.assertEqual(graph.invalidate.call_count, 1)
+
+    def test_parameter_batch_validation_is_atomic(self) -> None:
+        graph = build_default_pipeline()
+        graph.set_status("procedural_instances", NodeStatus.COMPLETE, "Calculated")
+        node = graph.node("procedural_instances")
+        original_parameters = dict(node.parameters)
+        starting_revision = graph.revision
+        original_invalidate = graph.invalidate
+        graph.invalidate = Mock(wraps=original_invalidate)
+
+        with self.assertRaisesRegex(ValueError, "at most"):
+            graph.set_parameters(
+                "procedural_instances",
+                {
+                    "marker_count_multiplier": 1.17,
+                    "minimum_marker_score": 2.0,
+                },
+            )
+
+        self.assertEqual(node.parameters, original_parameters)
+        self.assertEqual(node.status, NodeStatus.COMPLETE)
+        self.assertEqual(graph.revision, starting_revision)
+        graph.invalidate.assert_not_called()
+
+    def test_procedural_marker_count_multiplier_is_exposed(self) -> None:
+        from seedvision.segmentation.procedural import ProceduralInstanceSettings
+
+        node = build_default_pipeline().node("procedural_instances")
+        spec = next(
+            item
+            for item in node.parameter_specs
+            if item.key == "marker_count_multiplier"
+        )
+        self.assertEqual(node.parameters["marker_count_multiplier"], 1.02)
+        self.assertEqual(spec.kind, "float")
+        self.assertLessEqual(spec.minimum, 0.70)
+        self.assertGreaterEqual(spec.maximum, 1.40)
+        self.assertEqual(
+            ProceduralInstanceSettings(**node.parameters).marker_count_multiplier,
+            1.02,
+        )
 
     def test_calibration_nodes_feed_the_corrected_analysis_path(self) -> None:
         graph = build_default_pipeline()
@@ -699,8 +782,6 @@ class PipelineModelTests(unittest.TestCase):
                 "background",
                 "foreground",
                 "other",
-                "physical_edge",
-                "non_edge",
                 "annotated_seeds",
             ),
         )
@@ -720,8 +801,6 @@ class PipelineModelTests(unittest.TestCase):
             "background",
             "foreground",
             "other",
-            "physical_edge",
-            "non_edge",
             "annotated_seeds",
         }
         self.assertEqual(
@@ -748,12 +827,6 @@ class PipelineModelTests(unittest.TestCase):
         self.assertEqual(consumers_by_port["background"], material_consumers)
         self.assertEqual(consumers_by_port["foreground"], material_consumers)
         self.assertEqual(consumers_by_port["other"], material_consumers)
-        self.assertEqual(
-            consumers_by_port["physical_edge"], {"reference_texture_prototypes"}
-        )
-        self.assertEqual(
-            consumers_by_port["non_edge"], {"reference_texture_prototypes"}
-        )
         self.assertEqual(
             consumers_by_port["annotated_seeds"],
             {
@@ -948,6 +1021,51 @@ class PipelineModelTests(unittest.TestCase):
                 "edge_traces", "trace_curvature_policy", "globally convex"
             )
 
+    def test_foreground_noise_first_tertile_is_default_and_exposed(self) -> None:
+        graph = build_default_pipeline()
+        foreground = graph.node("foreground_noise_likelihood")
+        background = graph.node("refined_background_likelihood")
+        spec = next(
+            item
+            for item in foreground.parameter_specs
+            if item.key == "foreground_noise_direction_integration"
+        )
+
+        self.assertEqual(
+            foreground.parameters["foreground_noise_direction_integration"],
+            "1st tertile",
+        )
+        self.assertEqual(
+            foreground.default_parameters[
+                "foreground_noise_direction_integration"
+            ],
+            "1st tertile",
+        )
+        self.assertIn("1st tertile", spec.choices)
+        background_spec = next(
+            item
+            for item in background.parameter_specs
+            if item.key == "noise_direction_integration"
+        )
+        self.assertNotIn("1st tertile", background_spec.choices)
+        self.assertEqual(
+            background.parameters["noise_direction_integration"], "maximum"
+        )
+        affected = graph.set_parameter(
+            "foreground_noise_likelihood",
+            "foreground_noise_direction_integration",
+            "median",
+        )
+        self.assertEqual(affected[0], "foreground_noise_likelihood")
+        self.assertIn("seed_interior", affected)
+        self.assertIn("procedural_instances", affected)
+        with self.assertRaises(ValueError):
+            graph.set_parameter(
+                "foreground_noise_likelihood",
+                "foreground_noise_direction_integration",
+                "lower-ish",
+            )
+
 
 class NodeTimingRecorderTests(unittest.TestCase):
     def test_cpu_and_explicit_spans_are_aggregated_by_node(self) -> None:
@@ -1025,6 +1143,20 @@ class BaselineSettingsTests(unittest.TestCase):
             AnalysisLayerSettings(trace_curvature_policy="sometimes")
         with self.assertRaises(ValueError):
             AnalysisLayerSettings(trace_curvature_tolerance_degrees=46.0)
+        self.assertEqual(
+            AnalysisLayerSettings().foreground_noise_direction_integration,
+            "1st tertile",
+        )
+        self.assertEqual(
+            AnalysisLayerSettings(
+                foreground_noise_direction_integration="1st tertile"
+            ).foreground_noise_direction_integration,
+            "1st tertile",
+        )
+        with self.assertRaises(ValueError):
+            AnalysisLayerSettings(
+                foreground_noise_direction_integration="lower-ish"
+            )
         with self.assertRaises(ValueError):
             AdvancedAnalysisSettings(compute_device="metal")
 
@@ -1043,6 +1175,106 @@ class BaselineSettingsTests(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             AnalysisLayerSettings(background_colour_components=257)
+
+    def test_reference_texture_material_and_edge_capacities_are_independent(self) -> None:
+        from seedvision.segmentation import AnalysisLayerSettings
+
+        defaults = AnalysisLayerSettings()
+        self.assertEqual(
+            defaults.reference_texture_material_prototypes_per_class,
+            64,
+        )
+        self.assertEqual(
+            defaults.reference_texture_edge_prototypes_per_class,
+            256,
+        )
+        graph = build_default_pipeline()
+        node = graph.node("reference_texture_prototypes")
+        specs = {spec.key: spec for spec in node.parameter_specs}
+        self.assertEqual(
+            node.parameters["reference_texture_material_prototypes_per_class"],
+            64,
+        )
+        self.assertEqual(
+            node.parameters["reference_texture_edge_prototypes_per_class"],
+            256,
+        )
+        self.assertEqual(
+            specs["reference_texture_material_prototypes_per_class"].maximum,
+            256,
+        )
+        self.assertEqual(
+            specs["reference_texture_edge_prototypes_per_class"].maximum,
+            1024,
+        )
+        graph.set_parameter(
+            "reference_texture_prototypes",
+            "reference_texture_material_prototypes_per_class",
+            72,
+        )
+        graph.set_parameter(
+            "reference_texture_prototypes",
+            "reference_texture_edge_prototypes_per_class",
+            320,
+        )
+        graph.reset_parameters("reference_texture_prototypes")
+        self.assertEqual(
+            node.parameters["reference_texture_material_prototypes_per_class"],
+            64,
+        )
+        self.assertEqual(
+            node.parameters["reference_texture_edge_prototypes_per_class"],
+            256,
+        )
+        with self.assertRaises(ValueError):
+            AnalysisLayerSettings(
+                reference_texture_material_prototypes_per_class=264
+            )
+        with self.assertRaises(ValueError):
+            AnalysisLayerSettings(
+                reference_texture_edge_prototypes_per_class=1040
+            )
+
+    def test_net_physical_edge_internal_subtraction_control(self) -> None:
+        from seedvision.segmentation import AnalysisLayerSettings
+
+        defaults = AnalysisLayerSettings()
+        self.assertEqual(defaults.net_physical_edge_internal_scale, 0.5)
+        with self.assertRaises(ValueError):
+            AnalysisLayerSettings(net_physical_edge_internal_scale=-0.01)
+        with self.assertRaises(ValueError):
+            AnalysisLayerSettings(net_physical_edge_internal_scale=2.01)
+
+        graph = build_default_pipeline()
+        node = graph.node("reference_edge_probability")
+        specs = {spec.key: spec for spec in node.parameter_specs}
+        self.assertEqual(node.parameters["net_physical_edge_internal_scale"], 0.5)
+        self.assertEqual(specs["net_physical_edge_internal_scale"].minimum, 0.0)
+        self.assertEqual(specs["net_physical_edge_internal_scale"].maximum, 2.0)
+        self.assertTrue(specs["net_physical_edge_internal_scale"].display_only)
+        graph.node("reference_edge_probability").status = NodeStatus.COMPLETE
+        graph.node("reference_edge_ridges").status = NodeStatus.COMPLETE
+        graph.node("procedural_instances").status = NodeStatus.COMPLETE
+        revision = graph.revision
+        affected = graph.set_parameter(
+            "reference_edge_probability",
+            "net_physical_edge_internal_scale",
+            1.25,
+        )
+        self.assertEqual(affected, ("reference_edge_probability",))
+        self.assertEqual(graph.revision, revision)
+        self.assertEqual(node.status, NodeStatus.COMPLETE)
+        self.assertEqual(
+            graph.node("reference_edge_ridges").status, NodeStatus.COMPLETE
+        )
+        self.assertEqual(graph.node("procedural_instances").status, NodeStatus.COMPLETE)
+        self.assertEqual(
+            graph.reset_parameters("reference_edge_probability"),
+            ("reference_edge_probability",),
+        )
+        self.assertEqual(graph.revision, revision)
+        self.assertEqual(node.status, NodeStatus.COMPLETE)
+        self.assertEqual(node.parameters["net_physical_edge_internal_scale"], 0.5)
 
 
 if __name__ == "__main__":

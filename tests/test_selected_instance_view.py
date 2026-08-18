@@ -67,9 +67,11 @@ class SelectedInstanceImageViewTests(unittest.TestCase):
         self.assertAlmostEqual(bounds.y(), 279.0)
         self.assertAlmostEqual(bounds.width(), 52.0)
         self.assertAlmostEqual(bounds.height(), 42.0)
-        image = item.pixmap().toImage()
-        self.assertEqual(image.pixelColor(0, 0).alpha(), 0)
-        self.assertGreater(image.pixelColor(10, 10).alpha(), 0)
+        image = item.render_tile(0, 0)
+        # Tile pixels retain global full-image coordinates; the one-pixel crop
+        # controls exposure without resampling the authoritative label map.
+        self.assertEqual(image.pixelColor(259, 279).alpha(), 0)
+        self.assertGreater(image.pixelColor(260, 280).alpha(), 0)
 
     def test_id_change_centres_selected_seed_without_changing_zoom(self) -> None:
         self.view.set_instance_annotations(self._two_seed_labels(), render=False)

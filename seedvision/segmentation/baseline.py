@@ -455,6 +455,10 @@ def analyze_path(
             cache_values["raw.image"] = image
     if image is None:
         raise RuntimeError(f"The image decoder could not read {path}")
+    # The retired boundary-painting UI may still supply empty legacy arguments
+    # while an analysis task is in flight.  They stop at this compatibility
+    # boundary and can never enter the computational graph.
+    del physical_edge_reference_mask, non_edge_reference_mask
     return analyze_image(
         image,
         image_path=path,
@@ -472,8 +476,6 @@ def analyze_path(
         foreground_reference_mask=foreground_reference_mask,
         background_exclusion_mask=background_exclusion_mask,
         foreground_exclusion_mask=foreground_exclusion_mask,
-        physical_edge_reference_mask=physical_edge_reference_mask,
-        non_edge_reference_mask=non_edge_reference_mask,
         seed_instance_annotations=seed_instance_annotations,
         background_colour_enabled=background_colour_enabled,
         enabled_nodes=enabled_nodes,
@@ -508,8 +510,6 @@ def analyze_image(
     foreground_reference_mask: np.ndarray | None = None,
     background_exclusion_mask: np.ndarray | None = None,
     foreground_exclusion_mask: np.ndarray | None = None,
-    physical_edge_reference_mask: np.ndarray | None = None,
-    non_edge_reference_mask: np.ndarray | None = None,
     seed_instance_annotations: np.ndarray | None = None,
     background_colour_enabled: bool = True,
     enabled_nodes: set[str] | frozenset[str] | None = None,
@@ -575,12 +575,6 @@ def analyze_image(
     )
     foreground_exclusion_mask = _aligned_reference_mask(
         foreground_exclusion_mask, analysis_image.shape[:2]
-    )
-    physical_edge_reference_mask = _aligned_reference_mask(
-        physical_edge_reference_mask, analysis_image.shape[:2]
-    )
-    non_edge_reference_mask = _aligned_reference_mask(
-        non_edge_reference_mask, analysis_image.shape[:2]
     )
     seed_instance_annotations = _aligned_instance_annotations(
         seed_instance_annotations, analysis_image.shape[:2]
@@ -703,22 +697,6 @@ def analyze_image(
         None
         if foreground_exclusion_mask is None
         else foreground_exclusion_mask[
-            offset_y : offset_y + crop_height,
-            offset_x : offset_x + crop_width,
-        ]
-    )
-    local_physical_edge_reference_mask = (
-        None
-        if physical_edge_reference_mask is None
-        else physical_edge_reference_mask[
-            offset_y : offset_y + crop_height,
-            offset_x : offset_x + crop_width,
-        ]
-    )
-    local_non_edge_reference_mask = (
-        None
-        if non_edge_reference_mask is None
-        else non_edge_reference_mask[
             offset_y : offset_y + crop_height,
             offset_x : offset_x + crop_width,
         ]
@@ -1387,8 +1365,6 @@ def analyze_image(
         foreground_reference_mask=local_foreground_reference_mask,
         background_exclusion_mask=local_background_exclusion_mask,
         foreground_exclusion_mask=local_foreground_exclusion_mask,
-        physical_edge_reference_mask=local_physical_edge_reference_mask,
-        non_edge_reference_mask=local_non_edge_reference_mask,
         seed_instance_annotations=local_seed_instance_annotations,
         background_reference_samples=background_samples,
         background_reference_sample_count=accepted_background_points,
@@ -1582,10 +1558,6 @@ def analyze_image(
         or seed_scale_dirty
         or foreground_dirty
         or bool(
-            requested_advanced_nodes
-            & {"illumination_decomposition", "image_quality"}
-        )
-        or bool(
             layer_dirty
             & {
                 "background_likelihood",
@@ -1594,7 +1566,9 @@ def analyze_image(
                 "edge_gradients",
                 "edge_ridges",
                 "reference_edge_probability",
+                "reference_edge_ridges",
                 "reference_texture_prototypes",
+                "edge_traces",
             }
         )
         or "procedural_instances" in dirty
@@ -1613,11 +1587,12 @@ def analyze_image(
                 edge_ridges=layers.edge_ridges,
                 physical_edge_probability=layers.physical_edge_probability,
                 non_edge_probability=layers.non_edge_probability,
+                thinned_reference_edge_ridges=layers.reference_edge_ridges,
+                oriented_edge_trace_labels=layers.edge_trace_labels,
+                oriented_edge_trace_continuity=layers.edge_trace_continuity,
                 reference_surface_probability=(
                     layers.reference_seed_surface_probability
                 ),
-                sensor_noise=advanced.rasters["sensor_noise"],
-                shadow_likelihood=advanced.rasters["shadow_likelihood"],
                 seed_instance_annotations=local_seed_instance_annotations,
                 settings=procedural_settings,
             )

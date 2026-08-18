@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import StrEnum
 import re
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 
 class NodeStatus(StrEnum):
@@ -29,6 +29,7 @@ class ParameterSpec:
     step: float | None = None
     description: str = ""
     choices: tuple[str, ...] = ()
+    display_only: bool = False
 
 
 @dataclass(slots=True)
@@ -64,7 +65,9 @@ class PipelineNode:
         self.input_port_types = dict(self.input_port_types)
         self.output_port_types = dict(self.output_port_types)
 
-    def set_parameter(self, key: str, value: Any) -> None:
+    def validated_parameter_value(self, key: str, value: Any) -> Any:
+        """Normalize and validate one value without mutating this node."""
+
         spec = next((item for item in self.parameter_specs if item.key == key), None)
         if spec is None:
             raise KeyError(f"Node {self.identifier!r} has no parameter {key!r}.")
@@ -88,7 +91,10 @@ class PipelineNode:
             raise ValueError(f"{spec.label} must be at least {spec.minimum}.")
         if spec.maximum is not None and value > spec.maximum:
             raise ValueError(f"{spec.label} must be at most {spec.maximum}.")
-        self.parameters[key] = value
+        return value
+
+    def set_parameter(self, key: str, value: Any) -> None:
+        self.parameters[key] = self.validated_parameter_value(key, value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,11 +121,11 @@ _PORT_LABELS = {
     "BackgroundReferences": "Background refs",
     "ForegroundReferences": "Foreground refs",
     "OtherReferences": "Other refs",
-    "PhysicalEdgeReferences": "Physical-edge refs",
-    "NonEdgeReferences": "Non-edge refs",
     "PaintedInstanceAnnotations": "Annotated seed IDs",
     "PhysicalEdgeProbability": "Physical-edge probability",
-    "NonEdgeProbability": "Non-edge probability",
+    "NonEdgeProbability": "Non-physical edge probability",
+    "PhysicalPrototypeProbability": "Physical-edge prototype probability",
+    "NonEdgePrototypeProbability": "Non-physical prototype probability",
     "PerimeterColourSamples": "Perimeter colours",
     "ForegroundColour": "FG colour",
     "ForegroundEvidence": "FG evidence",
@@ -143,6 +149,10 @@ _PORT_LABELS = {
     "ContinuousTangents": "Edge tangents",
     "ThinnedRidges": "Thinned ridges",
     "OrientedTraces": "Oriented traces",
+    "OrientedTraceLabels": "Trace identities",
+    "TraceContinuity": "Trace continuity",
+    "TraceGapConfidence": "Trace gap confidence",
+    "ThinnedReferenceRidges": "Reference ridges",
     "LocalShadow": "Local shadow",
     "LocalLighting": "Local lighting",
     "SensorNoise": "Sensor noise",
@@ -652,11 +662,47 @@ class PipelineGraph:
         return tuple(result)
 
     def set_parameter(self, node_id: str, key: str, value: Any) -> tuple[str, ...]:
+        return self.set_parameters(node_id, {key: value})
+
+    def set_parameters(
+        self, node_id: str, values: Mapping[str, Any]
+    ) -> tuple[str, ...]:
+        """Atomically update several parameters with one graph invalidation.
+
+        Every supplied value is normalized and validated before any node state
+        changes.  A failed member therefore cannot leave an earlier member
+        applied, increment the revision, or invalidate cached node statuses.
+        """
+
         node = self._require_active(node_id)
-        previous = node.parameters.get(key)
-        node.set_parameter(key, value)
-        if node.parameters[key] == previous:
+        normalized = {
+            key: node.validated_parameter_value(key, value)
+            for key, value in dict(values).items()
+        }
+        changed = {
+            key: value
+            for key, value in normalized.items()
+            if node.parameters.get(key) != value
+        }
+        if not changed:
             return ()
+        node.parameters.update(changed)
+        changed_specs = {
+            spec.key: spec
+            for spec in node.parameter_specs
+            if spec.key in changed
+        }
+        display_only = bool(changed) and all(
+            changed_specs.get(key) is not None
+            and changed_specs[key].display_only
+            for key in changed
+        )
+        if display_only:
+            # Presentation controls are persisted on their owning node, but
+            # must not supersede an in-flight calculation or invalidate any
+            # cached analytical product.  The owning node is returned so Qt
+            # can repaint its card and current diagnostic.
+            return (node_id,)
         self.revision += 1
         affected = (node_id, *self.downstream(node_id, recursive=True))
         self.invalidate(affected)
@@ -668,7 +714,19 @@ class PipelineGraph:
         node = self._require_active(node_id)
         if node.parameters == node.default_parameters:
             return ()
+        changed_keys = {
+            key
+            for key, default in node.default_parameters.items()
+            if node.parameters.get(key) != default
+        }
+        specs = {spec.key: spec for spec in node.parameter_specs}
+        display_only = bool(changed_keys) and all(
+            specs.get(key) is not None and specs[key].display_only
+            for key in changed_keys
+        )
         node.parameters = dict(node.default_parameters)
+        if display_only:
+            return (node_id,)
         self.revision += 1
         affected = (node_id, *self.downstream(node_id, recursive=True))
         self.invalidate(affected, preserve_bypassed=True)
@@ -1103,7 +1161,7 @@ def build_default_pipeline() -> PipelineGraph:
         ParameterSpec("noise_vector_length_fraction", "Ray length / diameter", "float", 0.05, 2.00, 0.05, "Length of every directed texture-continuation ray relative to the master seed diameter."),
         ParameterSpec("noise_vector_sample_count", "Samples per ray", "int", 2, 32, 1, "Number of positions geometrically averaged along each directed ray."),
         ParameterSpec("noise_vector_decay", "Ray sample decay", "float", 0.10, 1.00, 0.02, "Multiplicative weight retained by each successively more distant ray sample."),
-        ParameterSpec("noise_direction_integration", "Direction integration", "choice", choices=("mean", "maximum", "minimum", "median"), description="How the directional overlays are merged. Mean is a normalized sum; maximum reaches object borders most readily; minimum requires background continuity in every direction."),
+        ParameterSpec("noise_direction_integration", "Direction integration", "choice", choices=("mean", "maximum", "minimum", "median"), description="How directional continuation is merged. Mean averages all rays; maximum accepts the strongest continuation; minimum requires every direction; median requires broad directional support."),
         ParameterSpec("noise_background_min_likelihood", "Confident background minimum", "int", 0, 255, 1, "Minimum colour-likelihood value used as a texture background pseudo-label."),
         ParameterSpec("noise_nonbackground_max_likelihood", "Confident non-background maximum", "int", 0, 255, 1, "Maximum colour-likelihood value used as a texture non-background pseudo-label."),
         ParameterSpec("noise_working_maximum_dimension", "GPU working dimension", "int", 512, 4096, 128, "Maximum directional-noise analysis dimension. Work and upsampling stay on GPU; selected overlays retain the full crop dimensions."),
@@ -1121,10 +1179,20 @@ def build_default_pipeline() -> PipelineGraph:
             spec.minimum,
             spec.maximum,
             spec.step,
-            spec.description.replace("background", "foreground").replace(
-                "Background", "Foreground"
+            (
+                "How foreground continuation is merged. The 1st tertile is "
+                "the exact 33⅓ percentile: more conservative than median but "
+                "less brittle than requiring every direction with minimum."
+                if spec.key == "noise_direction_integration"
+                else spec.description.replace("background", "foreground").replace(
+                    "Background", "Foreground"
+                )
             ),
-            spec.choices,
+            (
+                (*spec.choices, "1st tertile")
+                if spec.key == "noise_direction_integration"
+                else spec.choices
+            ),
         )
         for spec in noise_parameters
     )
@@ -1198,7 +1266,7 @@ def build_default_pipeline() -> PipelineGraph:
     )
     trace_parameters = (
         ParameterSpec("trace_tangent_tolerance_degrees", "Link tangent tolerance", "float", 2.0, 60.0, 1.0, "Maximum axial tangent disagreement used to join ridge pixels into one trace."),
-        ParameterSpec("trace_maximum_gap_px", "Maximum trace gap", "int", 1, 5, 1, "Largest tangent-aligned pixel gap bridged by the oriented GPU component linker."),
+        ParameterSpec("trace_maximum_gap_px", "Maximum trace gap", "int", 1, 5, 1, "Largest Chebyshev separation between candidate endpoint coordinates in the working grid. A value of four does not mean four empty pixels between the endpoints."),
         ParameterSpec("trace_curvature_policy", "Convexity bias", "choice", choices=("off", "prefer", "require"), description="Curvature rule for initial non-adjacent links. Prefer rejects confident S-shaped bridges; require rejects every resolved S-shaped bridge; off preserves tangent-only linking."),
         ParameterSpec("trace_curvature_tolerance_degrees", "Curvature ambiguity", "float", 0.0, 45.0, 1.0, "Endpoint bend angles at or below this value are treated as too nearly straight to classify reliably. Prefer uses at least twice this deadband."),
         ParameterSpec("trace_window_fraction", "Continuity window / diameter", "float", 0.03, 0.75, 0.01, "Distance followed in each tangent direction when measuring trace continuity."),
@@ -1222,8 +1290,8 @@ def build_default_pipeline() -> PipelineGraph:
         ParameterSpec("boundary_center_vote_weight", "Centre-vote influence", "float", 0.0, 1.0, 0.05, "Contribution from orientation-aware normal votes for compatible seed centres."),
         ParameterSpec("boundary_center_vote_blur_fraction", "Centre-vote blur / diameter", "float", 0.005, 0.30, 0.005, "Seed-relative smoothing of fragmented-arc centre votes."),
         ParameterSpec("boundary_semantic_weight", "Semantic-side influence", "float", 0.0, 1.0, 0.05, "Soft influence of foreground/background evidence on which side of a trace is seed interior."),
-        ParameterSpec("boundary_reference_influence", "Reference-edge influence", "float", 0.0, 1.0, 0.05, "Soft influence of the reference-trained physical-edge probability on final confirmed curves."),
-        ParameterSpec("boundary_reference_nonedge_discount", "Reference non-edge discount", "float", 0.0, 1.0, 0.05, "Suppression applied where the reference classifier identifies an apparent rather than physical edge."),
+        ParameterSpec("boundary_instance_edge_influence", "Instance-edge influence", "float", 0.0, 1.0, 0.05, "Soft influence of the instance-derived physical-edge probability on final confirmed curves."),
+        ParameterSpec("boundary_nonphysical_edge_discount", "Non-physical discount", "float", 0.0, 1.0, 0.05, "Suppression applied where the instance-derived classifier identifies an apparent rather than physical edge."),
         ParameterSpec("boundary_polarity_boost", "Lightness-polarity boost", "float", 0.0, 1.0, 0.05, "Optional confidence boost when the fitted interior brightens away from the boundary; never a hard requirement."),
         ParameterSpec("boundary_minimum_confidence", "Accepted-boundary minimum", "float", 0.0, 1.0, 0.01, "Final confidence below which a ridge is categorized in the rejection-reason overlay."),
         ParameterSpec("boundary_geometry_max_candidates", "Displayed fit candidates", "int", 16, 1024, 16, "Maximum compact centre/ellipse hypotheses downloaded only when the vector fit overlay is requested."),
@@ -1265,14 +1333,32 @@ def build_default_pipeline() -> PipelineGraph:
         ParameterSpec("lighting_extreme_softness", "Extreme transition softness", "float", 0.05, 2.0, 0.05, "Width of the sigmoid transition used for both shadow and highlight likelihoods."),
     )
     reference_texture_parameters = (
-        ParameterSpec("reference_texture_prototypes_per_class", "Maximum prototypes / class", "int", 8, 256, 8, "Maximum coverage-preserving feature medoids retained independently for Background, Foreground, Other, Physical edge, and Non-edge references."),
+        ParameterSpec("reference_texture_material_prototypes_per_class", "Maximum material prototypes / class", "int", 8, 256, 8, "Maximum coverage-preserving feature medoids retained independently for each of Background, Foreground, and Other."),
+        ParameterSpec("reference_texture_edge_prototypes_per_class", "Maximum edge prototypes / class", "int", 8, 1024, 16, "Maximum coverage-preserving feature medoids retained independently for the instance-derived Physical-edge and Non-physical-edge classes. Full-image evaluation remains prototype-batched."),
         ParameterSpec("reference_texture_minimum_samples_per_prototype", "Minimum support / prototype", "int", 4, 512, 4, "Minimum working-resolution painted samples per retained prototype; diverse classes can still use fewer prototypes when evidence is sparse."),
         ParameterSpec("reference_texture_fit_iterations", "Prototype fit iterations", "int", 1, 12, 1, "Robust farthest-first clustering iterations used to refine each image-local prototype bank."),
         ParameterSpec("reference_texture_similarity_scale", "Prototype tolerance", "float", 0.25, 4.0, 0.05, "Scales each prototype's robust diagonal feature spread when evaluating matching pixels throughout the dish."),
         ParameterSpec("reference_texture_context_fraction", "Feature context / diameter", "float", 0.005, 0.30, 0.005, "Seed-relative neighbourhood used for local Lab residuals, edge density, and tangent coherence."),
         ParameterSpec("reference_texture_patch_fraction", "Collage patch / diameter", "float", 0.10, 0.80, 0.02, "Side length of the source-image thumbnail retained for each prototype in the collage."),
         ParameterSpec("reference_texture_working_maximum_dimension", "GPU working dimension", "int", 256, 2048, 64, "Maximum dimension for prototype fitting and global feature matching; full-resolution probability outputs are restored on the GPU."),
+        ParameterSpec("reference_texture_edge_working_maximum_dimension", "Edge GPU working dimension", "int", 512, 4096, 128, "Hard maximum dimension for adaptive tangent-strip edge prototype fitting and matching. Material prototypes retain their separate GPU working dimension."),
+        ParameterSpec("reference_edge_minimum_working_seed_diameter_px", "Minimum edge seed diameter / px", "float", 8.0, 96.0, 1.0, "Adaptive edge-strip resolution target in working pixels per seed diameter; the explicit edge working-dimension limit remains a hard cap."),
+        ParameterSpec("reference_edge_strip_normal_offset_fraction", "Strip side offset / diameter", "float", 0.01, 0.20, 0.005, "Distance from the edge centre to the separately pooled interior and exterior strip regions."),
+        ParameterSpec("reference_edge_strip_tangent_half_length_fraction", "Strip tangent half-length / diameter", "float", 0.01, 0.25, 0.005, "Half-length of the narrow validity-normalized pooling strip along the local edge tangent."),
         ParameterSpec("reference_edge_ridge_weight", "Ridge support", "float", 0.0, 1.0, 0.05, "Blend between continuous edge magnitude and thinned-ridge support before the reference classifier is applied."),
+        ParameterSpec("reference_texture_instance_interior_buffer_fraction", "Interior buffer / diameter", "float", 0.0, 0.50, 0.01, "Distance kept unlabeled between an annotated seed contour and internal candidate edges used as non-physical examples."),
+    )
+    reference_edge_probability_parameters = (
+        ParameterSpec(
+            "net_physical_edge_internal_scale",
+            "Internal-edge subtraction",
+            "float",
+            0.0,
+            2.0,
+            0.05,
+            "Multiplier applied to non-physical/internal-edge evidence in the Net physical-edge diagnostic: max(physical - multiplier × internal, 0). It does not alter either source probability raster.",
+            display_only=True,
+        ),
     )
     procedural_instance_parameters = (
         ParameterSpec("working_maximum_dimension", "Topology working dimension", "int", 256, 4096, 128, "Maximum raster dimension downloaded after GPU resizing for CPU marker-controlled watershed."),
@@ -1280,19 +1366,21 @@ def build_default_pipeline() -> PipelineGraph:
         ParameterSpec("occupancy_closing_fraction", "Material closing / diameter", "float", 0.01, 0.50, 0.01, "Seed-relative closing radius used to bridge interrupted material evidence."),
         ParameterSpec("occupancy_hole_area_fraction", "Filled-hole area / diameter²", "float", 0.0, 4.0, 0.05, "Largest enclosed low-probability coat region filled as seed material."),
         ParameterSpec("dish_margin_fraction", "Dish margin / diameter", "float", 0.0, 0.50, 0.01, "Inset from the valid dish boundary that prevents glass-rim instances."),
-        ParameterSpec("boundary_edge_weight", "Edge weight", "float", 0.0, 1.0, 0.02, "Contribution of shared Lab edge magnitude to physical boundary cost."),
-        ParameterSpec("boundary_sensor_weight", "Sensor/noise weight", "float", 0.0, 1.0, 0.02, "Contribution of sensor/noise transitions to physical boundary cost."),
-        ParameterSpec("boundary_ridge_weight", "Ridge weight", "float", 0.0, 1.0, 0.02, "Contribution of thinned edge ridges to physical boundary cost."),
-        ParameterSpec("boundary_shadow_weight", "Local-shadow weight", "float", 0.0, 1.0, 0.02, "Contribution of local-shadow transitions to physical boundary cost."),
-        ParameterSpec("boundary_reference_weight", "Reference-edge weight", "float", 0.0, 1.0, 0.02, "Contribution of the painted-reference physical-edge classifier to watershed boundary cost."),
-        ParameterSpec("boundary_nonedge_discount", "Non-edge discount", "float", 0.0, 1.0, 0.02, "How strongly reference-derived non-edge probability suppresses apparent coat-pattern boundaries."),
+        ParameterSpec("boundary_edge_weight", "Candidate edge weight", "float", 0.0, 1.0, 0.02, "Contribution of continuous Lab edge magnitude to the initial boundary candidate."),
+        ParameterSpec("boundary_ridge_weight", "Candidate ridge weight", "float", 0.0, 1.0, 0.02, "Contribution of generic thinned edge ridges to the initial boundary candidate."),
+        ParameterSpec("boundary_semantic_floor", "Unclassified-edge floor", "float", 0.0, 1.0, 0.02, "Minimum candidate support retained where instance-derived physical/non-physical evidence is uncertain."),
+        ParameterSpec("boundary_nonphysical_discount", "Non-physical discount", "float", 0.0, 1.0, 0.02, "How strongly instance-derived non-physical edge evidence suppresses the entire boundary candidate."),
+        ParameterSpec("boundary_physical_ridge_weight", "Physical-ridge weight", "float", 0.0, 1.0, 0.02, "Contribution of thinned instance-derived physical-edge probability to boundary support."),
+        ParameterSpec("boundary_trace_weight", "Oriented-trace weight", "float", 0.0, 1.0, 0.02, "Contribution of coherent seed-scale oriented edge traces to boundary support."),
+        ParameterSpec("trace_minimum_length_fraction", "Trace minimum / diameter", "float", 0.02, 2.0, 0.02, "Minimum trace length relative to seed diameter before it supports the watershed boundary."),
+        ParameterSpec("trace_convexity_weight", "Trace convexity weight", "float", 0.0, 1.0, 0.02, "How strongly seed-scale elliptical convexity contributes to oriented-trace support."),
         ParameterSpec("reference_texture_weight", "Reference-texture material weight", "float", 0.0, 1.0, 0.02, "Blend of the many-prototype reference seed-surface likelihood into the procedural material gate; it is ignored when no foreground prototypes exist."),
-        ParameterSpec("strong_boundary_quantile", "Strong-boundary quantile", "float", 0.05, 0.95, 0.01, "Boundary-cost quantile treated as a barrier when measuring seed-core depth."),
+        ParameterSpec("centre_geometry_smoothing_fraction", "Centre smoothing / diameter", "float", 0.02, 0.50, 0.01, "Seed-relative smoothing applied to material occupancy before automatic centre detection."),
         ParameterSpec("centre_material_weight", "Centre material weight", "float", 0.0, 1.0, 0.02, "Contribution of seed-scale smoothed material evidence to marker likelihood."),
-        ParameterSpec("centre_distance_weight", "Centre depth weight", "float", 0.0, 1.0, 0.02, "Contribution of distance from strong physical boundaries to marker likelihood."),
-        ParameterSpec("centre_ring_weight", "Centre ring weight", "float", 0.0, 1.0, 0.02, "Contribution of annular boundary support around a possible seed centre."),
+        ParameterSpec("centre_distance_weight", "Centre interior-depth weight", "float", 0.0, 1.0, 0.02, "Contribution of distance from the material boundary to marker likelihood; internal image texture is not used."),
         ParameterSpec("centre_minimum_separation_fraction", "Marker spacing / diameter", "float", 0.10, 1.00, 0.01, "Minimum automatic marker spacing in ordinary and crowded seed material."),
         ParameterSpec("sparse_centre_minimum_separation_fraction", "Sparse marker spacing / diameter", "float", 0.10, 1.00, 0.01, "Stricter marker spacing used when seed material covers less than 35% of the dish."),
+        ParameterSpec("marker_count_multiplier", "Expected marker-count multiplier", "float", 0.50, 2.00, 0.01, "Scales the seed-area-derived expected marker count used to retain the strongest automatic centre candidates."),
         ParameterSpec("minimum_marker_score", "Minimum marker likelihood", "float", 0.0, 1.0, 0.01, "Reject automatic centre maxima below this combined likelihood."),
         ParameterSpec("minimum_instance_area_fraction", "Minimum area / diameter²", "float", 0.05, 1.40, 0.01, "Remove watershed regions smaller than this calibrated seed-relative area."),
         ParameterSpec("maximum_instance_area_fraction", "Confidence max area / diameter²", "float", 0.06, 3.00, 0.01, "Larger assigned regions receive an explicit oversize confidence penalty."),
@@ -1355,14 +1443,16 @@ def build_default_pipeline() -> PipelineGraph:
             "reference_layers",
             "Reference layers",
             "Input",
-            "All applied material, boundary and seed-instance annotations",
+            "Applied material classes and seed-instance annotations",
             1040,
             -680,
             details=(
-                "This input owns the six full-resolution reference sublayers. Background, "
-                "foreground and other are mutually exclusive material classes; physical "
-                "edge and non-edge are mutually exclusive boundary classes; annotated "
-                "seeds are integer instance identities. Each output has its own typed "
+                "This input owns the four active full-resolution reference sublayers. "
+                "Background, foreground and other are mutually exclusive material classes; "
+                "annotated seeds are integer instance identities. Physical contours and "
+                "internal non-physical edge examples are derived automatically from complete "
+                "annotated instances rather than painted in a separate boundary layer. Each "
+                "output has its own typed "
                 "connector so every calculation that consumes human evidence is explicit "
                 "in the graph. Painted coordinates are training evidence and are never "
                 "forced directly into a probability output."
@@ -1371,8 +1461,6 @@ def build_default_pipeline() -> PipelineGraph:
                 ("background", "Background"),
                 ("foreground", "Foreground"),
                 ("other", "Other"),
-                ("physical_edge", "Physical edge"),
-                ("non_edge", "Non-edge"),
                 ("annotated_seeds", "Annotated seeds"),
             ),
             status_detail="No applied references",
@@ -1777,7 +1865,7 @@ def build_default_pipeline() -> PipelineGraph:
                 "foreground_noise_vector_length_fraction": 0.55,
                 "foreground_noise_vector_sample_count": 9,
                 "foreground_noise_vector_decay": 0.86,
-                "foreground_noise_direction_integration": "maximum",
+                "foreground_noise_direction_integration": "1st tertile",
                 "foreground_noise_foreground_min_likelihood": 190,
                 "foreground_noise_nonforeground_max_likelihood": 65,
                 "foreground_noise_working_maximum_dimension": 1280,
@@ -1791,7 +1879,9 @@ def build_default_pipeline() -> PipelineGraph:
                 "forced output values. The "
                 "same one-sided ray integration used by the background-noise node "
                 "continues matching seed texture through patterned coats without "
-                "turning painted foreground pixels into forced output values."
+                "turning painted foreground pixels into forced output values. The "
+                "default first-tertile rule uses the exact 33⅓ percentile across "
+                "directions, requiring broad rather than merely single-ray support."
             ),
         ),
         PipelineNode(
@@ -1995,62 +2085,87 @@ def build_default_pipeline() -> PipelineGraph:
             "reference_texture_prototypes",
             "Reference texture prototypes",
             "GPU diagnostic",
-            "Learn many image-local material and boundary feature prototypes",
+            "Learn material prototypes and instance-derived edge classes",
             1560,
             690,
             parameters={
-                "reference_texture_prototypes_per_class": 64,
+                "reference_texture_material_prototypes_per_class": 64,
+                "reference_texture_edge_prototypes_per_class": 256,
                 "reference_texture_minimum_samples_per_prototype": 16,
                 "reference_texture_fit_iterations": 4,
                 "reference_texture_similarity_scale": 1.0,
                 "reference_texture_context_fraction": 0.04,
                 "reference_texture_patch_fraction": 0.28,
                 "reference_texture_working_maximum_dimension": 960,
+                "reference_texture_edge_working_maximum_dimension": 2048,
+                "reference_edge_minimum_working_seed_diameter_px": 28.0,
+                "reference_edge_strip_normal_offset_fraction": 0.05,
+                "reference_edge_strip_tangent_half_length_fraction": 0.08,
                 "reference_edge_ridge_weight": 0.35,
+                "reference_texture_instance_interior_buffer_fraction": 0.08,
             },
             parameter_specs=reference_texture_parameters,
             details=(
-                "Painted Background, Foreground, Other, Physical-edge and Non-edge "
-                "samples are represented by separate coverage-preserving banks rather "
-                "than one class average. Corrected Lab, six multiscale noise bands, "
-                "local residuals, edge/ridge density, tangent coherence, and "
-                "cross-normal contrast form rotation-tolerant features. Farthest-first "
-                "robust clustering retains up to 64 medoid patches per class by default. "
+                "Painted Background, Foreground and Other samples, plus automatically "
+                "derived instance-contour and internal-edge samples, are represented by "
+                "separate coverage-preserving banks rather than one class average. "
+                "Material banks use corrected Lab, six multiscale noise bands, "
+                "local residuals, and edge/ridge density. Edge banks instead use "
+                "a narrow tangent-aligned descriptor with separately pooled interior, "
+                "edge-centre, and exterior regions plus signed cross-edge Lab contrast. "
+                "Annotated instance geometry fixes inside/outside while training; both "
+                "normal polarities are tested at unlabelled pixels. Their independently "
+                "bounded adaptive resolution retains detail on small seeds. Farthest-first "
+                "robust clustering retains up to 64 medoids for each material class and "
+                "256 for each physical/non-physical edge class by default. The two "
+                "capacities are independent, and prototype evaluation is GPU-batched. "
                 "Every bank is evaluated across the full dish with the same equation at "
                 "painted and unpainted pixels. Edge thumbnails are tangent-aligned in the "
-                "full-pane prototype collage."
+                "full-pane prototype collage. Every complete annotated seed contributes "
+                "its contour as physical-edge evidence. Edge candidates safely inset from "
+                "that contour become non-physical examples; flat interior pixels are not "
+                "mislabelled merely because they lie inside a seed."
             ),
             output_ports=(
                 ("seed_surface", "Seed surface"),
                 ("background_texture", "Background texture"),
                 ("other_texture", "Other texture"),
                 ("physical_probability", "Physical edge"),
-                ("non_edge_probability", "Non-edge"),
+                ("non_edge_probability", "Non-physical edge"),
                 ("prototype_profile", "Prototype collage"),
             ),
             inline_parameters=(
-                ("reference_texture_prototypes_per_class", "Max / class"),
+                ("reference_texture_material_prototypes_per_class", "Material max"),
+                ("reference_texture_edge_prototypes_per_class", "Edge max"),
                 ("reference_texture_similarity_scale", "Tolerance"),
-                ("reference_texture_context_fraction", "Context xD"),
+                ("reference_edge_strip_normal_offset_fraction", "Strip offset"),
             ),
         ),
         PipelineNode(
             "reference_edge_probability",
-            "Reference edge probabilities",
+            "Instance-derived edge probabilities",
             "GPU diagnostic",
-            "Publish multi-prototype physical-edge and non-edge probabilities",
+            "Classify physical contours versus non-physical internal edges",
             1860,
             690,
+            parameters={"net_physical_edge_internal_scale": 0.50},
+            parameter_specs=reference_edge_probability_parameters,
             details=(
                 "The upstream reference-texture node fits and globally evaluates many "
-                "tangent-normalized Physical-edge and Non-edge prototypes. This node "
+                "tangent-normalized physical and non-physical edge prototypes derived "
+                "from complete annotated seed instances. This node "
                 "publishes those two typed probability rasters for boundary confirmation "
-                "and procedural watershed. With no reviewed edge examples, physical "
-                "probability falls back to generic edge/ridge support and Non-edge is zero."
+                "and procedural watershed. With no annotated instances, both semantic "
+                "rasters remain neutral rather than pretending generic texture is physical. "
+                "The diagnostic-only internal-edge subtraction control adjusts the displayed "
+                "positive physical margin without changing either authored output raster."
             ),
             output_ports=(
                 ("physical_probability", "Physical edge"),
-                ("non_edge_probability", "Non-edge"),
+                ("non_edge_probability", "Non-physical edge"),
+            ),
+            inline_parameters=(
+                ("net_physical_edge_internal_scale", "Internal subtraction"),
             ),
         ),
         PipelineNode(
@@ -2111,6 +2226,16 @@ def build_default_pipeline() -> PipelineGraph:
                 ("trace_curvature_policy", "Convexity"),
                 ("trace_curvature_tolerance_degrees", "Curve Â±Â°"),
             ),
+            output_ports=(
+                ("trace_labels", "Trace identities"),
+                ("continuity", "Trace continuity"),
+                ("gap_confidence", "Gap confidence"),
+            ),
+            output_port_types={
+                "trace_labels": "OrientedTraceLabels",
+                "continuity": "TraceContinuity",
+                "gap_confidence": "TraceGapConfidence",
+            },
             details=(
                 "A GPU union/find graph joins ridge pixels only when endpoint tangents "
                 "and their displacement agree. Optional winding-independent convexity "
@@ -2145,8 +2270,8 @@ def build_default_pipeline() -> PipelineGraph:
                 "boundary_center_vote_weight": 0.35,
                 "boundary_center_vote_blur_fraction": 0.08,
                 "boundary_semantic_weight": 0.25,
-                "boundary_reference_influence": 0.35,
-                "boundary_reference_nonedge_discount": 0.80,
+                "boundary_instance_edge_influence": 0.35,
+                "boundary_nonphysical_edge_discount": 0.80,
                 "boundary_polarity_boost": 0.20,
                 "boundary_minimum_confidence": 0.12,
                 "boundary_geometry_max_candidates": 256,
@@ -2300,20 +2425,23 @@ def build_default_pipeline() -> PipelineGraph:
             "Procedural seed separation",
             "Segmentation",
             "Fuse material, physical-boundary and seed-scale evidence into reviewable instances",
-            2100,
+            2340,
             820,
             details=(
                 "Foreground colour/noise, optional many-prototype reference texture, and "
                 "inverse background evidence first define a seed-material gate. Seed-sized "
                 "enclosed coat-pattern holes are filled, but "
-                "the detected dish margin is excluded. Shared edges, thinned ridges, local "
-                "shadow and sensor/noise transitions form a physical boundary cost. "
-                "Seed-scale material, boundary depth and annular support propose centres; "
+                "the detected dish margin is excluded. Generic Lab edges and thinned ridges "
+                "form boundary candidates; instance-derived physical-minus-non-physical "
+                "evidence gates the entire candidate, while thinned physical ridges and "
+                "long, continuous, seed-scale convex traces add geometric support. Internal "
+                "coat texture is therefore suppressed instead of being counted repeatedly. "
+                "Seed-scale material geometry and material-interior depth propose centres; "
                 "distinct painted seed-instance IDs replace nearby automatic markers. A "
                 "bounded CPU marker-controlled watershed performs the topological partition, "
                 "then reports per-instance confidence from marker, boundary and area support. "
-                "This is an untrained review aid: patterned coats can still create false "
-                "centres, so low-confidence results must not be treated as validated counts."
+                "This remains a review aid: unannotated edge types use neutral semantic "
+                "support, so low-confidence results must not be treated as validated counts."
             ),
             parameters={
                 "working_maximum_dimension": 1600,
@@ -2321,19 +2449,21 @@ def build_default_pipeline() -> PipelineGraph:
                 "occupancy_closing_fraction": 0.12,
                 "occupancy_hole_area_fraction": 1.25,
                 "dish_margin_fraction": 0.12,
-                "boundary_edge_weight": 0.56,
-                "boundary_sensor_weight": 0.24,
-                "boundary_ridge_weight": 0.12,
-                "boundary_shadow_weight": 0.08,
-                "boundary_reference_weight": 0.35,
-                "boundary_nonedge_discount": 0.85,
+                "boundary_edge_weight": 0.35,
+                "boundary_ridge_weight": 0.65,
+                "boundary_semantic_floor": 0.08,
+                "boundary_nonphysical_discount": 0.95,
+                "boundary_physical_ridge_weight": 0.55,
+                "boundary_trace_weight": 0.45,
+                "trace_minimum_length_fraction": 0.22,
+                "trace_convexity_weight": 0.60,
                 "reference_texture_weight": 0.35,
-                "strong_boundary_quantile": 0.67,
-                "centre_material_weight": 0.30,
-                "centre_distance_weight": 0.40,
-                "centre_ring_weight": 0.30,
+                "centre_geometry_smoothing_fraction": 0.14,
+                "centre_material_weight": 0.55,
+                "centre_distance_weight": 0.45,
                 "centre_minimum_separation_fraction": 0.42,
                 "sparse_centre_minimum_separation_fraction": 0.58,
+                "marker_count_multiplier": 1.02,
                 "minimum_marker_score": 0.12,
                 "minimum_instance_area_fraction": 0.18,
                 "maximum_instance_area_fraction": 1.45,
@@ -2972,8 +3102,6 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineConnection("reference_layers", "reference_texture_prototypes", "BackgroundReferences", source_port="background", target_port="background_reference"),
         PipelineConnection("reference_layers", "reference_texture_prototypes", "ForegroundReferences", source_port="foreground", target_port="foreground_reference"),
         PipelineConnection("reference_layers", "reference_texture_prototypes", "OtherReferences", source_port="other", target_port="other_reference"),
-        PipelineConnection("reference_layers", "reference_texture_prototypes", "PhysicalEdgeReferences", source_port="physical_edge", target_port="physical_reference"),
-        PipelineConnection("reference_layers", "reference_texture_prototypes", "NonEdgeReferences", source_port="non_edge", target_port="non_edge_reference"),
         PipelineConnection("reference_layers", "reference_texture_prototypes", "PaintedInstanceAnnotations", source_port="annotated_seeds", target_port="annotations"),
         PipelineConnection("edge_gradients", "reference_texture_prototypes", "EdgeMagnitude", source_port="magnitude", target_port="edge"),
         PipelineConnection("edge_gradients", "reference_texture_prototypes", "AxialTangents", source_port="undirected", target_port="undirected"),
@@ -2995,7 +3123,7 @@ def build_default_pipeline() -> PipelineGraph:
             "seed_scale_estimation", "edge_traces", "SeedDiameter",
             source_port="seed_diameter", target_port="scale",
         ),
-        PipelineConnection("edge_traces", "seed_edge_curves", "OrientedTraces"),
+        PipelineConnection("edge_traces", "seed_edge_curves", "OrientedTraceLabels", source_port="trace_labels", target_port="traces"),
         PipelineConnection("edge_gradients", "seed_edge_curves", "FloatGradientField"),
         PipelineConnection(
             "seed_scale_estimation", "seed_edge_curves", "SeedDiameter",
@@ -3169,21 +3297,10 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineConnection("edge_ridges", "procedural_instances", "ThinnedRidges"),
         PipelineConnection("reference_edge_probability", "procedural_instances", "PhysicalEdgeProbability", source_port="physical_probability", target_port="physical_reference"),
         PipelineConnection("reference_edge_probability", "procedural_instances", "NonEdgeProbability", source_port="non_edge_probability", target_port="non_edge_reference"),
+        PipelineConnection("reference_edge_ridges", "procedural_instances", "ThinnedReferenceRidges", source_port="reference_ridges", target_port="reference_ridges"),
+        PipelineConnection("edge_traces", "procedural_instances", "OrientedTraceLabels", source_port="trace_labels", target_port="trace_labels"),
+        PipelineConnection("edge_traces", "procedural_instances", "TraceContinuity", source_port="continuity", target_port="trace_continuity"),
         PipelineConnection("reference_texture_prototypes", "procedural_instances", "ReferenceSeedSurface", source_port="seed_surface", target_port="reference_surface"),
-        PipelineConnection(
-            "illumination_decomposition",
-            "procedural_instances",
-            "ShadowLikelihood",
-            source_port="shadow",
-            target_port="shadow",
-        ),
-        PipelineConnection(
-            "image_quality",
-            "procedural_instances",
-            "SensorNoiseLikelihood",
-            source_port="sensor_noise",
-            target_port="sensor_noise",
-        ),
         PipelineConnection("reference_layers", "procedural_instances", "PaintedInstanceAnnotations", source_port="annotated_seeds", target_port="annotations"),
         PipelineConnection("metadata", "unet_instances", "SpeciesCondition", target_port="image"),
         PipelineConnection("deskew_colour", "unet_instances", "CorrectedImage", target_port="image"),

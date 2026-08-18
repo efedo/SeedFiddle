@@ -65,7 +65,7 @@ class ForegroundColourProfile:
 
 @dataclass(frozen=True, slots=True)
 class ReferenceTexturePrototype:
-    """One medoid patch retained from a painted reference feature cluster."""
+    """One feature medoid plus a display-only source-context thumbnail."""
 
     class_name: str
     patch_bgr: np.ndarray
@@ -81,15 +81,25 @@ class ReferenceTextureProfile:
 
     prototypes: tuple[ReferenceTexturePrototype, ...] = ()
     class_sample_counts: tuple[tuple[str, int], ...] = ()
+    class_sample_count_units: tuple[tuple[str, str], ...] = ()
     material_feature_names: tuple[str, ...] = ()
     edge_feature_names: tuple[str, ...] = ()
     working_scale: float = 1.0
+    edge_working_scale: float = 1.0
+    edge_working_seed_diameter_px: float = 0.0
+    edge_strip_normal_offset_px: float = 0.0
+    edge_strip_tangent_half_length_px: float = 0.0
     patch_size_px: int = 0
 
     def count_for(self, class_name: str) -> int:
         return sum(
             prototype.class_name == class_name
             for prototype in self.prototypes
+        )
+
+    def sample_count_unit_for(self, class_name: str) -> str:
+        return dict(self.class_sample_count_units).get(
+            class_name, "reference pixels"
         )
 
 
@@ -128,7 +138,7 @@ class AnalysisLayerSettings:
     foreground_noise_vector_length_fraction: float = 0.55
     foreground_noise_vector_sample_count: int = 9
     foreground_noise_vector_decay: float = 0.86
-    foreground_noise_direction_integration: str = "maximum"
+    foreground_noise_direction_integration: str = "1st tertile"
     foreground_noise_foreground_min_likelihood: int = 190
     foreground_noise_nonforeground_max_likelihood: int = 65
     foreground_noise_working_maximum_dimension: int = 1280
@@ -171,22 +181,31 @@ class AnalysisLayerSettings:
     ridge_low_threshold: float = 0.10
     ridge_high_threshold: float = 0.24
     ridge_hysteresis_iterations: int = 8
-    reference_edge_context_fraction: float = 0.04
-    reference_edge_similarity_scale: float = 1.0
     reference_edge_ridge_weight: float = 0.35
-    reference_edge_working_maximum_dimension: int = 1280
     reference_ridge_nms_step_px: float = 1.0
     reference_ridge_low_threshold: float = 0.10
     reference_ridge_high_threshold: float = 0.24
     reference_ridge_hysteresis_iterations: int = 8
     reference_ridge_working_maximum_dimension: int = 1280
-    reference_texture_prototypes_per_class: int = 64
+    reference_texture_material_prototypes_per_class: int = 64
+    reference_texture_edge_prototypes_per_class: int = 256
     reference_texture_minimum_samples_per_prototype: int = 16
     reference_texture_fit_iterations: int = 4
     reference_texture_similarity_scale: float = 1.0
     reference_texture_context_fraction: float = 0.04
     reference_texture_patch_fraction: float = 0.28
     reference_texture_working_maximum_dimension: int = 960
+    reference_texture_edge_working_maximum_dimension: int = 2048
+    reference_edge_minimum_working_seed_diameter_px: float = 28.0
+    reference_edge_strip_normal_offset_fraction: float = 0.05
+    reference_edge_strip_tangent_half_length_fraction: float = 0.08
+    # Annotated instances always provide boundary supervision when present;
+    # this controls how far inside each contour internal-edge examples begin.
+    reference_texture_instance_interior_buffer_fraction: float = 0.08
+    # Display-only evidence margin: the internal/non-physical classifier is
+    # intentionally adjustable because true physical contours can receive
+    # support from both image-local prototype banks.
+    net_physical_edge_internal_scale: float = 0.50
     trace_tangent_tolerance_degrees: float = 24.0
     trace_maximum_gap_px: int = 2
     trace_curvature_policy: str = "prefer"
@@ -209,8 +228,8 @@ class AnalysisLayerSettings:
     boundary_center_vote_weight: float = 0.35
     boundary_center_vote_blur_fraction: float = 0.08
     boundary_semantic_weight: float = 0.25
-    boundary_reference_influence: float = 0.35
-    boundary_reference_nonedge_discount: float = 0.80
+    boundary_instance_edge_influence: float = 0.35
+    boundary_nonphysical_edge_discount: float = 0.80
     boundary_polarity_boost: float = 0.20
     boundary_minimum_confidence: float = 0.12
     boundary_geometry_max_candidates: int = 256
@@ -288,8 +307,14 @@ class AnalysisLayerSettings:
             raise ValueError("Noise working dimension must be between 512 and 4096.")
         if not 512 <= self.foreground_noise_working_maximum_dimension <= 4096:
             raise ValueError("Foreground-noise working dimension must be between 512 and 4096.")
-        if not 8 <= self.reference_texture_prototypes_per_class <= 256:
-            raise ValueError("Reference texture prototypes per class must be between 8 and 256.")
+        if not 8 <= self.reference_texture_material_prototypes_per_class <= 256:
+            raise ValueError(
+                "Material reference-texture prototypes per class must be between 8 and 256."
+            )
+        if not 8 <= self.reference_texture_edge_prototypes_per_class <= 1024:
+            raise ValueError(
+                "Edge reference-texture prototypes per class must be between 8 and 1024."
+            )
         if not 4 <= self.reference_texture_minimum_samples_per_prototype <= 512:
             raise ValueError("Reference texture prototype support must be between 4 and 512 pixels.")
         if not 1 <= self.reference_texture_fit_iterations <= 12:
@@ -302,6 +327,34 @@ class AnalysisLayerSettings:
             raise ValueError("Reference texture patch size must be between 0.10 and 0.80 seed diameters.")
         if not 256 <= self.reference_texture_working_maximum_dimension <= 2048:
             raise ValueError("Reference texture working dimension must be between 256 and 2048.")
+        if not 512 <= self.reference_texture_edge_working_maximum_dimension <= 4096:
+            raise ValueError(
+                "Reference edge-strip working dimension must be between 512 and 4096."
+            )
+        if not 8.0 <= self.reference_edge_minimum_working_seed_diameter_px <= 96.0:
+            raise ValueError(
+                "Minimum edge-strip seed diameter must be between 8 and 96 pixels."
+            )
+        if not 0.01 <= self.reference_edge_strip_normal_offset_fraction <= 0.20:
+            raise ValueError(
+                "Edge-strip normal offset must be between 0.01 and 0.2 diameter."
+            )
+        if not 0.01 <= self.reference_edge_strip_tangent_half_length_fraction <= 0.25:
+            raise ValueError(
+                "Edge-strip tangent half-length must be between 0.01 and 0.25 diameter."
+            )
+        if not (
+            0.0
+            <= self.reference_texture_instance_interior_buffer_fraction
+            <= 0.50
+        ):
+            raise ValueError(
+                "Annotated-instance interior buffer must be between 0 and 0.5 diameter."
+            )
+        if not 0.0 <= self.net_physical_edge_internal_scale <= 2.0:
+            raise ValueError(
+                "Net physical-edge internal subtraction must be between 0 and 2."
+            )
         if not 0.10 <= self.noise_vector_decay <= 1.0:
             raise ValueError("Noise vector decay must be between 0.10 and 1.")
         if not 0.10 <= self.foreground_noise_vector_decay <= 1.0:
@@ -324,9 +377,12 @@ class AnalysisLayerSettings:
             raise ValueError("Background frequency influence must be between 0 and 1.")
         if not 0.50 <= self.background_distribution_scale_multiplier <= 3.0:
             raise ValueError("Background colour tolerance multiplier must be between 0.5 and 3.")
-        if self.noise_direction_integration not in {"mean", "maximum", "minimum", "median"}:
+        direction_integrations = {"mean", "maximum", "minimum", "median"}
+        if self.noise_direction_integration not in direction_integrations:
             raise ValueError("Unknown directional background integration method.")
-        if self.foreground_noise_direction_integration not in {"mean", "maximum", "minimum", "median"}:
+        if self.foreground_noise_direction_integration not in {
+            *direction_integrations, "1st tertile"
+        }:
             raise ValueError("Unknown directional foreground integration method.")
         if not 0.05 <= self.surface_gradient_radius_fraction <= 2.0:
             raise ValueError("Surface-gradient ray length fraction is out of range.")
@@ -377,14 +433,8 @@ class AnalysisLayerSettings:
             )
         if not 1 <= self.trace_junction_max_neighbors <= 8:
             raise ValueError("Trace junction neighbour limit must be between 1 and 8.")
-        if not 0.005 <= self.reference_edge_context_fraction <= 0.25:
-            raise ValueError("Reference-edge context must be between 0.005 and 0.25 diameter.")
-        if not 0.25 <= self.reference_edge_similarity_scale <= 4.0:
-            raise ValueError("Reference-edge tolerance must be between 0.25 and 4.")
         if not 0.0 <= self.reference_edge_ridge_weight <= 1.0:
             raise ValueError("Reference-edge ridge support must be between 0 and 1.")
-        if not 256 <= self.reference_edge_working_maximum_dimension <= 4096:
-            raise ValueError("Reference-edge working dimension must be between 256 and 4096.")
         if not 0.25 <= self.reference_ridge_nms_step_px <= 3.0:
             raise ValueError(
                 "Reference-ridge NMS step must be between 0.25 and 3 pixels."
@@ -421,8 +471,8 @@ class AnalysisLayerSettings:
         for name, value in (
             ("boundary_center_vote_weight", self.boundary_center_vote_weight),
             ("boundary_semantic_weight", self.boundary_semantic_weight),
-            ("boundary_reference_influence", self.boundary_reference_influence),
-            ("boundary_reference_nonedge_discount", self.boundary_reference_nonedge_discount),
+            ("boundary_instance_edge_influence", self.boundary_instance_edge_influence),
+            ("boundary_nonphysical_edge_discount", self.boundary_nonphysical_edge_discount),
             ("boundary_polarity_boost", self.boundary_polarity_boost),
             ("boundary_minimum_confidence", self.boundary_minimum_confidence),
         ):
@@ -470,6 +520,7 @@ class AnalysisLayers:
     reference_texture_profile: ReferenceTextureProfile | None = None
     physical_edge_probability: object | None = None
     non_edge_probability: object | None = None
+    net_physical_edge_internal_scale: float = 0.50
     reference_edge_ridges: object | None = None
     undirected_edge_likelihood: object | None = None
     background_mode: str = "automatic"
@@ -568,6 +619,57 @@ class AnalysisLayers:
             blue = np.uint8(normalized * 255.0)
         alpha = np.uint8(np.asarray(self.valid_mask) > 0) * 255
         return np.dstack((red, green, blue, alpha))
+
+    def reference_edge_comparison_rgba(self) -> np.ndarray:
+        """Compare both learned edge classes without materializing a new raster.
+
+        Physical-edge probability is blue and non-physical-edge probability is red, so
+        pixels supported by both classes appear magenta.  The two lazy source
+        rasters are downloaded only when this diagnostic is selected.
+        """
+
+        valid = np.asarray(self.valid_mask)
+        shape = valid.shape
+        physical = (
+            np.zeros(shape, dtype=np.uint8)
+            if self.physical_edge_probability is None
+            else np.asarray(self.physical_edge_probability, dtype=np.uint8)
+        )
+        non_edge = (
+            np.zeros(shape, dtype=np.uint8)
+            if self.non_edge_probability is None
+            else np.asarray(self.non_edge_probability, dtype=np.uint8)
+        )
+        green = np.zeros(shape, dtype=np.uint8)
+        alpha = np.uint8(valid > 0) * 255
+        return np.dstack((non_edge, green, physical, alpha))
+
+    def net_physical_edge_probability_rgba(self) -> np.ndarray:
+        """Render the scaled positive physical-edge evidence margin in blue."""
+
+        valid = np.asarray(self.valid_mask)
+        shape = valid.shape
+        physical = (
+            np.zeros(shape, dtype=np.uint8)
+            if self.physical_edge_probability is None
+            else np.asarray(self.physical_edge_probability, dtype=np.uint8)
+        )
+        non_edge = (
+            np.zeros(shape, dtype=np.uint8)
+            if self.non_edge_probability is None
+            else np.asarray(self.non_edge_probability, dtype=np.uint8)
+        )
+        net_physical = np.rint(
+            np.maximum(
+                physical.astype(np.float32)
+                - float(self.net_physical_edge_internal_scale)
+                * non_edge.astype(np.float32),
+                0.0,
+            )
+        ).astype(np.uint8)
+        black = np.zeros(shape, dtype=np.uint8)
+        alpha = np.uint8(valid > 0) * 255
+        return np.dstack((black, black, net_physical, alpha))
 
     def reference_edge_ridges_rgba(self) -> np.ndarray:
         values = (
@@ -726,8 +828,6 @@ def build_analysis_layers(
     foreground_reference_mask: np.ndarray | None = None,
     background_exclusion_mask: np.ndarray | None = None,
     foreground_exclusion_mask: np.ndarray | None = None,
-    physical_edge_reference_mask: np.ndarray | None = None,
-    non_edge_reference_mask: np.ndarray | None = None,
     seed_instance_annotations: np.ndarray | None = None,
     background_reference_samples: np.ndarray | None = None,
     background_reference_sample_count: int = 0,
@@ -772,8 +872,6 @@ def build_analysis_layers(
         foreground_reference_mask=foreground_reference_mask,
         background_exclusion_mask=background_exclusion_mask,
         foreground_exclusion_mask=foreground_exclusion_mask,
-        physical_edge_reference_mask=physical_edge_reference_mask,
-        non_edge_reference_mask=non_edge_reference_mask,
         seed_instance_annotations=seed_instance_annotations,
         background_reference_samples=background_reference_samples,
         background_reference_sample_count=background_reference_sample_count,

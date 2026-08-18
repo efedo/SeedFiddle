@@ -4,6 +4,90 @@ import unittest
 
 
 class AnalysisLayerTests(unittest.TestCase):
+    def test_edge_prototype_bank_honours_capacity_above_256(self) -> None:
+        import torch
+
+        from seedvision.cuda.layers import _fit_feature_prototype_bank
+
+        prototype_count = 300
+        values = torch.arange(
+            prototype_count, dtype=torch.float32
+        ).repeat_interleave(4)
+        features = torch.stack(
+            (
+                values / float(prototype_count),
+                torch.sin(values),
+                torch.cos(values),
+            ),
+            dim=0,
+        ).reshape(1, 3, 30, 40)
+        mask = torch.ones((1, 1, 30, 40), dtype=torch.bool)
+
+        bank = _fit_feature_prototype_bank(
+            features,
+            mask,
+            class_name="physical_edge",
+            maximum_prototypes=prototype_count,
+            minimum_support=4,
+            iterations=1,
+            scale_floor=0.01,
+        )
+
+        self.assertIsNotNone(bank)
+        self.assertEqual(int(bank.centres.shape[0]), prototype_count)
+
+    def test_both_prototype_capacities_participate_in_cache_identity(self) -> None:
+        from unittest.mock import patch
+
+        import numpy as np
+
+        from seedvision.cuda.layers import reference_texture_probabilities
+        from seedvision.visualization import (
+            AnalysisLayerSettings,
+            build_analysis_layers,
+        )
+
+        image = np.full((48, 48, 3), (100, 135, 170), np.uint8)
+        valid = np.full((48, 48), 255, np.uint8)
+        cache: dict[str, object] = {}
+
+        def calculate(settings):
+            return build_analysis_layers(
+                image,
+                valid,
+                np.empty((0, 2), np.float32),
+                np.empty((0,), np.float32),
+                18.0,
+                offset_x=0,
+                offset_y=0,
+                settings=settings,
+                cache_values=cache,
+                instance_masks_enabled=False,
+                seed_edge_curves_enabled=False,
+            )
+
+        with patch(
+            "seedvision.cuda.layers.reference_texture_probabilities",
+            wraps=reference_texture_probabilities,
+        ) as fit:
+            calculate(AnalysisLayerSettings())
+            self.assertEqual(fit.call_count, 1)
+            calculate(AnalysisLayerSettings())
+            self.assertEqual(fit.call_count, 1)
+            calculate(
+                AnalysisLayerSettings(
+                    reference_texture_material_prototypes_per_class=72
+                )
+            )
+            self.assertEqual(fit.call_count, 2)
+            calculate(
+                AnalysisLayerSettings(
+                    reference_texture_material_prototypes_per_class=72,
+                    reference_texture_edge_prototypes_per_class=320,
+                )
+            )
+            self.assertEqual(fit.call_count, 3)
+
     def test_contrastive_other_evidence_preserves_equal_positive_matches(self) -> None:
         import torch
 
@@ -191,7 +275,7 @@ class AnalysisLayerTests(unittest.TestCase):
         displayed = layers.background_rgba()
         self.assertLess(int(displayed[10, 10, 0]), int(displayed[48, 48, 0]))
 
-    def test_reference_edge_probabilities_use_sparse_classes_without_forcing(self) -> None:
+    def test_instance_edge_probabilities_use_sparse_classes_without_forcing(self) -> None:
         import cv2
         import numpy as np
 
@@ -201,10 +285,8 @@ class AnalysisLayerTests(unittest.TestCase):
         cv2.circle(image, (48, 48), 25, (65, 105, 165), -1)
         cv2.line(image, (48, 28), (48, 68), (25, 55, 95), 3)
         valid = np.full((96, 96), 255, dtype=np.uint8)
-        physical = np.zeros((96, 96), dtype=bool)
-        physical[46:51, 22:28] = True
-        non_edge = np.zeros((96, 96), dtype=bool)
-        non_edge[43:54, 46:51] = True
+        instances = np.zeros((96, 96), dtype=np.uint16)
+        cv2.circle(instances, (48, 48), 25, 1, -1)
         layers = build_analysis_layers(
             image,
             valid,
@@ -213,8 +295,7 @@ class AnalysisLayerTests(unittest.TestCase):
             50.0,
             offset_x=0,
             offset_y=0,
-            physical_edge_reference_mask=physical,
-            non_edge_reference_mask=non_edge,
+            seed_instance_annotations=instances,
             instance_masks_enabled=False,
             seed_edge_curves_enabled=False,
         )
@@ -234,7 +315,7 @@ class AnalysisLayerTests(unittest.TestCase):
             int(np.count_nonzero(reference_ridges)),
             int(np.count_nonzero(physical_probability)),
         )
-        # Painted coordinates are samples, not hard output assignments.
+        # Annotation coordinates are samples, not hard output assignments.
         self.assertLess(int(physical_probability[48, 24]), 255)
         self.assertLess(int(non_edge_probability[48, 48]), 255)
         self.assertEqual(
@@ -251,13 +332,100 @@ class AnalysisLayerTests(unittest.TestCase):
             50.0,
             offset_x=0,
             offset_y=0,
-            physical_edge_reference_mask=physical,
-            non_edge_reference_mask=non_edge,
+            seed_instance_annotations=instances,
             reference_edge_ridges_enabled=False,
             instance_masks_enabled=False,
             seed_edge_curves_enabled=False,
         )
         self.assertEqual(int(np.asarray(disabled.reference_edge_ridges).max()), 0)
+
+    def test_reference_edge_comparison_and_net_physical_overlays(self) -> None:
+        from dataclasses import replace
+
+        import numpy as np
+
+        from seedvision.visualization import AnalysisLayers, NoiseFrequencyProfile
+
+        physical = np.asarray(
+            ((0, 64, 200), (255, 10, 99)), dtype=np.uint8
+        )
+        non_edge = np.asarray(
+            ((0, 128, 80), (255, 30, 0)), dtype=np.uint8
+        )
+        valid = np.asarray(((255, 255, 255), (0, 255, 255)), dtype=np.uint8)
+        zeros = np.zeros_like(valid)
+        layers = AnalysisLayers(
+            offset_x=0,
+            offset_y=0,
+            instance_labels=zeros,
+            instance_colours=np.zeros((1, 3), dtype=np.uint8),
+            background_likelihood=zeros,
+            refined_background_likelihood=zeros,
+            noise_frequency_profile=NoiseFrequencyProfile(
+                band_scales_px=(1.0, 2.0, 3.0),
+                background_log_rms=(0.0, 0.0, 0.0),
+                nonbackground_log_rms=(0.0, 0.0, 0.0),
+                background_sample_count=0,
+                nonbackground_sample_count=0,
+                separation=0.0,
+            ),
+            edge_likelihood=zeros,
+            directed_edge_hue=zeros,
+            undirected_edge_hue=zeros,
+            seed_edge_curve_likelihood=zeros,
+            seed_edge_curve_radius_px=zeros,
+            valid_mask=valid,
+            physical_edge_probability=physical,
+            non_edge_probability=non_edge,
+        )
+
+        comparison = layers.reference_edge_comparison_rgba()
+        np.testing.assert_array_equal(comparison[:, :, 0], non_edge)
+        np.testing.assert_array_equal(comparison[:, :, 1], zeros)
+        np.testing.assert_array_equal(comparison[:, :, 2], physical)
+        np.testing.assert_array_equal(comparison[:, :, 3], valid)
+
+        net = layers.net_physical_edge_probability_rgba()
+        np.testing.assert_array_equal(net[:, :, 0], zeros)
+        np.testing.assert_array_equal(net[:, :, 1], zeros)
+        np.testing.assert_array_equal(
+            net[:, :, 2],
+            np.asarray(((0, 0, 160), (128, 0, 99)), dtype=np.uint8),
+        )
+        np.testing.assert_array_equal(net[:, :, 3], valid)
+
+        stronger_subtraction = replace(
+            layers, net_physical_edge_internal_scale=1.25
+        )
+        np.testing.assert_array_equal(
+            stronger_subtraction.net_physical_edge_probability_rgba()[:, :, 2],
+            np.asarray(((0, 0, 100), (0, 0, 99)), dtype=np.uint8),
+        )
+        np.testing.assert_array_equal(
+            np.asarray(stronger_subtraction.physical_edge_probability), physical
+        )
+        np.testing.assert_array_equal(
+            np.asarray(stronger_subtraction.non_edge_probability), non_edge
+        )
+
+        without_non_edge = replace(layers, non_edge_probability=None)
+        np.testing.assert_array_equal(
+            without_non_edge.reference_edge_comparison_rgba()[:, :, 0],
+            zeros,
+        )
+        np.testing.assert_array_equal(
+            without_non_edge.net_physical_edge_probability_rgba()[:, :, 2],
+            physical,
+        )
+        without_physical = replace(layers, physical_edge_probability=None)
+        np.testing.assert_array_equal(
+            without_physical.reference_edge_comparison_rgba()[:, :, 2],
+            zeros,
+        )
+        np.testing.assert_array_equal(
+            without_physical.net_physical_edge_probability_rgba()[:, :, 2],
+            zeros,
+        )
 
     def test_probability_ridge_thinning_centres_and_hysteretically_connects(self) -> None:
         import torch
@@ -340,14 +508,21 @@ class AnalysisLayerTests(unittest.TestCase):
         foreground[122:154, 80:110] = True
         other = np.zeros((height, width), bool)
         other[12:45, 150:180] = True
-        physical = np.zeros((height, width), bool)
-        physical[60:70, 20:30] = True
-        physical[55:70, 163:172] = True
-        non_edge = np.zeros((height, width), bool)
-        non_edge[48:78, 54:60] = True
+        instances = np.zeros((height, width), np.uint16)
+        for instance_id, (centre_x, centre_y, radius, _colour) in enumerate(
+            seeds, start=1
+        ):
+            cv2.circle(
+                instances,
+                (centre_x, centre_y),
+                radius,
+                instance_id,
+                -1,
+            )
 
         settings = AnalysisLayerSettings(
-            reference_texture_prototypes_per_class=16,
+            reference_texture_material_prototypes_per_class=16,
+            reference_texture_edge_prototypes_per_class=8,
             reference_texture_minimum_samples_per_prototype=8,
             reference_texture_fit_iterations=3,
             reference_texture_working_maximum_dimension=512,
@@ -365,8 +540,7 @@ class AnalysisLayerTests(unittest.TestCase):
             foreground_reference_mask=foreground,
             background_exclusion_mask=other,
             foreground_exclusion_mask=other,
-            physical_edge_reference_mask=physical,
-            non_edge_reference_mask=non_edge,
+            seed_instance_annotations=instances,
             instance_masks_enabled=False,
             seed_edge_curves_enabled=False,
         )
@@ -385,8 +559,8 @@ class AnalysisLayerTests(unittest.TestCase):
                 "background": 16,
                 "foreground": 16,
                 "other": 16,
-                "physical_edge": 16,
-                "non_edge": 16,
+                "physical_edge": 8,
+                "non_edge": 8,
             },
         )
         self.assertTrue(
@@ -634,6 +808,30 @@ class AnalysisLayerTests(unittest.TestCase):
             layers.foreground_noise_frequency_profile.separation, 0.5
         )
         self.assertEqual(layers.foreground_noise_rgba().shape, (96, 96, 4))
+
+    def test_first_tertile_is_the_exact_directional_one_third_quantile(self) -> None:
+        import torch
+
+        from seedvision.cuda.layers import _integrate_directional_noise
+
+        stack = torch.tensor(
+            (0.0, 10.0, 20.0, 30.0, 40.0), dtype=torch.float32
+        )[:, None, None]
+        first_tertile = _integrate_directional_noise(stack, "1st tertile")
+
+        self.assertAlmostEqual(float(first_tertile.item()), 40.0 / 3.0, places=5)
+        self.assertLess(
+            float(_integrate_directional_noise(stack, "minimum").item()),
+            float(first_tertile.item()),
+        )
+        self.assertLess(
+            float(first_tertile.item()),
+            float(_integrate_directional_noise(stack, "median").item()),
+        )
+        self.assertLess(
+            float(_integrate_directional_noise(stack, "median").item()),
+            float(_integrate_directional_noise(stack, "maximum").item()),
+        )
 
     def test_noise_profiles_train_directly_from_both_painted_classes(self) -> None:
         import numpy as np
@@ -1454,6 +1652,27 @@ class AnalysisLayerTests(unittest.TestCase):
         first_gradients = cache["layer.edge_gradients"]
         first_reference_probability = cache["layer.reference_edge_probability"]
         first_reference_ridge = cache["layer.reference_edge_ridges"]
+
+        scaled_overlay = build_analysis_layers(
+            image,
+            valid,
+            centers,
+            radii,
+            46.0,
+            offset_x=0,
+            offset_y=0,
+            cache_values=cache,
+            settings=AnalysisLayerSettings(
+                net_physical_edge_internal_scale=1.25
+            ),
+        )
+        self.assertEqual(scaled_overlay.net_physical_edge_internal_scale, 1.25)
+        self.assertIs(
+            cache["layer.reference_edge_probability"],
+            first_reference_probability,
+        )
+        self.assertIs(cache["layer.reference_edge_ridges"], first_reference_ridge)
+        self.assertIs(cache["layer.seed_edge_curves"], first)
 
         build_analysis_layers(
             image,

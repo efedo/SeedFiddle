@@ -56,9 +56,18 @@ The complete desktop workflow is under **Learning**:
    initialize the draft from a procedural/U-Net/StarDist result, and correct
    every seed. Every visible seed must have one ID; interior scribbles and
    partly filled seeds are not training masks.
-2. **Save applied seed-label maskâ€¦** preserves the full corrected-coordinate
-   `uint16` mask so annotation can be resumed with **Load seed-label mask as
-   draftâ€¦** in a later session.
+2. **Load reference mask…** in the seed-annotation panel first looks for a
+   source-bound mask in `seed-instance-references/`. It verifies the source and
+   mask SHA-256 digests, then warps categorical IDs into the current corrected
+   image with nearest-neighbour interpolation and installs an undoable draft.
+   **Choose mask file…** explicitly selects a corrected-coordinate PNG, TIFF,
+   or NPZ even when a matching bundled reference exists.
+   **Save applied seed-label mask…** preserves the corrected-coordinate
+   `uint16` draft for later editing. The repository bundle covers all eleven
+   committed photographs, including the two isolated reference seeds outside
+   each dish. Its entries are deliberately marked `reviewed: false`: they are
+   machine-prepared pre-annotations that must be corrected and accepted at full
+   resolution before training or scientific evaluation.
 3. **Export applied labels to learning datasetâ€¦** stores the canonical-scale
    feature stack, display image, labels, species condition, lot/capture group,
    train/validation/test split, annotation revision, reviewer, and review state
@@ -75,9 +84,11 @@ The complete desktop workflow is under **Learning**:
    corresponding pipeline node.
 
 The U-Net's interior, physical boundary, centre, distance, and uncertainty
-targets are derived from the reviewed instance masks. Its additional apparent
-coat-pattern boundary target remains optional: without a separate boundary plus
-reviewed-validity mask it receives zero loss, rather than fabricated labels.
+targets are derived from the reviewed instance masks. The physical target is
+the instance contour; its apparent coat-pattern boundary target uses only strong
+edge/ridge candidates safely inset from that contour. Flat interior and the
+uncertainty band are excluded by the sparse validity mask rather than fabricated
+as negative labels.
 StarDist object and radial targets are derived directly from the same reviewed
 instance masks. Neither architecture learns from the painted foreground or
 background reference layers as labels; those are inputs to the exported feature
@@ -141,7 +152,12 @@ displayed dark (high match) to light (low match). The refined layer uses
 confident pixels from the colour layer as per-image pseudo-labels, learns
 fine/medium/coarse band-pass energy profiles for background and non-background,
 evaluates their continuation along one-sided rays, and merges the directional
-maps with the selected mean, maximum, minimum, or median rule. Both edge overlays use brightness for
+maps with the selected mean, maximum, minimum, median, or first-tertile rule.
+Foreground noise defaults to the exact one-third quantile, so roughly two
+thirds of ray directions must retain at least the reported support; background
+noise retains its maximum default. The bounded CUDA implementation interpolates
+two order statistics without sorting a second full directional raster bank.
+Both edge overlays use brightness for
 maximum multichannel edge strength. The undirected option maps axial tangent
 orientation across the complete hue wheel, with 0° and 180° equivalent. The
 directed option uses 0° and 360° equivalence and orients tangents so that the
@@ -187,7 +203,7 @@ risk and products that depend on the removed distance branch are retained in
 the unused-node toolbox for future development. Independent illumination,
 image-quality, foreground/noise, and edge diagnostics remain active.
 
-Reference annotation is divided into three independent full-resolution layers:
+Reference annotation is divided into two independent full-resolution layers:
 
 1. **Material references** is one categorical mask with mutually exclusive
    **Background**, **Foreground**, and **Other** classes. Painting one class at
@@ -196,52 +212,85 @@ Reference annotation is divided into three independent full-resolution layers:
    to both fitted colour/texture classes instead of hard-setting their output
    pixels. It reduces a class only where Other fits better, so glass or neutral
    colours shared with a positive class cannot veto legitimate evidence.
-2. **Boundary references** contains mutually exclusive **Physical edge** and
-   **Non-edge** review marks. Non-edge is suitable for strong coat-pattern or
-   lighting transitions that are not a physical seed boundary. The optional
-   **Snap** brush previews and commits either class at the strongest nearby
-   analysed edge. These sparse labels are exported with an explicit reviewed
-   validity raster for the U-Net physical-boundary target.
-3. **Seed instance annotations** is the separate labelled integer layer
-   described below; every seed receives its own stable colour ID.
+2. **Seed instance annotations** is the separate labelled integer layer
+   described below; every seed receives its own stable colour ID. Its viewer
+   overlay is drawn from viewport-requested 512-pixel tiles at one mask pixel
+   per image pixel, so zooming and panning never expose the former 2,048-pixel
+   display proxy. Tile-local indexed palettes retain exact categorical edges
+   while a dual 512-entry/48 MiB LRU bound prevents image size from creating an
+   unbounded display cache.
+
+There is no separate painted boundary-reference layer. A complete applied seed
+instance supplies its one-pixel physical contour automatically. Strong
+edge/ridge candidates safely inset from that contour supply sparse
+**Non-physical edge** examples; ordinary flat seed interior is left unlabelled.
+This keeps the two classes geometrically consistent with the instance mask and
+prevents a stale manual boundary raster from disagreeing with it.
 
 The active **Reference texture prototypes** node turns those reviewed examples
-into an image-local, non-neural pattern matcher. It fits up to 64 independent
-coverage-preserving medoids for each of Background, Foreground, Other, Physical
-edge, and Non-edge instead of averaging a class into one texture. Material
-prototypes combine Lab colour, fine/medium/coarse darkness and colour energy,
-local residuals, edge magnitude, ridges, and local edge density. Boundary
-prototypes add tangent coherence and cross-edge contrast; their source patches
-are rotated to a common tangent for review. The node evaluates every prototype
-throughout the dish on CUDA and publishes Foreground/seed-surface, Background,
-Other, Physical-edge, and Non-edge likelihoods. Competing classes attenuate a
-positive match only when they fit more specifically, and painted coordinates
-are never assigned an output probability directly.
+into an image-local, non-neural pattern matcher. Its independent capacity
+controls default to 64 coverage-preserving medoids for each material class
+(Background, Foreground, and Other) and 256 for each instance-derived edge
+class (Physical edge and Non-physical edge), instead of averaging a class into
+one texture. The edge capacity can be increased to 1,024; fitting assignments
+and full-image evaluation are chunked so this does not allocate a
+samples-by-prototypes or prototypes-by-full-raster tensor. Material prototypes
+combine Lab colour, fine/medium/coarse darkness and colour energy, local
+residuals, edge magnitude, ridges, and local edge density. Edge prototypes
+instead use narrow tangent-aligned strips with separately pooled interior,
+centre-edge, and exterior regions, signed interior-minus-exterior Lab contrast,
+local residuals, edge/ridge support, and axial tangent coherence. Annotated
+instance geometry supplies the true outward normal while fitting a physical
+edge, including opposite normals at a contact between two seed IDs. Global
+inference never receives that annotation geometry: it uses image-derived
+tangents and evaluates both normal polarities. Material matching retains its
+independent 960-pixel default working limit, while edge matching adaptively
+targets 28 working pixels per seed diameter up to its separate 2,048-pixel
+default hard cap so small seeds retain substantially more boundary detail. The
+node evaluates every prototype throughout the dish on CUDA and publishes
+Foreground/seed-surface, Background, Other, Physical-edge, and Non-physical-edge
+likelihoods. Competing classes attenuate a positive match only when they fit
+more specifically, and reviewed coordinates are never assigned an output
+probability directly.
 
 Selecting the node exposes a full-image-pane **Reference texture prototype
 collage** containing every retained medoid, grouped and colour-coded by class,
-with cluster support percentages and source reference counts. Its three material
-likelihood overlays remain available beside the existing physical/non-edge
-overlays. Maximum prototypes, minimum cluster support, fit iterations,
-similarity tolerance, seed-relative context, thumbnail size, ridge influence,
-and working dimension are editable and computationally active. With no applied
-references the expensive feature fit is skipped and the physical-edge output
-uses generic edge/ridge support. This is per-image procedural adaptation, not a
+with cluster support percentages and source reference counts. The squares are
+context thumbnails rather than spatial templates. Edge thumbnails mark the
+actual centre sample in yellow and the two polarity-neutral side strips in cyan.
+Its three material likelihood overlays remain available beside the existing
+physical/non-physical overlays. Separate maximum material and edge prototypes,
+minimum cluster support, fit iterations, similarity tolerance, seed-relative
+context, thumbnail size, ridge influence, strip geometry, and separate
+material/edge working dimensions are editable and computationally active. With no applied
+references the expensive feature fit is skipped. When no instance annotations
+exist, the physical/non-physical classifier is neutral: unknown regions retain
+neutral generic edge/ridge support in the procedural separator, but are not
+misrepresented as learned physical-boundary evidence. This is per-image procedural adaptation, not a
 trained cross-image model; it is intended to improve annotation bootstrapping
 and provide inspectable evidence for later learned-model training.
 
-The top-bar **Material references**, **Boundary references**, and **Annotate
-seed instances** commands open the applicable compact contextual controls over
+Applied seed-instance annotations always provide the boundary-class examples.
+Each labelled instance's one-pixel contour becomes **Physical edge** evidence;
+only strong edge/ridge candidates beyond the configurable safe interior buffer
+become **Non-physical edge** evidence. The intervening uncertainty band and
+unstructured interior remain unlabelled. These masks are regenerated from the
+saved instance IDs and current image evidence and are never stored as a second,
+potentially stale annotation layer.
+
+The top-bar **Material references** and **Annotate seed instances** commands
+open the applicable compact contextual controls over
 the image. Drag the **Move painting controls** bar to reposition this panel.
 Repeated explanatory text is kept in tooltips. Shared **Paint**,
 **Eraser**, **Clear layer**, brush-radius, **Apply**, and **Revert** controls
 replace per-class editing rows; right-drag remains a temporary eraser. A live
-image-coordinate outline shows the exact brush footprint, and boundary
-snapping moves this preview to the position that will be committed. Freehand
+image-coordinate outline shows the exact brush footprint. Freehand
 reference strokes use lightweight vector previews and rebuild their mask
 overlays only once on release. Painting remains a draft and performs no image
-analysis until **Apply**. Turn off **Show marks** to inspect analysis overlays
-without material or boundary paint; seed-instance colours remain visible.
+analysis until **Apply + save**. The always-visible **Show: Materials | Seed
+instances** checkboxes independently hide either painted group
+without changing, applying, saving, or invalidating their data. For example,
+leave only Seed instances checked to review labels without material marks.
 Clearing the selected class returns the shared tool to Paint so the empty layer
 can immediately be redrawn.
 
@@ -250,17 +299,27 @@ The fixed panel header also provides a context-aware **Undo** button
 independently for the categorical reference layers and seed-instance labels.
 One freehand drag, assisted-tool click, clear command, imported label map, or
 automatic starting draft is one undo step. Undo restores mutually exclusive
-peer classes together (Background/Foreground/Other or Physical edge/Non-edge),
-including the previous seed-label provenance. **Apply** and **Revert** establish
-a new history boundary; disk-restored references begin with an empty queue.
+peer material classes together (Background/Foreground/Other), including the
+previous seed-label provenance. **Apply + save** and **Revert**
+establish a new history boundary; disk-restored references begin with an empty
+queue.
 
-**Save applied references** stores all three applied annotation layers together
-in the ignored `projects/reference-regions/` workspace area. Seed Fiddle
-automatically restores that archive the next time the same image is opened, but
+**Apply + save** confirms the current material or seed-instance draft and
+atomically stores both applied annotation layers together in the
+ignored `projects/reference-regions/` workspace area. This automatic save occurs
+only after Apply; an unfinished stroke or other unapplied draft is never written.
+The explicit **Save applied references** command remains available. Seed Fiddle
+automatically restores the archive the next time the same image is opened, but
 only after its stored SHA-256 fingerprint and dimensions match the current
 image. A changed, corrupt, or incompatible image/archive produces a warning and
-no reference pixels are loaded. Unapplied drafts must be applied or reverted
-before saving, so a saved archive is always an exact analysis input.
+no reference pixels are loaded. If automatic saving fails, the newly applied
+state remains available in memory and a prominent warning explains that it is
+not yet durable.
+
+The current reference-region archive is version 2 and contains only the
+categorical material raster and annotated seed IDs/provenance. Version-1
+archives remain readable after the same fingerprint validation, but their
+retired manually painted Physical-edge/Non-edge raster is deliberately ignored.
 
 Use the separate **Annotate seed instances** mode to give each known seed a
 stable, distinct colour ID. Freehand **Brush** and **Eraser** drags show an
@@ -268,35 +327,83 @@ immediate vector stroke, then rebuild only the annotation raster on release;
 they do not rebuild the analysis overlays. The assisted tools use a debounced
 live preview and click-to-apply interaction: **Trace edge**
 sets an initial anchor, previews a magnetic path as the cursor moves, and applies
-each segment on the next click; **Snap shape** shows both a nominal reference
-cursor and its nearest edge-supported circle/ellipse fit; **Smart fill** previews
-its proposed region and can start from an unmarked seed or extend a partial
-annotation. **Show selected seed only** hides every other instance mark; choosing
-another Seed ID recentres the image on that seed without changing zoom. Hidden
-neighbouring IDs are protected from both the brush and eraser.
+each segment on the next click; **Smart fill** previews its proposed region and
+can start from an unmarked seed or extend a partial annotation. **Shape fill**
+adds a geometric prior without stamping a nominal oval:
+it searches centre, size, axis ratio, and every axial ellipse rotation, then uses
+that fitted shape only as a prior for a separately optimized closed contour along
+the selected real edge evidence. The mouse wheel changes its visible **Oval size
+preference** in 5% steps instead of zooming while the tool is active. The
+refined edge contour validates the fit and remains a preview/confidence datum;
+it is not a hard selection mask. Selection uses Smart fill's neighbour-relative
+Lab growth and edge-frontier logic under one-sided ellipse pressure with fixed
+natural 8-neighbour connectivity. The fitted ellipse is approximately a maximum
+extent, not a minimum: the shape prior imposes no inward limit where a seed is
+occluded, while
+outward movement receives an exponential penalty with a default 0.05-seed-
+diameter half-life and is prohibited beyond 0.10 seed diameter. Shape fill does
+not use tangents or tunnelling, and its one-sided extent prior replaces Smart
+fill's cursor-distance and radial-falloff controls. Its preview shows a dotted
+prior, the refined boundary, and the proposed mask. Insufficient edge coverage,
+sector coverage, continuity, confidence, or excessive overlap produces an
+explicit refusal and paints nothing. **Show selected seed only** hides every
+other instance mark; choosing another Seed ID recentres the image on that seed
+without changing zoom. Hidden neighbouring IDs are protected from both the
+brush and eraser.
 
-Trace edge and Smart fill each expose the exact **Edge evidence** they consume:
+Trace edge, Smart fill, and Shape fill expose the exact **Edge evidence** they consume:
 **Thinned edge ridges** (the precise default), **Thinned reference edge ridge**,
-**Oriented edge traces**, **Adaptive combined**, **Physical-edge probability**,
-or the broader **Edge magnitude** raster. The reference-ridge choice applies
+**Oriented edge traces**, **Combined (ridge priority)**,
+**Physical-edge probability**, or the broader **Edge magnitude** raster. Smart
+fill and Shape fill additionally offer **Net physical-edge probability**
+(physical minus the node's adjustable scaled non-physical evidence). The
+reference-ridge choice applies
 independently adjustable normal-direction non-maximum suppression and CUDA
-high/low hysteresis to the broad, reference-trained physical-edge probability;
-it therefore retains reference classification while placing the barrier on a
-local edge centreline. Trace edge uses a bounded continuity-aware live-wire seam,
+high/low hysteresis to the broad, instance-trained physical-edge probability;
+it therefore retains instance-derived classification while placing the barrier on a
+local edge centreline. The combined option is a fixed per-pixel maximum of
+generic thinned ridges and binary oriented-trace support, with physical-edge
+probability and broad edge magnitude retained at 45% strength. Trace edge uses a
+bounded continuity-aware live-wire seam,
 locks to support connecting its two anchors when available, and evaluates
 directed/undirected tangent evidence against each local move. It therefore does
-not jump from the selected boundary to a stronger parallel one. Smart fill
+not jump from the selected boundary to a stronger parallel one. Open trace
+segments are committed as exact one-full-resolution-pixel categorical lines,
+independent of the freehand brush radius and without an antialias fringe. The
+first anchor remains marked in cyan; returning to it previews and, by default,
+fills only the closed polygon interior while preserving other seed IDs. Smart fill
 compares each candidate with already accepted touching pixels rather than a
 fixed starting colour, stops at the selected edge raster, never overwrites
 another seed ID, and offers bounded growth, four/eight-neighbour connectivity,
-colour tolerance, edge threshold, and five tunnelling strengths. A one-pixel
+**Neighbour colour step** controls the maximum floating-range OpenCV-Lab change
+from an accepted pixel to a touching candidate (L uses the displayed value and
+a*/b* use 72%); it is not distance from the initially clicked colour. **Edge
+barrier threshold** is the minimum selected edge strength that blocks growth,
+so lower values stop on weaker evidence and higher values permit more growth.
+**Maximum distance from cursor** is a hard circular limit on newly filled
+pixels and defaults to 0.60 estimated seed diameter. It is a radius from the
+click, not the instance's side-to-side width; with a centred click, the largest
+permitted span is therefore 1.20 seed diameters. **Fall-off half-life** defaults
+to 0.40 seed diameter and applies the exact radial extension pressure
+`p(d) = 2^(-d/h)`. At distance `h`, both the allowed inward-neighbour Lab step
+and the continuous edge-barrier threshold are half their cursor values, so
+progressively weaker colour transitions or edges stop outward growth. The
+minimum Lab step is taken over inward touching neighbours permitted by the
+selected four/eight-neighbour connectivity. Zero edge evidence and uniform
+colour remain passable to the hard distance limit, and the output remains a
+categorical label rather than a feathered mask. Smart fill also exposes a
+separate maximum-added-pixel safety limit and five tunnelling strengths. A one-pixel
 barrier frontier lets the annotation meet a selected thinned ridge instead of
 stopping on the shoulder of a blurred magnitude band. Tunnelling opens one
 bounded passage through the nearest admissible weak barrier; it does not weaken
 every edge or broaden the colour tolerance. If a small contact gap nevertheless
-lets the neighbour-relative flood reach its growth limit, a local smooth
+lets the neighbour-relative flood reach its cursor-distance limit, a local smooth
 star-convex edge contour recovers one seed instead of accepting the leaked
 radius-sized region.
+Every seed ID is checked with exact categorical 8-neighbour connectivity. A
+non-blocking warning identifies the selected seed's number of disconnected
+areas, or lists other IDs requiring review; Apply remains available because a
+disconnection can occasionally be intentional during an unfinished edit.
 The **Start from result** selector can expand any available **Procedural seed
 separation**, **U-Net + watershed**, or **StarDist** label result into a
 full-resolution editable draft. This is an annotation bootstrap, never an
@@ -358,20 +465,21 @@ frequencies. If no reference seed survives detection, the inspector explicitly
 labels the older high-confidence-image-pixel diagnostic fit as a fallback.
 
 The active graph exposes one **Reference layers** input node with distinct typed
-outputs for Background, Foreground, Other, Physical edge, Non-edge, and Annotated
-seeds. Every calculation that consumes one of these sublayers has a corresponding
+outputs for Background, Foreground, Other, and Annotated seeds. Every
+calculation that consumes one of these sublayers has a corresponding
 connector. Painted material areas supply direct colour/texture evidence;
 colour-probability pseudo-labels remain only a fallback where a class has no
 painted samples. Painting never overwrites the resulting probability at the
 brush coordinates.
 
-Physical-edge and non-edge marks now fit a separate image-local probability
-classifier using the corrected Lab image, continuous edge magnitude,
-directed/undirected tangent coherence, and thinned ridges. Its yellow physical-edge
-and blue non-edge overlays feed final curve confirmation and procedural watershed
-boundary cost, and are available as optional channels to compatible learned-model
-checkpoints. The boundary brush exposes both a Snap switch and an adjustable
-snap-strength slider.
+Complete annotated instances automatically fit the image-local physical versus
+non-physical edge classifier using the corrected Lab image, continuous edge
+magnitude, directed/undirected tangent coherence, and thinned ridges. Their
+contours are physical examples; safely inset edge/ridge candidates are sparse
+non-physical examples. Its physical and non-physical overlays feed final curve
+confirmation and procedural watershed boundary cost and remain available as
+optional channels to compatible learned-model checkpoints. With no annotated
+instances, the semantic output is neutral rather than a generic-edge fallback.
 
 ## Visual pipeline
 
@@ -513,6 +621,17 @@ The active layout-to-diagnostic span is represented by these live pipeline nodes
    separately cached GPU node fed by broad physical-edge probability and the
    continuous edge normals; it preserves peak probability after NMS and exposes
    its own step, low/high threshold, hysteresis-reach, and working-size controls.
+   The **Instance-derived edge probabilities** node also owns two comparison
+   diagnostics. **Physical blue / non-physical red** places the existing
+   physical score in blue and the non-physical score in red, with magenta
+   showing simultaneous support. **Net physical-edge probability** displays
+   `max(physical - k × non-physical, 0)` in blue and clamps ties or
+   non-physical-dominant pixels to black. Its node-owned **Internal-edge
+   subtraction** coefficient `k` defaults to 0.5 and is adjustable from 0 to 2,
+   allowing overlap between the two learned classes without automatically
+   punching holes through a physical trace. It changes only this diagnostic;
+   the two source probability rasters remain unchanged. These are evidence-score
+   comparisons rather than calibrated complementary probabilities.
    Non-adjacent trace-gap links
    require a tight chord/tangent match, consistent directed gradient side, and
    an open directional endpoint. An additional **Convexity bias** defaults to
@@ -527,16 +646,43 @@ The active layout-to-diagnostic span is represented by these live pipeline nodes
 7. **Procedural seed separation** fuses foreground colour/noise, the optional
    many-prototype seed-surface likelihood, and inverse background into a material
    likelihood, fills only enclosed seed-sized coat
-   holes, and excludes a seed-relative dish margin. Shared edge magnitude,
-   sensor/noise transitions, thinned ridges, and local shadow form a physical
-   boundary cost. Smoothed material, boundary depth, and annular boundary
-   support produce automatic markers; distinct painted instance IDs replace
+   holes, and excludes a seed-relative dish margin. Edge magnitude and thinned
+   ridges form the generic boundary candidate field. The instance-derived
+   physical-minus-non-physical semantic margin gates that whole field (and is
+   neutral when no annotations exist), while the separately thinned physical
+   ridge and coherent convex oriented traces add narrow, continuity-aware
+   support. Sensor/noise, shadow, and internal-boundary peaks are not direct
+   boundary or centre evidence. Smoothed material geometry and seed-interior
+   depth produce automatic markers; distinct painted instance IDs replace
    nearby automatic markers. OpenCV marker-controlled watershed performs the
    bounded topological partition, and marker/boundary/area evidence supplies a
    per-instance confidence. Six owned overlays expose every stage. GPU inputs
    are resized before this topology-only CPU transfer. Labels and diagnostic
    rasters remain at that bounded working resolution and are scaled by Qt only
    for display, then the compact result is cached at the node.
+   Applied instance annotations can also supervise a bounded, image-local
+   parameter search from the node inspector through **Fit settings to applied
+   annotations…**. Each trial deliberately withholds the annotated IDs from
+   watershed marker generation, then scores its independent prediction against
+   the reviewed masks with one-to-one instance matching. Overreach is distance
+   weighted rather than uniform: the cost is zero on the reviewed seed, small
+   immediately outside it, equals the editable overreach amplitude at the
+   default 0.50-seed-diameter distance scale, and then rises exponentially
+   (with a finite safety cap). Matched predictions are measured from their own
+   target, so merging into a neighbouring annotated seed cannot exploit the
+   distance to the annotation union. Missing seed pixels retain a fixed 1.0
+   cost. The search returns an unapplied proposal, reports raw precision/recall
+   and FP/FN counts plus distance-weighted FP equivalents and the effective
+   pixel scale, and changes the graph only after explicit acceptance.
+   **Annotations cover whole dish** is off by
+   default: partial-review scoring ignores predictions wholly disjoint from an
+   annotated seed and labels its metrics accordingly. Turn it on only after
+   every seed in the detected dish has a complete instance mask; whole-dish
+   scoring then penalizes every predicted object, including isolated background
+   false positives. The fit is measured on one image, but accepting its proposal
+   changes the procedural node settings globally for every image. This is useful
+   in-sample adjustment, not evidence that settings generalize; publishable
+   validation still requires independent, complete reviewed masks.
 8. The disabled **Directional surface darkness gradients** toolbox node searches
    independent one-sided rays and emits lightening/darkening magnitude and
    direction products. Its lightening and darkening derivative cutoff nodes
@@ -591,7 +737,8 @@ The inspector exposes the implemented settings on their owning nodes, including:
   nonlinear shadow/highlight thresholds, and transition softness;
 - dormant distance/circle fusion confidence after restoring those nodes;
 - manual/automatic background sampling, reported colour ranges, texture bands,
-  directed-ray geometry, direction integration, and GPU working resolution;
+  directed-ray geometry, direction integration (including foreground's default
+  exact first tertile), and GPU working resolution;
 - edge blur, chroma weighting, normalization, and display gamma;
 - one-sided surface-gradient blur, ray length, angular/sample resolution,
   normalization, and GPU working size; after restoring the optional cutoff
