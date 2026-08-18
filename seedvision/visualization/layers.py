@@ -514,6 +514,9 @@ class AnalysisLayers:
     colour_frequency_noise_masks: tuple[object, ...] = ()
     foreground_noise_likelihood: object | None = None
     foreground_noise_frequency_profile: NoiseFrequencyProfile | None = None
+    other_colour_probability: object | None = None
+    other_noise_probability: object | None = None
+    other_noise_frequency_profile: NoiseFrequencyProfile | None = None
     reference_seed_surface_probability: object | None = None
     reference_background_texture_probability: object | None = None
     reference_other_texture_probability: object | None = None
@@ -573,6 +576,28 @@ class AnalysisLayers:
             np.zeros_like(np.asarray(self.valid_mask), dtype=np.uint8)
             if self.foreground_noise_likelihood is None
             else np.asarray(self.foreground_noise_likelihood)
+        )
+        alpha = np.uint8(np.asarray(self.valid_mask) > 0) * 255
+        return np.dstack((gray, gray, gray, alpha))
+
+    def other_colour_rgba(self) -> np.ndarray:
+        """Show raw colour membership in the explicitly painted Other model."""
+
+        gray = (
+            np.zeros_like(np.asarray(self.valid_mask), dtype=np.uint8)
+            if self.other_colour_probability is None
+            else np.asarray(self.other_colour_probability, dtype=np.uint8)
+        )
+        alpha = np.uint8(np.asarray(self.valid_mask) > 0) * 255
+        return np.dstack((gray, gray, gray, alpha))
+
+    def other_noise_rgba(self) -> np.ndarray:
+        """Show the directional Other-vs-non-Other noise/colour score."""
+
+        gray = (
+            np.zeros_like(np.asarray(self.valid_mask), dtype=np.uint8)
+            if self.other_noise_probability is None
+            else np.asarray(self.other_noise_probability, dtype=np.uint8)
         )
         alpha = np.uint8(np.asarray(self.valid_mask) > 0) * 255
         return np.dstack((gray, gray, gray, alpha))

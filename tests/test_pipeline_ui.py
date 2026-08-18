@@ -1108,6 +1108,53 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertFalse(node_selector.isEnabled())
         window.close()
 
+    def test_other_probability_overlays_are_registered_owned_and_synchronised(self) -> None:
+        from seedvision.ui.main_window import MainWindow, _overlay_node_owner
+
+        window = MainWindow(ROOT)
+        expectations = (
+            (
+                "other_colour_probability",
+                "Other colour probability",
+                "background_likelihood",
+            ),
+            (
+                "other_noise_probability",
+                "Other noise probability",
+                "refined_background_likelihood",
+            ),
+        )
+        for mode, label, owner in expectations:
+            self.assertEqual(_overlay_node_owner(mode), owner)
+            global_index = window.overlay_combo.findData(mode)
+            self.assertGreaterEqual(global_index, 0)
+            self.assertEqual(
+                window.overlay_combo.itemText(global_index).strip(), label
+            )
+
+            window.pipeline_canvas.select_node(owner)
+            self.application.processEvents()
+            local_selector = window.pipeline_inspector.overlay_combo
+            local_index = local_selector.findData(mode)
+            self.assertGreaterEqual(local_index, 0)
+            self.assertEqual(local_selector.itemText(local_index), label)
+            local_selector.setCurrentIndex(local_index)
+            self.application.processEvents()
+
+            self.assertEqual(window.overlay_combo.currentData(), mode)
+            self.assertEqual(window.image_view._overlay_mode, mode)
+            self.assertEqual(window._selected_pipeline_node, owner)
+            legend = window.overlay_legend_label.text()
+            self.assertIn("painted Other", legend)
+            self.assertIn("Reference Other-material probability", legend)
+            if mode == "other_colour_probability":
+                self.assertIn("not forced output", legend)
+            else:
+                self.assertIn("non-Other", legend)
+                self.assertIn("Directional", legend)
+                self.assertIn("integration", legend)
+        window.close()
+
     def test_compact_toolbar_and_contextual_paint_panel(self) -> None:
         from PySide6.QtCore import QPoint, Qt
         from PySide6.QtTest import QTest
@@ -1727,6 +1774,8 @@ class PipelineCanvasTests(unittest.TestCase):
             reference_other_texture_probability=np.full(
                 (12, 12), 95, np.uint8
             ),
+            other_colour_probability=np.full((12, 12), 73, np.uint8),
+            other_noise_probability=np.full((12, 12), 203, np.uint8),
             physical_edge_probability=np.full((12, 12), 105, np.uint8),
             non_edge_probability=np.full((12, 12), 85, np.uint8),
             reference_edge_ridges=np.full((12, 12), 125, np.uint8),
@@ -1755,6 +1804,8 @@ class PipelineCanvasTests(unittest.TestCase):
             "background_likelihood",
             "refined_background_likelihood",
             "foreground_noise_likelihood",
+            "other_colour_probability",
+            "other_noise_probability",
             "reference_seed_surface_probability",
             "reference_background_texture_probability",
             "reference_other_texture_probability",
@@ -1771,6 +1822,27 @@ class PipelineCanvasTests(unittest.TestCase):
         ):
             view.set_overlay_mode(mode)
             self.assertEqual(len(view._overlay_items), 1)
+        from PySide6.QtWidgets import QGraphicsPixmapItem
+
+        for mode, expected in (
+            ("other_colour_probability", 73),
+            ("other_noise_probability", 203),
+        ):
+            view.set_overlay_mode(mode)
+            raster_items = [
+                item
+                for item in view._overlay_items
+                if isinstance(item, QGraphicsPixmapItem)
+            ]
+            self.assertEqual(len(raster_items), 1)
+            image = raster_items[0].pixmap().toImage()
+            colour = image.pixelColor(0, 0)
+            self.assertEqual(
+                (colour.red(), colour.green(), colour.blue()),
+                (expected, expected, expected),
+            )
+            self.assertEqual(raster_items[0].pos().x(), layers.offset_x)
+            self.assertEqual(raster_items[0].pos().y(), layers.offset_y)
         view.set_overlay_opacity(0.42)
         self.assertAlmostEqual(view._overlay_items[0].opacity(), 0.42)
         view.set_overlay_mode("raw_image")

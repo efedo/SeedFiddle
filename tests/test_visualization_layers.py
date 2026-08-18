@@ -4,6 +4,323 @@ import unittest
 
 
 class AnalysisLayerTests(unittest.TestCase):
+    def test_other_probability_overlays_are_direct_bright_and_lazy(self) -> None:
+        import numpy as np
+        import torch
+
+        from seedvision.cuda import GpuRaster
+        from seedvision.visualization import AnalysisLayers, NoiseFrequencyProfile
+
+        colour_values = np.asarray(
+            ((0, 64, 128), (192, 224, 255)), dtype=np.uint8
+        )
+        noise_values = np.asarray(
+            ((255, 200, 150), (100, 50, 0)), dtype=np.uint8
+        )
+        valid_values = np.asarray(
+            ((255, 255, 0), (255, 0, 255)), dtype=np.uint8
+        )
+
+        def lazy(values: np.ndarray, name: str) -> GpuRaster:
+            return GpuRaster(
+                torch.from_numpy(values)[None, None],
+                numpy_dtype=np.uint8,
+                name=name,
+            )
+
+        other_colour = lazy(colour_values, "Other colour probability")
+        other_noise = lazy(noise_values, "Other noise probability")
+        valid = lazy(valid_values, "valid mask")
+        zeros = np.zeros_like(colour_values)
+        layers = AnalysisLayers(
+            offset_x=4,
+            offset_y=7,
+            instance_labels=zeros.astype(np.uint16),
+            instance_colours=np.zeros((1, 3), dtype=np.uint8),
+            background_likelihood=zeros,
+            refined_background_likelihood=zeros,
+            noise_frequency_profile=NoiseFrequencyProfile(
+                band_scales_px=(1.0, 2.0, 4.0),
+                background_log_rms=(0.0, 0.0, 0.0),
+                nonbackground_log_rms=(0.0, 0.0, 0.0),
+                background_sample_count=0,
+                nonbackground_sample_count=0,
+                separation=0.0,
+            ),
+            edge_likelihood=zeros,
+            directed_edge_hue=zeros,
+            undirected_edge_hue=zeros,
+            seed_edge_curve_likelihood=zeros,
+            seed_edge_curve_radius_px=zeros.astype(np.float32),
+            valid_mask=valid,
+            other_colour_probability=other_colour,
+            other_noise_probability=other_noise,
+        )
+
+        self.assertFalse(other_colour.is_materialized)
+        self.assertFalse(other_noise.is_materialized)
+        self.assertFalse(valid.is_materialized)
+
+        colour_rgba = layers.other_colour_rgba()
+        np.testing.assert_array_equal(colour_rgba[..., 0], colour_values)
+        np.testing.assert_array_equal(colour_rgba[..., 1], colour_values)
+        np.testing.assert_array_equal(colour_rgba[..., 2], colour_values)
+        np.testing.assert_array_equal(
+            colour_rgba[..., 3], np.uint8(valid_values > 0) * 255
+        )
+        self.assertEqual(other_colour.download_count, 1)
+        self.assertEqual(valid.download_count, 1)
+        self.assertFalse(other_noise.is_materialized)
+
+        layers.other_colour_rgba()
+        self.assertEqual(other_colour.download_count, 1)
+        self.assertEqual(valid.download_count, 1)
+        noise_rgba = layers.other_noise_rgba()
+        np.testing.assert_array_equal(noise_rgba[..., 0], noise_values)
+        np.testing.assert_array_equal(noise_rgba[..., 1], noise_values)
+        np.testing.assert_array_equal(noise_rgba[..., 2], noise_values)
+        np.testing.assert_array_equal(
+            noise_rgba[..., 3], np.uint8(valid_values > 0) * 255
+        )
+        self.assertEqual(other_noise.download_count, 1)
+        self.assertEqual(other_colour.download_count, 1)
+
+    def test_missing_other_probabilities_render_black_not_an_unrelated_layer(self) -> None:
+        import numpy as np
+
+        from seedvision.visualization import AnalysisLayers, NoiseFrequencyProfile
+
+        valid = np.asarray(((255, 0), (255, 255)), dtype=np.uint8)
+        zeros = np.zeros((2, 2), dtype=np.uint8)
+        layers = AnalysisLayers(
+            offset_x=0,
+            offset_y=0,
+            instance_labels=zeros.astype(np.uint16),
+            instance_colours=np.zeros((1, 3), dtype=np.uint8),
+            background_likelihood=zeros,
+            refined_background_likelihood=zeros,
+            noise_frequency_profile=NoiseFrequencyProfile(
+                band_scales_px=(1.0, 2.0, 4.0),
+                background_log_rms=(0.0, 0.0, 0.0),
+                nonbackground_log_rms=(0.0, 0.0, 0.0),
+                background_sample_count=0,
+                nonbackground_sample_count=0,
+                separation=0.0,
+            ),
+            edge_likelihood=np.full((2, 2), 255, dtype=np.uint8),
+            directed_edge_hue=np.full((2, 2), 90, dtype=np.uint8),
+            undirected_edge_hue=zeros,
+            seed_edge_curve_likelihood=zeros,
+            seed_edge_curve_radius_px=zeros.astype(np.float32),
+            valid_mask=valid,
+            other_colour_probability=None,
+            other_noise_probability=None,
+        )
+
+        for rgba in (layers.other_colour_rgba(), layers.other_noise_rgba()):
+            self.assertFalse(np.any(rgba[..., :3]))
+            np.testing.assert_array_equal(
+                rgba[..., 3], np.uint8(valid > 0) * 255
+            )
+
+    def test_other_colour_probability_is_the_raw_painted_colour_model(self) -> None:
+        import numpy as np
+
+        from seedvision.cuda import CudaContext
+        from seedvision.cuda.layers import background_colour_likelihood
+        from seedvision.visualization import AnalysisLayerSettings
+
+        image = np.full((64, 64, 3), (218, 222, 226), np.uint8)
+        other_bgr = (35, 80, 180)
+        image[8:24, 8:24] = other_bgr
+        image[8:24, 40:56] = other_bgr
+        valid = np.full((64, 64), 255, np.uint8)
+        background = np.zeros((64, 64), bool)
+        background[40:56, 8:24] = True
+        other = np.zeros((64, 64), bool)
+        other[8:24, 8:24] = True
+
+        (
+            _background_probability,
+            _mode,
+            _reference_count,
+            _profile,
+            other_probability,
+        ) = background_colour_likelihood(
+            image,
+            valid,
+            background_reference_mask=background,
+            background_exclusion_mask=other,
+            settings=AnalysisLayerSettings(
+                background_refinement_iterations=0
+            ),
+            cuda_context=CudaContext.resolve(requested="cpu"),
+            include_other_probability=True,
+        )
+
+        self.assertIsNotNone(other_probability)
+        assert other_probability is not None
+        self.assertFalse(other_probability.is_materialized)
+        probability = np.asarray(other_probability)
+        # The painted patch and an unpainted identical patch receive the same
+        # learned colour membership. The output is not the painted mask and is
+        # not an inverse of the Background probability.
+        np.testing.assert_array_equal(
+            probability[8:24, 8:24], probability[8:24, 40:56]
+        )
+        self.assertGreater(float(probability[8:24, 8:24].mean()), 200.0)
+        self.assertLess(float(probability[40:56, 8:24].mean()), 20.0)
+
+        without_other = background_colour_likelihood(
+            image,
+            valid,
+            background_reference_mask=background,
+            settings=AnalysisLayerSettings(
+                background_refinement_iterations=0
+            ),
+            cuda_context=CudaContext.resolve(requested="cpu"),
+            include_other_probability=True,
+        )
+        self.assertIsNone(without_other[4])
+
+    def test_other_noise_probability_uses_other_as_positive_texture_class(self) -> None:
+        import numpy as np
+
+        from seedvision.cuda import CudaContext
+        from seedvision.cuda.layers import noise_frequency_background_likelihood
+        from seedvision.visualization import AnalysisLayerSettings
+
+        image = np.full((64, 64, 3), 210, np.uint8)
+        checker = (
+            (np.indices((16, 16)).sum(axis=0) % 2) * 80 + 60
+        ).astype(np.uint8)
+        for left in (8, 40):
+            image[8:24, left : left + 16] = checker[..., None]
+        valid = np.full((64, 64), 255, np.uint8)
+        background = np.zeros((64, 64), bool)
+        background[40:48, 8:16] = True
+        foreground = np.zeros((64, 64), bool)
+        foreground[40:48, 40:48] = True
+        other = np.zeros((64, 64), bool)
+        other[8:24, 8:24] = True
+        background_colour = np.full((64, 64), 220, np.uint8)
+        other_colour = np.zeros((64, 64), np.uint8)
+        other_colour[8:24, 8:24] = 250
+        other_colour[8:24, 40:56] = 250
+        settings = AnalysisLayerSettings(
+            noise_vector_length_fraction=0.20,
+            noise_vector_sample_count=5,
+        )
+
+        result = noise_frequency_background_likelihood(
+            image,
+            valid,
+            background_colour,
+            24.0,
+            settings,
+            background_reference_mask=background,
+            foreground_reference_mask=foreground,
+            target_exclusion_mask=other,
+            other_colour_likelihood=other_colour,
+            cuda_context=CudaContext.resolve(requested="cpu"),
+            include_other_probability=True,
+        )
+        other_noise = result[4]
+        other_profile = result[5]
+        self.assertIsNotNone(other_noise)
+        self.assertIsNotNone(other_profile)
+        assert other_noise is not None and other_profile is not None
+        self.assertFalse(other_noise.is_materialized)
+        self.assertEqual(other_profile.background_sample_count, 16 * 16)
+        self.assertEqual(other_profile.nonbackground_sample_count, 2 * 8 * 8)
+        probability = np.asarray(other_noise)
+        painted_mean = float(probability[11:21, 11:21].mean())
+        matching_mean = float(probability[11:21, 43:53].mean())
+        nonother_mean = float(
+            np.concatenate(
+                (probability[40:48, 8:16], probability[40:48, 40:48])
+            ).mean()
+        )
+        self.assertGreater(painted_mean, nonother_mean + 60.0)
+        self.assertGreater(matching_mean, nonother_mean + 60.0)
+        self.assertAlmostEqual(painted_mean, matching_mean, delta=12.0)
+
+        without_other = noise_frequency_background_likelihood(
+            image,
+            valid,
+            background_colour,
+            24.0,
+            settings,
+            background_reference_mask=background,
+            foreground_reference_mask=foreground,
+            cuda_context=CudaContext.resolve(requested="cpu"),
+            include_other_probability=True,
+        )
+        self.assertIsNone(without_other[4])
+        self.assertIsNone(without_other[5])
+
+    def test_other_probability_rasters_follow_existing_node_cache_boundaries(self) -> None:
+        import numpy as np
+
+        from seedvision.visualization import build_analysis_layers
+
+        image = np.full((48, 48, 3), (215, 220, 225), np.uint8)
+        image[8:20, 8:20] = (35, 80, 180)
+        valid = np.full((48, 48), 255, np.uint8)
+        background = np.zeros((48, 48), bool)
+        background[28:40, 4:16] = True
+        foreground = np.zeros((48, 48), bool)
+        foreground[28:40, 32:44] = True
+        other = np.zeros((48, 48), bool)
+        other[8:20, 8:20] = True
+        common = dict(
+            background_reference_mask=background,
+            foreground_reference_mask=foreground,
+            background_exclusion_mask=other,
+            foreground_exclusion_mask=other,
+            instance_masks_enabled=False,
+            seed_edge_curves_enabled=False,
+            reference_texture_prototypes_enabled=False,
+            reference_edge_probability_enabled=False,
+            reference_edge_ridges_enabled=False,
+        )
+        cache: dict[str, object] = {}
+
+        def calculate(dirty_nodes=frozenset()):
+            return build_analysis_layers(
+                image,
+                valid,
+                np.empty((0, 2), np.float32),
+                np.empty((0,), np.float32),
+                20.0,
+                offset_x=0,
+                offset_y=0,
+                cache_values=cache,
+                dirty_nodes=dirty_nodes,
+                **common,
+            )
+
+        first = calculate()
+        self.assertIsNotNone(first.other_colour_probability)
+        self.assertIsNotNone(first.other_noise_probability)
+        second = calculate()
+        self.assertIs(second.other_colour_probability, first.other_colour_probability)
+        self.assertIs(second.other_noise_probability, first.other_noise_probability)
+        unrelated = calculate({"directed_edges"})
+        self.assertIs(
+            unrelated.other_colour_probability, first.other_colour_probability
+        )
+        self.assertIs(
+            unrelated.other_noise_probability, first.other_noise_probability
+        )
+        repainted = calculate({"reference_layers"})
+        self.assertIsNot(
+            repainted.other_colour_probability, first.other_colour_probability
+        )
+        self.assertIsNot(
+            repainted.other_noise_probability, first.other_noise_probability
+        )
+
     def test_edge_prototype_bank_honours_capacity_above_256(self) -> None:
         import torch
 

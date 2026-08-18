@@ -190,8 +190,10 @@ OVERLAY_NODE_OWNERS = {
     "proposals": "identification",
     "instance_masks": "instance_masks",
     "background_likelihood": "background_likelihood",
+    "other_colour_probability": "background_likelihood",
     "background_colour_gamut": "background_likelihood",
     "refined_background_likelihood": "refined_background_likelihood",
+    "other_noise_probability": "refined_background_likelihood",
     "foreground_noise_likelihood": "foreground_noise_likelihood",
     "edge_gradients": "edge_gradients",
     "surface_lightening_gradient": "surface_darkness_gradients",
@@ -902,8 +904,10 @@ class MainWindow(QMainWindow):
             ("Seed proposals", "proposals"),
             ("Instance colour masks", "instance_masks"),
             ("Background colour probability", "background_likelihood"),
+            ("Other colour probability", "other_colour_probability"),
             ("Accepted background colours (HSV)", "background_colour_gamut"),
             ("Background noise probability", "refined_background_likelihood"),
+            ("Other noise probability", "other_noise_probability"),
             ("Foreground noise probability", "foreground_noise_likelihood"),
             ("Shared edge magnitude", "edge_gradients"),
             ("Surface lightening direction", "surface_lightening_gradient"),
@@ -4104,7 +4108,7 @@ class MainWindow(QMainWindow):
             self.image_view.set_reference_erase_mode(
                 self.reference_eraser_button.isChecked()
             )
-            overlay_index = self.overlay_combo.findData("background_likelihood")
+            overlay_index = self.overlay_combo.findData("other_colour_probability")
             if overlay_index >= 0:
                 self.overlay_combo.setCurrentIndex(overlay_index)
             self.statusBar().showMessage(
@@ -6070,6 +6074,12 @@ class MainWindow(QMainWindow):
                 "outer-rim band sampled for the initial colour estimate; orange "
                 "indicates the inside-rim fallback when too little outer band was visible."
             ),
+            "other_colour_probability": (
+                "Other-colour probability learned from painted Other references: black = "
+                "no matching colour evidence; white = a strong match. Painted pixels are "
+                "training evidence, not forced output values. This colour-only diagnostic "
+                "is distinct from the multifeature Reference Other-material probability."
+            ),
             "refined_background_likelihood": (
                 "Noise-frequency likelihood: dark = background-like local "
                 "texture; light = non-background-like texture. Fine, medium, "
@@ -6077,6 +6087,15 @@ class MainWindow(QMainWindow):
                 "pixels in the colour layer, using equal class priors. The same "
                 "learned texture classifier is also displayed across the initial "
                 "dish-surrounding sampling annulus."
+            ),
+            "other_noise_probability": (
+                "Other-texture probability learned from painted Other versus non-Other "
+                "references: black = non-Other-like local frequency; white = Other-like "
+                "evidence. Its base score is 72% learned three-band texture probability "
+                "plus 28% Other-colour probability. Directional continuation then uses "
+                "the noise node's configured ray integration. This class-specific "
+                "diagnostic is distinct from the "
+                "multifeature Reference Other-material probability."
             ),
             "background_colour_gamut": (
                 "Full-size exact HSV hue/saturation slice of the fitted background "

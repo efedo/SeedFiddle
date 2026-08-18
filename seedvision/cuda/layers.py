@@ -380,6 +380,7 @@ def build_cuda_analysis_layers(
             source_tensor=source_tensor,
             lab_tensor=lab_tensor,
             valid_tensor=valid_tensor,
+            include_other_probability=True,
         )
         if background_timing is not None:
             timing_recorder.stop(background_timing)
@@ -392,11 +393,18 @@ def build_cuda_analysis_layers(
             "disabled",
             0,
             None,
+            None,
         )
         values["layer.background"] = background_result
     else:
         background_result = values["layer.background"]
-    background, background_mode, reference_count, colour_profile = background_result
+    (
+        background,
+        background_mode,
+        reference_count,
+        colour_profile,
+        other_colour_probability,
+    ) = background_result
 
     surrounding_background_dirty = (
         background_dirty
@@ -450,6 +458,8 @@ def build_cuda_analysis_layers(
             background_reference_mask=background_reference_mask,
             foreground_reference_mask=foreground_reference_mask,
             target_exclusion_mask=background_exclusion_mask,
+            other_colour_likelihood=other_colour_probability,
+            include_other_probability=True,
             reference_radius=max(
                 2,
                 round(seed_diameter * settings.background_sample_radius_fraction),
@@ -469,11 +479,20 @@ def build_cuda_analysis_layers(
             empty_noise_frequency_profile(seed_diameter, settings),
             (),
             (),
+            None,
+            None,
         )
         values["layer.refined_background"] = refined_result
     else:
         refined_result = values["layer.refined_background"]
-    refined_background, noise_profile, directional_background, directional_angles = refined_result
+    (
+        refined_background,
+        noise_profile,
+        directional_background,
+        directional_angles,
+        other_noise_probability,
+        other_noise_profile,
+    ) = refined_result
     foreground_noise_dirty = (
         painted_reference_dirty
         or "foreground_segmentation" in dirty
@@ -1058,6 +1077,9 @@ def build_cuda_analysis_layers(
         noise_frequency_profile=noise_profile,
         foreground_noise_likelihood=foreground_noise,
         foreground_noise_frequency_profile=foreground_noise_profile,
+        other_colour_probability=other_colour_probability,
+        other_noise_probability=other_noise_probability,
+        other_noise_frequency_profile=other_noise_profile,
         reference_seed_surface_probability=(
             reference_textures.seed_surface_probability
         ),
@@ -1164,6 +1186,7 @@ def background_colour_likelihood(
     source_tensor=None,
     lab_tensor=None,
     valid_tensor=None,
+    include_other_probability=False,
 ):
     from seedvision.visualization.layers import BackgroundColourProfile, AnalysisLayerSettings
     import torch
@@ -1330,6 +1353,7 @@ def background_colour_likelihood(
     dominant_component = int(torch.argmax(component_weights).item())
     centre = component_centres[dominant_component]
     scale = component_scales[dominant_component]
+    excluded_membership = None
     excluded_centres = None
     excluded_scales = None
     excluded_weights = None
@@ -1457,9 +1481,23 @@ def background_colour_likelihood(
         ),
         exclusion_strength=exclusion_strength,
     )
-    return _lazy_u8(
-        likelihood[None, None] * 255.0, "background colour likelihood"
-    ), mode, reference_count, profile
+    other_probability = (
+        None
+        if excluded_membership is None
+        else _lazy_u8(
+            excluded_membership[None, None] * 255.0,
+            "other colour probability",
+        )
+    )
+    result = (
+        _lazy_u8(
+            likelihood[None, None] * 255.0, "background colour likelihood"
+        ),
+        mode,
+        reference_count,
+        profile,
+    )
+    return result + (other_probability,) if include_other_probability else result
 
 
 def empty_noise_frequency_profile(seed_diameter, settings):
@@ -1621,6 +1659,7 @@ def noise_frequency_background_likelihood(
     background_reference_mask=None,
     foreground_reference_mask=None,
     target_exclusion_mask=None,
+    other_colour_likelihood=None,
     target_name="background",
     reference_radius=3,
     cuda_context=None,
@@ -1628,6 +1667,7 @@ def noise_frequency_background_likelihood(
     lab_tensor=None,
     valid_tensor=None,
     target_reference_precedence=False,
+    include_other_probability=False,
 ):
     from seedvision.visualization.layers import NoiseFrequencyProfile
     import torch
@@ -1642,6 +1682,11 @@ def noise_frequency_background_likelihood(
         else valid_tensor.bool()
     )
     full_colour = _raster_tensor(colour_likelihood, context, normalized=True)
+    full_other_colour = (
+        None
+        if other_colour_likelihood is None
+        else _raster_tensor(other_colour_likelihood, context, normalized=True)
+    )
     source_height, source_width = full_valid.shape[-2:]
     # The background-named inputs represent the target class. The foreground
     # wrapper swaps its painted masks into those positions so both classifiers
@@ -1676,6 +1721,9 @@ def noise_frequency_background_likelihood(
         # Foreground wins accidental positive-mask overlap, matching the colour
         # models' foreground-precedence convention.
         full_target_reference &= ~full_nontarget_reference
+    full_other_nontarget_reference = (
+        full_target_reference | full_nontarget_reference
+    )
     full_target_exclusion = torch.zeros_like(full_target_reference)
     if target_exclusion_mask is not None:
         full_target_exclusion = image_to_tensor(
@@ -1683,6 +1731,8 @@ def noise_frequency_background_likelihood(
         )[0, 0] > 0
         full_target_exclusion &= full_valid[0, 0]
         full_target_reference &= ~full_target_exclusion
+    full_other_reference = full_target_exclusion
+    full_other_nontarget_reference &= ~full_other_reference
 
     work_scale = min(
         1.0,
@@ -1701,6 +1751,9 @@ def noise_frequency_background_likelihood(
         target_reference = full_target_reference
         nontarget_reference = full_nontarget_reference
         target_exclusion = full_target_exclusion
+        other_colour = full_other_colour
+        other_reference = full_other_reference
+        other_nontarget_reference = full_other_nontarget_reference
     else:
         source = functional.interpolate(
             full_source, (height, width), mode="area"
@@ -1726,6 +1779,22 @@ def noise_frequency_background_likelihood(
         target_exclusion = functional.adaptive_max_pool2d(
             full_target_exclusion[None, None].float(), (height, width)
         )[0, 0] > 0.0
+        other_colour = (
+            None
+            if full_other_colour is None
+            else functional.interpolate(
+                full_other_colour,
+                (height, width),
+                mode="bilinear",
+                align_corners=False,
+            )
+        )
+        other_reference = functional.adaptive_max_pool2d(
+            full_other_reference[None, None].float(), (height, width)
+        )[0, 0] > 0.0
+        other_nontarget_reference = functional.adaptive_max_pool2d(
+            full_other_nontarget_reference[None, None].float(), (height, width)
+        )[0, 0] > 0.0
     reported_scales = _noise_scales(seed_diameter, settings)
     scales = _noise_scales(seed_diameter * work_scale, settings)
     fine = gaussian_blur(lab, max(0.55, scales[0]))
@@ -1740,12 +1809,13 @@ def noise_frequency_background_likelihood(
     feature = torch.cat(features, dim=1)
     eligible = valid
     if not bool(eligible.any().item()):
-        return (
+        result = (
             _lazy_u8(full_colour * 0.0, f"excluded {target_name} noise likelihood"),
             empty_noise_frequency_profile(seed_diameter, settings),
             (),
             (),
         )
+        return result + (None, None) if include_other_probability else result
     if target_reference_precedence:
         nontarget_reference &= ~target_reference
     else:
@@ -1804,6 +1874,97 @@ def noise_frequency_background_likelihood(
     non_log = -0.5 * (((values - non_center) / non_scale).square() + 2.0 * torch.log(non_scale)).sum(dim=-1, keepdim=True)
     texture_probability = torch.sigmoid((bg_log - non_log) * 0.72).permute(0, 3, 1, 2)
     base = (0.72 * texture_probability + 0.28 * colour).clamp(1e-4, 1.0) * valid
+
+    other_base = None
+    other_profile = None
+    if (
+        other_colour is not None
+        and bool(other_reference.any().item())
+        and bool((valid[0, 0] & ~other_reference).any().item())
+    ):
+        # Other is a real positive texture class here, not the pooled negative
+        # side of either the Background or Foreground binary classifier. Use
+        # painted Background/Foreground as direct non-Other examples whenever
+        # available; otherwise take conservative low-Other colour pseudo-labels.
+        other_reference &= valid[0, 0]
+        other_nontarget_reference &= valid[0, 0] & ~other_reference
+        if bool(other_nontarget_reference.any().item()):
+            confident_nonother = other_nontarget_reference[None, None]
+        else:
+            confident_nonother = (
+                eligible
+                & ~other_reference[None, None]
+                & (
+                    other_colour
+                    <= settings.noise_nonbackground_max_likelihood / 255.0
+                )
+            )
+        if int(confident_nonother.sum().item()) < minimum_samples:
+            nonother_threshold = torch.quantile(other_colour[eligible], 0.25)
+            confident_nonother = (
+                eligible
+                & ~other_reference[None, None]
+                & (other_colour <= nonother_threshold)
+            )
+        if not bool(confident_nonother.any().item()):
+            # A nearly all-Other reference mask can leave the conservative
+            # colour cutoff empty. Use every remaining valid coordinate rather
+            # than fitting a NaN distribution. The enclosing guard omits the
+            # diagnostic entirely for a literally all-Other image because it
+            # has no defensible negative class.
+            confident_nonother = eligible & ~other_reference[None, None]
+        confident_other = other_reference[None, None]
+        other_values = feature.permute(0, 2, 3, 1)[
+            confident_other.permute(0, 2, 3, 1).expand(-1, -1, -1, 3)
+        ].reshape(-1, 3)
+        nonother_values = feature.permute(0, 2, 3, 1)[
+            confident_nonother.permute(0, 2, 3, 1).expand(-1, -1, -1, 3)
+        ].reshape(-1, 3)
+        other_center, other_scale = _robust_tensor_distribution(other_values)
+        nonother_center, nonother_scale = _robust_tensor_distribution(
+            nonother_values
+        )
+        other_log = -0.5 * (
+            ((values - other_center) / other_scale).square()
+            + 2.0 * torch.log(other_scale)
+        ).sum(dim=-1, keepdim=True)
+        nonother_log = -0.5 * (
+            ((values - nonother_center) / nonother_scale).square()
+            + 2.0 * torch.log(nonother_scale)
+        ).sum(dim=-1, keepdim=True)
+        other_texture_probability = torch.sigmoid(
+            (other_log - nonother_log) * 0.72
+        ).permute(0, 3, 1, 2)
+        other_base = (
+            0.72 * other_texture_probability + 0.28 * other_colour
+        ).clamp(1e-4, 1.0) * valid
+        other_pooled_scale = torch.sqrt(
+            other_scale.square() + nonother_scale.square()
+        ).clamp_min(1e-4)
+        other_separation = float(
+            2.0
+            * torch.linalg.vector_norm(
+                (other_center - nonother_center) / other_pooled_scale
+            ).item()
+        )
+        other_profile = NoiseFrequencyProfile(
+            band_scales_px=reported_scales,
+            background_log_rms=tuple(
+                float(value) for value in other_center.cpu().tolist()
+            ),
+            nonbackground_log_rms=tuple(
+                float(value) for value in nonother_center.cpu().tolist()
+            ),
+            background_sample_count=int(confident_other.sum().item()),
+            nonbackground_sample_count=int(confident_nonother.sum().item()),
+            separation=other_separation,
+            background_log_scale=tuple(
+                float(value) for value in other_scale.cpu().tolist()
+            ),
+            nonbackground_log_scale=tuple(
+                float(value) for value in nonother_scale.cpu().tolist()
+            ),
+        )
     yy, xx = torch.meshgrid(
         torch.arange(height, device=context.device, dtype=torch.float32),
         torch.arange(width, device=context.device, dtype=torch.float32),
@@ -1820,24 +1981,42 @@ def noise_frequency_background_likelihood(
         torch.arange(settings.noise_vector_sample_count, device=context.device),
     )
     weights /= weights.sum()
-    directional_tensors = []
-    for degrees in angles:
-        radians = np.deg2rad(degrees)
-        distance_view = distances[:, None, None]
-        sample_x = xx[None] + float(np.cos(radians)) * distance_view
-        sample_y = yy[None] + float(np.sin(radians)) * distance_view
-        sample = bilinear_sample(base, sample_x, sample_y).clamp_min(1e-4)
-        sample_valid = bilinear_sample(valid.float(), sample_x, sample_y)
-        weight_view = weights[:, None, None]
-        accumulated = (
-            torch.log(sample) * weight_view * sample_valid
-        ).sum(dim=0)
-        support = (weight_view * sample_valid).sum(dim=0)
-        directional = torch.exp(accumulated / support.clamp_min(0.15)) * valid[0, 0]
-        directional_tensors.append(directional)
-    stack = torch.stack(directional_tensors)
-    refined = _integrate_directional_noise(
-        stack, settings.noise_direction_integration
+    def directional_refinement(current_base):
+        # Preallocate one direction bank and finish it before evaluating another
+        # class. Retaining two Python lists plus both stacked banks at 1280 px
+        # would add hundreds of MiB to an otherwise bounded CUDA pass.
+        stack = torch.empty(
+            (len(angles), height, width),
+            device=context.device,
+            dtype=current_base.dtype,
+        )
+        for index, degrees in enumerate(angles):
+            radians = np.deg2rad(degrees)
+            distance_view = distances[:, None, None]
+            sample_x = xx[None] + float(np.cos(radians)) * distance_view
+            sample_y = yy[None] + float(np.sin(radians)) * distance_view
+            sample_valid = bilinear_sample(valid.float(), sample_x, sample_y)
+            weight_view = weights[:, None, None]
+            support = (weight_view * sample_valid).sum(dim=0)
+            sample = bilinear_sample(
+                current_base, sample_x, sample_y
+            ).clamp_min(1e-4)
+            accumulated = (
+                torch.log(sample) * weight_view * sample_valid
+            ).sum(dim=0)
+            stack[index] = (
+                torch.exp(accumulated / support.clamp_min(0.15))
+                * valid[0, 0]
+            )
+        return _integrate_directional_noise(
+            stack, settings.noise_direction_integration
+        )
+
+    refined = directional_refinement(base)
+    other_refined = (
+        None
+        if other_base is None
+        else directional_refinement(other_base)
     )
 
     pooled_scale = torch.sqrt(bg_scale.square() + non_scale.square()).clamp_min(1e-4)
@@ -1871,12 +2050,24 @@ def noise_frequency_background_likelihood(
             )
         return values * full_valid.float()
 
-    return (
+    result = (
         _lazy_u8(restore(refined) * 255.0, f"{target_name} noise likelihood"),
         profile,
         (),
         angles,
     )
+    other_result = (
+        (
+            None
+            if other_refined is None
+            else _lazy_u8(
+                restore(other_refined) * 255.0,
+                "other noise probability",
+            )
+        ),
+        other_profile,
+    )
+    return result + other_result if include_other_probability else result
 
 
 def surrounding_band_noise_likelihood(

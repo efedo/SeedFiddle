@@ -204,7 +204,15 @@ repository or `images/` while troubleshooting the environment.
   quantile across ray directions; this is more conservative than median while
   avoiding minimum's all-direction requirement. Its CUDA reducer interpolates
   two `kthvalue` order statistics rather than allocating a sorted full-raster
-  direction bank. Background noise retains its maximum default.
+  direction bank. Background noise retains its maximum default. The Background
+  colour/noise nodes also expose direct-bright **Other colour probability** and
+  **Other noise probability** overlays when Other examples have been painted.
+  The colour view is the raw competing Lab membership already used by the
+  background model; the noise view fits Other against painted Background and
+  Foreground texture, blends 72% three-band texture with 28% Other-colour
+  probability, and applies the background node's directional integration.
+  These diagnostics remain blank without Other paint and are separate from the
+  multifeature Reference Other-material prototype probability.
 - **Reference layers** is an explicit active input node for the mutually exclusive
   Background/Foreground/Other material layer and integer annotated seed instances. Painting a
   class clears the other two at that pixel; Other supplies a competing learned

@@ -74,8 +74,10 @@ OVERLAY_MODES = {
     "proposals",
     "instance_masks",
     "background_likelihood",
+    "other_colour_probability",
     "background_colour_gamut",
     "refined_background_likelihood",
+    "other_noise_probability",
     "foreground_noise_likelihood",
     "reference_texture_prototypes",
     "reference_seed_surface_probability",
@@ -1704,6 +1706,10 @@ class ImageView(QGraphicsView):
             rgba = layers.refined_background_rgba()
         elif self._overlay_mode == "foreground_noise_likelihood":
             rgba = layers.foreground_noise_rgba()
+        elif self._overlay_mode == "other_colour_probability":
+            rgba = layers.other_colour_rgba()
+        elif self._overlay_mode == "other_noise_probability":
+            rgba = layers.other_noise_rgba()
         elif self._overlay_mode == "reference_seed_surface_probability":
             rgba = layers.reference_seed_surface_rgba()
         elif self._overlay_mode == "reference_background_texture_probability":

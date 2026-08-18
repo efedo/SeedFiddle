@@ -600,6 +600,16 @@ The active layout-to-diagnostic span is represented by these live pipeline nodes
    classifier to that same surrounding annulus and displays the resulting noise
    likelihood alongside the dish-resident refined map.
 
+   The background colour and noise nodes also expose **Other colour probability**
+   and **Other noise probability** diagnostics learned from painted Other material.
+   Both use direct brightness (white is stronger Other evidence), do not force
+   painted coordinates to probability one, and remain blank when no Other
+   reference has been painted. Other noise uses a base score of 72% learned
+   three-band texture probability plus 28% Other-colour probability before
+   directional ray integration. These class-specific diagnostics are distinct
+   from **Reference Other-material probability**, which combines colour,
+   texture, residual, edge, and ridge prototype features.
+
    The foreground and background colour maps are related evidence scores, not
    complementary or mutually calibrated posteriors. Background colour uses a
    compact robust multimodal Lab fit anchored by painted background examples or
