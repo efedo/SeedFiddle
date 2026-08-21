@@ -114,6 +114,7 @@ class AnalysisLayerSettings:
     background_lightness_percentile: float = 55.0
     background_minimum_sample_fraction: float = 0.002
     background_prior_tolerance: float = 24.0
+    background_keep_perimeter_reference: bool = True
     background_lightness_scale_floor: float = 8.0
     background_chroma_scale_floor: float = 3.0
     background_colour_components: int = 32
@@ -517,6 +518,8 @@ class AnalysisLayers:
     other_colour_probability: object | None = None
     other_noise_probability: object | None = None
     other_noise_frequency_profile: NoiseFrequencyProfile | None = None
+    background_reference_source_mask: object | None = None
+    foreground_reference_source_mask: object | None = None
     reference_seed_surface_probability: object | None = None
     reference_background_texture_probability: object | None = None
     reference_other_texture_probability: object | None = None
@@ -851,6 +854,7 @@ def build_analysis_layers(
     foreground_reference_points: tuple[tuple[float, float], ...] = (),
     background_reference_mask: np.ndarray | None = None,
     foreground_reference_mask: np.ndarray | None = None,
+    foreground_reference_source_mask=None,
     background_exclusion_mask: np.ndarray | None = None,
     foreground_exclusion_mask: np.ndarray | None = None,
     seed_instance_annotations: np.ndarray | None = None,
@@ -895,6 +899,7 @@ def build_analysis_layers(
         foreground_reference_points=foreground_reference_points,
         background_reference_mask=background_reference_mask,
         foreground_reference_mask=foreground_reference_mask,
+        foreground_reference_source_mask=foreground_reference_source_mask,
         background_exclusion_mask=background_exclusion_mask,
         foreground_exclusion_mask=foreground_exclusion_mask,
         seed_instance_annotations=seed_instance_annotations,

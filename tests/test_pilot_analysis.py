@@ -258,7 +258,7 @@ class PilotAnalysisTests(unittest.TestCase):
             seed_diameter=28.0,
         )
         referenced = referenced_result[1]
-        profile = referenced_result[-1]
+        profile = referenced_result[-2]
 
         # A painted pixel is not hard-forced to one; it receives the same
         # colour-derived evidence as an unpainted matching pixel.
@@ -272,6 +272,226 @@ class PilotAnalysisTests(unittest.TestCase):
         self.assertIsNotNone(profile)
         self.assertGreaterEqual(len(profile.component_centres_lab), 1)
         self.assertAlmostEqual(sum(profile.component_weights), 1.0, places=4)
+
+    def test_annotated_foreground_source_is_a_per_id_safely_inset_interior(self) -> None:
+        import cv2
+        import numpy as np
+
+        from seedvision.annotation.instance_references import (
+            instance_boundary_references,
+        )
+        from seedvision.cuda import CudaContext
+        from seedvision.segmentation.baseline import (
+            _annotated_foreground_reference_source_tensor,
+        )
+
+        labels = np.zeros((64, 72), np.uint16)
+        labels[12:52, 8:36] = 1
+        labels[12:52, 36:64] = 2
+        context = CudaContext.resolve(requested="cpu")
+
+        actual = (
+            _annotated_foreground_reference_source_tensor(
+                labels,
+                20.0,
+                context,
+                inset_fraction=0.15,
+            )
+            .cpu()
+            .numpy()
+        )
+        contour = instance_boundary_references(
+            labels,
+            20.0,
+            interior_buffer_fraction=0.15,
+        ).physical_edge
+        # The contour has distance zero. A three-pixel inset therefore removes
+        # the contour plus two further pixels on every side, including both
+        # labelled sides of the contact between IDs.
+        expected = (labels > 0) & ~(
+            cv2.dilate(
+                contour.astype(np.uint8),
+                np.ones((5, 5), np.uint8),
+            )
+            > 0
+        )
+        np.testing.assert_array_equal(actual, expected)
+        self.assertTrue(actual[32, 20])
+        self.assertTrue(actual[32, 52])
+        self.assertFalse(actual[32, 35])
+        self.assertFalse(actual[32, 36])
+
+        tiny = np.zeros((28, 28), np.uint16)
+        tiny[10:15, 10:15] = 7
+        self.assertFalse(
+            bool(
+                _annotated_foreground_reference_source_tensor(
+                    tiny,
+                    30.0,
+                    context,
+                    inset_fraction=0.20,
+                ).any()
+            )
+        )
+
+    def test_annotated_instances_are_opt_in_foreground_colour_references(self) -> None:
+        import cv2
+        import numpy as np
+
+        from seedvision.cuda import CudaContext
+        from seedvision.segmentation.baseline import (
+            BaselineSettings,
+            _annotated_foreground_reference_source_tensor,
+            _foreground_feature,
+        )
+
+        image = np.full((128, 128, 3), (220, 220, 220), np.uint8)
+        labels = np.zeros(image.shape[:2], np.uint16)
+        cv2.circle(labels, (38, 64), 20, 1, -1)
+        seed_colour = (211, 214, 218)
+        image[labels > 0] = seed_colour
+        # This separate patch has exactly the annotated seed colour. A change
+        # here proves that annotations train a colour model rather than merely
+        # overwriting their own coordinates.
+        image[45:84, 86:112] = seed_colour
+        context = CudaContext.resolve(requested="cpu")
+        seed_diameter = 40.0
+        disabled = _foreground_feature(
+            image,
+            BaselineSettings(
+                foreground_include_annotated_seed_instances=False,
+                foreground_reference_weight=0.90,
+                foreground_refinement_iterations=0,
+            ),
+            context,
+            seed_instance_annotations=labels,
+            seed_diameter=seed_diameter,
+        )
+        enabled = _foreground_feature(
+            image,
+            BaselineSettings(
+                foreground_include_annotated_seed_instances=True,
+                foreground_reference_weight=0.90,
+                foreground_refinement_iterations=0,
+            ),
+            context,
+            seed_instance_annotations=labels,
+            seed_diameter=seed_diameter,
+        )
+
+        self.assertIsNone(disabled[-1])
+        source = enabled[-1]
+        self.assertIsNotNone(source)
+        assert source is not None
+        expected_source = _annotated_foreground_reference_source_tensor(
+            labels, seed_diameter, context
+        )
+        np.testing.assert_array_equal(
+            np.asarray(source) > 0,
+            expected_source.cpu().numpy(),
+        )
+        profile = enabled[-2]
+        self.assertIsNotNone(profile)
+        assert profile is not None
+        self.assertEqual(profile.source, "annotated_instances")
+        self.assertEqual(
+            profile.source_sample_count,
+            int(expected_source.sum().item()),
+        )
+        disabled_probability = np.asarray(disabled[1])
+        enabled_probability = np.asarray(enabled[1])
+        matching = np.s_[55:75, 90:108]
+        self.assertGreater(
+            float(enabled_probability[matching].mean()),
+            float(disabled_probability[matching].mean()) + 150.0,
+        )
+        self.assertAlmostEqual(
+            float(enabled_probability[matching].mean()),
+            float(enabled_probability[labels > 0].mean()),
+            delta=2.0,
+        )
+
+    def test_automatic_foreground_source_obeys_painted_class_precedence(self) -> None:
+        import cv2
+        import numpy as np
+
+        from seedvision.cuda import CudaContext
+        from seedvision.segmentation.baseline import (
+            BaselineSettings,
+            _annotated_foreground_reference_source_tensor,
+            _foreground_feature,
+        )
+
+        image = np.full((96, 96, 3), (220, 220, 220), np.uint8)
+        labels = np.zeros(image.shape[:2], np.uint16)
+        cv2.circle(labels, (48, 48), 26, 3, -1)
+        image[labels > 0] = (70, 110, 170)
+        painted_foreground = np.zeros(labels.shape, bool)
+        painted_background = np.zeros(labels.shape, bool)
+        other = np.zeros(labels.shape, bool)
+        painted_foreground[40:45, 40:45] = True
+        painted_background[50:55, 40:45] = True
+        other[40:45, 50:55] = True
+        context = CudaContext.resolve(requested="cpu")
+        seed_diameter = 52.0
+        common = dict(
+            foreground_reference_mask=painted_foreground,
+            background_reference_mask=painted_background,
+            foreground_exclusion_mask=other,
+            seed_instance_annotations=labels,
+            seed_diameter=seed_diameter,
+            # Make the focused synthetic raster entirely valid, so the expected
+            # source is governed only by material-reference precedence.
+            valid_radius=10_000.0,
+        )
+
+        enabled = _foreground_feature(
+            image,
+            BaselineSettings(
+                foreground_include_annotated_seed_instances=True,
+                foreground_refinement_iterations=0,
+            ),
+            context,
+            **common,
+        )
+        raw_source = _annotated_foreground_reference_source_tensor(
+            labels, seed_diameter, context
+        ).cpu().numpy()
+        expected_source = raw_source.copy()
+        expected_source &= ~painted_foreground
+        expected_source &= ~painted_background
+        expected_source &= ~other
+        np.testing.assert_array_equal(
+            np.asarray(enabled[-1]) > 0,
+            expected_source,
+        )
+        profile = enabled[-2]
+        self.assertIsNotNone(profile)
+        assert profile is not None
+        self.assertEqual(profile.source, "painted_and_annotated_instances")
+        self.assertEqual(
+            profile.source_sample_count,
+            int(expected_source.sum()) + int(painted_foreground.sum()),
+        )
+
+        disabled = _foreground_feature(
+            image,
+            BaselineSettings(
+                foreground_include_annotated_seed_instances=False,
+                foreground_refinement_iterations=0,
+            ),
+            context,
+            **common,
+        )
+        self.assertIsNone(disabled[-1])
+        disabled_profile = disabled[-2]
+        self.assertIsNotNone(disabled_profile)
+        assert disabled_profile is not None
+        self.assertEqual(disabled_profile.source, "painted")
+        self.assertEqual(
+            disabled_profile.source_sample_count,
+            int(painted_foreground.sum()),
+        )
 
     def test_isolated_reference_seed_colours_drive_automatic_foreground(self) -> None:
         import numpy as np
@@ -312,7 +532,7 @@ class PilotAnalysisTests(unittest.TestCase):
             seed_diameter=28.0,
         )
         automatic = automatic_result[1]
-        profile = automatic_result[-1]
+        profile = automatic_result[-2]
 
         matching_loss = int(unreferenced[50, 96]) - int(automatic[50, 96])
         distractor_loss = int(unreferenced[60, 32]) - int(automatic[60, 32])
@@ -368,7 +588,7 @@ class PilotAnalysisTests(unittest.TestCase):
         reference_mask[40:56, 22:38] = True
         reference_mask[60:76, 22:38] = True
         probability, profile = (
-            lambda result: (result[1], result[-1])
+            lambda result: (result[1], result[-2])
         )(
             _foreground_feature(
                 crop,

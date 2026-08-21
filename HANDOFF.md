@@ -76,6 +76,32 @@ repository or `images/` while troubleshooting the environment.
 
 ## Current implementation
 
+- The **File** menu now separates portable analysis settings from complete
+  project masters. `.seedfiddle-settings.json` profiles contain every graph
+  parameter, enabled/active/toolbox state, and authored connection state, but
+  deliberately exclude node layout, images, species, annotations, manual
+  centres, statuses, and caches. `.seedfiddle-project.json` masters embed that
+  profile plus ordered source-image records and fingerprints, species/current
+  selection, node positions, selected node/overlay, and the two cable-display
+  flags. They reference rather than embed the full-resolution source-bound
+  reference-region and manual-centre sidecars. Project shortcuts are `Ctrl+N`
+  New, `Ctrl+Shift+O` Open, `Ctrl+S` Save, and `Ctrl+Shift+S` Save As; `Ctrl+O`
+  remains Open images. Recent masters use QSettings. Open validates the full
+  schema and graph compatibility before mutation, clears every prior per-image
+  draft/cache/history, and restores available images without leaking unlisted
+  deterministic sidecars. Missing/changed source records and unresolved listed
+  sidecar references remain byte-for-byte in a degraded master on Save.
+  Hash-changed sidecars load only through their explicit manifest path and own
+  source binding; corrected-coordinate masks wait for current calibrated shape
+  validation. A successful user edit switches that image to its canonical
+  autosaved sidecar. Version-one masters deliberately reference these canonical
+  mutable per-image sidecars rather than snapshotting or versioning them; two
+  masters pointing at one sidecar share its current annotation content, while
+  the recorded SHA-256 detects changes on the next open. Dirty project
+  replacement/close and unapplied drafts use
+  Save/Discard/Cancel; autosave failures remain dirty and are retried before a
+  master can be saved. Project/profile mutation is disabled during background
+  analysis, training, or fitting.
 - Colour-card/swatch detection, colour balance, projective deskew, ruler
   detection, 5 cm scale overlay, absolute scale, and dual Petri-dish rims.
   The Reference seed scale overlay uses a one-pixel diameter outline and places
@@ -92,7 +118,11 @@ repository or `images/` while troubleshooting the environment.
   connections, drag a connected input into empty space to disconnect it, or
   right-click an edge. Plain left-drag over a connection pans instead of
   selecting its large path bounds; Ctrl-click explicitly selects an edge for
-  Delete/Backspace. Disconnection bypasses enabled consumers
+  Delete/Backspace. Two independent default-off toolbar options simplify dense
+  wiring without changing the DAG: **Bundle cables** gives compatible wires from
+  one source a shared initial trunk before they branch toward their destinations,
+  while **Route around nodes** uses rounded detours (and tighter necessary bends)
+  to keep connections out of intervening node cards. Disconnection bypasses enabled consumers
   and their dependents; reconnection restores only the cards automatically
   suspended by that missing input, leaving deliberately disabled experimental
   nodes off. One **Reference layers** input exposes separately typed Background,
@@ -223,9 +253,15 @@ repository or `images/` while troubleshooting the environment.
   Each noise classifier learns its positive and negative texture distributions
   directly from the applicable painted areas when present, using colour
   pseudo-labels only for an unpainted class. Painted coordinates are not forced
-  to exact colour- or noise-probability zero or one. There is no separately
-  painted boundary layer: every complete annotated instance contributes its
-  one-pixel contour as physical-edge supervision, while only strong edge/ridge
+  to exact colour- or noise-probability zero or one. The material panel's
+  **Include annotated seeds as Foreground** option defaults off. When enabled,
+  it adds only safely inset interiors from applied seed IDs to the Foreground
+  colour, directional-noise, and material-prototype sources; contours and their
+  uncertainty band remain excluded. Painted Background, Other, and exclusion
+  evidence takes precedence, manual Foreground remains additive, and unapplied
+  drafts or display-only visibility changes have no analytical effect. There
+  is no separately painted boundary layer: every complete annotated instance
+  contributes its one-pixel contour as physical-edge supervision, while only strong edge/ridge
   candidates safely inset from that contour contribute sparse non-physical-edge
   supervision. Flat interior and the contour uncertainty band remain unlabelled.
   These derived examples fit an image-local **Instance-derived edge probabilities**
@@ -261,6 +297,24 @@ repository or `images/` while troubleshooting the environment.
   bounded working size and Qt scales them only for display. The compact result
   is node-cached, and
   distinct painted instance IDs suppress nearby automatic markers.
+  A dedicated **Manual seed centres** graph input and inspector editor allow
+  per-image placement and adjustment of the actual watershed markers rather
+  than the final region centroids. Automatic markers are hollow cyan, manual
+  or replacement markers solid yellow, annotation-authoritative markers locked
+  magenta, and rejected manual points red with their reason. Click adds, drag
+  moves, and right-click/Delete removes; Escape cancels the active drag or exits
+  editing. **Augment automatic** retains discovery while suppressing nearby
+  duplicates. **Replace automatic** uses the editable list as the complete
+  automatic-marker set but never removes annotation markers. Switching to
+  Replace seeds the list from every currently surviving non-annotation marker;
+  dragging or deleting an automatic marker makes the same conversion so its
+  former maximum cannot silently reappear. Image-local Undo and Reset are
+  available. Completed gestures alone autosave a compact SHA/dimension-bound
+  source-coordinate sidecar under `projects/manual-seed-centres/`; the fresh
+  calibration transform maps exact source floats to corrected and crop-local
+  coordinates on every run. The per-image input invalidates only procedural
+  inference and its dependents, and editing stops while analysis runs or when
+  the image/node/result changes.
   Its inspector also offers a bounded annotation-guided parameter fit. Trial
   segmentations explicitly receive no annotated watershed markers, and are
   compared with the applied masks using deterministic one-to-one overlap
@@ -286,7 +340,15 @@ repository or `images/` while troubleshooting the environment.
   median starting background colour. The Background colour probability overlay
   also evaluates the exact fitted positive/Other-contrastive Lab model across
   this bounded GPU annulus and displays it beside the unchanged dish crop; its
-  annulus is outline-only so the probability values remain legible.
+  annulus is outline-only so the probability values remain legible. Background
+  painting now defaults **Keep perimeter-matched source** on, combining the ring
+  Lab samples and accepted median-similar in-dish pixels with manual Background
+  marks. The ring anchors colour, while matching in-dish pixels provide the
+  spatial noise and material-prototype examples. In the painting view,
+  the retained ring and automatic in-dish area are cyan while manual marks stay
+  green. Unchecking the control removes the complete perimeter-derived source;
+  without paint, the colour model falls back to its generic light/low-chroma
+  automatic selection.
 - A six-output active multiscale node supplies fine/medium/coarse surrounding RMS
   darkness and Lab-colour noise energy. The maximum one-sided lightening and
   darkening CIE L* surface slopes, their query-to-target directions, and the two
@@ -345,7 +407,7 @@ repository or `images/` while troubleshooting the environment.
   the material raster and integer seed IDs/provenance to one atomic, version-2
   categorical NPZ
   under ignored `projects/reference-regions/`; unapplied strokes are never
-  persisted. The explicit **Save applied reference regions** (`Ctrl+S`) remains
+  persisted. The explicit **Save applied reference regions** command remains
   available. An automatic-save failure warns without rolling back the valid
   in-memory applied state. First opening an image in a window restores the
   immutable applied snapshot only after its stored SHA-256 and dimensions match
@@ -420,7 +482,8 @@ repository or `images/` while troubleshooting the environment.
   circle node can be moved back to **Unused nodes** and restored again later.
 - Foreground references use a per-pixel Lab colour-frequency table, never a
   regional average or painted-pixel probability override. Automatic background
-  colour is anchored to the retained outside-dish annulus distribution.
+  colour is anchored to the retained outside-dish annulus distribution, which
+  remains additive to painted Background references by default.
 - Both probability nodes expose **Maximum reference colour modes** as the
   user-facing capacity control. Foreground retains coverage-preserving quantized
   Lab frequency cells, whereas background fits adaptive robust Lab mixture
@@ -470,8 +533,9 @@ repository or `images/` while troubleshooting the environment.
   required by image-backed tests. Generated diagnostics under `artifacts/` are
   ignored.
 
-The full suite passed 349 tests on Python 3.12.10 with PyTorch CUDA on an RTX
-3070 on 2026-08-18. The 303 non-pipeline-UI tests passed normally; the 46
+The full suite passed 444 tests on Python 3.12.10 with PyTorch CUDA on an RTX
+3070 on 2026-08-18. The 393 non-pipeline-UI tests passed normally (with one
+POSIX-only portability regression skipped on Windows); the 51
 pipeline-UI tests passed with the developer machine's stale ignored
 reference-region autoload disabled so its modal warning could not block the
 offscreen runner. This includes the comprehensive graph-contract correction,

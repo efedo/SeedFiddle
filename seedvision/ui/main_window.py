@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 import weakref
 from collections import OrderedDict
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from threading import Event
 
@@ -13,6 +14,7 @@ import numpy as np
 from PySide6.QtCore import (
     QObject,
     QRunnable,
+    QSettings,
     QSignalBlocker,
     QSize,
     Qt,
@@ -37,6 +39,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QProgressDialog,
@@ -54,16 +57,36 @@ from PySide6.QtWidgets import (
 
 from seedvision.pipeline import NodeStatus, build_default_pipeline
 from seedvision.persistence import (
+    ANALYSIS_SETTINGS_FILE_SUFFIX,
+    MANUAL_SEED_CENTRES_SIDECAR,
+    PROJECT_ANALYSIS_EXTENSION,
+    REFERENCE_REGIONS_SIDECAR,
+    AnalysisSettingsError,
     ImageFingerprintMismatch,
     ImportedInstanceMask,
     InvalidReferenceArchive,
     InstanceMaskImportError,
+    InvalidManualSeedCentreArchive,
+    ManualSeedCentreFingerprintMismatch,
+    ManualSeedCentreStore,
+    ManualSeedCentreStoreError,
+    ProjectAnalysisError,
+    ProjectAnalysisDocument,
+    ProjectAnalysisStore,
+    ProjectFileStatus,
+    ProjectImageRecord,
+    ProjectImageSpec,
+    ProjectUiState,
     ReferenceRegionBundle,
     ReferenceRegionError,
     ReferenceRegionStore,
+    analysis_settings_profile_from_graph,
+    apply_analysis_settings_profile,
+    load_analysis_settings_profile,
     load_bundled_instance_mask,
     load_corrected_instance_mask,
     read_source_raster_shape,
+    save_analysis_settings_profile,
 )
 from seedvision.resources import release_host_caches, resident_bytes
 from seedvision.learning.pipeline import StarDistPipelineSettings, UNetPipelineSettings
@@ -81,6 +104,9 @@ from seedvision.segmentation import (
     CalibrationSettings,
     DishDetectionSettings,
     PipelineAnalysisCache,
+    ManualSeedCentreMode,
+    ManualSeedCentreSpace,
+    ManualSeedCentres,
     ProceduralFitOptions,
     ProceduralInstanceSettings,
     fit_procedural_settings,
@@ -140,6 +166,28 @@ IDENTIFICATION_STAGE_NODE_IDS = (
     "perimeter_background_reference",
     "foreground_segmentation",
 )
+
+
+def _path_identity(path: Path | str) -> str:
+    """Use host filesystem path equality for every image/project state key."""
+
+    text = str(Path(path).expanduser().resolve())
+    return text.casefold() if os.name == "nt" else text
+
+
+@dataclass(frozen=True, slots=True)
+class _ManualSeedCentreState:
+    """Image-local edits retained losslessly in source-image coordinates."""
+
+    centres_source_xy: np.ndarray
+    mode: str = "augment"
+
+    def __post_init__(self) -> None:
+        values = np.asarray(self.centres_source_xy, dtype=np.float64).reshape(-1, 2)
+        values = values.copy()
+        values.flags.writeable = False
+        object.__setattr__(self, "centres_source_xy", values)
+        object.__setattr__(self, "mode", str(self.mode))
 VIEWER_NODE_MODES = {
     "raw_images": "raw_image",
     "metadata": "raw_image",
@@ -314,6 +362,7 @@ class _AnalysisTask(QRunnable):
         physical_edge_reference_mask: np.ndarray | None,
         non_edge_reference_mask: np.ndarray | None,
         seed_instance_annotations: np.ndarray | None,
+        manual_seed_centres: ManualSeedCentres | None,
         background_colour_enabled: bool,
         enabled_nodes: frozenset[str],
         pipeline_revision: int,
@@ -369,6 +418,7 @@ class _AnalysisTask(QRunnable):
             if seed_instance_annotations is None
             else np.asarray(seed_instance_annotations, dtype=np.uint16)
         )
+        self.manual_seed_centres = manual_seed_centres
         self.background_colour_enabled = background_colour_enabled
         self.enabled_nodes = enabled_nodes
         self.pipeline_revision = pipeline_revision
@@ -400,6 +450,7 @@ class _AnalysisTask(QRunnable):
                 physical_edge_reference_mask=self.physical_edge_reference_mask,
                 non_edge_reference_mask=self.non_edge_reference_mask,
                 seed_instance_annotations=self.seed_instance_annotations,
+                manual_seed_centres=self.manual_seed_centres,
                 background_colour_enabled=self.background_colour_enabled,
                 enabled_nodes=self.enabled_nodes,
                 node_cache=self.node_cache,
@@ -589,12 +640,46 @@ class MainWindow(QMainWindow):
     ANALYSIS_CACHE_CUDA_BUDGET_BYTES = 2 * 1024**3
     ANALYSIS_CACHE_MAX_IMAGES = 3
     REFERENCE_UNDO_LIMIT = 20
+    MAX_RECENT_PROJECTS = 8
+    RECENT_PROJECTS_SETTINGS_KEY = "projects/recentFiles"
 
     def __init__(self, root: Path, parent=None) -> None:
         super().__init__(parent)
         self._root = root
+        self._application_settings = QSettings("Seed Fiddle", "Seed Fiddle", self)
+        self._current_project_path: Path | None = None
+        # The repository image folder remains a convenient loose workspace on
+        # startup. Project dirty tracking begins after New, Open, or the first
+        # successful Save Project, so legacy review sessions are not mistaken
+        # for an unsaved master document.
+        self._project_tracking_enabled = False
+        self._installing_project = False
+        self._project_dirty = False
+        self._recent_project_paths = self._read_recent_project_paths()
         self._reference_region_store = ReferenceRegionStore(root)
+        self._manual_seed_centre_store = ManualSeedCentreStore(root)
+        self._project_analysis_store = ProjectAnalysisStore(root)
         self._reference_region_autoload_attempted: set[str] = set()
+        self._manual_seed_centre_autoload_attempted: set[str] = set()
+        self._reference_layer_shapes: dict[str, tuple[int, int]] = {}
+        self._project_unbound_reference_loads: set[str] = set()
+        self._project_manual_centre_loads: set[str] = set()
+        self._project_reference_sidecar_paths: dict[str, Path] = {}
+        self._project_manual_centre_sidecar_paths: dict[str, Path] = {}
+        self._project_manifest_sidecar_policy_active = False
+        self._pending_unbound_reference_bundles: dict[
+            str, ReferenceRegionBundle
+        ] = {}
+        self._withheld_reference_sidecars: set[str] = set()
+        self._withheld_manual_centre_sidecars: set[str] = set()
+        self._project_unresolved_reference_sidecars: set[str] = set()
+        self._project_unresolved_manual_centre_sidecars: set[str] = set()
+        self._unsaved_reference_sidecars: set[str] = set()
+        self._unsaved_manual_centre_sidecars: set[str] = set()
+        self._project_original_image_order: tuple[str, ...] = ()
+        self._project_original_image_records: dict[str, ProjectImageRecord] = {}
+        self._project_unresolved_image_records: dict[str, ProjectImageRecord] = {}
+        self._project_unresolved_selected_image_id: str | None = None
         self._image_paths: dict[str, Path] = {}
         self._analyses: dict[str, object] = {}
         self._analysis_caches: OrderedDict[str, PipelineAnalysisCache] = OrderedDict()
@@ -626,6 +711,10 @@ class MainWindow(QMainWindow):
         ] = {}
         self._reference_undo_histories: dict[str, RasterUndoHistory] = {}
         self._instance_undo_histories: dict[str, RasterUndoHistory] = {}
+        self._manual_seed_centre_states: dict[str, _ManualSeedCentreState] = {}
+        self._manual_seed_centre_histories: dict[
+            str, list[_ManualSeedCentreState]
+        ] = {}
         self._active_tasks: dict[str, _AnalysisTask] = {}
         self._learning_training_task: _LearningTrainingTask | None = None
         self._learning_training_progress: QProgressDialog | None = None
@@ -642,9 +731,12 @@ class MainWindow(QMainWindow):
         self._selecting_overlay_from_node = False
         self.pipeline = build_default_pipeline()
 
-        self.setWindowTitle("Seed Fiddle")
         self.setMinimumSize(1100, 700)
         self.resize(1540, 920)
+        self.project_status_label = QLabel(self)
+        self.project_status_label.setObjectName("projectStatusLabel")
+        self.statusBar().addPermanentWidget(self.project_status_label)
+        self._update_project_chrome()
 
         self.image_view = ImageView(self)
         self.image_view.image_dropped.connect(self._add_and_open_image)
@@ -657,6 +749,12 @@ class MainWindow(QMainWindow):
         self.image_view.instance_tool_status.connect(self.statusBar().showMessage)
         self.image_view.shape_fill_size_preference_changed.connect(
             self._shape_fill_size_preference_changed
+        )
+        self.image_view.manual_seed_centres_edited.connect(
+            self._manual_seed_centres_edited
+        )
+        self.image_view.manual_seed_centre_editing_cancelled.connect(
+            self._stop_manual_seed_centre_editing
         )
         self.pipeline_canvas = PipelineCanvas(self.pipeline, self)
         self.pipeline_canvas.node_selected.connect(self._pipeline_node_selected)
@@ -672,6 +770,8 @@ class MainWindow(QMainWindow):
         self.pipeline_canvas.connections_changed.connect(
             self._pipeline_connections_changed
         )
+        self.pipeline_canvas.layout_changed.connect(self._set_project_dirty)
+        self.pipeline_canvas.presentation_changed.connect(self._set_project_dirty)
         self.pipeline_canvas.connection_error.connect(
             self.statusBar().showMessage
         )
@@ -708,6 +808,1166 @@ class MainWindow(QMainWindow):
         if self.image_view.image_path is None:
             self.statusBar().showMessage("Ready — add a laboratory image to begin.")
 
+    def _read_recent_project_paths(self) -> list[Path]:
+        raw = self._application_settings.value(
+            self.RECENT_PROJECTS_SETTINGS_KEY, []
+        )
+        if isinstance(raw, str):
+            values = [raw]
+        elif isinstance(raw, (tuple, list)):
+            values = [str(value) for value in raw]
+        else:
+            values = []
+        paths: list[Path] = []
+        identities: set[str] = set()
+        for value in values:
+            if not value:
+                continue
+            path = Path(value).expanduser().resolve()
+            identity = _path_identity(path)
+            if identity in identities:
+                continue
+            identities.add(identity)
+            paths.append(path)
+            if len(paths) == self.MAX_RECENT_PROJECTS:
+                break
+        return paths
+
+    def _store_recent_project_paths(self) -> None:
+        self._application_settings.setValue(
+            self.RECENT_PROJECTS_SETTINGS_KEY,
+            [str(path) for path in self._recent_project_paths],
+        )
+
+    def _remember_recent_project(self, path: Path) -> None:
+        resolved = Path(path).expanduser().resolve()
+        identity = _path_identity(resolved)
+        self._recent_project_paths = [
+            candidate
+            for candidate in self._recent_project_paths
+            if _path_identity(candidate) != identity
+        ]
+        self._recent_project_paths.insert(0, resolved)
+        del self._recent_project_paths[self.MAX_RECENT_PROJECTS :]
+        self._store_recent_project_paths()
+        if hasattr(self, "recent_projects_menu"):
+            self._refresh_recent_projects_menu()
+
+    def _forget_recent_project(self, path: Path) -> None:
+        identity = _path_identity(path)
+        retained = [
+            candidate
+            for candidate in self._recent_project_paths
+            if _path_identity(candidate) != identity
+        ]
+        if len(retained) == len(self._recent_project_paths):
+            return
+        self._recent_project_paths = retained
+        self._store_recent_project_paths()
+        if hasattr(self, "recent_projects_menu"):
+            self._refresh_recent_projects_menu()
+
+    def _set_project_path(self, path: Path | None) -> None:
+        self._current_project_path = (
+            None if path is None else Path(path).expanduser().resolve()
+        )
+        self._update_project_chrome()
+
+    def _set_project_dirty(self, dirty: bool = True) -> None:
+        dirty = bool(dirty)
+        if dirty and not self._project_tracking_enabled:
+            return
+        if dirty == self._project_dirty:
+            return
+        self._project_dirty = dirty
+        self._update_project_chrome()
+
+    def _update_project_chrome(self) -> None:
+        if not self._project_tracking_enabled:
+            self.setWindowTitle("Seed Fiddle")
+            if hasattr(self, "project_status_label"):
+                self.project_status_label.setText("Project: none")
+                self.project_status_label.setToolTip(
+                    "Loose workspace — use Save Project to create a master file."
+                )
+            return
+        name = (
+            self._current_project_path.name
+            if self._current_project_path is not None
+            else "Untitled"
+        )
+        modified = " *" if self._project_dirty else ""
+        self.setWindowTitle(f"Seed Fiddle — {name}{modified}")
+        if not hasattr(self, "project_status_label"):
+            return
+        self.project_status_label.setText(f"Project: {name}{modified}")
+        self.project_status_label.setToolTip(
+            str(self._current_project_path)
+            if self._current_project_path is not None
+            else "No master project file has been saved yet."
+        )
+
+    def _refresh_recent_projects_menu(self) -> None:
+        self.recent_projects_menu.clear()
+        if not self._recent_project_paths:
+            empty = self.recent_projects_menu.addAction("No recent projects")
+            empty.setEnabled(False)
+            return
+        for path in self._recent_project_paths:
+            action = self.recent_projects_menu.addAction(path.name)
+            action.setToolTip(str(path))
+            action.setStatusTip(str(path))
+            action.triggered.connect(
+                lambda _checked=False, project_path=path: (
+                    self._open_recent_project(project_path)
+                )
+            )
+
+    def _open_recent_project(self, path: Path) -> None:
+        if not path.is_file():
+            QMessageBox.warning(
+                self,
+                "Recent project not found",
+                f"The project master no longer exists and was removed from the "
+                f"recent list.\n\n{path}",
+            )
+            self._forget_recent_project(path)
+            return
+        self._open_project(path)
+
+    def _project_ui_state(self) -> ProjectUiState:
+        catalogue = {**self.pipeline.nodes, **self.pipeline.unused_nodes}
+        return ProjectUiState(
+            node_positions={
+                node_id: (float(node.x), float(node.y))
+                for node_id, node in catalogue.items()
+            },
+            bundle_cables=self.pipeline_canvas.cable_bundling_enabled,
+            route_around_nodes=self.pipeline_canvas.obstacle_routing_enabled,
+            selected_node=(
+                self._selected_pipeline_node
+                if self._selected_pipeline_node in catalogue
+                else None
+            ),
+            selected_overlay=str(self.overlay_combo.currentData() or "raw_image"),
+        )
+
+    def _project_image_specs(self) -> tuple[ProjectImageSpec, ...]:
+        specs: list[ProjectImageSpec] = []
+        for index in range(self.image_list.count()):
+            item = self.image_list.item(index)
+            path = Path(item.data(Qt.ItemDataRole.UserRole)).resolve()
+            key = _path_identity(path)
+            include_references = key not in self._withheld_reference_sidecars
+            include_centres = key not in self._withheld_manual_centre_sidecars
+            specs.append(
+                ProjectImageSpec(
+                    path,
+                    read_source_raster_shape(path),
+                    include_reference_regions=include_references,
+                    include_manual_seed_centres=include_centres,
+                    reference_regions_path=(
+                        self._project_reference_sidecar_paths.get(key)
+                        if include_references
+                        else None
+                    ),
+                    manual_seed_centres_path=(
+                        self._project_manual_centre_sidecar_paths.get(key)
+                        if include_centres
+                        else None
+                    ),
+                )
+            )
+        return tuple(specs)
+
+    def _reference_bundle_for_project_key(
+        self, key: str, path: Path
+    ) -> ReferenceRegionBundle:
+        rasters = tuple(
+            value
+            for value in (
+                self._applied_background_reference_masks.get(key),
+                self._applied_foreground_reference_masks.get(key),
+                self._applied_background_exclusion_masks.get(key),
+                self._applied_instance_annotations.get(key),
+            )
+            if value is not None
+        )
+        shape = (
+            tuple(int(value) for value in rasters[0].shape)
+            if rasters
+            else self._reference_layer_shapes.get(
+                key, read_source_raster_shape(path)
+            )
+        )
+        if any(tuple(value.shape) != shape for value in rasters):
+            raise ReferenceRegionError(
+                f"Applied reference layers for {path.name} do not share one image shape."
+            )
+        return ReferenceRegionBundle(
+            shape=shape,
+            background=self._applied_background_reference_masks.get(key),
+            foreground=self._applied_foreground_reference_masks.get(key),
+            other=self._applied_background_exclusion_masks.get(key),
+            annotated_seeds=self._applied_instance_annotations.get(key),
+            annotation_origin=self._applied_instance_annotation_origins.get(
+                key, "manual"
+            ),
+        )
+
+    def _retry_unsaved_project_sidecars(self) -> bool:
+        for key in tuple(self._unsaved_reference_sidecars):
+            path = self._image_paths.get(key)
+            if path is None:
+                QMessageBox.critical(
+                    self,
+                    "Could not save project sidecars",
+                    "Unsaved applied reference data belongs to an image that is no "
+                    "longer in the project. The master was not saved.",
+                )
+                self._set_project_dirty()
+                return False
+            try:
+                self._reference_region_store.save(
+                    path, self._reference_bundle_for_project_key(key, path)
+                )
+            except (InstanceMaskImportError, ReferenceRegionError, OSError) as error:
+                QMessageBox.critical(
+                    self,
+                    "Could not save project sidecars",
+                    f"Applied reference data for {path.name} remains only in memory. "
+                    f"The project master was not saved.\n\n{error}",
+                )
+                self._set_project_dirty()
+                return False
+            self._unsaved_reference_sidecars.discard(key)
+            self._reference_region_autoload_attempted.add(key)
+            self._withheld_reference_sidecars.discard(key)
+            self._project_unresolved_reference_sidecars.discard(key)
+            self._pending_unbound_reference_bundles.pop(key, None)
+            self._project_unbound_reference_loads.add(key)
+            self._project_reference_sidecar_paths[key] = (
+                self._reference_region_store.path_for(path)
+            )
+
+        for key in tuple(self._unsaved_manual_centre_sidecars):
+            path = self._image_paths.get(key)
+            state = self._manual_seed_centre_states.get(key)
+            if path is None or state is None:
+                QMessageBox.critical(
+                    self,
+                    "Could not save project sidecars",
+                    "Unsaved manual seed centres no longer have a matching project "
+                    "image/state. The master was not saved.",
+                )
+                self._set_project_dirty()
+                return False
+            try:
+                self._manual_seed_centre_store.save(
+                    path,
+                    state.centres_source_xy,
+                    mode=state.mode,
+                    source_shape=read_source_raster_shape(path),
+                )
+            except (
+                InstanceMaskImportError,
+                ManualSeedCentreStoreError,
+                OSError,
+            ) as error:
+                QMessageBox.critical(
+                    self,
+                    "Could not save project sidecars",
+                    f"Manual seed centres for {path.name} remain only in memory. "
+                    f"The project master was not saved.\n\n{error}",
+                )
+                self._set_project_dirty()
+                return False
+            self._unsaved_manual_centre_sidecars.discard(key)
+            self._manual_seed_centre_autoload_attempted.add(key)
+            self._withheld_manual_centre_sidecars.discard(key)
+            self._project_unresolved_manual_centre_sidecars.discard(key)
+            self._project_manual_centre_loads.add(key)
+            self._project_manual_centre_sidecar_paths[key] = (
+                self._manual_seed_centre_store.path_for(path)
+            )
+        return True
+
+    def _merge_preserved_project_sidecars(
+        self, record: ProjectImageRecord, key: str
+    ) -> ProjectImageRecord:
+        """Retain unresolved manifest refs until a successful edit supersedes them."""
+
+        original = self._project_original_image_records.get(record.identifier)
+        if original is None or not original.sidecars:
+            return record
+        captured_by_kind = {item.kind: item for item in record.sidecars}
+        merged = []
+        for item in original.sidecars:
+            preserve = (
+                item.kind == REFERENCE_REGIONS_SIDECAR
+                and key in self._withheld_reference_sidecars
+            ) or (
+                item.kind == MANUAL_SEED_CENTRES_SIDECAR
+                and key in self._withheld_manual_centre_sidecars
+            )
+            if preserve:
+                merged.append(item)
+                captured_by_kind.pop(item.kind, None)
+            else:
+                replacement = captured_by_kind.pop(item.kind, None)
+                if replacement is not None:
+                    merged.append(replacement)
+        for item in record.sidecars:
+            if item.kind in captured_by_kind:
+                merged.append(item)
+                captured_by_kind.pop(item.kind)
+        if tuple(merged) == record.sidecars:
+            return record
+        return ProjectImageRecord(
+            identifier=record.identifier,
+            source=record.source,
+            source_shape=record.source_shape,
+            sidecars=tuple(merged),
+        )
+
+    def _write_project(self, destination: Path) -> bool:
+        if not self._project_tracking_enabled:
+            self._project_tracking_enabled = True
+            self._set_project_dirty()
+            self._update_project_chrome()
+        if not self._retry_unsaved_project_sidecars():
+            return False
+        selected_image = self.image_view.image_path
+        try:
+            image_specs = self._project_image_specs()
+            captured = self._project_analysis_store.capture(
+                analysis_settings=analysis_settings_profile_from_graph(self.pipeline),
+                images=image_specs,
+                species=(self.species_combo.currentText().strip() or None),
+                selected_image=selected_image,
+                ui_state=self._project_ui_state(),
+            )
+            live_records = {}
+            for spec, record in zip(image_specs, captured.images, strict=True):
+                key = _path_identity(spec.path)
+                live_records[record.identifier] = (
+                    self._merge_preserved_project_sidecars(record, key)
+                )
+            merged_records: list[ProjectImageRecord] = []
+            installed_ids: set[str] = set()
+            for identifier in self._project_original_image_order:
+                record = live_records.get(identifier)
+                if record is None:
+                    record = self._project_unresolved_image_records.get(identifier)
+                if record is not None:
+                    merged_records.append(record)
+                    installed_ids.add(identifier)
+            for record in captured.images:
+                if record.identifier not in installed_ids:
+                    merged_records.append(record)
+                    installed_ids.add(record.identifier)
+            selected_id = captured.selected_image_id
+            if self._project_unresolved_selected_image_id in installed_ids:
+                selected_id = self._project_unresolved_selected_image_id
+            document = ProjectAnalysisDocument(
+                analysis_settings=captured.analysis_settings,
+                images=tuple(merged_records),
+                species=captured.species,
+                selected_image_id=selected_id,
+                ui_state=captured.ui_state,
+            )
+            saved = self._project_analysis_store.save(document, destination)
+        except (
+            AnalysisSettingsError,
+            InstanceMaskImportError,
+            ProjectAnalysisError,
+            OSError,
+        ) as error:
+            QMessageBox.critical(self, "Could not save project", str(error))
+            self._set_project_dirty()
+            return False
+        live_ids = set(live_records)
+        self._project_original_image_order = tuple(
+            record.identifier for record in document.images
+        )
+        self._project_original_image_records = {
+            record.identifier: record for record in document.images
+        }
+        self._project_unresolved_image_records = {
+            record.identifier: record
+            for record in document.images
+            if record.identifier not in live_ids
+        }
+        self._project_unresolved_selected_image_id = (
+            document.selected_image_id
+            if document.selected_image_id in self._project_unresolved_image_records
+            else None
+        )
+        self._project_tracking_enabled = True
+        self._set_project_path(saved)
+        self._remember_recent_project(saved)
+        unresolved = bool(
+            self._project_unresolved_image_records
+            or self._project_unresolved_reference_sidecars
+            or self._project_unresolved_manual_centre_sidecars
+        )
+        self._set_project_dirty(False)
+        self.statusBar().showMessage(
+            f"Saved project to {saved}."
+            + (
+                " Unresolved file references were preserved and will be checked "
+                "again when the project is opened."
+                if unresolved
+                else ""
+            )
+        )
+        return True
+
+    @Slot()
+    def _save_project(self) -> bool:
+        if self._background_work_is_active():
+            QMessageBox.information(
+                self,
+                "Analysis is busy",
+                "Wait for the current analysis, training, or parameter fit to finish "
+                "before saving the project.",
+            )
+            return False
+        if not self._resolve_unapplied_project_drafts():
+            return False
+        if self._current_project_path is None:
+            return self._save_project_as(drafts_resolved=True)
+        return self._write_project(self._current_project_path)
+
+    @Slot()
+    def _save_project_as(self, *, drafts_resolved: bool = False) -> bool:
+        if self._background_work_is_active():
+            QMessageBox.information(
+                self,
+                "Analysis is busy",
+                "Wait for the current analysis, training, or parameter fit to finish "
+                "before saving the project.",
+            )
+            return False
+        if not drafts_resolved and not self._resolve_unapplied_project_drafts():
+            return False
+        initial = (
+            str(self._current_project_path)
+            if self._current_project_path is not None
+            else str(self._root / "analysis.seedfiddle-project.json")
+        )
+        selected, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Seed Fiddle project",
+            initial,
+            f"Seed Fiddle projects (*{PROJECT_ANALYSIS_EXTENSION});;JSON files (*.json);;All files (*)",
+        )
+        if not selected:
+            return False
+        destination = self._path_with_required_suffix(
+            Path(selected), PROJECT_ANALYSIS_EXTENSION
+        )
+        return self._write_project(destination)
+
+    @Slot()
+    def _choose_project(self) -> None:
+        if self._background_work_is_active():
+            QMessageBox.information(
+                self,
+                "Analysis is busy",
+                "Wait for the current analysis, training, or parameter fit to finish "
+                "before opening another project.",
+            )
+            return
+        selected, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open Seed Fiddle project",
+            (
+                str(self._current_project_path.parent)
+                if self._current_project_path is not None
+                else str(self._root)
+            ),
+            f"Seed Fiddle projects (*{PROJECT_ANALYSIS_EXTENSION});;JSON files (*.json);;All files (*)",
+        )
+        if selected:
+            self._open_project(Path(selected))
+
+    def _confirm_project_replacement(self) -> bool:
+        if self._background_work_is_active():
+            QMessageBox.information(
+                self,
+                "Analysis is busy",
+                "Wait for the current analysis, training, or parameter fit to finish "
+                "before replacing the current project.",
+            )
+            return False
+        if not self._resolve_unapplied_project_drafts():
+            return False
+        if not self._project_dirty:
+            return True
+        answer = QMessageBox.warning(
+            self,
+            "Save changes to the current project?",
+            "The current project has changes that are not recorded in its master "
+            "file. Save them before replacing the project?",
+            QMessageBox.StandardButton.Save
+            | QMessageBox.StandardButton.Discard
+            | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer == QMessageBox.StandardButton.Cancel:
+            return False
+        if answer == QMessageBox.StandardButton.Save:
+            return self._save_project()
+        return answer == QMessageBox.StandardButton.Discard
+
+    @staticmethod
+    def _project_issue_summary(load_result) -> str:
+        lines = []
+        for issue in load_result.issues[:12]:
+            role = issue.role.replace("_", " ")
+            lines.append(f"• {role}: {issue.status.value}: {issue.path}")
+        if len(load_result.issues) > len(lines):
+            lines.append(f"• …and {len(load_result.issues) - len(lines)} more issue(s)")
+        return "\n".join(lines)
+
+    def _open_project(self, source: Path) -> bool:
+        """Validate fully, then replace the current project as one UI transaction."""
+
+        if self._background_work_is_active():
+            QMessageBox.information(
+                self,
+                "Analysis is busy",
+                "Wait for the current analysis, training, or parameter fit to finish "
+                "before opening another project.",
+            )
+            return False
+        source = Path(source).expanduser().resolve()
+        try:
+            loaded = self._project_analysis_store.load(source, verify_files=True)
+            compatibility_graph = build_default_pipeline()
+            apply_analysis_settings_profile(
+                compatibility_graph, loaded.document.analysis_settings
+            )
+        except (AnalysisSettingsError, ProjectAnalysisError, OSError) as error:
+            QMessageBox.critical(self, "Could not open project", str(error))
+            return False
+
+        source_issues = tuple(
+            issue for issue in loaded.issues if issue.role == "source_image"
+        )
+        if source_issues:
+            available_count = sum(
+                image.status == ProjectFileStatus.AVAILABLE
+                for image in loaded.images
+            )
+            answer = QMessageBox.warning(
+                self,
+                "Some project images are unavailable",
+                f"{len(source_issues)} source image(s) are missing, unreadable, or "
+                f"changed and will be skipped; {available_count} verified image(s) "
+                "can be opened. Their original records remain referenced in the "
+                "master, and Save preserves them unless you explicitly re-add or "
+                "replace those source files.\n\n"
+                + self._project_issue_summary(loaded),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return False
+        if not self._confirm_project_replacement():
+            return False
+
+        self._installing_project = True
+        self._clear_project_session_state()
+        try:
+            apply_analysis_settings_profile(
+                self.pipeline, loaded.document.analysis_settings
+            )
+        except AnalysisSettingsError as error:
+            # The fresh-catalogue probe above makes this unreachable unless the
+            # in-memory authored graph changed concurrently.
+            QMessageBox.critical(self, "Could not install project settings", str(error))
+            self._installing_project = False
+            return False
+
+        ui_state = loaded.document.ui_state
+        catalogue = {**self.pipeline.nodes, **self.pipeline.unused_nodes}
+        default_catalogue = {
+            **compatibility_graph.nodes,
+            **compatibility_graph.unused_nodes,
+        }
+        for node_id, node in catalogue.items():
+            default_node = default_catalogue[node_id]
+            node.x, node.y = float(default_node.x), float(default_node.y)
+        with QSignalBlocker(self.pipeline_canvas):
+            self.pipeline_canvas.set_cable_bundling_enabled(False)
+            self.pipeline_canvas.set_obstacle_routing_enabled(False)
+        if ui_state is not None:
+            for node_id, position in ui_state.node_positions.items():
+                node = catalogue.get(node_id)
+                if node is not None:
+                    node.x, node.y = float(position[0]), float(position[1])
+            with QSignalBlocker(self.pipeline_canvas):
+                self.pipeline_canvas.set_cable_bundling_enabled(
+                    ui_state.bundle_cables
+                )
+                self.pipeline_canvas.set_obstacle_routing_enabled(
+                    ui_state.route_around_nodes
+                )
+        preferred_node = (
+            ui_state.selected_node
+            if ui_state is not None and ui_state.selected_node in self.pipeline.nodes
+            else "seed_scale_estimation"
+        )
+        selected_node = self.pipeline_canvas.rebuild_from_graph(preferred_node)
+        if selected_node is not None:
+            self._selected_pipeline_node = selected_node
+            self.pipeline_inspector.set_node(self.pipeline.node(selected_node))
+
+        species = loaded.document.species
+        if species:
+            if self.species_combo.findText(species) < 0:
+                self.species_combo.addItem(species)
+            with QSignalBlocker(self.species_combo):
+                self.species_combo.setCurrentText(species)
+        elif self.species_combo.count():
+            with QSignalBlocker(self.species_combo):
+                self.species_combo.setCurrentIndex(0)
+
+        available_images = [
+            image
+            for image in loaded.images
+            if image.status == ProjectFileStatus.AVAILABLE
+        ]
+        self._project_original_image_order = tuple(
+            record.identifier for record in loaded.document.images
+        )
+        self._project_original_image_records = {
+            record.identifier: record for record in loaded.document.images
+        }
+        self._project_unresolved_image_records = {
+            image.record.identifier: image.record
+            for image in loaded.images
+            if image.status != ProjectFileStatus.AVAILABLE
+        }
+        self._project_unresolved_selected_image_id = (
+            loaded.document.selected_image_id
+            if loaded.document.selected_image_id
+            in self._project_unresolved_image_records
+            else None
+        )
+        self._project_manifest_sidecar_policy_active = True
+        loadable_sidecar_statuses = {
+            ProjectFileStatus.AVAILABLE,
+            ProjectFileStatus.FINGERPRINT_MISMATCH,
+        }
+        for image in loaded.images:
+            key = _path_identity(image.path)
+            reference = image.sidecar(REFERENCE_REGIONS_SIDECAR)
+            if reference is not None:
+                self._project_reference_sidecar_paths[key] = reference.path
+            if (
+                image.status == ProjectFileStatus.AVAILABLE
+                and reference is not None
+                and reference.status in loadable_sidecar_statuses
+            ):
+                self._project_unbound_reference_loads.add(key)
+            else:
+                self._withheld_reference_sidecars.add(key)
+                if reference is not None:
+                    self._project_unresolved_reference_sidecars.add(key)
+            centres = image.sidecar(MANUAL_SEED_CENTRES_SIDECAR)
+            if centres is not None:
+                self._project_manual_centre_sidecar_paths[key] = centres.path
+            if (
+                image.status == ProjectFileStatus.AVAILABLE
+                and centres is not None
+                and centres.status in loadable_sidecar_statuses
+            ):
+                self._project_manual_centre_loads.add(key)
+            else:
+                self._withheld_manual_centre_sidecars.add(key)
+                if centres is not None:
+                    self._project_unresolved_manual_centre_sidecars.add(key)
+        for image in available_images:
+            self._add_image(
+                image.path, open_now=False, mark_project_dirty=False
+            )
+        selected_image = loaded.selected_image
+        path_to_open = (
+            selected_image.path
+            if selected_image is not None
+            and selected_image.status == ProjectFileStatus.AVAILABLE
+            else available_images[0].path
+            if available_images
+            else None
+        )
+
+        self._project_tracking_enabled = True
+        self._set_project_path(source)
+        self._remember_recent_project(source)
+        self._set_project_dirty(bool(loaded.issues))
+        selected_overlay = (
+            ui_state.selected_overlay
+            if ui_state is not None and ui_state.selected_overlay
+            else "raw_image"
+        )
+        self._rebuild_overlay_combo(selected_overlay)
+        if path_to_open is not None:
+            self._open_path(path_to_open, mark_project_dirty=False)
+        else:
+            self._show_pending_result()
+            self._update_analysis_availability()
+            self._sync_background_controls()
+        overlay_index = self.overlay_combo.findData(selected_overlay)
+        if overlay_index >= 0:
+            self.overlay_combo.setCurrentIndex(overlay_index)
+        self._installing_project = False
+
+        if loaded.issues:
+            QMessageBox.warning(
+                self,
+                "Project opened with file changes",
+                "The verified parts of the project were opened. Changed source images "
+                "were skipped. A changed sidecar was loaded only if its own image-bound "
+                "validation accepted it. Save the project to refresh recorded sidecar "
+                "fingerprints after reviewing these issues.\n\n"
+                + self._project_issue_summary(loaded),
+            )
+        self.statusBar().showMessage(
+            f"Opened project {source} with {len(available_images)} available image(s)"
+            + (f" and {len(loaded.issues)} file issue(s)." if loaded.issues else ".")
+        )
+        return True
+
+    @Slot()
+    def _new_project(self) -> bool:
+        if not self._confirm_project_replacement():
+            return False
+        default_graph = build_default_pipeline()
+        default_profile = analysis_settings_profile_from_graph(default_graph)
+        default_positions = {
+            **default_graph.nodes,
+            **default_graph.unused_nodes,
+        }
+        self._installing_project = True
+        self._clear_project_session_state()
+        apply_analysis_settings_profile(self.pipeline, default_profile)
+        catalogue = {**self.pipeline.nodes, **self.pipeline.unused_nodes}
+        for node_id, default_node in default_positions.items():
+            node = catalogue[node_id]
+            node.x, node.y = float(default_node.x), float(default_node.y)
+        with QSignalBlocker(self.pipeline_canvas):
+            self.pipeline_canvas.set_cable_bundling_enabled(False)
+            self.pipeline_canvas.set_obstacle_routing_enabled(False)
+        selected = self.pipeline_canvas.rebuild_from_graph("seed_scale_estimation")
+        if selected is not None:
+            self._selected_pipeline_node = selected
+            self.pipeline_inspector.set_node(self.pipeline.node(selected))
+        if self.species_combo.count():
+            with QSignalBlocker(self.species_combo):
+                self.species_combo.setCurrentIndex(0)
+        self._rebuild_overlay_combo("raw_image")
+        self._project_tracking_enabled = True
+        self._set_project_path(None)
+        self._set_project_dirty(False)
+        self._update_analysis_availability()
+        self._sync_background_controls()
+        self._installing_project = False
+        self.statusBar().showMessage("Created a new untitled project.")
+        return True
+
+    def _clear_project_session_state(self) -> None:
+        """Purge every image-local value before installing another project."""
+
+        self._pending_analysis_key = None
+        # Clearing the controller values first makes teardown independent of
+        # any stale editor payload and lets the controls fall back to defaults.
+        self._manual_seed_centre_states.clear()
+        self._manual_seed_centre_histories.clear()
+        self._stop_manual_seed_centre_editing()
+        self._stop_reference_point_editing()
+        for key in tuple(self._analysis_caches):
+            self._discard_analysis_cache(key)
+        for analysis in self._analyses.values():
+            release_host_caches(analysis)
+        self._analyses.clear()
+        self._analysis_caches.clear()
+        self._cache_dirty_nodes.clear()
+
+        for values in (
+            self._draft_background_reference_masks,
+            self._draft_foreground_reference_masks,
+            self._applied_background_reference_masks,
+            self._applied_foreground_reference_masks,
+            self._draft_background_exclusion_masks,
+            self._draft_foreground_exclusion_masks,
+            self._applied_background_exclusion_masks,
+            self._applied_foreground_exclusion_masks,
+            self._draft_physical_edge_reference_masks,
+            self._draft_non_edge_reference_masks,
+            self._applied_physical_edge_reference_masks,
+            self._applied_non_edge_reference_masks,
+            self._draft_instance_annotations,
+            self._applied_instance_annotations,
+            self._draft_instance_annotation_origins,
+            self._applied_instance_annotation_origins,
+            self._reference_dirty_classes,
+            self._instance_continuity_cache,
+            self._reference_undo_histories,
+            self._instance_undo_histories,
+            self._manual_seed_centre_states,
+            self._manual_seed_centre_histories,
+            self._reference_layer_shapes,
+            self._pending_unbound_reference_bundles,
+        ):
+            values.clear()
+        self._reference_masks_dirty.clear()
+        self._instance_annotations_dirty.clear()
+        self._reference_region_autoload_attempted.clear()
+        self._manual_seed_centre_autoload_attempted.clear()
+        self._unsaved_reference_sidecars.clear()
+        self._unsaved_manual_centre_sidecars.clear()
+        self._project_unbound_reference_loads.clear()
+        self._project_manual_centre_loads.clear()
+        self._project_reference_sidecar_paths.clear()
+        self._project_manual_centre_sidecar_paths.clear()
+        self._project_manifest_sidecar_policy_active = False
+        self._withheld_reference_sidecars.clear()
+        self._withheld_manual_centre_sidecars.clear()
+        self._project_unresolved_reference_sidecars.clear()
+        self._project_unresolved_manual_centre_sidecars.clear()
+        self._project_original_image_order = ()
+        self._project_original_image_records.clear()
+        self._project_unresolved_image_records.clear()
+        self._project_unresolved_selected_image_id = None
+        self._image_paths.clear()
+        self.image_list.clear()
+
+        self.image_view.clear_image()
+        with QSignalBlocker(self.paint_background_action):
+            self.paint_background_action.setChecked(False)
+        with QSignalBlocker(self.annotate_instances_action):
+            self.annotate_instances_action.setChecked(False)
+        self._sync_reference_panel_visibility()
+        self.pipeline_inspector.set_analysis_result(None)
+        self.filename_label.setText("—")
+        self.dimensions_label.setText("—")
+        catalogue_ids = tuple(
+            (*self.pipeline.nodes.keys(), *self.pipeline.unused_nodes.keys())
+        )
+        self.pipeline.invalidate(catalogue_ids, preserve_bypassed=True)
+        self._show_pending_result()
+        self._release_unused_cuda_blocks()
+
+    def _unapplied_project_draft_keys(self) -> set[str]:
+        return set(self._reference_masks_dirty) | set(
+            self._instance_annotations_dirty
+        )
+
+    def _resolve_unapplied_project_drafts(self, *, recompute: bool = True) -> bool:
+        keys = self._unapplied_project_draft_keys()
+        if not keys:
+            return True
+        answer = QMessageBox.warning(
+            self,
+            "Unapplied reference edits",
+            f"{len(keys)} image(s) have unapplied material or seed-instance edits. "
+            "Project masters reference applied, fingerprinted sidecars only.\n\n"
+            "Choose Save to apply and save every draft, Discard to restore every "
+            "applied snapshot, or Cancel to keep editing.",
+            QMessageBox.StandardButton.Save
+            | QMessageBox.StandardButton.Discard
+            | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer == QMessageBox.StandardButton.Cancel:
+            return False
+        if answer == QMessageBox.StandardButton.Discard:
+            self._discard_all_unapplied_project_drafts(keys)
+            return True
+        if answer != QMessageBox.StandardButton.Save:
+            return False
+        return self._apply_and_save_all_project_drafts(keys, recompute=recompute)
+
+    @staticmethod
+    def _project_draft_value(
+        key: str,
+        draft: dict[str, np.ndarray],
+        applied: dict[str, np.ndarray],
+        dtype,
+    ) -> np.ndarray | None:
+        value = draft.get(key, applied.get(key))
+        if value is None or not np.any(value):
+            return None
+        return np.asarray(value, dtype=dtype)
+
+    @staticmethod
+    def _install_project_applied_value(
+        key: str,
+        store: dict[str, np.ndarray],
+        value: np.ndarray | None,
+        dtype,
+    ) -> np.ndarray | None:
+        if value is None or not np.any(value):
+            store.pop(key, None)
+            return None
+        installed = np.asarray(value, dtype=dtype).copy()
+        installed.flags.writeable = False
+        store[key] = installed
+        return installed
+
+    def _apply_and_save_all_project_drafts(
+        self, keys: set[str], *, recompute: bool = True
+    ) -> bool:
+        committed: set[str] = set()
+        for key in sorted(keys):
+            path = self._image_paths.get(key)
+            if path is None:
+                QMessageBox.critical(
+                    self,
+                    "Could not apply project drafts",
+                    "An edited image is no longer in the project image list. No "
+                    "project transition was performed.",
+                )
+                return False
+            background = self._project_draft_value(
+                key,
+                self._draft_background_reference_masks,
+                self._applied_background_reference_masks,
+                bool,
+            )
+            foreground = self._project_draft_value(
+                key,
+                self._draft_foreground_reference_masks,
+                self._applied_foreground_reference_masks,
+                bool,
+            )
+            other_background = self._project_draft_value(
+                key,
+                self._draft_background_exclusion_masks,
+                self._applied_background_exclusion_masks,
+                bool,
+            )
+            other_foreground = self._project_draft_value(
+                key,
+                self._draft_foreground_exclusion_masks,
+                self._applied_foreground_exclusion_masks,
+                bool,
+            )
+            if other_background is None:
+                other = other_foreground
+            elif other_foreground is None:
+                other = other_background
+            else:
+                other = np.asarray(other_background | other_foreground, dtype=bool)
+            instances = self._project_draft_value(
+                key,
+                self._draft_instance_annotations,
+                self._applied_instance_annotations,
+                np.uint16,
+            )
+            raw_shape_candidates = tuple(
+                value
+                for value in (
+                    self._draft_background_reference_masks.get(
+                        key, self._applied_background_reference_masks.get(key)
+                    ),
+                    self._draft_foreground_reference_masks.get(
+                        key, self._applied_foreground_reference_masks.get(key)
+                    ),
+                    self._draft_background_exclusion_masks.get(
+                        key, self._applied_background_exclusion_masks.get(key)
+                    ),
+                    self._draft_instance_annotations.get(
+                        key, self._applied_instance_annotations.get(key)
+                    ),
+                )
+                if value is not None
+            )
+            rasters = tuple(
+                value
+                for value in (background, foreground, other, instances)
+                if value is not None
+            )
+            shape = (
+                tuple(int(value) for value in raw_shape_candidates[0].shape)
+                if raw_shape_candidates
+                else self._reference_layer_shapes.get(
+                    key, read_source_raster_shape(path)
+                )
+            )
+            if any(tuple(value.shape) != shape for value in raw_shape_candidates):
+                if committed:
+                    self._finish_bulk_project_reference_change(
+                        committed, recompute=recompute
+                    )
+                QMessageBox.critical(
+                    self,
+                    "Could not apply project drafts",
+                    f"Draft layers for {path.name} do not share one image shape."
+                    + (
+                        f"\n\n{len(committed)} earlier image(s) were already applied "
+                        "and saved; their analysis state was invalidated. This and "
+                        "later drafts remain unapplied."
+                        if committed
+                        else ""
+                    ),
+                )
+                return False
+            origin = self._draft_instance_annotation_origins.get(
+                key, self._applied_instance_annotation_origins.get(key, "manual")
+            )
+            try:
+                self._reference_region_store.save(
+                    path,
+                    ReferenceRegionBundle(
+                        shape=shape,
+                        background=background,
+                        foreground=foreground,
+                        other=other,
+                        annotated_seeds=instances,
+                        annotation_origin=origin,
+                    ),
+                )
+            except (ReferenceRegionError, OSError) as error:
+                if committed:
+                    self._finish_bulk_project_reference_change(
+                        committed, recompute=recompute
+                    )
+                QMessageBox.critical(
+                    self,
+                    "Could not save applied reference edits",
+                    f"Drafts for {path.name} remain available in memory. The project "
+                    "transition was cancelled."
+                    + (
+                        f" {len(committed)} earlier image(s) were already applied and "
+                        "saved; their analysis state was invalidated. This and later "
+                        "drafts remain unapplied."
+                        if committed
+                        else ""
+                    )
+                    + f"\n\n{error}",
+                )
+                self._set_project_dirty()
+                return False
+
+            self._install_project_applied_value(
+                key, self._applied_background_reference_masks, background, bool
+            )
+            self._install_project_applied_value(
+                key, self._applied_foreground_reference_masks, foreground, bool
+            )
+            installed_other = self._install_project_applied_value(
+                key, self._applied_background_exclusion_masks, other, bool
+            )
+            if installed_other is None:
+                self._applied_foreground_exclusion_masks.pop(key, None)
+            else:
+                self._applied_foreground_exclusion_masks[key] = installed_other
+            installed_instances = self._install_project_applied_value(
+                key, self._applied_instance_annotations, instances, np.uint16
+            )
+            if installed_instances is None:
+                self._applied_instance_annotation_origins.pop(key, None)
+            else:
+                self._applied_instance_annotation_origins[key] = origin
+            for draft in (
+                self._draft_background_reference_masks,
+                self._draft_foreground_reference_masks,
+                self._draft_background_exclusion_masks,
+                self._draft_foreground_exclusion_masks,
+                self._draft_physical_edge_reference_masks,
+                self._draft_non_edge_reference_masks,
+                self._draft_instance_annotations,
+            ):
+                draft.pop(key, None)
+            self._draft_instance_annotation_origins.pop(key, None)
+            self._reference_masks_dirty.discard(key)
+            self._reference_dirty_classes.pop(key, None)
+            self._instance_annotations_dirty.discard(key)
+            self._reference_undo_histories.pop(key, None)
+            self._instance_undo_histories.pop(key, None)
+            self._reference_region_autoload_attempted.add(key)
+            self._unsaved_reference_sidecars.discard(key)
+            self._withheld_reference_sidecars.discard(key)
+            self._project_unresolved_reference_sidecars.discard(key)
+            self._pending_unbound_reference_bundles.pop(key, None)
+            self._project_unbound_reference_loads.add(key)
+            self._project_reference_sidecar_paths[key] = (
+                self._reference_region_store.path_for(path)
+            )
+            self._reference_layer_shapes[key] = shape
+            committed.add(key)
+
+        self._finish_bulk_project_reference_change(
+            committed, recompute=recompute
+        )
+        self.statusBar().showMessage(
+            f"Applied and saved reference drafts for {len(committed)} image(s)."
+        )
+        return True
+
+    def _discard_all_unapplied_project_drafts(self, keys: set[str]) -> None:
+        for key in keys:
+            for draft in (
+                self._draft_background_reference_masks,
+                self._draft_foreground_reference_masks,
+                self._draft_background_exclusion_masks,
+                self._draft_foreground_exclusion_masks,
+                self._draft_physical_edge_reference_masks,
+                self._draft_non_edge_reference_masks,
+                self._draft_instance_annotations,
+            ):
+                draft.pop(key, None)
+            self._draft_instance_annotation_origins.pop(key, None)
+            self._reference_masks_dirty.discard(key)
+            self._reference_dirty_classes.pop(key, None)
+            self._instance_annotations_dirty.discard(key)
+            self._reference_undo_histories.pop(key, None)
+            self._instance_undo_histories.pop(key, None)
+        current_key = self._current_image_key()
+        if current_key is not None:
+            self._sync_reference_masks_to_view(current_key, render=False)
+            self.image_view.set_instance_annotations(
+                self._applied_instance_annotations.get(current_key),
+                copy=False,
+                render=True,
+            )
+        self._sync_background_controls()
+        self.statusBar().showMessage(
+            f"Discarded unapplied reference drafts for {len(keys)} image(s)."
+        )
+
+    def _finish_bulk_project_reference_change(
+        self, keys: set[str], *, recompute: bool = True
+    ) -> None:
+        if not keys:
+            return
+        affected = {
+            "reference_layers",
+            *self.pipeline.downstream("reference_layers", recursive=True),
+        }
+        self.pipeline.invalidate(affected)
+        for key in keys:
+            self._cache_dirty_nodes.setdefault(key, set()).update(
+                affected - {"reference_layers"}
+            )
+            self._analyses.pop(key, None)
+        current_key = self._current_image_key()
+        if current_key is not None:
+            self._sync_reference_masks_to_view(current_key, render=False)
+            self.image_view.set_instance_annotations(
+                self._applied_instance_annotations.get(current_key),
+                copy=False,
+                render=True,
+            )
+            if recompute and current_key in self._analysis_caches:
+                self._analyze_current_image(dirty_nodes=affected)
+        self._set_project_dirty()
+        self._sync_background_controls()
+
     def _load_species_names(self) -> tuple[str, ...]:
         try:
             payload = json.loads(
@@ -719,14 +1979,49 @@ class MainWindow(QMainWindow):
             return FALLBACK_SPECIES
 
     def _build_actions(self) -> None:
+        self.new_project_action = QAction("New project", self)
+        self.new_project_action.setShortcut(QKeySequence.StandardKey.New)
+        self.new_project_action.triggered.connect(self._new_project)
+
+        self.open_project_action = QAction("Open project…", self)
+        self.open_project_action.setShortcut("Ctrl+Shift+O")
+        self.open_project_action.triggered.connect(self._choose_project)
+
+        self.save_project_action = QAction("Save project", self)
+        self.save_project_action.setShortcut(QKeySequence.StandardKey.Save)
+        self.save_project_action.triggered.connect(self._save_project)
+
+        self.save_project_as_action = QAction("Save project as…", self)
+        self.save_project_as_action.setShortcut(QKeySequence.StandardKey.SaveAs)
+        self.save_project_as_action.triggered.connect(self._save_project_as)
+
         self.open_action = QAction("Open images…", self)
         self.open_action.setShortcut(QKeySequence.StandardKey.Open)
         self.open_action.triggered.connect(self._choose_images)
 
+        self.load_analysis_settings_action = QAction(
+            "Load settings profile…", self
+        )
+        self.load_analysis_settings_action.setToolTip(
+            "Replace analytical parameters, node active/enabled state, and wiring. "
+            "Images, annotations, and canvas layout are not part of a settings profile."
+        )
+        self.load_analysis_settings_action.triggered.connect(
+            self._choose_analysis_settings_profile
+        )
+        self.save_analysis_settings_action = QAction(
+            "Save settings profile as…", self
+        )
+        self.save_analysis_settings_action.setToolTip(
+            "Save portable analytical settings without images, annotations, or layout."
+        )
+        self.save_analysis_settings_action.triggered.connect(
+            self._save_analysis_settings_profile_as
+        )
+
         self.save_reference_regions_action = QAction(
             "Save applied reference regions", self
         )
-        self.save_reference_regions_action.setShortcut(QKeySequence.StandardKey.Save)
         self.save_reference_regions_action.setEnabled(False)
         self.save_reference_regions_action.setToolTip(
             "Save all applied material and seed-instance reference "
@@ -850,7 +2145,19 @@ class MainWindow(QMainWindow):
 
     def _build_menu(self) -> None:
         file_menu = self.menuBar().addMenu("&File")
+        file_menu.addAction(self.new_project_action)
+        file_menu.addAction(self.open_project_action)
+        self.recent_projects_menu = QMenu("Open recent project", file_menu)
+        file_menu.addMenu(self.recent_projects_menu)
+        self._refresh_recent_projects_menu()
+        file_menu.addAction(self.save_project_action)
+        file_menu.addAction(self.save_project_as_action)
+        file_menu.addSeparator()
         file_menu.addAction(self.open_action)
+        settings_menu = file_menu.addMenu("Analysis settings")
+        settings_menu.addAction(self.load_analysis_settings_action)
+        settings_menu.addAction(self.save_analysis_settings_action)
+        file_menu.addSeparator()
         file_menu.addAction(self.save_reference_regions_action)
         file_menu.addSeparator()
         file_menu.addAction(self.exit_action)
@@ -1202,6 +2509,62 @@ class MainWindow(QMainWindow):
         reference_options_layout.addWidget(self.background_enabled_checkbox)
         reference_options_layout.addStretch(1)
         reference_layout.addWidget(reference_options)
+
+        self.keep_perimeter_background_reference_checkbox = QCheckBox(
+            "Keep perimeter-matched source", self.reference_controls
+        )
+        self.keep_perimeter_background_reference_checkbox.setChecked(
+            bool(
+                self.pipeline.node("background_likelihood").parameters.get(
+                    "background_keep_perimeter_reference", True
+                )
+            )
+        )
+        self.image_view.set_automatic_background_reference_visible(
+            self.keep_perimeter_background_reference_checkbox.isChecked()
+        )
+        self.keep_perimeter_background_reference_checkbox.setToolTip(
+            "Keep the buffered perimeter ring's Lab colours and the in-dish area "
+            "matching its median in addition to any painted Background marks. The "
+            "ring anchors the colour model; matching in-dish pixels train Background "
+            "colour, noise, and material-prototype models. While Background painting "
+            "is active, the retained in-dish area is shown in cyan and painted marks "
+            "in green. Uncheck to remove the perimeter-derived source; if no "
+            "Background is painted, the colour model uses its generic automatic "
+            "chroma/lightness source instead."
+        )
+        self.keep_perimeter_background_reference_checkbox.toggled.connect(
+            self._keep_perimeter_background_reference_toggled
+        )
+        reference_layout.addWidget(
+            self.keep_perimeter_background_reference_checkbox
+        )
+
+        self.include_seed_instances_as_foreground_checkbox = QCheckBox(
+            "Include annotated seeds as Foreground", self.reference_controls
+        )
+        self.include_seed_instances_as_foreground_checkbox.setChecked(
+            bool(
+                self.pipeline.node("foreground_segmentation").parameters.get(
+                    "foreground_include_annotated_seed_instances", False
+                )
+            )
+        )
+        self.include_seed_instances_as_foreground_checkbox.setToolTip(
+            "Use the safely inset interiors of applied seed-instance annotations as "
+            "additional Foreground material examples for colour, directional-noise, "
+            "and material-prototype fitting. Instance contours are excluded, and "
+            "painted Background, Other, and exclusion evidence takes precedence. "
+            "An annotation draft does nothing until Apply + save. This setting changes "
+            "analysis only; the Seed instances Show checkbox controls whether labels "
+            "are visible."
+        )
+        self.include_seed_instances_as_foreground_checkbox.toggled.connect(
+            self._include_seed_instances_as_foreground_toggled
+        )
+        reference_layout.addWidget(
+            self.include_seed_instances_as_foreground_checkbox
+        )
 
         material_buttons = QWidget(self.reference_controls)
         reference_buttons = material_buttons
@@ -2380,6 +3743,165 @@ class MainWindow(QMainWindow):
         label.setStyleSheet(f"color: {colour};")
         return label
 
+    def _background_work_is_active(self) -> bool:
+        return bool(
+            self._active_tasks
+            or self._learning_training_task is not None
+            or self._procedural_fit_task is not None
+        )
+
+    def _analysis_settings_dialog_directory(self) -> str:
+        if self._current_project_path is not None:
+            return str(self._current_project_path.parent)
+        return str(self._root)
+
+    @staticmethod
+    def _path_with_required_suffix(path: Path, suffix: str) -> Path:
+        text = str(path)
+        return path if text.casefold().endswith(suffix.casefold()) else Path(text + suffix)
+
+    @Slot()
+    def _save_analysis_settings_profile_as(self) -> None:
+        if self._background_work_is_active():
+            QMessageBox.information(
+                self,
+                "Analysis is busy",
+                "Wait for the current analysis, training, or parameter fit to finish "
+                "before saving a settings profile.",
+            )
+            return
+        selected, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save analysis settings profile",
+            self._analysis_settings_dialog_directory(),
+            f"Seed Fiddle settings (*{ANALYSIS_SETTINGS_FILE_SUFFIX});;JSON files (*.json);;All files (*)",
+        )
+        if not selected:
+            return
+        destination = self._path_with_required_suffix(
+            Path(selected), ANALYSIS_SETTINGS_FILE_SUFFIX
+        )
+        try:
+            saved = save_analysis_settings_profile(destination, self.pipeline)
+        except AnalysisSettingsError as error:
+            QMessageBox.critical(
+                self, "Could not save analysis settings", str(error)
+            )
+            return
+        self.statusBar().showMessage(f"Saved analysis settings profile to {saved}.")
+
+    @Slot()
+    def _choose_analysis_settings_profile(self) -> None:
+        if self._background_work_is_active():
+            QMessageBox.information(
+                self,
+                "Analysis is busy",
+                "Wait for the current analysis, training, or parameter fit to finish "
+                "before loading a settings profile.",
+            )
+            return
+        selected, _ = QFileDialog.getOpenFileName(
+            self,
+            "Load analysis settings profile",
+            self._analysis_settings_dialog_directory(),
+            f"Seed Fiddle settings (*{ANALYSIS_SETTINGS_FILE_SUFFIX});;JSON files (*.json);;All files (*)",
+        )
+        if selected:
+            self._load_analysis_settings_profile(Path(selected))
+
+    def _load_analysis_settings_profile(self, source: Path) -> bool:
+        """Validate, confirm, and atomically install one portable profile."""
+
+        if self._background_work_is_active():
+            QMessageBox.information(
+                self,
+                "Analysis is busy",
+                "Wait for the current analysis, training, or parameter fit to finish "
+                "before loading a settings profile.",
+            )
+            return False
+        try:
+            profile = load_analysis_settings_profile(source)
+            compatibility_graph = build_default_pipeline()
+            apply_analysis_settings_profile(compatibility_graph, profile)
+        except AnalysisSettingsError as error:
+            QMessageBox.critical(
+                self, "Could not load analysis settings", str(error)
+            )
+            return False
+        answer = QMessageBox.question(
+            self,
+            "Replace analysis settings?",
+            "This profile will replace analytical parameters, enabled and unused "
+            "node state, and authored wiring. It will not replace images, reference "
+            "regions, seed annotations, manual centres, or node layout.\n\n"
+            f"Load {source.name}?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return False
+        try:
+            result = apply_analysis_settings_profile(self.pipeline, profile)
+        except AnalysisSettingsError as error:
+            QMessageBox.critical(
+                self, "Incompatible analysis settings", str(error)
+            )
+            return False
+        if not result.changed:
+            self.statusBar().showMessage(
+                f"{source.name} already matches the current analysis settings."
+            )
+            return True
+
+        self._stop_manual_seed_centre_editing()
+        self._stop_reference_point_editing()
+        selected_mode = str(self.overlay_combo.currentData() or "raw_image")
+        selected_id = self.pipeline_canvas.rebuild_from_graph(
+            self._selected_pipeline_node
+        )
+        if selected_id is not None:
+            self._selected_pipeline_node = selected_id
+            self.pipeline_inspector.set_node(self.pipeline.node(selected_id))
+        self._rebuild_overlay_combo(selected_mode)
+        self._sync_inspector_overlay_options()
+        self._sync_background_controls()
+
+        affected = set(result.affected_node_ids)
+        if result.analytical_changed:
+            for image_key in set(self._analysis_caches) | set(self._analyses):
+                self._cache_dirty_nodes.setdefault(image_key, set()).update(affected)
+                self._analyses.pop(image_key, None)
+            current_key = self._current_image_key()
+            if current_key is not None and current_key in self._analysis_caches:
+                self._analyze_current_image(dirty_nodes=affected)
+        else:
+            current_key = self._current_image_key()
+            current_result = None
+            for image_key, analysis in tuple(self._analyses.items()):
+                normalized = self._normalize_display_only_analysis_result(analysis)
+                self._analyses[image_key] = normalized
+                if image_key == current_key:
+                    current_result = normalized
+            if current_result is not None:
+                self.image_view.show_analysis(current_result, render=False)
+                self.pipeline_inspector.set_analysis_result(current_result)
+                self.image_view.refresh_analysis()
+
+        self.pipeline_canvas.refresh()
+        self.pipeline_inspector.refresh_status()
+        self._update_analysis_availability()
+        self._set_project_dirty()
+        detail = (
+            "recomputing affected analysis nodes"
+            if result.analytical_changed
+            else "updated display-only analysis settings from cached results"
+        )
+        self.statusBar().showMessage(
+            f"Loaded analysis settings from {source}; {detail}."
+        )
+        return True
+
     def _load_workspace_images(self) -> None:
         image_dir = self._root / "images"
         if not image_dir.is_dir():
@@ -2388,7 +3910,7 @@ class MainWindow(QMainWindow):
             path for path in image_dir.iterdir() if path.suffix.lower() in SUPPORTED_SUFFIXES
         )
         for path in paths:
-            self._add_image(path, open_now=False)
+            self._add_image(path, open_now=False, mark_project_dirty=False)
         if paths:
             self._open_path(paths[0])
 
@@ -2409,15 +3931,25 @@ class MainWindow(QMainWindow):
         self._add_image(Path(filename), open_now=True)
         self.image_view.show()
 
-    def _add_image(self, path: Path, *, open_now: bool) -> None:
+    def _add_image(
+        self, path: Path, *, open_now: bool, mark_project_dirty: bool = True
+    ) -> None:
         resolved = path.resolve()
-        key = str(resolved).casefold()
+        key = _path_identity(resolved)
         if key not in self._image_paths:
             self._image_paths[key] = resolved
+            if mark_project_dirty and self._project_manifest_sidecar_policy_active:
+                # A new source is not covered by the open master's manifest.
+                # Never import same-named loose-workspace annotations invisibly;
+                # an explicit successful edit/save re-enables its canonical sidecar.
+                self._withheld_reference_sidecars.add(key)
+                self._withheld_manual_centre_sidecars.add(key)
             item = QListWidgetItem(resolved.name)
             item.setData(Qt.ItemDataRole.UserRole, str(resolved))
             item.setToolTip(str(resolved))
             self.image_list.addItem(item)
+            if mark_project_dirty:
+                self._set_project_dirty()
         if open_now:
             self._open_path(resolved)
 
@@ -2425,7 +3957,9 @@ class MainWindow(QMainWindow):
         self._open_path(Path(item.data(Qt.ItemDataRole.UserRole)))
         self.image_view.show()
 
-    def _open_path(self, path: Path) -> None:
+    def _open_path(self, path: Path, *, mark_project_dirty: bool = True) -> None:
+        self._stop_manual_seed_centre_editing()
+        previous_path = self.image_view.image_path
         succeeded, error = self.image_view.load_image(path)
         if not succeeded:
             QMessageBox.warning(self, "Could not open image", f"{path}\n\n{error}")
@@ -2433,12 +3967,49 @@ class MainWindow(QMainWindow):
         self.filename_label.setText(path.name)
         width, height = self.image_view.image_size or (0, 0)
         self.dimensions_label.setText(f"{width:,} × {height:,} px")
-        key = str(path.resolve()).casefold()
+        key = _path_identity(path)
+        if mark_project_dirty and not self._installing_project:
+            selection_changed = (
+                previous_path is None or _path_identity(previous_path) != key
+            )
+            if self._project_unresolved_selected_image_id is not None:
+                self._project_unresolved_selected_image_id = None
+                selection_changed = True
+            if selection_changed:
+                self._set_project_dirty()
         references_loaded = False
-        if key not in self._reference_region_autoload_attempted:
+        reference_load_allowed = (
+            not self._project_manifest_sidecar_policy_active
+            or key in self._project_unbound_reference_loads
+        )
+        if (
+            reference_load_allowed
+            and key not in self._reference_region_autoload_attempted
+        ):
             self._reference_region_autoload_attempted.add(key)
             references_loaded = self._auto_load_reference_regions(
-                path, (height, width)
+                path,
+                (
+                    None
+                    if self._project_manifest_sidecar_policy_active
+                    else (height, width)
+                ),
+                archive_path=self._project_reference_sidecar_paths.get(key),
+            )
+        centres_loaded = False
+        centre_load_allowed = (
+            not self._project_manifest_sidecar_policy_active
+            or key in self._project_manual_centre_loads
+        )
+        if (
+            centre_load_allowed
+            and key not in self._manual_seed_centre_autoload_attempted
+        ):
+            self._manual_seed_centre_autoload_attempted.add(key)
+            centres_loaded = self._auto_load_manual_seed_centres(
+                path,
+                archive_path=self._project_manual_centre_sidecar_paths.get(key),
+                quiet=self._project_manifest_sidecar_policy_active,
             )
         # load_image() intentionally clears all graphics-scene annotation
         # buffers. Restore the current per-image draft/applied state even when
@@ -2464,10 +4035,19 @@ class MainWindow(QMainWindow):
         self._sync_background_controls()
         self.statusBar().showMessage(
             f"Loaded {path}"
-            + (" with saved reference regions." if references_loaded else "")
+            + (
+                " with saved reference regions pending calibration validation."
+                if references_loaded
+                and key in self._pending_unbound_reference_bundles
+                else " with saved reference regions."
+                if references_loaded
+                else ""
+            )
+            + (" with saved manual seed centres." if centres_loaded else "")
         )
 
     def _show_pending_result(self) -> None:
+        self._stop_manual_seed_centre_editing()
         self._stop_reference_point_editing()
         self.image_view.clear_analysis()
         self.pipeline_inspector.set_analysis_result(None)
@@ -2545,6 +4125,21 @@ class MainWindow(QMainWindow):
             **self.pipeline.node("procedural_instances").parameters
         )
 
+    def _manual_seed_centres_for_analysis(
+        self, key: str
+    ) -> ManualSeedCentres | None:
+        state = self._manual_seed_centre_states.get(key)
+        if state is None:
+            return None
+        return ManualSeedCentres(
+            tuple(
+                (float(x), float(y))
+                for x, y in state.centres_source_xy
+            ),
+            ManualSeedCentreMode(state.mode),
+            ManualSeedCentreSpace.SOURCE_IMAGE,
+        )
+
     def _unet_settings(self) -> UNetPipelineSettings:
         return UNetPipelineSettings(**self.pipeline.node("unet_instances").parameters)
 
@@ -2589,7 +4184,7 @@ class MainWindow(QMainWindow):
         path = self.image_view.image_path
         if path is None:
             return
-        key = str(path.resolve()).casefold()
+        key = _path_identity(path)
         pending_dirty = self._cache_dirty_nodes.setdefault(key, set())
         if dirty_nodes:
             pending_dirty.update(dirty_nodes)
@@ -2632,6 +4227,7 @@ class MainWindow(QMainWindow):
             self._applied_physical_edge_reference_masks.get(key),
             self._applied_non_edge_reference_masks.get(key),
             self._applied_instance_annotations.get(key),
+            self._manual_seed_centres_for_analysis(key),
             self.pipeline.node("background_likelihood").enabled,
             frozenset(
                 node.identifier
@@ -2689,8 +4285,7 @@ class MainWindow(QMainWindow):
         if (
             pipeline_revision != self.pipeline.revision
             or current_path is None
-            or str(current_path.resolve()).casefold()
-            != str(Path(path_text).resolve()).casefold()
+            or _path_identity(current_path) != _path_identity(path_text)
             or node_id not in self.pipeline.nodes
         ):
             return
@@ -2715,7 +4310,7 @@ class MainWindow(QMainWindow):
     @Slot(object, int)
     def _analysis_completed(self, result, pipeline_revision: int) -> None:
         path = result.image_path
-        key = str(path.resolve()).casefold() if path is not None else ""
+        key = _path_identity(path) if path is not None else ""
         self._active_tasks.pop(key, None)
         if pipeline_revision != self.pipeline.revision:
             self.statusBar().showMessage(
@@ -2781,7 +4376,7 @@ class MainWindow(QMainWindow):
     ) -> None:
         del pipeline_revision
         path = Path(path_text)
-        key = str(path.resolve()).casefold()
+        key = _path_identity(path)
         self._active_tasks.pop(key, None)
         self._discard_analysis_cache(key)
         if self.image_view.image_path == path:
@@ -2822,8 +4417,15 @@ class MainWindow(QMainWindow):
         self._start_pending_analysis()
 
     def _show_analysis_result(self, result) -> None:
+        path = result.image_path
+        key = _path_identity(path) if path is not None else ""
         self._sync_directional_overlay_choices(result)
         self.image_view.show_analysis(result, render=False)
+        pending_reference_affected = (
+            self._resolve_pending_project_reference_bundle(key, result)
+            if key
+            else set()
+        )
         self.pipeline_inspector.set_analysis_result(result)
         brush_radius = max(
             2,
@@ -2840,8 +4442,6 @@ class MainWindow(QMainWindow):
         self.instance_brush_label.setText(f"{brush_radius} px")
         self.image_view.set_reference_brush_radius(brush_radius)
         self._sync_instance_tool_settings()
-        path = result.image_path
-        key = str(path.resolve()).casefold() if path is not None else ""
         self.image_view.set_reference_masks(
             self._draft_background_reference_masks.get(
                 key, self._applied_background_reference_masks.get(key)
@@ -2872,6 +4472,7 @@ class MainWindow(QMainWindow):
             copy=False,
             render=False,
         )
+        self._sync_manual_seed_centres_to_view(key, result, render=False)
         self.image_view.refresh_analysis()
         calibration = result.calibration
         card = calibration.colour_card
@@ -2952,6 +4553,9 @@ class MainWindow(QMainWindow):
         )
         self.warning_label.setText("\n".join(result.warnings))
         self._sync_background_controls()
+        self._sync_procedural_centres_controls()
+        if pending_reference_affected:
+            self._analyze_current_image(dirty_nodes=pending_reference_affected)
 
     def _sync_directional_overlay_choices(self, result) -> None:
         selected = str(self.overlay_combo.currentData() or "")
@@ -2989,7 +4593,7 @@ class MainWindow(QMainWindow):
         path = self.image_view.image_path
         if path is None:
             return None
-        return str(path.resolve()).casefold()
+        return _path_identity(path)
 
     def _reference_group_state(
         self, key: str, context: str
@@ -3262,40 +4866,408 @@ class MainWindow(QMainWindow):
         self._sync_background_controls()
         self.statusBar().showMessage(f"Undid {result.label}.")
 
+    def _default_manual_seed_centre_state(self) -> _ManualSeedCentreState:
+        return _ManualSeedCentreState(np.empty((0, 2), np.float64), "augment")
+
+    def _manual_seed_centre_state(self, key: str) -> _ManualSeedCentreState:
+        return self._manual_seed_centre_states.get(
+            key, self._default_manual_seed_centre_state()
+        )
+
+    def _auto_load_manual_seed_centres(
+        self,
+        path: Path,
+        *,
+        archive_path: Path | None = None,
+        quiet: bool = False,
+    ) -> bool:
+        """Restore compact source-coordinate marker edits for an unchanged image."""
+
+        key = _path_identity(path)
+        try:
+            source_shape = read_source_raster_shape(path)
+            stored = (
+                self._manual_seed_centre_store.load_project_archive(
+                    path, archive_path, source_shape
+                )
+                if archive_path is not None
+                else self._manual_seed_centre_store.load_if_present(
+                    path, source_shape
+                )
+            )
+        except (
+            InvalidManualSeedCentreArchive,
+            ManualSeedCentreFingerprintMismatch,
+            ManualSeedCentreStoreError,
+            OSError,
+        ) as error:
+            self._withheld_manual_centre_sidecars.add(key)
+            if self._project_manifest_sidecar_policy_active and archive_path is not None:
+                self._project_unresolved_manual_centre_sidecars.add(key)
+            if not quiet:
+                QMessageBox.warning(
+                    self,
+                    "Saved manual seed centres not loaded",
+                    "Seed Fiddle could not safely load the saved manual seed centres. "
+                    "No point edits were installed, and the sidecar was left unchanged."
+                    f"\n\n{error}\n\n{self._manual_seed_centre_store.path_for(path)}",
+                )
+            return False
+        if stored is None:
+            if self._project_manifest_sidecar_policy_active:
+                self._withheld_manual_centre_sidecars.add(key)
+                if archive_path is not None:
+                    self._project_unresolved_manual_centre_sidecars.add(key)
+            return False
+        self._manual_seed_centre_states[key] = _ManualSeedCentreState(
+            stored.centres_xy, stored.mode
+        )
+        self._unsaved_manual_centre_sidecars.discard(key)
+        self._withheld_manual_centre_sidecars.discard(key)
+        self._project_unresolved_manual_centre_sidecars.discard(key)
+        self._manual_seed_centre_histories.pop(key, None)
+        return True
+
+    @staticmethod
+    def _project_manual_seed_centres(
+        centres_xy: np.ndarray, matrix: np.ndarray
+    ) -> np.ndarray:
+        values = np.asarray(centres_xy, dtype=np.float64).reshape(-1, 2)
+        if not len(values):
+            return values.copy()
+        transform = np.asarray(matrix, dtype=np.float64)
+        if (
+            transform.shape != (3, 3)
+            or not np.all(np.isfinite(transform))
+            or abs(float(np.linalg.det(transform))) < 1e-12
+        ):
+            raise ValueError("The source/corrected calibration transform is invalid.")
+        homogeneous = np.column_stack(
+            (values, np.ones(len(values), dtype=np.float64))
+        )
+        projected = homogeneous @ transform.T
+        denominator = projected[:, 2]
+        if np.any(np.abs(denominator) < 1e-12):
+            raise ValueError("A manual centre cannot be projected through calibration.")
+        result = projected[:, :2] / denominator[:, None]
+        if not np.all(np.isfinite(result)):
+            raise ValueError("A manual centre projects to an invalid coordinate.")
+        return result
+
+    def _manual_seed_centres_in_corrected_coordinates(
+        self, key: str, result
+    ) -> np.ndarray:
+        state = self._manual_seed_centre_state(key)
+        return self._project_manual_seed_centres(
+            state.centres_source_xy, result.calibration.affine_matrix
+        )
+
+    def _manual_seed_centres_in_source_coordinates(
+        self, corrected_xy: np.ndarray, result
+    ) -> np.ndarray:
+        try:
+            inverse = np.linalg.inv(
+                np.asarray(result.calibration.affine_matrix, dtype=np.float64)
+            )
+        except np.linalg.LinAlgError as error:
+            raise ValueError(
+                "The current calibration cannot map centres back to the source image."
+            ) from error
+        source = self._project_manual_seed_centres(corrected_xy, inverse)
+        path = self.image_view.image_path
+        if path is None:
+            raise ValueError("No source image is open.")
+        height, width = read_source_raster_shape(path)
+        tolerance = 1e-4
+        if len(source) and (
+            np.any(source[:, 0] < -tolerance)
+            or np.any(source[:, 0] > width - 1.0 + tolerance)
+            or np.any(source[:, 1] < -tolerance)
+            or np.any(source[:, 1] > height - 1.0 + tolerance)
+        ):
+            raise ValueError(
+                "That point lies in calibration padding outside the source photograph."
+            )
+        if len(source):
+            source[:, 0] = np.clip(source[:, 0], 0.0, width - 1.0)
+            source[:, 1] = np.clip(source[:, 1], 0.0, height - 1.0)
+        return source
+
+    def _sync_manual_seed_centres_to_view(
+        self, key: str, result=None, *, render: bool = False
+    ) -> None:
+        state = self._manual_seed_centre_state(key)
+        if result is None:
+            result = self._analyses.get(key)
+        corrected = (
+            np.empty((0, 2), np.float64)
+            if result is None
+            else self._manual_seed_centres_in_corrected_coordinates(key, result)
+        )
+        self.image_view.set_manual_seed_centres(
+            corrected, mode=state.mode, render=render
+        )
+
+    def _persist_manual_seed_centres(
+        self, key: str, state: _ManualSeedCentreState
+    ) -> Path | None:
+        path = self.image_view.image_path
+        if path is None or _path_identity(path) != key:
+            return None
+        try:
+            destination = self._manual_seed_centre_store.save(
+                path,
+                state.centres_source_xy,
+                mode=state.mode,
+                source_shape=read_source_raster_shape(path),
+            )
+        except (ManualSeedCentreStoreError, OSError) as error:
+            self._unsaved_manual_centre_sidecars.add(key)
+            self._set_project_dirty()
+            QMessageBox.critical(
+                self,
+                "Automatic manual-centre save failed",
+                "The centre edit remains active in this session, but the compact "
+                "sidecar could not be saved. No existing sidecar was replaced."
+                f"\n\n{error}",
+            )
+            return None
+        self._manual_seed_centre_autoload_attempted.add(key)
+        self._unsaved_manual_centre_sidecars.discard(key)
+        self._withheld_manual_centre_sidecars.discard(key)
+        self._project_unresolved_manual_centre_sidecars.discard(key)
+        self._project_manual_centre_loads.add(key)
+        self._project_manual_centre_sidecar_paths[key] = (
+            self._manual_seed_centre_store.path_for(path)
+        )
+        return destination
+
+    @Slot(object, str, str)
+    def _manual_seed_centres_edited(
+        self, corrected_xy: object, mode: str, label: str
+    ) -> None:
+        key = self._current_image_key()
+        result = None if key is None else self._analyses.get(key)
+        if key is None or result is None:
+            self.statusBar().showMessage(
+                "Run procedural inference before editing seed centres."
+            )
+            return
+        try:
+            source_xy = self._manual_seed_centres_in_source_coordinates(
+                np.asarray(corrected_xy, dtype=np.float64), result
+            )
+        except (OSError, ValueError) as error:
+            self.statusBar().showMessage(str(error))
+            self._sync_manual_seed_centres_to_view(key, result, render=True)
+            return
+        self._apply_manual_seed_centre_state(
+            key,
+            _ManualSeedCentreState(source_xy, mode),
+            label=label,
+            record_undo=True,
+        )
+
+    def _apply_manual_seed_centre_state(
+        self,
+        key: str,
+        state: _ManualSeedCentreState,
+        *,
+        label: str,
+        record_undo: bool,
+    ) -> None:
+        previous = self._manual_seed_centre_state(key)
+        if previous.mode == state.mode and np.array_equal(
+            previous.centres_source_xy, state.centres_source_xy
+        ):
+            self._sync_procedural_centres_controls()
+            return
+        if record_undo:
+            history = self._manual_seed_centre_histories.setdefault(key, [])
+            history.append(previous)
+            if len(history) > self.REFERENCE_UNDO_LIMIT:
+                del history[: len(history) - self.REFERENCE_UNDO_LIMIT]
+        self._manual_seed_centre_states[key] = state
+        result = self._analyses.get(key)
+        if result is not None and key == self._current_image_key():
+            self._sync_manual_seed_centres_to_view(key, result, render=True)
+        destination = self._persist_manual_seed_centres(key, state)
+        self._set_project_dirty()
+        affected = {
+            "manual_seed_centres",
+            *self.pipeline.downstream("manual_seed_centres", recursive=True),
+        }
+        # Manual centres are a typed graph input even though their per-image
+        # payload lives outside node parameters. Supersede any in-flight task
+        # exactly once so a pre-edit result cannot be accepted as current.
+        self.pipeline.revision += 1
+        self.pipeline.invalidate(affected)
+        self.pipeline.set_status(
+            "manual_seed_centres",
+            NodeStatus.COMPLETE,
+            f"{len(state.centres_source_xy):,} point(s); "
+            + (
+                "augmenting automatic markers"
+                if state.mode == "augment"
+                else "replacing automatic markers"
+            ),
+        )
+        if self.pipeline.is_active("procedural_instances"):
+            self.pipeline.set_status(
+                "procedural_instances", NodeStatus.WARNING, "Manual centres changed; updating"
+            )
+        self.pipeline_canvas.refresh(affected)
+        self.pipeline_inspector.refresh_status()
+        self._cache_dirty_nodes.setdefault(key, set()).update(
+            affected - {"manual_seed_centres"}
+        )
+        self._analyses.pop(key, None)
+        self._sync_procedural_centres_controls()
+        self._analyze_current_image(dirty_nodes=affected)
+        self.statusBar().showMessage(
+            label.capitalize()
+            + (
+                "; autosaved source-coordinate centres and recomputing."
+                if destination is not None
+                else "; recomputing, but automatic save failed."
+            )
+        )
+
+    @Slot()
+    def _undo_manual_seed_centres(self) -> None:
+        key = self._current_image_key()
+        history = None if key is None else self._manual_seed_centre_histories.get(key)
+        if key is None or not history:
+            return
+        state = history.pop()
+        if not history:
+            self._manual_seed_centre_histories.pop(key, None)
+        self._apply_manual_seed_centre_state(
+            key, state, label="undid manual seed-centre edit", record_undo=False
+        )
+
+    @Slot()
+    def _reset_manual_seed_centres(self) -> None:
+        key = self._current_image_key()
+        if key is None:
+            return
+        self._apply_manual_seed_centre_state(
+            key,
+            self._default_manual_seed_centre_state(),
+            label="reset seed centres to automatic",
+            record_undo=True,
+        )
+
+    def _resolve_pending_project_reference_bundle(self, key: str, result) -> set[str]:
+        """Install a source-bound archive only after calibration fixes its shape."""
+
+        bundle = self._pending_unbound_reference_bundles.pop(key, None)
+        if bundle is None:
+            return set()
+        corrected_shape = tuple(
+            int(value) for value in result.calibration.corrected_bgr.shape[:2]
+        )
+        if tuple(bundle.shape) != corrected_shape:
+            self._withheld_reference_sidecars.add(key)
+            self._project_unresolved_reference_sidecars.add(key)
+            self._set_project_dirty()
+            path = self._image_paths.get(key, result.image_path)
+            QMessageBox.warning(
+                self,
+                "Saved reference regions withheld",
+                "The project sidecar is bound to the unchanged source image, but "
+                "its corrected-coordinate dimensions do not match the current "
+                "calibration. No saved regions were applied. Save newly applied "
+                "references to replace it for the current calibration.\n\n"
+                f"Saved: {bundle.shape[1]:,} × {bundle.shape[0]:,} px\n"
+                f"Current: {corrected_shape[1]:,} × {corrected_shape[0]:,} px\n\n"
+                f"Image: {path}",
+            )
+            return set()
+
+        self._install_reference_region_bundle(key, bundle, sync_view=False)
+        self._reference_layer_shapes[key] = corrected_shape
+        self._withheld_reference_sidecars.discard(key)
+        self._project_unresolved_reference_sidecars.discard(key)
+        self._unsaved_reference_sidecars.discard(key)
+        affected = {
+            "reference_layers",
+            *self.pipeline.downstream("reference_layers", recursive=True),
+        }
+        self.pipeline.invalidate(affected)
+        self._cache_dirty_nodes.setdefault(key, set()).update(
+            affected - {"reference_layers"}
+        )
+        self._analyses.pop(key, None)
+        return affected
+
     def _auto_load_reference_regions(
-        self, path: Path, image_shape: tuple[int, int]
+        self,
+        path: Path,
+        image_shape: tuple[int, int] | None,
+        *,
+        archive_path: Path | None = None,
     ) -> bool:
         """Restore an all-or-nothing applied snapshot for an unchanged image."""
 
+        key = _path_identity(path)
         try:
-            bundle = self._reference_region_store.load_if_present(path, image_shape)
-        except ImageFingerprintMismatch as error:
-            QMessageBox.warning(
-                self,
-                "Saved reference regions not loaded",
-                f"Saved reference regions exist for {path.name}, but the image "
-                "contents have changed since they were saved. Seed Fiddle did not "
-                "load any of those regions.\n\n"
-                f"Saved SHA-256: {error.expected_sha256}\n"
-                f"Current SHA-256: {error.actual_sha256}\n\n"
-                f"The saved archive was left unchanged at:\n{error.archive_path}",
+            bundle = (
+                self._reference_region_store.load_project_archive(
+                    path, archive_path, image_shape
+                )
+                if archive_path is not None
+                else self._reference_region_store.load_if_present(path, image_shape)
             )
+        except ImageFingerprintMismatch as error:
+            self._withheld_reference_sidecars.add(key)
+            if self._project_manifest_sidecar_policy_active and archive_path is not None:
+                self._project_unresolved_reference_sidecars.add(key)
+            if not self._project_manifest_sidecar_policy_active:
+                QMessageBox.warning(
+                    self,
+                    "Saved reference regions not loaded",
+                    f"Saved reference regions exist for {path.name}, but the image "
+                    "contents have changed since they were saved. Seed Fiddle did not "
+                    "load any of those regions.\n\n"
+                    f"Saved SHA-256: {error.expected_sha256}\n"
+                    f"Current SHA-256: {error.actual_sha256}\n\n"
+                    f"The saved archive was left unchanged at:\n{error.archive_path}",
+                )
             return False
         except (InvalidReferenceArchive, ReferenceRegionError, OSError) as error:
-            QMessageBox.warning(
-                self,
-                "Saved reference regions not loaded",
-                f"Seed Fiddle could not safely load the saved reference regions "
-                f"for {path.name}. No saved regions were applied.\n\n{error}\n\n"
-                "The saved archive was left unchanged at:\n"
-                f"{self._reference_region_store.path_for(path)}",
-            )
+            self._withheld_reference_sidecars.add(key)
+            if self._project_manifest_sidecar_policy_active and archive_path is not None:
+                self._project_unresolved_reference_sidecars.add(key)
+            if not self._project_manifest_sidecar_policy_active:
+                QMessageBox.warning(
+                    self,
+                    "Saved reference regions not loaded",
+                    f"Seed Fiddle could not safely load the saved reference regions "
+                    f"for {path.name}. No saved regions were applied.\n\n{error}\n\n"
+                    "The saved archive was left unchanged at:\n"
+                    f"{self._reference_region_store.path_for(path)}",
+                )
             return False
         if bundle is None:
+            if self._project_manifest_sidecar_policy_active:
+                self._withheld_reference_sidecars.add(key)
+                if archive_path is not None:
+                    self._project_unresolved_reference_sidecars.add(key)
             return False
 
-        key = str(path.resolve()).casefold()
+        self._reference_layer_shapes[key] = tuple(
+            int(value) for value in bundle.shape
+        )
+        self._unsaved_reference_sidecars.discard(key)
+        if image_shape is None:
+            self._pending_unbound_reference_bundles[key] = bundle
+            return True
+
         self._install_reference_region_bundle(key, bundle)
+        self._withheld_reference_sidecars.discard(key)
+        self._project_unresolved_reference_sidecars.discard(key)
+        self._unsaved_reference_sidecars.discard(key)
         self._discard_analysis_cache(key)
         affected = {"reference_layers"}
         for port_id in (
@@ -3318,7 +5290,11 @@ class MainWindow(QMainWindow):
         return True
 
     def _install_reference_region_bundle(
-        self, key: str, bundle: ReferenceRegionBundle
+        self,
+        key: str,
+        bundle: ReferenceRegionBundle,
+        *,
+        sync_view: bool = True,
     ) -> None:
         """Commit one fully validated persistent snapshot to controller state."""
 
@@ -3384,12 +5360,13 @@ class MainWindow(QMainWindow):
             self._applied_instance_annotation_origins[key] = (
                 bundle.annotation_origin or "manual"
             )
-        self._sync_reference_masks_to_view(key, render=False)
-        self.image_view.set_instance_annotations(
-            self._applied_instance_annotations.get(key),
-            copy=False,
-            render=False,
-        )
+        if sync_view:
+            self._sync_reference_masks_to_view(key, render=False)
+            self.image_view.set_instance_annotations(
+                self._applied_instance_annotations.get(key),
+                copy=False,
+                render=False,
+            )
 
     @Slot()
     def _save_reference_regions(self) -> None:
@@ -3427,6 +5404,7 @@ class MainWindow(QMainWindow):
         if key is None or path is None or image_size is None:
             return None
         width, height = image_size
+        self._reference_layer_shapes[key] = (height, width)
         bundle = ReferenceRegionBundle(
             shape=(height, width),
             background=self._applied_background_reference_masks.get(key),
@@ -3444,6 +5422,8 @@ class MainWindow(QMainWindow):
         try:
             destination = self._reference_region_store.save(path, bundle)
         except (ReferenceRegionError, OSError) as error:
+            self._unsaved_reference_sidecars.add(key)
+            self._set_project_dirty()
             QMessageBox.critical(
                 self,
                 (
@@ -3462,6 +5442,14 @@ class MainWindow(QMainWindow):
             )
             return None
         self._reference_region_autoload_attempted.add(key)
+        self._unsaved_reference_sidecars.discard(key)
+        self._withheld_reference_sidecars.discard(key)
+        self._project_unresolved_reference_sidecars.discard(key)
+        self._pending_unbound_reference_bundles.pop(key, None)
+        self._project_unbound_reference_loads.add(key)
+        self._project_reference_sidecar_paths[key] = (
+            self._reference_region_store.path_for(path)
+        )
         return destination
 
     def _ensure_reference_draft(self, mask_kind: str) -> None:
@@ -3720,6 +5708,39 @@ class MainWindow(QMainWindow):
         )
         has_result = self.image_view._analysis_result is not None
         can_edit = enabled and has_result and not running
+        keep_perimeter_source = bool(
+            self.pipeline.node("background_likelihood").parameters.get(
+                "background_keep_perimeter_reference", True
+            )
+        )
+        with QSignalBlocker(
+            self.keep_perimeter_background_reference_checkbox
+        ):
+            self.keep_perimeter_background_reference_checkbox.setChecked(
+                keep_perimeter_source
+            )
+        self.keep_perimeter_background_reference_checkbox.setEnabled(
+            enabled and has_result and not running
+        )
+        self.image_view.set_automatic_background_reference_visible(
+            keep_perimeter_source
+        )
+        include_annotated_instances = bool(
+            self.pipeline.node("foreground_segmentation").parameters.get(
+                "foreground_include_annotated_seed_instances", False
+            )
+        )
+        with QSignalBlocker(
+            self.include_seed_instances_as_foreground_checkbox
+        ):
+            self.include_seed_instances_as_foreground_checkbox.setChecked(
+                include_annotated_instances
+            )
+        self.include_seed_instances_as_foreground_checkbox.setEnabled(
+            self.pipeline.node("foreground_segmentation").enabled
+            and has_result
+            and not running
+        )
         self.background_point_button.setEnabled(can_edit)
         self.foreground_point_button.setEnabled(has_result and not running)
         self.background_exclusion_button.setEnabled(has_result and not running)
@@ -3984,6 +6005,25 @@ class MainWindow(QMainWindow):
     @Slot(bool)
     def _background_enabled_toggled(self, enabled: bool) -> None:
         self._pipeline_enabled_changed("background_likelihood", enabled)
+
+    @Slot(bool)
+    def _keep_perimeter_background_reference_toggled(self, keep: bool) -> None:
+        self.image_view.set_automatic_background_reference_visible(keep)
+        self._pipeline_parameter_changed(
+            "background_likelihood",
+            "background_keep_perimeter_reference",
+            bool(keep),
+        )
+
+    @Slot(bool)
+    def _include_seed_instances_as_foreground_toggled(
+        self, include: bool
+    ) -> None:
+        self._pipeline_parameter_changed(
+            "foreground_segmentation",
+            "foreground_include_annotated_seed_instances",
+            bool(include),
+        )
 
     @Slot(bool)
     def _background_toolbar_editing_changed(self, enabled: bool) -> None:
@@ -4904,6 +6944,7 @@ class MainWindow(QMainWindow):
         autosave_destination = self._persist_applied_reference_regions(
             automatic=True
         )
+        self._set_project_dirty()
         affected = {
             "reference_layers",
             "instance_masks",
@@ -5031,7 +7072,6 @@ class MainWindow(QMainWindow):
                 else "This sample remains unreviewed. Load and inspect its label mask, then export a reviewed revision before training."
             ),
         )
-
     @Slot()
     def _save_instance_labels(self) -> None:
         key = self._current_image_key()
@@ -5368,16 +7408,138 @@ class MainWindow(QMainWindow):
     def _pipeline_node_action_requested(
         self, node_id: str, action_id: str, payload: object
     ) -> None:
-        if (
-            node_id == "procedural_instances"
-            and action_id == PipelineInspector.PROCEDURAL_FIT_ACTION
-        ):
+        if node_id != "procedural_instances":
+            return
+        if action_id == PipelineInspector.PROCEDURAL_FIT_ACTION:
             values = payload if isinstance(payload, dict) else {}
             self._start_procedural_fit(
                 float(values.get("false_positive_weight", 2.0)),
                 float(values.get("overreach_distance_scale_fraction", 0.50)),
                 bool(values.get("annotations_are_complete", False)),
             )
+        elif action_id == PipelineInspector.PROCEDURAL_CENTRES_EDIT_ACTION:
+            if bool(payload):
+                self._start_manual_seed_centre_editing()
+            else:
+                self._stop_manual_seed_centre_editing()
+        elif action_id == PipelineInspector.PROCEDURAL_CENTRES_MODE_ACTION:
+            self._change_manual_seed_centre_mode(str(payload))
+        elif action_id == PipelineInspector.PROCEDURAL_CENTRES_UNDO_ACTION:
+            self._undo_manual_seed_centres()
+        elif action_id == PipelineInspector.PROCEDURAL_CENTRES_RESET_ACTION:
+            self._reset_manual_seed_centres()
+
+    def _start_manual_seed_centre_editing(self) -> None:
+        key = self._current_image_key()
+        result = None if key is None else self._analyses.get(key)
+        if (
+            key is None
+            or result is None
+            or result.procedural_instances is None
+            or self._active_tasks
+            or self._learning_training_task is not None
+            or self._procedural_fit_task is not None
+        ):
+            self._sync_procedural_centres_controls()
+            return
+        self._stop_reference_point_editing()
+        overlay_index = self.overlay_combo.findData("procedural_centres")
+        if overlay_index >= 0:
+            self.overlay_combo.setCurrentIndex(overlay_index)
+        self._sync_manual_seed_centres_to_view(key, result, render=False)
+        self.image_view.set_manual_seed_centre_editing(True)
+        self._sync_procedural_centres_controls()
+        self.statusBar().showMessage(
+            "Editing procedural centres: click to add, drag to adjust, and "
+            "right-click or Delete to remove. Escape cancels or exits."
+        )
+
+    @Slot()
+    def _stop_manual_seed_centre_editing(self) -> None:
+        if hasattr(self, "image_view"):
+            self.image_view.cancel_manual_seed_centre_drag()
+            self.image_view.set_manual_seed_centre_editing(False)
+        if hasattr(self, "pipeline_inspector"):
+            self._sync_procedural_centres_controls()
+
+    def _change_manual_seed_centre_mode(self, mode: str) -> None:
+        if mode not in {"augment", "replace_automatic"}:
+            return
+        key = self._current_image_key()
+        result = None if key is None else self._analyses.get(key)
+        if key is None or result is None or result.procedural_instances is None:
+            self._sync_procedural_centres_controls()
+            return
+        current = self._manual_seed_centre_state(key)
+        if current.mode == mode:
+            return
+        if mode == "replace_automatic":
+            corrected = self.image_view.editable_procedural_marker_centres()
+            label = "switched to Replace automatic using surviving centres"
+        else:
+            corrected = self._manual_seed_centres_in_corrected_coordinates(
+                key, result
+            )
+            label = "switched to Augment automatic"
+        self._manual_seed_centres_edited(corrected, mode, label)
+
+    def _sync_procedural_centres_controls(self) -> None:
+        if not hasattr(self, "pipeline_inspector"):
+            return
+        key = self._current_image_key()
+        state = (
+            self._default_manual_seed_centre_state()
+            if key is None
+            else self._manual_seed_centre_state(key)
+        )
+        result = None if key is None else self._analyses.get(key)
+        procedural = (
+            None if result is None else getattr(result, "procedural_instances", None)
+        )
+        running = bool(
+            self._active_tasks
+            or self._learning_training_task is not None
+            or self._procedural_fit_task is not None
+        )
+        can_edit = bool(
+            key is not None
+            and procedural is not None
+            and self.pipeline.is_active("procedural_instances")
+            and self.pipeline.node("procedural_instances").enabled
+            and not running
+        )
+        if not can_edit and self.image_view.manual_seed_centre_editing:
+            self.image_view.set_manual_seed_centre_editing(False)
+        rejected_count = (
+            0
+            if procedural is None
+            else len(procedural.rejected_manual_centres_xy)
+        )
+        if running:
+            status = "Centre editing is paused while analysis is running."
+        elif procedural is None:
+            status = "Run procedural inference to inspect and edit its actual markers."
+        elif state.mode == "augment":
+            status = (
+                f"{len(state.centres_source_xy):,} manual override(s); automatic "
+                "markers remain enabled."
+            )
+        else:
+            status = (
+                f"{len(state.centres_source_xy):,} replacement marker(s); automatic "
+                "marker discovery is disabled."
+            )
+        self.pipeline_inspector.set_procedural_centres_state(
+            mode=state.mode,
+            count=len(state.centres_source_xy),
+            editing=self.image_view.manual_seed_centre_editing,
+            can_edit=can_edit,
+            can_undo=bool(
+                key is not None and self._manual_seed_centre_histories.get(key)
+            ),
+            status=status,
+            rejected_count=rejected_count,
+        )
 
     def _sync_procedural_fit_controls(self) -> None:
         """Explain whether the current image supplies safe fitting targets."""
@@ -5672,6 +7834,7 @@ class MainWindow(QMainWindow):
         affected = set(
             self.pipeline.set_parameters("procedural_instances", changes)
         )
+        self._set_project_dirty()
         for image_key in set(self._analysis_caches) | set(self._analyses):
             self._cache_dirty_nodes.setdefault(image_key, set()).update(affected)
             self._analyses.pop(image_key, None)
@@ -5765,6 +7928,7 @@ class MainWindow(QMainWindow):
         autosave_destination = self._persist_applied_reference_regions(
             automatic=True
         )
+        self._set_project_dirty()
         material_changed = bool(
             dirty_classes
             & {"background", "foreground", "other", "background_exclusion", "foreground_exclusion"}
@@ -5887,6 +8051,8 @@ class MainWindow(QMainWindow):
     def _overlay_changed(self, index: int) -> None:
         del index
         mode = str(self.overlay_combo.currentData())
+        if not self._installing_project:
+            self._set_project_dirty()
         self._sync_overlay_display_controls(mode)
         self.image_view.set_overlay_mode(mode)
         self._update_overlay_legend(mode)
@@ -6072,7 +8238,10 @@ class MainWindow(QMainWindow):
                 "Colour-based likelihood: dark = high tray/dish background "
                 "match; light = low match. The translucent cyan annulus is the "
                 "outer-rim band sampled for the initial colour estimate; orange "
-                "indicates the inside-rim fallback when too little outer band was visible."
+                "indicates the inside-rim fallback when too little outer band was "
+                "visible. While Background painting is active and the automatic "
+                "source is kept, cyan also marks every retained perimeter-matching "
+                "in-dish source pixel; manually painted references remain green."
             ),
             "other_colour_probability": (
                 "Other-colour probability learned from painted Other references: black = "
@@ -6731,7 +8900,7 @@ class MainWindow(QMainWindow):
         self.pipeline.set_status(
             "metadata", NodeStatus.COMPLETE, self.species_combo.currentText()
         )
-        key = str(path.resolve()).casefold()
+        key = _path_identity(path)
         reference_counts = (
             self._mask_pixel_count(
                 self._applied_background_reference_masks.get(key)
@@ -6756,6 +8925,17 @@ class MainWindow(QMainWindow):
                 f"seeds {reference_counts[4]:,}"
                 if any(reference_counts)
                 else "No applied references"
+            ),
+        )
+        manual_state = self._manual_seed_centre_state(key)
+        self.pipeline.set_status(
+            "manual_seed_centres",
+            NodeStatus.COMPLETE,
+            f"{len(manual_state.centres_source_xy):,} point(s); "
+            + (
+                "augment"
+                if manual_state.mode == "augment"
+                else "replace automatic"
             ),
         )
         for node_id in (*CALIBRATION_NODE_IDS, "layout_detection"):
@@ -6833,6 +9013,7 @@ class MainWindow(QMainWindow):
     def _set_analysis_running(
         self, path: Path, dirty_nodes: frozenset[str] = frozenset()
     ) -> None:
+        self._stop_manual_seed_centre_editing()
         details = {
             "colour_reference": "Detecting the 4×6 swatch grid",
             "ruler_detection": "Locating 0 and terminal scale dashes",
@@ -6904,7 +9085,12 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _pipeline_node_selected(self, node_id: str) -> None:
+        selection_changed = node_id != self._selected_pipeline_node
+        if node_id != "procedural_instances" and self.image_view.manual_seed_centre_editing:
+            self._stop_manual_seed_centre_editing()
         self._selected_pipeline_node = node_id
+        if selection_changed and not self._installing_project:
+            self._set_project_dirty()
         self.pipeline_inspector.set_node(self.pipeline.node(node_id))
         # Selected-node controls live at the top of the panel, so reset from
         # whichever summary section the user had previously been viewing.
@@ -6923,6 +9109,7 @@ class MainWindow(QMainWindow):
                 finally:
                     self._selecting_overlay_from_node = False
         self._sync_inspector_overlay_options()
+        self._sync_procedural_centres_controls()
 
     @Slot(str)
     def _pipeline_unused_node_restored(self, node_id: str) -> None:
@@ -6935,6 +9122,7 @@ class MainWindow(QMainWindow):
             self.overlay_combo.setCurrentIndex(overlay_index)
         self.pipeline_inspector.set_node(self.pipeline.node(node_id))
         self._sync_inspector_overlay_options()
+        self._set_project_dirty()
         self.statusBar().showMessage(
             f"Restored {self.pipeline.node(node_id).title} to the graph; "
             "it remains disabled until explicitly enabled."
@@ -6958,6 +9146,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"Moved {self.pipeline.node(node_id).title} to Unused nodes."
         )
+        self._set_project_dirty()
 
     @Slot(str, str, object)
     def _pipeline_parameter_changed(self, node_id: str, key: str, value) -> None:
@@ -6976,8 +9165,35 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Invalid pipeline parameter", str(error))
             self.pipeline_inspector.set_node(self.pipeline.node(node_id))
             return
+        if (
+            node_id == "background_likelihood"
+            and key == "background_keep_perimeter_reference"
+            and hasattr(self, "keep_perimeter_background_reference_checkbox")
+        ):
+            keep_perimeter_source = bool(value)
+            with QSignalBlocker(
+                self.keep_perimeter_background_reference_checkbox
+            ):
+                self.keep_perimeter_background_reference_checkbox.setChecked(
+                    keep_perimeter_source
+                )
+            self.image_view.set_automatic_background_reference_visible(
+                keep_perimeter_source
+            )
+        if (
+            node_id == "foreground_segmentation"
+            and key == "foreground_include_annotated_seed_instances"
+            and hasattr(self, "include_seed_instances_as_foreground_checkbox")
+        ):
+            with QSignalBlocker(
+                self.include_seed_instances_as_foreground_checkbox
+            ):
+                self.include_seed_instances_as_foreground_checkbox.setChecked(
+                    bool(value)
+                )
         if not affected:
             return
+        self._set_project_dirty()
         if parameter_spec is not None and parameter_spec.display_only:
             self._refresh_display_only_analysis_parameter(node_id, key)
             return
@@ -7023,6 +9239,7 @@ class MainWindow(QMainWindow):
                 f"{self.pipeline.node(node_id).title} already uses its defaults."
             )
             return
+        self._set_project_dirty()
         if display_only_reset:
             for key in changed_keys:
                 self._refresh_display_only_analysis_parameter(node_id, key)
@@ -7175,6 +9392,7 @@ class MainWindow(QMainWindow):
         affected_set = set(affected)
         if not affected_set:
             return
+        self._set_project_dirty()
         for image_key in set(self._analysis_caches) | set(self._analyses):
             self._cache_dirty_nodes.setdefault(image_key, set()).update(
                 affected_set
@@ -7228,6 +9446,7 @@ class MainWindow(QMainWindow):
             return
         if not affected:
             return
+        self._set_project_dirty()
         affected_set = set(affected)
         for image_key in set(self._analysis_caches) | set(self._analyses):
             self._cache_dirty_nodes.setdefault(image_key, set()).update(
@@ -7272,6 +9491,7 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _species_changed(self, species: str) -> None:
+        self._set_project_dirty()
         if self.image_view.image_path is None:
             return
         self.pipeline.set_status("metadata", NodeStatus.COMPLETE, species)
@@ -7305,6 +9525,15 @@ class MainWindow(QMainWindow):
         self.analyze_action.setEnabled(available)
         if hasattr(self, "train_learning_model_action"):
             self.train_learning_model_action.setEnabled(not running)
+        if hasattr(self, "load_analysis_settings_action"):
+            self.load_analysis_settings_action.setEnabled(not running)
+            self.save_analysis_settings_action.setEnabled(not running)
+        if hasattr(self, "open_project_action"):
+            self.new_project_action.setEnabled(not running)
+            self.open_project_action.setEnabled(not running)
+            self.save_project_action.setEnabled(not running)
+            self.save_project_as_action.setEnabled(not running)
+        self._sync_procedural_centres_controls()
 
     def _show_pipeline_workspace(self) -> None:
         self.pipeline_canvas.show()
@@ -7342,6 +9571,52 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt override
         """Finish the sole GPU job and deterministically release owned caches."""
+
+        if self._project_tracking_enabled:
+            has_unsaved_state = bool(
+                self._project_dirty or self._unapplied_project_draft_keys()
+            )
+            if has_unsaved_state and self._background_work_is_active():
+                QMessageBox.information(
+                    self,
+                    "Project work is still running",
+                    "Wait for the current analysis, training, or parameter fit to "
+                    "finish before closing a modified project.",
+                )
+                event.ignore()
+                return
+            if not self._resolve_unapplied_project_drafts(recompute=False):
+                event.ignore()
+                return
+            if self._project_dirty:
+                answer = QMessageBox.warning(
+                    self,
+                    "Save changes before closing?",
+                    "The project master has unsaved changes. Save them before "
+                    "closing Seed Fiddle?",
+                    QMessageBox.StandardButton.Save
+                    | QMessageBox.StandardButton.Discard
+                    | QMessageBox.StandardButton.Cancel,
+                    QMessageBox.StandardButton.Cancel,
+                )
+                if answer == QMessageBox.StandardButton.Cancel:
+                    event.ignore()
+                    return
+                if answer == QMessageBox.StandardButton.Save:
+                    saved = (
+                        self._write_project(self._current_project_path)
+                        if self._current_project_path is not None
+                        else self._save_project_as(drafts_resolved=True)
+                    )
+                    if not saved:
+                        event.ignore()
+                        return
+                if answer not in {
+                    QMessageBox.StandardButton.Save,
+                    QMessageBox.StandardButton.Discard,
+                }:
+                    event.ignore()
+                    return
 
         self._pending_analysis_key = None
         if self._learning_training_task is not None:

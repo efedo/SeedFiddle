@@ -12,7 +12,12 @@ from seedvision.segmentation.baseline import (
 from seedvision.calibration import CalibrationSettings, DishDetectionSettings
 from seedvision.visualization import AdvancedAnalysisSettings, AnalysisLayerSettings
 from seedvision.segmentation.procedural import (
+    MANUAL_CENTRE_SUPPRESSION_DIAMETER_FRACTION,
+    ManualSeedCentreMode,
+    ManualSeedCentreSpace,
+    ManualSeedCentres,
     PreparedProceduralInstanceInputs,
+    ProceduralMarkerSource,
     ProceduralInstanceResult,
     ProceduralInstanceSettings,
     prepare_procedural_instance_inputs,
@@ -37,7 +42,12 @@ __all__ = [
     "CalibrationSettings",
     "DishDetectionSettings",
     "PipelineAnalysisCache",
+    "MANUAL_CENTRE_SUPPRESSION_DIAMETER_FRACTION",
+    "ManualSeedCentreMode",
+    "ManualSeedCentreSpace",
+    "ManualSeedCentres",
     "PreparedProceduralInstanceInputs",
+    "ProceduralMarkerSource",
     "ProceduralInstanceResult",
     "ProceduralInstanceSettings",
     "DEFAULT_PROCEDURAL_FIT_PARAMETERS",

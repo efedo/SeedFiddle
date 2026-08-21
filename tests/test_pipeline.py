@@ -15,8 +15,8 @@ class PipelineModelTests(unittest.TestCase):
         order = graph.topological_order()
         self.assertEqual(order[0], "raw_images")
         self.assertEqual(set(order), set(graph.nodes))
-        self.assertEqual(len(graph.nodes), 33)
-        self.assertEqual(len(graph.connections), 151)
+        self.assertEqual(len(graph.nodes), 34)
+        self.assertEqual(len(graph.connections), 157)
         self.assertEqual(
             graph.upstream("perimeter_background_reference"),
             ("deskew_colour", "layout_detection", "scale_calibration"),
@@ -25,6 +25,56 @@ class PipelineModelTests(unittest.TestCase):
             graph.downstream("perimeter_background_reference"),
             ("background_likelihood", "refined_background_likelihood"),
         )
+        automatic_source = graph.connection_for_input(
+            "reference_texture_prototypes", "automatic_background_reference"
+        )
+        self.assertIsNotNone(automatic_source)
+        self.assertEqual(
+            (automatic_source.source, automatic_source.source_port),
+            ("background_likelihood", "background_reference_source"),
+        )
+        annotation_exclusion = graph.connection_for_input(
+            "background_likelihood", "annotations"
+        )
+        self.assertIsNotNone(annotation_exclusion)
+        self.assertEqual(
+            (annotation_exclusion.source, annotation_exclusion.source_port),
+            ("reference_layers", "annotated_seeds"),
+        )
+        annotation_foreground = graph.connection_for_input(
+            "foreground_segmentation", "annotations"
+        )
+        self.assertIsNotNone(annotation_foreground)
+        self.assertEqual(
+            (annotation_foreground.source, annotation_foreground.source_port),
+            ("reference_layers", "annotated_seeds"),
+        )
+        for consumer in (
+            "foreground_noise_likelihood",
+            "reference_texture_prototypes",
+        ):
+            automatic_foreground = graph.connection_for_input(
+                consumer, "automatic_foreground_reference"
+            )
+            self.assertIsNotNone(automatic_foreground)
+            self.assertEqual(
+                (
+                    automatic_foreground.source,
+                    automatic_foreground.source_port,
+                ),
+                (
+                    "foreground_segmentation",
+                    "annotated_foreground_reference_source",
+                ),
+            )
+        centre_edits = graph.connection_for_input(
+            "procedural_instances", "manual_centres"
+        )
+        self.assertIsNotNone(centre_edits)
+        self.assertEqual(
+            (centre_edits.source, centre_edits.source_port),
+            ("manual_seed_centres", "centres"),
+        )
         for connection in graph.connections:
             self.assertLess(graph.node(connection.source).x, graph.node(connection.target).x)
 
@@ -32,7 +82,7 @@ class PipelineModelTests(unittest.TestCase):
         graph = build_default_pipeline()
         all_nodes = {**graph.nodes, **graph.unused_nodes}
         all_connections = (*graph.connections, *graph.unused_connections)
-        self.assertEqual(len(graph.connection_templates), 243)
+        self.assertEqual(len(graph.connection_templates), 249)
         self.assertTrue(all(node.output_ports for node in all_nodes.values()))
         self.assertEqual(
             len(all_connections),
@@ -75,6 +125,7 @@ class PipelineModelTests(unittest.TestCase):
             "raw_images": set(),
             "metadata": {"raw_images"},
             "reference_layers": set(),
+            "manual_seed_centres": set(),
             "colour_reference": {"metadata"},
             "deskew_colour": {"metadata", "colour_reference"},
             "ruler_detection": {"deskew_colour"},
@@ -114,6 +165,8 @@ class PipelineModelTests(unittest.TestCase):
             "directed_edges": {"edge_gradients"},
             "edge_ridges": {"edge_gradients"},
             "reference_texture_prototypes": {
+                "background_likelihood",
+                "foreground_segmentation",
                 "deskew_colour", "layout_detection", "seed_scale_estimation",
                 "reference_layers", "edge_gradients", "edge_ridges",
                 "frequency_noise_masks",
@@ -191,6 +244,7 @@ class PipelineModelTests(unittest.TestCase):
                 "edge_gradients", "edge_ridges", "reference_edge_probability",
                 "reference_edge_ridges", "edge_traces",
                 "reference_texture_prototypes", "reference_layers",
+                "manual_seed_centres",
             },
             "unet_instances": {
                 "metadata", "deskew_colour", "layout_detection",
@@ -558,6 +612,7 @@ class PipelineModelTests(unittest.TestCase):
                 "edge_traces",
                 "reference_texture_prototypes",
                 "reference_layers",
+                "manual_seed_centres",
             ),
         )
         graph.set_status("procedural_instances", NodeStatus.COMPLETE, "Calculated")
@@ -830,6 +885,8 @@ class PipelineModelTests(unittest.TestCase):
         self.assertEqual(
             consumers_by_port["annotated_seeds"],
             {
+                "background_likelihood",
+                "foreground_segmentation",
                 "instance_masks",
                 "procedural_instances",
                 "reference_texture_prototypes",
@@ -1124,6 +1181,7 @@ class BaselineSettingsTests(unittest.TestCase):
         from seedvision.segmentation import (
             AdvancedAnalysisSettings,
             AnalysisLayerSettings,
+            BaselineSettings,
             DishDetectionSettings,
         )
 
@@ -1146,6 +1204,17 @@ class BaselineSettingsTests(unittest.TestCase):
         self.assertEqual(
             AnalysisLayerSettings().foreground_noise_direction_integration,
             "1st tertile",
+        )
+        self.assertTrue(
+            AnalysisLayerSettings().background_keep_perimeter_reference
+        )
+        self.assertFalse(
+            BaselineSettings().foreground_include_annotated_seed_instances
+        )
+        self.assertFalse(
+            build_default_pipeline().node("foreground_segmentation").parameters[
+                "foreground_include_annotated_seed_instances"
+            ]
         )
         self.assertEqual(
             AnalysisLayerSettings(

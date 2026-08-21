@@ -290,6 +290,7 @@ def build_cuda_analysis_layers(
     foreground_reference_points: tuple[tuple[float, float], ...] = (),
     background_reference_mask: np.ndarray | None = None,
     foreground_reference_mask: np.ndarray | None = None,
+    foreground_reference_source_mask=None,
     background_exclusion_mask: np.ndarray | None = None,
     foreground_exclusion_mask: np.ndarray | None = None,
     seed_instance_annotations: np.ndarray | None = None,
@@ -370,6 +371,7 @@ def build_cuda_analysis_layers(
             background_reference_mask=background_reference_mask,
             foreground_reference_mask=foreground_reference_mask,
             background_exclusion_mask=background_exclusion_mask,
+            seed_instance_annotations=seed_instance_annotations,
             background_reference_samples=background_reference_samples,
             background_reference_sample_count=background_reference_sample_count,
             background_prior_lab=background_prior_lab,
@@ -381,6 +383,7 @@ def build_cuda_analysis_layers(
             lab_tensor=lab_tensor,
             valid_tensor=valid_tensor,
             include_other_probability=True,
+            include_reference_source_mask=True,
         )
         if background_timing is not None:
             timing_recorder.stop(background_timing)
@@ -394,6 +397,7 @@ def build_cuda_analysis_layers(
             0,
             None,
             None,
+            None,
         )
         values["layer.background"] = background_result
     else:
@@ -404,6 +408,7 @@ def build_cuda_analysis_layers(
         reference_count,
         colour_profile,
         other_colour_probability,
+        background_reference_source_mask,
     ) = background_result
 
     surrounding_background_dirty = (
@@ -456,6 +461,9 @@ def build_cuda_analysis_layers(
             background_reference_points=background_reference_points,
             foreground_reference_points=foreground_reference_points,
             background_reference_mask=background_reference_mask,
+            automatic_target_reference_mask=(
+                background_reference_source_mask
+            ),
             foreground_reference_mask=foreground_reference_mask,
             target_exclusion_mask=background_exclusion_mask,
             other_colour_likelihood=other_colour_probability,
@@ -519,6 +527,9 @@ def build_cuda_analysis_layers(
             foreground_reference_points=foreground_reference_points,
             background_reference_mask=background_reference_mask,
             foreground_reference_mask=foreground_reference_mask,
+            automatic_foreground_reference_mask=(
+                foreground_reference_source_mask
+            ),
             foreground_exclusion_mask=foreground_exclusion_mask,
             reference_radius=max(
                 2,
@@ -896,7 +907,9 @@ def build_cuda_analysis_layers(
         float(settings.reference_texture_instance_interior_buffer_fraction),
     )
     reference_texture_dirty = (
-        painted_reference_dirty
+        background_dirty
+        or painted_reference_dirty
+        or "foreground_segmentation" in dirty
         or gradients_dirty
         or frequency_noise_dirty
         or ridges_dirty
@@ -927,7 +940,13 @@ def build_cuda_analysis_layers(
             seed_diameter,
             settings,
             background_reference_mask=background_reference_mask,
+            background_reference_source_mask=(
+                background_reference_source_mask
+            ),
             foreground_reference_mask=foreground_reference_mask,
+            foreground_reference_source_mask=(
+                foreground_reference_source_mask
+            ),
             other_reference_mask=other_reference_mask,
             seed_instance_annotations=seed_instance_annotations,
             cuda_context=context,
@@ -1080,6 +1099,12 @@ def build_cuda_analysis_layers(
         other_colour_probability=other_colour_probability,
         other_noise_probability=other_noise_probability,
         other_noise_frequency_profile=other_noise_profile,
+        background_reference_source_mask=(
+            background_reference_source_mask
+        ),
+        foreground_reference_source_mask=(
+            foreground_reference_source_mask
+        ),
         reference_seed_surface_probability=(
             reference_textures.seed_surface_probability
         ),
@@ -1176,6 +1201,7 @@ def background_colour_likelihood(
     background_reference_mask=None,
     foreground_reference_mask=None,
     background_exclusion_mask=None,
+    seed_instance_annotations=None,
     background_reference_samples=None,
     background_reference_sample_count=0,
     background_prior_lab=None,
@@ -1187,6 +1213,7 @@ def background_colour_likelihood(
     lab_tensor=None,
     valid_tensor=None,
     include_other_probability=False,
+    include_reference_source_mask=False,
 ):
     from seedvision.visualization.layers import BackgroundColourProfile, AnalysisLayerSettings
     import torch
@@ -1233,19 +1260,98 @@ def background_colour_likelihood(
         )[0, 0] > 0
         background_exclusion &= valid
         background_point_mask &= ~background_exclusion
+    annotated_seed_mask = torch.zeros_like(valid)
+    if seed_instance_annotations is not None:
+        annotation_values = np.asarray(seed_instance_annotations)
+        if annotation_values.shape != (height, width):
+            raise ValueError(
+                "Seed instance annotations must match the crop dimensions."
+            )
+        annotated_seed_mask = image_to_tensor(
+            np.asarray(annotation_values > 0, np.uint8), context
+        )[0, 0] > 0
+        annotated_seed_mask &= valid
     mode = "automatic"
     reference_count = 0
-    supplied = None
+    manual_samples = None
     source_values = None
     eligible = valid & ~foreground_point_mask & ~background_exclusion
+    eligible &= ~annotated_seed_mask
+
+    def limited_rows(values, maximum=32768):
+        """Bound one already-materialized sample group deterministically."""
+
+        count = int(values.shape[0])
+        if count <= maximum:
+            return values
+        indices = torch.linspace(
+            0, count - 1, maximum, device=values.device
+        ).round().long()
+        return values[indices]
+
+    def sampled_mask_indices(mask, maximum=32768):
+        """Select spatially distributed true pixels without a huge nonzero list."""
+
+        flat = mask.reshape(-1)
+        count = int(flat.sum().item())
+        if not count:
+            return torch.empty(
+                (0,), device=mask.device, dtype=torch.long
+            )
+        wanted_count = min(count, int(maximum))
+        wanted_ranks = np.rint(
+            np.linspace(0, count - 1, wanted_count)
+        ).astype(np.int64)
+        selected = []
+        cumulative = 0
+        chunk_size = 1_048_576
+        for start in range(0, int(flat.numel()), chunk_size):
+            stop = min(start + chunk_size, int(flat.numel()))
+            chunk = flat[start:stop]
+            chunk_count = int(chunk.sum().item())
+            if not chunk_count:
+                continue
+            left = int(np.searchsorted(wanted_ranks, cumulative, side="left"))
+            right = int(
+                np.searchsorted(
+                    wanted_ranks, cumulative + chunk_count, side="left"
+                )
+            )
+            if right > left:
+                local_true = torch.nonzero(chunk, as_tuple=False).flatten()
+                local_ranks = torch.as_tensor(
+                    wanted_ranks[left:right] - cumulative,
+                    device=mask.device,
+                    dtype=torch.long,
+                )
+                selected.append(local_true[local_ranks] + start)
+            cumulative += chunk_count
+        return torch.cat(selected) if selected else torch.empty(
+            (0,), device=mask.device, dtype=torch.long
+        )
+
     if _sample_count(background_reference_samples):
-        supplied = _bgr_samples_to_lab(background_reference_samples, context)
+        if torch.is_tensor(background_reference_samples):
+            source_values = background_reference_samples.to(
+                device=context.device, dtype=torch.float32
+            ).reshape(-1, 3)
+        else:
+            source_values = torch.as_tensor(
+                np.asarray(background_reference_samples).reshape(-1, 3),
+                device=context.device,
+                dtype=torch.float32,
+            )
+        source_values = limited_rows(source_values)
+        manual_samples = _bgr_samples_to_lab(source_values, context)
         mode = "manual"
         reference_count = int(background_reference_sample_count)
     elif background_reference_points or background_point_mask.any():
         if background_point_mask.any():
-            supplied = lab[background_point_mask]
-            source_values = source[0].permute(1, 2, 0)[background_point_mask]
+            manual_indices = sampled_mask_indices(background_point_mask)
+            manual_samples = lab.reshape(-1, 3)[manual_indices]
+            source_values = source[0].permute(1, 2, 0).reshape(-1, 3)[
+                manual_indices
+            ]
             mode = "manual"
             reference_count = (
                 int(background_point_mask.sum().item())
@@ -1253,72 +1359,177 @@ def background_colour_likelihood(
                 else len(background_reference_points)
             )
 
-    automatic_prior_samples = False
-    if supplied is None and _sample_count(background_prior_samples_lab):
-        supplied = background_prior_samples_lab
-        automatic_prior_samples = True
+    def lab_sample_tensor(values):
+        if not _sample_count(values):
+            return None
+        if torch.is_tensor(values):
+            return limited_rows(values.to(
+                device=context.device, dtype=lab.dtype
+            ).reshape(-1, 3))
+        return limited_rows(torch.as_tensor(
+            np.asarray(values).reshape(-1, 3),
+            device=context.device,
+            dtype=lab.dtype,
+        ))
 
-    if supplied is None:
-        if background_prior_lab is not None:
-            prior = torch.as_tensor(
-                background_prior_lab,
-                device=context.device,
-                dtype=lab.dtype,
-            )
-            prior_distance = torch.sqrt(
-                (lab[:, :, 0] - prior[0]).square()
-                + 1.5 * (lab[:, :, 1] - prior[1]).square()
-                + 1.5 * (lab[:, :, 2] - prior[2]).square()
-            )
-            candidates = eligible & (
-                prior_distance <= settings.background_prior_tolerance
-            )
-        else:
-            valid_lab = lab[eligible]
-            chroma = torch.sqrt((valid_lab[:, 1] - 128.0).square() + (valid_lab[:, 2] - 128.0).square())
-            chroma_limit = torch.quantile(chroma, settings.background_chroma_percentile / 100.0)
-            lightness_limit = torch.quantile(valid_lab[:, 0], settings.background_lightness_percentile / 100.0)
-            candidates = eligible & (
-                torch.sqrt((lab[:, :, 1] - 128.0).square() + (lab[:, :, 2] - 128.0).square()) <= chroma_limit
-            ) & (lab[:, :, 0] >= lightness_limit)
-        minimum = max(32, round(valid.sum().item() * settings.background_minimum_sample_fraction))
-        if int(candidates.sum().item()) < minimum:
-            if background_prior_lab is not None:
-                # In a densely filled dish there may be no visible interior
-                # tray. Do not satisfy the minimum by relabelling the closest
-                # seed colours as background: retain the independently measured
-                # outside-dish prior as the model centre.
-                source_values = source[0].permute(1, 2, 0)[candidates]
-                if not int(candidates.sum().item()):
-                    nearest = torch.argmin(
-                        torch.where(
-                            eligible,
-                            prior_distance,
-                            torch.full_like(prior_distance, float("inf")),
-                        )
-                    )
-                    source_values = source[0].permute(1, 2, 0).reshape(-1, 3)[
-                        nearest : nearest + 1
-                    ]
-                supplied = prior[None, :]
+    def balanced_samples(groups, maximum=32768):
+        """Give each authored source equal fit weight within a bounded pool."""
+
+        available = [
+            values.reshape(-1, 3)
+            for values in groups
+            if values is not None and int(values.shape[0])
+        ]
+        if not available:
+            return None
+        if len(available) == 1:
+            return limited_rows(available[0], maximum)
+        target = min(
+            int(maximum), sum(int(values.shape[0]) for values in available)
+        )
+        base, remainder = divmod(target, len(available))
+        allocations = [
+            base + (1 if index < remainder else 0)
+            for index in range(len(available))
+        ]
+        retained = []
+        for values, count in zip(available, allocations, strict=True):
+            if count == int(values.shape[0]):
+                retained.append(values)
             else:
-                score = lab[:, :, 0] - torch.sqrt(
-                    (lab[:, :, 1] - 128.0).square()
-                    + (lab[:, :, 2] - 128.0).square()
-                )
-                threshold = torch.quantile(
-                    score[eligible],
-                    max(
-                        0.0,
-                        1.0 - minimum / max(int(eligible.sum().item()), 1),
-                    ),
-                )
-                candidates = eligible & (score >= threshold)
-        if supplied is None:
-            supplied = lab[candidates]
-            source_values = source[0].permute(1, 2, 0)[candidates]
+                indices = torch.linspace(
+                    0,
+                    int(values.shape[0]) - 1,
+                    count,
+                    device=values.device,
+                ).round().long()
+                retained.append(values[indices])
+        return torch.cat(retained, dim=0)
+
+    perimeter_samples = lab_sample_tensor(background_prior_samples_lab)
+    prior = (
+        torch.as_tensor(
+            background_prior_lab,
+            device=context.device,
+            dtype=lab.dtype,
+        )
+        if background_prior_lab is not None
+        else (
+            None
+            if perimeter_samples is None
+            else torch.median(perimeter_samples, dim=0).values
+        )
+    )
+    keep_perimeter = bool(
+        settings.background_keep_perimeter_reference and prior is not None
+    )
+    automatic_reference_mask = None
+    automatic_samples = None
+    no_eligible_background_source = False
+    if keep_perimeter:
+        prior_distance = torch.sqrt(
+            (lab[:, :, 0] - prior[0]).square()
+            + 1.5 * (lab[:, :, 1] - prior[1]).square()
+            + 1.5 * (lab[:, :, 2] - prior[2]).square()
+        )
+        # Painted Background remains its own anchor. Keeping it out of this
+        # mask prevents accidental double-weighting while manual Foreground and
+        # Other retain categorical precedence over the automatic source.
+        automatic_reference_mask = (
+            eligible
+            & ~background_point_mask
+            & ~annotated_seed_mask
+            & (prior_distance <= settings.background_prior_tolerance)
+        )
+        if bool(automatic_reference_mask.any().item()):
+            automatic_indices = sampled_mask_indices(
+                automatic_reference_mask
+            )
+            automatic_samples = lab.reshape(-1, 3)[automatic_indices]
+            automatic_bgr = source[0].permute(1, 2, 0).reshape(-1, 3)[
+                automatic_indices
+            ]
+            source_values = (
+                automatic_bgr
+                if source_values is None
+                else torch.cat((source_values, automatic_bgr), dim=0)
+            )
+        del prior_distance
+        # Preserve the ring's observed multimodality without allowing its raw
+        # area to drown painted anchors or the median-similar in-dish source.
+        ring_anchor = (
+            perimeter_samples
+            if perimeter_samples is not None
+            else prior[None, :]
+        )
+        supplied = balanced_samples(
+            (manual_samples, ring_anchor, automatic_samples)
+        )
+        automatic_prior_samples = manual_samples is None
+    elif manual_samples is not None:
+        supplied = balanced_samples((manual_samples,))
+        automatic_prior_samples = False
+    elif not bool(eligible.any().item()):
+        # Every valid coordinate is explicitly Foreground or Other. Retain a
+        # single technical fit sample so the compact profile stays well formed,
+        # but mask the model to zero below rather than stealing a negative
+        # reference pixel or silently re-enabling the perimeter prior.
+        first_valid = torch.nonzero(
+            valid.reshape(-1), as_tuple=False
+        ).flatten()[:1]
+        supplied = lab.reshape(-1, 3)[first_valid]
+        source_values = source[0].permute(1, 2, 0).reshape(-1, 3)[first_valid]
+        automatic_prior_samples = False
+        no_eligible_background_source = True
     else:
-        candidates = None
+        # An explicit perimeter opt-out is honest even without paint: neither
+        # the median nor the annulus samples influence this independent
+        # low-chroma/light-background fallback.
+        valid_lab = lab[eligible]
+        chroma = torch.sqrt(
+            (valid_lab[:, 1] - 128.0).square()
+            + (valid_lab[:, 2] - 128.0).square()
+        )
+        chroma_limit = torch.quantile(
+            chroma, settings.background_chroma_percentile / 100.0
+        )
+        lightness_limit = torch.quantile(
+            valid_lab[:, 0], settings.background_lightness_percentile / 100.0
+        )
+        candidates = eligible & (
+            torch.sqrt(
+                (lab[:, :, 1] - 128.0).square()
+                + (lab[:, :, 2] - 128.0).square()
+            )
+            <= chroma_limit
+        ) & (lab[:, :, 0] >= lightness_limit)
+        minimum = max(
+            32,
+            round(
+                valid.sum().item()
+                * settings.background_minimum_sample_fraction
+            ),
+        )
+        if int(candidates.sum().item()) < minimum:
+            score = lab[:, :, 0] - torch.sqrt(
+                (lab[:, :, 1] - 128.0).square()
+                + (lab[:, :, 2] - 128.0).square()
+            )
+            threshold = torch.quantile(
+                score[eligible],
+                max(
+                    0.0,
+                    1.0 - minimum / max(int(eligible.sum().item()), 1),
+                ),
+            )
+            candidates = eligible & (score >= threshold)
+        candidate_indices = sampled_mask_indices(candidates)
+        supplied = lab.reshape(-1, 3)[candidate_indices]
+        source_values = source[0].permute(1, 2, 0).reshape(-1, 3)[
+            candidate_indices
+        ]
+        automatic_prior_samples = False
+    del annotated_seed_mask
 
     (
         likelihood,
@@ -1348,7 +1559,9 @@ def background_colour_likelihood(
         # Reference classes restrict fitting, but every valid coordinate is
         # evaluated by the resulting colour model. This prevents annotation
         # coordinates from becoming hard-coded output values.
-        output_mask=valid,
+        output_mask=(
+            eligible if no_eligible_background_source else valid
+        ),
     )
     dominant_component = int(torch.argmax(component_weights).item())
     centre = component_centres[dominant_component]
@@ -1395,7 +1608,28 @@ def background_colour_likelihood(
             strength=exclusion_strength,
         )
 
-    if source_values is None:
+    if keep_perimeter:
+        # The bounded, source-balanced anchor pool is the exact colour fit
+        # input, including retained ring Lab samples. Convert that compact
+        # metadata pool so the reported BGR range cannot omit the ring merely
+        # because painted/in-dish BGR values were also available.
+        import cv2
+
+        fitted_source_lab = (
+            supplied.detach().to(device="cpu", dtype=torch.float32).numpy()
+        )
+        fitted_source_lab_u8 = np.clip(
+            np.rint(fitted_source_lab.reshape(-1, 1, 3)), 0, 255
+        ).astype(np.uint8)
+        fitted_source_bgr = cv2.cvtColor(
+            fitted_source_lab_u8, cv2.COLOR_LAB2BGR
+        ).reshape(-1, 3)
+        range_values = torch.as_tensor(
+            fitted_source_bgr,
+            device=context.device,
+            dtype=torch.float32,
+        )
+    elif source_values is None:
         # Convert the selected Lab samples' corresponding input colours only for
         # the compact UI range. Manual sample BGR values are already supplied.
         if _sample_count(background_reference_samples):
@@ -1436,6 +1670,14 @@ def background_colour_likelihood(
             range_values = source[0].permute(1, 2, 0)[valid][: min(4096, int(valid.sum().item()))]
     else:
         range_values = source_values
+    if int(range_values.shape[0]) > 32768:
+        range_indices = torch.linspace(
+            0,
+            int(range_values.shape[0]) - 1,
+            32768,
+            device=range_values.device,
+        ).round().long()
+        range_values = range_values[range_indices]
     low = torch.quantile(range_values, 0.05, dim=0).round().clamp(0, 255).cpu().numpy()
     high = torch.quantile(range_values, 0.95, dim=0).round().clamp(0, 255).cpu().numpy()
     sample_count = int(fitted_sample_count)
@@ -1497,7 +1739,18 @@ def background_colour_likelihood(
         reference_count,
         profile,
     )
-    return result + (other_probability,) if include_other_probability else result
+    if include_other_probability:
+        result += (other_probability,)
+    if include_reference_source_mask:
+        result += (
+            None
+            if automatic_reference_mask is None
+            else _lazy_u8(
+                automatic_reference_mask[None, None].to(torch.uint8) * 255,
+                "automatic background reference source",
+            ),
+        )
+    return result
 
 
 def empty_noise_frequency_profile(seed_diameter, settings):
@@ -1657,6 +1910,7 @@ def noise_frequency_background_likelihood(
     background_reference_points=(),
     foreground_reference_points=(),
     background_reference_mask=None,
+    automatic_target_reference_mask=None,
     foreground_reference_mask=None,
     target_exclusion_mask=None,
     other_colour_likelihood=None,
@@ -1721,9 +1975,6 @@ def noise_frequency_background_likelihood(
         # Foreground wins accidental positive-mask overlap, matching the colour
         # models' foreground-precedence convention.
         full_target_reference &= ~full_nontarget_reference
-    full_other_nontarget_reference = (
-        full_target_reference | full_nontarget_reference
-    )
     full_target_exclusion = torch.zeros_like(full_target_reference)
     if target_exclusion_mask is not None:
         full_target_exclusion = image_to_tensor(
@@ -1731,6 +1982,34 @@ def noise_frequency_background_likelihood(
         )[0, 0] > 0
         full_target_exclusion &= full_valid[0, 0]
         full_target_reference &= ~full_target_exclusion
+    full_manual_target_reference = full_target_reference.clone()
+    full_automatic_target_reference = torch.zeros_like(
+        full_target_reference
+    )
+    if automatic_target_reference_mask is not None:
+        if hasattr(automatic_target_reference_mask, "gpu_tensor"):
+            automatic_values = automatic_target_reference_mask.gpu_tensor(
+                device=context.device
+            )
+            if automatic_values.ndim == 2:
+                automatic_values = automatic_values[None, None]
+            elif automatic_values.ndim == 3:
+                automatic_values = automatic_values[None]
+            automatic_target = automatic_values[0, 0] > 0
+        else:
+            automatic_target = image_to_tensor(
+                automatic_target_reference_mask, context
+            )[0, 0] > 0
+        full_automatic_target_reference = automatic_target & (
+            full_valid[0, 0]
+            & ~full_nontarget_reference
+            & ~full_target_exclusion
+            & ~full_manual_target_reference
+        )
+        full_target_reference |= full_automatic_target_reference
+    full_other_nontarget_reference = (
+        full_target_reference | full_nontarget_reference
+    )
     full_other_reference = full_target_exclusion
     full_other_nontarget_reference &= ~full_other_reference
 
@@ -1748,7 +2027,11 @@ def noise_frequency_background_likelihood(
             full_valid,
             full_colour,
         )
-        target_reference = full_target_reference
+        manual_target_reference = full_manual_target_reference
+        automatic_target_reference = full_automatic_target_reference
+        target_reference = (
+            manual_target_reference | automatic_target_reference
+        )
         nontarget_reference = full_nontarget_reference
         target_exclusion = full_target_exclusion
         other_colour = full_other_colour
@@ -1770,9 +2053,16 @@ def noise_frequency_background_likelihood(
         # Preserve even narrow painted regions when the noise classifier works
         # at a bounded resolution; nearest-neighbour downsampling could drop a
         # small ground-truth stroke entirely.
-        target_reference = functional.adaptive_max_pool2d(
-            full_target_reference[None, None].float(), (height, width)
+        manual_target_reference = functional.adaptive_max_pool2d(
+            full_manual_target_reference[None, None].float(), (height, width)
         )[0, 0] > 0.0
+        automatic_target_reference = functional.adaptive_max_pool2d(
+            full_automatic_target_reference[None, None].float(),
+            (height, width),
+        )[0, 0] > 0.0
+        target_reference = (
+            manual_target_reference | automatic_target_reference
+        )
         nontarget_reference = functional.adaptive_max_pool2d(
             full_nontarget_reference[None, None].float(), (height, width)
         )[0, 0] > 0.0
@@ -1819,7 +2109,11 @@ def noise_frequency_background_likelihood(
     if target_reference_precedence:
         nontarget_reference &= ~target_reference
     else:
-        target_reference &= ~nontarget_reference
+        manual_target_reference &= ~nontarget_reference
+        automatic_target_reference &= ~nontarget_reference
+        target_reference = (
+            manual_target_reference | automatic_target_reference
+        )
     automatic_target = (
         eligible
         & ~target_exclusion[None, None]
@@ -1833,8 +2127,9 @@ def noise_frequency_background_likelihood(
     )
     minimum_samples = max(32, round(int(valid.sum().item()) * 0.002))
     if bool(target_reference.any().item()):
-        # Painted target regions supply the actual texture observations. Colour
-        # pseudo-labels are used only when the user has not painted this class.
+        # Painted target regions and the retained ring-matched in-dish source
+        # supply actual texture observations. Colour pseudo-labels are used
+        # only when neither direct source is available.
         confident_background = target_reference[None, None]
     else:
         confident_background = automatic_target
@@ -1865,8 +2160,51 @@ def noise_frequency_background_likelihood(
             & (colour <= threshold)
         )
 
-    bg_values = feature.permute(0, 2, 3, 1)[confident_background.permute(0, 2, 3, 1).expand(-1, -1, -1, 3)].reshape(-1, 3)
-    non_values = feature.permute(0, 2, 3, 1)[confident_nonbackground.permute(0, 2, 3, 1).expand(-1, -1, -1, 3)].reshape(-1, 3)
+    feature_values = feature.permute(0, 2, 3, 1)
+
+    def mask_feature_values(mask):
+        return feature_values[
+            mask.permute(0, 2, 3, 1).expand(-1, -1, -1, 3)
+        ].reshape(-1, 3)
+
+    def resampled_rows(rows, count):
+        if int(rows.shape[0]) == count:
+            return rows
+        indices = torch.linspace(
+            0,
+            int(rows.shape[0]) - 1,
+            count,
+            device=rows.device,
+        ).round().long()
+        return rows[indices]
+
+    manual_fit_mask = manual_target_reference[None, None]
+    automatic_fit_mask = automatic_target_reference[None, None]
+    if bool(manual_fit_mask.any().item()) and bool(
+        automatic_fit_mask.any().item()
+    ):
+        manual_values = mask_feature_values(manual_fit_mask)
+        automatic_values = mask_feature_values(automatic_fit_mask)
+        fit_count = min(
+            32768,
+            int(manual_values.shape[0]) + int(automatic_values.shape[0]),
+        )
+        manual_count = (fit_count + 1) // 2
+        automatic_count = fit_count - manual_count
+        bg_values = torch.cat(
+            (
+                resampled_rows(manual_values, manual_count),
+                resampled_rows(automatic_values, automatic_count),
+            ),
+            dim=0,
+        )
+    else:
+        bg_values = mask_feature_values(confident_background)
+        if int(bg_values.shape[0]) > 32768:
+            bg_values = resampled_rows(bg_values, 32768)
+    non_values = mask_feature_values(confident_nonbackground)
+    if int(non_values.shape[0]) > 32768:
+        non_values = resampled_rows(non_values, 32768)
     bg_center, bg_scale = _robust_tensor_distribution(bg_values)
     non_center, non_scale = _robust_tensor_distribution(non_values)
     values = feature.permute(0, 2, 3, 1)
@@ -2634,6 +2972,7 @@ def _fit_feature_prototype_bank(
     mask,
     *,
     class_name: str,
+    priority_mask=None,
     maximum_prototypes: int,
     minimum_support: int,
     iterations: int,
@@ -2647,9 +2986,48 @@ def _fit_feature_prototype_bank(
     sample_count = int(locations.shape[0])
     if sample_count == 0:
         return None
-    if sample_count > 32768:
-        step = max(1, sample_count // 32768)
-        locations = locations[::step][:32768]
+
+    def resampled_locations(values, count):
+        if int(values.shape[0]) == count:
+            return values
+        indices = torch.linspace(
+            0,
+            int(values.shape[0]) - 1,
+            count,
+            device=values.device,
+        ).round().long()
+        return values[indices]
+
+    if priority_mask is not None:
+        priority = mask & priority_mask.bool()
+        secondary = mask & ~priority
+        priority_locations = torch.nonzero(
+            priority[0, 0], as_tuple=False
+        )
+        secondary_locations = torch.nonzero(
+            secondary[0, 0], as_tuple=False
+        )
+        if int(priority_locations.shape[0]) and int(
+            secondary_locations.shape[0]
+        ):
+            fit_count = min(32768, sample_count)
+            priority_count = (fit_count + 1) // 2
+            secondary_count = fit_count - priority_count
+            locations = torch.cat(
+                (
+                    resampled_locations(
+                        priority_locations, priority_count
+                    ),
+                    resampled_locations(
+                        secondary_locations, secondary_count
+                    ),
+                ),
+                dim=0,
+            )
+        elif sample_count > 32768:
+            locations = resampled_locations(locations, 32768)
+    elif sample_count > 32768:
+        locations = resampled_locations(locations, 32768)
     samples = features[0, :, locations[:, 0], locations[:, 1]].T
     centre = torch.median(samples, dim=0).values
     spread = (
@@ -3252,7 +3630,9 @@ def reference_texture_probabilities(
     settings,
     *,
     background_reference_mask=None,
+    background_reference_source_mask=None,
     foreground_reference_mask=None,
+    foreground_reference_source_mask=None,
     other_reference_mask=None,
     seed_instance_annotations=None,
     cuda_context=None,
@@ -3317,29 +3697,90 @@ def reference_texture_probabilities(
         "strip valid support",
     )
 
-    def source_count(mask) -> int:
-        return 0 if mask is None else int(np.count_nonzero(mask))
-
-    if foreground_reference_mask is None:
-        foreground_source_count = source_count(seed_instance_annotations)
-    elif seed_instance_annotations is None:
-        foreground_source_count = source_count(foreground_reference_mask)
-    else:
-        foreground_source_count = int(
-            np.count_nonzero(
-                np.logical_or(
-                    np.asarray(foreground_reference_mask, dtype=bool),
-                    np.asarray(seed_instance_annotations) > 0,
-                )
+    def full_reference_mask(values):
+        if values is None:
+            return torch.zeros(
+                (1, 1, source_height, source_width),
+                device=context.device,
+                dtype=torch.bool,
             )
-        )
+        if hasattr(values, "gpu_tensor"):
+            source = values.gpu_tensor(device=context.device)
+            if source.ndim == 2:
+                source = source[None, None]
+            elif source.ndim == 3:
+                source = source[None]
+        else:
+            array = np.ascontiguousarray(
+                np.asarray(values, dtype=np.uint8)
+            )
+            if array.ndim != 2:
+                raise ValueError("Reference masks must be two-dimensional.")
+            source = torch.from_numpy(array).to(
+                device=context.device
+            )[None, None]
+        if source.shape[-2:] != (source_height, source_width):
+            raise ValueError(
+                "Reference masks must match the prototype source dimensions."
+            )
+        return source > 0
+
+    full_painted_background = full_reference_mask(background_reference_mask)
+    full_painted_foreground = full_reference_mask(foreground_reference_mask)
+    full_automatic_foreground = full_reference_mask(
+        foreground_reference_source_mask
+    )
+    full_other = full_reference_mask(other_reference_mask)
+    full_annotations = full_reference_mask(
+        None
+        if seed_instance_annotations is None
+        else np.asarray(seed_instance_annotations) > 0
+    )
+    full_source_valid = gradients.valid.bool()
+    full_painted_background &= full_source_valid
+    full_painted_foreground &= full_source_valid
+    full_automatic_foreground &= full_source_valid
+    full_other &= full_source_valid
+    full_annotations &= full_source_valid
+    full_manual_overlap = (
+        full_painted_background.to(torch.uint8)
+        + full_painted_foreground.to(torch.uint8)
+        + full_other.to(torch.uint8)
+    ) > 1
+    full_painted_background &= ~full_manual_overlap
+    full_painted_foreground &= ~full_manual_overlap
+    full_other &= ~full_manual_overlap
+    full_automatic_foreground &= (
+        ~full_painted_background
+        & ~full_painted_foreground
+        & ~full_other
+    )
+    full_automatic_background = (
+        full_reference_mask(background_reference_source_mask)
+        & full_source_valid
+        & ~full_painted_background
+        & ~full_painted_foreground
+        & ~full_automatic_foreground
+        & ~full_other
+        & ~full_annotations
+    )
+    full_background = full_painted_background | full_automatic_background
+    full_foreground_source = (
+        full_painted_foreground | full_automatic_foreground
+    )
 
     source_counts = (
-        ("background", source_count(background_reference_mask)),
-        ("foreground", foreground_source_count),
-        ("other", source_count(other_reference_mask)),
+        ("background", int(full_background.sum().item())),
+        ("foreground", int(full_foreground_source.sum().item())),
+        ("other", int(full_other.sum().item())),
         ("physical_edge", 0),
         ("non_edge", 0),
+    )
+    del (
+        full_background,
+        full_foreground_source,
+        full_manual_overlap,
+        full_source_valid,
     )
     sample_count_units = (
         ("background", "source reference pixels"),
@@ -3400,11 +3841,40 @@ def reference_texture_probabilities(
         )
 
     valid = resized(gradients.valid.float(), mode="nearest") > 0.5
+    diameter = max(6.0, float(seed_diameter) * work_scale)
+
+    def working_reference_mask(values):
+        return resized(values.float(), mode="area") > 0.001
+
+    painted_background_mask = working_reference_mask(
+        full_painted_background
+    ) & valid
+    painted_foreground_mask = working_reference_mask(
+        full_painted_foreground
+    ) & valid
+    automatic_foreground_mask = working_reference_mask(
+        full_automatic_foreground
+    ) & valid
+    other_mask = working_reference_mask(full_other) & valid
+    automatic_background_mask = working_reference_mask(
+        full_automatic_background
+    ) & valid
+    del (
+        full_painted_background,
+        full_painted_foreground,
+        full_automatic_foreground,
+        full_other,
+        full_annotations,
+        full_automatic_background,
+    )
     edge = resized(gradients.strength).clamp(0.0, 1.0)
     ridge = resized(
         _raster_tensor(ridges, context, normalized=True)
     ).clamp(0.0, 1.0)
-    if not any(count for _class_name, count in source_counts):
+    if (
+        not any(count for _class_name, count in source_counts)
+        and not has_instance_annotations
+    ):
         # Generic gradient/ridge support already has its own upstream products.
         # Publishing it again as a learned semantic probability caused the
         # procedural boundary cost to count the same evidence twice.
@@ -3453,7 +3923,6 @@ def reference_texture_probabilities(
         )
 
     lab = resized(gradients.lab)
-    diameter = max(6.0, float(seed_diameter) * work_scale)
     sigma = max(
         0.7,
         diameter * float(settings.reference_texture_context_fraction),
@@ -3486,31 +3955,24 @@ def reference_texture_probabilities(
         dim=1,
     )
 
-    def reference_mask(values):
-        if values is None:
-            return torch.zeros_like(valid)
-        source = image_to_tensor(np.asarray(values, dtype=np.uint8), context)
-        return resized(source, mode="area") > 0.001
-
-    background_mask = reference_mask(background_reference_mask) & valid
-    foreground_mask = reference_mask(foreground_reference_mask) & valid
-    other_mask = reference_mask(other_reference_mask) & valid
-    if has_instance_annotations:
-        annotation_mask = reference_mask(
-            np.asarray(seed_instance_annotations) > 0
-        ) & valid
-        erosion = max(1, round(diameter * 0.06))
-        kernel = erosion * 2 + 1
-        eroded = 1.0 - functional.max_pool2d(
-            1.0 - annotation_mask.float(),
-            kernel,
-            stride=1,
-            padding=erosion,
-        )
-        if bool((eroded > 0.999).any().item()):
-            foreground_mask |= eroded > 0.999
-        else:
-            foreground_mask |= annotation_mask
+    # Automatic sources are subordinate to every explicitly painted semantic
+    # class.  The annotated-instance source was already inset and cleaned by
+    # Foreground segmentation, but the precedence is enforced again here so a
+    # direct caller cannot introduce ambiguous material supervision.
+    automatic_foreground_mask = (
+        automatic_foreground_mask
+        & ~painted_background_mask
+        & ~painted_foreground_mask
+        & ~other_mask
+    )
+    foreground_mask = painted_foreground_mask | automatic_foreground_mask
+    automatic_background_mask = (
+        automatic_background_mask
+        & ~foreground_mask
+        & ~other_mask
+        & ~painted_background_mask
+    )
+    background_mask = painted_background_mask | automatic_background_mask
     material_overlap = (
         background_mask.to(torch.uint8)
         + foreground_mask.to(torch.uint8)
@@ -3538,12 +4000,14 @@ def reference_texture_probabilities(
             material_features,
             background_mask,
             class_name="background",
+            priority_mask=painted_background_mask,
             **material_fit_arguments,
         ),
         "foreground": _fit_feature_prototype_bank(
             material_features,
             foreground_mask,
             class_name="foreground",
+            priority_mask=painted_foreground_mask,
             **material_fit_arguments,
         ),
         "other": _fit_feature_prototype_bank(
@@ -4942,6 +5406,7 @@ def noise_frequency_foreground_likelihood(
     foreground_reference_points=(),
     background_reference_mask=None,
     foreground_reference_mask=None,
+    automatic_foreground_reference_mask=None,
     foreground_exclusion_mask=None,
     reference_radius=3,
     cuda_context=None,
@@ -4960,6 +5425,7 @@ def noise_frequency_foreground_likelihood(
         background_reference_points=foreground_reference_points,
         foreground_reference_points=background_reference_points,
         background_reference_mask=foreground_reference_mask,
+        automatic_target_reference_mask=automatic_foreground_reference_mask,
         foreground_reference_mask=background_reference_mask,
         target_exclusion_mask=foreground_exclusion_mask,
         target_name="foreground",

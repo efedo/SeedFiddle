@@ -321,6 +321,685 @@ class AnalysisLayerTests(unittest.TestCase):
             repainted.other_noise_probability, first.other_noise_probability
         )
 
+    def test_kept_perimeter_background_source_is_exact_and_additive_to_paint(self) -> None:
+        import cv2
+        import numpy as np
+        import torch
+
+        from seedvision.cuda import CudaContext
+        from seedvision.cuda.layers import background_colour_likelihood
+        from seedvision.visualization import AnalysisLayerSettings
+
+        height, width = 48, 64
+        image = np.full((height, width, 3), (25, 75, 175), np.uint8)
+        perimeter_bgr = np.asarray((222, 224, 226), np.uint8)
+        painted_bgr = np.asarray((60, 165, 95), np.uint8)
+        image[4:12, 4:12] = perimeter_bgr
+        image[4:12, 16:24] = perimeter_bgr
+        image[4:12, 28:36] = perimeter_bgr
+        image[4:12, 40:48] = perimeter_bgr
+        image[4:12, 52:60] = perimeter_bgr
+        image[28:36, 4:12] = painted_bgr
+        valid = np.full((height, width), 255, np.uint8)
+        painted = np.zeros((height, width), bool)
+        painted[28:36, 4:12] = True
+        foreground = np.zeros((height, width), bool)
+        foreground[4:12, 28:36] = True
+        other = np.zeros((height, width), bool)
+        other[4:12, 40:48] = True
+        annotations = np.zeros((height, width), np.uint16)
+        annotations[4:12, 52:60] = 7
+        perimeter_lab = cv2.cvtColor(
+            perimeter_bgr.reshape(1, 1, 3), cv2.COLOR_BGR2LAB
+        )[0, 0].astype(np.float32)
+        ring_samples = torch.as_tensor(
+            np.repeat(perimeter_lab[None, :], 16, axis=0)
+        )
+        settings = AnalysisLayerSettings(
+            background_keep_perimeter_reference=True,
+            background_prior_tolerance=8.0,
+            background_colour_components=8,
+            background_refinement_iterations=0,
+        )
+
+        (
+            kept_probability,
+            _mode,
+            painted_count,
+            kept_profile,
+            _other_probability,
+            source_mask,
+        ) = background_colour_likelihood(
+            image,
+            valid,
+            background_reference_mask=painted,
+            foreground_reference_mask=foreground,
+            background_exclusion_mask=other,
+            seed_instance_annotations=annotations,
+            background_prior_lab=tuple(float(value) for value in perimeter_lab),
+            background_prior_samples_lab=ring_samples,
+            settings=settings,
+            cuda_context=CudaContext.resolve(requested="cpu"),
+            include_other_probability=True,
+            include_reference_source_mask=True,
+        )
+
+        self.assertIsNotNone(source_mask)
+        assert source_mask is not None
+        self.assertFalse(source_mask.is_materialized)
+        lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB).astype(np.float32)
+        delta = lab - perimeter_lab[None, None, :]
+        expected_source = (
+            np.sqrt(
+                delta[:, :, 0] ** 2
+                + 1.5 * delta[:, :, 1] ** 2
+                + 1.5 * delta[:, :, 2] ** 2
+            )
+            <= settings.background_prior_tolerance
+        )
+        expected_source &= valid > 0
+        expected_source &= ~painted
+        expected_source &= ~foreground
+        expected_source &= ~other
+        expected_source &= annotations == 0
+        np.testing.assert_array_equal(
+            np.asarray(source_mask) > 0, expected_source
+        )
+        self.assertEqual(painted_count, int(painted.sum()))
+        self.assertEqual(
+            kept_profile.sample_count,
+            int(painted.sum()) + len(ring_samples) + int(expected_source.sum()),
+        )
+        kept_values = np.asarray(kept_probability)
+        self.assertGreater(float(kept_values[4:12, 4:12].mean()), 220.0)
+        self.assertGreater(float(kept_values[28:36, 4:12].mean()), 150.0)
+
+        (
+            manual_probability,
+            _manual_mode,
+            manual_count,
+            manual_profile,
+            _manual_other,
+            omitted_source,
+        ) = background_colour_likelihood(
+            image,
+            valid,
+            background_reference_mask=painted,
+            foreground_reference_mask=foreground,
+            background_exclusion_mask=other,
+            seed_instance_annotations=annotations,
+            background_prior_lab=tuple(float(value) for value in perimeter_lab),
+            background_prior_samples_lab=ring_samples,
+            settings=AnalysisLayerSettings(
+                background_keep_perimeter_reference=False,
+                background_prior_tolerance=8.0,
+                background_colour_components=8,
+                background_refinement_iterations=0,
+            ),
+            cuda_context=CudaContext.resolve(requested="cpu"),
+            include_other_probability=True,
+            include_reference_source_mask=True,
+        )
+        self.assertIsNone(omitted_source)
+        self.assertEqual(manual_count, int(painted.sum()))
+        self.assertEqual(manual_profile.sample_count, int(painted.sum()))
+        self.assertGreater(
+            float(np.asarray(manual_probability)[28:36, 4:12].mean()),
+            220.0,
+        )
+
+    def test_tiny_painted_background_anchor_is_not_drowned_by_large_automatic_area(self) -> None:
+        import cv2
+        import numpy as np
+        import torch
+
+        from seedvision.cuda import CudaContext
+        from seedvision.cuda.layers import background_colour_likelihood
+        from seedvision.visualization import AnalysisLayerSettings
+
+        perimeter_bgr = np.asarray((222, 225, 228), np.uint8)
+        painted_bgr = np.asarray((45, 165, 85), np.uint8)
+        image = np.empty((96, 96, 3), np.uint8)
+        image[:] = perimeter_bgr
+        painted = np.zeros(image.shape[:2], bool)
+        painted[9:12, 13:16] = True
+        image[painted] = painted_bgr
+        valid = np.full(image.shape[:2], 255, np.uint8)
+        perimeter_lab = cv2.cvtColor(
+            perimeter_bgr.reshape(1, 1, 3), cv2.COLOR_BGR2LAB
+        )[0, 0].astype(np.float32)
+
+        probability, _mode, count, profile, source_mask = (
+            background_colour_likelihood(
+                image,
+                valid,
+                background_reference_mask=painted,
+                background_prior_lab=tuple(
+                    float(value) for value in perimeter_lab
+                ),
+                background_prior_samples_lab=torch.as_tensor(
+                    np.repeat(perimeter_lab[None, :], 64, axis=0)
+                ),
+                settings=AnalysisLayerSettings(
+                    background_keep_perimeter_reference=True,
+                    background_prior_tolerance=8.0,
+                    background_colour_components=8,
+                    background_refinement_iterations=0,
+                ),
+                cuda_context=CudaContext.resolve(requested="cpu"),
+                include_reference_source_mask=True,
+            )
+        )
+        self.assertEqual(count, int(painted.sum()))
+        self.assertIsNotNone(source_mask)
+        assert source_mask is not None
+        self.assertEqual(
+            int(np.count_nonzero(np.asarray(source_mask))),
+            image.shape[0] * image.shape[1] - int(painted.sum()),
+        )
+        self.assertGreater(profile.sample_count, 9_000)
+        values = np.asarray(probability)
+        self.assertGreater(float(values[painted].mean()), 220.0)
+        self.assertGreater(float(values[~painted].mean()), 220.0)
+
+    def test_perimeter_opt_out_without_paint_uses_nonperimeter_fallback(self) -> None:
+        import cv2
+        import numpy as np
+        import torch
+
+        from seedvision.cuda import CudaContext
+        from seedvision.cuda.layers import background_colour_likelihood
+        from seedvision.visualization import AnalysisLayerSettings
+
+        image = np.full((32, 40, 3), (205, 212, 220), np.uint8)
+        image[:, :20] = (75, 95, 155)
+        valid = np.full(image.shape[:2], 255, np.uint8)
+        annotations = np.zeros(image.shape[:2], np.uint16)
+        annotations[:, 20:] = 3
+        perimeter_bgr = np.asarray((235, 238, 240), np.uint8)
+        perimeter_lab = cv2.cvtColor(
+            perimeter_bgr.reshape(1, 1, 3), cv2.COLOR_BGR2LAB
+        )[0, 0].astype(np.float32)
+        ring_samples = torch.as_tensor(
+            np.repeat(perimeter_lab[None, :], 64, axis=0)
+        )
+
+        result = background_colour_likelihood(
+            image,
+            valid,
+            background_prior_lab=tuple(float(value) for value in perimeter_lab),
+            background_prior_samples_lab=ring_samples,
+            seed_instance_annotations=annotations,
+            settings=AnalysisLayerSettings(
+                background_keep_perimeter_reference=False,
+                background_refinement_iterations=0,
+            ),
+            cuda_context=CudaContext.resolve(requested="cpu"),
+            include_other_probability=True,
+            include_reference_source_mask=True,
+        )
+        probability, mode, count, profile, _other, source_mask = result
+        self.assertIsNone(source_mask)
+        self.assertEqual(mode, "automatic")
+        self.assertEqual(count, 0)
+        self.assertGreater(profile.sample_count, 0)
+        self.assertLessEqual(
+            profile.sample_count, int(np.count_nonzero(annotations == 0))
+        )
+        self.assertEqual(np.asarray(probability).shape, valid.shape)
+        probability_values = np.asarray(probability)
+        self.assertGreater(
+            float(probability_values[:, :20].mean()),
+            float(probability_values[:, 20:].mean()) + 50.0,
+        )
+
+    def test_automatic_background_source_trains_noise_and_prototypes_gpu_safely(self) -> None:
+        import numpy as np
+        import torch
+
+        from seedvision.cuda import CudaContext, GpuRaster
+        from seedvision.cuda.layers import (
+            directional_edges,
+            multiscale_frequency_noise_masks,
+            noise_frequency_background_likelihood,
+            reference_texture_probabilities,
+        )
+        from seedvision.visualization import AnalysisLayerSettings
+
+        height = width = 48
+        yy, xx = np.indices((height, width))
+        texture = ((xx * 11 + yy * 7) % 43).astype(np.uint8)
+        image = np.empty((height, width, 3), np.uint8)
+        image[:, :, 0] = 170 + texture // 4
+        image[:, :, 1] = 185 + texture // 5
+        image[:, :, 2] = 200 + texture // 6
+        valid = np.full((height, width), 255, np.uint8)
+        painted = np.zeros((height, width), bool)
+        painted[2:10, 2:10] = True
+        automatic = np.zeros((height, width), bool)
+        automatic[8:34, 8:34] = True
+        foreground = np.zeros((height, width), bool)
+        foreground[16:25, 16:25] = True
+        other = np.zeros((height, width), bool)
+        other[25:32, 25:32] = True
+        annotations = np.zeros((height, width), np.uint16)
+        annotations[10:15, 25:30] = 11
+        expected_noise_automatic = (
+            automatic & ~painted & ~foreground & ~other
+        )
+        expected_automatic = expected_noise_automatic & (annotations == 0)
+        expected_noise_background = painted | expected_noise_automatic
+        expected_background = painted | expected_automatic
+        # Instance IDs alone remain edge supervision. They become material
+        # Foreground only when the opt-in derived source is supplied explicitly.
+        expected_foreground = foreground
+        context = CudaContext.resolve(requested="cpu")
+        source = GpuRaster(
+            torch.from_numpy(np.uint8(automatic)[None, None] * 255),
+            numpy_dtype=np.uint8,
+            name="retained automatic Background source",
+        )
+        self.assertFalse(source.is_materialized)
+        settings = AnalysisLayerSettings(
+            noise_vector_length_fraction=0.20,
+            noise_vector_sample_count=5,
+            reference_texture_minimum_samples_per_prototype=16,
+            reference_texture_fit_iterations=1,
+        )
+
+        noise_result = noise_frequency_background_likelihood(
+            image,
+            valid,
+            np.full((height, width), 128, np.uint8),
+            20.0,
+            settings,
+            background_reference_mask=painted,
+            automatic_target_reference_mask=source,
+            foreground_reference_mask=foreground,
+            target_exclusion_mask=other,
+            cuda_context=context,
+        )
+        self.assertEqual(
+            noise_result[1].background_sample_count,
+            int(expected_noise_background.sum()),
+        )
+        self.assertFalse(source.is_materialized)
+
+        gradients = directional_edges(
+            image, valid, settings, cuda_context=context
+        )
+        frequency_noise = multiscale_frequency_noise_masks(
+            image, valid, 20.0, settings, cuda_context=context
+        )
+        ridges = GpuRaster(
+            torch.zeros((1, 1, height, width), dtype=torch.uint8),
+            numpy_dtype=np.uint8,
+            name="empty test ridges",
+        )
+        products = reference_texture_probabilities(
+            image,
+            gradients,
+            ridges,
+            frequency_noise,
+            20.0,
+            settings,
+            background_reference_mask=painted,
+            background_reference_source_mask=source,
+            foreground_reference_mask=foreground,
+            other_reference_mask=other,
+            seed_instance_annotations=annotations,
+            cuda_context=context,
+        )
+        source_counts = dict(products.profile.class_sample_counts)
+        self.assertEqual(
+            products.background_sample_count, int(expected_background.sum())
+        )
+        self.assertEqual(
+            source_counts["background"], int(expected_background.sum())
+        )
+        # Automatic Background is subordinate: overlapping semantic paint
+        # remains available to its authored class instead of overlap cleanup
+        # deleting both labels.
+        self.assertEqual(
+            products.foreground_sample_count, int(expected_foreground.sum())
+        )
+        self.assertEqual(products.other_sample_count, int(other.sum()))
+        self.assertFalse(source.is_materialized)
+
+    def test_annotated_foreground_source_trains_noise_and_material_prototypes_only_when_supplied(self) -> None:
+        import cv2
+        import numpy as np
+        import torch
+
+        from seedvision.cuda import CudaContext, GpuRaster
+        from seedvision.cuda.layers import (
+            directional_edges,
+            multiscale_frequency_noise_masks,
+            noise_frequency_foreground_likelihood,
+            reference_texture_probabilities,
+        )
+        from seedvision.visualization import AnalysisLayerSettings
+
+        height = width = 64
+        rng = np.random.default_rng(4)
+        image = np.full((height, width, 3), 218, np.uint8)
+        texture = rng.integers(
+            -25, 26, (height, width, 1), dtype=np.int16
+        )
+        image = np.clip(
+            image.astype(np.int16) + texture, 0, 255
+        ).astype(np.uint8)
+        valid = np.full((height, width), 255, np.uint8)
+        painted_foreground = np.zeros((height, width), bool)
+        painted_foreground[4:12, 4:12] = True
+        painted_background = np.zeros((height, width), bool)
+        painted_background[50:58, 4:12] = True
+        other = np.zeros((height, width), bool)
+        other[4:12, 50:58] = True
+        automatic = np.zeros((height, width), bool)
+        automatic[16:48, 16:48] = True
+        # Direct consumers must repeat semantic precedence defensively rather
+        # than trusting that every caller supplied a pre-cleaned source.
+        automatic[50:55, 4:9] = True
+        automatic[5:10, 52:57] = True
+        expected_automatic = (
+            automatic
+            & ~painted_foreground
+            & ~painted_background
+            & ~other
+        )
+        expected_foreground = painted_foreground | expected_automatic
+        annotations = np.zeros((height, width), np.uint16)
+        cv2.circle(annotations, (32, 32), 18, 1, -1)
+        context = CudaContext.resolve(requested="cpu")
+        source = GpuRaster(
+            torch.from_numpy(automatic.astype(np.uint8))[None, None] * 255,
+            numpy_dtype=np.uint8,
+            name="automatic annotated Foreground source",
+        )
+        settings = AnalysisLayerSettings(
+            noise_vector_length_fraction=0.20,
+            noise_vector_sample_count=5,
+            reference_texture_minimum_samples_per_prototype=8,
+            reference_texture_fit_iterations=1,
+        )
+
+        noise_result = noise_frequency_foreground_likelihood(
+            image,
+            valid,
+            np.full((height, width), 128, np.uint8),
+            36.0,
+            settings,
+            background_reference_mask=painted_background,
+            foreground_reference_mask=painted_foreground,
+            automatic_foreground_reference_mask=source,
+            foreground_exclusion_mask=other,
+            cuda_context=context,
+        )
+        self.assertEqual(
+            noise_result[1].background_sample_count,
+            int(expected_foreground.sum()),
+        )
+        self.assertEqual(
+            noise_result[1].nonbackground_sample_count,
+            int((painted_background | other).sum()),
+        )
+        self.assertFalse(source.is_materialized)
+
+        gradients = directional_edges(
+            image, valid, settings, cuda_context=context
+        )
+        frequency_noise = multiscale_frequency_noise_masks(
+            image, valid, 36.0, settings, cuda_context=context
+        )
+        ridges = GpuRaster(
+            torch.zeros((1, 1, height, width), dtype=torch.uint8),
+            numpy_dtype=np.uint8,
+            name="empty test ridges",
+        )
+        enabled = reference_texture_probabilities(
+            image,
+            gradients,
+            ridges,
+            frequency_noise,
+            36.0,
+            settings,
+            background_reference_mask=painted_background,
+            foreground_reference_mask=painted_foreground,
+            foreground_reference_source_mask=source,
+            other_reference_mask=other,
+            seed_instance_annotations=annotations,
+            cuda_context=context,
+        )
+        enabled_counts = dict(enabled.profile.class_sample_counts)
+        self.assertEqual(
+            enabled_counts["foreground"], int(expected_foreground.sum())
+        )
+        self.assertEqual(
+            enabled.foreground_sample_count, int(expected_foreground.sum())
+        )
+        self.assertGreater(enabled.physical_sample_count, 0)
+        self.assertFalse(source.is_materialized)
+
+        opted_out = reference_texture_probabilities(
+            image,
+            gradients,
+            ridges,
+            frequency_noise,
+            36.0,
+            settings,
+            background_reference_mask=painted_background,
+            foreground_reference_mask=painted_foreground,
+            other_reference_mask=other,
+            # Annotations remain edge supervision, but are not silently reused
+            # as Foreground material when the derived source is absent.
+            seed_instance_annotations=annotations,
+            cuda_context=context,
+        )
+        opted_out_counts = dict(opted_out.profile.class_sample_counts)
+        self.assertEqual(
+            opted_out_counts["foreground"], int(painted_foreground.sum())
+        )
+        self.assertEqual(
+            opted_out.foreground_sample_count, int(painted_foreground.sum())
+        )
+        self.assertEqual(
+            opted_out.physical_sample_count, enabled.physical_sample_count
+        )
+
+    def test_background_reference_source_obeys_background_cache_boundaries(self) -> None:
+        import cv2
+        import numpy as np
+        import torch
+
+        from seedvision.visualization import AnalysisLayerSettings, build_analysis_layers
+
+        image = np.full((40, 48, 3), (45, 90, 175), np.uint8)
+        perimeter_bgr = np.asarray((220, 225, 230), np.uint8)
+        image[5:19, 5:19] = perimeter_bgr
+        valid = np.full(image.shape[:2], 255, np.uint8)
+        painted = np.zeros(image.shape[:2], bool)
+        painted[25:33, 6:14] = True
+        perimeter_lab = cv2.cvtColor(
+            perimeter_bgr.reshape(1, 1, 3), cv2.COLOR_BGR2LAB
+        )[0, 0].astype(np.float32)
+        common = dict(
+            background_reference_mask=painted,
+            background_prior_lab=tuple(float(value) for value in perimeter_lab),
+            background_prior_samples_lab=torch.as_tensor(
+                np.repeat(perimeter_lab[None, :], 32, axis=0)
+            ),
+            foreground_noise_enabled=False,
+            reference_edge_probability_enabled=False,
+            reference_edge_ridges_enabled=False,
+            reference_texture_prototypes_enabled=False,
+            surface_darkness_gradients_enabled=False,
+            lightening_gradient_ceiling_enabled=False,
+            darkening_gradient_ceiling_enabled=False,
+            instance_masks_enabled=False,
+            seed_edge_curves_enabled=False,
+        )
+        cache: dict[str, object] = {}
+
+        def calculate(settings, dirty_nodes=frozenset()):
+            return build_analysis_layers(
+                image,
+                valid,
+                np.empty((0, 2), np.float32),
+                np.empty((0,), np.float32),
+                20.0,
+                offset_x=0,
+                offset_y=0,
+                settings=settings,
+                cache_values=cache,
+                dirty_nodes=dirty_nodes,
+                **common,
+            )
+
+        kept_settings = AnalysisLayerSettings(
+            background_keep_perimeter_reference=True,
+            background_prior_tolerance=8.0,
+            background_refinement_iterations=0,
+        )
+        first = calculate(kept_settings)
+        self.assertIsNotNone(first.background_reference_source_mask)
+        source = first.background_reference_source_mask
+        noise_profile = first.noise_frequency_profile
+        reused = calculate(kept_settings)
+        self.assertIs(reused.background_reference_source_mask, source)
+        self.assertIs(reused.noise_frequency_profile, noise_profile)
+        unrelated = calculate(kept_settings, {"directed_edges"})
+        self.assertIs(unrelated.background_reference_source_mask, source)
+        self.assertIs(unrelated.noise_frequency_profile, noise_profile)
+
+        opted_out = calculate(
+            AnalysisLayerSettings(
+                background_keep_perimeter_reference=False,
+                background_prior_tolerance=8.0,
+                background_refinement_iterations=0,
+            ),
+            {"background_likelihood"},
+        )
+        self.assertIsNone(opted_out.background_reference_source_mask)
+        self.assertIsNot(opted_out.noise_frequency_profile, noise_profile)
+
+        restored = calculate(
+            kept_settings, {"background_likelihood"}
+        )
+        self.assertIsNotNone(restored.background_reference_source_mask)
+        self.assertIsNot(restored.background_reference_source_mask, source)
+
+    def test_annotated_foreground_source_obeys_foreground_cache_boundaries(self) -> None:
+        import numpy as np
+        import torch
+
+        from seedvision.cuda import GpuRaster
+        from seedvision.visualization import AnalysisLayerSettings, build_analysis_layers
+
+        height = width = 48
+        image = np.full((height, width, 3), (105, 145, 185), np.uint8)
+        valid = np.full((height, width), 255, np.uint8)
+        foreground_probability = np.full((height, width), 180, np.uint8)
+        painted_background = np.zeros((height, width), bool)
+        painted_background[2:10, 2:10] = True
+        painted_foreground = np.zeros((height, width), bool)
+        painted_foreground[36:44, 36:44] = True
+        source_values_1 = np.zeros((height, width), np.uint8)
+        source_values_1[12:22, 12:22] = 255
+        source_values_2 = np.zeros((height, width), np.uint8)
+        source_values_2[12:32, 12:32] = 255
+
+        def source(values, name):
+            return GpuRaster(
+                torch.from_numpy(values)[None, None],
+                numpy_dtype=np.uint8,
+                name=name,
+            )
+
+        first_source = source(source_values_1, "first annotated FG source")
+        second_source = source(source_values_2, "second annotated FG source")
+        settings = AnalysisLayerSettings(
+            reference_texture_material_prototypes_per_class=8,
+            reference_texture_minimum_samples_per_prototype=4,
+            reference_texture_fit_iterations=1,
+        )
+        cache: dict[str, object] = {}
+        common = dict(
+            foreground_probability=foreground_probability,
+            background_reference_mask=painted_background,
+            foreground_reference_mask=painted_foreground,
+            settings=settings,
+            cache_values=cache,
+            reference_edge_probability_enabled=False,
+            reference_edge_ridges_enabled=False,
+            surface_darkness_gradients_enabled=False,
+            lightening_gradient_ceiling_enabled=False,
+            darkening_gradient_ceiling_enabled=False,
+            instance_masks_enabled=False,
+            seed_edge_curves_enabled=False,
+        )
+
+        def calculate(reference_source, dirty_nodes=frozenset()):
+            return build_analysis_layers(
+                image,
+                valid,
+                np.empty((0, 2), np.float32),
+                np.empty((0,), np.float32),
+                20.0,
+                offset_x=0,
+                offset_y=0,
+                foreground_reference_source_mask=reference_source,
+                dirty_nodes=dirty_nodes,
+                **common,
+            )
+
+        first = calculate(first_source)
+        reused = calculate(first_source)
+        self.assertIs(
+            reused.foreground_noise_likelihood,
+            first.foreground_noise_likelihood,
+        )
+        self.assertIs(
+            reused.reference_seed_surface_probability,
+            first.reference_seed_surface_probability,
+        )
+        self.assertIs(reused.reference_texture_profile, first.reference_texture_profile)
+
+        unrelated = calculate(first_source, {"directed_edges"})
+        self.assertIs(
+            unrelated.foreground_noise_likelihood,
+            first.foreground_noise_likelihood,
+        )
+        self.assertIs(
+            unrelated.reference_seed_surface_probability,
+            first.reference_seed_surface_probability,
+        )
+
+        changed = calculate(second_source, {"foreground_segmentation"})
+        self.assertIsNot(
+            changed.foreground_noise_likelihood,
+            first.foreground_noise_likelihood,
+        )
+        self.assertIsNot(
+            changed.reference_seed_surface_probability,
+            first.reference_seed_surface_probability,
+        )
+        self.assertIsNot(
+            changed.reference_texture_profile,
+            first.reference_texture_profile,
+        )
+        self.assertIs(
+            changed.foreground_reference_source_mask,
+            second_source,
+        )
+        self.assertEqual(
+            dict(changed.reference_texture_profile.class_sample_counts)[
+                "foreground"
+            ],
+            int(painted_foreground.sum())
+            + int(np.count_nonzero(source_values_2)),
+        )
+
     def test_edge_prototype_bank_honours_capacity_above_256(self) -> None:
         import torch
 

@@ -38,6 +38,15 @@ def style_canvas_control_bar(frame: QFrame, object_name: str) -> None:
             background-color: #202a33;
             border-color: #718395;
         }}
+        QFrame#{object_name} QToolButton:checked {{
+            color: #ffffff;
+            background-color: #245f75;
+            border-color: #57d8ff;
+        }}
+        QFrame#{object_name} QToolButton:checked:hover {{
+            background-color: #2c7189;
+            border-color: #83e4ff;
+        }}
         QFrame#{object_name} QToolButton:disabled {{
             color: {CANVAS_DISABLED_BUTTON_TEXT};
             background-color: {CANVAS_DISABLED_BUTTON_BACKGROUND};

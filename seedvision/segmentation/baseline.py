@@ -33,6 +33,8 @@ from seedvision.cuda import (
 )
 from seedvision.cuda.layers import directional_edges
 from seedvision.segmentation.procedural import (
+    ManualSeedCentreSpace,
+    ManualSeedCentres,
     ProceduralInstanceResult,
     ProceduralInstanceSettings,
     procedural_seed_instances,
@@ -96,6 +98,7 @@ class BaselineSettings:
     foreground_background_prior_tolerance: float = 24.0
     foreground_probability_softness_fraction: float = 0.18
     foreground_reference_weight: float = 0.75
+    foreground_include_annotated_seed_instances: bool = False
     foreground_local_contrast_scale_fraction: float = 0.18
     foreground_shadow_rejection_strength: float = 1.0
     foreground_reference_components: int = 64
@@ -415,6 +418,7 @@ def analyze_path(
     physical_edge_reference_mask: np.ndarray | None = None,
     non_edge_reference_mask: np.ndarray | None = None,
     seed_instance_annotations: np.ndarray | None = None,
+    manual_seed_centres: ManualSeedCentres | None = None,
     background_colour_enabled: bool = True,
     enabled_nodes: set[str] | frozenset[str] | None = None,
     node_cache: PipelineAnalysisCache | None = None,
@@ -477,6 +481,7 @@ def analyze_path(
         background_exclusion_mask=background_exclusion_mask,
         foreground_exclusion_mask=foreground_exclusion_mask,
         seed_instance_annotations=seed_instance_annotations,
+        manual_seed_centres=manual_seed_centres,
         background_colour_enabled=background_colour_enabled,
         enabled_nodes=enabled_nodes,
         node_cache=node_cache,
@@ -511,6 +516,7 @@ def analyze_image(
     background_exclusion_mask: np.ndarray | None = None,
     foreground_exclusion_mask: np.ndarray | None = None,
     seed_instance_annotations: np.ndarray | None = None,
+    manual_seed_centres: ManualSeedCentres | None = None,
     background_colour_enabled: bool = True,
     enabled_nodes: set[str] | frozenset[str] | None = None,
     node_cache: PipelineAnalysisCache | None = None,
@@ -564,6 +570,9 @@ def analyze_image(
         calibration = values["calibration"]
         reused.append("deskew_colour")
     analysis_image = calibration.corrected_bgr
+    manual_seed_centres = _manual_centres_in_corrected_coordinates(
+        manual_seed_centres, calibration
+    )
     background_reference_mask = _aligned_reference_mask(
         background_reference_mask, analysis_image.shape[:2]
     )
@@ -709,6 +718,11 @@ def analyze_image(
             offset_x : offset_x + crop_width,
         ]
     )
+    local_manual_seed_centres = (
+        None
+        if manual_seed_centres is None
+        else manual_seed_centres.translated(-offset_x, -offset_y)
+    )
     reference_samples_dirty = (
         crop_dirty
         or seed_scale_dirty
@@ -830,6 +844,7 @@ def analyze_image(
             foreground_perimeter_background_lab,
             segmentation_background_lab,
             foreground_colour_profile,
+            foreground_reference_source_mask,
         ) = _foreground_feature(
             crop,
             settings,
@@ -841,6 +856,7 @@ def analyze_image(
             foreground_reference_points=local_foreground_points,
             foreground_reference_mask=local_foreground_reference_mask,
             foreground_exclusion_mask=local_foreground_exclusion_mask,
+            seed_instance_annotations=local_seed_instance_annotations,
             reference_radius=reference_radius,
             seed_diameter=seed_diameter,
             analysis_radius=float(dish.outer_radius),
@@ -869,6 +885,7 @@ def analyze_image(
             foreground_perimeter_samples_lab,
             segmentation_background_lab,
             foreground_colour_profile,
+            foreground_reference_source_mask,
         )
         timings.stop(foreground_timing)
         computed.append("foreground_segmentation")
@@ -885,6 +902,7 @@ def analyze_image(
             foreground_perimeter_samples_lab,
             segmentation_background_lab,
             foreground_colour_profile,
+            foreground_reference_source_mask,
         ) = values["foreground"]
         reused.append("foreground_segmentation")
     perimeter_background_lab = background_perimeter_prior_lab
@@ -1226,7 +1244,13 @@ def analyze_image(
     if identification_dirty:
         layer_dirty.update({"instance_masks", "seed_edge_curves"})
     if foreground_dirty:
-        layer_dirty.update({"foreground_noise_likelihood", "seed_edge_curves"})
+        layer_dirty.update(
+            {
+                "foreground_noise_likelihood",
+                "reference_texture_prototypes",
+                "seed_edge_curves",
+            }
+        )
     if perimeter_background_dirty:
         layer_dirty.update(
             {
@@ -1282,6 +1306,9 @@ def analyze_image(
             {
                 "refined_background_likelihood",
                 "instance_masks",
+                "reference_texture_prototypes",
+                "reference_edge_probability",
+                "reference_edge_ridges",
                 "seed_edge_curves",
             }
         )
@@ -1363,6 +1390,7 @@ def analyze_image(
         foreground_reference_points=local_foreground_points,
         background_reference_mask=local_background_reference_mask,
         foreground_reference_mask=local_foreground_reference_mask,
+        foreground_reference_source_mask=foreground_reference_source_mask,
         background_exclusion_mask=local_background_exclusion_mask,
         foreground_exclusion_mask=local_foreground_exclusion_mask,
         seed_instance_annotations=local_seed_instance_annotations,
@@ -1572,6 +1600,8 @@ def analyze_image(
             }
         )
         or "procedural_instances" in dirty
+        or values.get("segmentation.procedural_manual_centres")
+        != local_manual_seed_centres
         or "segmentation.procedural_instances" not in values
     )
     if procedural_enabled and procedural_dirty:
@@ -1594,9 +1624,11 @@ def analyze_image(
                     layers.reference_seed_surface_probability
                 ),
                 seed_instance_annotations=local_seed_instance_annotations,
+                manual_seed_centres=local_manual_seed_centres,
                 settings=procedural_settings,
             )
         values["segmentation.procedural_instances"] = procedural_result
+        values["segmentation.procedural_manual_centres"] = local_manual_seed_centres
         computed.append("procedural_instances")
     elif procedural_enabled:
         procedural_result = values["segmentation.procedural_instances"]
@@ -1604,6 +1636,7 @@ def analyze_image(
     else:
         procedural_result = None
         values.pop("segmentation.procedural_instances", None)
+        values.pop("segmentation.procedural_manual_centres", None)
 
     learned_evidence = {
         "foreground_colour": foreground_probability,
@@ -2026,7 +2059,52 @@ def _reference_colour_samples(
         if image_tensor is None
         else image_tensor
     )[0].permute(1, 2, 0)
-    samples = tensor[sample_mask]
+    sample_count = int(sample_mask.sum().item())
+    if sample_count <= 32768:
+        samples = tensor[sample_mask]
+    else:
+        # Keep the fitted reference pool bounded without ever materializing a
+        # full-resolution nonzero index list. Select evenly spaced ranks from
+        # successive raster chunks; `accepted` above remains the exact painted
+        # pixel count reported to the UI.
+        wanted_ranks = np.rint(
+            np.linspace(0, sample_count - 1, 32768)
+        ).astype(np.int64)
+        flat_mask = sample_mask.reshape(-1)
+        flat_tensor = tensor.reshape(-1, 3)
+        selected = []
+        cumulative = 0
+        chunk_size = 1_048_576
+        for start in range(0, int(flat_mask.numel()), chunk_size):
+            stop = min(start + chunk_size, int(flat_mask.numel()))
+            chunk = flat_mask[start:stop]
+            chunk_count = int(chunk.sum().item())
+            if not chunk_count:
+                continue
+            left = int(
+                np.searchsorted(wanted_ranks, cumulative, side="left")
+            )
+            right = int(
+                np.searchsorted(
+                    wanted_ranks,
+                    cumulative + chunk_count,
+                    side="left",
+                )
+            )
+            if right > left:
+                local_true = torch.nonzero(
+                    chunk, as_tuple=False
+                ).flatten()
+                local_ranks = torch.as_tensor(
+                    wanted_ranks[left:right] - cumulative,
+                    device=cuda_context.device,
+                    dtype=torch.long,
+                )
+                selected.append(
+                    flat_tensor[local_true[local_ranks] + start]
+                )
+            cumulative += chunk_count
+        samples = torch.cat(selected, dim=0)
     return samples, accepted
 
 
@@ -2048,6 +2126,34 @@ def _aligned_reference_mask(
             interpolation=cv2.INTER_NEAREST,
         )
     return values > 0
+
+
+def _manual_centres_in_corrected_coordinates(
+    centres: ManualSeedCentres | None,
+    calibration: ImageCalibration,
+) -> ManualSeedCentres | None:
+    """Resolve persisted source points against the current calibration.
+
+    This conversion deliberately occurs after calibration on every run. Source
+    coordinates therefore remain stable on disk while a changed deskew or
+    perspective setting cannot reuse positions transformed by an older run.
+    """
+
+    if centres is None:
+        return None
+    if not isinstance(centres, ManualSeedCentres):
+        raise TypeError("manual_seed_centres must be a ManualSeedCentres value.")
+    if centres.coordinate_space is ManualSeedCentreSpace.CORRECTED_IMAGE:
+        return centres
+    if not centres.centres_xy:
+        transformed: tuple[tuple[float, float], ...] = ()
+    else:
+        values = calibration.transform_points(list(centres.centres_xy))
+        transformed = tuple((float(x), float(y)) for x, y in values)
+    return centres.in_coordinate_space(
+        transformed,
+        ManualSeedCentreSpace.CORRECTED_IMAGE,
+    )
 
 
 def _aligned_instance_annotations(
@@ -2207,6 +2313,97 @@ def _reference_seed_diameter(
     )
 
 
+def _annotated_foreground_reference_source_tensor(
+    instance_labels: np.ndarray,
+    seed_diameter: float,
+    cuda_context: CudaContext,
+    *,
+    inset_fraction: float = 0.08,
+):
+    """Derive conservative per-ID seed interiors without leaving the device.
+
+    A pixel first becomes contour evidence when any of its eight neighbours has
+    a different ID (zero padding covers the image edge).  Dilating that contour
+    excludes the requested uncertainty band while preserving contacts between
+    touching IDs.  There is deliberately no whole-instance fallback: a tiny or
+    narrow annotation that has no safe core contributes no material sample.
+    """
+
+    import torch
+    import torch.nn.functional as functional
+
+    labels = np.asarray(instance_labels)
+    if labels.ndim != 2:
+        raise ValueError(
+            "Seed instance annotations must be a two-dimensional raster."
+        )
+    if not np.issubdtype(labels.dtype, np.integer):
+        raise ValueError("Seed instance annotations must contain integer IDs.")
+    if np.any(labels < 0):
+        raise ValueError("Seed instance annotation IDs cannot be negative.")
+    if labels.size and int(labels.max(initial=0)) > np.iinfo(np.int32).max:
+        raise ValueError("Seed instance annotation IDs exceed the supported range.")
+    if not np.isfinite(seed_diameter) or float(seed_diameter) <= 0.0:
+        raise ValueError("Seed diameter must be positive and finite.")
+    if not 0.0 <= float(inset_fraction) <= 0.50:
+        raise ValueError("The annotated-foreground inset must be 0--0.5 diameter.")
+
+    height, width = labels.shape
+    label_tensor = torch.from_numpy(
+        np.ascontiguousarray(labels, dtype=np.int32)
+    ).to(device=cuda_context.device)
+    positive = label_tensor > 0
+    contour = torch.zeros_like(positive)
+    if height and width:
+        contour[0, :] |= positive[0, :]
+        contour[-1, :] |= positive[-1, :]
+        contour[:, 0] |= positive[:, 0]
+        contour[:, -1] |= positive[:, -1]
+        for y_offset in (-1, 0, 1):
+            for x_offset in (-1, 0, 1):
+                if y_offset == 0 and x_offset == 0:
+                    continue
+                target_y0 = max(0, -y_offset)
+                target_y1 = min(height, height - y_offset)
+                target_x0 = max(0, -x_offset)
+                target_x1 = min(width, width - x_offset)
+                if target_y0 >= target_y1 or target_x0 >= target_x1:
+                    continue
+                target = label_tensor[
+                    target_y0:target_y1, target_x0:target_x1
+                ]
+                neighbour = label_tensor[
+                    target_y0 + y_offset : target_y1 + y_offset,
+                    target_x0 + x_offset : target_x1 + x_offset,
+                ]
+                contour[target_y0:target_y1, target_x0:target_x1] |= (
+                    (target > 0) & (neighbour != target)
+                )
+    del label_tensor
+
+    # The contour is distance zero, matching the existing reference-edge
+    # semantics.  Therefore retaining distance >= B requires dilation radius
+    # ceil(B)-1 rather than ceil(B).
+    inset_px = max(1.0, float(seed_diameter) * float(inset_fraction))
+    dilation_radius = max(0, int(np.ceil(inset_px)) - 1)
+    if dilation_radius:
+        pool_dtype = (
+            torch.float16
+            if cuda_context.device.type == "cuda"
+            else torch.float32
+        )
+        contour_band = functional.max_pool2d(
+            contour[None, None].to(dtype=pool_dtype),
+            kernel_size=dilation_radius * 2 + 1,
+            stride=1,
+            padding=dilation_radius,
+        )[0, 0] > 0
+        safe = positive & ~contour_band
+    else:
+        safe = positive & ~contour
+    return safe
+
+
 def _foreground_feature(
     crop: np.ndarray,
     settings: BaselineSettings,
@@ -2219,6 +2416,7 @@ def _foreground_feature(
     foreground_reference_points: tuple[tuple[float, float], ...] = (),
     foreground_reference_mask: np.ndarray | None = None,
     foreground_exclusion_mask: np.ndarray | None = None,
+    seed_instance_annotations: np.ndarray | None = None,
     reference_radius: int = 3,
     seed_diameter: float = 24.0,
     valid_radius: float | None = None,
@@ -2239,6 +2437,7 @@ def _foreground_feature(
     tuple[float, float, float],
     tuple[float, float, float],
     ForegroundColourProfile | None,
+    GpuRaster | None,
 ]:
     height, width = crop.shape[:2]
     import torch
@@ -2292,7 +2491,7 @@ def _foreground_feature(
             dtype=lab.dtype,
         )
 
-    foreground_reference_tensor = _reference_point_mask(
+    manual_foreground_reference_tensor = _reference_point_mask(
         height,
         width,
         foreground_reference_points,
@@ -2300,7 +2499,7 @@ def _foreground_feature(
         cuda_context,
     ) & valid_pixels
     if foreground_reference_mask is not None:
-        foreground_reference_tensor |= (
+        manual_foreground_reference_tensor |= (
             image_to_tensor(
                 np.asarray(foreground_reference_mask, np.uint8), cuda_context
             )[0, 0]
@@ -2312,7 +2511,7 @@ def _foreground_feature(
             np.asarray(foreground_exclusion_mask, np.uint8), cuda_context
         )[0, 0] > 0
         foreground_exclusion_tensor &= valid_pixels
-        foreground_reference_tensor &= ~foreground_exclusion_tensor
+        manual_foreground_reference_tensor &= ~foreground_exclusion_tensor
     manual_mask = _reference_point_mask(
         height,
         width,
@@ -2325,6 +2524,35 @@ def _foreground_feature(
             np.asarray(background_reference_mask, np.uint8), cuda_context
         )[0, 0] > 0
     manual_mask &= valid_pixels
+    # Applied instance labels identify seed material independently of the colour
+    # calculation.  Only their safely inset interiors are eligible: contours,
+    # contacts between IDs, and the uncertainty band remain out of the material
+    # source.  Painted semantic classes retain precedence over this automatic
+    # evidence, and an instance too small to retain an inset contributes no
+    # unsafe fallback pixels.
+    automatic_foreground_reference_tensor = torch.zeros_like(valid_pixels)
+    if (
+        settings.foreground_include_annotated_seed_instances
+        and seed_instance_annotations is not None
+        and np.any(seed_instance_annotations)
+    ):
+        automatic_foreground_reference_tensor = (
+            _annotated_foreground_reference_source_tensor(
+                seed_instance_annotations,
+                seed_diameter,
+                cuda_context,
+            )
+        )
+        automatic_foreground_reference_tensor &= (
+            valid_pixels
+            & ~manual_mask
+            & ~foreground_exclusion_tensor
+            & ~manual_foreground_reference_tensor
+        )
+    foreground_reference_tensor = (
+        manual_foreground_reference_tensor
+        | automatic_foreground_reference_tensor
+    )
     supplied_background = None
     if _sample_count(background_reference_samples):
         supplied_background = _bgr_samples_to_lab(
@@ -2493,7 +2721,14 @@ def _foreground_feature(
             * prototype_probability
         )
         foreground_profile_sample_mask = foreground_reference_tensor
-        foreground_profile_source = "painted"
+        if bool(automatic_foreground_reference_tensor.any().item()):
+            foreground_profile_source = (
+                "painted_and_annotated_instances"
+                if bool(manual_foreground_reference_tensor.any().item())
+                else "annotated_instances"
+            )
+        else:
+            foreground_profile_source = "painted"
         foreground_source_sample_count = int(
             foreground_reference_tensor.sum().item()
         )
@@ -2798,6 +3033,18 @@ def _foreground_feature(
         tuple(float(value) for value in perimeter_background.cpu().tolist()),
         tuple(float(value) for value in background.cpu().tolist()),
         foreground_colour_profile,
+        (
+            GpuRaster(
+                automatic_foreground_reference_tensor[None, None].to(
+                    torch.uint8
+                )
+                * 255,
+                numpy_dtype=np.uint8,
+                name="annotated foreground reference source",
+            )
+            if bool(automatic_foreground_reference_tensor.any().item())
+            else None
+        ),
     )
 
 

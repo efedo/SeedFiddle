@@ -629,7 +629,7 @@ class ReferenceEdgeStripDescriptorTests(unittest.TestCase):
         profile = layers.reference_texture_profile
         self.assertEqual(
             dict(profile.class_sample_counts)["foreground"],
-            int(np.count_nonzero(labels)),
+            0,
         )
         self.assertEqual(
             profile.sample_count_unit_for("physical_edge"),

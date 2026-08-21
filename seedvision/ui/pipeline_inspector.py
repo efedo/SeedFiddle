@@ -880,6 +880,10 @@ class PipelineInspector(QWidget):
     """Edit node enablement and typed parameter values."""
 
     PROCEDURAL_FIT_ACTION = "fit_procedural_to_annotations"
+    PROCEDURAL_CENTRES_EDIT_ACTION = "edit_manual_seed_centres"
+    PROCEDURAL_CENTRES_MODE_ACTION = "set_manual_seed_centre_mode"
+    PROCEDURAL_CENTRES_UNDO_ACTION = "undo_manual_seed_centres"
+    PROCEDURAL_CENTRES_RESET_ACTION = "reset_manual_seed_centres"
 
     parameter_changed = Signal(str, str, object)
     enabled_changed = Signal(str, bool)
@@ -899,6 +903,11 @@ class PipelineInspector(QWidget):
         self._procedural_fit_busy = False
         self._procedural_fit_busy_text = ""
         self._procedural_fit_result_summary = ""
+        self._procedural_centres_can_edit = False
+        self._procedural_centres_can_undo = False
+        self._procedural_centres_count = 0
+        self._procedural_centres_rejected_count = 0
+        self._procedural_centres_status = "Run procedural inference to edit centres."
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         self.title_label = QLabel("Select a pipeline node", self)
@@ -946,6 +955,111 @@ class PipelineInspector(QWidget):
         self.status_label = QLabel("", self)
         self.status_label.setWordWrap(True)
         self.status_label.setStyleSheet(f"color: {self._secondary_colour};")
+        self.procedural_centres_container = QWidget(self)
+        procedural_centres_layout = QVBoxLayout(self.procedural_centres_container)
+        procedural_centres_layout.setContentsMargins(0, 4, 0, 4)
+        procedural_centres_layout.setSpacing(4)
+        self.procedural_centres_heading = QLabel(
+            "Manual seed centres", self.procedural_centres_container
+        )
+        self.procedural_centres_heading.setStyleSheet("font-weight: 600;")
+        procedural_centres_layout.addWidget(self.procedural_centres_heading)
+        self.procedural_centres_description = QLabel(
+            "Click empty image space to add a centre, drag a marker to adjust it, "
+            "and right-click or press Delete to remove it. Automatic markers are "
+            "hollow cyan, manual markers yellow, annotation-locked markers magenta, "
+            "and rejected edits red.",
+            self.procedural_centres_container,
+        )
+        self.procedural_centres_description.setWordWrap(True)
+        self.procedural_centres_description.setStyleSheet(
+            f"color: {self._secondary_colour};"
+        )
+        procedural_centres_layout.addWidget(self.procedural_centres_description)
+
+        procedural_centres_mode_row = QWidget(self.procedural_centres_container)
+        procedural_centres_mode_layout = QHBoxLayout(procedural_centres_mode_row)
+        procedural_centres_mode_layout.setContentsMargins(0, 0, 0, 0)
+        procedural_centres_mode_layout.setSpacing(6)
+        mode_label = QLabel("Mode", procedural_centres_mode_row)
+        self.procedural_centres_mode_combo = QComboBox(procedural_centres_mode_row)
+        self.procedural_centres_mode_combo.addItem(
+            "Augment automatic", "augment"
+        )
+        self.procedural_centres_mode_combo.addItem(
+            "Replace automatic", "replace_automatic"
+        )
+        mode_tooltip = (
+            "Augment keeps automatic marker discovery and adds manual overrides. "
+            "Replace automatic treats the editable list as the complete automatic "
+            "marker set; markers derived from applied seed annotations remain locked "
+            "and authoritative in either mode. Switching to Replace first copies the "
+            "currently surviving automatic and manual markers, so none disappear."
+        )
+        mode_label.setToolTip(mode_tooltip)
+        self.procedural_centres_mode_combo.setToolTip(mode_tooltip)
+        self.procedural_centres_mode_combo.currentIndexChanged.connect(
+            self._procedural_centres_mode_changed
+        )
+        procedural_centres_mode_layout.addWidget(mode_label)
+        procedural_centres_mode_layout.addWidget(self.procedural_centres_mode_combo, 1)
+        procedural_centres_layout.addWidget(procedural_centres_mode_row)
+
+        self.procedural_centres_edit_button = QPushButton(
+            "Edit centres on image", self.procedural_centres_container
+        )
+        self.procedural_centres_edit_button.setCheckable(True)
+        self.procedural_centres_edit_button.setToolTip(
+            "Enter centre-edit mode. Escape cancels an active drag; press Escape "
+            "again to leave centre editing. Each completed gesture is autosaved "
+            "and recomputes only procedural inference and its dependents."
+        )
+        self.procedural_centres_edit_button.toggled.connect(
+            self._procedural_centres_edit_toggled
+        )
+        procedural_centres_layout.addWidget(self.procedural_centres_edit_button)
+
+        procedural_centres_button_row = QWidget(self.procedural_centres_container)
+        procedural_centres_button_layout = QHBoxLayout(procedural_centres_button_row)
+        procedural_centres_button_layout.setContentsMargins(0, 0, 0, 0)
+        procedural_centres_button_layout.setSpacing(6)
+        self.procedural_centres_undo_button = QPushButton(
+            "Undo", procedural_centres_button_row
+        )
+        self.procedural_centres_undo_button.setToolTip(
+            "Undo the most recent completed centre gesture or mode change for this image."
+        )
+        self.procedural_centres_undo_button.clicked.connect(
+            self._procedural_centres_undo_requested
+        )
+        self.procedural_centres_reset_button = QPushButton(
+            "Reset to automatic", procedural_centres_button_row
+        )
+        self.procedural_centres_reset_button.setToolTip(
+            "Remove every manual override and restore Augment automatic mode."
+        )
+        self.procedural_centres_reset_button.clicked.connect(
+            self._procedural_centres_reset_requested
+        )
+        procedural_centres_button_layout.addWidget(
+            self.procedural_centres_undo_button
+        )
+        procedural_centres_button_layout.addWidget(
+            self.procedural_centres_reset_button
+        )
+        procedural_centres_layout.addWidget(procedural_centres_button_row)
+        self.procedural_centres_status_label = QLabel(
+            self._procedural_centres_status, self.procedural_centres_container
+        )
+        self.procedural_centres_status_label.setWordWrap(True)
+        self.procedural_centres_status_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self.procedural_centres_status_label.setStyleSheet(
+            f"color: {self._secondary_colour};"
+        )
+        procedural_centres_layout.addWidget(self.procedural_centres_status_label)
+        self.procedural_centres_container.setVisible(False)
         self.procedural_fit_container = QWidget(self)
         procedural_fit_layout = QVBoxLayout(self.procedural_fit_container)
         procedural_fit_layout.setContentsMargins(0, 4, 0, 2)
@@ -1125,6 +1239,7 @@ class PipelineInspector(QWidget):
         layout.addWidget(self.details_label)
         layout.addWidget(self.enabled_checkbox)
         layout.addWidget(self.status_label)
+        layout.addWidget(self.procedural_centres_container)
         layout.addWidget(self.procedural_fit_container)
         layout.addWidget(self.foreground_start_heading)
         layout.addWidget(self.foreground_start_label)
@@ -1205,7 +1320,110 @@ class PipelineInspector(QWidget):
         self.parameter_container.setVisible(bool(node.parameter_specs))
         self.parameters_header.setVisible(bool(node.parameter_specs))
         self._refresh_procedural_fit_action()
+        self._refresh_procedural_centres_action()
         self._update_colour_summary()
+
+    def set_procedural_centres_state(
+        self,
+        *,
+        mode: str,
+        count: int,
+        editing: bool,
+        can_edit: bool,
+        can_undo: bool,
+        status: str = "",
+        rejected_count: int = 0,
+    ) -> None:
+        """Synchronize the image-local marker editor without emitting actions."""
+
+        if mode not in {"augment", "replace_automatic"}:
+            raise ValueError(f"Unknown manual seed-centre mode {mode!r}.")
+        self._procedural_centres_can_edit = bool(can_edit)
+        self._procedural_centres_can_undo = bool(can_undo)
+        self._procedural_centres_count = max(0, int(count))
+        self._procedural_centres_rejected_count = max(0, int(rejected_count))
+        self._procedural_centres_status = str(status).strip()
+        with QSignalBlocker(self.procedural_centres_mode_combo):
+            index = self.procedural_centres_mode_combo.findData(mode)
+            self.procedural_centres_mode_combo.setCurrentIndex(max(0, index))
+        with QSignalBlocker(self.procedural_centres_edit_button):
+            self.procedural_centres_edit_button.setChecked(bool(editing))
+        self._refresh_procedural_centres_action()
+
+    def _refresh_procedural_centres_action(self) -> None:
+        node = self._node
+        visible = node is not None and node.identifier == "procedural_instances"
+        self.procedural_centres_container.setVisible(visible)
+        if not visible:
+            return
+        runnable = bool(node.enabled and node.implemented)
+        enabled = runnable and self._procedural_centres_can_edit
+        self.procedural_centres_edit_button.setEnabled(enabled)
+        self.procedural_centres_mode_combo.setEnabled(enabled)
+        self.procedural_centres_undo_button.setEnabled(
+            runnable and self._procedural_centres_can_undo
+        )
+        self.procedural_centres_reset_button.setEnabled(
+            runnable
+            and (
+                self._procedural_centres_count > 0
+                or self.procedural_centres_mode_combo.currentData()
+                != "augment"
+            )
+        )
+        if self._procedural_centres_status:
+            status = self._procedural_centres_status
+        elif not runnable:
+            status = "Enable procedural seed separation before editing centres."
+        elif not enabled:
+            status = "Run procedural inference before editing centres."
+        else:
+            status = f"{self._procedural_centres_count:,} saved manual centre(s)."
+        if self._procedural_centres_rejected_count:
+            status += (
+                f" {self._procedural_centres_rejected_count:,} rejected point(s) "
+                "are shown in red; hover them for the exact reason."
+            )
+        self.procedural_centres_status_label.setText(status)
+
+    @Slot(int)
+    def _procedural_centres_mode_changed(self, index: int) -> None:
+        del index
+        node = self._node
+        if node is None or node.identifier != "procedural_instances":
+            return
+        self.node_action_requested.emit(
+            node.identifier,
+            self.PROCEDURAL_CENTRES_MODE_ACTION,
+            str(self.procedural_centres_mode_combo.currentData()),
+        )
+
+    @Slot(bool)
+    def _procedural_centres_edit_toggled(self, editing: bool) -> None:
+        node = self._node
+        if node is None or node.identifier != "procedural_instances":
+            return
+        self.node_action_requested.emit(
+            node.identifier,
+            self.PROCEDURAL_CENTRES_EDIT_ACTION,
+            bool(editing),
+        )
+
+    @Slot()
+    def _procedural_centres_undo_requested(self) -> None:
+        node = self._node
+        if node is not None and node.identifier == "procedural_instances":
+            self.node_action_requested.emit(
+                node.identifier, self.PROCEDURAL_CENTRES_UNDO_ACTION, None
+            )
+
+    @Slot()
+    def _procedural_centres_reset_requested(self) -> None:
+        node = self._node
+        if node is not None and node.identifier == "procedural_instances":
+            self.node_action_requested.emit(
+                node.identifier, self.PROCEDURAL_CENTRES_RESET_ACTION, None
+            )
 
     def set_procedural_fit_eligibility(
         self, eligible: bool, reason: str = ""

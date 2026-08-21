@@ -48,6 +48,51 @@ python .\seed_vision.py --offline
 
 `--offline` requires compatible wheel files in `wheels/`.
 
+## Projects and analysis settings
+
+The **File** menu distinguishes a complete analysis project from a portable
+settings profile:
+
+- **New project** (`Ctrl+N`), **Open project…** (`Ctrl+Shift+O`), **Save
+  project** (`Ctrl+S`), and **Save project as…** (`Ctrl+Shift+S`) use the
+  `.seedfiddle-project.json` master format. A master preserves the ordered image
+  manifest and source fingerprints, species and current selection, the embedded
+  analysis graph settings, and compact node-canvas presentation state. It
+  references source-bound reference-region and manual-centre sidecars by path
+  and SHA-256; it does not copy photographs, full-resolution masks, CUDA
+  tensors, or caches into JSON. **Open images…** remains `Ctrl+O`.
+- **Analysis settings → Save settings profile as…** and **Load settings
+  profile…** use `.seedfiddle-settings.json`. A profile replaces analytical
+  parameters, enabled state, active-versus-unused nodes, and authored wiring.
+  It deliberately excludes images, species, annotations, manual centres, node
+  positions, selected overlays, timings, and cached results, so it can be
+  reused across projects without importing their review data or layout.
+
+The version-one project format is a manifest, not an annotation snapshot or
+version-control system. Per-image sidecars are canonical mutable files: if two
+masters reference the same sidecar, both see its current annotation content.
+The master-recorded digest detects that change on the next open; saving the
+master refreshes the digest after source binding and content validation.
+
+Project open validates the complete JSON and graph contract before changing the
+current session. Missing or changed source images remain represented in the
+master but are withheld from the live image list; invalid, missing, or unlisted
+sidecars are not opportunistically replaced by similarly named workspace files.
+A listed sidecar whose bytes changed may load only after its own source-image
+binding validates, and corrected-coordinate reference masks are applied only
+after the current calibration confirms their dimensions. Warnings leave the
+original files untouched. A later successful reference or centre edit switches
+that image to the newly autosaved canonical sidecar.
+
+The title and status bar show the current master and a modification marker, and
+the recent-project menu is retained in Qt application settings. Replacing or
+closing a project uses **Save / Discard / Cancel** safeguards. If reference
+painting or seed-instance drafts have not been applied, **Save** explicitly
+means apply and atomically save those drafts first; a failed sidecar write keeps
+the in-memory work and the project dirty instead of recording a stale master.
+Project/profile mutations are disabled while analysis, training, or parameter
+fitting is active.
+
 ## Learned instance models
 
 The complete desktop workflow is under **Learning**:
@@ -294,6 +339,25 @@ leave only Seed instances checked to review labels without material marks.
 Clearing the selected class returns the shared tool to Paint so the empty layer
 can immediately be redrawn.
 
+While painting **Background**, **Keep perimeter-matched source** defaults on.
+It combines the buffered perimeter-ring Lab samples and every qualifying
+in-dish pixel similar to their median colour with any manually painted
+Background marks. The ring anchors the colour model; the matching in-dish area
+trains Background colour, noise, and material prototypes. The painting view
+fills the sampled ring and shows the accepted automatic in-dish area in cyan,
+while manual marks remain green. Uncheck the
+control to exclude all perimeter-derived evidence; with no painted Background
+remaining, the colour model uses its generic light/low-chroma automatic source.
+
+**Include annotated seeds as Foreground** is a separate material-reference
+option and defaults off. When enabled, only applied seed-instance IDs contribute:
+their safely inset interiors are added as Foreground examples for the colour,
+directional-noise, and material-prototype models, while contours and their
+uncertainty band are excluded. Painted Background, Other, and exclusion evidence
+retains precedence, and painted Foreground remains additive. Unapplied drafts do
+nothing until **Apply + save**; hiding the Seed instances overlay changes display
+only and does not change the fitted reference source.
+
 The fixed panel header also provides a context-aware **Undo** button
 (`Ctrl+Z`). Seed Fiddle retains the latest 20 unapplied commands for each image,
 independently for the categorical reference layers and seed-instance labels.
@@ -428,7 +492,8 @@ tolerance, and bounded refinement controls determine how that evidence affects
 similarly coloured pixels throughout the dish. Painted foreground pixels use
 the same probability equation as every matching unpainted pixel and are never
 forced to probability one. Painted background references remain explicit
-semantic constraints. Turn off **Use background colour
+semantic constraints and, by default, augment rather than replace the retained
+perimeter-matched source. Turn off **Use background colour
 analysis** (or bypass the **Background colour probability** node) when no reliable
 background reference is available. Independent foreground-noise, image-quality,
 and edge diagnostics still run; the colour and noise-frequency background maps
@@ -489,9 +554,15 @@ runs from raw images on the left to calibration and diagnostic products on the
 right. Nodes can be moved and
 intentionally overlapped. A one-line graph toolbar shows zoom controls and can
 automatically arrange the graph into non-overlapping dependency columns with
-barycentric ordering to reduce crossings. Its **Unused nodes** toolbox preserves
-experimental nodes outside the executable DAG and can explicitly restore one
-with its authored wiring. The image viewer has its own fit,
+barycentric ordering to reduce crossings. Two independent, default-off display
+options further clean up dense graphs: **Bundle cables** shares an initial trunk
+among compatible wires leaving the same source in the same direction, then
+branches each wire toward its own input; **Route around nodes** gives connections
+rounded detours around intervening node cards, with tighter bends when clearance
+requires them. These options change only connection drawing, not graph topology,
+calculation, or caching. Its **Unused nodes** toolbox preserves experimental
+nodes outside the executable DAG and can explicitly restore one with its authored
+wiring. The image viewer has its own fit,
 100%, zoom, and percentage controls. Both canvases can be panned and zoomed,
 including when a node-graph pan begins over a connection path. Connections use
 right-click to disconnect or Ctrl-click followed by Delete/Backspace; ordinary
@@ -593,6 +664,13 @@ The active layout-to-diagnostic span is represented by these live pipeline nodes
    that exact buffered annulus, and shows the resulting probability beside the
    dish-resident raster. The annulus remains outlined without an opaque colour
    tint (or uses the inside-rim fallback when necessary).
+   When **Keep perimeter-matched source** is checked (the default), those ring
+   Lab samples and their accepted similar in-dish area remain training evidence
+   even after Background paint is applied. The ring anchors colour; its matching
+   in-dish area supplies spatial noise and material examples. Background
+   painting fills the ring and shows the automatic area in cyan beside the green manual marks.
+   Unchecking it removes the complete perimeter-derived source from colour,
+   noise, and material-prototype fitting.
    Its node-owned full-pane overlay shows 25%, 50%, 75%, and 90% fitted
    membership contours over the exact HSV hue/saturation slice selected by the
    toolbar Value control, with learned mode frequencies and a neutral swatch.
@@ -612,8 +690,8 @@ The active layout-to-diagnostic span is represented by these live pipeline nodes
 
    The foreground and background colour maps are related evidence scores, not
    complementary or mutually calibrated posteriors. Background colour uses a
-   compact robust multimodal Lab fit anchored by painted background examples or
-   the adjustable perimeter annulus. Foreground colour instead combines distance
+   compact robust multimodal Lab fit anchored by painted background examples and,
+   by default, the adjustable perimeter source. Foreground colour instead combines distance
    from an independently fitted background model, an Otsu-derived cutoff,
    seed-scale lightness support, and a higher-capacity Lab frequency table for
    painted or isolated-reference-seed colours. This extra capacity is intentional
@@ -670,6 +748,22 @@ The active layout-to-diagnostic span is represented by these live pipeline nodes
    are resized before this topology-only CPU transfer. Labels and diagnostic
    rasters remain at that bounded working resolution and are scaled by Qt only
    for display, then the compact result is cached at the node.
+   The node inspector also provides a per-image **Manual seed centres** editor.
+   Hollow cyan markers are automatic, solid yellow markers are manual,
+   magenta markers are locked to applied instance annotations, and rejected
+   edits are red with their reason. Click empty image space to add, drag to
+   adjust, and right-click or press Delete to remove; Escape cancels a drag or
+   exits editing. **Augment automatic** adds overrides and suppresses nearby
+   automatic duplicates. **Replace automatic** treats the editable points as
+   the complete automatic-marker set while annotation-authoritative markers
+   remain. Switching to Replace first copies every surviving non-annotation
+   marker, and dragging or deleting an automatic marker performs the same safe
+   conversion. Undo and **Reset to automatic** are image-local. Each completed
+   gesture is atomically autosaved to a compact SHA-bound source-coordinate
+   sidecar under `projects/manual-seed-centres/`; the current calibration maps
+   those exact source floats into corrected/crop coordinates for inference.
+   A gesture invalidates and recomputes only the manual-centre input,
+   procedural separation, and its graph dependents.
    Applied instance annotations can also supervise a bounded, image-local
    parameter search from the node inspector through **Fit settings to applied
    annotations…**. Each trial deliberately withholds the annotated IDs from
@@ -798,8 +892,9 @@ residuals. The active procedural node consumes those products and exposes
 review-oriented seed identities and confidence. The former distance-based
 instance, boundary, review, and output nodes remain serialized in the toolbox
 alongside the optional strong-slope cutoff views.
-The background-colour node is bypassable, and its automatic colour estimate can
-be replaced per image by a user-painted binary reference mask in Image review.
+The background-colour node is bypassable. Its user-painted reference mask
+augments the perimeter-matched source by default; uncheck **Keep
+perimeter-matched source** when paint should replace that automatic evidence.
 Their node headers follow analysis running/completion/failure state. Selecting
 one of these nodes selects the corresponding layer for the **Image review** tab.
 

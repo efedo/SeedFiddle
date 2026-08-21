@@ -9,10 +9,97 @@ pipeline.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from enum import IntEnum, StrEnum
 
 import cv2
 import numpy as np
+
+
+MANUAL_CENTRE_SUPPRESSION_DIAMETER_FRACTION = 0.45
+
+
+class ManualSeedCentreMode(StrEnum):
+    """How edited point markers interact with automatic centre proposals."""
+
+    AUGMENT = "augment"
+    REPLACE_AUTOMATIC = "replace_automatic"
+
+
+class ManualSeedCentreSpace(StrEnum):
+    """Coordinate frame carried by persisted or runtime centre edits."""
+
+    SOURCE_IMAGE = "source_image"
+    CORRECTED_IMAGE = "corrected_image"
+
+
+class ProceduralMarkerSource(IntEnum):
+    """Compact source codes aligned with result watershed-marker centres."""
+
+    AUTOMATIC = 0
+    MANUAL = 1
+    ANNOTATED = 2
+
+
+@dataclass(frozen=True, slots=True)
+class ManualSeedCentres:
+    """User-edited centre markers with an explicit image-coordinate frame.
+
+    ``augment`` preserves automatic markers except for those within 0.45 seed
+    diameter of a manual point. ``replace_automatic`` uses the supplied points
+    as the complete editable marker set. Applied instance annotations remain a
+    separate full-mask authority in both modes. Baseline analysis resolves
+    ``source_image`` points through the current calibration; the low-level
+    procedural API receives ``corrected_image`` points in its supplied raster.
+    """
+
+    centres_xy: tuple[tuple[float, float], ...] = ()
+    mode: ManualSeedCentreMode = ManualSeedCentreMode.AUGMENT
+    coordinate_space: ManualSeedCentreSpace = ManualSeedCentreSpace.CORRECTED_IMAGE
+
+    def __post_init__(self) -> None:
+        try:
+            mode = ManualSeedCentreMode(self.mode)
+        except ValueError as error:
+            raise ValueError(
+                "Manual centre mode must be 'augment' or 'replace_automatic'."
+            ) from error
+        try:
+            coordinate_space = ManualSeedCentreSpace(self.coordinate_space)
+        except ValueError as error:
+            raise ValueError(
+                "Manual centre coordinate space must be 'source_image' or "
+                "'corrected_image'."
+            ) from error
+        normalized: list[tuple[float, float]] = []
+        for centre in self.centres_xy:
+            if len(centre) != 2:
+                raise ValueError("Each manual seed centre must contain x and y.")
+            x, y = float(centre[0]), float(centre[1])
+            if not np.isfinite(x) or not np.isfinite(y):
+                raise ValueError("Manual seed-centre coordinates must be finite.")
+            normalized.append((x, y))
+        object.__setattr__(self, "centres_xy", tuple(normalized))
+        object.__setattr__(self, "mode", mode)
+        object.__setattr__(self, "coordinate_space", coordinate_space)
+
+    def translated(self, dx: float, dy: float) -> ManualSeedCentres:
+        """Return the same edits translated into another raster frame."""
+
+        return ManualSeedCentres(
+            tuple((x + float(dx), y + float(dy)) for x, y in self.centres_xy),
+            self.mode,
+            self.coordinate_space,
+        )
+
+    def in_coordinate_space(
+        self,
+        centres_xy: tuple[tuple[float, float], ...],
+        coordinate_space: ManualSeedCentreSpace,
+    ) -> ManualSeedCentres:
+        """Return these edit semantics with transformed point coordinates."""
+
+        return ManualSeedCentres(centres_xy, self.mode, coordinate_space)
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,7 +175,12 @@ class ProceduralInstanceSettings:
 
 @dataclass(frozen=True, slots=True)
 class ProceduralInstanceResult:
-    """Instance labels and the diagnostic evidence used to construct them."""
+    """Instance labels and the diagnostic evidence used to construct them.
+
+    ``centres_xy`` are final region centroids. ``marker_centres_xy`` instead
+    records the actual surviving watershed seed for each renumbered label, in
+    label order, with its provenance in the aligned ``marker_sources`` array.
+    """
 
     labels: np.ndarray
     centres_xy: np.ndarray
@@ -100,10 +192,38 @@ class ProceduralInstanceResult:
     centre_likelihood: np.ndarray
     source_shape: tuple[int, int]
     working_scale: float
+    marker_centres_xy: np.ndarray = field(
+        default_factory=lambda: np.empty((0, 2), np.float32)
+    )
+    marker_sources: np.ndarray = field(
+        default_factory=lambda: np.empty(0, np.uint8)
+    )
+    rejected_manual_centres_xy: np.ndarray = field(
+        default_factory=lambda: np.empty((0, 2), np.float32)
+    )
+    rejected_manual_centre_reasons: tuple[str, ...] = ()
 
     @property
     def count(self) -> int:
         return int(len(self.centres_xy))
+
+    def marker_centres_for_source(
+        self, source: ProceduralMarkerSource
+    ) -> np.ndarray:
+        """Return actual surviving watershed markers from one source class."""
+
+        selected = np.asarray(self.marker_sources, dtype=np.uint8) == int(source)
+        return np.asarray(self.marker_centres_xy, dtype=np.float32)[selected]
+
+    @property
+    def editable_marker_centres_xy(self) -> np.ndarray:
+        """Return non-annotation markers suitable for initializing replace mode."""
+
+        selected = (
+            np.asarray(self.marker_sources, dtype=np.uint8)
+            != int(ProceduralMarkerSource.ANNOTATED)
+        )
+        return np.asarray(self.marker_centres_xy, dtype=np.float32)[selected]
 
     def instance_rgba(self) -> np.ndarray:
         """Return deterministic colours for the integer instance identities."""
@@ -395,6 +515,99 @@ def _renumber_labels(labels: np.ndarray) -> np.ndarray:
     return lookup[np.asarray(labels, dtype=np.int32)]
 
 
+def _manual_centres_at_working_scale(
+    edits: ManualSeedCentres | None,
+    prepared: PreparedProceduralInstanceInputs,
+    occupancy: np.ndarray,
+    annotations: np.ndarray | None,
+    annotation_x: np.ndarray,
+    annotation_y: np.ndarray,
+    *,
+    annotation_suppression_radius: float,
+) -> tuple[
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    tuple[str, ...],
+]:
+    """Validate corrected/source-raster points for bounded CPU topology.
+
+    Points never expand the material mask. A click on valid dish background is
+    therefore reported as ``outside_material`` instead of silently creating an
+    image region that the evidence did not classify as seed material.
+    """
+
+    if edits is not None and not isinstance(edits, ManualSeedCentres):
+        raise TypeError("manual_seed_centres must be a ManualSeedCentres value.")
+    if edits is None or not edits.centres_xy:
+        return (
+            np.empty(0, np.int32),
+            np.empty(0, np.int32),
+            np.empty((0, 2), np.float32),
+            np.empty((0, 2), np.float32),
+            (),
+        )
+    source_height, source_width = prepared.source_shape
+    height, width = prepared.working_shape
+    scale = float(prepared.working_scale)
+    accepted_x: list[int] = []
+    accepted_y: list[int] = []
+    accepted_source: list[tuple[float, float]] = []
+    rejected: list[tuple[float, float]] = []
+    reasons: list[str] = []
+    occupied_working_pixels: set[tuple[int, int]] = set()
+    annotation_radius_squared = float(annotation_suppression_radius) ** 2
+
+    def reject(x: float, y: float, reason: str) -> None:
+        rejected.append((float(x), float(y)))
+        reasons.append(reason)
+
+    for x, y in edits.centres_xy:
+        if x < 0.0 or y < 0.0 or x >= source_width or y >= source_height:
+            reject(x, y, "outside_source")
+            continue
+        working_x = int(round(float(x) * scale))
+        working_y = int(round(float(y) * scale))
+        working_x = int(np.clip(working_x, 0, width - 1))
+        working_y = int(np.clip(working_y, 0, height - 1))
+        if not prepared.valid_mask[working_y, working_x]:
+            reject(x, y, "outside_valid_region")
+            continue
+        if not occupancy[working_y, working_x]:
+            reject(x, y, "outside_material")
+            continue
+        if (
+            annotations is not None
+            and annotations[working_y, working_x] > 0
+        ) or (
+            len(annotation_x)
+            and np.any(
+                (annotation_x - working_x) ** 2
+                + (annotation_y - working_y) ** 2
+                < annotation_radius_squared
+            )
+        ):
+            reject(x, y, "near_annotated_instance")
+            continue
+        key = (working_x, working_y)
+        if key in occupied_working_pixels:
+            reject(x, y, "duplicate_working_pixel")
+            continue
+        occupied_working_pixels.add(key)
+        accepted_x.append(working_x)
+        accepted_y.append(working_y)
+        accepted_source.append((float(x), float(y)))
+
+    return (
+        np.asarray(accepted_x, np.int32),
+        np.asarray(accepted_y, np.int32),
+        np.asarray(accepted_source, np.float32).reshape(-1, 2),
+        np.asarray(rejected, np.float32).reshape(-1, 2),
+        tuple(reasons),
+    )
+
+
 def _trace_ellipse_geometry(
     points_xy: np.ndarray, diameter: float
 ) -> tuple[float, tuple[float, float] | None]:
@@ -642,6 +855,7 @@ def procedural_seed_instances_from_prepared(
     prepared: PreparedProceduralInstanceInputs,
     *,
     seed_instance_annotations=None,
+    manual_seed_centres: ManualSeedCentres | None = None,
     settings: ProceduralInstanceSettings = ProceduralInstanceSettings(),
 ) -> ProceduralInstanceResult:
     """Run only parameter-dependent CPU topology on a prepared working set."""
@@ -650,6 +864,19 @@ def procedural_seed_instances_from_prepared(
         raise ValueError(
             "Prepared inputs use a different working maximum dimension; "
             "prepare them again for these settings."
+        )
+    if manual_seed_centres is not None and not isinstance(
+        manual_seed_centres, ManualSeedCentres
+    ):
+        raise TypeError("manual_seed_centres must be a ManualSeedCentres value.")
+    if (
+        manual_seed_centres is not None
+        and manual_seed_centres.coordinate_space
+        is not ManualSeedCentreSpace.CORRECTED_IMAGE
+    ):
+        raise ValueError(
+            "Prepared procedural inputs require centres in their source raster's "
+            "corrected-image coordinate frame."
         )
     source_height, source_width = prepared.source_shape
     scale = prepared.working_scale
@@ -900,8 +1127,8 @@ def procedural_seed_instances_from_prepared(
     order = np.argsort(peak_scores)[::-1]
     peak_x, peak_y, peak_scores = peak_x[order], peak_y[order], peak_scores[order]
 
-    manual_x = np.empty(0, np.int32)
-    manual_y = np.empty(0, np.int32)
+    annotation_x = np.empty(0, np.int32)
+    annotation_y = np.empty(0, np.int32)
     annotations = None
     annotation_ids = np.empty(0, np.uint16)
     if seed_instance_annotations is not None:
@@ -911,24 +1138,46 @@ def procedural_seed_instances_from_prepared(
         )
         annotation_ids = np.unique(annotations)
         annotation_ids = annotation_ids[annotation_ids > 0]
-        manual_centres: list[tuple[int, int]] = []
+        annotation_centres: list[tuple[int, int]] = []
         for annotation_id in annotation_ids:
             rows, columns = np.nonzero(annotations == annotation_id)
             if len(rows):
-                manual_centres.append(
+                annotation_centres.append(
                     (int(round(float(columns.mean()))), int(round(float(rows.mean()))))
                 )
-        if manual_centres:
-            manual_x = np.asarray([item[0] for item in manual_centres], np.int32)
-            manual_y = np.asarray([item[1] for item in manual_centres], np.int32)
+        if annotation_centres:
+            annotation_x = np.asarray(
+                [item[0] for item in annotation_centres], np.int32
+            )
+            annotation_y = np.asarray(
+                [item[1] for item in annotation_centres], np.int32
+            )
             occupancy[annotations > 0] = True
             minimum_squared = (diameter * separation_fraction * 0.85) ** 2
             keep_automatic = np.ones(len(peak_x), dtype=bool)
-            for x, y in zip(manual_x, manual_y, strict=True):
+            for x, y in zip(annotation_x, annotation_y, strict=True):
                 keep_automatic &= (peak_x - x) ** 2 + (peak_y - y) ** 2 >= minimum_squared
             peak_x = peak_x[keep_automatic]
             peak_y = peak_y[keep_automatic]
             peak_scores = peak_scores[keep_automatic]
+
+    (
+        manual_x,
+        manual_y,
+        accepted_manual_source_xy,
+        rejected_manual_xy,
+        rejected_manual_reasons,
+    ) = _manual_centres_at_working_scale(
+        manual_seed_centres,
+        prepared,
+        occupancy,
+        annotations,
+        annotation_x,
+        annotation_y,
+        annotation_suppression_radius=(
+            diameter * separation_fraction * 0.85
+        ),
+    )
 
     area_fraction = (
         settings.packed_seed_cell_fraction
@@ -940,14 +1189,18 @@ def procedural_seed_instances_from_prepared(
         int(round(np.count_nonzero(occupancy) / max(1.0, area_fraction * diameter * diameter))),
     )
     maximum_markers = max(
-        len(manual_x),
+        len(annotation_x),
         1,
         int(round(expected_count * settings.marker_count_multiplier)),
     )
-    automatic_count = max(0, maximum_markers - len(manual_x))
+    automatic_count = max(0, maximum_markers - len(annotation_x))
     automatic_x = peak_x[:automatic_count]
     automatic_y = peak_y[:automatic_count]
     automatic_scores = peak_scores[:automatic_count]
+    replace_automatic = (
+        manual_seed_centres is not None
+        and manual_seed_centres.mode is ManualSeedCentreMode.REPLACE_AUTOMATIC
+    )
 
     # In a dense dish, regional-max NMS alone can discard several adjacent
     # genuine centres whenever one maximum is only slightly stronger.  Use the
@@ -955,7 +1208,11 @@ def procedural_seed_instances_from_prepared(
     # count) and fill its deficit with well-separated points from the smoothed
     # interior field.  Sparse scenes retain the stricter component maxima so
     # background material cannot be tiled with speculative seeds.
-    if coverage >= 0.55 and len(manual_x) + len(automatic_x) < maximum_markers:
+    if (
+        not replace_automatic
+        and coverage >= 0.55
+        and len(annotation_x) + len(automatic_x) < maximum_markers
+    ):
         marker_eligible = (
             traversable
             & (raw_boundary_depth >= max(1.0, diameter * 0.080))
@@ -970,19 +1227,65 @@ def procedural_seed_instances_from_prepared(
                 seed_diameter=diameter,
                 minimum_separation_fraction=separation_fraction,
                 minimum_score=settings.minimum_marker_score,
-                target_count=maximum_markers,
-                anchor_x=np.concatenate((manual_x, automatic_x)),
-                anchor_y=np.concatenate((manual_y, automatic_y)),
+                # A manual point is an additional authority, not a consumer
+                # of the calibrated automatic count. Including it in both the
+                # target and anchor set preserves that automatic population
+                # while preventing a supplemental point from landing beside it.
+                target_count=maximum_markers + len(manual_x),
+                anchor_x=np.concatenate(
+                    (annotation_x, manual_x, automatic_x)
+                ),
+                anchor_y=np.concatenate(
+                    (annotation_y, manual_y, automatic_y)
+                ),
             )
         )
         automatic_x = np.concatenate((automatic_x, supplemental_x))
         automatic_y = np.concatenate((automatic_y, supplemental_y))
         automatic_scores = np.concatenate((automatic_scores, supplemental_scores))
 
-    peak_x = np.concatenate((manual_x, automatic_x))
-    peak_y = np.concatenate((manual_y, automatic_y))
+    if replace_automatic:
+        automatic_x = np.empty(0, np.int32)
+        automatic_y = np.empty(0, np.int32)
+        automatic_scores = np.empty(0, np.float32)
+    elif len(manual_x) and len(automatic_x):
+        suppression_squared = (
+            diameter * MANUAL_CENTRE_SUPPRESSION_DIAMETER_FRACTION
+        ) ** 2
+        keep_automatic = np.ones(len(automatic_x), dtype=bool)
+        for x, y in zip(manual_x, manual_y, strict=True):
+            keep_automatic &= (
+                (automatic_x - x) ** 2 + (automatic_y - y) ** 2
+                > suppression_squared
+            )
+        automatic_x = automatic_x[keep_automatic]
+        automatic_y = automatic_y[keep_automatic]
+        automatic_scores = automatic_scores[keep_automatic]
+
+    peak_x = np.concatenate((annotation_x, manual_x, automatic_x))
+    peak_y = np.concatenate((annotation_y, manual_y, automatic_y))
     peak_scores = np.concatenate(
-        (np.ones(len(manual_x), np.float32), automatic_scores)
+        (
+            np.ones(len(annotation_x) + len(manual_x), np.float32),
+            automatic_scores,
+        )
+    )
+    peak_sources = np.concatenate(
+        (
+            np.full(
+                len(annotation_x),
+                int(ProceduralMarkerSource.ANNOTATED),
+                np.uint8,
+            ),
+            np.full(
+                len(manual_x), int(ProceduralMarkerSource.MANUAL), np.uint8
+            ),
+            np.full(
+                len(automatic_x),
+                int(ProceduralMarkerSource.AUTOMATIC),
+                np.uint8,
+            ),
+        )
     )
 
     markers = np.zeros((height, width), dtype=np.int32)
@@ -1005,12 +1308,36 @@ def procedural_seed_instances_from_prepared(
 
     minimum_area = diameter * diameter * settings.minimum_instance_area_fraction
     maximum_area = diameter * diameter * settings.maximum_instance_area_fraction
+    surviving_markers = np.zeros(len(peak_x), dtype=bool)
     if labels.max() > 0:
-        areas = np.bincount(labels.reshape(-1))
+        areas = np.bincount(labels.reshape(-1), minlength=len(peak_x) + 1)
         retained_labels = areas >= minimum_area
         retained_labels[0] = False
+        surviving_markers[:] = retained_labels[1 : len(peak_x) + 1]
         labels = np.where(retained_labels[labels], labels, 0).astype(np.int32)
     labels = _renumber_labels(labels)
+
+    manual_start = len(annotation_x)
+    manual_stop = manual_start + len(manual_x)
+    culled_manual = ~surviving_markers[manual_start:manual_stop]
+    if np.any(culled_manual):
+        rejected_manual_xy = np.concatenate(
+            (rejected_manual_xy, accepted_manual_source_xy[culled_manual]),
+            axis=0,
+        )
+        rejected_manual_reasons = (
+            *rejected_manual_reasons,
+            *("instance_below_minimum_area" for _ in range(np.count_nonzero(culled_manual))),
+        )
+    marker_centres = np.column_stack(
+        (
+            peak_x[surviving_markers] / scale,
+            peak_y[surviving_markers] / scale,
+        )
+    ).astype(np.float32)
+    marker_sources = np.asarray(
+        peak_sources[surviving_markers], dtype=np.uint8
+    )
 
     label_count = int(labels.max())
     if label_count:
@@ -1081,6 +1408,12 @@ def procedural_seed_instances_from_prepared(
         centre_likelihood=np.uint8(np.clip(np.rint(centre * 255.0), 0, 255)),
         source_shape=(source_height, source_width),
         working_scale=float(scale),
+        marker_centres_xy=np.asarray(marker_centres, np.float32).reshape(-1, 2),
+        marker_sources=marker_sources,
+        rejected_manual_centres_xy=np.asarray(
+            rejected_manual_xy, np.float32
+        ).reshape(-1, 2),
+        rejected_manual_centre_reasons=tuple(rejected_manual_reasons),
     )
 
 
@@ -1101,6 +1434,7 @@ def procedural_seed_instances(
     oriented_edge_trace_continuity=None,
     reference_surface_probability=None,
     seed_instance_annotations=None,
+    manual_seed_centres: ManualSeedCentres | None = None,
     settings: ProceduralInstanceSettings = ProceduralInstanceSettings(),
 ) -> ProceduralInstanceResult:
     """Separate visible seeds, preparing one bounded copy of every input."""
@@ -1125,5 +1459,6 @@ def procedural_seed_instances(
     return procedural_seed_instances_from_prepared(
         prepared,
         seed_instance_annotations=seed_instance_annotations,
+        manual_seed_centres=manual_seed_centres,
         settings=settings,
     )

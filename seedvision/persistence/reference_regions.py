@@ -159,15 +159,59 @@ class ReferenceRegionStore:
     def load_if_present(
         self,
         image_path: Path | str,
-        expected_shape: tuple[int, int],
+        expected_shape: tuple[int, int] | None = None,
     ) -> ReferenceRegionBundle | None:
-        """Load only after the current image fingerprint matches saved metadata."""
+        """Load after validating the image fingerprint and every saved raster.
+
+        ``expected_shape`` is normally the current corrected-image shape.  A
+        project master knows only the immutable raw source dimensions, so it
+        may pass ``None`` to validate the archive against its own positive,
+        internally consistent corrected-coordinate shape instead.
+        """
 
         image = Path(image_path).resolve()
-        source = self.path_for(image)
+        return self._load_archive(
+            image,
+            self.path_for(image),
+            expected_shape,
+            require_current_identity=True,
+        )
+
+    def load_project_archive(
+        self,
+        image_path: Path | str,
+        archive_path: Path | str,
+        expected_shape: tuple[int, int] | None = None,
+    ) -> ReferenceRegionBundle | None:
+        """Load the exact sidecar named by a validated project master.
+
+        A project master binds this explicit path to both the source-image and
+        sidecar SHA-256 digests.  The archive's historical ``image_identity``
+        remains schema-validated but is deliberately not recomputed: that
+        identity controls loose-workspace discovery and can differ after moving
+        a complete workspace between case-insensitive and case-sensitive hosts.
+        """
+
+        return self._load_archive(
+            Path(image_path).resolve(),
+            Path(archive_path).resolve(),
+            expected_shape,
+            require_current_identity=False,
+        )
+
+    def _load_archive(
+        self,
+        image: Path,
+        source: Path,
+        expected_shape: tuple[int, int] | None,
+        *,
+        require_current_identity: bool,
+    ) -> ReferenceRegionBundle | None:
         if not source.is_file():
             return None
-        expected_height, expected_width = _validated_shape(expected_shape)
+        expected = (
+            None if expected_shape is None else _validated_shape(expected_shape)
+        )
         try:
             with np.load(source, allow_pickle=False) as archive:
                 if "version" not in archive.files:
@@ -199,7 +243,14 @@ class ReferenceRegionStore:
                 saved_identity = _scalar_text(
                     archive["image_identity"], "image identity"
                 )
-                if saved_identity != self.image_identity(image):
+                if not saved_identity or "\x00" in saved_identity:
+                    raise InvalidReferenceArchive(
+                        f"Invalid image identity metadata in {source}."
+                    )
+                if (
+                    require_current_identity
+                    and saved_identity != self.image_identity(image)
+                ):
                     raise InvalidReferenceArchive(
                         f"Saved reference archive belongs to a different image: {source}"
                     )
@@ -216,15 +267,17 @@ class ReferenceRegionStore:
                     raise ImageFingerprintMismatch(
                         image, source, saved_digest, actual_digest
                     )
-                saved_shape = (
-                    _scalar_int(archive["height"], "height"),
-                    _scalar_int(archive["width"], "width"),
+                saved_shape = _validated_shape(
+                    (
+                        _scalar_int(archive["height"], "height"),
+                        _scalar_int(archive["width"], "width"),
+                    )
                 )
-                if saved_shape != (expected_height, expected_width):
+                if expected is not None and saved_shape != expected:
                     raise InvalidReferenceArchive(
                         "Saved reference dimensions "
                         f"{saved_shape[1]}×{saved_shape[0]} do not match the image "
-                        f"{expected_width}×{expected_height}: {source}"
+                        f"{expected[1]}×{expected[0]}: {source}"
                     )
                 material = np.asarray(archive["material"])
                 legacy_boundary = (
@@ -245,7 +298,7 @@ class ReferenceRegionStore:
                 f"Could not read saved reference regions from {source}: {error}"
             ) from error
 
-        shape = (expected_height, expected_width)
+        shape = saved_shape
         material = _categorical_raster(
             material, shape, _MATERIAL_CLASSES, "material", source
         )

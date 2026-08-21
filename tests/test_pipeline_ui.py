@@ -30,8 +30,8 @@ class PipelineCanvasTests(unittest.TestCase):
         self.application.processEvents()
         canvas.fit_graph()
         self.assertGreater(canvas.horizontalScrollBar().maximum(), 0)
-        self.assertEqual(len(canvas.node_items), 33)
-        self.assertEqual(len(canvas.edge_items), 151)
+        self.assertEqual(len(canvas.node_items), 34)
+        self.assertEqual(len(canvas.edge_items), 157)
         self.assertNotIn("circle_candidates", canvas.node_items)
         self.assertEqual(canvas.unused_nodes_button.text(), "Unused nodes (21)")
         unused_actions = [
@@ -276,8 +276,8 @@ class PipelineCanvasTests(unittest.TestCase):
         self.application.processEvents()
         self.assertEqual(restored, ["circle_candidates"])
         self.assertIn("circle_candidates", canvas.node_items)
-        self.assertEqual(len(canvas.node_items), 34)
-        self.assertEqual(len(canvas.edge_items), 159)
+        self.assertEqual(len(canvas.node_items), 35)
+        self.assertEqual(len(canvas.edge_items), 165)
         self.assertEqual(canvas.unused_nodes_button.text(), "Unused nodes (20)")
         self.assertTrue(canvas.unused_nodes_button.isEnabled())
         self.assertTrue(canvas.node_items["circle_candidates"].isSelected())
@@ -290,7 +290,7 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertNotIn("circle_candidates", canvas.node_items)
         self.assertIn("circle_candidates", graph.unused_nodes)
         self.assertFalse(graph.node("circle_candidates").enabled)
-        self.assertEqual(len(canvas.edge_items), 151)
+        self.assertEqual(len(canvas.edge_items), 157)
         self.assertEqual(canvas.unused_nodes_button.text(), "Unused nodes (21)")
         restore_action = next(
             action
@@ -359,7 +359,7 @@ class PipelineCanvasTests(unittest.TestCase):
             and edge.target == "foreground_noise_likelihood"
         )
         canvas._disconnect_connection(connection)
-        self.assertEqual(len(canvas.edge_items), 150)
+        self.assertEqual(len(canvas.edge_items), 156)
         self.assertFalse(graph.node(connection.target).enabled)
         self.assertIsNone(
             graph.connection_for_input(connection.target, connection.target_port)
@@ -376,7 +376,7 @@ class PipelineCanvasTests(unittest.TestCase):
                 connection.source_port
             )
         )
-        self.assertEqual(len(canvas.edge_items), 151)
+        self.assertEqual(len(canvas.edge_items), 157)
         self.assertTrue(graph.node(connection.target).enabled)
         self.assertIsNotNone(
             graph.connection_for_input(connection.target, connection.target_port)
@@ -484,6 +484,22 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertEqual(canvas.zoom_label.text(), "118%")
         self.assertEqual(canvas.auto_arrange_button.text(), "Auto arrange")
         self.assertEqual(canvas.unused_nodes_button.text(), "Unused nodes (21)")
+        self.assertEqual(canvas.bundle_cables_button.text(), "Bundle cables")
+        self.assertEqual(
+            canvas.route_around_nodes_button.text(), "Route around nodes"
+        )
+        self.assertTrue(canvas.bundle_cables_button.isCheckable())
+        self.assertTrue(canvas.route_around_nodes_button.isCheckable())
+        self.assertFalse(canvas.cable_bundling_enabled)
+        self.assertFalse(canvas.obstacle_routing_enabled)
+        self.assertFalse(canvas.bundle_cables_button.isChecked())
+        self.assertFalse(canvas.route_around_nodes_button.isChecked())
+        canvas.bundle_cables_button.click()
+        canvas.route_around_nodes_button.click()
+        self.assertTrue(canvas.cable_bundling_enabled)
+        self.assertTrue(canvas.obstacle_routing_enabled)
+        self.assertIn("display only", canvas.bundle_cables_button.toolTip())
+        self.assertIn("display only", canvas.route_around_nodes_button.toolTip())
         for button in (
             view.zoom_out_button,
             view.zoom_in_button,
@@ -491,6 +507,8 @@ class PipelineCanvasTests(unittest.TestCase):
             view.actual_size_button,
             canvas.auto_arrange_button,
             canvas.unused_nodes_button,
+            canvas.bundle_cables_button,
+            canvas.route_around_nodes_button,
             canvas.zoom_out_button,
             canvas.zoom_in_button,
             canvas.fit_button,
@@ -508,6 +526,7 @@ class PipelineCanvasTests(unittest.TestCase):
             "#aeb9c4",
         )
         self.assertIn("QToolButton:disabled", canvas.control_bar.styleSheet())
+        self.assertIn("QToolButton:checked", canvas.control_bar.styleSheet())
         view.close()
         canvas.close()
 
@@ -547,7 +566,7 @@ class PipelineCanvasTests(unittest.TestCase):
         inspector = PipelineInspector()
         expected_parameter_counts = {
             "seed_scale_estimation": 9,
-            "foreground_segmentation": 15,
+            "foreground_segmentation": 16,
             "distance_candidates": 4,
             "circle_candidates": 15,
             "identification": 1,
@@ -566,7 +585,7 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertEqual(
             inspector.title_label.text(), "Node: Foreground colour probability"
         )
-        self.assertEqual(inspector.parameter_form.rowCount(), 15)
+        self.assertEqual(inspector.parameter_form.rowCount(), 16)
         self.assertTrue(
             all(widget.toolTip() for widget in inspector._parameter_widgets)
         )
@@ -1464,6 +1483,18 @@ class PipelineCanvasTests(unittest.TestCase):
         from seedvision.ui.main_window import MainWindow
 
         window = MainWindow(ROOT)
+        self.assertTrue(
+            window.pipeline.node("background_likelihood").parameters[
+                "background_keep_perimeter_reference"
+            ]
+        )
+        self.assertTrue(
+            window.keep_perimeter_background_reference_checkbox.isChecked()
+        )
+        self.assertIn(
+            "in addition to any painted Background marks",
+            window.keep_perimeter_background_reference_checkbox.toolTip(),
+        )
         window.pipeline.set_parameter(
             "layout_detection", "hough_accumulator_threshold", 41
         )
@@ -1591,6 +1622,113 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertEqual(
             window.pipeline.node("undirected_edges").status, NodeStatus.IDLE
         )
+        window.close()
+
+    def test_perimeter_source_checkbox_invalidates_every_background_consumer(self) -> None:
+        from unittest.mock import patch
+
+        from seedvision.segmentation import PipelineAnalysisCache
+        from seedvision.ui.main_window import MainWindow
+
+        with patch.object(
+            MainWindow, "_auto_load_reference_regions", return_value=False
+        ):
+            window = MainWindow(ROOT)
+        key = window._current_image_key()
+        if key is None:
+            window.close()
+            self.skipTest("No workspace image is present")
+        window._analysis_caches[key] = PipelineAnalysisCache()
+        window._analyses[key] = object()
+        window._cache_dirty_nodes.pop(key, None)
+        scheduled: list[set[str]] = []
+        window._analyze_current_image = lambda **kwargs: scheduled.append(
+            set(kwargs.get("dirty_nodes", ()))
+        )
+
+        self.assertTrue(
+            window.keep_perimeter_background_reference_checkbox.isChecked()
+        )
+        window.keep_perimeter_background_reference_checkbox.setChecked(False)
+
+        self.assertFalse(
+            window.pipeline.node("background_likelihood").parameters[
+                "background_keep_perimeter_reference"
+            ]
+        )
+        self.assertFalse(
+            window._layer_settings().background_keep_perimeter_reference
+        )
+        self.assertFalse(
+            window.image_view._automatic_background_reference_visible
+        )
+        dirty = window._cache_dirty_nodes[key]
+        for node_id in (
+            "background_likelihood",
+            "refined_background_likelihood",
+            "reference_texture_prototypes",
+        ):
+            self.assertIn(node_id, dirty)
+        self.assertEqual(len(scheduled), 1)
+        self.assertTrue(dirty.issubset(scheduled[0]))
+        window.close()
+
+    def test_annotated_seed_foreground_checkbox_is_opt_in_and_invalidates_consumers(self) -> None:
+        from unittest.mock import patch
+
+        from seedvision.segmentation import PipelineAnalysisCache
+        from seedvision.ui.main_window import MainWindow
+
+        with patch.object(
+            MainWindow, "_auto_load_reference_regions", return_value=False
+        ):
+            window = MainWindow(ROOT)
+        key = window._current_image_key()
+        if key is None:
+            window.close()
+            self.skipTest("No workspace image is present")
+        window._analysis_caches[key] = PipelineAnalysisCache()
+        window._analyses[key] = object()
+        window.image_view._analysis_result = object()
+        window._cache_dirty_nodes.pop(key, None)
+        scheduled: list[set[str]] = []
+        window._analyze_current_image = lambda **kwargs: scheduled.append(
+            set(kwargs.get("dirty_nodes", ()))
+        )
+        window._sync_background_controls()
+
+        checkbox = window.include_seed_instances_as_foreground_checkbox
+        self.assertFalse(checkbox.isChecked())
+        self.assertTrue(checkbox.isEnabled())
+        self.assertIn("safely inset interiors", checkbox.toolTip())
+        self.assertIn("Apply + save", checkbox.toolTip())
+        checkbox.setChecked(True)
+
+        self.assertTrue(
+            window.pipeline.node("foreground_segmentation").parameters[
+                "foreground_include_annotated_seed_instances"
+            ]
+        )
+        self.assertTrue(
+            window._baseline_settings().foreground_include_annotated_seed_instances
+        )
+        dirty = window._cache_dirty_nodes[key]
+        for node_id in (
+            "foreground_segmentation",
+            "foreground_noise_likelihood",
+            "reference_texture_prototypes",
+        ):
+            self.assertIn(node_id, dirty)
+        self.assertEqual(len(scheduled), 1)
+        self.assertTrue(dirty.issubset(scheduled[0]))
+
+        # Programmatic inspector/reset-style edits mirror the contextual control.
+        window._pipeline_parameter_changed(
+            "foreground_segmentation",
+            "foreground_include_annotated_seed_instances",
+            False,
+        )
+        self.assertFalse(checkbox.isChecked())
         window.close()
 
     def test_net_edge_subtraction_refreshes_display_without_analysis_work(self) -> None:
@@ -2232,6 +2370,189 @@ class PipelineCanvasTests(unittest.TestCase):
             self.assertFalse(view.reference_mask("background")[50, 50])
             view.close()
 
+    def test_background_painting_shows_exact_automatic_area_and_perimeter_ring(self) -> None:
+        import numpy as np
+
+        from PySide6.QtCore import QPointF, Qt
+        from PySide6.QtGui import QColor, QImage
+        from PySide6.QtWidgets import QGraphicsPathItem, QGraphicsPixmapItem
+
+        from seedvision.ui.image_view import ImageView
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "automatic-background-source.png"
+            image = QImage(96, 80, QImage.Format.Format_RGB32)
+            image.fill(QColor("white"))
+            self.assertTrue(image.save(str(path)))
+
+            source_mask = np.zeros((20, 30), dtype=np.uint8)
+            source_mask[2:6, 4:11] = 255
+            source_mask[13, 24] = 255
+            painted_mask = np.zeros((80, 96), dtype=bool)
+            painted_mask[55:61, 67:73] = True
+            result = SimpleNamespace(
+                calibration=SimpleNamespace(
+                    corrected_bgr=np.full((80, 96, 3), 235, np.uint8)
+                ),
+                layers=SimpleNamespace(
+                    background_reference_source_mask=source_mask
+                ),
+                crop_offset=(7, 11),
+                dish=SimpleNamespace(center_x=48.0, center_y=40.0),
+                perimeter_background_band=SimpleNamespace(
+                    inner_radius_px=40.0,
+                    outer_radius_px=45.0,
+                    outside_vessel=True,
+                    sample_count=1337,
+                    buffer_cm=0.35,
+                    thickness_cm=0.50,
+                ),
+            )
+            view = ImageView()
+            succeeded, error = view.load_image(path)
+            self.assertTrue(succeeded, error)
+            view.set_overlay_mode("none")
+            view.set_reference_masks(painted_mask, None, render=False)
+            view.show_analysis(result)
+
+            # The automatic source is a painting aid, not a general overlay.
+            self.assertFalse(
+                any(
+                    item.toolTip().startswith(
+                        "Automatic perimeter-matched Background source"
+                    )
+                    for item in view._overlay_items
+                )
+            )
+            view.set_background_point_editing(True)
+            source_items = [
+                item
+                for item in view._overlay_items
+                if isinstance(item, QGraphicsPixmapItem)
+                and item.toolTip().startswith(
+                    "Automatic perimeter-matched Background source"
+                )
+            ]
+            self.assertEqual(len(source_items), 1)
+            source_item = source_items[0]
+            self.assertEqual(source_item.pos(), QPointF(7.0, 11.0))
+            rendered = source_item.pixmap().toImage()
+            self.assertEqual((rendered.width(), rendered.height()), (30, 20))
+            for y in range(source_mask.shape[0]):
+                for x in range(source_mask.shape[1]):
+                    pixel = rendered.pixelColor(x, y)
+                    self.assertEqual(
+                        pixel.alpha(), 92 if source_mask[y, x] else 0
+                    )
+            included = rendered.pixelColor(4, 2)
+            for actual, expected in zip(
+                (included.red(), included.green(), included.blue()),
+                (65, 217, 255),
+            ):
+                # QPixmap stores translucent pixels premultiplied; converting
+                # back to QColor can round a channel down by one.
+                self.assertAlmostEqual(actual, expected, delta=1)
+
+            rings = [
+                item
+                for item in view._overlay_items
+                if isinstance(item, QGraphicsPathItem)
+                and item.toolTip().startswith("Initial background sampling band")
+            ]
+            self.assertEqual(len(rings), 1)
+            ring = rings[0]
+            self.assertNotEqual(
+                ring.brush().style(), Qt.BrushStyle.NoBrush
+            )
+            self.assertAlmostEqual(ring.path().boundingRect().width(), 90.0)
+            self.assertFalse(ring.path().contains(QPointF(48.0, 40.0)))
+            self.assertTrue(ring.path().contains(QPointF(90.5, 40.0)))
+
+            view.set_automatic_background_reference_visible(False)
+            self.assertFalse(
+                any(
+                    item.toolTip().startswith((
+                        "Automatic perimeter-matched Background source",
+                        "Initial background sampling band",
+                    ))
+                    for item in view._overlay_items
+                )
+            )
+            # The manually painted Background raster stays visible.
+            self.assertTrue(
+                any(
+                    isinstance(item, QGraphicsPixmapItem)
+                    for item in view._overlay_items
+                )
+            )
+            view.set_automatic_background_reference_visible(True)
+            view.set_foreground_point_editing(True)
+            self.assertFalse(
+                any(
+                    item.toolTip().startswith((
+                        "Automatic perimeter-matched Background source",
+                        "Initial background sampling band",
+                    ))
+                    for item in view._overlay_items
+                )
+            )
+            view.close()
+
+    def test_sparse_automatic_background_source_survives_large_view_downsampling(self) -> None:
+        import numpy as np
+
+        from PySide6.QtGui import QColor, QImage
+        from PySide6.QtWidgets import QGraphicsPixmapItem
+
+        from seedvision.ui.image_view import ImageView
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            width, height = 4097, 9
+            path = Path(temporary_directory) / "wide-background-source.png"
+            image = QImage(width, height, QImage.Format.Format_RGB32)
+            image.fill(QColor("white"))
+            self.assertTrue(image.save(str(path)))
+            source_mask = np.zeros((height, width), np.uint8)
+            # The former point sampler chose columns 0, 2, 4, ... and silently
+            # dropped this valid one-pixel source at odd x=1.
+            source_mask[4, 1] = 255
+            result = SimpleNamespace(
+                calibration=SimpleNamespace(
+                    corrected_bgr=np.full((height, width, 3), 235, np.uint8)
+                ),
+                layers=SimpleNamespace(
+                    background_reference_source_mask=source_mask
+                ),
+                crop_offset=(0, 0),
+                perimeter_background_band=None,
+            )
+            view = ImageView()
+            succeeded, error = view.load_image(path)
+            self.assertTrue(succeeded, error)
+            view.set_overlay_mode("none")
+            view.show_analysis(result)
+            view.set_background_point_editing(True)
+
+            source_items = [
+                item
+                for item in view._overlay_items
+                if isinstance(item, QGraphicsPixmapItem)
+                and item.toolTip().startswith(
+                    "Automatic perimeter-matched Background source"
+                )
+            ]
+            self.assertEqual(len(source_items), 1)
+            rendered = source_items[0].pixmap().toImage()
+            self.assertEqual(rendered.width(), 2048)
+            self.assertTrue(
+                any(
+                    rendered.pixelColor(x, y).alpha() > 0
+                    for y in range(rendered.height())
+                    for x in range(rendered.width())
+                )
+            )
+            view.close()
+
     def test_image_view_edits_distinct_seed_instance_ids(self) -> None:
         import numpy as np
 
@@ -2531,7 +2852,12 @@ class PipelineCanvasTests(unittest.TestCase):
             shape_centre = view.mapFromScene(QPointF(112, 58))
             QTest.mouseMove(view.viewport(), view.viewport().rect().topLeft())
             QTest.mouseMove(view.viewport(), shape_centre)
+            # Keep the debounced hover target deterministic when a prior Qt
+            # view left a platform-level mouse move queued at another scene
+            # coordinate. The public event path is still exercised above.
+            view._update_reference_brush_outline(QPointF(112, 58))
             QTest.qWait(55)
+            view._update_instance_assisted_preview(QPointF(112, 58))
             self.assertIsNotNone(view._instance_shape_guided_region)
             assert view._instance_shape_guided_region is not None
             self.assertIsNotNone(

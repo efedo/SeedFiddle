@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import cv2
@@ -484,6 +484,8 @@ class ImageView(QGraphicsView):
     instance_annotations_edited = Signal(object)
     instance_tool_status = Signal(str)
     shape_fill_size_preference_changed = Signal(float)
+    manual_seed_centres_edited = Signal(object, str, str)
+    manual_seed_centre_editing_cancelled = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -517,6 +519,7 @@ class ImageView(QGraphicsView):
         self._physical_edge_reference_mask: np.ndarray | None = None
         self._non_edge_reference_mask: np.ndarray | None = None
         self._material_reference_annotations_visible = True
+        self._automatic_background_reference_visible = True
         # Retired manual Physical-edge/Non-edge masks can still be restored
         # from an older reference archive, but they are deliberately never
         # presented or edited.  Boundary supervision now comes from complete
@@ -528,6 +531,12 @@ class ImageView(QGraphicsView):
         # independent of this flag.
         self._reference_annotations_visible = True
         self._instance_annotations: np.ndarray | None = None
+        self._manual_seed_centres = np.empty((0, 2), dtype=np.float64)
+        self._manual_seed_centre_mode = "augment"
+        self._manual_seed_centre_editing = False
+        self._manual_seed_centre_selected: dict[str, object] | None = None
+        self._manual_seed_centre_drag: dict[str, object] | None = None
+        self._manual_seed_centre_drag_items: list[QGraphicsItem] = []
         self._instance_bounds_cache: dict[
             int, tuple[int, int, int, int] | None
         ] = {}
@@ -869,6 +878,7 @@ class ImageView(QGraphicsView):
         self._prototype_collage_key = None
         self._displayed_base = "source"
         release_host_caches(self._analysis_result)
+        self._clear_manual_seed_centre_drag_items()
         self._scene.clear()
         self._overlay_items = []
         self._analysis_result = None
@@ -879,6 +889,11 @@ class ImageView(QGraphicsView):
         self._physical_edge_reference_mask = None
         self._non_edge_reference_mask = None
         self._instance_annotations = None
+        self._manual_seed_centres = np.empty((0, 2), dtype=np.float64)
+        self._manual_seed_centre_mode = "augment"
+        self._manual_seed_centre_editing = False
+        self._manual_seed_centre_selected = None
+        self._manual_seed_centre_drag = None
         self._instance_bounds_cache.clear()
         self._instance_tool_points.clear()
         self._annotation_evidence_cache.clear()
@@ -904,6 +919,44 @@ class ImageView(QGraphicsView):
             self._fit_pending = True
         return True, ""
 
+    def clear_image(self) -> None:
+        """Return to the empty placeholder without retaining image-local state."""
+
+        self._instance_preview_timer.stop()
+        self._gamut_render_timer.stop()
+        release_host_caches(self._analysis_result)
+        self._clear_manual_seed_centre_drag_items()
+        self._image_path = None
+        self._background_reference_mask = None
+        self._foreground_reference_mask = None
+        self._background_exclusion_mask = None
+        self._foreground_exclusion_mask = None
+        self._physical_edge_reference_mask = None
+        self._non_edge_reference_mask = None
+        self._instance_annotations = None
+        self._manual_seed_centres = np.empty((0, 2), dtype=np.float64)
+        self._manual_seed_centre_mode = "augment"
+        self._manual_seed_centre_editing = False
+        self._manual_seed_centre_selected = None
+        self._manual_seed_centre_drag = None
+        self._instance_bounds_cache.clear()
+        self._instance_tool_points.clear()
+        self._annotation_evidence_cache.clear()
+        self._instance_trace_anchor = None
+        self._instance_trace_geometry = None
+        self._instance_preview_geometry = None
+        self._instance_preview_region = None
+        self._instance_shape_guided_region = None
+        self._instance_preview_endpoint = None
+        self._instance_preview_point = None
+        self._pending_instance_preview_point = None
+        self._reference_point_mode = None
+        self._reference_paint_button = None
+        self._last_reference_paint_point = None
+        self._last_reference_hover_point = None
+        self._show_placeholder()
+        self._fit_pending = False
+
     def showEvent(self, event) -> None:  # noqa: N802 - Qt override
         super().showEvent(event)
         if self._fit_pending:
@@ -926,7 +979,86 @@ class ImageView(QGraphicsView):
         self._corrected_base_key = None
         self._restore_source_image()
 
+    @property
+    def manual_seed_centre_editing(self) -> bool:
+        return self._manual_seed_centre_editing
+
+    def set_manual_seed_centres(
+        self,
+        centres_xy: np.ndarray | None,
+        *,
+        mode: str = "augment",
+        render: bool = True,
+    ) -> None:
+        """Supply manual centres in full corrected-image coordinates."""
+
+        if mode not in {"augment", "replace_automatic"}:
+            raise ValueError(f"Unknown manual seed-centre mode {mode!r}.")
+        if centres_xy is None:
+            values = np.empty((0, 2), dtype=np.float64)
+        else:
+            values = np.asarray(centres_xy)
+            if values.ndim != 2 or values.shape[1:] != (2,):
+                raise ValueError("Manual seed centres must be an N×2 array.")
+            if not np.all(np.isfinite(values)):
+                raise ValueError("Manual seed centres must contain finite coordinates.")
+            values = values.astype(np.float64, copy=True)
+        self._manual_seed_centres = values
+        self._manual_seed_centre_mode = mode
+        self._manual_seed_centre_selected = None
+        self._manual_seed_centre_drag = None
+        self._clear_manual_seed_centre_drag_items()
+        if render and self._analysis_result is not None:
+            self._render_analysis()
+
+    def manual_seed_centres(self) -> tuple[np.ndarray, str]:
+        return self._manual_seed_centres.copy(), self._manual_seed_centre_mode
+
+    def set_manual_seed_centre_editing(self, enabled: bool) -> None:
+        """Enter the click/add, drag/move, and right-click/remove centre mode."""
+
+        enabled = bool(enabled)
+        if enabled == self._manual_seed_centre_editing:
+            return
+        self._manual_seed_centre_editing = enabled
+        self._manual_seed_centre_selected = None
+        self._manual_seed_centre_drag = None
+        self._clear_manual_seed_centre_drag_items()
+        if enabled:
+            self._set_reference_point_mode(None)
+            self.setDragMode(QGraphicsView.DragMode.NoDrag)
+            self.viewport().setCursor(Qt.CursorShape.CrossCursor)
+            self.setFocus(Qt.FocusReason.MouseFocusReason)
+        elif self._reference_point_mode is None:
+            self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+            self.viewport().unsetCursor()
+        if self._analysis_result is not None:
+            self._render_analysis()
+
+    def editable_procedural_marker_centres(
+        self,
+        *,
+        exclude_result_index: int | None = None,
+    ) -> np.ndarray:
+        """Return surviving non-annotation markers in corrected coordinates."""
+
+        records = self._procedural_marker_records(include_current_manual=True)
+        points: list[tuple[float, float]] = []
+        for record in records:
+            if record["source"] in {"annotation", "rejected"}:
+                continue
+            result_index = record.get("result_index")
+            if exclude_result_index is not None and result_index == exclude_result_index:
+                continue
+            point = record["point"]
+            candidate = (float(point.x()), float(point.y()))
+            if any(np.hypot(candidate[0] - x, candidate[1] - y) < 0.25 for x, y in points):
+                continue
+            points.append(candidate)
+        return np.asarray(points, dtype=np.float64).reshape(-1, 2)
+
     def _clear_overlay_items(self) -> None:
+        self._clear_manual_seed_centre_drag_items()
         for item in self._overlay_items:
             self._scene.removeItem(item)
         self._overlay_items.clear()
@@ -1069,6 +1201,16 @@ class ImageView(QGraphicsView):
         self._material_reference_annotations_visible = bool(visible)
         self._sync_combined_reference_visibility()
         self._render_analysis()
+
+    def set_automatic_background_reference_visible(self, visible: bool) -> None:
+        """Show the retained automatic source while painting Background."""
+
+        visible = bool(visible)
+        if visible == self._automatic_background_reference_visible:
+            return
+        self._automatic_background_reference_visible = visible
+        if self._reference_point_mode == "background":
+            self._render_analysis()
 
     def set_boundary_reference_annotations_visible(self, visible: bool) -> None:
         """Keep retired Physical-edge/Non-edge masks hidden.
@@ -1354,6 +1496,13 @@ class ImageView(QGraphicsView):
             )
 
     def _set_reference_point_mode(self, mode: str | None) -> None:
+        previous_mode = self._reference_point_mode
+        if mode is not None and self._manual_seed_centre_editing:
+            self._manual_seed_centre_editing = False
+            self._manual_seed_centre_selected = None
+            self._manual_seed_centre_drag = None
+            self._clear_manual_seed_centre_drag_items()
+            self.manual_seed_centre_editing_cancelled.emit()
         self._reference_point_mode = mode
         if mode is not None:
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
@@ -1371,6 +1520,8 @@ class ImageView(QGraphicsView):
             self._clear_reference_live_stroke()
             self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
             self.viewport().unsetCursor()
+        if (previous_mode == "background") != (mode == "background"):
+            self._render_analysis()
 
     def _update_reference_brush_outline(self, scene_point: QPointF) -> None:
         if self._reference_point_mode is None or self._image_item is None:
@@ -1818,7 +1969,19 @@ class ImageView(QGraphicsView):
                     layers.surrounding_noise_offset_x,
                     layers.surrounding_noise_offset_y,
                 )
-            self._render_background_sampling_band(result, fill=False)
+            automatic_source_paint_view = (
+                self._reference_point_mode == "background"
+                and self._automatic_background_reference_visible
+                and getattr(
+                    layers, "background_reference_source_mask", None
+                )
+                is not None
+            )
+            if (
+                self._automatic_background_reference_visible
+                and not automatic_source_paint_view
+            ):
+                self._render_background_sampling_band(result, fill=False)
         self._render_context_annotations(result)
 
     def _render_edge_fit_geometry(self, result) -> None:
@@ -1899,30 +2062,227 @@ class ImageView(QGraphicsView):
         self._overlay_items.append(item)
 
     def _render_procedural_centres(self, result) -> None:
+        if self._manual_seed_centre_editing:
+            # The editor renders the same real watershed markers with source
+            # semantics and hit targets after the selected raster overlay.
+            return
         procedural = getattr(result, "procedural_instances", None)
         if procedural is None:
             return
-        offset_x, offset_y = result.crop_offset
-        for index, (x, y) in enumerate(procedural.centres_xy):
-            confidence = (
-                float(procedural.instance_confidences[index])
-                if index < len(procedural.instance_confidences)
-                else 0.0
+        for record in self._procedural_marker_records(include_current_manual=False):
+            self._render_manual_seed_centre_marker(record, editing=False)
+
+    @staticmethod
+    def _normalised_procedural_marker_source(value: object) -> str:
+        raw = getattr(value, "value", value)
+        if isinstance(raw, str):
+            normalised = raw.casefold().replace("-", "_")
+            if normalised in {"automatic", "manual", "annotated"}:
+                return "annotation" if normalised == "annotated" else normalised
+        try:
+            return {0: "automatic", 1: "manual", 2: "annotation"}[int(raw)]
+        except (KeyError, TypeError, ValueError):
+            return "automatic"
+
+    def _procedural_marker_records(
+        self, *, include_current_manual: bool
+    ) -> list[dict[str, object]]:
+        """Describe actual watershed markers in full corrected coordinates."""
+
+        result = self._analysis_result
+        procedural = (
+            None if result is None else getattr(result, "procedural_instances", None)
+        )
+        records: list[dict[str, object]] = []
+        used_manual: set[int] = set()
+        if procedural is not None:
+            manual_match_tolerance = max(
+                2.0,
+                0.75 / max(1e-6, float(getattr(procedural, "working_scale", 1.0)))
+                + 0.5,
             )
-            colour = QColor.fromHsvF(0.33 * confidence, 0.95, 1.0)
-            pen = QPen(colour, 3.0)
-            pen.setCosmetic(True)
-            radius = 3.0 + 3.0 * confidence
-            item = self._scene.addEllipse(
-                float(x + offset_x - radius),
-                float(y + offset_y - radius),
+            marker_centres = np.asarray(
+                getattr(procedural, "marker_centres_xy", ()), dtype=np.float64
+            ).reshape(-1, 2)
+            marker_sources = np.asarray(
+                getattr(procedural, "marker_sources", ()), dtype=object
+            ).reshape(-1)
+            if len(marker_sources) != len(marker_centres):
+                marker_sources = np.zeros(len(marker_centres), dtype=np.uint8)
+            offset_x, offset_y = result.crop_offset
+            for result_index, (local_point, source_value) in enumerate(
+                zip(marker_centres, marker_sources, strict=True)
+            ):
+                point = QPointF(
+                    float(local_point[0] + offset_x),
+                    float(local_point[1] + offset_y),
+                )
+                source = self._normalised_procedural_marker_source(source_value)
+                manual_index = None
+                if source == "manual" and len(self._manual_seed_centres):
+                    distances = np.hypot(
+                        self._manual_seed_centres[:, 0] - point.x(),
+                        self._manual_seed_centres[:, 1] - point.y(),
+                    )
+                    if used_manual:
+                        distances[list(used_manual)] = np.inf
+                    candidate = int(np.argmin(distances))
+                    if float(distances[candidate]) <= manual_match_tolerance:
+                        manual_index = candidate
+                        used_manual.add(candidate)
+                records.append(
+                    {
+                        "point": point,
+                        "source": source,
+                        "manual_index": manual_index,
+                        "result_index": result_index,
+                        "reason": "",
+                    }
+                )
+
+            rejected = np.asarray(
+                getattr(procedural, "rejected_manual_centres_xy", ()),
+                dtype=np.float64,
+            ).reshape(-1, 2)
+            reasons = tuple(
+                str(value)
+                for value in getattr(
+                    procedural, "rejected_manual_centre_reasons", ()
+                )
+            )
+            for rejected_index, local_point in enumerate(rejected):
+                point = QPointF(
+                    float(local_point[0] + offset_x),
+                    float(local_point[1] + offset_y),
+                )
+                manual_index = None
+                if len(self._manual_seed_centres):
+                    distances = np.hypot(
+                        self._manual_seed_centres[:, 0] - point.x(),
+                        self._manual_seed_centres[:, 1] - point.y(),
+                    )
+                    if used_manual:
+                        distances[list(used_manual)] = np.inf
+                    candidate = int(np.argmin(distances))
+                    if float(distances[candidate]) <= manual_match_tolerance:
+                        manual_index = candidate
+                        used_manual.add(candidate)
+                records.append(
+                    {
+                        "point": point,
+                        "source": "rejected",
+                        "manual_index": manual_index,
+                        "result_index": None,
+                        "reason": (
+                            reasons[rejected_index]
+                            if rejected_index < len(reasons)
+                            else "Manual centre was rejected by procedural inference."
+                        ),
+                    }
+                )
+
+        if include_current_manual:
+            for manual_index, (x, y) in enumerate(self._manual_seed_centres):
+                if manual_index in used_manual:
+                    continue
+                records.append(
+                    {
+                        "point": QPointF(float(x), float(y)),
+                        "source": "manual",
+                        "manual_index": manual_index,
+                        "result_index": None,
+                        "reason": "Pending procedural recomputation.",
+                    }
+                )
+        return records
+
+    def _render_manual_seed_centre_editor(self, result) -> None:
+        del result
+        for record in self._procedural_marker_records(include_current_manual=True):
+            self._render_manual_seed_centre_marker(record, editing=True)
+
+    def _render_manual_seed_centre_marker(
+        self, record: dict[str, object], *, editing: bool
+    ) -> None:
+        point = record["point"]
+        source = str(record["source"])
+        selected = False
+        if self._manual_seed_centre_selected is not None:
+            selected = (
+                self._manual_seed_centre_selected.get("source") == source
+                and self._manual_seed_centre_selected.get("manual_index")
+                == record.get("manual_index")
+                and self._manual_seed_centre_selected.get("result_index")
+                == record.get("result_index")
+            )
+        colours = {
+            "automatic": QColor("#43ddff"),
+            "manual": QColor("#ffe04f"),
+            "annotation": QColor("#ff55de"),
+            "rejected": QColor("#ff4545"),
+        }
+        colour = colours.get(source, colours["automatic"])
+        pen = QPen(QColor("#ffffff") if selected else colour, 3.0 if selected else 2.0)
+        pen.setCosmetic(True)
+        brush = QBrush(
+            colour
+            if source in {"manual", "annotation"}
+            else Qt.BrushStyle.NoBrush
+        )
+        radius = 7.0 if editing else 5.0
+        items: list[QGraphicsItem] = []
+        if source == "annotation":
+            item = self._scene.addRect(
+                -radius,
+                -radius,
                 radius * 2.0,
                 radius * 2.0,
                 pen,
+                brush,
             )
-            item.setOpacity(self._overlay_opacity)
-            item.setZValue(15)
-            self._overlay_items.append(item)
+            items.append(item)
+        else:
+            item = self._scene.addEllipse(
+                -radius,
+                -radius,
+                radius * 2.0,
+                radius * 2.0,
+                pen,
+                brush,
+            )
+            items.append(item)
+        if source == "manual":
+            dark_pen = QPen(QColor("#493f00"), 1.5)
+            dark_pen.setCosmetic(True)
+            items.extend(
+                (
+                    self._scene.addLine(-3.5, 0.0, 3.5, 0.0, dark_pen),
+                    self._scene.addLine(0.0, -3.5, 0.0, 3.5, dark_pen),
+                )
+            )
+        elif source == "rejected":
+            items.extend(
+                (
+                    self._scene.addLine(-5.0, -5.0, 5.0, 5.0, pen),
+                    self._scene.addLine(-5.0, 5.0, 5.0, -5.0, pen),
+                )
+            )
+        tooltips = {
+            "automatic": "Automatic procedural watershed marker. Dragging or deleting it switches to Replace automatic mode.",
+            "manual": "Manual procedural watershed marker. Drag to adjust; right-click or Delete removes it.",
+            "annotation": "Locked marker from an applied seed-instance annotation. Edit the annotation to move it.",
+            "rejected": str(record.get("reason") or "Rejected manual marker."),
+        }
+        for marker_item in items:
+            marker_item.setPos(point)
+            marker_item.setFlag(
+                QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True
+            )
+            marker_item.setOpacity(1.0 if editing else self._overlay_opacity)
+            marker_item.setZValue(46 if editing else 15)
+            marker_item.setToolTip(tooltips[source])
+            marker_item.setData(0, "manual-seed-centre-marker")
+            self._overlay_items.append(marker_item)
 
     def _render_learned_centres(self, result, learned) -> None:
         offset_x, offset_y = result.crop_offset
@@ -2152,10 +2512,88 @@ class ImageView(QGraphicsView):
         if include_scale:
             self._render_scale_bar(result)
         if self._material_reference_annotations_visible:
+            if (
+                self._reference_point_mode == "background"
+                and self._automatic_background_reference_visible
+                and self._render_automatic_background_reference_area(result)
+            ):
+                if self._overlay_mode != "perimeter_background_reference":
+                    self._render_background_sampling_band(result)
             self._render_background_reference_points()
             self._render_foreground_reference_points()
             self._render_exclusion_masks()
         self._render_instance_annotations()
+        if self._manual_seed_centre_editing:
+            self._render_manual_seed_centre_editor(result)
+
+    def _render_automatic_background_reference_area(self, result) -> bool:
+        """Render a coverage-preserving view of the retained source mask."""
+
+        raster = getattr(
+            result.layers, "background_reference_source_mask", None
+        )
+        if raster is None:
+            return False
+        values = np.asarray(raster)
+        if values.ndim != 2:
+            values = np.squeeze(values)
+        if values.ndim != 2:
+            return False
+        mask = values > 0
+        if not bool(np.any(mask)):
+            # The sampled ring is still retained even when no in-dish pixel
+            # passes its colour-similarity gate.
+            return True
+
+        source_height, source_width = mask.shape
+        maximum_display_dimension = 2048
+        if max(source_height, source_width) > maximum_display_dimension:
+            factor = maximum_display_dimension / max(
+                source_height, source_width
+            )
+            display_width = max(1, round(source_width * factor))
+            display_height = max(1, round(source_height * factor))
+            # A nearest-neighbour overview can omit a narrow or isolated
+            # source pixel entirely. Area resampling in floating point keeps
+            # every non-empty source footprint represented in at least one
+            # display cell, while the authoritative full-resolution mask stays
+            # on the analysis layer.
+            display_mask = cv2.resize(
+                mask.astype(np.float32),
+                (display_width, display_height),
+                interpolation=cv2.INTER_AREA,
+            ) > 0.0
+        else:
+            display_mask = mask
+
+        rgba = np.zeros((*display_mask.shape, 4), dtype=np.uint8)
+        rgba[:, :, :3] = (65, 217, 255)
+        rgba[:, :, 3] = np.uint8(display_mask) * 92
+        height, width = display_mask.shape
+        image = QImage(
+            rgba.data,
+            width,
+            height,
+            int(rgba.strides[0]),
+            QImage.Format.Format_RGBA8888,
+        ).copy()
+        item = self._scene.addPixmap(QPixmap.fromImage(image))
+        item.setPos(*result.crop_offset)
+        item.setTransformationMode(Qt.TransformationMode.FastTransformation)
+        item.setTransform(
+            QTransform.fromScale(source_width / width, source_height / height)
+        )
+        item.setOpacity(self._overlay_opacity)
+        item.setZValue(29)
+        item.setToolTip(
+            "Automatic perimeter-matched Background source area (cyan). "
+            "The outside ring supplies Lab colour anchors; matching in-dish "
+            "pixels supply the Background colour, noise, and material-prototype "
+            "models. Green areas are manually painted Background references."
+        )
+        item.setData(0, "automatic-background-reference-area")
+        self._overlay_items.append(item)
+        return True
 
     def _background_marker_radius(self) -> float:
         return self._reference_brush_radius
@@ -3741,7 +4179,227 @@ class ImageView(QGraphicsView):
             self.instance_tool_status.emit(str(error))
         return False
 
+    def _manual_seed_centre_hit(
+        self, scene_point: QPointF
+    ) -> dict[str, object] | None:
+        """Return the closest constant-screen-size marker hit."""
+
+        pointer = self.mapFromScene(scene_point)
+        candidates: list[tuple[float, int, dict[str, object]]] = []
+        priority = {"manual": 0, "rejected": 0, "automatic": 1, "annotation": 2}
+        for record in self._procedural_marker_records(include_current_manual=True):
+            marker = self.mapFromScene(record["point"])
+            distance = float(np.hypot(pointer.x() - marker.x(), pointer.y() - marker.y()))
+            if distance <= 12.0:
+                candidates.append(
+                    (distance, priority.get(str(record["source"]), 3), record)
+                )
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: (item[0], item[1]))
+        return dict(candidates[0][2])
+
+    def _clamped_manual_seed_centre_point(self, scene_point: QPointF) -> QPointF:
+        if self._image_item is None:
+            return QPointF(scene_point)
+        bounds = self._image_item.boundingRect()
+        return QPointF(
+            min(max(float(scene_point.x()), bounds.left()), bounds.right() - 1e-6),
+            min(max(float(scene_point.y()), bounds.top()), bounds.bottom() - 1e-6),
+        )
+
+    def _start_manual_seed_centre_drag(
+        self,
+        scene_point: QPointF,
+        record: dict[str, object] | None,
+    ) -> None:
+        point = self._clamped_manual_seed_centre_point(scene_point)
+        if record is None:
+            base = self._manual_seed_centres.copy()
+            index = len(base)
+            base = np.vstack((base, (point.x(), point.y())))
+            mode = self._manual_seed_centre_mode
+            source = "new"
+            original = QPointF(point)
+            result_index = None
+        else:
+            source = str(record["source"])
+            if source == "annotation":
+                self._manual_seed_centre_selected = dict(record)
+                self.instance_tool_status.emit(
+                    "That magenta centre is locked to an applied seed annotation; "
+                    "move the annotation itself to adjust it."
+                )
+                self._render_analysis()
+                return
+            if source == "rejected":
+                self.instance_tool_status.emit(
+                    "Rejected manual centre: "
+                    + str(record.get("reason") or "not accepted by procedural inference")
+                    + ". Drag it to try another location, or remove it."
+                )
+            original = QPointF(record["point"])
+            result_index = record.get("result_index")
+            manual_index = record.get("manual_index")
+            if source == "automatic":
+                # A distant move would not suppress the old automatic maximum
+                # in Augment mode. Convert the currently surviving editable
+                # marker set into an explicit replacement before moving it.
+                base = self.editable_procedural_marker_centres()
+                if not len(base):
+                    return
+                distances = np.hypot(
+                    base[:, 0] - original.x(), base[:, 1] - original.y()
+                )
+                index = int(np.argmin(distances))
+                mode = "replace_automatic"
+            elif manual_index is not None:
+                base = self._manual_seed_centres.copy()
+                index = int(manual_index)
+                if not 0 <= index < len(base):
+                    return
+                mode = self._manual_seed_centre_mode
+            else:
+                return
+        self._manual_seed_centre_selected = None if record is None else dict(record)
+        self._manual_seed_centre_drag = {
+            "base": base,
+            "index": index,
+            "mode": mode,
+            "source": source,
+            "result_index": result_index,
+            "press_view": self.mapFromScene(scene_point),
+            "point": point,
+            "original": original,
+        }
+        self._show_manual_seed_centre_drag_point(point)
+
+    def _show_manual_seed_centre_drag_point(self, point: QPointF) -> None:
+        self._clear_manual_seed_centre_drag_items()
+        pen = QPen(QColor("#ffffff"), 2.5)
+        pen.setCosmetic(True)
+        brush = QBrush(QColor("#ffe04f"))
+        circle = self._scene.addEllipse(-8.0, -8.0, 16.0, 16.0, pen, brush)
+        cross_pen = QPen(QColor("#493f00"), 1.5)
+        cross_pen.setCosmetic(True)
+        horizontal = self._scene.addLine(-4.0, 0.0, 4.0, 0.0, cross_pen)
+        vertical = self._scene.addLine(0.0, -4.0, 0.0, 4.0, cross_pen)
+        for item in (circle, horizontal, vertical):
+            item.setPos(point)
+            item.setFlag(
+                QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True
+            )
+            item.setZValue(60)
+            self._manual_seed_centre_drag_items.append(item)
+
+    def _clear_manual_seed_centre_drag_items(self) -> None:
+        for item in self._manual_seed_centre_drag_items:
+            if item.scene() is self._scene:
+                self._scene.removeItem(item)
+        self._manual_seed_centre_drag_items.clear()
+
+    def _finish_manual_seed_centre_drag(self, scene_point: QPointF) -> None:
+        drag = self._manual_seed_centre_drag
+        if drag is None:
+            return
+        point = self._clamped_manual_seed_centre_point(scene_point)
+        press_view = drag["press_view"]
+        release_view = self.mapFromScene(scene_point)
+        moved = float(
+            np.hypot(
+                release_view.x() - press_view.x(),
+                release_view.y() - press_view.y(),
+            )
+        )
+        source = str(drag["source"])
+        self._manual_seed_centre_drag = None
+        self._clear_manual_seed_centre_drag_items()
+        if source != "new" and moved < 2.0:
+            self._render_analysis()
+            return
+        values = np.asarray(drag["base"], dtype=np.float64).copy()
+        index = int(drag["index"])
+        values[index] = (point.x(), point.y())
+        mode = str(drag["mode"])
+        if source == "automatic":
+            label = "moved automatic centre and switched to Replace automatic"
+        elif source == "new":
+            label = "added manual seed centre"
+        else:
+            label = "moved manual seed centre"
+        self._commit_manual_seed_centre_edit(values, mode, label)
+
+    def _remove_manual_seed_centre_record(
+        self, record: dict[str, object]
+    ) -> None:
+        source = str(record["source"])
+        if source == "annotation":
+            self.instance_tool_status.emit(
+                "That magenta centre is locked to an applied seed annotation; "
+                "edit the annotation to remove it."
+            )
+            return
+        manual_index = record.get("manual_index")
+        if source == "automatic":
+            values = self.editable_procedural_marker_centres(
+                exclude_result_index=int(record["result_index"])
+            )
+            self._commit_manual_seed_centre_edit(
+                values,
+                "replace_automatic",
+                "removed automatic centre and switched to Replace automatic",
+            )
+            return
+        if manual_index is None:
+            return
+        index = int(manual_index)
+        if not 0 <= index < len(self._manual_seed_centres):
+            return
+        values = np.delete(self._manual_seed_centres, index, axis=0)
+        self._commit_manual_seed_centre_edit(
+            values,
+            self._manual_seed_centre_mode,
+            "removed manual seed centre",
+        )
+
+    def _commit_manual_seed_centre_edit(
+        self, values: np.ndarray, mode: str, label: str
+    ) -> None:
+        self._manual_seed_centres = np.asarray(values, dtype=np.float64).reshape(-1, 2)
+        self._manual_seed_centre_mode = str(mode)
+        self._manual_seed_centre_selected = None
+        self.manual_seed_centres_edited.emit(
+            self._manual_seed_centres.copy(), self._manual_seed_centre_mode, label
+        )
+        self.instance_tool_status.emit(label.capitalize() + "; recomputing procedural instances.")
+        self._render_analysis()
+
+    def cancel_manual_seed_centre_drag(self) -> bool:
+        if self._manual_seed_centre_drag is None:
+            return False
+        self._manual_seed_centre_drag = None
+        self._clear_manual_seed_centre_drag_items()
+        self.instance_tool_status.emit("Cancelled manual seed-centre adjustment.")
+        self._render_analysis()
+        return True
+
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if self._manual_seed_centre_editing and self._image_item is not None:
+            scene_point = self.mapToScene(event.position().toPoint())
+            if not self._image_item.boundingRect().contains(scene_point):
+                event.ignore()
+                return
+            record = self._manual_seed_centre_hit(scene_point)
+            if event.button() == Qt.MouseButton.RightButton:
+                if record is not None:
+                    self._manual_seed_centre_selected = dict(record)
+                    self._remove_manual_seed_centre_record(record)
+                event.accept()
+                return
+            if event.button() == Qt.MouseButton.LeftButton:
+                self._start_manual_seed_centre_drag(scene_point, record)
+                event.accept()
+                return
         if self._reference_point_mode is None or self._image_item is None:
             super().mousePressEvent(event)
             return
@@ -3785,6 +4443,14 @@ class ImageView(QGraphicsView):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if self._manual_seed_centre_editing and self._manual_seed_centre_drag is not None:
+            scene_point = self._clamped_manual_seed_centre_point(
+                self.mapToScene(event.position().toPoint())
+            )
+            self._manual_seed_centre_drag["point"] = scene_point
+            self._show_manual_seed_centre_drag_point(scene_point)
+            event.accept()
+            return
         if self._reference_point_mode is not None and self._image_item is not None:
             self._update_reference_brush_outline(
                 self.mapToScene(event.position().toPoint())
@@ -3825,6 +4491,16 @@ class ImageView(QGraphicsView):
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         if (
+            self._manual_seed_centre_editing
+            and self._manual_seed_centre_drag is not None
+            and event.button() == Qt.MouseButton.LeftButton
+        ):
+            self._finish_manual_seed_centre_drag(
+                self.mapToScene(event.position().toPoint())
+            )
+            event.accept()
+            return
+        if (
             self._reference_point_mode is not None
             and self._reference_paint_button == event.button()
         ):
@@ -3860,6 +4536,22 @@ class ImageView(QGraphicsView):
             event.accept()
             return
         super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802 - Qt override
+        if self._manual_seed_centre_editing:
+            if event.key() == Qt.Key.Key_Escape:
+                if not self.cancel_manual_seed_centre_drag():
+                    self.manual_seed_centre_editing_cancelled.emit()
+                event.accept()
+                return
+            if event.key() in {Qt.Key.Key_Delete, Qt.Key.Key_Backspace}:
+                if self._manual_seed_centre_selected is not None:
+                    self._remove_manual_seed_centre_record(
+                        dict(self._manual_seed_centre_selected)
+                    )
+                event.accept()
+                return
+        super().keyPressEvent(event)
 
     def leaveEvent(self, event) -> None:  # noqa: N802 - Qt override
         self._last_reference_hover_point = None

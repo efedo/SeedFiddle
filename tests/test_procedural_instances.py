@@ -8,7 +8,12 @@ import numpy as np
 
 from seedvision.cuda import GpuRaster
 from seedvision.segmentation.procedural import (
+    MANUAL_CENTRE_SUPPRESSION_DIAMETER_FRACTION,
+    ManualSeedCentreMode,
+    ManualSeedCentreSpace,
+    ManualSeedCentres,
     ProceduralInstanceSettings,
+    ProceduralMarkerSource,
     prepare_procedural_instance_inputs,
     procedural_seed_instances,
     procedural_seed_instances_from_prepared,
@@ -48,6 +53,319 @@ class ProceduralInstanceTests(unittest.TestCase):
         material = np.zeros(shape, np.uint8)
         cv2.circle(material, (160, 160), 135, 235, -1)
         return valid, material, 255 - material
+
+    @classmethod
+    def _manual_centre_scene_arguments(cls):
+        valid, _identities, material, background, boundary = (
+            cls._touching_seed_scene()
+        )
+        settings = ProceduralInstanceSettings(
+            centre_minimum_separation_fraction=0.58,
+            minimum_marker_score=0.10,
+            marker_count_multiplier=0.50,
+        )
+        arguments = dict(
+            foreground_probability=material,
+            foreground_noise_probability=material,
+            background_probability=background,
+            refined_background_probability=background,
+            edge_magnitude=boundary,
+            edge_ridges=boundary,
+            settings=settings,
+        )
+        return valid, arguments
+
+    def test_no_manual_centre_edits_are_bit_exact_with_legacy_result(self) -> None:
+        valid, arguments = self._manual_centre_scene_arguments()
+        legacy = procedural_seed_instances(valid, 54.0, **arguments)
+        explicit_none = procedural_seed_instances(
+            valid, 54.0, **arguments, manual_seed_centres=None
+        )
+        empty_augment = procedural_seed_instances(
+            valid,
+            54.0,
+            **arguments,
+            manual_seed_centres=ManualSeedCentres(),
+        )
+
+        for candidate in (explicit_none, empty_augment):
+            for field_name in (
+                "labels",
+                "centres_xy",
+                "marker_scores",
+                "instance_confidences",
+                "occupancy_likelihood",
+                "occupancy_mask",
+                "boundary_cost",
+                "centre_likelihood",
+                "marker_centres_xy",
+                "marker_sources",
+                "rejected_manual_centres_xy",
+            ):
+                np.testing.assert_array_equal(
+                    getattr(candidate, field_name), getattr(legacy, field_name)
+                )
+            self.assertEqual(
+                candidate.rejected_manual_centre_reasons,
+                legacy.rejected_manual_centre_reasons,
+            )
+
+    def test_augment_adds_and_overrides_without_duplicate_markers(self) -> None:
+        valid, arguments = self._manual_centre_scene_arguments()
+        baseline = procedural_seed_instances(valid, 54.0, **arguments)
+        baseline_automatic = baseline.marker_centres_for_source(
+            ProceduralMarkerSource.AUTOMATIC
+        )
+        self.assertEqual(len(baseline_automatic), 2)
+
+        # The low marker-count prior omits the left seed. Augmenting that seed
+        # must preserve both untouched automatic markers.
+        added_point = np.asarray((78.0, 120.0), np.float32)
+        added = procedural_seed_instances(
+            valid,
+            54.0,
+            **arguments,
+            manual_seed_centres=ManualSeedCentres(
+                (tuple(added_point),), ManualSeedCentreMode.AUGMENT
+            ),
+        )
+        np.testing.assert_allclose(
+            added.marker_centres_for_source(ProceduralMarkerSource.MANUAL),
+            added_point[None],
+            atol=0.01,
+        )
+        np.testing.assert_array_equal(
+            added.marker_centres_for_source(ProceduralMarkerSource.AUTOMATIC),
+            baseline_automatic,
+        )
+
+        # Moving a manual point onto an automatic marker replaces that marker,
+        # but cannot leave a duplicate within the documented 0.45-diameter band.
+        override_point = baseline_automatic[0] + np.asarray((-2.0, -2.0))
+        overridden = procedural_seed_instances(
+            valid,
+            54.0,
+            **arguments,
+            manual_seed_centres=ManualSeedCentres(
+                (tuple(override_point),), ManualSeedCentreMode.AUGMENT
+            ),
+        )
+        automatic = overridden.marker_centres_for_source(
+            ProceduralMarkerSource.AUTOMATIC
+        )
+        manual = overridden.marker_centres_for_source(
+            ProceduralMarkerSource.MANUAL
+        )
+        self.assertEqual(len(manual), 1)
+        self.assertEqual(len(automatic), len(baseline_automatic) - 1)
+        self.assertTrue(
+            np.all(
+                np.linalg.norm(automatic - manual[0], axis=1)
+                >= 54.0 * MANUAL_CENTRE_SUPPRESSION_DIAMETER_FRACTION
+            )
+        )
+
+    def test_replace_mode_and_empty_replace_delete_automatic_markers(self) -> None:
+        valid, arguments = self._manual_centre_scene_arguments()
+        replacement = procedural_seed_instances(
+            valid,
+            54.0,
+            **arguments,
+            manual_seed_centres=ManualSeedCentres(
+                ((78.0, 120.0),),
+                ManualSeedCentreMode.REPLACE_AUTOMATIC,
+            ),
+        )
+        np.testing.assert_allclose(
+            replacement.marker_centres_xy,
+            np.asarray(((78.0, 120.0),), np.float32),
+        )
+        np.testing.assert_array_equal(
+            replacement.marker_sources,
+            np.asarray((int(ProceduralMarkerSource.MANUAL),), np.uint8),
+        )
+
+        deleted = procedural_seed_instances(
+            valid,
+            54.0,
+            **arguments,
+            manual_seed_centres=ManualSeedCentres(
+                (), ManualSeedCentreMode.REPLACE_AUTOMATIC
+            ),
+        )
+        self.assertEqual(deleted.count, 0)
+        self.assertEqual(deleted.marker_centres_xy.shape, (0, 2))
+        self.assertEqual(deleted.marker_sources.shape, (0,))
+        self.assertFalse(np.any(deleted.labels))
+
+    def test_annotations_remain_whole_mask_authority_over_manual_centres(self) -> None:
+        valid, arguments = self._manual_centre_scene_arguments()
+        annotations = np.zeros(valid.shape, np.uint16)
+        cv2.circle(annotations, (78, 120), 10, 7, -1)
+        result = procedural_seed_instances(
+            valid,
+            54.0,
+            **arguments,
+            seed_instance_annotations=annotations,
+            manual_seed_centres=ManualSeedCentres(
+                ((80.0, 120.0), (162.0, 120.0)),
+                ManualSeedCentreMode.REPLACE_AUTOMATIC,
+            ),
+        )
+
+        annotation_labels = np.unique(result.labels[annotations > 0])
+        self.assertEqual(len(annotation_labels), 1)
+        self.assertGreater(int(annotation_labels[0]), 0)
+        np.testing.assert_array_equal(
+            result.marker_sources,
+            np.asarray(
+                (
+                    int(ProceduralMarkerSource.ANNOTATED),
+                    int(ProceduralMarkerSource.MANUAL),
+                ),
+                np.uint8,
+            ),
+        )
+        np.testing.assert_allclose(
+            result.editable_marker_centres_xy,
+            np.asarray(((162.0, 120.0),), np.float32),
+        )
+        self.assertEqual(
+            result.rejected_manual_centre_reasons,
+            ("near_annotated_instance",),
+        )
+        np.testing.assert_allclose(
+            result.rejected_manual_centres_xy,
+            np.asarray(((80.0, 120.0),), np.float32),
+        )
+
+    def test_marker_metadata_is_not_replaced_by_instance_centroids(self) -> None:
+        valid, arguments = self._manual_centre_scene_arguments()
+        marker = np.asarray((60.0, 120.0), np.float32)
+        result = procedural_seed_instances(
+            valid,
+            54.0,
+            **arguments,
+            manual_seed_centres=ManualSeedCentres(
+                (tuple(marker),), ManualSeedCentreMode.REPLACE_AUTOMATIC
+            ),
+        )
+
+        self.assertEqual(result.count, 1)
+        np.testing.assert_allclose(result.marker_centres_xy[0], marker)
+        self.assertEqual(
+            int(result.marker_sources[0]), int(ProceduralMarkerSource.MANUAL)
+        )
+        self.assertGreater(
+            float(np.linalg.norm(result.centres_xy[0] - marker)), 8.0
+        )
+
+    def test_invalid_outside_duplicate_and_culled_manual_centres_are_reported(self) -> None:
+        with self.assertRaises(ValueError):
+            ManualSeedCentres(((float("nan"), 4.0),))
+        with self.assertRaises(ValueError):
+            ManualSeedCentres((), mode="unknown")
+        with self.assertRaises(ValueError):
+            ManualSeedCentres((), coordinate_space="screen")
+
+        valid, arguments = self._manual_centre_scene_arguments()
+        rejected = procedural_seed_instances(
+            valid,
+            54.0,
+            **arguments,
+            manual_seed_centres=ManualSeedCentres(
+                (
+                    (-1.0, 10.0),
+                    (0.0, 0.0),
+                    (120.0, 20.0),
+                    (78.0, 120.0),
+                    (78.2, 120.2),
+                ),
+                ManualSeedCentreMode.REPLACE_AUTOMATIC,
+            ),
+        )
+        self.assertEqual(
+            rejected.rejected_manual_centre_reasons,
+            (
+                "outside_source",
+                "outside_valid_region",
+                "outside_material",
+                "duplicate_working_pixel",
+            ),
+        )
+        np.testing.assert_allclose(
+            rejected.rejected_manual_centres_xy,
+            np.asarray(
+                ((-1.0, 10.0), (0.0, 0.0), (120.0, 20.0), (78.2, 120.2)),
+                np.float32,
+            ),
+        )
+
+        culled_arguments = dict(arguments)
+        culled_arguments["settings"] = ProceduralInstanceSettings(
+            centre_minimum_separation_fraction=0.58,
+            minimum_marker_score=0.10,
+            marker_count_multiplier=0.50,
+            minimum_instance_area_fraction=1.44,
+            maximum_instance_area_fraction=1.45,
+        )
+        culled = procedural_seed_instances(
+            valid,
+            54.0,
+            **culled_arguments,
+            manual_seed_centres=ManualSeedCentres(
+                ((78.0, 120.0),), ManualSeedCentreMode.REPLACE_AUTOMATIC
+            ),
+        )
+        self.assertEqual(
+            culled.rejected_manual_centre_reasons,
+            ("instance_below_minimum_area",),
+        )
+        np.testing.assert_allclose(
+            culled.rejected_manual_centres_xy,
+            np.asarray(((78.0, 120.0),), np.float32),
+        )
+
+    def test_source_centres_transform_once_to_corrected_coordinates(self) -> None:
+        from types import SimpleNamespace
+
+        from seedvision.segmentation.baseline import (
+            _manual_centres_in_corrected_coordinates,
+        )
+
+        calls: list[tuple[tuple[float, float], ...]] = []
+
+        def transform(points):
+            calls.append(tuple(tuple(value) for value in points))
+            values = np.asarray(points, np.float64)
+            return values * np.asarray((1.5, 0.75)) + np.asarray((11.0, -4.0))
+
+        source = ManualSeedCentres(
+            ((10.0, 20.0), (30.0, 40.0)),
+            ManualSeedCentreMode.AUGMENT,
+            ManualSeedCentreSpace.SOURCE_IMAGE,
+        )
+        corrected = _manual_centres_in_corrected_coordinates(
+            source, SimpleNamespace(transform_points=transform)
+        )
+        assert corrected is not None
+        self.assertEqual(
+            corrected.coordinate_space, ManualSeedCentreSpace.CORRECTED_IMAGE
+        )
+        np.testing.assert_allclose(
+            corrected.centres_xy, ((26.0, 11.0), (56.0, 26.0))
+        )
+        self.assertEqual(calls, [source.centres_xy])
+        self.assertIs(
+            _manual_centres_in_corrected_coordinates(
+                corrected, SimpleNamespace(transform_points=lambda _points: None)
+            ),
+            corrected,
+        )
+        np.testing.assert_allclose(
+            corrected.translated(-6.0, -8.0).centres_xy,
+            ((20.0, 3.0), (50.0, 18.0)),
+        )
 
     def test_redesigned_boundary_settings_are_validated(self) -> None:
         invalid_settings = (
@@ -226,6 +544,25 @@ class ProceduralInstanceTests(unittest.TestCase):
                 result.centres_xy[:, 1] - expected[1],
             )
             self.assertLess(float(distances.min()), 30.0)
+
+    def test_low_level_prepared_runner_rejects_untransformed_source_coordinates(self) -> None:
+        valid, arguments = self._manual_centre_scene_arguments()
+        settings = arguments.pop("settings")
+        prepared = prepare_procedural_instance_inputs(
+            valid,
+            60.0,
+            **arguments,
+            working_maximum_dimension=settings.working_maximum_dimension,
+        )
+        with self.assertRaisesRegex(ValueError, "corrected-image"):
+            procedural_seed_instances_from_prepared(
+                prepared,
+                manual_seed_centres=ManualSeedCentres(
+                    ((78.0, 120.0),),
+                    coordinate_space=ManualSeedCentreSpace.SOURCE_IMAGE,
+                ),
+                settings=settings,
+            )
 
     def test_gpu_rasters_resize_without_materializing_full_host_caches(self) -> None:
         import torch

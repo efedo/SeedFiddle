@@ -122,11 +122,14 @@ _PORT_LABELS = {
     "ForegroundReferences": "Foreground refs",
     "OtherReferences": "Other refs",
     "PaintedInstanceAnnotations": "Annotated seed IDs",
+    "ManualSeedCentres": "Manual seed centres",
     "PhysicalEdgeProbability": "Physical-edge probability",
     "NonEdgeProbability": "Non-physical edge probability",
     "PhysicalPrototypeProbability": "Physical-edge prototype probability",
     "NonEdgePrototypeProbability": "Non-physical prototype probability",
     "PerimeterColourSamples": "Perimeter colours",
+    "AutomaticBackgroundReferences": "Automatic BG refs",
+    "AutomaticForegroundReferences": "Automatic FG refs",
     "ForegroundColour": "FG colour",
     "ForegroundEvidence": "FG evidence",
     "ForegroundMask": "FG mask",
@@ -1008,6 +1011,18 @@ def build_default_pipeline() -> PipelineGraph:
         ParameterSpec("foreground_background_prior_tolerance", "Perimeter colour tolerance", "float", 2.0, 100.0, 1.0, "Maximum weighted Lab distance from the outside-dish prior admitted when refining the automatic dish background."),
         ParameterSpec("foreground_probability_softness_fraction", "Probability softness", "float", 0.02, 1.0, 0.01, "Width of the soft probability transition around the foreground threshold, relative to that threshold."),
         ParameterSpec("foreground_reference_weight", "Foreground colour influence", "float", 0.0, 1.0, 0.05, "How strongly isolated-reference-seed colours, or painted foreground colours when supplied, enhance seed probability across the dish."),
+        ParameterSpec(
+            "foreground_include_annotated_seed_instances",
+            "Include annotated seeds as Foreground",
+            "bool",
+            description=(
+                "Use safely inset interiors of applied seed-instance annotations as "
+                "additional Foreground material examples for colour, directional-noise, "
+                "and material-prototype fitting. Instance contours are excluded, and "
+                "painted Background, Other, and exclusion evidence takes precedence. "
+                "Unapplied annotation drafts are not analysis evidence."
+            ),
+        ),
         ParameterSpec("foreground_local_contrast_scale_fraction", "Local contrast scale / diameter", "float", 0.03, 0.60, 0.01, "Gaussian neighbourhood, relative to seed diameter, used to distinguish locally bright seed surfaces from darker inter-seed gaps."),
         ParameterSpec("foreground_shadow_rejection_strength", "Shadow rejection", "float", 0.0, 3.0, 0.05, "Weight of seed-scale local lightness evidence in crowded dishes. It ramps down automatically when ample true tray is visible; increase when dark gaps are mistaken for seeds."),
         ParameterSpec("foreground_reference_components", "Maximum reference colour modes", "int", 1, 256, 4, "Maximum coverage-preserving quantized Lab colour modes retained from individual painted foreground pixels."),
@@ -1124,6 +1139,18 @@ def build_default_pipeline() -> PipelineGraph:
         ParameterSpec("background_lightness_percentile", "Automatic lightness percentile", "float", 1.0, 99.0, 1.0, "Automatic samples must be at least this lightness percentile."),
         ParameterSpec("background_minimum_sample_fraction", "Minimum automatic area", "float", 0.0001, 0.25, 0.001, "Minimum fraction of valid dish pixels retained as automatic background references; the lightest, least-chromatic candidates are added if percentile filters return less."),
         ParameterSpec("background_prior_tolerance", "Perimeter colour tolerance", "float", 2.0, 100.0, 1.0, "Maximum weighted Lab distance from the outside-dish median admitted to the automatic background training set."),
+        ParameterSpec(
+            "background_keep_perimeter_reference",
+            "Keep perimeter reference",
+            "bool",
+            description=(
+                "Keep the buffered perimeter-ring median and matching in-dish "
+                "area as an automatic Background source alongside painted "
+                "Background references. Uncheck to train from paint alone, or "
+                "from the non-perimeter light/low-chroma fallback when no "
+                "Background area has been painted."
+            ),
+        ),
         ParameterSpec("background_lightness_scale_floor", "Lightness range floor", "float", 1.0, 40.0, 0.5, "Minimum robust Lab lightness spread used by the colour probability model."),
         ParameterSpec("background_chroma_scale_floor", "Chroma range floor", "float", 0.5, 30.0, 0.5, "Minimum robust Lab a/b spread used by the colour probability model."),
         ParameterSpec("background_colour_components", "Maximum reference colour modes", "int", 1, 256, 4, "Maximum robust Lab colour modes fitted to painted or automatic background samples. Higher values preserve more colour variation but increase calculation time."),
@@ -1466,6 +1493,25 @@ def build_default_pipeline() -> PipelineGraph:
             status_detail="No applied references",
         ),
         PipelineNode(
+            "manual_seed_centres",
+            "Manual seed centres",
+            "Input",
+            "Optional point edits for procedural watershed markers",
+            1040,
+            -900,
+            details=(
+                "Stores user-edited seed-centre points independently from full seed-instance "
+                "annotations. Augment mode adds points and replaces only nearby automatic "
+                "markers; replace-automatic mode treats the edited points as the complete "
+                "non-annotation marker set. Applied seed masks remain authoritative in both "
+                "modes. Points guide the bounded procedural watershed without painting or "
+                "expanding its material mask."
+            ),
+            output_ports=(("centres", "Manual seed centres"),),
+            output_port_types={"centres": "ManualSeedCentres"},
+            status_detail="No manual centre edits",
+        ),
+        PipelineNode(
             "colour_reference",
             "Colour-card swatches",
             "Calibration",
@@ -1629,6 +1675,9 @@ def build_default_pipeline() -> PipelineGraph:
                 "Other areas fit separate competing colour and texture distributions; "
                 "they downweight foreground only where Other is a better fit, so shared "
                 "colours cannot erase legitimate positive evidence. "
+                "Applied seed-instance annotations can optionally contribute safely inset "
+                "interiors as additional Foreground examples to the colour, directional-noise, "
+                "and material-prototype models; contours and unapplied drafts are excluded. "
                 "A node-owned full-pane overlay plots the painted distribution, or the "
                 "independently sampled isolated-reference-seed distribution, as "
                 "probability contours over an exact HSV hue/saturation slice at the "
@@ -1645,6 +1694,7 @@ def build_default_pipeline() -> PipelineGraph:
                 "foreground_background_prior_tolerance": 24.0,
                 "foreground_probability_softness_fraction": 0.18,
                 "foreground_reference_weight": 0.75,
+                "foreground_include_annotated_seed_instances": False,
                 "foreground_local_contrast_scale_fraction": 0.18,
                 "foreground_shadow_rejection_strength": 1.0,
                 "foreground_reference_components": 64,
@@ -1760,6 +1810,7 @@ def build_default_pipeline() -> PipelineGraph:
                 "background_lightness_percentile": 55.0,
                 "background_minimum_sample_fraction": 0.002,
                 "background_prior_tolerance": 24.0,
+                "background_keep_perimeter_reference": True,
                 "background_lightness_scale_floor": 8.0,
                 "background_chroma_scale_floor": 3.0,
                 "background_colour_components": 32,
@@ -1771,9 +1822,12 @@ def build_default_pipeline() -> PipelineGraph:
             },
             parameter_specs=background_parameters,
             details=(
-                "Painted areas, or pixels within a fixed weighted-colour tolerance of "
-                "the median colour in the buffered outer dish-perimeter band, fit a multimodal "
+                "Painted areas and, by default, pixels within a fixed weighted-colour "
+                "tolerance of the median colour in the buffered outer dish-perimeter band "
+                "jointly fit a multimodal "
                 "CIE Lab probability distribution with a separate centre and spread for each mode. "
+                "The perimeter source can be switched off explicitly; without painted "
+                "Background, that opt-out uses the independent light/low-chroma fallback. "
                 "Optional iterative rounds admit only high-probability matches while retaining the "
                 "painted pixels as anchors. Background and foreground reference areas remain "
                 "semantic constraints in the colour map and become direct positive/negative "
@@ -1812,8 +1866,10 @@ def build_default_pipeline() -> PipelineGraph:
                 "candidate centres, and a nearby automatic duplicate is suppressed. "
                 "The provisional masks then grow within the editable radial extent "
                 "and foreground/background gate while retaining each painted interior. "
-                "These integer IDs never alter the foreground colour model or force "
-                "foreground probability. The node remains disabled by default until "
+                "This node never forces foreground probability from the integer IDs. "
+                "The separate Foreground option can reuse safely inset applied interiors "
+                "as fitting examples without forcing their output values. The node remains "
+                "disabled by default until "
                 "its separation quality has been validated."
             ),
         ),
@@ -1873,8 +1929,11 @@ def build_default_pipeline() -> PipelineGraph:
             parameter_specs=foreground_noise_parameters,
             details=(
                 "Fine, medium, and coarse texture distributions are learned directly "
-                "from painted foreground and non-foreground areas when available; "
-                "confident foreground-colour pseudo-labels are used only for an "
+                "from painted foreground and non-foreground areas when available. "
+                "When enabled on the Foreground colour node, safely inset interiors of "
+                "applied annotated seeds are additive positive examples; painted material "
+                "and exclusion evidence retains precedence. "
+                "Confident foreground-colour pseudo-labels are used only for an "
                 "unpainted class. The painted locations are training evidence, never "
                 "forced output values. The "
                 "same one-sided ray integration used by the background-noise node "
@@ -2106,9 +2165,12 @@ def build_default_pipeline() -> PipelineGraph:
             },
             parameter_specs=reference_texture_parameters,
             details=(
-                "Painted Background, Foreground and Other samples, plus automatically "
-                "derived instance-contour and internal-edge samples, are represented by "
+                "Painted Background, Foreground and Other samples, the retained in-dish "
+                "area matching the perimeter-ring median, and automatically derived "
+                "instance-contour and internal-edge samples are represented by "
                 "separate coverage-preserving banks rather than one class average. "
+                "The optional annotated-seed Foreground source adds safely inset instance "
+                "interiors to the Foreground material bank without adding contour pixels. "
                 "Material banks use corrected Lab, six multiscale noise bands, "
                 "local residuals, and edge/ridge density. Edge banks instead use "
                 "a narrow tangent-aligned descriptor with separately pooled interior, "
@@ -2880,6 +2942,13 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineConnection("reference_layers", "foreground_segmentation", "BackgroundReferences", source_port="background", target_port="background_reference"),
         PipelineConnection("reference_layers", "foreground_segmentation", "ForegroundReferences", source_port="foreground", target_port="foreground_reference"),
         PipelineConnection("reference_layers", "foreground_segmentation", "OtherReferences", source_port="other", target_port="other_reference"),
+        PipelineConnection(
+            "reference_layers",
+            "foreground_segmentation",
+            "PaintedInstanceAnnotations",
+            source_port="annotated_seeds",
+            target_port="annotations",
+        ),
         PipelineConnection("foreground_segmentation", "distance_candidates", "ForegroundMask"),
         PipelineConnection("seed_scale_estimation", "distance_candidates", "SeedDiameter"),
         PipelineConnection(
@@ -2942,6 +3011,13 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineConnection("reference_layers", "background_likelihood", "BackgroundReferences", source_port="background", target_port="background_reference"),
         PipelineConnection("reference_layers", "background_likelihood", "ForegroundReferences", source_port="foreground", target_port="foreground_reference"),
         PipelineConnection("reference_layers", "background_likelihood", "OtherReferences", source_port="other", target_port="other_reference"),
+        PipelineConnection(
+            "reference_layers",
+            "background_likelihood",
+            "PaintedInstanceAnnotations",
+            source_port="annotated_seeds",
+            target_port="annotations",
+        ),
         PipelineConnection("identification", "instance_masks", "SeedProposals"),
         PipelineConnection(
             "layout_detection", "instance_masks", "DishRegion",
@@ -3007,6 +3083,13 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineConnection("reference_layers", "foreground_noise_likelihood", "BackgroundReferences", source_port="background", target_port="background_reference"),
         PipelineConnection("reference_layers", "foreground_noise_likelihood", "ForegroundReferences", source_port="foreground", target_port="foreground_reference"),
         PipelineConnection("reference_layers", "foreground_noise_likelihood", "OtherReferences", source_port="other", target_port="other_reference"),
+        PipelineConnection(
+            "foreground_segmentation",
+            "foreground_noise_likelihood",
+            "AutomaticForegroundReferences",
+            source_port="annotated_foreground_reference_source",
+            target_port="automatic_foreground_reference",
+        ),
         PipelineConnection(
             "deskew_colour", "edge_gradients", "CorrectedImage", target_port="image"
         ),
@@ -3102,6 +3185,20 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineConnection("reference_layers", "reference_texture_prototypes", "BackgroundReferences", source_port="background", target_port="background_reference"),
         PipelineConnection("reference_layers", "reference_texture_prototypes", "ForegroundReferences", source_port="foreground", target_port="foreground_reference"),
         PipelineConnection("reference_layers", "reference_texture_prototypes", "OtherReferences", source_port="other", target_port="other_reference"),
+        PipelineConnection(
+            "background_likelihood",
+            "reference_texture_prototypes",
+            "AutomaticBackgroundReferences",
+            source_port="background_reference_source",
+            target_port="automatic_background_reference",
+        ),
+        PipelineConnection(
+            "foreground_segmentation",
+            "reference_texture_prototypes",
+            "AutomaticForegroundReferences",
+            source_port="annotated_foreground_reference_source",
+            target_port="automatic_foreground_reference",
+        ),
         PipelineConnection("reference_layers", "reference_texture_prototypes", "PaintedInstanceAnnotations", source_port="annotated_seeds", target_port="annotations"),
         PipelineConnection("edge_gradients", "reference_texture_prototypes", "EdgeMagnitude", source_port="magnitude", target_port="edge"),
         PipelineConnection("edge_gradients", "reference_texture_prototypes", "AxialTangents", source_port="undirected", target_port="undirected"),
@@ -3302,6 +3399,7 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineConnection("edge_traces", "procedural_instances", "TraceContinuity", source_port="continuity", target_port="trace_continuity"),
         PipelineConnection("reference_texture_prototypes", "procedural_instances", "ReferenceSeedSurface", source_port="seed_surface", target_port="reference_surface"),
         PipelineConnection("reference_layers", "procedural_instances", "PaintedInstanceAnnotations", source_port="annotated_seeds", target_port="annotations"),
+        PipelineConnection("manual_seed_centres", "procedural_instances", "ManualSeedCentres", source_port="centres", target_port="manual_centres"),
         PipelineConnection("metadata", "unet_instances", "SpeciesCondition", target_port="image"),
         PipelineConnection("deskew_colour", "unet_instances", "CorrectedImage", target_port="image"),
         PipelineConnection("layout_detection", "unet_instances", "DishRegion", target_port="image"),
