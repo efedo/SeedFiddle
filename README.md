@@ -630,7 +630,7 @@ their most recent measured time. During a run, nodes begin blue and independentl
 turn green as their worker stage completes; progress messages are scoped to the
 current image and pipeline revision.
 
-The active and restorable graph is audited against a separate 54-node
+The active and restorable graph is audited against a separate 53-node
 direct-input contract rather than testing only the connectors that happen to
 exist. Dish-region, corrected-image, physical-scale, seed-diameter, mask,
 proposal, and reference inputs are therefore shown on every calculation that
@@ -743,7 +743,8 @@ The active layout-to-diagnostic span is represented by these live pipeline nodes
    Its node-owned full-pane overlay shows 25%, 50%, 75%, and 90% fitted
    membership contours over the exact HSV hue/saturation slice selected by the
    toolbar Value control, with learned mode frequencies and a neutral swatch.
-   The **Background noise probability** extracts its positive three-band
+   The **Background noise probability** output of **Material noise
+   probabilities** extracts its positive three-band
    texture samples directly from that full-resolution exterior annulus, despite
    its different coordinate frame from the dish crop, and displays the annulus
    likelihood alongside the dish-resident map. Texture contribution is
@@ -752,9 +753,9 @@ The active layout-to-diagnostic span is represented by these live pipeline nodes
    clearer colour evidence to dominate instead of classifying pale seeds as
    background.
 
-   The material-colour and background-noise nodes also expose **Other colour
-   probability** and **Other noise probability** diagnostics learned from
-   painted Other material.
+   The combined material-colour and material-noise nodes also expose **Other
+   colour probability** and **Other noise probability** diagnostics learned
+   from painted Other material.
    Both use direct brightness (white is stronger Other evidence), do not force
    painted coordinates to probability one, and remain blank when no Other
    reference has been painted. Other noise uses the same separation-adaptive
@@ -769,8 +770,9 @@ The active layout-to-diagnostic span is represented by these live pipeline nodes
    default, the adjustable perimeter source. Foreground colour uses only the
    user-authored source above. Equal numeric values in the two raw maps do not
    imply equal confidence.
-5. **Foreground noise probability** learns its matching three-band profile from
-   the same painted/annotated Foreground source. It does not create foreground
+5. The **Foreground noise probability** output of **Material noise
+   probabilities** learns its matching three-band profile from the same
+   painted/annotated Foreground source. It does not create foreground
    pseudo-labels; without a source it remains zero/blocked. Where trained, it
    continues texture evidence across patterned coats without hard-forcing the
    annotated coordinates.

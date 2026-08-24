@@ -93,6 +93,14 @@ repository or `images/` while troubleshooting the environment.
   off only Background/Other fitting; mandatory-reference Foreground fitting
   remains active. Version-4 settings migrate both former node records and
   connections into this combined node.
+- **Material noise probabilities** now combines the former foreground- and
+  background-noise cards without combining their calculations. All 20 numerical
+  controls, explicit independent Background/Other and Foreground enable switches,
+  the Foreground/Background/Other noise overlays, distinct maximum versus first-
+  tertile defaults, CUDA cache products, and internal timings are retained.
+  Changing the combined card invalidates both internal products; version-5 and
+  older profiles merge their former node records, enabled states, and wires into
+  this owner.
 - Node-editor wires now receive stable deterministic per-wire colours from a
   shared source-node palette. Unobstructed bundled cable trunks and branches use
   smooth cubic curves; obstacle-avoiding routes retain rounded corners.
@@ -202,7 +210,7 @@ repository or `images/` while troubleshooting the environment.
   derivative upper cutoffs, and every distance-dependent node are preserved
   there with their authored connections but excluded from the default DAG and
   calculations.
-- The complete 54-node active/toolbox catalogue has an independent direct-input
+- The complete 53-node active/toolbox catalogue has an independent direct-input
   contract test. Corrected-image, dish-region, absolute-scale, seed-diameter,
   mask, proposal, and reference dependencies are explicit wherever the runtime
   reads them. In particular, **Edge gradients** consumes **Layout detection**'s
@@ -328,9 +336,10 @@ repository or `images/` while troubleshooting the environment.
   quantile across ray directions; this is more conservative than median while
   avoiding minimum's all-direction requirement. Its CUDA reducer interpolates
   two `kthvalue` order statistics rather than allocating a sorted full-raster
-  direction bank. Background noise retains its maximum default. The Background
-  colour/noise nodes also expose direct-bright **Other colour probability** and
-  **Other noise probability** overlays when Other examples have been painted.
+  direction bank. Background noise retains its maximum default. The combined
+  Material colour/noise nodes also expose direct-bright **Other colour
+  probability** and **Other noise probability** overlays when Other examples
+  have been painted.
   The colour view is the raw competing Lab membership already used by the
   background model; the noise view fits Other against painted Background and
   Foreground texture, blends 72% three-band texture with 28% Other-colour
@@ -669,8 +678,8 @@ repository or `images/` while troubleshooting the environment.
   regional average or painted-pixel probability override. Automatic background
   colour is anchored to the retained outside-dish annulus distribution, which
   remains additive to painted Background references by default.
-- Both probability nodes expose **Maximum reference colour modes** as the
-  user-facing capacity control. Foreground retains coverage-preserving quantized
+- The combined Material colour node exposes separate **Maximum reference colour
+  modes** controls. Foreground retains coverage-preserving quantized
   Lab frequency cells, whereas background fits adaptive robust Lab mixture
   components. The background default is 32, its supported range is 1--256, and
   full-image membership is evaluated four modes at a time to keep peak CUDA
@@ -862,6 +871,15 @@ the reference-manifest integrity test correctly rejects that missing source.
 All 122 focused graph, settings-migration, cable-routing, overlay-contract, and
 manual-centre Qt tests pass, as do the remaining computational and UI tests in
 the full run.
+
+The suite was rerun after combining the foreground/background directional-noise
+cards on 2026-08-24: 506 tests ran, 503 passed, and 2 platform-dependent tests
+were skipped. The sole failure remains the same pre-existing deletion of
+tracked `images/IMG_9689c.JPG`; the reference-manifest integrity test correctly
+rejects that missing source. All 166 focused graph, UI, settings-migration,
+overlay, and device-cache regressions pass, as do all 65 broader pilot,
+material-evidence, project, inspector, learning, and procedural-fit integration
+tests.
 
 ## Learned instance-segmentation implementation
 

@@ -306,6 +306,94 @@ class AnalysisSettingsPersistenceTests(unittest.TestCase):
             ("reference_layers", "centres"),
         )
 
+    def test_version_five_profile_migrates_combined_noise_node(self) -> None:
+        source = build_default_pipeline()
+        source.set_parameter(
+            "refined_background_likelihood",
+            "noise_vector_length_fraction",
+            0.61,
+        )
+        source.set_parameter(
+            "refined_background_likelihood",
+            "foreground_noise_vector_length_fraction",
+            0.73,
+        )
+        source.set_parameter(
+            "background_likelihood", "background_colour_enabled", False
+        )
+        payload = analysis_settings_profile_to_payload(
+            analysis_settings_profile_from_graph(source)
+        )
+        payload["version"] = 5
+        combined = _node_payload(payload, "refined_background_likelihood")
+        combined["enabled"] = False
+        parameters = dict(combined["parameters"])
+        foreground_parameters = {
+            key: value
+            for key, value in parameters.items()
+            if key.startswith("foreground_noise_")
+            and key != "foreground_noise_enabled"
+        }
+        combined["parameters"] = {
+            key: value
+            for key, value in parameters.items()
+            if key not in foreground_parameters
+            and key
+            not in {"background_noise_enabled", "foreground_noise_enabled"}
+        }
+        payload["nodes"].append(
+            {
+                "id": "foreground_noise_likelihood",
+                "active": True,
+                "enabled": True,
+                "connection_suspended": False,
+                "parameters": foreground_parameters,
+            }
+        )
+        for connection in payload["connections"]:
+            if (
+                connection["source"] == "refined_background_likelihood"
+                and connection["source_port"] == "foreground_noise_probability"
+            ):
+                connection["source"] = "foreground_noise_likelihood"
+            if (
+                connection["target"] == "refined_background_likelihood"
+                and connection["target_port"]
+                in {"foreground_probability", "automatic_foreground_reference"}
+            ):
+                connection["target"] = "foreground_noise_likelihood"
+
+        target = build_default_pipeline()
+        apply_analysis_settings_profile(
+            target, analysis_settings_profile_from_payload(payload)
+        )
+
+        noise = target.node("refined_background_likelihood")
+        self.assertEqual(noise.parameters["noise_vector_length_fraction"], 0.61)
+        self.assertEqual(
+            noise.parameters["foreground_noise_vector_length_fraction"], 0.73
+        )
+        self.assertFalse(noise.parameters["background_noise_enabled"])
+        self.assertTrue(noise.parameters["foreground_noise_enabled"])
+        self.assertTrue(noise.enabled)
+        self.assertFalse(
+            target.node("background_likelihood").parameters[
+                "background_colour_enabled"
+            ]
+        )
+        self.assertNotIn("foreground_noise_likelihood", target.nodes)
+        foreground_output = target.connection_for_input(
+            "material_evidence_decision", "foreground_noise"
+        )
+        self.assertIsNotNone(foreground_output)
+        self.assertEqual(
+            (foreground_output.source, foreground_output.source_port),
+            (
+                "refined_background_likelihood",
+                "foreground_noise_probability",
+            ),
+        )
+
     def test_missing_and_unknown_catalogue_members_fail_clearly(self) -> None:
         cases: list[tuple[str, Callable[[dict[str, object]], None]]] = []
 

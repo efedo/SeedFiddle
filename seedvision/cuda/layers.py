@@ -402,6 +402,7 @@ def build_cuda_analysis_layers(
     background_prior_samples_lab=None,
     background_prior_source_mask=None,
     background_colour_enabled: bool = True,
+    background_noise_enabled: bool = True,
     foreground_noise_enabled: bool = True,
     reference_edge_probability_enabled: bool = True,
     reference_edge_ridges_enabled: bool = True,
@@ -611,7 +612,7 @@ def build_cuda_analysis_layers(
         or "layer.refined_background" not in values
     )
     refined_timing = None
-    if refined_dirty and background_colour_enabled:
+    if refined_dirty and background_colour_enabled and background_noise_enabled:
         refined_timing = (
             None
             if timing_recorder is None
@@ -680,6 +681,7 @@ def build_cuda_analysis_layers(
     foreground_noise_dirty = (
         painted_reference_dirty
         or "foreground_segmentation" in dirty
+        or "refined_background_likelihood" in dirty
         or "foreground_noise_likelihood" in dirty
         or "layer.foreground_noise" not in values
     )
@@ -747,6 +749,7 @@ def build_cuda_analysis_layers(
     if (
         surrounding_dirty
         and background_colour_enabled
+        and background_noise_enabled
         and surrounding_noise_source_tensor is not None
         and surrounding_noise_valid_tensor is not None
     ):

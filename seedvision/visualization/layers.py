@@ -130,6 +130,8 @@ class AnalysisLayerSettings:
     background_distribution_scale_multiplier: float = 1.25
     background_automatic_evidence_floor: float = 0.10
     background_reviewed_authority_half_life_seed_areas: float = 0.50
+    background_noise_enabled: bool = True
+    foreground_noise_enabled: bool = True
     noise_medium_scale_fraction: float = 0.03
     noise_coarse_scale_fraction: float = 0.08
     noise_direction_step_degrees: int = 15
@@ -1078,6 +1080,7 @@ def build_analysis_layers(
     background_prior_samples_lab=None,
     background_prior_source_mask=None,
     background_colour_enabled: bool = True,
+    background_noise_enabled: bool = True,
     foreground_noise_enabled: bool = True,
     reference_edge_probability_enabled: bool = True,
     reference_edge_ridges_enabled: bool = True,
@@ -1133,6 +1136,7 @@ def build_analysis_layers(
         background_prior_samples_lab=background_prior_samples_lab,
         background_prior_source_mask=background_prior_source_mask,
         background_colour_enabled=background_colour_enabled,
+        background_noise_enabled=background_noise_enabled,
         foreground_noise_enabled=foreground_noise_enabled,
         reference_edge_probability_enabled=reference_edge_probability_enabled,
         reference_edge_ridges_enabled=reference_edge_ridges_enabled,

@@ -21,8 +21,10 @@ from seedvision.pipeline import NodeStatus, ParameterSpec, PipelineConnection, P
 
 
 ANALYSIS_SETTINGS_FORMAT = "seedfiddle-analysis-settings"
-ANALYSIS_SETTINGS_VERSION = 5
-_LEGACY_ANALYSIS_SETTINGS_VERSIONS = frozenset({1, 2, 3, 4})
+ANALYSIS_SETTINGS_VERSION = 6
+_LEGACY_ANALYSIS_SETTINGS_VERSIONS = frozenset({1, 2, 3, 4, 5})
+_PRE_COLOUR_MERGE_VERSIONS = frozenset({1, 2, 3, 4})
+_PRE_NOISE_MERGE_VERSIONS = frozenset({1, 2, 3, 4, 5})
 ANALYSIS_SETTINGS_FILE_SUFFIX = ".seedfiddle-settings.json"
 
 _MAX_PROFILE_BYTES = 8 * 1024 * 1024
@@ -604,6 +606,7 @@ def _prepare_analysis_settings(
         "directed_edges",
         "undirected_edges",
         "foreground_segmentation",
+        "foreground_noise_likelihood",
         "manual_seed_centres",
     }
     canonical_by_id = {node.identifier: node for node in canonical.nodes}
@@ -635,7 +638,7 @@ def _prepare_analysis_settings(
     supplied_parameters_by_id = {
         node_id: dict(saved.parameters) for node_id, saved in profile_by_id.items()
     }
-    if canonical.version in _LEGACY_ANALYSIS_SETTINGS_VERSIONS:
+    if canonical.version in _PRE_COLOUR_MERGE_VERSIONS:
         # Version five merged the two colour cards without changing either
         # equation, and folded the centre-point input into Manual annotations.
         # Carry the old foreground controls onto the combined background card;
@@ -648,6 +651,27 @@ def _prepare_analysis_settings(
         if legacy_background is not None:
             combined["background_colour_enabled"] = bool(
                 legacy_background.enabled
+            )
+    if canonical.version in _PRE_NOISE_MERGE_VERSIONS:
+        # Version six similarly combines the two noise cards while preserving
+        # both calculations, parameter names, output ports, and cache keys.
+        legacy_foreground_noise = canonical_by_id.get(
+            "foreground_noise_likelihood"
+        )
+        combined_noise = supplied_parameters_by_id.get(
+            "refined_background_likelihood", {}
+        )
+        legacy_background_noise = canonical_by_id.get(
+            "refined_background_likelihood"
+        )
+        if legacy_background_noise is not None:
+            combined_noise["background_noise_enabled"] = bool(
+                legacy_background_noise.enabled
+            )
+        if legacy_foreground_noise is not None:
+            combined_noise.update(dict(legacy_foreground_noise.parameters))
+            combined_noise["foreground_noise_enabled"] = bool(
+                legacy_foreground_noise.enabled
             )
     if canonical.version in _LEGACY_ANALYSIS_SETTINGS_VERSIONS:
         retired_parameters = {
@@ -742,8 +766,14 @@ def _prepare_analysis_settings(
         active_by_id[node_id] = saved.active
         enabled_by_id[node_id] = (
             True
-            if canonical.version in _LEGACY_ANALYSIS_SETTINGS_VERSIONS
-            and node_id == "background_likelihood"
+            if (
+                canonical.version in _LEGACY_ANALYSIS_SETTINGS_VERSIONS
+                and node_id == "background_likelihood"
+            )
+            or (
+                canonical.version in _PRE_NOISE_MERGE_VERSIONS
+                and node_id == "refined_background_likelihood"
+            )
             else saved.enabled
         )
         connection_suspended_by_id[node_id] = saved.connection_suspended
@@ -767,6 +797,8 @@ def _prepare_analysis_settings(
         source = connection.source
         target = connection.target
         if canonical.version in _LEGACY_ANALYSIS_SETTINGS_VERSIONS:
+            if target == "foreground_noise_likelihood":
+                target = "refined_background_likelihood"
             if target in retired_node_ids:
                 continue
             if source in {"directed_edges", "undirected_edges"}:
@@ -778,6 +810,8 @@ def _prepare_analysis_settings(
                 continue
             if source == "foreground_segmentation":
                 source = "background_likelihood"
+            elif source == "foreground_noise_likelihood":
+                source = "refined_background_likelihood"
             elif source == "manual_seed_centres":
                 source = "reference_layers"
         key = (

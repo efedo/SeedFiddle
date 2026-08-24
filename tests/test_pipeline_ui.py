@@ -30,8 +30,8 @@ class PipelineCanvasTests(unittest.TestCase):
         self.application.processEvents()
         canvas.fit_graph()
         self.assertGreater(canvas.horizontalScrollBar().maximum(), 0)
-        self.assertEqual(len(canvas.node_items), 34)
-        self.assertEqual(len(canvas.edge_items), 167)
+        self.assertEqual(len(canvas.node_items), 33)
+        self.assertEqual(len(canvas.edge_items), 161)
         self.assertNotIn("circle_candidates", canvas.node_items)
         self.assertEqual(canvas.unused_nodes_button.text(), "Unused nodes (20)")
         unused_actions = [
@@ -59,7 +59,6 @@ class PipelineCanvasTests(unittest.TestCase):
         for overlay_node_id in (
             "background_likelihood",
             "refined_background_likelihood",
-            "foreground_noise_likelihood",
             "edge_gradients",
             "surface_darkness_gradients",
             "frequency_noise_masks",
@@ -306,12 +305,13 @@ class PipelineCanvasTests(unittest.TestCase):
             ],
             QComboBox,
         )
-        foreground_integration = canvas.node_items[
-            "foreground_noise_likelihood"
-        ]._inline_editors["foreground_noise_direction_integration"]
-        background_integration = canvas.node_items[
-            "refined_background_likelihood"
-        ]._inline_editors["noise_direction_integration"]
+        noise_item = canvas.node_items["refined_background_likelihood"]
+        foreground_integration = noise_item._inline_editors[
+            "foreground_noise_direction_integration"
+        ]
+        background_integration = noise_item._inline_editors[
+            "noise_direction_integration"
+        ]
         self.assertIsInstance(foreground_integration, QComboBox)
         self.assertEqual(foreground_integration.currentText(), "1st tertile")
         self.assertGreaterEqual(foreground_integration.findText("1st tertile"), 0)
@@ -372,8 +372,8 @@ class PipelineCanvasTests(unittest.TestCase):
         self.application.processEvents()
         self.assertEqual(restored, ["circle_candidates"])
         self.assertIn("circle_candidates", canvas.node_items)
-        self.assertEqual(len(canvas.node_items), 35)
-        self.assertEqual(len(canvas.edge_items), 175)
+        self.assertEqual(len(canvas.node_items), 34)
+        self.assertEqual(len(canvas.edge_items), 169)
         self.assertEqual(canvas.unused_nodes_button.text(), "Unused nodes (19)")
         self.assertTrue(canvas.unused_nodes_button.isEnabled())
         self.assertTrue(canvas.node_items["circle_candidates"].isSelected())
@@ -386,7 +386,7 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertNotIn("circle_candidates", canvas.node_items)
         self.assertIn("circle_candidates", graph.unused_nodes)
         self.assertFalse(graph.node("circle_candidates").enabled)
-        self.assertEqual(len(canvas.edge_items), 167)
+        self.assertEqual(len(canvas.edge_items), 161)
         self.assertEqual(canvas.unused_nodes_button.text(), "Unused nodes (20)")
         restore_action = next(
             action
@@ -452,10 +452,11 @@ class PipelineCanvasTests(unittest.TestCase):
             edge
             for edge in graph.connections
             if edge.source == "background_likelihood"
-            and edge.target == "foreground_noise_likelihood"
+            and edge.target == "refined_background_likelihood"
+            and edge.source_port == "foreground_probability"
         )
         canvas._disconnect_connection(connection)
-        self.assertEqual(len(canvas.edge_items), 166)
+        self.assertEqual(len(canvas.edge_items), 160)
         self.assertFalse(graph.node(connection.target).enabled)
         self.assertIsNone(
             graph.connection_for_input(connection.target, connection.target_port)
@@ -472,7 +473,7 @@ class PipelineCanvasTests(unittest.TestCase):
                 connection.source_port
             )
         )
-        self.assertEqual(len(canvas.edge_items), 167)
+        self.assertEqual(len(canvas.edge_items), 161)
         self.assertTrue(graph.node(connection.target).enabled)
         self.assertIsNotNone(
             graph.connection_for_input(connection.target, connection.target_port)
@@ -713,8 +714,7 @@ class PipelineCanvasTests(unittest.TestCase):
         for node_id, minimum_count in {
             "layout_detection": 8,
             "background_likelihood": 11,
-            "refined_background_likelihood": 9,
-            "foreground_noise_likelihood": 9,
+            "refined_background_likelihood": 19,
             "edge_gradients": 13,
             "instance_masks": 3,
             "edge_ridges": 4,
@@ -1012,19 +1012,20 @@ class PipelineCanvasTests(unittest.TestCase):
         )
         self.assertEqual(
             window.pipeline_inspector.title_label.text(),
-            "Node: Background noise probability",
+            "Node: Material noise probabilities",
         )
-        self.assertEqual(len(window.pipeline_inspector._parameter_widgets), 10)
-        window.pipeline_canvas.select_node("foreground_noise_likelihood")
-        self.application.processEvents()
-        self.assertEqual(
-            window.overlay_combo.currentData(), "foreground_noise_likelihood"
+        self.assertEqual(len(window.pipeline_inspector._parameter_widgets), 22)
+        node_overlays = {
+            window.pipeline_inspector.overlay_combo.itemData(index)
+            for index in range(window.pipeline_inspector.overlay_combo.count())
+        }
+        self.assertTrue(
+            {
+                "refined_background_likelihood",
+                "foreground_noise_likelihood",
+                "other_noise_probability",
+            }.issubset(node_overlays)
         )
-        self.assertEqual(
-            window.pipeline_inspector.title_label.text(),
-            "Node: Foreground noise probability",
-        )
-        self.assertEqual(len(window.pipeline_inspector._parameter_widgets), 10)
         window.pipeline_canvas.select_node("boundary_normals")
         self.application.processEvents()
         self.assertEqual(window.overlay_combo.currentData(), "boundary_confidence")
@@ -1652,9 +1653,24 @@ class PipelineCanvasTests(unittest.TestCase):
             ]
         )
         self.assertTrue(window.pipeline.node("background_likelihood").enabled)
-        self.assertTrue(window.pipeline.node("foreground_noise_likelihood").enabled)
         self.assertTrue(window.pipeline.node("refined_background_likelihood").enabled)
         self.assertFalse(window.background_enabled_checkbox.isChecked())
+        window.close()
+
+    def test_combined_noise_node_preserves_independent_enable_switches(self) -> None:
+        from seedvision.ui.main_window import MainWindow
+
+        window = MainWindow(ROOT)
+        window._pipeline_parameter_changed(
+            "refined_background_likelihood", "background_noise_enabled", False
+        )
+        node = window.pipeline.node("refined_background_likelihood")
+        self.assertFalse(node.parameters["background_noise_enabled"])
+        self.assertTrue(node.parameters["foreground_noise_enabled"])
+        self.assertTrue(node.enabled)
+        settings = window._layer_settings()
+        self.assertFalse(settings.background_noise_enabled)
+        self.assertTrue(settings.foreground_noise_enabled)
         window.close()
 
     def test_settings_reset_button_restores_node_defaults(self) -> None:
@@ -1693,7 +1709,7 @@ class PipelineCanvasTests(unittest.TestCase):
             "layout_detection", "hough_accumulator_threshold", 41
         )
         window.pipeline.set_parameter(
-            "foreground_noise_likelihood",
+            "refined_background_likelihood",
             "foreground_noise_vector_length_fraction",
             0.75,
         )
@@ -1904,7 +1920,7 @@ class PipelineCanvasTests(unittest.TestCase):
         dirty = window._cache_dirty_nodes[key]
         for node_id in (
             "background_likelihood",
-            "foreground_noise_likelihood",
+            "refined_background_likelihood",
             "reference_texture_prototypes",
         ):
             self.assertIn(node_id, dirty)
@@ -3418,9 +3434,6 @@ class PipelineCanvasTests(unittest.TestCase):
             NodeStatus.COMPLETE,
         )
         self.assertIn(
-            "foreground_noise_likelihood", window._cache_dirty_nodes[key]
-        )
-        self.assertIn(
             "refined_background_likelihood", window._cache_dirty_nodes[key]
         )
 
@@ -3938,8 +3951,8 @@ class PipelineCanvasTests(unittest.TestCase):
             NodeStatus.WARNING,
         )
         self.assertEqual(
-            window.pipeline.node("foreground_noise_likelihood").status,
-            NodeStatus.BLOCKED,
+            window.pipeline.node("refined_background_likelihood").status,
+            NodeStatus.WARNING,
         )
         self.assertIn(
             "0.35 cm buffer",

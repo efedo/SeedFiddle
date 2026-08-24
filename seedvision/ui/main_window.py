@@ -150,7 +150,6 @@ OVERLAY_NODE_IDS = (
     "instance_masks",
     "background_likelihood",
     "refined_background_likelihood",
-    "foreground_noise_likelihood",
     "edge_gradients",
     "surface_darkness_gradients",
     "lightening_gradient_ceiling",
@@ -265,7 +264,7 @@ OVERLAY_NODE_OWNERS = {
     "background_colour_gamut": "background_likelihood",
     "refined_background_likelihood": "refined_background_likelihood",
     "other_noise_probability": "refined_background_likelihood",
-    "foreground_noise_likelihood": "foreground_noise_likelihood",
+    "foreground_noise_likelihood": "refined_background_likelihood",
     "material_seed_support": "material_evidence_decision",
     "material_background_support": "material_evidence_decision",
     "material_other_support": "material_evidence_decision",
@@ -4802,7 +4801,6 @@ class MainWindow(QMainWindow):
             "perimeter_background_reference",
             "background_likelihood",
             "refined_background_likelihood",
-            "foreground_noise_likelihood",
             "edge_gradients",
             "surface_darkness_gradients",
             "lightening_gradient_ceiling",
@@ -5083,6 +5081,10 @@ class MainWindow(QMainWindow):
             # Foreground and background retain separate cached calculations,
             # but share one visible Material colour probabilities card.
             node_id = "background_likelihood"
+        elif node_id == "foreground_noise_likelihood":
+            # The two directional texture calculations likewise retain their
+            # separate caches while sharing one visible Material noise card.
+            node_id = "refined_background_likelihood"
         current_path = self.image_view.image_path
         key = _path_identity(path_text)
         activity = self._analysis_activities.get(key)
@@ -9339,9 +9341,6 @@ class MainWindow(QMainWindow):
             self.pipeline.set_status(
                 "refined_background_likelihood", NodeStatus.IDLE, "Updating"
             )
-            self.pipeline.set_status(
-                "foreground_noise_likelihood", NodeStatus.IDLE, "Updating"
-            )
             self.pipeline.set_status("instance_masks", NodeStatus.IDLE, "Updating")
             self.pipeline.set_status(
                 "measurements", NodeStatus.BLOCKED, "Requires reviewed masks"
@@ -9697,8 +9696,8 @@ class MainWindow(QMainWindow):
             "foreground_noise_likelihood": (
                 "Foreground texture probability: black = non-foreground-like local "
                 "frequency; white = foreground-like texture. Fine, medium, and coarse "
-                "profiles are learned from reviewed Foreground when available, with "
-                "colour pseudo-labels only as fallback. Weakly separated texture is "
+                "profiles are learned from reviewed Foreground and optional safely "
+                "inset annotated-seed interiors when available. Weakly separated texture is "
                 "automatically suppressed relative to the colour evidence; painted "
                 "reference pixels are never forced to one."
             ),
@@ -9989,6 +9988,28 @@ class MainWindow(QMainWindow):
         for node_id, elapsed in node_timings.items():
             if node_id in self.pipeline.nodes:
                 self.pipeline.node(node_id).calculation_seconds = float(elapsed)
+        for visible_node_id, internal_node_ids in (
+            (
+                "background_likelihood",
+                ("background_likelihood", "foreground_segmentation"),
+            ),
+            (
+                "refined_background_likelihood",
+                (
+                    "refined_background_likelihood",
+                    "foreground_noise_likelihood",
+                ),
+            ),
+        ):
+            elapsed_parts = [
+                float(node_timings[node_id])
+                for node_id in internal_node_ids
+                if node_id in node_timings
+            ]
+            if elapsed_parts:
+                self.pipeline.node(visible_node_id).calculation_seconds = sum(
+                    elapsed_parts
+                )
         calibration = result.calibration
         card = calibration.colour_card
         self.pipeline.set_status(
@@ -10227,35 +10248,59 @@ class MainWindow(QMainWindow):
             f"{result.count:,} uniquely coloured masks",
         )
         profile = result.layers.noise_frequency_profile
-        if background_mode == "disabled":
-            self.pipeline.set_status(
-                "refined_background_likelihood",
-                NodeStatus.BLOCKED,
-                "Background colour analysis disabled",
-            )
+        noise_parameters = self.pipeline.node(
+            "refined_background_likelihood"
+        ).parameters
+        background_noise_enabled = bool(
+            noise_parameters.get("background_noise_enabled", True)
+        )
+        foreground_noise_enabled = bool(
+            noise_parameters.get("foreground_noise_enabled", True)
+        )
+        noise_details: list[str] = []
+        background_noise_available = (
+            background_noise_enabled and background_mode != "disabled"
+        )
+        if not background_noise_enabled:
+            noise_details.append("Background noise disabled")
+        elif background_mode == "disabled":
+            noise_details.append("Background noise disabled")
         else:
-            self.pipeline.set_status(
-                "refined_background_likelihood",
-                NodeStatus.COMPLETE,
+            noise_details.append(
+                "Background: "
                 f"{len(result.layers.directional_background_angles_degrees)} directions integrated; "
                 f"three-band separation {profile.separation:.2f}; "
                 f"texture blend {72.0 * max(0.0, min(1.0, (profile.separation - 0.5) / 2.0)):.0f}%; "
-                "direct exterior-annulus positives shown",
+                "direct exterior-annulus positives shown"
             )
         foreground_noise_profile = result.layers.foreground_noise_frequency_profile
-        if foreground_colour_profile is None:
-            self.pipeline.set_status(
-                "foreground_noise_likelihood",
-                NodeStatus.BLOCKED,
-                "Requires painted Foreground or enabled annotated-seed reference",
+        foreground_noise_available = (
+            foreground_noise_enabled
+            and foreground_colour_profile is not None
+            and foreground_noise_profile is not None
+        )
+        if not foreground_noise_enabled:
+            noise_details.append("Foreground noise disabled")
+        elif foreground_colour_profile is None:
+            noise_details.append(
+                "Foreground: requires painted Foreground or enabled annotated-seed reference"
             )
         elif foreground_noise_profile is not None:
-            self.pipeline.set_status(
-                "foreground_noise_likelihood",
-                NodeStatus.COMPLETE,
+            noise_details.append(
                 "Foreground/non-foreground three-band separation "
-                f"{foreground_noise_profile.separation:.2f}",
+                f"{foreground_noise_profile.separation:.2f}"
             )
+        self.pipeline.set_status(
+            "refined_background_likelihood",
+            (
+                NodeStatus.COMPLETE
+                if background_noise_available and foreground_noise_available
+                else NodeStatus.WARNING
+                if background_noise_available or foreground_noise_available
+                else NodeStatus.BLOCKED
+            ),
+            "; ".join(noise_details),
+        )
         self.pipeline.set_status(
             "edge_gradients",
             NodeStatus.COMPLETE,
@@ -10536,7 +10581,6 @@ class MainWindow(QMainWindow):
             "wavelet_decomposition",
             "background_likelihood",
             "refined_background_likelihood",
-            "foreground_noise_likelihood",
             "edge_gradients",
             "surface_darkness_gradients",
             "lightening_gradient_ceiling",
@@ -10635,8 +10679,7 @@ class MainWindow(QMainWindow):
             "edge_traces": "Linking orientation-compatible ridge fragments",
             "seed_edge_curves": "Confirming radii, circles, ellipses, centres, and semantic sides",
             "background_likelihood": "Estimating the likely colour range",
-            "refined_background_likelihood": "Evaluating directed texture rays",
-            "foreground_noise_likelihood": "Evaluating foreground texture rays",
+            "refined_background_likelihood": "Evaluating foreground, background, and Other texture rays",
             "seed_interior": "Fusing seed-interior evidence on the tensor device",
             "boundary_normals": "Estimating boundary confidence and normals",
             "touching_split": "Scoring necks and distance saddles",
@@ -10937,7 +10980,6 @@ class MainWindow(QMainWindow):
             "perimeter_background_reference",
             "background_likelihood",
             "refined_background_likelihood",
-            "foreground_noise_likelihood",
             "edge_gradients",
             "surface_darkness_gradients",
             "lightening_gradient_ceiling",

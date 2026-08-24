@@ -28,8 +28,8 @@ class PipelineModelTests(unittest.TestCase):
         order = graph.topological_order()
         self.assertEqual(order[0], "raw_images")
         self.assertEqual(set(order), set(graph.nodes))
-        self.assertEqual(len(graph.nodes), 34)
-        self.assertEqual(len(graph.connections), 167)
+        self.assertEqual(len(graph.nodes), 33)
+        self.assertEqual(len(graph.connections), 161)
         self.assertEqual(
             graph.upstream("perimeter_background_reference"),
             ("deskew_colour", "layout_detection", "scale_calibration"),
@@ -55,7 +55,7 @@ class PipelineModelTests(unittest.TestCase):
             ("reference_layers", "annotated_seeds"),
         )
         for consumer in (
-            "foreground_noise_likelihood",
+            "refined_background_likelihood",
             "reference_texture_prototypes",
         ):
             annotated_foreground = graph.connection_for_input(
@@ -87,7 +87,7 @@ class PipelineModelTests(unittest.TestCase):
         graph = build_default_pipeline()
         all_nodes = {**graph.nodes, **graph.unused_nodes}
         all_connections = (*graph.connections, *graph.unused_connections)
-        self.assertEqual(len(graph.connection_templates), 255)
+        self.assertEqual(len(graph.connection_templates), 249)
         self.assertTrue(all(node.output_ports for node in all_nodes.values()))
         self.assertEqual(
             len(all_connections),
@@ -153,10 +153,6 @@ class PipelineModelTests(unittest.TestCase):
                 "seed_scale_estimation", "perimeter_background_reference",
                 "reference_layers",
             },
-            "foreground_noise_likelihood": {
-                "background_likelihood", "deskew_colour", "layout_detection",
-                "seed_scale_estimation", "reference_layers",
-            },
             "edge_gradients": {
                 "wavelet_decomposition", "deskew_colour", "layout_detection",
             },
@@ -176,8 +172,7 @@ class PipelineModelTests(unittest.TestCase):
                 "frequency_noise_masks",
             },
             "material_evidence_decision": {
-                "foreground_noise_likelihood", "background_likelihood",
-                "refined_background_likelihood",
+                "background_likelihood", "refined_background_likelihood",
                 "reference_texture_prototypes", "seed_scale_estimation",
             },
             "reference_edge_probability": {"reference_texture_prototypes"},
@@ -257,16 +252,16 @@ class PipelineModelTests(unittest.TestCase):
             "unet_instances": {
                 "metadata", "deskew_colour", "layout_detection",
                 "seed_scale_estimation",
-                "foreground_noise_likelihood", "background_likelihood",
-                "refined_background_likelihood", "edge_gradients",
+                "background_likelihood", "refined_background_likelihood",
+                "edge_gradients",
                 "reference_edge_probability", "illumination_decomposition",
                 "image_quality", "reference_layers",
             },
             "stardist_instances": {
                 "metadata", "deskew_colour", "layout_detection",
                 "seed_scale_estimation",
-                "foreground_noise_likelihood", "background_likelihood",
-                "refined_background_likelihood", "edge_gradients",
+                "background_likelihood", "refined_background_likelihood",
+                "edge_gradients",
                 "reference_edge_probability", "illumination_decomposition",
                 "image_quality",
             },
@@ -344,19 +339,20 @@ class PipelineModelTests(unittest.TestCase):
             edge
             for edge in graph.connections
             if edge.source == "background_likelihood"
-            and edge.target == "foreground_noise_likelihood"
+            and edge.target == "refined_background_likelihood"
+            and edge.source_port == "foreground_probability"
         )
         graph.set_enabled("procedural_instances", False)
         affected = graph.disconnect(connection)
-        self.assertIn("foreground_noise_likelihood", affected)
-        self.assertFalse(graph.node("foreground_noise_likelihood").enabled)
+        self.assertIn("refined_background_likelihood", affected)
+        self.assertFalse(graph.node("refined_background_likelihood").enabled)
         self.assertFalse(graph.node("procedural_instances").enabled)
         self.assertEqual(
-            graph.missing_input_ports("foreground_noise_likelihood"),
+            graph.missing_input_ports("refined_background_likelihood"),
             (connection.target_port,),
         )
         with self.assertRaisesRegex(ValueError, "Reconnect required"):
-            graph.set_enabled("foreground_noise_likelihood", True)
+            graph.set_enabled("refined_background_likelihood", True)
 
         reconnected = graph.connect(
             connection.source,
@@ -365,7 +361,7 @@ class PipelineModelTests(unittest.TestCase):
             connection.target_port,
         )
         self.assertEqual(reconnected, affected)
-        self.assertTrue(graph.node("foreground_noise_likelihood").enabled)
+        self.assertTrue(graph.node("refined_background_likelihood").enabled)
         # This node was deliberately disabled before the wire edit.
         self.assertFalse(graph.node("procedural_instances").enabled)
         self.assertFalse(graph.node("unet_instances").enabled)
@@ -376,7 +372,8 @@ class PipelineModelTests(unittest.TestCase):
             edge
             for edge in graph.connections
             if edge.source == "background_likelihood"
-            and edge.target == "foreground_noise_likelihood"
+            and edge.target == "refined_background_likelihood"
+            and edge.source_port == "foreground_probability"
         )
         graph.disconnect(connection)
         other_source = graph.node("background_likelihood")
@@ -456,15 +453,20 @@ class PipelineModelTests(unittest.TestCase):
                 "reference_layers",
             ),
         )
+        self.assertNotIn("foreground_noise_likelihood", graph.nodes)
         self.assertEqual(
-            graph.upstream("foreground_noise_likelihood"),
-            (
-                "background_likelihood",
-                "deskew_colour",
-                "layout_detection",
-                "seed_scale_estimation",
-                "reference_layers",
-            ),
+            graph.node("refined_background_likelihood").title,
+            "Material noise probabilities",
+        )
+        self.assertTrue(
+            graph.node("refined_background_likelihood").parameters[
+                "background_noise_enabled"
+            ]
+        )
+        self.assertTrue(
+            graph.node("refined_background_likelihood").parameters[
+                "foreground_noise_enabled"
+            ]
         )
         self.assertEqual(
             graph.upstream("background_likelihood"),
@@ -583,7 +585,7 @@ class PipelineModelTests(unittest.TestCase):
             ),
         )
         affected = graph.set_parameter(
-            "foreground_noise_likelihood",
+            "refined_background_likelihood",
             "foreground_noise_vector_length_fraction",
             0.70,
         )
@@ -758,7 +760,7 @@ class PipelineModelTests(unittest.TestCase):
         self.assertIn("layout_detection", affected)
         self.assertNotIn("identification", affected)
         self.assertIn("background_likelihood", affected)
-        self.assertIn("foreground_noise_likelihood", affected)
+        self.assertIn("refined_background_likelihood", affected)
         self.assertNotIn("circle_candidates", affected)
         self.assertNotIn("output", affected)
 
@@ -860,7 +862,6 @@ class PipelineModelTests(unittest.TestCase):
             {
                 "background_likelihood",
                 "refined_background_likelihood",
-                "foreground_noise_likelihood",
                 "seed_scale_estimation",
                 "reference_texture_prototypes",
                 "procedural_instances",
@@ -891,7 +892,6 @@ class PipelineModelTests(unittest.TestCase):
         material_consumers = {
             "background_likelihood",
             "refined_background_likelihood",
-            "foreground_noise_likelihood",
             "reference_texture_prototypes",
         }
         self.assertEqual(consumers_by_port["background"], material_consumers)
@@ -917,7 +917,6 @@ class PipelineModelTests(unittest.TestCase):
             {
                 "background_likelihood",
                 "refined_background_likelihood",
-                "foreground_noise_likelihood",
                 "reference_edge_probability",
                 "procedural_instances",
             }.issubset(affected)
@@ -957,8 +956,19 @@ class PipelineModelTests(unittest.TestCase):
             ]
         )
         self.assertTrue(graph.node("background_likelihood").enabled)
-        self.assertTrue(graph.node("foreground_noise_likelihood").enabled)
-        self.assertIn("foreground_noise_likelihood", affected)
+        self.assertTrue(graph.node("refined_background_likelihood").enabled)
+        self.assertIn("refined_background_likelihood", affected)
+
+    def test_combined_noise_node_keeps_independent_enable_controls(self) -> None:
+        graph = build_default_pipeline()
+        affected = graph.set_parameter(
+            "refined_background_likelihood", "foreground_noise_enabled", False
+        )
+        node = graph.node("refined_background_likelihood")
+        self.assertTrue(node.parameters["background_noise_enabled"])
+        self.assertFalse(node.parameters["foreground_noise_enabled"])
+        self.assertTrue(node.enabled)
+        self.assertIn("material_evidence_decision", affected)
 
     def test_reset_parameters_restores_authored_defaults(self) -> None:
         graph = build_default_pipeline()
@@ -1098,20 +1108,19 @@ class PipelineModelTests(unittest.TestCase):
 
     def test_foreground_noise_first_tertile_is_default_and_exposed(self) -> None:
         graph = build_default_pipeline()
-        foreground = graph.node("foreground_noise_likelihood")
-        background = graph.node("refined_background_likelihood")
+        noise = graph.node("refined_background_likelihood")
         spec = next(
             item
-            for item in foreground.parameter_specs
+            for item in noise.parameter_specs
             if item.key == "foreground_noise_direction_integration"
         )
 
         self.assertEqual(
-            foreground.parameters["foreground_noise_direction_integration"],
+            noise.parameters["foreground_noise_direction_integration"],
             "1st tertile",
         )
         self.assertEqual(
-            foreground.default_parameters[
+            noise.default_parameters[
                 "foreground_noise_direction_integration"
             ],
             "1st tertile",
@@ -1119,24 +1128,24 @@ class PipelineModelTests(unittest.TestCase):
         self.assertIn("1st tertile", spec.choices)
         background_spec = next(
             item
-            for item in background.parameter_specs
+            for item in noise.parameter_specs
             if item.key == "noise_direction_integration"
         )
         self.assertNotIn("1st tertile", background_spec.choices)
         self.assertEqual(
-            background.parameters["noise_direction_integration"], "maximum"
+            noise.parameters["noise_direction_integration"], "maximum"
         )
         affected = graph.set_parameter(
-            "foreground_noise_likelihood",
+            "refined_background_likelihood",
             "foreground_noise_direction_integration",
             "median",
         )
-        self.assertEqual(affected[0], "foreground_noise_likelihood")
+        self.assertEqual(affected[0], "refined_background_likelihood")
         self.assertIn("seed_interior", affected)
         self.assertIn("procedural_instances", affected)
         with self.assertRaises(ValueError):
             graph.set_parameter(
-                "foreground_noise_likelihood",
+                "refined_background_likelihood",
                 "foreground_noise_direction_integration",
                 "lower-ish",
             )

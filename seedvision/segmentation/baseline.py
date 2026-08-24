@@ -576,7 +576,12 @@ def analyze_image(
     reused: list[str] = []
 
     def node_enabled(node_id: str) -> bool:
-        return enabled_nodes is None or node_id in enabled_nodes
+        visible_node_id = (
+            "refined_background_likelihood"
+            if node_id == "foreground_noise_likelihood"
+            else node_id
+        )
+        return enabled_nodes is None or visible_node_id in enabled_nodes
 
     calibration_nodes = {
         "colour_reference", "ruler_detection", "deskew_colour", "scale_calibration"
@@ -1388,7 +1393,16 @@ def analyze_image(
             }
         )
     if "refined_background_likelihood" in layer_dirty:
-        layer_dirty.update({"instance_masks", "seed_edge_curves"})
+        # Foreground and background noise retain separate CUDA calculations and
+        # caches, but one visible graph node owns both parameter sets. A change
+        # to that card must therefore invalidate both internal products.
+        layer_dirty.update(
+            {
+                "foreground_noise_likelihood",
+                "instance_masks",
+                "seed_edge_curves",
+            }
+        )
     if "instance_masks" in layer_dirty:
         layer_dirty.add("seed_edge_curves")
     if layer_dirty & {
@@ -1484,7 +1498,14 @@ def analyze_image(
             ]
         ),
         background_colour_enabled=background_colour_enabled,
-        foreground_noise_enabled=node_enabled("foreground_noise_likelihood"),
+        background_noise_enabled=(
+            node_enabled("refined_background_likelihood")
+            and layer_settings.background_noise_enabled
+        ),
+        foreground_noise_enabled=(
+            node_enabled("foreground_noise_likelihood")
+            and layer_settings.foreground_noise_enabled
+        ),
         reference_edge_probability_enabled=node_enabled(
             "reference_edge_probability"
         ),

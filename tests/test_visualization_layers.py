@@ -1038,6 +1038,18 @@ class AnalysisLayerTests(unittest.TestCase):
             changed.reference_texture_profile,
             first.reference_texture_profile,
         )
+
+        combined_noise_changed = calculate(
+            second_source, {"refined_background_likelihood"}
+        )
+        self.assertIsNot(
+            combined_noise_changed.foreground_noise_likelihood,
+            changed.foreground_noise_likelihood,
+        )
+        self.assertIsNot(
+            combined_noise_changed.refined_background_likelihood,
+            changed.refined_background_likelihood,
+        )
         self.assertIs(
             changed.foreground_reference_source_mask,
             second_source,
@@ -2190,6 +2202,20 @@ class AnalysisLayerTests(unittest.TestCase):
         self.assertEqual(layers.noise_frequency_profile.background_sample_count, 0)
         self.assertGreater(np.count_nonzero(layers.instance_labels == 1), 0)
         self.assertGreater(int(layers.edge_likelihood.max()), 0)
+
+        noise_disabled = build_analysis_layers(
+            image,
+            valid,
+            np.asarray(((48, 48),), dtype=np.float32),
+            np.asarray((16,), dtype=np.float32),
+            32.0,
+            offset_x=0,
+            offset_y=0,
+            background_noise_enabled=False,
+        )
+        self.assertNotEqual(noise_disabled.background_mode, "disabled")
+        self.assertGreater(int(noise_disabled.background_likelihood.max()), 0)
+        self.assertFalse(np.any(noise_disabled.refined_background_likelihood))
 
     def test_manual_regions_constrain_colour_and_train_noise_without_overrides(self) -> None:
         import cv2

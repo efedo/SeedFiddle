@@ -1935,12 +1935,14 @@ def build_default_pipeline() -> PipelineGraph:
         ),
         PipelineNode(
             "refined_background_likelihood",
-            "Background noise probability",
+            "Material noise probabilities",
             "Diagnostic overlay",
-            "Directional frequency continuation learned from user-authored evidence",
+            "Independent foreground, background, and Other directional texture evidence",
             1440,
             180,
             parameters={
+                "background_noise_enabled": True,
+                "foreground_noise_enabled": True,
                 "noise_medium_scale_fraction": 0.03,
                 "noise_coarse_scale_fraction": 0.08,
                 "noise_direction_step_degrees": 15,
@@ -1951,30 +1953,6 @@ def build_default_pipeline() -> PipelineGraph:
                 "noise_background_min_likelihood": 190,
                 "noise_nonbackground_max_likelihood": 65,
                 "noise_working_maximum_dimension": 1280,
-            },
-            parameter_specs=noise_parameters,
-            details=(
-                "Fine, medium, and coarse texture distributions are learned directly "
-                "from painted background and non-background areas when available; "
-                "confident colour pseudo-labels are used only for an unpainted class. "
-                "The painted locations are training evidence, never forced output values. "
-                "Texture likelihood is then "
-                "separately evaluated across the exact dish-surrounding sampling "
-                "annulus, without expanding unrelated downstream GPU crops. It is "
-                "also "
-                "geometrically accumulated along independent one-sided rays. At "
-                "15° spacing there are 24 unique overlays (0° through 345°); "
-                "the selected integration rule merges them into the refined map."
-            ),
-        ),
-        PipelineNode(
-            "foreground_noise_likelihood",
-            "Foreground noise probability",
-            "Diagnostic overlay",
-            "Directional frequency continuation learned from painted or automatic evidence",
-            1560,
-            -20,
-            parameters={
                 "foreground_noise_medium_scale_fraction": 0.03,
                 "foreground_noise_coarse_scale_fraction": 0.08,
                 "foreground_noise_direction_step_degrees": 15,
@@ -1986,20 +1964,43 @@ def build_default_pipeline() -> PipelineGraph:
                 "foreground_noise_nonforeground_max_likelihood": 65,
                 "foreground_noise_working_maximum_dimension": 1280,
             },
-            parameter_specs=foreground_noise_parameters,
+            parameter_specs=(
+                ParameterSpec(
+                    "background_noise_enabled",
+                    "Use background noise analysis",
+                    "bool",
+                    description=(
+                        "Enable the independent Background/Other directional-texture "
+                        "calculation on this combined node."
+                    ),
+                ),
+                ParameterSpec(
+                    "foreground_noise_enabled",
+                    "Use foreground noise analysis",
+                    "bool",
+                    description=(
+                        "Enable the independent mandatory-reference Foreground "
+                        "directional-texture calculation on this combined node."
+                    ),
+                ),
+                *noise_parameters,
+                *foreground_noise_parameters,
+            ),
             details=(
-                "Fine, medium, and coarse texture distributions are learned directly "
-                "from painted foreground and non-foreground areas when available. "
-                "When enabled on the Foreground colour node, safely inset interiors of "
-                "applied annotated seeds are additive positive examples; painted material "
-                "and exclusion evidence retains precedence. "
-                "No colour pseudo-label or automatic foreground source is synthesized. "
-                "The annotated locations are training evidence, never forced output values. The "
-                "same one-sided ray integration used by the background-noise node "
-                "continues matching seed texture through patterned coats without "
-                "turning painted foreground pixels into forced output values. The "
-                "default first-tertile rule uses the exact 33⅓ percentile across "
-                "directions, requiring broad rather than merely single-ray support."
+                "This card combines controls and connectors without combining the "
+                "underlying evidence equations. Fine, medium, and coarse Background "
+                "texture distributions are learned from the retained exterior annulus "
+                "or painted Background and their non-Background examples. Foreground "
+                "texture distributions are learned independently from painted "
+                "Foreground and optional safely inset annotated-seed interiors; no "
+                "automatic foreground source is synthesized. Painted locations remain "
+                "training evidence and are never forced output values. Both calculations "
+                "retain their own enable switch, scales, ray geometry, thresholds, "
+                "integration rule, GPU working limit, cached raster, and timing. "
+                "Background defaults to "
+                "maximum across one-sided rays; Foreground defaults to the exact first "
+                "tertile so matching texture needs broad directional support. Other "
+                "noise remains the competing texture evidence fitted beside Background."
             ),
         ),
         PipelineNode(
@@ -2987,16 +2988,10 @@ def build_default_pipeline() -> PipelineGraph:
             ("instance_radius_extent_multiplier", "Radius extent"),
         ),
         "refined_background_likelihood": (
-            ("noise_direction_step_degrees", "Direction step"),
-            ("noise_vector_length_fraction", "Ray length"),
-            ("noise_direction_integration", "Integration"),
-            ("noise_working_maximum_dimension", "GPU dimension"),
-        ),
-        "foreground_noise_likelihood": (
-            ("foreground_noise_direction_step_degrees", "Direction step"),
-            ("foreground_noise_vector_length_fraction", "Ray length"),
-            ("foreground_noise_direction_integration", "Integration"),
-            ("foreground_noise_working_maximum_dimension", "GPU dimension"),
+            ("background_noise_enabled", "Use BG noise"),
+            ("foreground_noise_enabled", "Use FG noise"),
+            ("noise_direction_integration", "BG integration"),
+            ("foreground_noise_direction_integration", "FG integration"),
         ),
         "edge_gradients": (
             ("edge_blur_sigma", "Blur sigma"),
@@ -3225,30 +3220,14 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineConnection("reference_layers", "refined_background_likelihood", "OtherReferences", source_port="other", target_port="other_reference"),
         PipelineConnection(
             "background_likelihood",
-            "foreground_noise_likelihood",
+            "refined_background_likelihood",
             "ForegroundProbability",
             source_port="foreground_probability",
             target_port="foreground_probability",
         ),
         PipelineConnection(
-            "deskew_colour", "foreground_noise_likelihood", "CorrectedImage",
-            target_port="image",
-        ),
-        PipelineConnection(
-            "layout_detection", "foreground_noise_likelihood", "DishRegion",
-            source_port="dish_region", target_port="region",
-        ),
-        PipelineConnection(
-            "seed_scale_estimation",
-            "foreground_noise_likelihood",
-            "SeedDiameter",
-        ),
-        PipelineConnection("reference_layers", "foreground_noise_likelihood", "BackgroundReferences", source_port="background", target_port="background_reference"),
-        PipelineConnection("reference_layers", "foreground_noise_likelihood", "ForegroundReferences", source_port="foreground", target_port="foreground_reference"),
-        PipelineConnection("reference_layers", "foreground_noise_likelihood", "OtherReferences", source_port="other", target_port="other_reference"),
-        PipelineConnection(
             "background_likelihood",
-            "foreground_noise_likelihood",
+            "refined_background_likelihood",
             "AnnotatedForegroundReferences",
             source_port="annotated_foreground_reference_source",
             target_port="automatic_foreground_reference",
@@ -3362,7 +3341,7 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineConnection("frequency_noise_masks", "reference_texture_prototypes", "MediumColourNoise", source_port="colour_medium", target_port="colour_medium"),
         PipelineConnection("frequency_noise_masks", "reference_texture_prototypes", "CoarseColourNoise", source_port="colour_coarse", target_port="colour_coarse"),
         PipelineConnection("background_likelihood", "material_evidence_decision", "ForegroundColourProbability", source_port="foreground_probability", target_port="foreground_colour"),
-        PipelineConnection("foreground_noise_likelihood", "material_evidence_decision", "ForegroundNoiseProbability", source_port="foreground_noise_probability", target_port="foreground_noise"),
+        PipelineConnection("refined_background_likelihood", "material_evidence_decision", "ForegroundNoiseProbability", source_port="foreground_noise_probability", target_port="foreground_noise"),
         PipelineConnection("background_likelihood", "material_evidence_decision", "BackgroundProbability", source_port="background_probability", target_port="background_colour"),
         PipelineConnection("refined_background_likelihood", "material_evidence_decision", "BackgroundNoiseProbability", source_port="background_noise_probability", target_port="background_noise"),
         PipelineConnection("background_likelihood", "material_evidence_decision", "OtherColourProbability", source_port="other_colour_probability", target_port="other_colour"),
@@ -3558,7 +3537,7 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineConnection("layout_detection", "unet_instances", "DishRegion", target_port="image"),
         PipelineConnection("seed_scale_estimation", "unet_instances", "SeedDiameter", target_port="scale"),
         PipelineConnection("background_likelihood", "unet_instances", "ForegroundProbability", source_port="foreground_probability", target_port="foreground_probability"),
-        PipelineConnection("foreground_noise_likelihood", "unet_instances", "ForegroundNoiseProbability", source_port="foreground_noise_probability", target_port="foreground_noise"),
+        PipelineConnection("refined_background_likelihood", "unet_instances", "ForegroundNoiseProbability", source_port="foreground_noise_probability", target_port="foreground_noise"),
         PipelineConnection("background_likelihood", "unet_instances", "BackgroundProbability", source_port="background_probability", target_port="background_probability"),
         PipelineConnection("refined_background_likelihood", "unet_instances", "BackgroundNoiseProbability", source_port="background_noise_probability", target_port="background_noise"),
         PipelineConnection("edge_gradients", "unet_instances", "EdgeMagnitude", target_port="image"),
@@ -3574,7 +3553,7 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineConnection("layout_detection", "stardist_instances", "DishRegion", target_port="image"),
         PipelineConnection("seed_scale_estimation", "stardist_instances", "SeedDiameter", target_port="scale"),
         PipelineConnection("background_likelihood", "stardist_instances", "ForegroundProbability", source_port="foreground_probability", target_port="foreground_probability"),
-        PipelineConnection("foreground_noise_likelihood", "stardist_instances", "ForegroundNoiseProbability", source_port="foreground_noise_probability", target_port="foreground_noise"),
+        PipelineConnection("refined_background_likelihood", "stardist_instances", "ForegroundNoiseProbability", source_port="foreground_noise_probability", target_port="foreground_noise"),
         PipelineConnection("background_likelihood", "stardist_instances", "BackgroundProbability", source_port="background_probability", target_port="background_probability"),
         PipelineConnection("refined_background_likelihood", "stardist_instances", "BackgroundNoiseProbability", source_port="background_noise_probability", target_port="background_noise"),
         PipelineConnection("edge_gradients", "stardist_instances", "EdgeMagnitude", target_port="image"),
