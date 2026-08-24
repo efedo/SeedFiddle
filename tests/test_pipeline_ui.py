@@ -31,9 +31,9 @@ class PipelineCanvasTests(unittest.TestCase):
         canvas.fit_graph()
         self.assertGreater(canvas.horizontalScrollBar().maximum(), 0)
         self.assertEqual(len(canvas.node_items), 34)
-        self.assertEqual(len(canvas.edge_items), 157)
+        self.assertEqual(len(canvas.edge_items), 167)
         self.assertNotIn("circle_candidates", canvas.node_items)
-        self.assertEqual(canvas.unused_nodes_button.text(), "Unused nodes (21)")
+        self.assertEqual(canvas.unused_nodes_button.text(), "Unused nodes (20)")
         unused_actions = [
             action.text() for action in canvas.unused_nodes_menu.actions()
         ]
@@ -42,11 +42,9 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertIn(
             "Add Lightening derivative upper cutoff to graph", unused_actions
         )
+
         self.assertIn(
             "Add Darkening derivative upper cutoff to graph", unused_actions
-        )
-        self.assertIn(
-            "Add Directional surface darkness gradients to graph", unused_actions
         )
         self.assertIn(
             "Add Calibration residual risk to graph", unused_actions
@@ -63,9 +61,8 @@ class PipelineCanvasTests(unittest.TestCase):
             "refined_background_likelihood",
             "foreground_noise_likelihood",
             "edge_gradients",
+            "surface_darkness_gradients",
             "frequency_noise_masks",
-            "undirected_edges",
-            "directed_edges",
             "edge_ridges",
             "edge_traces",
             "procedural_instances",
@@ -74,7 +71,7 @@ class PipelineCanvasTests(unittest.TestCase):
         for stage_node_id in (
             "seed_scale_estimation",
             "perimeter_background_reference",
-            "foreground_segmentation",
+            "background_likelihood",
         ):
             self.assertIn(stage_node_id, canvas.node_items)
         for advanced_node_id in (
@@ -89,7 +86,6 @@ class PipelineCanvasTests(unittest.TestCase):
             self.assertIn(advanced_node_id, canvas.node_items)
         for dormant_node_id in (
             "distance_candidates",
-            "surface_darkness_gradients",
             "calibration_residuals",
             "identification",
             "instance_masks",
@@ -112,6 +108,39 @@ class PipelineCanvasTests(unittest.TestCase):
             shared.output_anchor("directed"),
         )
         canvas.close()
+
+    def test_current_image_name_is_in_pane_and_list_selection_tracks_it(self) -> None:
+        from seedvision.ui.main_window import MainWindow
+
+        window = MainWindow(ROOT)
+        path = window.image_view.image_path
+        self.assertIsNotNone(path)
+        self.assertEqual(window.image_view.current_file_label.text(), path.name)
+        current = window.image_list.currentItem()
+        self.assertIsNotNone(current)
+        self.assertEqual(Path(current.data(256)).resolve(), path.resolve())
+        self.assertIn("Add one or more images", window.open_action.toolTip())
+        self.assertNotIn("Add images below", window.open_action.toolTip())
+        self.assertFalse(hasattr(window, "add_images_button"))
+        window.close()
+
+    def test_run_to_node_scopes_execution_to_enabled_ancestors(self) -> None:
+        from unittest.mock import patch
+
+        from seedvision.ui.main_window import MainWindow
+
+        window = MainWindow(ROOT)
+        with patch.object(window, "_analyze_current_image") as analyze:
+            window._run_pipeline_to_node("procedural_instances")
+        arguments = analyze.call_args.kwargs
+        self.assertEqual(arguments["dirty_nodes"], {"procedural_instances"})
+        scope = arguments["enabled_node_scope"]
+        self.assertIn("procedural_instances", scope)
+        self.assertIn("layout_detection", scope)
+        self.assertIn("reference_edge_probability", scope)
+        self.assertNotIn("review", scope)
+        self.assertNotIn("measurements", scope)
+        window.close()
 
     def test_analysis_cache_is_lru_bounded_and_gpu_jobs_are_serialized(self) -> None:
         import numpy as np
@@ -178,12 +207,79 @@ class PipelineCanvasTests(unittest.TestCase):
         cache = PipelineAnalysisCache(values={"partial": raster})
         window._analysis_caches[key] = cache
         window._active_tasks[key] = object()
-        with patch("seedvision.ui.main_window.QMessageBox.warning"):
+        window._pending_analysis_key = key
+        events = []
+        with (
+            patch.object(
+                window,
+                "_analyze_current_image",
+                side_effect=lambda **_kwargs: events.append("resume"),
+            ),
+            patch(
+                "seedvision.ui.main_window.QMessageBox.warning",
+                side_effect=lambda *args: events.append("warning"),
+            ),
+        ):
             window._analysis_failed(str(path), "synthetic failure", window.pipeline.revision)
 
         self.assertNotIn(key, window._analysis_caches)
         self.assertFalse(raster.is_materialized)
         self.assertEqual(cache.values, {})
+        self.assertEqual(events, ["resume", "warning"])
+        window.close()
+
+    def test_superseded_analysis_is_cancelled_and_remains_visible(self) -> None:
+        from time import monotonic
+
+        from seedvision.pipeline import NodeStatus
+        from seedvision.ui.main_window import MainWindow, _AnalysisActivity
+
+        class FakeTask:
+            def __init__(self) -> None:
+                self.cancelled = False
+
+            def cancel(self) -> None:
+                self.cancelled = True
+
+        window = MainWindow(ROOT)
+        key = window._current_image_key()
+        path = window.image_view.image_path
+        if key is None or path is None:
+            window.close()
+            self.skipTest("No workspace image is present")
+        task = FakeTask()
+        started = monotonic() - 5.0
+        old_revision = window.pipeline.revision
+        window._active_tasks[key] = task
+        window._analysis_activities[key] = _AnalysisActivity(
+            path=path,
+            pipeline_revision=old_revision,
+            started_at=started,
+            last_progress_at=started,
+            current_node="reference_texture_prototypes",
+            current_node_started_at=started,
+        )
+        # Simulate a setting mutation that has already advanced the graph.
+        window.pipeline.revision += 1
+        window._analyze_current_image(
+            dirty_nodes={"reference_texture_prototypes"}
+        )
+
+        self.assertTrue(task.cancelled)
+        self.assertEqual(window._pending_analysis_key, key)
+        self.assertIsNotNone(
+            window._analysis_activities[key].cancellation_requested_at
+        )
+        self.assertEqual(
+            window.pipeline.node("reference_texture_prototypes").status,
+            NodeStatus.RUNNING,
+        )
+        self.assertIn("Cancellation requested", window.analysis_activity_label.text())
+        self.assertIn("updated rerun is queued", window.analysis_activity_label.text())
+
+        window._active_tasks.clear()
+        window._analysis_activities.clear()
+        window._pending_analysis_key = None
         window.close()
 
     def test_node_cards_support_typed_blueprint_controls_and_time_footers(self) -> None:
@@ -229,7 +325,7 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertGreaterEqual(edge_item._footer_y, controls_bottom + 4.0)
         self.assertEqual(edge_item.height, edge_item._footer_y + 24.0)
         self.assertLess(canvas.node_items["colour_reference"].height, 220.0)
-        self.assertGreaterEqual(canvas.node_items["undirected_edges"].height, 108.0)
+        self.assertGreaterEqual(canvas.node_items["edge_gradients"].height, 108.0)
         self.assertEqual(_format_calculation_time(0.01234), "Last calc: 12.3 ms")
         self.assertEqual(_format_calculation_time(1.25), "Last calc: 1.25 s")
         canvas.close()
@@ -277,8 +373,8 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertEqual(restored, ["circle_candidates"])
         self.assertIn("circle_candidates", canvas.node_items)
         self.assertEqual(len(canvas.node_items), 35)
-        self.assertEqual(len(canvas.edge_items), 165)
-        self.assertEqual(canvas.unused_nodes_button.text(), "Unused nodes (20)")
+        self.assertEqual(len(canvas.edge_items), 175)
+        self.assertEqual(canvas.unused_nodes_button.text(), "Unused nodes (19)")
         self.assertTrue(canvas.unused_nodes_button.isEnabled())
         self.assertTrue(canvas.node_items["circle_candidates"].isSelected())
         self.assertTrue(canvas.move_to_unused_button.isEnabled())
@@ -290,8 +386,8 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertNotIn("circle_candidates", canvas.node_items)
         self.assertIn("circle_candidates", graph.unused_nodes)
         self.assertFalse(graph.node("circle_candidates").enabled)
-        self.assertEqual(len(canvas.edge_items), 157)
-        self.assertEqual(canvas.unused_nodes_button.text(), "Unused nodes (21)")
+        self.assertEqual(len(canvas.edge_items), 167)
+        self.assertEqual(canvas.unused_nodes_button.text(), "Unused nodes (20)")
         restore_action = next(
             action
             for action in canvas.unused_nodes_menu.actions()
@@ -324,7 +420,7 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertIn("circle_candidates", window.pipeline.unused_nodes)
         self.assertEqual(
             window.pipeline_inspector.title_label.text(),
-            "Node: Grayscale & local lighting",
+            "Node: Grayscale and local lighting",
         )
         window.close()
 
@@ -355,11 +451,11 @@ class PipelineCanvasTests(unittest.TestCase):
         connection = next(
             edge
             for edge in graph.connections
-            if edge.source == "foreground_segmentation"
+            if edge.source == "background_likelihood"
             and edge.target == "foreground_noise_likelihood"
         )
         canvas._disconnect_connection(connection)
-        self.assertEqual(len(canvas.edge_items), 156)
+        self.assertEqual(len(canvas.edge_items), 166)
         self.assertFalse(graph.node(connection.target).enabled)
         self.assertIsNone(
             graph.connection_for_input(connection.target, connection.target_port)
@@ -376,7 +472,7 @@ class PipelineCanvasTests(unittest.TestCase):
                 connection.source_port
             )
         )
-        self.assertEqual(len(canvas.edge_items), 157)
+        self.assertEqual(len(canvas.edge_items), 167)
         self.assertTrue(graph.node(connection.target).enabled)
         self.assertIsNotNone(
             graph.connection_for_input(connection.target, connection.target_port)
@@ -483,7 +579,7 @@ class PipelineCanvasTests(unittest.TestCase):
         canvas.zoom_in()
         self.assertEqual(canvas.zoom_label.text(), "118%")
         self.assertEqual(canvas.auto_arrange_button.text(), "Auto arrange")
-        self.assertEqual(canvas.unused_nodes_button.text(), "Unused nodes (21)")
+        self.assertEqual(canvas.unused_nodes_button.text(), "Unused nodes (20)")
         self.assertEqual(canvas.bundle_cables_button.text(), "Bundle cables")
         self.assertEqual(
             canvas.route_around_nodes_button.text(), "Route around nodes"
@@ -558,6 +654,31 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertEqual(node.status, NodeStatus.RUNNING)
         window.close()
 
+    def test_selected_overlay_shows_large_red_calculating_banner(self) -> None:
+        from seedvision.ui.main_window import MainWindow
+
+        window = MainWindow(ROOT)
+        path = window.image_view.image_path
+        self.assertIsNotNone(path)
+        window._select_overlay_mode("background_likelihood")
+        window._set_analysis_running(
+            path, frozenset({"background_likelihood"})
+        )
+        banner = window.image_view.calculating_banner
+        self.assertFalse(banner.isHidden())
+        self.assertIn("Calculating Background colour probability", banner.text())
+        self.assertIn("#ff3434", banner.styleSheet())
+        self.assertIn("font-size: 28px", banner.styleSheet())
+
+        window._analysis_node_progress(
+            str(path),
+            "background_likelihood",
+            "completed",
+            window.pipeline.revision,
+        )
+        self.assertTrue(banner.isHidden())
+        window.close()
+
     def test_identification_stages_expose_methods_and_relevant_parameters(self) -> None:
         from seedvision.pipeline import build_default_pipeline
         from seedvision.ui.pipeline_inspector import PipelineInspector
@@ -565,8 +686,8 @@ class PipelineCanvasTests(unittest.TestCase):
         graph = build_default_pipeline()
         inspector = PipelineInspector()
         expected_parameter_counts = {
-            "seed_scale_estimation": 9,
-            "foreground_segmentation": 16,
+            "seed_scale_estimation": 10,
+            "background_likelihood": 22,
             "distance_candidates": 4,
             "circle_candidates": 15,
             "identification": 1,
@@ -580,12 +701,12 @@ class PipelineCanvasTests(unittest.TestCase):
             inspector.method_heading.click()
             self.assertTrue(inspector.details_label.isVisibleTo(inspector))
             self.assertGreater(len(inspector.details_label.text()), 80)
-        inspector.set_node(graph.node("foreground_segmentation"))
+        inspector.set_node(graph.node("background_likelihood"))
         self.assertFalse(inspector.details_label.isVisibleTo(inspector))
         self.assertEqual(
-            inspector.title_label.text(), "Node: Foreground colour probability"
+            inspector.title_label.text(), "Node: Material colour probabilities"
         )
-        self.assertEqual(inspector.parameter_form.rowCount(), 16)
+        self.assertEqual(inspector.parameter_form.rowCount(), 22)
         self.assertTrue(
             all(widget.toolTip() for widget in inspector._parameter_widgets)
         )
@@ -594,9 +715,7 @@ class PipelineCanvasTests(unittest.TestCase):
             "background_likelihood": 11,
             "refined_background_likelihood": 9,
             "foreground_noise_likelihood": 9,
-            "edge_gradients": 4,
-            "undirected_edges": 0,
-            "directed_edges": 0,
+            "edge_gradients": 13,
             "instance_masks": 3,
             "edge_ridges": 4,
             "reference_edge_ridges": 5,
@@ -736,7 +855,7 @@ class PipelineCanvasTests(unittest.TestCase):
                 layers=SimpleNamespace(foreground_colour_profile=profile),
             )
         )
-        inspector.set_node(build_default_pipeline().node("foreground_segmentation"))
+        inspector.set_node(build_default_pipeline().node("background_likelihood"))
 
         self.assertFalse(hasattr(inspector, "gamut_widget"))
         self.assertTrue(inspector.foreground_start_heading.isVisibleTo(inspector))
@@ -764,7 +883,7 @@ class PipelineCanvasTests(unittest.TestCase):
                 ),
             )
         )
-        inspector.set_node(build_default_pipeline().node("foreground_segmentation"))
+        inspector.set_node(build_default_pipeline().node("background_likelihood"))
         self.assertIn("Isolated reference seeds", inspector.foreground_start_label.text())
         self.assertIn("#", inspector.foreground_start_label.text())
         self.assertIn("1,800", inspector.foreground_start_label.text())
@@ -791,7 +910,7 @@ class PipelineCanvasTests(unittest.TestCase):
         _image, probability, centre_points = (
             BackgroundColourGamut.render_hsv_value_slice(
                 profile,
-                build_default_pipeline().node("foreground_segmentation").parameters,
+                build_default_pipeline().node("background_likelihood").parameters,
                 class_name="foreground",
                 value=0.20,
             )
@@ -833,32 +952,25 @@ class PipelineCanvasTests(unittest.TestCase):
         from seedvision.ui.main_window import MainWindow
 
         window = MainWindow(ROOT)
-        window.pipeline_canvas.select_node("directed_edges")
+        window.pipeline_canvas.select_node("edge_gradients")
+        self.application.processEvents()
+        directed_index = window.pipeline_inspector.overlay_combo.findData(
+            "directed_edges"
+        )
+        self.assertGreaterEqual(directed_index, 0)
+        window.pipeline_inspector.overlay_combo.setCurrentIndex(directed_index)
         self.application.processEvents()
         self.assertEqual(window.overlay_combo.currentData(), "directed_edges")
         self.assertEqual(window.image_view._overlay_mode, "directed_edges")
         self.assertEqual(
             window.pipeline_inspector.title_label.text(),
-            "Node: Directed edge tangents",
+            "Node: Edge gradients",
         )
-        self.assertEqual(len(window.pipeline_inspector._parameter_widgets), 0)
-        window.pipeline_canvas.select_node("edge_gradients")
-        self.application.processEvents()
-        self.assertEqual(window.overlay_combo.currentData(), "edge_gradients")
-        self.assertEqual(window.image_view._overlay_mode, "edge_gradients")
-        self.assertEqual(len(window.pipeline_inspector._parameter_widgets), 4)
+        self.assertEqual(len(window.pipeline_inspector._parameter_widgets), 13)
         self.assertEqual(
             len(window.pipeline_canvas.node_items["edge_gradients"]._inline_editors),
             4,
         )
-        restore_surface = next(
-            action
-            for action in window.pipeline_canvas.unused_nodes_menu.actions()
-            if action.text()
-            == "Add Directional surface darkness gradients to graph"
-        )
-        restore_surface.trigger()
-        self.application.processEvents()
         window.pipeline_canvas.select_node("surface_darkness_gradients")
         self.application.processEvents()
         self.assertEqual(
@@ -939,7 +1051,7 @@ class PipelineCanvasTests(unittest.TestCase):
         self.application.processEvents()
         self.assertEqual(window._selected_pipeline_node, "boundary_normals")
         self.assertEqual(
-            window.overlay_owner_label.text(), "Boundary confidence & normals"
+            window.overlay_owner_label.text(), "Boundary confidence and normals"
         )
         highlighted = [
             edge
@@ -964,9 +1076,9 @@ class PipelineCanvasTests(unittest.TestCase):
         self.application.processEvents()
         self.assertGreaterEqual(window.metadata_scroll.verticalScrollBar().width(), 16)
 
-        window.pipeline_canvas.select_node("foreground_segmentation")
+        window.pipeline_canvas.select_node("background_likelihood")
         self.application.processEvents()
-        self.assertEqual(window.overlay_combo.currentData(), "foreground_mask")
+        self.assertEqual(window.overlay_combo.currentData(), "background_likelihood")
         self.assertFalse(window.calibration_section.isVisible())
         self.assertFalse(window.baseline_section.isVisible())
         highlighted = [
@@ -977,7 +1089,7 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertTrue(highlighted)
         self.assertTrue(
             all(
-                "foreground_segmentation"
+                "background_likelihood"
                 in (edge.connection.source, edge.connection.target)
                 for edge in highlighted
             )
@@ -1020,32 +1132,77 @@ class PipelineCanvasTests(unittest.TestCase):
         from seedvision.ui.main_window import MainWindow
 
         window = MainWindow(ROOT)
+        self.assertTrue(window.overlay_combo.isHidden())
+        self.assertIs(window.overlay_button.menu(), window.overlay_menu)
         self.assertEqual(
-            window.overlay_combo.findData("surface_lightening_gradient"), -1
+            window.overlay_combo.findData("automatic_foreground_colour_evidence"),
+            -1,
         )
-        restore_surface = next(
-            action
-            for action in window.pipeline_canvas.unused_nodes_menu.actions()
-            if action.text()
-            == "Add Directional surface darkness gradients to graph"
+        self.assertEqual(window.overlay_combo.findData("foreground_feature"), -1)
+        node_menus = {
+            action.text(): tuple(child.text() for child in action.menu().actions())
+            for action in window.overlay_menu.actions()
+            if action.menu() is not None
+        }
+        self.assertNotIn("Viewer", node_menus)
+        self.assertNotIn(
+            "None",
+            {label for labels in node_menus.values() for label in labels},
         )
-        restore_surface.trigger()
+        self.assertIn(
+            "Estimated illumination field",
+            node_menus["Grayscale and local lighting"],
+        )
+        nodes_by_title = {
+            node.title: node for node in window.pipeline.nodes.values()
+        }
+        menu_contracts = tuple(
+            (
+                menu_action.text(),
+                tuple(
+                    (overlay_action.text(), overlay_action.isCheckable())
+                    for overlay_action in menu_action.menu().actions()
+                ),
+            )
+            for menu_action in window.overlay_menu.actions()
+            if menu_action.menu() is not None
+        )
+        self.assertTrue(all("&" not in title for title, _labels in menu_contracts))
+        for menu_title, overlay_contracts in menu_contracts:
+            self.assertIn(menu_title, nodes_by_title)
+            node = nodes_by_title[menu_title]
+            self.assertIn(node.identifier, window.pipeline_canvas.node_items)
+            window.pipeline_canvas.select_node(node.identifier)
+            self.application.processEvents()
+            self.assertEqual(
+                window.pipeline_inspector.title_label.text(),
+                f"Node: {menu_title}",
+            )
+            output_labels = set(dict(node.output_ports).values())
+            for overlay_label, is_checkable in overlay_contracts:
+                self.assertFalse(is_checkable)
+                self.assertIn(overlay_label, output_labels)
+        self.assertIn("Directional surface darkness gradients", node_menus)
+        self.assertIn("Edge gradients", node_menus)
+        self.assertIn("Reference texture prototypes", node_menus)
+        edge_actions = set(node_menus["Edge gradients"])
+        self.assertIn("Edge tangent (undirected)", edge_actions)
+        self.assertIn("Edge tangent (directed)", edge_actions)
+
+        window.pipeline_canvas.select_node("hue_only")
         self.application.processEvents()
-        lightening_index = window.overlay_combo.findData(
-            "surface_lightening_gradient"
-        )
-        self.assertGreater(lightening_index, 0)
-        self.assertTrue(window.overlay_combo.itemText(lightening_index).startswith("    "))
-        heading_item = window.overlay_combo.model().item(lightening_index - 1)
-        self.assertEqual(
-            heading_item.text(), "Directional surface darkness gradients"
-        )
-        self.assertFalse(heading_item.isEnabled())
-        self.assertTrue(heading_item.font().bold())
+        node_selector = window.pipeline_inspector.overlay_combo
+        self.assertEqual(node_selector.count(), 1)
+        self.assertEqual(node_selector.currentData(), "hue_only")
+
+        window.pipeline_canvas.select_node("wavelet_decomposition")
+        self.application.processEvents()
+        self.assertEqual(node_selector.count(), 5)
+        self.assertEqual(node_selector.currentData(), "wavelet_detail_1")
+        self.assertGreaterEqual(node_selector.findData("wavelet_residual"), 0)
 
         window.pipeline_canvas.select_node("frequency_noise_masks")
         self.application.processEvents()
-        node_selector = window.pipeline_inspector.overlay_combo
         self.assertEqual(node_selector.count(), 6)
         self.assertEqual(node_selector.currentData(), "darkness_noise_fine")
         coarse_colour = node_selector.findData("colour_noise_coarse")
@@ -1057,13 +1214,17 @@ class PipelineCanvasTests(unittest.TestCase):
 
         window.pipeline_canvas.select_node("procedural_instances")
         self.application.processEvents()
-        self.assertEqual(node_selector.count(), 6)
+        self.assertEqual(node_selector.count(), 8)
         self.assertEqual(node_selector.currentData(), "procedural_instances")
         self.assertGreaterEqual(node_selector.findData("procedural_confidence"), 0)
+        self.assertGreaterEqual(node_selector.findData("procedural_concavity"), 0)
+        self.assertGreaterEqual(
+            node_selector.findData("procedural_alternative_candidates"), 0
+        )
 
         window.pipeline_canvas.select_node("reference_texture_prototypes")
         self.application.processEvents()
-        self.assertEqual(node_selector.count(), 4)
+        self.assertEqual(node_selector.count(), 6)
         self.assertGreaterEqual(
             node_selector.findData("reference_texture_prototypes"), 0
         )
@@ -1076,18 +1237,24 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertGreaterEqual(
             node_selector.findData("reference_other_texture_probability"), 0
         )
+        self.assertGreaterEqual(
+            node_selector.findData("physical_edge_probability"), 0
+        )
+        self.assertGreaterEqual(
+            node_selector.findData("non_edge_probability"), 0
+        )
 
         window.pipeline_canvas.select_node("reference_edge_probability")
         self.application.processEvents()
-        self.assertEqual(node_selector.count(), 4)
-        self.assertEqual(node_selector.currentData(), "physical_edge_probability")
+        self.assertEqual(node_selector.count(), 2)
+        self.assertEqual(node_selector.currentData(), "reference_edge_comparison")
         self.assertEqual(
             window.pipeline.node("reference_edge_probability").parameters[
                 "net_physical_edge_internal_scale"
             ],
             0.5,
         )
-        self.assertEqual(len(window.pipeline_inspector._parameter_widgets), 1)
+        self.assertEqual(len(window.pipeline_inspector._parameter_widgets), 11)
         comparison_index = node_selector.findData("reference_edge_comparison")
         net_index = node_selector.findData("net_physical_edge_probability")
         self.assertGreaterEqual(comparison_index, 0)
@@ -1112,8 +1279,17 @@ class PipelineCanvasTests(unittest.TestCase):
 
         window.pipeline_canvas.select_node("reference_edge_ridges")
         self.application.processEvents()
-        self.assertEqual(node_selector.count(), 1)
+        self.assertEqual(node_selector.count(), 4)
         self.assertEqual(node_selector.currentData(), "reference_edge_ridges")
+        self.assertGreaterEqual(
+            node_selector.findData("net_reference_edge_ridges"), 0
+        )
+        self.assertGreaterEqual(
+            node_selector.findData("locally_normalized_net_physical_edge"), 0
+        )
+        self.assertGreaterEqual(
+            node_selector.findData("normalized_net_reference_edge_ridges"), 0
+        )
         reference_index = window.overlay_combo.findData("reference_edge_ridges")
         self.assertGreater(reference_index, 0)
         self.assertEqual(
@@ -1172,6 +1348,25 @@ class PipelineCanvasTests(unittest.TestCase):
                 self.assertIn("non-Other", legend)
                 self.assertIn("Directional", legend)
                 self.assertIn("integration", legend)
+        window.close()
+
+    def test_probability_legends_state_low_and_high_display_values(self) -> None:
+        from seedvision.ui.main_window import MainWindow
+
+        window = MainWindow(ROOT)
+        window._update_overlay_legend("background_likelihood")
+        self.assertIn(
+            "white = low displayed probability/evidence; black = high",
+            window.overlay_legend_label.text(),
+        )
+        window._update_overlay_legend("foreground_mask")
+        foreground_legend = window.overlay_legend_label.text()
+        self.assertIn("black = low displayed probability/evidence", foreground_legend)
+        self.assertIn("need not sum to one", foreground_legend)
+        window._update_overlay_legend("reference_background_texture_probability")
+        reference_legend = window.overlay_legend_label.text()
+        self.assertIn("black = low displayed probability/evidence", reference_legend)
+        self.assertIn("no-match", reference_legend)
         window.close()
 
     def test_compact_toolbar_and_contextual_paint_panel(self) -> None:
@@ -1445,21 +1640,20 @@ class PipelineCanvasTests(unittest.TestCase):
         window.close()
 
     def test_background_node_can_be_disabled_without_disabling_foreground_noise(self) -> None:
-        from seedvision.pipeline import NodeStatus
         from seedvision.ui.main_window import MainWindow
 
         window = MainWindow(ROOT)
-        window._pipeline_enabled_changed("background_likelihood", False)
-        self.assertFalse(window.pipeline.node("background_likelihood").enabled)
+        window._pipeline_parameter_changed(
+            "background_likelihood", "background_colour_enabled", False
+        )
+        self.assertFalse(
+            window.pipeline.node("background_likelihood").parameters[
+                "background_colour_enabled"
+            ]
+        )
+        self.assertTrue(window.pipeline.node("background_likelihood").enabled)
         self.assertTrue(window.pipeline.node("foreground_noise_likelihood").enabled)
-        self.assertEqual(
-            window.pipeline.node("background_likelihood").status,
-            NodeStatus.BYPASSED,
-        )
-        self.assertEqual(
-            window.pipeline.node("refined_background_likelihood").status,
-            NodeStatus.BYPASSED,
-        )
+        self.assertTrue(window.pipeline.node("refined_background_likelihood").enabled)
         self.assertFalse(window.background_enabled_checkbox.isChecked())
         window.close()
 
@@ -1467,12 +1661,12 @@ class PipelineCanvasTests(unittest.TestCase):
         from seedvision.ui.main_window import MainWindow
 
         window = MainWindow(ROOT)
-        node = window.pipeline.node("foreground_segmentation")
+        node = window.pipeline.node("background_likelihood")
         default = node.default_parameters["foreground_reference_weight"]
         window._pipeline_parameter_changed(
-            "foreground_segmentation", "foreground_reference_weight", 0.25
+            "background_likelihood", "foreground_reference_weight", 0.25
         )
-        window.pipeline_canvas.select_node("foreground_segmentation")
+        window.pipeline_canvas.select_node("background_likelihood")
         self.application.processEvents()
         window.pipeline_inspector.reset_parameters_button.click()
         self.application.processEvents()
@@ -1524,7 +1718,9 @@ class PipelineCanvasTests(unittest.TestCase):
             0.70,
         )
         window.pipeline.set_parameter(
-            "foreground_segmentation", "foreground_refinement_iterations", 3
+            "background_likelihood",
+            "foreground_distribution_scale_multiplier",
+            1.7,
         )
 
         self.assertEqual(window._dish_settings().hough_accumulator_threshold, 41)
@@ -1553,8 +1749,9 @@ class PipelineCanvasTests(unittest.TestCase):
             window._layer_settings().perimeter_background_band_thickness_cm,
             0.70,
         )
-        self.assertEqual(
-            window._baseline_settings().foreground_refinement_iterations, 3
+        self.assertAlmostEqual(
+            window._baseline_settings().foreground_distribution_scale_multiplier,
+            1.7,
         )
         self.assertEqual(
             window.pipeline.node("edge_gradients").parameters["edge_chroma_weight"],
@@ -1571,15 +1768,15 @@ class PipelineCanvasTests(unittest.TestCase):
             "seed_interior", "maximum_dimension", 768
         )
         window.pipeline.set_parameter(
-            "seed_interior", "interior_foreground_noise_weight", 0.60
+            "seed_interior", "interior_smoothing_fraction", 0.08
         )
         window.pipeline.set_parameter(
             "image_quality", "quality_noise_scale_fraction", 0.05
         )
         self.assertEqual(window._advanced_settings().maximum_dimension, 768)
         self.assertAlmostEqual(
-            window._advanced_settings().interior_foreground_noise_weight,
-            0.60,
+            window._advanced_settings().interior_smoothing_fraction,
+            0.08,
         )
         self.assertAlmostEqual(
             window._advanced_settings().quality_noise_scale_fraction, 0.05
@@ -1597,8 +1794,6 @@ class PipelineCanvasTests(unittest.TestCase):
         window = MainWindow(ROOT)
         for node_id in (
             "edge_gradients",
-            "undirected_edges",
-            "directed_edges",
             "edge_ridges",
             "reference_texture_prototypes",
             "edge_traces",
@@ -1611,16 +1806,10 @@ class PipelineCanvasTests(unittest.TestCase):
             window.pipeline.node("edge_gradients").status, NodeStatus.IDLE
         )
         self.assertEqual(
-            window.pipeline.node("directed_edges").status, NodeStatus.IDLE
-        )
-        self.assertEqual(
             window.pipeline.node("edge_ridges").status, NodeStatus.IDLE
         )
         self.assertEqual(
             window.pipeline.node("edge_traces").status, NodeStatus.IDLE
-        )
-        self.assertEqual(
-            window.pipeline.node("undirected_edges").status, NodeStatus.IDLE
         )
         window.close()
 
@@ -1673,7 +1862,7 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertTrue(dirty.issubset(scheduled[0]))
         window.close()
 
-    def test_annotated_seed_foreground_checkbox_is_opt_in_and_invalidates_consumers(self) -> None:
+    def test_annotated_seed_foreground_checkbox_defaults_on_and_invalidates_consumers(self) -> None:
         from unittest.mock import patch
 
         from seedvision.segmentation import PipelineAnalysisCache
@@ -1698,23 +1887,23 @@ class PipelineCanvasTests(unittest.TestCase):
         window._sync_background_controls()
 
         checkbox = window.include_seed_instances_as_foreground_checkbox
-        self.assertFalse(checkbox.isChecked())
+        self.assertTrue(checkbox.isChecked())
         self.assertTrue(checkbox.isEnabled())
         self.assertIn("safely inset interiors", checkbox.toolTip())
         self.assertIn("Apply + save", checkbox.toolTip())
-        checkbox.setChecked(True)
+        checkbox.setChecked(False)
 
-        self.assertTrue(
-            window.pipeline.node("foreground_segmentation").parameters[
+        self.assertFalse(
+            window.pipeline.node("background_likelihood").parameters[
                 "foreground_include_annotated_seed_instances"
             ]
         )
-        self.assertTrue(
+        self.assertFalse(
             window._baseline_settings().foreground_include_annotated_seed_instances
         )
         dirty = window._cache_dirty_nodes[key]
         for node_id in (
-            "foreground_segmentation",
+            "background_likelihood",
             "foreground_noise_likelihood",
             "reference_texture_prototypes",
         ):
@@ -1724,54 +1913,21 @@ class PipelineCanvasTests(unittest.TestCase):
 
         # Programmatic inspector/reset-style edits mirror the contextual control.
         window._pipeline_parameter_changed(
-            "foreground_segmentation",
+            "background_likelihood",
             "foreground_include_annotated_seed_instances",
             False,
         )
         self.assertFalse(checkbox.isChecked())
         window.close()
 
-    def test_net_edge_subtraction_refreshes_display_without_analysis_work(self) -> None:
-        from dataclasses import dataclass, replace
+    def test_net_edge_subtraction_recomputes_thinned_net_ridge_dependents(self) -> None:
         from unittest.mock import patch
 
-        import numpy as np
         from PySide6.QtWidgets import QMessageBox
 
         from seedvision.pipeline import NodeStatus
         from seedvision.segmentation import PipelineAnalysisCache
         from seedvision.ui.main_window import MainWindow
-        from seedvision.visualization import AnalysisLayers, NoiseFrequencyProfile
-
-        @dataclass(frozen=True)
-        class CachedResult:
-            layers: AnalysisLayers
-
-        shape = (3, 3)
-        layers = AnalysisLayers(
-            offset_x=0,
-            offset_y=0,
-            instance_labels=np.zeros(shape, np.uint16),
-            instance_colours=np.zeros((1, 3), np.uint8),
-            background_likelihood=np.zeros(shape, np.uint8),
-            refined_background_likelihood=np.zeros(shape, np.uint8),
-            noise_frequency_profile=NoiseFrequencyProfile(
-                band_scales_px=(1.0, 2.0, 3.0),
-                background_log_rms=(0.0, 0.0, 0.0),
-                nonbackground_log_rms=(0.0, 0.0, 0.0),
-                background_sample_count=0,
-                nonbackground_sample_count=0,
-                separation=0.0,
-            ),
-            edge_likelihood=np.zeros(shape, np.uint8),
-            directed_edge_hue=np.zeros(shape, np.uint8),
-            undirected_edge_hue=np.zeros(shape, np.uint8),
-            seed_edge_curve_likelihood=np.zeros(shape, np.uint8),
-            seed_edge_curve_radius_px=np.zeros(shape, np.float32),
-            valid_mask=np.full(shape, 255, np.uint8),
-            physical_edge_probability=np.full(shape, 200, np.uint8),
-            non_edge_probability=np.full(shape, 100, np.uint8),
-        )
         warning_patcher = patch.object(
             QMessageBox,
             "warning",
@@ -1783,7 +1939,7 @@ class PipelineCanvasTests(unittest.TestCase):
         path = ROOT / "images" / "IMG_0002c.JPG"
         key = str(path.resolve()).casefold()
         window.image_view._image_path = path
-        window._analyses[key] = CachedResult(layers)
+        window._analyses[key] = object()
         sentinel = object()
         window._analysis_caches[key] = PipelineAnalysisCache(
             values={"sentinel": sentinel}
@@ -1798,76 +1954,39 @@ class PipelineCanvasTests(unittest.TestCase):
         window.pipeline.node("procedural_instances").status = NodeStatus.COMPLETE
         revision = window.pipeline.revision
 
-        with (
-            patch.object(window, "_analyze_current_image") as analyze,
-            patch.object(window.image_view, "show_analysis") as show_analysis,
-            patch.object(window.image_view, "refresh_analysis") as refresh_analysis,
-            patch.object(window.pipeline_inspector, "set_analysis_result"),
-        ):
+        with patch.object(window, "_analyze_current_image") as analyze:
             window._pipeline_parameter_changed(
                 "reference_edge_probability",
                 "net_physical_edge_internal_scale",
                 1.25,
             )
-            analyze.assert_not_called()
-            show_analysis.assert_called_once()
-            refresh_analysis.assert_called_once()
-            updated = window._analyses[key]
-            self.assertEqual(
-                updated.layers.net_physical_edge_internal_scale,
-                1.25,
-            )
-            self.assertTrue(
-                np.all(updated.layers.net_physical_edge_probability_rgba()[..., 2] == 75)
-            )
-            self.assertIn("1.25 × internal edge", window.overlay_legend_label.text())
-            self.assertEqual(window.pipeline.revision, revision)
-            self.assertEqual(window._cache_dirty_nodes[key], set())
+            affected = {
+                "reference_edge_probability",
+                "reference_edge_ridges",
+                "edge_traces",
+                "unet_instances",
+                "stardist_instances",
+                "procedural_instances",
+            }
+            analyze.assert_called_once_with(dirty_nodes=affected)
+            self.assertNotIn(key, window._analyses)
+            self.assertEqual(window.pipeline.revision, revision + 1)
+            self.assertEqual(window._cache_dirty_nodes[key], affected)
             self.assertIs(window._analysis_caches[key].values["sentinel"], sentinel)
-            self.assertEqual(node.status, NodeStatus.COMPLETE)
+            self.assertEqual(node.status, NodeStatus.IDLE)
             self.assertEqual(
                 window.pipeline.node("reference_edge_ridges").status,
-                NodeStatus.COMPLETE,
+                NodeStatus.IDLE,
             )
             self.assertEqual(
                 window.pipeline.node("procedural_instances").status,
-                NodeStatus.COMPLETE,
-            )
-
-            # A calculation already in flight may still carry the value that
-            # was current when its immutable result wrapper was created. The
-            # completion path must normalize that wrapper without rerunning
-            # any analysis or replacing its raster products.
-            stale_result = CachedResult(
-                replace(
-                    updated.layers,
-                    net_physical_edge_internal_scale=0.5,
-                )
-            )
-            normalized_result = (
-                window._normalize_display_only_analysis_result(stale_result)
-            )
-            self.assertEqual(
-                normalized_result.layers.net_physical_edge_internal_scale,
-                1.25,
-            )
-            self.assertIs(
-                normalized_result.layers.physical_edge_probability,
-                stale_result.layers.physical_edge_probability,
+                NodeStatus.IDLE,
             )
 
             window._pipeline_parameters_reset("reference_edge_probability")
-            analyze.assert_not_called()
-            self.assertEqual(show_analysis.call_count, 2)
-            self.assertEqual(refresh_analysis.call_count, 2)
-            reset_layers = window._analyses[key].layers
-            self.assertEqual(reset_layers.net_physical_edge_internal_scale, 0.5)
-            self.assertTrue(
-                np.all(reset_layers.net_physical_edge_probability_rgba()[..., 2] == 150)
-            )
-            self.assertIn("0.5 × internal edge", window.overlay_legend_label.text())
-            self.assertEqual(window.pipeline.revision, revision)
-            self.assertEqual(window._cache_dirty_nodes[key], set())
+            self.assertEqual(analyze.call_count, 2)
+            self.assertEqual(window.pipeline.revision, revision + 2)
+            self.assertEqual(window._cache_dirty_nodes[key], affected)
 
         window.close()
 
@@ -1917,6 +2036,18 @@ class PipelineCanvasTests(unittest.TestCase):
             physical_edge_probability=np.full((12, 12), 105, np.uint8),
             non_edge_probability=np.full((12, 12), 85, np.uint8),
             reference_edge_ridges=np.full((12, 12), 125, np.uint8),
+            locally_normalized_net_physical_edge=np.full(
+                (12, 12), 155, np.uint8
+            ),
+            normalized_net_reference_edge_ridges=np.full(
+                (12, 12), 145, np.uint8
+            ),
+            hue_only_rgb=np.full((12, 12, 3), (158, 0, 0), np.uint8),
+            wavelet_details=tuple(
+                np.full((12, 12, 3), float(level), np.float32)
+                for level in (2, 4, 6, 8)
+            ),
+            wavelet_residual=np.full((12, 12, 3), 128.0, np.float32),
             edge_likelihood=np.full((12, 12), 120, np.uint8),
             directed_edge_hue=np.full((12, 12), 45, np.uint8),
             undirected_edge_hue=np.full((12, 12), 90, np.uint8),
@@ -1951,7 +2082,15 @@ class PipelineCanvasTests(unittest.TestCase):
             "non_edge_probability",
             "reference_edge_comparison",
             "net_physical_edge_probability",
+            "locally_normalized_net_physical_edge",
             "reference_edge_ridges",
+            "normalized_net_reference_edge_ridges",
+            "hue_only",
+            "wavelet_detail_1",
+            "wavelet_detail_2",
+            "wavelet_detail_3",
+            "wavelet_detail_4",
+            "wavelet_residual",
             "undirected_edges",
             "directed_edges",
             "seed_edge_curves",
@@ -2046,6 +2185,47 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertEqual(len(view._overlay_items), 4)
         view.close()
 
+    def test_selected_procedural_instance_reports_geometry_in_node_panel(self) -> None:
+        import numpy as np
+
+        from seedvision.segmentation.procedural import ProceduralInstanceResult
+        from seedvision.ui.main_window import MainWindow
+
+        labels = np.ones((6, 7), np.uint16)
+        procedural = ProceduralInstanceResult(
+            labels=labels,
+            centres_xy=np.asarray(((3.0, 2.5),), np.float32),
+            marker_scores=np.asarray((0.91,), np.float32),
+            instance_confidences=np.asarray((0.84,), np.float32),
+            occupancy_likelihood=np.full(labels.shape, 255, np.uint8),
+            occupancy_mask=np.full(labels.shape, 255, np.uint8),
+            boundary_cost=np.zeros(labels.shape, np.uint8),
+            centre_likelihood=np.zeros(labels.shape, np.uint8),
+            source_shape=labels.shape,
+            working_scale=1.0,
+            instance_area_px2=np.asarray((42.0,), np.float32),
+            instance_maximum_width_px=np.asarray((7.0,), np.float32),
+            instance_width_fractions=np.asarray((1.17,), np.float32),
+            instance_concavity_fractions=np.asarray((0.12,), np.float32),
+            instance_protrusion_fractions=np.asarray((0.04,), np.float32),
+            instance_solidities=np.asarray((0.89,), np.float32),
+            instance_axis_ratios=np.asarray((1.44,), np.float32),
+        )
+        window = MainWindow(ROOT)
+        window.image_view._analysis_result = SimpleNamespace(
+            procedural_instances=procedural,
+            crop_offset=(0, 0),
+        )
+        window._procedural_instance_selected(1)
+        self.application.processEvents()
+        text = window.pipeline_inspector.procedural_instance_statistics_label.text()
+        self.assertEqual(window._selected_pipeline_node, "procedural_instances")
+        self.assertIn("maximum width 7.0 px", text)
+        self.assertIn("concavity 12.0%", text)
+        self.assertIn("solidity 0.890", text)
+        self.assertIn("axis ratio 1.440", text)
+        window.close()
+
     def test_image_view_displays_full_size_gamut_without_changing_mask_size(self) -> None:
         import numpy as np
 
@@ -2089,7 +2269,7 @@ class PipelineCanvasTests(unittest.TestCase):
             view.set_colour_gamut_parameters(
                 "foreground",
                 build_default_pipeline().node(
-                    "foreground_segmentation"
+                "background_likelihood"
                 ).parameters,
             )
             view.set_overlay_mode("foreground_colour_gamut")
@@ -2370,7 +2550,7 @@ class PipelineCanvasTests(unittest.TestCase):
             self.assertFalse(view.reference_mask("background")[50, 50])
             view.close()
 
-    def test_background_painting_shows_exact_automatic_area_and_perimeter_ring(self) -> None:
+    def test_background_painting_shows_only_exact_perimeter_ring_source(self) -> None:
         import numpy as np
 
         from PySide6.QtCore import QPointF, Qt
@@ -2388,6 +2568,9 @@ class PipelineCanvasTests(unittest.TestCase):
             source_mask = np.zeros((20, 30), dtype=np.uint8)
             source_mask[2:6, 4:11] = 255
             source_mask[13, 24] = 255
+            accepted_ring = np.zeros((80, 96), dtype=np.uint8)
+            accepted_ring[4, 48] = 255
+            accepted_ring[40, 91] = 255
             painted_mask = np.zeros((80, 96), dtype=bool)
             painted_mask[55:61, 67:73] = True
             result = SimpleNamespace(
@@ -2406,6 +2589,7 @@ class PipelineCanvasTests(unittest.TestCase):
                     sample_count=1337,
                     buffer_cm=0.35,
                     thickness_cm=0.50,
+                    accepted_sample_mask=accepted_ring,
                 ),
             )
             view = ImageView()
@@ -2433,18 +2617,23 @@ class PipelineCanvasTests(unittest.TestCase):
                     "Automatic perimeter-matched Background source"
                 )
             ]
-            self.assertEqual(len(source_items), 1)
-            source_item = source_items[0]
-            self.assertEqual(source_item.pos(), QPointF(7.0, 11.0))
-            rendered = source_item.pixmap().toImage()
-            self.assertEqual((rendered.width(), rendered.height()), (30, 20))
-            for y in range(source_mask.shape[0]):
-                for x in range(source_mask.shape[1]):
-                    pixel = rendered.pixelColor(x, y)
-                    self.assertEqual(
-                        pixel.alpha(), 92 if source_mask[y, x] else 0
-                    )
-            included = rendered.pixelColor(4, 2)
+            # A legacy/runtime crop source must not be painted inside the dish.
+            self.assertEqual(source_items, [])
+
+            ring_source_items = [
+                item
+                for item in view._overlay_items
+                if isinstance(item, QGraphicsPixmapItem)
+                and item.toolTip().startswith(
+                    "Colour-filtered pixels retained from the perimeter"
+                )
+            ]
+            self.assertEqual(len(ring_source_items), 1)
+            self.assertEqual(ring_source_items[0].pos(), QPointF(0.0, 0.0))
+            ring_source = ring_source_items[0].pixmap().toImage()
+            self.assertEqual(ring_source.pixelColor(48, 4).alpha(), 92)
+            self.assertEqual(ring_source.pixelColor(47, 4).alpha(), 0)
+            included = ring_source.pixelColor(48, 4)
             for actual, expected in zip(
                 (included.red(), included.green(), included.blue()),
                 (65, 217, 255),
@@ -2461,9 +2650,7 @@ class PipelineCanvasTests(unittest.TestCase):
             ]
             self.assertEqual(len(rings), 1)
             ring = rings[0]
-            self.assertNotEqual(
-                ring.brush().style(), Qt.BrushStyle.NoBrush
-            )
+            self.assertEqual(ring.brush().style(), Qt.BrushStyle.NoBrush)
             self.assertAlmostEqual(ring.path().boundingRect().width(), 90.0)
             self.assertFalse(ring.path().contains(QPointF(48.0, 40.0)))
             self.assertTrue(ring.path().contains(QPointF(90.5, 40.0)))
@@ -2521,10 +2708,19 @@ class PipelineCanvasTests(unittest.TestCase):
                     corrected_bgr=np.full((height, width, 3), 235, np.uint8)
                 ),
                 layers=SimpleNamespace(
-                    background_reference_source_mask=source_mask
+                    background_reference_source_mask=None
                 ),
                 crop_offset=(0, 0),
-                perimeter_background_band=None,
+                dish=SimpleNamespace(center_x=width / 2.0, center_y=height / 2.0),
+                perimeter_background_band=SimpleNamespace(
+                    inner_radius_px=1.0,
+                    outer_radius_px=3.0,
+                    outside_vessel=True,
+                    sample_count=1,
+                    buffer_cm=0.35,
+                    thickness_cm=0.50,
+                    accepted_sample_mask=source_mask,
+                ),
             )
             view = ImageView()
             succeeded, error = view.load_image(path)
@@ -2538,7 +2734,7 @@ class PipelineCanvasTests(unittest.TestCase):
                 for item in view._overlay_items
                 if isinstance(item, QGraphicsPixmapItem)
                 and item.toolTip().startswith(
-                    "Automatic perimeter-matched Background source"
+                    "Colour-filtered pixels retained from the perimeter"
                 )
             ]
             self.assertEqual(len(source_items), 1)
@@ -3050,6 +3246,19 @@ class PipelineCanvasTests(unittest.TestCase):
             "Neighbour colour step",
         )
         self.assertEqual(
+            fill_form.labelForField(
+                window.smart_fill_click_colour_tolerance_spin
+            ).text(),
+            "Click-origin colour range",
+        )
+        self.assertAlmostEqual(
+            window.smart_fill_click_colour_tolerance_spin.value(), 72.0
+        )
+        self.assertIn(
+            "initially clicked",
+            window.smart_fill_click_colour_tolerance_spin.toolTip(),
+        )
+        self.assertEqual(
             fill_form.labelForField(window.smart_fill_edge_stop_spin).text(),
             "Edge barrier threshold",
         )
@@ -3083,13 +3292,20 @@ class PipelineCanvasTests(unittest.TestCase):
             "touching candidate pixel",
             window.smart_fill_colour_tolerance_spin.toolTip(),
         )
+        window.smart_fill_click_colour_tolerance_spin.setValue(37.5)
+        self.assertAlmostEqual(
+            window.image_view._smart_fill_options.click_colour_tolerance_lab,
+            37.5,
+        )
         self.assertIn(
             "Lower values stop at weaker edges",
             window.smart_fill_edge_stop_spin.toolTip(),
         )
-        window.smart_fill_tunnel_combo.setCurrentIndex(3)
-        window.smart_fill_connectivity_combo.setCurrentIndex(1)
-        self.assertAlmostEqual(window.image_view._smart_fill_options.tunnel_strength, 0.75)
+        self.assertFalse(hasattr(window, "smart_fill_tunnel_combo"))
+        self.assertFalse(hasattr(window, "smart_fill_connectivity_combo"))
+        window.smart_fill_gap_sealing_spin.setValue(0.035)
+        self.assertGreater(window.image_view._smart_fill_options.edge_gap_sealing_px, 0)
+        self.assertAlmostEqual(window.image_view._smart_fill_options.tunnel_strength, 0.0)
         self.assertEqual(window.image_view._smart_fill_options.connectivity, 4)
         window.close()
 
@@ -3114,6 +3330,10 @@ class PipelineCanvasTests(unittest.TestCase):
         window._instance_ids = lambda _annotations: (7,)
         window.smart_fill_colour_tolerance_spin.setValue(17.25)
         smart_tolerance = window.smart_fill_colour_tolerance_spin.value()
+        window.smart_fill_click_colour_tolerance_spin.setValue(41.5)
+        smart_click_tolerance = (
+            window.smart_fill_click_colour_tolerance_spin.value()
+        )
         for button, expected_tool in (
             (window.instance_paint_mode_button, "brush"),
             (window.instance_edge_trace_button, "edge_trace"),
@@ -3143,6 +3363,10 @@ class PipelineCanvasTests(unittest.TestCase):
                 if expected_tool == "smart_fill":
                     self.assertAlmostEqual(
                         window.smart_fill_colour_tolerance_spin.value(), smart_tolerance
+                    )
+                    self.assertAlmostEqual(
+                        window.smart_fill_click_colour_tolerance_spin.value(),
+                        smart_click_tolerance,
                     )
         window.close()
 
@@ -3316,8 +3540,12 @@ class PipelineCanvasTests(unittest.TestCase):
         )
         window.close()
 
-    def test_reference_seed_scale_overlay_uses_a_thin_labelled_diameter(self) -> None:
-        from PySide6.QtWidgets import QGraphicsEllipseItem, QGraphicsTextItem
+    def test_reference_seed_scale_overlay_boldly_labels_actual_seed_above(self) -> None:
+        from PySide6.QtWidgets import (
+            QGraphicsEllipseItem,
+            QGraphicsRectItem,
+            QGraphicsTextItem,
+        )
 
         from seedvision.ui.image_view import ImageView
 
@@ -3327,6 +3555,7 @@ class PipelineCanvasTests(unittest.TestCase):
             SimpleNamespace(
                 reference_roi=(100, 150, 500, 450),
                 estimated_seed_diameter_px=80.0,
+                reference_seed_bounds=((210.0, 205.0, 288.0, 276.0),),
             )
         )
 
@@ -3341,17 +3570,36 @@ class PipelineCanvasTests(unittest.TestCase):
             if isinstance(item, QGraphicsTextItem)
             and item.toPlainText() == "80 px"
         ]
-        self.assertEqual(len(circles), 1)
+        self.assertEqual(len(circles), 2)
         self.assertEqual(len(labels), 1)
-        circle = circles[0]
+        circle = next(
+            item for item in circles if item.pen().color().name() == "#ffd84a"
+        )
+        halo = next(
+            item for item in circles if item.pen().color().name() == "#17202a"
+        )
         label = labels[0]
         self.assertTrue(circle.pen().isCosmetic())
-        self.assertLessEqual(circle.pen().widthF(), 1.0)
+        self.assertGreaterEqual(circle.pen().widthF(), 3.0)
         self.assertAlmostEqual(circle.opacity(), 0.43)
         self.assertAlmostEqual(label.opacity(), 0.43)
-        self.assertGreaterEqual(
-            label.sceneBoundingRect().top(), circle.sceneBoundingRect().bottom()
+        self.assertGreater(halo.pen().widthF(), circle.pen().widthF())
+        label_backgrounds = [
+            item
+            for item in view._overlay_items
+            if isinstance(item, QGraphicsRectItem)
+            and item.toolTip().startswith("Contrast background")
+        ]
+        self.assertEqual(len(label_backgrounds), 1)
+        self.assertEqual(
+            label_backgrounds[0].brush().color().name(), "#17202a"
         )
+        self.assertLessEqual(
+            label.sceneBoundingRect().bottom(), circle.sceneBoundingRect().top()
+        )
+        self.assertTrue(label.font().bold())
+        self.assertAlmostEqual(circle.rect().left(), 210.0)
+        self.assertAlmostEqual(circle.rect().top(), 205.0)
         self.assertAlmostEqual(
             label.sceneBoundingRect().center().x(),
             circle.sceneBoundingRect().center().x(),
@@ -3364,8 +3612,10 @@ class PipelineCanvasTests(unittest.TestCase):
         from PySide6.QtCore import Qt
         from PySide6.QtWidgets import (
             QGraphicsEllipseItem,
+            QGraphicsLineItem,
             QGraphicsPathItem,
             QGraphicsPixmapItem,
+            QGraphicsPolygonItem,
             QGraphicsRectItem,
             QGraphicsTextItem,
         )
@@ -3416,6 +3666,15 @@ class PipelineCanvasTests(unittest.TestCase):
         view.set_overlay_mode("ruler_detection")
         self.assertGreaterEqual(len(view._overlay_items), 3)
         self.assertGreaterEqual(view._overlay_items[0].pen().widthF(), 11.0)
+        supported_ticks = [
+            item
+            for item in view._overlay_items
+            if isinstance(item, QGraphicsLineItem)
+            and item.pen().color().name() == "#42dff5"
+        ]
+        self.assertEqual(
+            len(supported_ticks), result.calibration.ruler.matched_tick_count
+        )
         self.assertFalse(
             any(
                 isinstance(item, QGraphicsTextItem)
@@ -3423,6 +3682,54 @@ class PipelineCanvasTests(unittest.TestCase):
                 for item in view._overlay_items
             )
         )
+        view.set_overlay_mode("ruler_evidence")
+        evidence_colours = {
+            item.pen().color().name()
+            for item in view._overlay_items
+            if isinstance(item, (QGraphicsLineItem, QGraphicsPolygonItem))
+        }
+        self.assertIn("#28d65f", evidence_colours)
+        self.assertIn("#ff3038", evidence_colours)
+        self.assertEqual(
+            sum(
+                isinstance(item, QGraphicsLineItem)
+                and item.pen().color().name() == "#ff3038"
+                for item in view._overlay_items
+            ),
+            len(result.calibration.ruler.metric_tick_points),
+        )
+        self.assertTrue(
+            any(
+                isinstance(item, QGraphicsTextItem)
+                and "Cross-scale error:" in item.toPlainText()
+                for item in view._overlay_items
+            )
+        )
+        summary_plates = [
+            item
+            for item in view._overlay_items
+            if isinstance(item, QGraphicsRectItem)
+            and item.toolTip().startswith("Contrast plate for the ruler evidence")
+        ]
+        self.assertEqual(len(summary_plates), 1)
+        self.assertLess(summary_plates[0].brush().color().value(), 40)
+        imperial_lines = [
+            item
+            for item in view._overlay_items
+            if isinstance(item, QGraphicsLineItem)
+            and item.pen().color().name() == "#ff961f"
+        ]
+        for item, (outer, inner) in zip(
+            imperial_lines,
+            result.calibration.ruler.imperial_tick_segments,
+            strict=True,
+        ):
+            displayed_length = item.line().length()
+            measured_length = float(np.hypot(
+                float(inner[0]) - float(outer[0]),
+                float(inner[1]) - float(outer[1]),
+            ))
+            self.assertGreaterEqual(displayed_length, measured_length + 1.9)
         view.set_overlay_mode("layout_detection")
         dish_edges = [
             item
@@ -3434,34 +3741,48 @@ class PipelineCanvasTests(unittest.TestCase):
             dish_edges[0].pen().color().name(),
             dish_edges[1].pen().color().name(),
         )
-        layout_diameters = {round(item.rect().width()) for item in dish_edges}
-        self.assertIn(result.dish.inner_radius * 2, layout_diameters)
-        self.assertIn(result.dish.outer_radius * 2, layout_diameters)
+        layout_widths = sorted(item.rect().width() for item in dish_edges)
+        expected_widths = sorted(
+            (result.dish.inner_axes[0] * 2.0, result.dish.outer_axes[0] * 2.0)
+        )
+        for actual, expected in zip(layout_widths, expected_widths, strict=True):
+            self.assertAlmostEqual(actual, expected, delta=1.0)
         view.set_overlay_mode("seed_scale_estimation")
         scale_circles = [
             item
             for item in view._overlay_items
             if isinstance(item, QGraphicsEllipseItem)
+            and item.pen().color().name() == "#ffd84a"
         ]
-        self.assertEqual(len(scale_circles), 1)
-        self.assertAlmostEqual(
-            scale_circles[0].rect().width(), result.estimated_seed_diameter_px
+        expected_seed_count = max(1, len(result.reference_seed_bounds))
+        self.assertEqual(len(scale_circles), expected_seed_count)
+        self.assertTrue(
+            all(circle.pen().widthF() >= 3.0 for circle in scale_circles)
         )
-        self.assertLessEqual(scale_circles[0].pen().widthF(), 1.0)
-        expected_diameter_text = (
+        expected_diameter_texts = {
+            f"{value:.1f}".rstrip("0").rstrip(".") + " px"
+            for value in result.reference_seed_diameters_px
+        } or {
             f"{result.estimated_seed_diameter_px:.1f}".rstrip("0").rstrip(".")
             + " px"
-        )
+        }
         scale_labels = [
             item
             for item in view._overlay_items
             if isinstance(item, QGraphicsTextItem)
-            and item.toPlainText() == expected_diameter_text
+            and item.toPlainText() in expected_diameter_texts
         ]
-        self.assertEqual(len(scale_labels), 1)
-        self.assertGreaterEqual(
-            scale_labels[0].sceneBoundingRect().top(),
-            scale_circles[0].sceneBoundingRect().bottom(),
+        self.assertEqual(len(scale_labels), expected_seed_count)
+        self.assertLessEqual(
+            scale_labels[0].sceneBoundingRect().bottom(),
+            scale_circles[0].sceneBoundingRect().top(),
+        )
+        self.assertTrue(
+            any(
+                isinstance(item, QGraphicsTextItem)
+                and "Final seed diameter:" in item.toPlainText()
+                for item in view._overlay_items
+            )
         )
         view.set_overlay_mode("perimeter_background_reference")
         perimeter_bands = [
@@ -3517,8 +3838,8 @@ class PipelineCanvasTests(unittest.TestCase):
             for item in view._overlay_items
             if isinstance(item, QGraphicsEllipseItem)
         }
-        self.assertIn(result.dish.outer_radius * 2, proposal_diameters)
-        self.assertNotIn(result.dish.inner_radius * 2, proposal_diameters)
+        self.assertIn(round(result.dish.outer_axes[0] * 2.0), proposal_diameters)
+        self.assertNotIn(round(result.dish.inner_axes[0] * 2.0), proposal_diameters)
         view.set_overlay_mode("background_likelihood")
         sampling_bands = [
             item
@@ -3594,6 +3915,7 @@ class PipelineCanvasTests(unittest.TestCase):
         for node_id in (
             "illumination_decomposition",
             "image_quality",
+            "surface_darkness_gradients",
         ):
             self.assertEqual(window.pipeline.node(node_id).status, NodeStatus.COMPLETE)
         for node_id in (
@@ -3602,7 +3924,6 @@ class PipelineCanvasTests(unittest.TestCase):
             "ellipse_likelihood",
             "pattern_decomposition",
             "colour_probabilities",
-            "surface_darkness_gradients",
             "lightening_gradient_ceiling",
             "darkening_gradient_ceiling",
             "calibration_residuals",
@@ -3610,17 +3931,23 @@ class PipelineCanvasTests(unittest.TestCase):
             self.assertEqual(window.pipeline.node(node_id).status, NodeStatus.BYPASSED)
         for node_id in (
             "perimeter_background_reference",
-            "foreground_segmentation",
-            "foreground_noise_likelihood",
         ):
             self.assertEqual(window.pipeline.node(node_id).status, NodeStatus.COMPLETE)
+        self.assertEqual(
+            window.pipeline.node("background_likelihood").status,
+            NodeStatus.WARNING,
+        )
+        self.assertEqual(
+            window.pipeline.node("foreground_noise_likelihood").status,
+            NodeStatus.BLOCKED,
+        )
         self.assertIn(
             "0.35 cm buffer",
             window.pipeline.node("perimeter_background_reference").status_detail,
         )
         self.assertIn(
-            "Threshold",
-            window.pipeline.node("foreground_segmentation").status_detail,
+            "intentionally zero",
+            window.pipeline.node("background_likelihood").status_detail,
         )
         self.assertIn("circle_candidates", window.pipeline.unused_nodes)
         self.assertEqual(

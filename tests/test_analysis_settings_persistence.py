@@ -78,7 +78,8 @@ class AnalysisSettingsPersistenceTests(unittest.TestCase):
         disconnected = next(
             connection
             for connection in source.connections
-            if connection.source == "manual_seed_centres"
+            if connection.source == "reference_layers"
+            and connection.source_port == "centres"
             and connection.target == "procedural_instances"
         )
         source.disconnect(disconnected)
@@ -118,7 +119,7 @@ class AnalysisSettingsPersistenceTests(unittest.TestCase):
             analysis_settings_profile_to_payload(profile),
         )
 
-    def test_no_op_and_display_only_apply_are_revision_neutral(self) -> None:
+    def test_no_op_is_neutral_and_net_ridge_control_is_analytical(self) -> None:
         graph = build_default_pipeline()
         profile = analysis_settings_profile_from_graph(graph)
         graph.node("reference_edge_probability").status = NodeStatus.COMPLETE
@@ -138,20 +139,28 @@ class AnalysisSettingsPersistenceTests(unittest.TestCase):
         parameters = edge_node["parameters"]
         assert isinstance(parameters, dict)
         parameters["net_physical_edge_internal_scale"] = 1.25
-        display_profile = analysis_settings_profile_from_payload(payload)
-        result = apply_analysis_settings_profile(graph, display_profile)
+        changed_profile = analysis_settings_profile_from_payload(payload)
+        result = apply_analysis_settings_profile(graph, changed_profile)
 
         self.assertTrue(result.changed)
         self.assertFalse(result.structure_changed)
-        self.assertFalse(result.analytical_changed)
+        self.assertTrue(result.analytical_changed)
         self.assertEqual(
-            result.affected_node_ids, ("reference_edge_probability",)
+            result.affected_node_ids,
+            (
+                "reference_edge_probability",
+                "reference_edge_ridges",
+                "edge_traces",
+                "procedural_instances",
+                "unet_instances",
+                "stardist_instances",
+            ),
         )
-        self.assertEqual(graph.revision, revision)
+        self.assertEqual(graph.revision, revision + 1)
         self.assertEqual(
-            graph.node("reference_edge_probability").status, NodeStatus.COMPLETE
+            graph.node("reference_edge_probability").status, NodeStatus.IDLE
         )
-        self.assertEqual(graph.node("procedural_instances").status, NodeStatus.COMPLETE)
+        self.assertEqual(graph.node("procedural_instances").status, NodeStatus.IDLE)
         self.assertEqual(graph.node("reference_edge_probability").x, 321.0)
 
     def test_graph_compatibility_is_fully_validated_before_mutation(self) -> None:
@@ -185,6 +194,116 @@ class AnalysisSettingsPersistenceTests(unittest.TestCase):
                 analysis_settings_profile_from_graph(graph)
             ),
             original_payload,
+        )
+
+    def test_version_two_profile_adopts_new_candidate_geometry_defaults(self) -> None:
+        graph = build_default_pipeline()
+        payload = analysis_settings_profile_to_payload(
+            analysis_settings_profile_from_graph(graph)
+        )
+        payload["version"] = 2
+        procedural = _node_payload(payload, "procedural_instances")
+        parameters = procedural["parameters"]
+        assert isinstance(parameters, dict)
+        new_keys = {
+            "soft_minimum_instance_area_fraction",
+            "soft_maximum_instance_width_fraction",
+            "hard_maximum_instance_width_fraction",
+            "maximum_internal_concavity_fraction",
+            "maximum_protrusion_area_fraction",
+            "candidate_hypotheses_per_marker",
+            "candidate_overlap_fraction",
+        }
+        for key in new_keys:
+            parameters.pop(key)
+
+        target = build_default_pipeline()
+        apply_analysis_settings_profile(
+            target, analysis_settings_profile_from_payload(payload)
+        )
+
+        for key in new_keys:
+            self.assertEqual(
+                target.node("procedural_instances").parameters[key],
+                graph.node("procedural_instances").parameters[key],
+            )
+
+    def test_version_four_profile_migrates_combined_annotation_and_colour_nodes(self) -> None:
+        source = build_default_pipeline()
+        payload = analysis_settings_profile_to_payload(
+            analysis_settings_profile_from_graph(source)
+        )
+        payload["version"] = 4
+        background = _node_payload(payload, "background_likelihood")
+        combined_parameters = dict(background["parameters"])
+        foreground_parameters = {
+            key: value
+            for key, value in combined_parameters.items()
+            if key.startswith("foreground_") or key == "inner_radius_fraction"
+        }
+        background["parameters"] = {
+            key: value
+            for key, value in combined_parameters.items()
+            if key not in foreground_parameters
+            and key != "background_colour_enabled"
+        }
+        background["enabled"] = False
+        payload["nodes"].extend(
+            (
+                {
+                    "id": "foreground_segmentation",
+                    "active": True,
+                    "enabled": True,
+                    "connection_suspended": False,
+                    "parameters": foreground_parameters,
+                },
+                {
+                    "id": "manual_seed_centres",
+                    "active": True,
+                    "enabled": True,
+                    "connection_suspended": False,
+                    "parameters": {},
+                },
+            )
+        )
+        foreground_ports = {
+            "foreground_probability",
+            "annotated_foreground_reference_source",
+            "proposal_region",
+        }
+        for connection in payload["connections"]:
+            if (
+                connection["source"] == "background_likelihood"
+                and connection["source_port"] in foreground_ports
+            ):
+                connection["source"] = "foreground_segmentation"
+            elif (
+                connection["source"] == "reference_layers"
+                and connection["source_port"] == "centres"
+            ):
+                connection["source"] = "manual_seed_centres"
+
+        target = build_default_pipeline()
+        apply_analysis_settings_profile(
+            target, analysis_settings_profile_from_payload(payload)
+        )
+
+        combined = target.node("background_likelihood")
+        self.assertTrue(combined.enabled)
+        self.assertFalse(combined.parameters["background_colour_enabled"])
+        self.assertEqual(
+            combined.parameters["foreground_reference_weight"],
+            source.node("background_likelihood").parameters[
+                "foreground_reference_weight"
+            ],
+        )
+        centre_connection = target.connection_for_input(
+            "procedural_instances", "manual_centres"
+        )
+        self.assertIsNotNone(centre_connection)
+        self.assertEqual(
+            (centre_connection.source, centre_connection.source_port),
+            ("reference_layers", "centres"),
         )
 
     def test_missing_and_unknown_catalogue_members_fail_clearly(self) -> None:

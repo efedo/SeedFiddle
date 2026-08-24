@@ -68,6 +68,38 @@ class PipelineInspectorActionTests(unittest.TestCase):
         self.assertTrue(payload["annotations_are_complete"])
         inspector.close()
 
+    def test_reference_edge_fit_action_is_owned_by_probability_node(self) -> None:
+        from seedvision.pipeline import build_default_pipeline
+        from seedvision.ui.pipeline_inspector import PipelineInspector
+
+        graph = build_default_pipeline()
+        inspector = PipelineInspector()
+        inspector.set_node(graph.node("edge_gradients"))
+        self.assertTrue(inspector.reference_edge_fit_container.isHidden())
+
+        requests: list[tuple[str, str, object]] = []
+        inspector.node_action_requested.connect(
+            lambda node_id, action_id, payload: requests.append(
+                (node_id, action_id, payload)
+            )
+        )
+        inspector.set_node(graph.node("reference_edge_probability"))
+        self.assertFalse(inspector.reference_edge_fit_container.isHidden())
+        self.assertTrue(inspector.reference_edge_fit_button.isEnabled())
+        inspector.reference_edge_fit_button.click()
+
+        self.assertEqual(
+            requests,
+            [
+                (
+                    "reference_edge_probability",
+                    inspector.REFERENCE_EDGE_FIT_ACTION,
+                    None,
+                )
+            ],
+        )
+        inspector.close()
+
     def test_procedural_fit_state_api_disables_busy_or_ineligible_requests(self) -> None:
         from seedvision.pipeline import build_default_pipeline
         from seedvision.ui.pipeline_inspector import PipelineInspector

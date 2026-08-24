@@ -138,7 +138,7 @@ class AdvancedAnalysisTests(unittest.TestCase):
             first.rasters["wrinkling_likelihood"],
         )
 
-    def test_seed_interior_consumes_foreground_noise_probability(self) -> None:
+    def test_seed_interior_does_not_recombine_raw_foreground_noise(self) -> None:
         inputs = _synthetic_inputs()
         shape = inputs[0].shape[:2]
         settings = AdvancedAnalysisSettings(
@@ -171,8 +171,8 @@ class AdvancedAnalysisTests(unittest.TestCase):
 
         quiet_interior = np.asarray(quiet.rasters["seed_interior_probability"])
         noisy_interior = np.asarray(noisy.rasters["seed_interior_probability"])
-        self.assertEqual(int(quiet_interior.max()), 0)
-        self.assertGreater(float(np.mean(noisy_interior[16:-16, 16:-16])), 245.0)
+        self.assertGreater(float(np.mean(quiet_interior[16:-16, 16:-16])), 245.0)
+        np.testing.assert_array_equal(noisy_interior, quiet_interior)
         self.assertIs(
             noisy.rasters["boundary_magnitude"],
             quiet.rasters["boundary_magnitude"],

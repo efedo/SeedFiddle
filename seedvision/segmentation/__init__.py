@@ -34,6 +34,12 @@ from seedvision.segmentation.procedural_fit import (
     fit_procedural_settings,
     score_procedural_instances,
 )
+from seedvision.segmentation.reference_edge_fit import (
+    ReferenceEdgeFitResult,
+    ReferenceEdgeFitScore,
+    evaluate_reference_edge_settings,
+    fit_reference_edge_parameters,
+)
 
 __all__ = [
     "BaselineAnalysis",
@@ -56,6 +62,8 @@ __all__ = [
     "ProceduralFitResult",
     "ProceduralFitScore",
     "ProceduralFitTrial",
+    "ReferenceEdgeFitResult",
+    "ReferenceEdgeFitScore",
     "AnalysisLayerSettings",
     "AdvancedAnalysisSettings",
     "SeedProposal",
@@ -65,5 +73,7 @@ __all__ = [
     "procedural_seed_instances",
     "procedural_seed_instances_from_prepared",
     "fit_procedural_settings",
+    "evaluate_reference_edge_settings",
+    "fit_reference_edge_parameters",
     "score_procedural_instances",
 ]

@@ -3,10 +3,10 @@
 The approximate ellipse found here is deliberately only a geometric prior.  A
 successful result always checks a separately optimized closed contour through
 the supplied edge raster. The ellipse itself is only an approximate maximum:
-canonical Smart-fill growth is unpenalized anywhere inward, gradually penalized
-just outside, and stopped only at a small hard outward cutoff. Insufficient or
-spatially unrelated evidence returns an explicit refusal instead of silently
-painting the nominal ellipse.
+canonical Smart-fill growth is unpenalized deep inside, gradually penalized
+from a configurable distance inside the boundary, and stopped at a small hard
+outward cutoff. Insufficient or spatially unrelated evidence returns an
+explicit refusal instead of silently painting the nominal ellipse.
 
 All expensive work is bounded by small candidate/sample banks and one local
 region around the clicked seed.  The module has no Qt dependency so live-view
@@ -45,12 +45,14 @@ class ShapeGuidedFillOptions:
     maximum_axis_ratio: float = 2.30
     coarse_angular_samples: int = 64
     boundary_angular_samples: int = 128
+    penalty_start_inside_fraction: float = 0.05
     outward_penalty_half_life_fraction: float = 0.05
     outward_hard_cutoff_fraction: float = 0.10
     boundary_smoothness: float = 0.45
     lab_contrast_weight: float = 0.12
     colour_tolerance_lab: float = 18.0
     edge_barrier_threshold: float = 0.58
+    edge_gap_sealing_fraction: float = 0.02
     minimum_boundary_strength: float = 0.25
     minimum_edge_coverage: float = 0.34
     minimum_sector_coverage: float = 0.62
@@ -84,6 +86,11 @@ class ShapeGuidedFillOptions:
             raise ValueError("Boundary angular samples must be between 64 and 256.")
         if self.boundary_angular_samples % 8:
             raise ValueError("Boundary angular samples must be divisible by eight.")
+        if not 0.0 <= self.penalty_start_inside_fraction <= 0.50:
+            raise ValueError(
+                "Shape penalty start must be between zero and 0.5 seed diameter "
+                "inside the fitted oval."
+            )
         if not 0.005 <= self.outward_penalty_half_life_fraction <= 0.50:
             raise ValueError(
                 "Outward penalty half-life must be between 0.005 and 0.5 seed "
@@ -104,6 +111,7 @@ class ShapeGuidedFillOptions:
             ("boundary smoothness", self.boundary_smoothness),
             ("Lab contrast weight", self.lab_contrast_weight),
             ("edge barrier threshold", self.edge_barrier_threshold),
+            ("edge-gap sealing fraction", self.edge_gap_sealing_fraction),
             ("minimum boundary strength", self.minimum_boundary_strength),
             ("minimum edge coverage", self.minimum_edge_coverage),
             ("minimum sector coverage", self.minimum_sector_coverage),
@@ -168,10 +176,10 @@ def shape_outward_extension_pressure(
 ) -> np.ndarray:
     """Return Shape fill's one-sided geometric extension pressure.
 
-    Signed distances at or inside the fitted ellipse (``distance <= 0``) have
-    exactly unit pressure and therefore no shape-derived restriction. Outside,
-    pressure halves every configured fraction of the preferred seed diameter.
-    Values strictly beyond the hard-cutoff fraction are exactly zero.
+    Pressure is one deep inside the ellipse, then begins decaying at the
+    configured inward offset.  It halves every configured fraction of the
+    preferred seed diameter and is exactly zero strictly beyond the outward
+    hard cutoff.
     """
 
     diameter = float(preferred_seed_diameter_px)
@@ -180,14 +188,17 @@ def shape_outward_extension_pressure(
     signed_distance = np.asarray(signed_outward_distance_px, dtype=np.float32)
     if not np.all(np.isfinite(signed_distance)):
         raise ValueError("Signed outward distances must be finite.")
-    outward = np.maximum(signed_distance, 0.0)
+    start = -diameter * float(options.penalty_start_inside_fraction)
+    distance_from_start = np.maximum(signed_distance - start, 0.0)
     half_life = max(
         np.finfo(np.float32).eps,
         diameter * float(options.outward_penalty_half_life_fraction),
     )
     cutoff = diameter * float(options.outward_hard_cutoff_fraction)
-    pressure = np.exp2(-outward / half_life).astype(np.float32, copy=False)
-    return np.where(outward > cutoff, 0.0, pressure).astype(
+    pressure = np.exp2(-distance_from_start / half_life).astype(
+        np.float32, copy=False
+    )
+    return np.where(signed_distance > cutoff, 0.0, pressure).astype(
         np.float32, copy=False
     )
 
@@ -456,6 +467,7 @@ def fit_rotated_edge_ellipse(
 def _smart_fill_options(
     options: ShapeGuidedFillOptions,
     maximum_distance_px: int,
+    preferred_diameter_px: float,
 ) -> SmartFillOptions:
     """Map Shape fill's retained controls to canonical Smart fill.
 
@@ -467,8 +479,23 @@ def _smart_fill_options(
 
     return SmartFillOptions(
         colour_tolerance_lab=options.colour_tolerance_lab,
+        # Click-origin colour range is a Smart-fill-only control. Shape fill
+        # validates its own fitted interior evidence and retains its established
+        # neighbour-step semantics.
+        click_colour_tolerance_lab=360.0,
         edge_stop_threshold=options.edge_barrier_threshold,
         tunnel_strength=0.0,
+        edge_gap_sealing_px=max(
+            0,
+            min(
+                64,
+                int(
+                    round(
+                        preferred_diameter_px * options.edge_gap_sealing_fraction
+                    )
+                ),
+            ),
+        ),
         maximum_distance_from_cursor_px=int(
             np.clip(maximum_distance_px, 4, 4096)
         ),
@@ -704,20 +731,30 @@ def shape_guided_fill_region(
     cv2.fillPoly(
         prior_mask, [prior_local.reshape(-1, 1, 2)], 1, lineType=cv2.LINE_8
     )
-    # OpenCV returns, for every outside pixel, its Euclidean distance to the
-    # nearest fitted-ellipse pixel. Interior pressure is exactly one; only this
-    # positive outward distance is penalized or cut off.
-    outward_distance = cv2.distanceTransform(
+    # Form a signed distance: positive outside, negative inside.  This lets the
+    # soft search penalty begin before the nominal oval while retaining a hard
+    # cutoff only outside it.
+    outside_distance = cv2.distanceTransform(
         (prior_mask == 0).astype(np.uint8),
         cv2.DIST_L2,
         cv2.DIST_MASK_PRECISE,
     )
+    inside_distance = cv2.distanceTransform(
+        prior_mask.astype(np.uint8),
+        cv2.DIST_L2,
+        cv2.DIST_MASK_PRECISE,
+    )
+    signed_distance = outside_distance - inside_distance
     extension_pressure = shape_outward_extension_pressure(
-        outward_distance,
+        signed_distance,
         preferred_diameter,
         options,
     )
-    allowed = extension_pressure > 0.0
+    # One byte of effective growth pressure is the minimum meaningful support.
+    # This makes an intentionally tiny half-life visibly restrictive even in a
+    # perfectly uniform, edgeless area instead of letting it flood to the hard
+    # cutoff unchanged.
+    allowed = extension_pressure >= (1.0 / 255.0)
     maximum_work_distance = int(
         ceil(
             np.hypot(
@@ -726,7 +763,9 @@ def shape_guided_fill_region(
             )
         )
     ) + 1
-    smart_options = _smart_fill_options(options, maximum_work_distance)
+    smart_options = _smart_fill_options(
+        options, maximum_work_distance, preferred_diameter
+    )
     smart_region = smart_fill_region(
         source_labels,
         image,

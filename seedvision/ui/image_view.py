@@ -41,6 +41,7 @@ from seedvision.ui.canvas_controls import style_canvas_control_bar
 from seedvision.visualization import ADVANCED_OVERLAY_LABELS
 from seedvision.resources import release_host_caches
 from seedvision.annotation import (
+    ANNOTATION_EDGE_SOURCES,
     EdgeTraceOptions,
     ShapeGuidedFillOptions,
     ShapeGuidedFillRegion,
@@ -60,11 +61,17 @@ OVERLAY_MODES = {
     "deskew_colour",
     "calibrated_image",
     "colour_reference",
+    "ruler_evidence",
     "ruler_detection",
     "layout_detection",
+    "hue_only",
+    "wavelet_detail_1",
+    "wavelet_detail_2",
+    "wavelet_detail_3",
+    "wavelet_detail_4",
+    "wavelet_residual",
     "perimeter_background_reference",
     "seed_scale_estimation",
-    "foreground_feature",
     "foreground_mask",
     "foreground_colour_gamut",
     "foreground_binary_mask",
@@ -79,6 +86,16 @@ OVERLAY_MODES = {
     "refined_background_likelihood",
     "other_noise_probability",
     "foreground_noise_likelihood",
+    "material_seed_support",
+    "material_background_support",
+    "material_other_support",
+    "material_nonseed_support",
+    "material_seed_probability",
+    "material_nonseed_probability",
+    "material_ambiguity_probability",
+    "material_unknown_probability",
+    "material_background_subtype",
+    "material_other_subtype",
     "reference_texture_prototypes",
     "reference_seed_surface_probability",
     "reference_background_texture_probability",
@@ -105,7 +122,10 @@ OVERLAY_MODES = {
     "non_edge_probability",
     "reference_edge_comparison",
     "net_physical_edge_probability",
+    "locally_normalized_net_physical_edge",
     "reference_edge_ridges",
+    "net_reference_edge_ridges",
+    "normalized_net_reference_edge_ridges",
     "edge_traces",
     "edge_trace_continuity",
     "edge_trace_gap_confidence",
@@ -124,6 +144,8 @@ OVERLAY_MODES = {
     "procedural_centres",
     "procedural_instances",
     "procedural_confidence",
+    "procedural_concavity",
+    "procedural_alternative_candidates",
     "unet_interior",
     "unet_physical_boundary",
     "unet_pattern_boundary",
@@ -486,6 +508,7 @@ class ImageView(QGraphicsView):
     shape_fill_size_preference_changed = Signal(float)
     manual_seed_centres_edited = Signal(object, str, str)
     manual_seed_centre_editing_cancelled = Signal()
+    procedural_instance_selected = Signal(int)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -537,6 +560,7 @@ class ImageView(QGraphicsView):
         self._manual_seed_centre_selected: dict[str, object] | None = None
         self._manual_seed_centre_drag: dict[str, object] | None = None
         self._manual_seed_centre_drag_items: list[QGraphicsItem] = []
+        self._selected_procedural_label = 0
         self._instance_bounds_cache: dict[
             int, tuple[int, int, int, int] | None
         ] = {}
@@ -603,6 +627,7 @@ class ImageView(QGraphicsView):
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
         self.setViewportMargins(0, 38, 0, 0)
         self._build_zoom_controls()
+        self._build_calculating_banner()
         self._build_instance_continuity_warning()
         self._show_placeholder()
 
@@ -612,6 +637,17 @@ class ImageView(QGraphicsView):
         controls.setContentsMargins(8, 4, 8, 4)
         controls.setSpacing(5)
         heading = QLabel("Image zoom", self.zoom_controls)
+        self.current_file_label = QLabel("No image selected", self.zoom_controls)
+        self.current_file_label.setObjectName("currentImageFileLabel")
+        self.current_file_label.setAlignment(
+            Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter
+        )
+        self.current_file_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self.current_file_label.setStyleSheet(
+            "QLabel#currentImageFileLabel { color: #e8eef4; font-weight: 600; }"
+        )
         self.zoom_out_button = QToolButton(self.zoom_controls)
         self.zoom_out_button.setText("−")
         self.zoom_out_button.setToolTip("Zoom out")
@@ -631,6 +667,8 @@ class ImageView(QGraphicsView):
         self.actual_size_button.setToolTip("Show one image pixel per screen pixel")
         self.actual_size_button.clicked.connect(self.actual_size)
         controls.addWidget(heading)
+        controls.addStretch(1)
+        controls.addWidget(self.current_file_label, 2)
         controls.addStretch(1)
         controls.addWidget(self.zoom_out_button)
         controls.addWidget(self.zoom_label)
@@ -666,6 +704,49 @@ class ImageView(QGraphicsView):
             "}"
         )
         self.instance_continuity_warning_banner.hide()
+
+    def _build_calculating_banner(self) -> None:
+        """Create the unmistakable selected-overlay calculation notice."""
+
+        self.calculating_banner = QLabel(self)
+        self.calculating_banner.setObjectName("overlayCalculatingBanner")
+        self.calculating_banner.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.calculating_banner.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents
+        )
+        self.calculating_banner.setStyleSheet(
+            "QLabel#overlayCalculatingBanner {"
+            " color: #ff3434;"
+            " background-color: rgba(15, 18, 22, 210);"
+            " border: 3px solid #d71920;"
+            " border-radius: 8px;"
+            " padding: 12px 24px;"
+            " font-weight: 900;"
+            " font-size: 28px;"
+            "}"
+        )
+        self.calculating_banner.hide()
+
+    def set_overlay_calculating(self, text: str | None) -> None:
+        message = "" if text is None else str(text).strip()
+        self.calculating_banner.setText(message)
+        self.calculating_banner.setVisible(bool(message))
+        self._layout_calculating_banner()
+        if message:
+            self.calculating_banner.raise_()
+        self.zoom_controls.raise_()
+
+    def _layout_calculating_banner(self) -> None:
+        if self.calculating_banner.isHidden():
+            return
+        width = min(max(320, self.calculating_banner.sizeHint().width()), max(320, self.width() - 40))
+        height = max(64, self.calculating_banner.sizeHint().height())
+        self.calculating_banner.setGeometry(
+            max(0, (self.width() - width) // 2),
+            max(self.zoom_controls.height() + 18, (self.height() - height) // 5),
+            width,
+            height,
+        )
 
     def set_instance_continuity_warning(
         self, text: str, *, tool_tip: str = ""
@@ -894,6 +975,7 @@ class ImageView(QGraphicsView):
         self._manual_seed_centre_editing = False
         self._manual_seed_centre_selected = None
         self._manual_seed_centre_drag = None
+        self._selected_procedural_label = 0
         self._instance_bounds_cache.clear()
         self._instance_tool_points.clear()
         self._annotation_evidence_cache.clear()
@@ -913,6 +995,8 @@ class ImageView(QGraphicsView):
         self._image_item.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
         self._scene.setSceneRect(self._image_item.boundingRect())
         self._image_path = path
+        self.current_file_label.setText(path.name)
+        self.current_file_label.setToolTip(str(path))
         if self.isVisible():
             self.fit_image()
         else:
@@ -927,6 +1011,8 @@ class ImageView(QGraphicsView):
         release_host_caches(self._analysis_result)
         self._clear_manual_seed_centre_drag_items()
         self._image_path = None
+        self.current_file_label.setText("No image selected")
+        self.current_file_label.setToolTip("")
         self._background_reference_mask = None
         self._foreground_reference_mask = None
         self._background_exclusion_mask = None
@@ -978,6 +1064,20 @@ class ImageView(QGraphicsView):
         self._corrected_pixmap = None
         self._corrected_base_key = None
         self._restore_source_image()
+
+    def render_reference_annotations_without_analysis(self) -> None:
+        """Show restored image-local references even before calibration reruns."""
+
+        if self._analysis_result is not None:
+            self._render_analysis()
+            return
+        self._clear_overlay_items()
+        self._restore_source_image()
+        if self._material_reference_annotations_visible:
+            self._render_background_reference_points()
+            self._render_foreground_reference_points()
+            self._render_exclusion_masks()
+        self._render_instance_annotations()
 
     @property
     def manual_seed_centre_editing(self) -> bool:
@@ -1076,10 +1176,28 @@ class ImageView(QGraphicsView):
             self._prototype_collage_pixmap = None
             self._prototype_collage_key = None
             self._displayed_base = "stale"
+            self._selected_procedural_label = 0
         self._analysis_result = result
         self._annotation_evidence_cache.clear()
         if render:
             self._render_analysis()
+
+    def prepare_analysis_coordinates(self) -> None:
+        """Adopt corrected dimensions before corrected-coordinate masks are bound.
+
+        MainWindow installs a newly validated sidecar between storing an analysis
+        result and rendering its selected overlay.  This lightweight transition
+        makes that operation atomic even when the prior scene still displays the
+        raw source dimensions.
+        """
+
+        result = self._analysis_result
+        calibration = None if result is None else getattr(result, "calibration", None)
+        corrected = (
+            None if calibration is None else getattr(calibration, "corrected_bgr", None)
+        )
+        if corrected is not None:
+            self._set_bgr_base_image(corrected)
 
     def refresh_analysis(self) -> None:
         """Render the current base, overlay, and annotations once."""
@@ -1356,16 +1474,7 @@ class ImageView(QGraphicsView):
         edge_source: str | None = None,
     ) -> None:
         selected_source = options.edge_source if edge_source is None else str(edge_source)
-        allowed_sources = {
-            "adaptive",
-            "ridges",
-            "reference_ridges",
-            "traces",
-            "magnitude",
-            "physical",
-            "net_physical",
-        }
-        if selected_source not in allowed_sources:
+        if selected_source not in ANNOTATION_EDGE_SOURCES:
             raise ValueError(f"Unknown annotation edge source {selected_source!r}.")
         core_source = (
             "physical" if selected_source == "net_physical" else selected_source
@@ -1383,15 +1492,7 @@ class ImageView(QGraphicsView):
         *,
         edge_source: str = "adaptive",
     ) -> None:
-        if edge_source not in {
-            "adaptive",
-            "ridges",
-            "reference_ridges",
-            "traces",
-            "magnitude",
-            "physical",
-            "net_physical",
-        }:
+        if edge_source not in ANNOTATION_EDGE_SOURCES:
             raise ValueError(f"Unknown annotation edge source {edge_source!r}.")
         self._shape_guided_fill_options = options
         self._shape_guided_edge_source = edge_source
@@ -1573,7 +1674,7 @@ class ImageView(QGraphicsView):
             if self._reference_point_mode == "background"
             else QColor("#ff765f")
             if self._reference_point_mode == "foreground"
-            else QColor("#96969c")
+            else QColor("#ffad55")
             if self._reference_point_mode == "other"
             else QColor("#ffd137")
             if self._reference_point_mode == "physical_edge"
@@ -1700,12 +1801,41 @@ class ImageView(QGraphicsView):
             self._render_colour_reference(result, corrected=True)
             self._render_context_annotations(result)
             return
+        if self._overlay_mode == "ruler_evidence":
+            self._render_ruler_evidence(result)
+            self._render_context_annotations(result)
+            return
         if self._overlay_mode == "ruler_detection":
             self._render_ruler_reference(result)
             self._render_context_annotations(result)
             return
         if self._overlay_mode == "layout_detection":
             self._render_dish_edges(result, width=4, include_inner=True)
+            self._render_context_annotations(result)
+            return
+        if self._overlay_mode == "hue_only":
+            self._render_rgba_overlay(
+                result.layers.hue_only_rgba(),
+                result.layers.offset_x,
+                result.layers.offset_y,
+            )
+            self._render_context_annotations(result)
+            return
+        if self._overlay_mode.startswith("wavelet_detail_"):
+            level = int(self._overlay_mode.rsplit("_", 1)[1]) - 1
+            self._render_rgba_overlay(
+                result.layers.wavelet_rgba(level),
+                result.layers.offset_x,
+                result.layers.offset_y,
+            )
+            self._render_context_annotations(result)
+            return
+        if self._overlay_mode == "wavelet_residual":
+            self._render_rgba_overlay(
+                result.layers.wavelet_rgba(None),
+                result.layers.offset_x,
+                result.layers.offset_y,
+            )
             self._render_context_annotations(result)
             return
         if self._overlay_mode == "perimeter_background_reference":
@@ -1724,17 +1854,23 @@ class ImageView(QGraphicsView):
             return
 
         if self._overlay_mode in {
-            "foreground_feature",
             "foreground_mask",
             "foreground_binary_mask",
             "distance_transform",
         }:
             if self._overlay_mode == "foreground_mask":
-                raster = result.foreground_probability
+                raster = getattr(
+                    result,
+                    "foreground_colour_probability",
+                    result.foreground_probability,
+                )
             elif self._overlay_mode == "foreground_binary_mask":
                 raster = result.foreground_mask
             else:
                 raster = getattr(result, self._overlay_mode)
+            if raster is None:
+                self._render_context_annotations(result)
+                return
             self._render_scalar_raster(
                 raster,
                 *result.crop_offset,
@@ -1748,6 +1884,31 @@ class ImageView(QGraphicsView):
             self._render_context_annotations(result)
             return
 
+        material_rasters = {
+            "material_seed_support": "seed_evidence_support",
+            "material_background_support": "background_evidence_support",
+            "material_other_support": "other_evidence_support",
+            "material_nonseed_support": "nonseed_evidence_support",
+            "material_seed_probability": "seed_material_probability",
+            "material_nonseed_probability": "nonseed_material_probability",
+            "material_ambiguity_probability": "material_ambiguity_probability",
+            "material_unknown_probability": "material_unknown_probability",
+            "material_background_subtype": "conditional_background_probability",
+            "material_other_subtype": "conditional_other_probability",
+            "material_subtype_ambiguity": "conditional_material_subtype_ambiguity",
+            "material_subtype_unknown": "conditional_nonseed_unknown_probability",
+        }
+        if self._overlay_mode in material_rasters:
+            raster = getattr(result.layers, material_rasters[self._overlay_mode])
+            if raster is not None:
+                self._render_scalar_raster(
+                    raster,
+                    *result.crop_offset,
+                    valid_mask=result.layers.valid_mask,
+                )
+            self._render_context_annotations(result)
+            return
+
         if self._overlay_mode.startswith("procedural_"):
             procedural = getattr(result, "procedural_instances", None)
             if procedural is not None:
@@ -1758,6 +1919,13 @@ class ImageView(QGraphicsView):
                         source_shape=procedural.source_shape,
                     )
                     self._render_procedural_centres(result)
+                    self._render_selected_procedural_instance(result, procedural)
+                elif self._overlay_mode == "procedural_alternative_candidates":
+                    self._render_rgba_overlay(
+                        procedural.alternative_candidates_rgba,
+                        *result.crop_offset,
+                        source_shape=procedural.source_shape,
+                    )
                 else:
                     raster = {
                         "procedural_seed_material": procedural.occupancy_likelihood,
@@ -1765,6 +1933,7 @@ class ImageView(QGraphicsView):
                         "procedural_boundary_cost": procedural.boundary_cost,
                         "procedural_centres": procedural.centre_likelihood,
                         "procedural_confidence": procedural.confidence_raster(),
+                        "procedural_concavity": procedural.concavity,
                     }[self._overlay_mode]
                     self._render_scalar_raster(
                         raster,
@@ -1920,8 +2089,14 @@ class ImageView(QGraphicsView):
             rgba = layers.reference_edge_comparison_rgba()
         elif self._overlay_mode == "net_physical_edge_probability":
             rgba = layers.net_physical_edge_probability_rgba()
+        elif self._overlay_mode == "locally_normalized_net_physical_edge":
+            rgba = layers.locally_normalized_net_physical_edge_rgba()
         elif self._overlay_mode == "reference_edge_ridges":
             rgba = layers.reference_edge_ridges_rgba()
+        elif self._overlay_mode == "net_reference_edge_ridges":
+            rgba = layers.net_reference_edge_ridges_rgba()
+        elif self._overlay_mode == "normalized_net_reference_edge_ridges":
+            rgba = layers.normalized_net_reference_edge_ridges_rgba()
         elif self._overlay_mode == "edge_traces":
             rgba = layers.edge_traces_rgba()
         elif self._overlay_mode == "edge_trace_continuity":
@@ -1983,6 +2158,26 @@ class ImageView(QGraphicsView):
             ):
                 self._render_background_sampling_band(result, fill=False)
         self._render_context_annotations(result)
+
+    def _render_selected_procedural_instance(self, result, procedural) -> None:
+        """Outline the inspected working-resolution procedural label in yellow."""
+
+        label = int(self._selected_procedural_label)
+        if label <= 0 or label > procedural.count:
+            return
+        selected = np.asarray(procedural.labels) == label
+        if not np.any(selected):
+            return
+        edge = cv2.morphologyEx(
+            np.uint8(selected), cv2.MORPH_GRADIENT, np.ones((3, 3), np.uint8)
+        ) > 0
+        rgba = np.zeros((*edge.shape, 4), np.uint8)
+        rgba[edge] = (255, 225, 36, 255)
+        self._render_rgba_overlay(
+            rgba,
+            *result.crop_offset,
+            source_shape=procedural.source_shape,
+        )
 
     def _render_edge_fit_geometry(self, result) -> None:
         geometry = result.layers.edge_fit_geometry
@@ -2393,27 +2588,39 @@ class ImageView(QGraphicsView):
         legacy_radius = int(dish.radius)
         outer_radius = int(getattr(dish, "outer_radius", legacy_radius))
         inner_radius = int(getattr(dish, "inner_radius", legacy_radius))
-        edges = [(outer_radius, QColor("#41d9ff"))]
+        outer_axes = tuple(
+            float(value)
+            for value in getattr(dish, "outer_axes", (outer_radius, outer_radius))
+        )
+        inner_axes = tuple(
+            float(value)
+            for value in getattr(dish, "inner_axes", (inner_radius, inner_radius))
+        )
+        edges = [(outer_axes, QColor("#41d9ff"))]
         if include_inner:
-            edges.append((inner_radius, QColor("#ff63d8")))
-        rendered_radii: set[int] = set()
-        for radius, colour in edges:
-            radius = int(radius)
-            if radius in rendered_radii:
+            edges.append((inner_axes, QColor("#ff63d8")))
+        rendered_axes: set[tuple[int, int]] = set()
+        for axes, colour in edges:
+            axis_x, axis_y = (float(value) for value in axes)
+            key = (round(axis_x), round(axis_y))
+            if key in rendered_axes:
                 continue
-            rendered_radii.add(radius)
+            rendered_axes.add(key)
             pen = QPen(colour)
             pen.setWidth(width)
             pen.setCosmetic(True)
             if not getattr(dish, "rim_pair_detected", False):
                 pen.setStyle(Qt.PenStyle.DashLine)
             item = self._scene.addEllipse(
-                dish.center_x - radius,
-                dish.center_y - radius,
-                radius * 2,
-                radius * 2,
+                dish.center_x - axis_x,
+                dish.center_y - axis_y,
+                axis_x * 2,
+                axis_y * 2,
                 pen,
             )
+            if abs(axis_x - axis_y) >= 0.5:
+                item.setTransformOriginPoint(dish.center_x, dish.center_y)
+                item.setRotation(float(getattr(dish, "ellipse_angle_degrees", 0.0)))
             item.setOpacity(self._overlay_opacity)
             item.setZValue(10)
             self._overlay_items.append(item)
@@ -2473,38 +2680,244 @@ class ImageView(QGraphicsView):
         rectangle.setZValue(10)
         self._overlay_items.append(rectangle)
         diameter = float(result.estimated_seed_diameter_px)
-        centre = QPointF(x0 + diameter * 0.7, y0 + diameter * 0.7)
-        scale_pen = QPen(QColor("#ffd84a"), 1)
+        bounds = tuple(getattr(result, "reference_seed_bounds", ()))
+        fitted_diameters = tuple(
+            float(value)
+            for value in getattr(result, "reference_seed_diameters_px", ())
+        )
+        if bounds:
+            seed_rects = tuple(
+                QRectF(
+                    float(left),
+                    float(top),
+                    float(right) - float(left),
+                    float(bottom) - float(top),
+                )
+                for left, top, right, bottom in bounds
+            )
+        else:
+            centre = QPointF(x0 + diameter * 0.7, y0 + diameter * 0.7)
+            seed_rects = (
+                QRectF(
+                    centre.x() - diameter * 0.5,
+                    centre.y() - diameter * 0.5,
+                    diameter,
+                    diameter,
+                ),
+            )
+        scale_pen = QPen(QColor("#ffd84a"), 3)
         scale_pen.setCosmetic(True)
-        circle = self._scene.addEllipse(
-            centre.x() - diameter * 0.5,
-            centre.y() - diameter * 0.5,
-            diameter,
-            diameter,
-            scale_pen,
-        )
-        circle.setOpacity(self._overlay_opacity)
-        circle.setZValue(11)
-        self._overlay_items.append(circle)
+        scale_halo_pen = QPen(QColor("#17202a"), 8)
+        scale_halo_pen.setCosmetic(True)
+        for index, seed_rect in enumerate(seed_rects):
+            halo = self._scene.addEllipse(seed_rect, scale_halo_pen)
+            halo.setOpacity(self._overlay_opacity * 0.92)
+            halo.setZValue(10.8)
+            halo.setToolTip("High-contrast outline behind the isolated reference fit.")
+            self._overlay_items.append(halo)
+            circle = self._scene.addEllipse(seed_rect, scale_pen)
+            circle.setOpacity(self._overlay_opacity)
+            circle.setZValue(11)
+            self._overlay_items.append(circle)
+            fitted_diameter = (
+                fitted_diameters[index]
+                if index < len(fitted_diameters)
+                else diameter
+            )
+            diameter_text = (
+                f"{fitted_diameter:.1f}".rstrip("0").rstrip(".") + " px"
+            )
+            label = self._scene.addText(diameter_text)
+            label_font = QFont(label.font())
+            label_font.setPixelSize(max(12, min(36, round(diameter * 0.16))))
+            label_font.setBold(True)
+            label.setFont(label_font)
+            label.setDefaultTextColor(QColor("#ffd84a"))
+            label_bounds = label.boundingRect()
+            label.setPos(
+                seed_rect.center().x() - label_bounds.width() * 0.5,
+                seed_rect.top()
+                - label_bounds.height()
+                - max(2.0, diameter * 0.025),
+            )
+            label_background_colour = QColor("#17202a")
+            label_background_colour.setAlpha(224)
+            label_scene_bounds = label.sceneBoundingRect().adjusted(
+                -6.0, -3.0, 6.0, 3.0
+            )
+            label_background = self._scene.addRect(
+                label_scene_bounds,
+                QPen(Qt.PenStyle.NoPen),
+                QBrush(label_background_colour),
+            )
+            label_background.setOpacity(self._overlay_opacity)
+            label_background.setZValue(10.9)
+            label_background.setToolTip(
+                "Contrast background for the isolated reference diameter label."
+            )
+            self._overlay_items.append(label_background)
+            label.setOpacity(self._overlay_opacity)
+            label.setZValue(11)
+            label.setToolTip(
+                f"Locally fitted isolated-seed width: {fitted_diameter:.1f} pixels."
+            )
+            self._overlay_items.append(label)
 
-        diameter_text = f"{diameter:.1f}".rstrip("0").rstrip(".") + " px"
-        label = self._scene.addText(diameter_text)
-        label_font = QFont(label.font())
-        label_font.setPixelSize(max(12, min(36, round(diameter * 0.16))))
-        label_font.setBold(True)
-        label.setFont(label_font)
-        label.setDefaultTextColor(QColor("#ffd84a"))
-        label_bounds = label.boundingRect()
-        label.setPos(
-            centre.x() - label_bounds.width() * 0.5,
-            circle.rect().bottom() + max(2.0, diameter * 0.03),
+        measurements = tuple(
+            getattr(result, "annotated_seed_diameters", ())
         )
-        label.setOpacity(self._overlay_opacity)
-        label.setZValue(11)
-        label.setToolTip(
-            f"Estimated reference seed diameter: {diameter:.1f} pixels."
+        for measurement in measurements:
+            colour = (
+                QColor("#52f58a")
+                if measurement.selected and measurement.complete
+                else QColor("#ff4d5f")
+                if not measurement.complete
+                else QColor("#a8b2bd")
+            )
+            pen = QPen(colour, 4.0 if measurement.selected else 2.5)
+            pen.setCosmetic(True)
+            if not measurement.complete:
+                pen.setStyle(Qt.PenStyle.DashLine)
+            endpoint_a = measurement.endpoint_a
+            endpoint_b = measurement.endpoint_b
+            line = self._scene.addLine(
+                float(endpoint_a[0]),
+                float(endpoint_a[1]),
+                float(endpoint_b[0]),
+                float(endpoint_b[1]),
+                pen,
+            )
+            line.setOpacity(self._overlay_opacity)
+            line.setZValue(12)
+            line.setToolTip(
+                f"Annotated seed {measurement.identifier}: maximum width "
+                f"{measurement.diameter_px:.1f}px; "
+                + (
+                    "selected for final estimate"
+                    if measurement.selected and measurement.complete
+                    else "excluded because the mask is cutoff/disconnected"
+                    if not measurement.complete
+                    else "below the selected largest fraction"
+                )
+            )
+            self._overlay_items.append(line)
+            midpoint_x = (float(endpoint_a[0]) + float(endpoint_b[0])) * 0.5
+            midpoint_y = (float(endpoint_a[1]) + float(endpoint_b[1])) * 0.5
+            tag = self._scene.addText(
+                f"{measurement.identifier}: {measurement.diameter_px:.0f}px"
+            )
+            tag_font = QFont(tag.font())
+            tag_font.setPixelSize(max(11, min(24, round(diameter * 0.10))))
+            tag_font.setBold(bool(measurement.selected))
+            tag.setFont(tag_font)
+            tag.setDefaultTextColor(colour)
+            tag.setPos(midpoint_x + 4.0, midpoint_y + 4.0)
+            tag.setOpacity(self._overlay_opacity)
+            tag.setZValue(12)
+            self._overlay_items.append(tag)
+
+        self._render_seed_diameter_histogram(result, measurements)
+
+    def _render_seed_diameter_histogram(self, result, measurements) -> None:
+        """Draw the annotated-width distribution and authoritative estimate."""
+
+        diameter = float(result.estimated_seed_diameter_px)
+        image_size = self.image_size
+        if image_size is None:
+            return
+        image_width, image_height = image_size
+        panel_width = max(360.0, min(760.0, diameter * 4.8))
+        panel_height = max(190.0, min(390.0, diameter * 2.5))
+        margin = max(24.0, min(image_width, image_height) * 0.025)
+        panel_x = margin
+        panel_y = margin
+        background = QColor("#111923")
+        background.setAlpha(220)
+        panel = self._scene.addRect(
+            panel_x,
+            panel_y,
+            panel_width,
+            panel_height,
+            QPen(QColor("#d7e1ec"), 2.0),
+            QBrush(background),
         )
-        self._overlay_items.append(label)
+        panel.setZValue(16)
+        panel.setOpacity(self._overlay_opacity)
+        self._overlay_items.append(panel)
+
+        title = self._scene.addText(
+            f"Final seed diameter: {diameter:.1f}px\n"
+            f"Source: {getattr(result, 'seed_diameter_source', 'unknown')}"
+        )
+        title_font = QFont(title.font())
+        title_font.setPixelSize(max(14, min(30, round(panel_height * 0.095))))
+        title_font.setBold(True)
+        title.setFont(title_font)
+        title.setDefaultTextColor(QColor("#ffffff"))
+        title.setPos(panel_x + 14.0, panel_y + 8.0)
+        title.setZValue(17)
+        title.setOpacity(self._overlay_opacity)
+        self._overlay_items.append(title)
+
+        widths = np.asarray(
+            [
+                float(item.diameter_px)
+                for item in measurements
+                if item.complete and item.diameter_px > 0.0
+            ],
+            dtype=np.float64,
+        )
+        if not widths.size:
+            empty = self._scene.addText("No complete annotated instances")
+            empty.setDefaultTextColor(QColor("#a8b2bd"))
+            empty.setPos(panel_x + 14.0, panel_y + panel_height * 0.58)
+            empty.setZValue(17)
+            empty.setOpacity(self._overlay_opacity)
+            self._overlay_items.append(empty)
+            return
+
+        plot_x = panel_x + 24.0
+        plot_y = panel_y + panel_height * 0.43
+        plot_width = panel_width - 48.0
+        plot_height = panel_height * 0.43
+        bin_count = max(3, min(12, round(np.sqrt(widths.size) * 1.7)))
+        low = min(float(widths.min()), diameter) * 0.94
+        high = max(float(widths.max()), diameter) * 1.06
+        if high <= low:
+            high = low + 1.0
+        counts, edges = np.histogram(widths, bins=bin_count, range=(low, high))
+        maximum_count = max(1, int(counts.max(initial=0)))
+        bin_width = plot_width / bin_count
+        for index, count in enumerate(counts.tolist()):
+            bar_height = plot_height * float(count) / maximum_count
+            bar = self._scene.addRect(
+                plot_x + index * bin_width + 1.0,
+                plot_y + plot_height - bar_height,
+                max(1.0, bin_width - 2.0),
+                bar_height,
+                QPen(Qt.PenStyle.NoPen),
+                QBrush(QColor("#7895ad")),
+            )
+            bar.setZValue(17)
+            bar.setOpacity(self._overlay_opacity)
+            self._overlay_items.append(bar)
+        estimate_x = plot_x + (diameter - low) / (high - low) * plot_width
+        estimate_line = self._scene.addLine(
+            estimate_x,
+            plot_y - 3.0,
+            estimate_x,
+            plot_y + plot_height + 3.0,
+            QPen(QColor("#52f58a"), 4.0),
+        )
+        estimate_line.setZValue(18)
+        estimate_line.setOpacity(self._overlay_opacity)
+        self._overlay_items.append(estimate_line)
+        axis = self._scene.addText(f"{low:.0f}px                 {high:.0f}px")
+        axis.setDefaultTextColor(QColor("#d7e1ec"))
+        axis.setPos(plot_x, plot_y + plot_height + 3.0)
+        axis.setZValue(17)
+        axis.setOpacity(self._overlay_opacity)
+        self._overlay_items.append(axis)
 
     def _render_context_annotations(
         self, result, *, include_scale: bool = False
@@ -2518,7 +2931,10 @@ class ImageView(QGraphicsView):
                 and self._render_automatic_background_reference_area(result)
             ):
                 if self._overlay_mode != "perimeter_background_reference":
-                    self._render_background_sampling_band(result)
+                    # The outline communicates the configured annulus; the
+                    # translucent pixels below show the colour-filtered subset
+                    # that was actually retained.
+                    self._render_background_sampling_band(result, fill=False)
             self._render_background_reference_points()
             self._render_foreground_reference_points()
             self._render_exclusion_masks()
@@ -2529,71 +2945,71 @@ class ImageView(QGraphicsView):
     def _render_automatic_background_reference_area(self, result) -> bool:
         """Render a coverage-preserving view of the retained source mask."""
 
-        raster = getattr(
-            result.layers, "background_reference_source_mask", None
+        band = getattr(result, "perimeter_background_band", None)
+        ring_raster = (
+            None if band is None else getattr(band, "accepted_sample_mask", None)
         )
-        if raster is None:
+        if ring_raster is None:
             return False
-        values = np.asarray(raster)
-        if values.ndim != 2:
-            values = np.squeeze(values)
-        if values.ndim != 2:
-            return False
-        mask = values > 0
-        if not bool(np.any(mask)):
-            # The sampled ring is still retained even when no in-dish pixel
-            # passes its colour-similarity gate.
+        def render_mask(raster, offset: tuple[int, int], tooltip: str) -> bool:
+            if raster is None:
+                return False
+            values = np.asarray(raster)
+            if values.ndim != 2:
+                values = np.squeeze(values)
+            if values.ndim != 2 or not bool(np.any(values > 0)):
+                return False
+            mask = values > 0
+            source_height, source_width = mask.shape
+            maximum_display_dimension = 2048
+            if max(source_height, source_width) > maximum_display_dimension:
+                factor = maximum_display_dimension / max(source_height, source_width)
+                display_width = max(1, round(source_width * factor))
+                display_height = max(1, round(source_height * factor))
+                display_mask = cv2.resize(
+                    mask.astype(np.float32),
+                    (display_width, display_height),
+                    interpolation=cv2.INTER_AREA,
+                ) > 0.0
+            else:
+                display_mask = mask
+            rgba = np.zeros((*display_mask.shape, 4), dtype=np.uint8)
+            rgba[:, :, :3] = (65, 217, 255)
+            rgba[:, :, 3] = np.uint8(display_mask) * 92
+            height, width = display_mask.shape
+            image = QImage(
+                rgba.data,
+                width,
+                height,
+                int(rgba.strides[0]),
+                QImage.Format.Format_RGBA8888,
+            ).copy()
+            item = self._scene.addPixmap(QPixmap.fromImage(image))
+            item.setPos(*offset)
+            item.setTransformationMode(Qt.TransformationMode.FastTransformation)
+            item.setTransform(
+                QTransform.fromScale(source_width / width, source_height / height)
+            )
+            item.setOpacity(self._overlay_opacity)
+            item.setZValue(29)
+            item.setToolTip(tooltip)
+            item.setData(0, "automatic-background-reference-area")
+            self._overlay_items.append(item)
             return True
 
-        source_height, source_width = mask.shape
-        maximum_display_dimension = 2048
-        if max(source_height, source_width) > maximum_display_dimension:
-            factor = maximum_display_dimension / max(
-                source_height, source_width
-            )
-            display_width = max(1, round(source_width * factor))
-            display_height = max(1, round(source_height * factor))
-            # A nearest-neighbour overview can omit a narrow or isolated
-            # source pixel entirely. Area resampling in floating point keeps
-            # every non-empty source footprint represented in at least one
-            # display cell, while the authoritative full-resolution mask stays
-            # on the analysis layer.
-            display_mask = cv2.resize(
-                mask.astype(np.float32),
-                (display_width, display_height),
-                interpolation=cv2.INTER_AREA,
-            ) > 0.0
-        else:
-            display_mask = mask
-
-        rgba = np.zeros((*display_mask.shape, 4), dtype=np.uint8)
-        rgba[:, :, :3] = (65, 217, 255)
-        rgba[:, :, 3] = np.uint8(display_mask) * 92
-        height, width = display_mask.shape
-        image = QImage(
-            rgba.data,
-            width,
-            height,
-            int(rgba.strides[0]),
-            QImage.Format.Format_RGBA8888,
-        ).copy()
-        item = self._scene.addPixmap(QPixmap.fromImage(image))
-        item.setPos(*result.crop_offset)
-        item.setTransformationMode(Qt.TransformationMode.FastTransformation)
-        item.setTransform(
-            QTransform.fromScale(source_width / width, source_height / height)
+        rendered_ring = render_mask(
+            ring_raster,
+            (0, 0),
+            "Colour-filtered pixels retained from the perimeter sampling ring; "
+            "foreign colours such as calibration-card patches are excluded.",
         )
-        item.setOpacity(self._overlay_opacity)
-        item.setZValue(29)
-        item.setToolTip(
-            "Automatic perimeter-matched Background source area (cyan). "
-            "The outside ring supplies Lab colour anchors; matching in-dish "
-            "pixels supply the Background colour, noise, and material-prototype "
-            "models. Green areas are manually painted Background references."
-        )
-        item.setData(0, "automatic-background-reference-area")
-        self._overlay_items.append(item)
-        return True
+        if rendered_ring:
+            for item in self._overlay_items[-1:]:
+                item.setToolTip(
+                    item.toolTip()
+                    + " Green areas are manually painted Background references."
+                )
+        return rendered_ring
 
     def _background_marker_radius(self) -> float:
         return self._reference_brush_radius
@@ -2615,7 +3031,7 @@ class ImageView(QGraphicsView):
     def _render_exclusion_masks(self) -> None:
         self._render_reference_mask(
             self._background_exclusion_mask,
-            (150, 150, 156),
+            (255, 173, 85),
             32,
         )
 
@@ -2820,7 +3236,7 @@ class ImageView(QGraphicsView):
         colours = {
             "background": QColor(54, 241, 177, 185),
             "foreground": QColor(255, 118, 95, 185),
-            "other": QColor(150, 150, 156, 185),
+            "other": QColor(255, 173, 85, 205),
             "physical_edge": QColor(255, 209, 55, 210),
             "non_edge": QColor(92, 160, 255, 185),
         }
@@ -3177,6 +3593,24 @@ class ImageView(QGraphicsView):
         line.setZValue(13)
         line.setOpacity(self._overlay_opacity)
         self._overlay_items.append(line)
+        tick_points = calibration.ruler_tick_points_corrected()
+        if tick_points.size:
+            angle = np.deg2rad(float(ruler.angle_degrees) + 90.0)
+            half_length = max(4.0, ruler.width_px * 0.035)
+            offset_x = float(np.cos(angle) * half_length)
+            offset_y = float(np.sin(angle) * half_length)
+            tick_pen = QPen(QColor("#42dff5"), max(2.0, ruler.width_px * 0.008))
+            for x, y in tick_points:
+                tick = self._scene.addLine(
+                    float(x) - offset_x,
+                    float(y) - offset_y,
+                    float(x) + offset_x,
+                    float(y) + offset_y,
+                    tick_pen,
+                )
+                tick.setZValue(14)
+                tick.setOpacity(self._overlay_opacity * 0.80)
+                self._overlay_items.append(tick)
         endpoint_pen = QPen(QColor("#ffffff"), 7)
         radius = max(7.0, ruler.width_px * 0.04)
         for point in (point_a, point_b):
@@ -3190,6 +3624,215 @@ class ImageView(QGraphicsView):
             marker.setZValue(14)
             marker.setOpacity(self._overlay_opacity)
             self._overlay_items.append(marker)
+
+    def _render_ruler_evidence(self, result) -> None:
+        """Draw independently classified ruler evidence in fixed semantic colours."""
+
+        calibration = getattr(result, "calibration", None)
+        ruler = None if calibration is None else calibration.ruler
+        if ruler is None:
+            return
+
+        def polygon(points, colour: str, width: float, z: float) -> None:
+            if len(points) < 3:
+                return
+            item = self._scene.addPolygon(
+                QPolygonF([QPointF(float(x), float(y)) for x, y in points]),
+                QPen(QColor(colour), width),
+            )
+            item.setZValue(z)
+            item.setOpacity(self._overlay_opacity)
+            self._overlay_items.append(item)
+
+        polygon(ruler.outline_points, "#28d65f", 5.0, 13.0)
+        angle = np.deg2rad(float(ruler.angle_degrees) + 90.0)
+        half_length = max(4.0, float(ruler.width_px) * 0.055)
+        offset_x = float(np.cos(angle) * half_length)
+        offset_y = float(np.sin(angle) * half_length)
+
+        def ticks(
+            points,
+            segments,
+            classes,
+            unit_dividers,
+            family: str,
+            colour: str,
+            z: float,
+        ) -> None:
+            pen = QPen(QColor(colour), max(2.0, float(ruler.width_px) * 0.010))
+            unit_pen = QPen(
+                QColor(colour), max(3.0, float(ruler.width_px) * 0.016)
+            )
+            unit_divider_set = {int(value) for value in unit_dividers}
+            if segments:
+                lines = segments
+            else:
+                lines = tuple(
+                    (
+                        (float(x) - offset_x, float(y) - offset_y),
+                        (float(x) + offset_x, float(y) + offset_y),
+                    )
+                    for x, y in points
+                )
+            class_names = (
+                ("1 mm", "5 mm", "1 cm")
+                if family == "metric"
+                else ("1/16 in", "1/8 in", "1/4 in", "1/2 in", "1 in")
+            )
+            for index, (outer, inner) in enumerate(lines):
+                draw_outer = (float(outer[0]), float(outer[1]))
+                if family == "imperial":
+                    # The measured root is the last dark-response centre, not
+                    # the outside end of the printed bar. Extend only the
+                    # display stroke a few pixels outward so the bottom row is
+                    # visibly complete without changing tick pitch, length
+                    # classes, ruler geometry, or absolute-scale analysis.
+                    dx = float(outer[0]) - float(inner[0])
+                    dy = float(outer[1]) - float(inner[1])
+                    length = max(float(np.hypot(dx, dy)), 1e-6)
+                    extension = max(
+                        2.0, min(6.0, float(ruler.width_px) * 0.018)
+                    )
+                    draw_outer = (
+                        float(outer[0]) + dx * extension / length,
+                        float(outer[1]) + dy * extension / length,
+                    )
+                item = self._scene.addLine(
+                    draw_outer[0],
+                    draw_outer[1],
+                    float(inner[0]),
+                    float(inner[1]),
+                    unit_pen if index in unit_divider_set else pen,
+                )
+                item.setZValue(z)
+                item.setOpacity(self._overlay_opacity)
+                if index < len(classes):
+                    level = int(classes[index])
+                    name = class_names[min(level, len(class_names) - 1)]
+                    item.setToolTip(
+                        f"{family.title()} tick {index}: inferred {name} length class"
+                        + ("; unit divider" if index in unit_divider_set else "")
+                    )
+                self._overlay_items.append(item)
+
+        ticks(
+            ruler.metric_tick_points,
+            ruler.metric_tick_segments,
+            ruler.metric_tick_classes,
+            ruler.metric_unit_divider_indices,
+            "metric",
+            "#ff3038",
+            14.0,
+        )
+        ticks(
+            ruler.imperial_tick_points,
+            ruler.imperial_tick_segments,
+            ruler.imperial_tick_classes,
+            ruler.imperial_unit_divider_indices,
+            "imperial",
+            "#ff961f",
+            14.0,
+        )
+        for box in ruler.metric_number_boxes:
+            polygon(box, "#82131b", 3.0, 15.0)
+        for box in ruler.imperial_number_boxes:
+            polygon(box, "#9a4a00", 3.0, 15.0)
+
+        def semantic_labels(labels, colour: str) -> None:
+            for label_info in labels:
+                if not label_info.observed and label_info.kind != "unit":
+                    # Retain inferred values in metadata/status while keeping
+                    # the image overlay focused on positions corroborated by
+                    # actual printed glyph evidence.
+                    continue
+                label = self._scene.addText(
+                    label_info.text
+                    + (f" {label_info.unit}" if label_info.unit else "")
+                )
+                font = QFont(label.font())
+                font.setPixelSize(max(12, min(28, round(float(ruler.width_px) * 0.10))))
+                font.setBold(bool(label_info.observed))
+                label.setFont(font)
+                label.setDefaultTextColor(QColor(colour))
+                position = QPointF(*label_info.position)
+                label.setPos(position + QPointF(4.0, 3.0))
+                label.setZValue(16)
+                label.setOpacity(
+                    self._overlay_opacity * (1.0 if label_info.observed else 0.68)
+                )
+                label.setToolTip(
+                    ("Printed glyphs corroborate" if label_info.observed else "Tick lattice infers")
+                    + f" this {label_info.text} {label_info.unit} divider."
+                )
+                self._overlay_items.append(label)
+
+        semantic_labels(ruler.metric_labels, "#82131b")
+        semantic_labels(ruler.imperial_labels, "#9a4a00")
+
+        metric_scale = float(getattr(ruler, "metric_pixels_per_mm", 0.0))
+        imperial_scale = float(getattr(ruler, "imperial_pixels_per_mm", 0.0))
+        disagreement = getattr(ruler, "scale_disagreement_percent", None)
+        lines = [
+            f"Metric: {metric_scale:.3f} px/mm"
+            if metric_scale > 0.0
+            else "Metric: unresolved",
+            f"Imperial: {imperial_scale:.3f} px/mm"
+            if imperial_scale > 0.0
+            else "Imperial: unresolved",
+            (
+                f"Cross-scale error: {float(disagreement):.2f}%"
+                if disagreement is not None
+                else "Cross-scale error: unavailable"
+            ),
+            (
+                "Length hierarchy: metric "
+                f"{float(getattr(ruler, 'metric_hierarchy_consistency', 0.0)):.0%}; "
+                "imperial "
+                f"{float(getattr(ruler, 'imperial_hierarchy_consistency', 0.0)):.0%}"
+            ),
+        ]
+        summary = self._scene.addText("\n".join(lines))
+        summary_font = QFont(summary.font())
+        summary_font.setPixelSize(max(13, min(30, round(float(ruler.width_px) * 0.095))))
+        summary_font.setBold(True)
+        summary.setFont(summary_font)
+        summary.setDefaultTextColor(
+            QColor("#ff5964")
+            if (
+                disagreement is not None and float(disagreement) > 3.0
+            )
+            or (
+                bool(getattr(ruler, "metric_tick_segments", ()))
+                and not bool(getattr(ruler, "metric_hierarchy_reliable", False))
+            )
+            or (
+                bool(getattr(ruler, "imperial_tick_segments", ()))
+                and not bool(getattr(ruler, "imperial_hierarchy_reliable", False))
+            )
+            else QColor("#ecf6ff")
+        )
+        outline = np.asarray(ruler.outline_points, dtype=np.float64)
+        if outline.size:
+            summary.setPos(float(np.min(outline[:, 0])), float(np.min(outline[:, 1])) - summary.boundingRect().height() - 8.0)
+        summary_plate = self._scene.addRect(
+            summary.sceneBoundingRect().adjusted(-7.0, -5.0, 7.0, 5.0),
+            QPen(Qt.PenStyle.NoPen),
+            QBrush(QColor(8, 12, 16, 225)),
+        )
+        summary_plate.setZValue(16.5)
+        summary_plate.setOpacity(max(0.55, self._overlay_opacity))
+        summary_plate.setToolTip(
+            "Contrast plate for the ruler evidence scale and hierarchy summary."
+        )
+        self._overlay_items.append(summary_plate)
+        summary.setZValue(17)
+        summary.setOpacity(self._overlay_opacity)
+        summary.setToolTip(
+            "Metric and imperial pixels/mm are calculated independently from their "
+            "own tick bars. Measured tick lengths must also put the longest class "
+            "on the major increments before either family is accepted."
+        )
+        self._overlay_items.append(summary)
 
     def _render_scale_bar(self, result) -> None:
         calibration = getattr(result, "calibration", None)
@@ -3341,11 +3984,13 @@ class ImageView(QGraphicsView):
     def resizeEvent(self, event) -> None:  # noqa: N802 - Qt override
         super().resizeEvent(event)
         self.zoom_controls.setGeometry(0, 0, max(120, self.width()), 38)
+        self._layout_calculating_banner()
         self._layout_instance_continuity_warning()
         self._layout_context_panel()
         if self._context_panel is not None:
             self._context_panel.raise_()
         self.instance_continuity_warning_banner.raise_()
+        self.calculating_banner.raise_()
         self.zoom_controls.raise_()
 
     def _instance_assisted_tool_active(self) -> bool:
@@ -3912,8 +4557,14 @@ class ImageView(QGraphicsView):
             "magnitude": "edge_likelihood",
             "ridges": "edge_ridges",
             "reference_ridges": "reference_edge_ridges",
+            "normalized_reference_ridges": (
+                "normalized_net_reference_edge_ridges"
+            ),
             "traces": "edge_trace_labels",
             "physical": "physical_edge_probability",
+            "normalized_net_physical": (
+                "locally_normalized_net_physical_edge"
+            ),
         }
 
         def display_u8(attribute: str, *, binary: bool = False) -> np.ndarray:
@@ -3951,6 +4602,7 @@ class ImageView(QGraphicsView):
             precise = []
             for attribute, binary in (
                 ("edge_ridges", False),
+                ("normalized_net_reference_edge_ridges", False),
                 ("edge_trace_labels", True),
             ):
                 try:
@@ -3958,7 +4610,15 @@ class ImageView(QGraphicsView):
                 except RuntimeError:
                     pass
             broad = []
-            for attribute in ("physical_edge_probability", "edge_likelihood"):
+            learned_attribute = "locally_normalized_net_physical_edge"
+            try:
+                broad.append(display_u8(learned_attribute))
+            except RuntimeError:
+                try:
+                    broad.append(display_u8("physical_edge_probability"))
+                except RuntimeError:
+                    pass
+            for attribute in ("edge_likelihood",):
                 try:
                     broad.append(display_u8(attribute))
                 except RuntimeError:
@@ -4400,6 +5060,31 @@ class ImageView(QGraphicsView):
                 self._start_manual_seed_centre_drag(scene_point, record)
                 event.accept()
                 return
+        if (
+            self._reference_point_mode is None
+            and not self._manual_seed_centre_editing
+            and self._overlay_mode == "procedural_instances"
+            and event.button() == Qt.MouseButton.LeftButton
+            and self._analysis_result is not None
+            and self._image_item is not None
+        ):
+            scene_point = self.mapToScene(event.position().toPoint())
+            procedural = getattr(
+                self._analysis_result, "procedural_instances", None
+            )
+            if procedural is not None:
+                offset_x, offset_y = self._analysis_result.crop_offset
+                scale = float(procedural.working_scale)
+                x = int(np.floor((scene_point.x() - offset_x) * scale))
+                y = int(np.floor((scene_point.y() - offset_y) * scale))
+                if 0 <= y < procedural.labels.shape[0] and 0 <= x < procedural.labels.shape[1]:
+                    label = int(procedural.labels[y, x])
+                    if label > 0:
+                        self._selected_procedural_label = label
+                        self.procedural_instance_selected.emit(label)
+                        self._render_analysis()
+                        event.accept()
+                        return
         if self._reference_point_mode is None or self._image_item is None:
             super().mousePressEvent(event)
             return

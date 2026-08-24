@@ -13,33 +13,6 @@ from threading import RLock
 import numpy as np
 
 
-def apply_contrastive_negative_evidence(
-    positive_probability,
-    negative_probability,
-    *,
-    strength: float = 0.95,
-):
-    """Suppress a class only where negative evidence is more specific.
-
-    Positive and negative colour models can both match glass, pale seeds, or
-    neutral backgrounds. A direct multiplicative negative mask destroys valid
-    class evidence in those ambiguous regions. This contrastive form leaves an
-    equally good positive match intact and scales suppression with the negative
-    model's relative advantage. Painted coordinates receive no special case.
-    """
-
-    import torch
-
-    positive = positive_probability.clamp(0.0, 1.0)
-    negative = negative_probability.clamp(0.0, 1.0)
-    contradiction = torch.relu(negative - positive) / (
-        negative + positive + 1e-6
-    )
-    return positive * (
-        1.0 - max(0.0, min(1.0, float(strength))) * contradiction
-    )
-
-
 class GpuRaster:
     """GPU-resident raster downloaded only by an explicit CPU consumer."""
 

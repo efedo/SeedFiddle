@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 
 from PySide6.QtCore import QPointF, QRectF, QSignalBlocker, Qt, QTimer, Signal
@@ -140,6 +141,65 @@ def _default_connection_path(start: QPointF, end: QPointF) -> QPainterPath:
         end,
     )
     return path
+
+
+def _smooth_bundle_path(points: tuple[QPointF, ...]) -> QPainterPath:
+    """Interpolate a bundle route with continuous cubic tangents."""
+
+    points = _compressed_route_points(points)
+    if len(points) < 2:
+        return QPainterPath(points[0]) if points else QPainterPath()
+    path = QPainterPath(points[0])
+    for index in range(len(points) - 1):
+        previous = points[max(0, index - 1)]
+        start = points[index]
+        end = points[index + 1]
+        following = points[min(len(points) - 1, index + 2)]
+        control_1 = QPointF(
+            float(start.x()) + (float(end.x()) - float(previous.x())) / 6.0,
+            float(start.y()) + (float(end.y()) - float(previous.y())) / 6.0,
+        )
+        control_2 = QPointF(
+            float(end.x()) - (float(following.x()) - float(start.x())) / 6.0,
+            float(end.y()) - (float(following.y()) - float(start.y())) / 6.0,
+        )
+        path.cubicTo(control_1, control_2, end)
+    return path
+
+
+def _stable_colour_fraction(*parts: str) -> float:
+    payload = "\x1f".join(str(part) for part in parts).encode("utf-8")
+    return int.from_bytes(hashlib.blake2b(payload, digest_size=8).digest(), "big") / (
+        2**64 - 1
+    )
+
+
+def _wire_colour(connection: PipelineConnection) -> QColor:
+    """Give each wire a stable variation within its source node's palette."""
+
+    base_hue = _stable_colour_fraction(connection.source, "source-hue")
+    variation = (
+        _stable_colour_fraction(
+            connection.source_port,
+            connection.target,
+            connection.target_port,
+            connection.data_type,
+        )
+        - 0.5
+    )
+    hue = (base_hue + variation * 0.10) % 1.0
+    saturation = 0.58 + 0.20 * _stable_colour_fraction(
+        connection.source_port, connection.target_port, "saturation"
+    )
+    value = 0.76 + 0.16 * _stable_colour_fraction(
+        connection.target, connection.data_type, "value"
+    )
+    return QColor.fromHsvF(hue, saturation, value)
+
+
+def _source_cable_colour(source: str) -> QColor:
+    hue = _stable_colour_fraction(source, "source-hue")
+    return QColor.fromHsvF(hue, 0.48, 0.48)
 
 
 def _route_clears_obstacles(
@@ -406,6 +466,7 @@ class PipelineNodeItem(QGraphicsObject):
         moved_callback,
         released_callback,
         parameter_callback,
+        run_to_callback,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -414,6 +475,7 @@ class PipelineNodeItem(QGraphicsObject):
         self._moved_callback = moved_callback
         self._released_callback = released_callback
         self._parameter_callback = parameter_callback
+        self._run_to_callback = run_to_callback
         self.width = 220.0 if node.inline_parameters else self.DEFAULT_WIDTH
         named_port_count = max(len(node.input_ports), len(node.output_ports))
         port_bottom = (
@@ -594,8 +656,8 @@ class PipelineNodeItem(QGraphicsObject):
         body = QRectF(0, 0, self.width, self.height)
         selected = self.isSelected()
         if selected:
-            border = QColor("#8fdcff")
-            border_width = 2.8
+            border = QColor("#087fc1")
+            border_width = 3.2
         elif self._adjacent:
             border = QColor("#bf7cff")
             border_width = 2.4
@@ -605,7 +667,13 @@ class PipelineNodeItem(QGraphicsObject):
         border_pen = QPen(border, border_width)
         border_pen.setCosmetic(True)
         painter.setPen(border_pen)
-        painter.setBrush(QColor("#272e36") if self.node.enabled else QColor("#24282d"))
+        painter.setBrush(
+            QColor("#243a49")
+            if selected and self.node.enabled
+            else QColor("#272e36")
+            if self.node.enabled
+            else QColor("#24282d")
+        )
         painter.drawRoundedRect(body, 9, 9)
 
         header = QRectF(1, 1, self.width - 2, 34)
@@ -732,6 +800,15 @@ class PipelineNodeItem(QGraphicsObject):
         super().mouseReleaseEvent(event)
         self._released_callback(self.node.identifier)
 
+    def contextMenuEvent(self, event) -> None:  # noqa: N802 - Qt override
+        menu = QMenu()
+        run_to = menu.addAction("Run to node")
+        run_to.setEnabled(self.node.enabled and self.node.implemented)
+        selected = menu.exec(event.screenPos())
+        if selected is run_to:
+            self._run_to_callback(self.node.identifier)
+        event.accept()
+
 
 class PipelineEdgeItem(QGraphicsPathItem):
     """Bezier connection between two node ports."""
@@ -751,6 +828,7 @@ class PipelineEdgeItem(QGraphicsPathItem):
         self.bundle_key: tuple[str, int, int] | None = None
         self.is_bundled = False
         self._disconnect_callback = disconnect_callback
+        self.base_colour = _wire_colour(connection)
         self.setFlag(self.GraphicsItemFlag.ItemIsSelectable, True)
         # A connection's stroked hit area can cover much of a dense graph. If
         # it accepts ordinary left presses, QGraphicsView selects the Bezier
@@ -773,10 +851,8 @@ class PipelineEdgeItem(QGraphicsPathItem):
     def set_highlighted(self, highlighted: bool) -> None:
         """Emphasize every connection incident to the selected node."""
 
-        pen = QPen(
-            QColor("#57d8ff") if highlighted else QColor("#778594"),
-            4.8 if highlighted else 2.2,
-        )
+        colour = self.base_colour.lighter(138) if highlighted else self.base_colour
+        pen = QPen(colour, 4.8 if highlighted else 2.4)
         pen.setCosmetic(True)
         self.setPen(pen)
         self.setZValue(1 if highlighted else 0)
@@ -819,16 +895,22 @@ class PipelineCableItem(QGraphicsPathItem):
         self,
         bundle_key: tuple[str, int, int],
         route_points: tuple[QPointF, ...],
+        colour: QColor,
+        smooth: bool,
     ) -> None:
         super().__init__()
         self.bundle_key = bundle_key
         self.route_points = tuple(QPointF(point) for point in route_points)
-        pen = QPen(QColor("#465563"), 8.0)
+        pen = QPen(QColor(colour), 8.0)
         pen.setCosmetic(True)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         self.setPen(pen)
-        self.setPath(_rounded_route_path(self.route_points))
+        self.setPath(
+            _smooth_bundle_path(self.route_points)
+            if smooth
+            else _rounded_route_path(self.route_points)
+        )
         self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
         self.setFlag(self.GraphicsItemFlag.ItemIsSelectable, False)
         self.setZValue(-0.5)
@@ -838,6 +920,7 @@ class PipelineCanvas(QGraphicsView):
     """Zoomable, pannable, and movable Qt pipeline-node canvas."""
 
     node_selected = Signal(str)
+    run_to_node_requested = Signal(str)
     unused_node_restored = Signal(str)
     unused_node_shelved = Signal(str)
     parameter_changed = Signal(str, str, object)
@@ -898,6 +981,26 @@ class PipelineCanvas(QGraphicsView):
         self._build_control_bar()
         self._populate()
         self._scene.selectionChanged.connect(self._selection_changed)
+
+    def rebuild_graph_items(self) -> None:
+        """Recreate cards after a structural port-catalogue update."""
+
+        selected = next(
+            (
+                item.node.identifier
+                for item in self._scene.selectedItems()
+                if isinstance(item, PipelineNodeItem)
+            ),
+            None,
+        )
+        self.node_items.clear()
+        self.edge_items.clear()
+        self.cable_items.clear()
+        self._scene.clear()
+        self._create_connection_preview()
+        self._populate()
+        if selected in self.node_items:
+            self.select_node(selected)
 
     def _build_control_bar(self) -> None:
         self.control_bar = QFrame(self)
@@ -992,6 +1095,7 @@ class PipelineCanvas(QGraphicsView):
                 self._node_moved,
                 self._node_released,
                 self._inline_parameter_changed,
+                self.run_to_node_requested.emit,
             )
             self.node_items[node.identifier] = item
             self._scene.addItem(item)
@@ -1270,12 +1374,21 @@ class PipelineCanvas(QGraphicsView):
 
         for edge, points in planned_routes:
             edge.set_route(
-                _rounded_route_path(points),
+                (
+                    _rounded_route_path(points)
+                    if self.obstacle_routing_enabled
+                    else _smooth_bundle_path(points)
+                ),
                 route_points=points,
                 bundle_key=bundle_key,
             )
 
-        cable = PipelineCableItem(bundle_key, trunk_points)
+        cable = PipelineCableItem(
+            bundle_key,
+            trunk_points,
+            _source_cable_colour(bundle_key[0]),
+            not self.obstacle_routing_enabled,
+        )
         cable.setToolTip(
             f"{len(edges)} connections bundled from "
             f"{self.node_items[bundle_key[0]].node.title}"

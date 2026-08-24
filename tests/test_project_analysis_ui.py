@@ -350,7 +350,7 @@ class ProjectAnalysisUiTests(unittest.TestCase):
                 self.assertTrue(window.pipeline_canvas.cable_bundling_enabled)
                 self.assertTrue(window.pipeline_canvas.obstacle_routing_enabled)
                 self.assertEqual(
-                    window._selected_pipeline_node, "reference_edge_probability"
+                    window._selected_pipeline_node, "reference_texture_prototypes"
                 )
                 self.assertEqual(
                     window.overlay_combo.currentData(), "physical_edge_probability"
@@ -633,7 +633,7 @@ class ProjectAnalysisUiTests(unittest.TestCase):
             finally:
                 self._dispose(window)
 
-    def test_active_work_guards_all_project_and_profile_context_changes(self) -> None:
+    def test_ordinary_analysis_allows_project_save_but_guards_context_replacement(self) -> None:
         from PySide6.QtWidgets import QMessageBox
 
         from seedvision.persistence import (
@@ -659,12 +659,14 @@ class ProjectAnalysisUiTests(unittest.TestCase):
                     root / "projects" / "busy.seedfiddle-project.json",
                 )
                 before_revision = window.pipeline.revision
+                window._project_tracking_enabled = True
+                window._set_project_path(project_path)
                 window._active_tasks["busy"] = object()
                 window._update_analysis_availability()
                 self.assertFalse(window.new_project_action.isEnabled())
                 self.assertFalse(window.open_project_action.isEnabled())
-                self.assertFalse(window.save_project_action.isEnabled())
-                self.assertFalse(window.save_project_as_action.isEnabled())
+                self.assertTrue(window.save_project_action.isEnabled())
+                self.assertTrue(window.save_project_as_action.isEnabled())
                 self.assertFalse(window.load_analysis_settings_action.isEnabled())
                 self.assertFalse(window.save_analysis_settings_action.isEnabled())
 
@@ -673,12 +675,33 @@ class ProjectAnalysisUiTests(unittest.TestCase):
                         window._load_analysis_settings_profile(profile_path)
                     )
                     self.assertFalse(window._open_project(project_path))
-                    self.assertFalse(window._save_project())
+                    self.assertTrue(window._save_project())
                     self.assertFalse(window._new_project())
-                self.assertEqual(information.call_count, 4)
+                self.assertEqual(information.call_count, 3)
                 self.assertEqual(window.pipeline.revision, before_revision)
-                self.assertIsNone(window._current_project_path)
-                self.assertEqual(window._recent_project_paths, [])
+                self.assertEqual(window._current_project_path, project_path)
+                self.assertEqual(window._recent_project_paths, [project_path])
+            finally:
+                window._active_tasks.clear()
+                self._dispose(window)
+
+    def test_ordinary_recompute_keeps_reference_and_annotation_entry_points_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._write_image(root / "images" / "capture.png")
+            window = self._window(root)
+            try:
+                window.image_view._analysis_result = object()
+                window._active_tasks["ordinary-analysis"] = object()
+                window._sync_background_controls()
+                window._update_analysis_availability()
+
+                self.assertTrue(window.paint_background_action.isEnabled())
+                self.assertTrue(window.annotate_instances_action.isEnabled())
+                self.assertTrue(window.background_point_button.isEnabled())
+                self.assertTrue(window.instance_smart_fill_button.isEnabled())
+                self.assertTrue(window.save_project_action.isEnabled())
+                self.assertTrue(window.save_project_as_action.isEnabled())
             finally:
                 window._active_tasks.clear()
                 self._dispose(window)

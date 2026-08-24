@@ -1,7 +1,6 @@
 """Shared CUDA tensor operations used by Seed Fiddle's analysis pipeline."""
 
 from seedvision.cuda.ops import (
-    apply_contrastive_negative_evidence,
     CudaContext,
     GpuRaster,
     binary_close,
@@ -24,9 +23,12 @@ from seedvision.cuda.ops import (
     tensor_to_image,
     warp_perspective,
 )
+from seedvision.cuda.material import (
+    MaterialEvidenceProducts,
+    hierarchical_material_evidence,
+)
 
 __all__ = [
-    "apply_contrastive_negative_evidence",
     "CudaContext",
     "GpuRaster",
     "binary_close",
@@ -48,4 +50,6 @@ __all__ = [
     "resize",
     "tensor_to_image",
     "warp_perspective",
+    "MaterialEvidenceProducts",
+    "hierarchical_material_evidence",
 ]

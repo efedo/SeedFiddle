@@ -39,6 +39,8 @@ class BackgroundColourProfile:
     excluded_component_scales_lab: tuple[tuple[float, float, float], ...] = ()
     excluded_component_weights: tuple[float, ...] = ()
     exclusion_strength: float = 0.95
+    automatic_evidence_authority: float = 1.0
+    reviewed_sample_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,6 +111,7 @@ class AnalysisLayerSettings:
 
     perimeter_background_buffer_cm: float = 0.35
     perimeter_background_band_thickness_cm: float = 0.50
+    background_colour_enabled: bool = True
     background_sample_radius_fraction: float = 0.10
     background_chroma_percentile: float = 50.0
     background_lightness_percentile: float = 55.0
@@ -119,10 +122,14 @@ class AnalysisLayerSettings:
     background_chroma_scale_floor: float = 3.0
     background_colour_components: int = 32
     background_distribution_fit_iterations: int = 6
-    background_refinement_iterations: int = 2
+    # Legacy constructor compatibility only; no node exposes or consumes these
+    # retired self-refinement controls.
+    background_refinement_iterations: int = 0
     background_refinement_min_probability: float = 0.82
     background_frequency_weight_power: float = 0.35
     background_distribution_scale_multiplier: float = 1.25
+    background_automatic_evidence_floor: float = 0.10
+    background_reviewed_authority_half_life_seed_areas: float = 0.50
     noise_medium_scale_fraction: float = 0.03
     noise_coarse_scale_fraction: float = 0.08
     noise_direction_step_degrees: int = 15
@@ -143,6 +150,15 @@ class AnalysisLayerSettings:
     foreground_noise_foreground_min_likelihood: int = 190
     foreground_noise_nonforeground_max_likelihood: int = 65
     foreground_noise_working_maximum_dimension: int = 1280
+    edge_gradient_method: str = "scharr"
+    edge_gradient_source_fusion: str = "maximum"
+    edge_gradient_include_original: bool = True
+    edge_gradient_include_wavelet_detail_1: bool = False
+    edge_gradient_include_wavelet_detail_2: bool = False
+    edge_gradient_include_wavelet_detail_3: bool = False
+    edge_gradient_include_wavelet_detail_4: bool = False
+    edge_gradient_include_wavelet_residual: bool = False
+    edge_wavelet_detail_gain: float = 1.0
     edge_blur_sigma: float = 1.2
     edge_chroma_weight: float = 1.5
     edge_normalization_percentile: float = 99.0
@@ -188,11 +204,19 @@ class AnalysisLayerSettings:
     reference_ridge_high_threshold: float = 0.24
     reference_ridge_hysteresis_iterations: int = 8
     reference_ridge_working_maximum_dimension: int = 1280
+    reference_edge_normalization_radius_fraction: float = 0.30
+    reference_edge_normalization_target_support: float = 0.35
+    reference_edge_normalization_maximum_gain: float = 2.50
+    reference_edge_normalization_absolute_floor: float = 0.04
+    wavelet_level_count: int = 4
     reference_texture_material_prototypes_per_class: int = 64
     reference_texture_edge_prototypes_per_class: int = 256
     reference_texture_minimum_samples_per_prototype: int = 16
     reference_texture_fit_iterations: int = 4
     reference_texture_similarity_scale: float = 1.0
+    reference_edge_minimum_samples_per_prototype: int = 16
+    reference_edge_fit_iterations: int = 4
+    reference_edge_similarity_scale: float = 1.0
     reference_texture_context_fraction: float = 0.04
     reference_texture_patch_fraction: float = 0.28
     reference_texture_working_maximum_dimension: int = 960
@@ -203,10 +227,12 @@ class AnalysisLayerSettings:
     # Annotated instances always provide boundary supervision when present;
     # this controls how far inside each contour internal-edge examples begin.
     reference_texture_instance_interior_buffer_fraction: float = 0.08
-    # Display-only evidence margin: the internal/non-physical classifier is
-    # intentionally adjustable because true physical contours can receive
-    # support from both image-local prototype banks.
+    # Evidence margin used by the net physical ridge and downstream procedural
+    # inference. It remains adjustable because true physical contours can
+    # receive support from both image-local prototype banks.
     net_physical_edge_internal_scale: float = 0.50
+    trace_edge_source: str = "generic_ridges"
+    trace_diameter_multiplier: float = 1.0
     trace_tangent_tolerance_degrees: float = 24.0
     trace_maximum_gap_px: int = 2
     trace_curvature_policy: str = "prefer"
@@ -235,6 +261,13 @@ class AnalysisLayerSettings:
     boundary_minimum_confidence: float = 0.12
     boundary_geometry_max_candidates: int = 256
     boundary_working_maximum_dimension: int = 1280
+    material_colour_weight: float = 1.0
+    material_noise_weight: float = 0.55
+    material_prototype_weight: float = 0.70
+    material_unknown_weight: float = 0.35
+    material_decision_temperature: float = 1.0
+    material_seed_threshold: float = 0.68
+    material_morphology_fraction: float = 0.06
 
     def __post_init__(self) -> None:
         if not 0.0 <= self.perimeter_background_buffer_cm <= 2.0:
@@ -290,6 +323,12 @@ class AnalysisLayerSettings:
             raise ValueError("Minimum instance extent must be below maximum extent.")
         if not 0.0001 <= self.background_minimum_sample_fraction <= 0.25:
             raise ValueError("Background minimum sample fraction is out of range.")
+        if not 0.0 <= self.background_automatic_evidence_floor <= 1.0:
+            raise ValueError("Background automatic-evidence floor is out of range.")
+        if not 0.05 <= self.background_reviewed_authority_half_life_seed_areas <= 8.0:
+            raise ValueError(
+                "Background reviewed-authority half-life is out of range."
+            )
         if not 2.0 <= self.background_prior_tolerance <= 100.0:
             raise ValueError("Background prior tolerance is out of range.")
         if not 5 <= self.noise_direction_step_degrees <= 90:
@@ -322,6 +361,12 @@ class AnalysisLayerSettings:
             raise ValueError("Reference texture fit iterations must be between 1 and 12.")
         if not 0.25 <= self.reference_texture_similarity_scale <= 4.0:
             raise ValueError("Reference texture tolerance must be between 0.25 and 4.")
+        if not 4 <= self.reference_edge_minimum_samples_per_prototype <= 512:
+            raise ValueError("Reference edge prototype support must be between 4 and 512 pixels.")
+        if not 1 <= self.reference_edge_fit_iterations <= 12:
+            raise ValueError("Reference edge fit iterations must be between 1 and 12.")
+        if not 0.25 <= self.reference_edge_similarity_scale <= 4.0:
+            raise ValueError("Reference edge tolerance must be between 0.25 and 4.")
         if not 0.005 <= self.reference_texture_context_fraction <= 0.30:
             raise ValueError("Reference texture context must be between 0.005 and 0.30 seed diameters.")
         if not 0.10 <= self.reference_texture_patch_fraction <= 0.80:
@@ -356,6 +401,15 @@ class AnalysisLayerSettings:
             raise ValueError(
                 "Net physical-edge internal subtraction must be between 0 and 2."
             )
+        if self.trace_edge_source not in {
+            "generic_ridges",
+            "reference_ridges",
+            "net_reference_ridges",
+            "normalized_net_reference_ridges",
+        }:
+            raise ValueError("Unknown oriented-trace ridge source.")
+        if not 0.25 <= self.trace_diameter_multiplier <= 3.0:
+            raise ValueError("Trace diameter multiplier must be between 0.25 and 3.")
         if not 0.10 <= self.noise_vector_decay <= 1.0:
             raise ValueError("Noise vector decay must be between 0.10 and 1.")
         if not 0.10 <= self.foreground_noise_vector_decay <= 1.0:
@@ -370,10 +424,27 @@ class AnalysisLayerSettings:
             )
         if not 1 <= self.background_distribution_fit_iterations <= 20:
             raise ValueError("Background distribution fit iterations must be between 1 and 20.")
-        if not 0 <= self.background_refinement_iterations <= 8:
-            raise ValueError("Background refinement iterations must be between 0 and 8.")
-        if not 0.50 <= self.background_refinement_min_probability <= 0.99:
-            raise ValueError("Background refinement probability must be between 0.50 and 0.99.")
+        if self.edge_gradient_method not in {
+            "scharr", "sobel", "prewitt", "central_difference"
+        }:
+            raise ValueError("Unknown edge-gradient method.")
+        if self.edge_gradient_source_fusion not in {
+            "maximum", "root_mean_square", "vector_sum"
+        }:
+            raise ValueError("Unknown edge-gradient source fusion method.")
+        if not any(
+            (
+                self.edge_gradient_include_original,
+                self.edge_gradient_include_wavelet_detail_1,
+                self.edge_gradient_include_wavelet_detail_2,
+                self.edge_gradient_include_wavelet_detail_3,
+                self.edge_gradient_include_wavelet_detail_4,
+                self.edge_gradient_include_wavelet_residual,
+            )
+        ):
+            raise ValueError("Edge gradients require at least one selected image source.")
+        if not 0.0 <= self.edge_wavelet_detail_gain <= 8.0:
+            raise ValueError("Wavelet edge gain must be between 0 and 8.")
         if not 0.0 <= self.background_frequency_weight_power <= 1.0:
             raise ValueError("Background frequency influence must be between 0 and 1.")
         if not 0.50 <= self.background_distribution_scale_multiplier <= 3.0:
@@ -457,6 +528,24 @@ class AnalysisLayerSettings:
             raise ValueError(
                 "Reference-ridge working dimension must be between 256 and 4096."
             )
+        if not 0.05 <= self.reference_edge_normalization_radius_fraction <= 1.0:
+            raise ValueError(
+                "Reference-edge normalization radius must be between 0.05 and 1 diameter."
+            )
+        if not 0.05 <= self.reference_edge_normalization_target_support <= 0.95:
+            raise ValueError(
+                "Reference-edge normalization target must be between 0.05 and 0.95."
+            )
+        if not 1.0 <= self.reference_edge_normalization_maximum_gain <= 8.0:
+            raise ValueError(
+                "Reference-edge normalization maximum gain must be between 1 and 8."
+            )
+        if not 0.0 <= self.reference_edge_normalization_absolute_floor <= 0.50:
+            raise ValueError(
+                "Reference-edge normalization absolute floor must be between 0 and 0.5."
+            )
+        if not 1 <= self.wavelet_level_count <= 4:
+            raise ValueError("Wavelet level count must be between 1 and 4.")
         if not 0.05 <= self.boundary_radius_min_fraction < self.boundary_radius_max_fraction <= 1.5:
             raise ValueError("Boundary radius fractions are invalid.")
         if not 3 <= self.boundary_radius_sample_count <= 25:
@@ -479,6 +568,28 @@ class AnalysisLayerSettings:
         ):
             if not 0.0 <= value <= 1.0:
                 raise ValueError(f"{name} must be between 0 and 1.")
+        for name, value in (
+            ("material_colour_weight", self.material_colour_weight),
+            ("material_noise_weight", self.material_noise_weight),
+            ("material_prototype_weight", self.material_prototype_weight),
+        ):
+            if not 0.0 <= value <= 3.0:
+                raise ValueError(f"{name} must be between 0 and 3.")
+        if (
+            self.material_colour_weight
+            + self.material_noise_weight
+            + self.material_prototype_weight
+            <= 0.0
+        ):
+            raise ValueError("At least one material evidence weight must be positive.")
+        if not 0.01 <= self.material_unknown_weight <= 3.0:
+            raise ValueError("Material unknown weight must be between 0.01 and 3.")
+        if not 0.25 <= self.material_decision_temperature <= 4.0:
+            raise ValueError("Material decision temperature must be between 0.25 and 4.")
+        if not 0.05 <= self.material_seed_threshold <= 0.95:
+            raise ValueError("Material seed threshold must be between 0.05 and 0.95.")
+        if not 0.0 <= self.material_morphology_fraction <= 0.20:
+            raise ValueError("Material morphology fraction must be between 0 and 0.2.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -515,9 +626,27 @@ class AnalysisLayers:
     colour_frequency_noise_masks: tuple[object, ...] = ()
     foreground_noise_likelihood: object | None = None
     foreground_noise_frequency_profile: NoiseFrequencyProfile | None = None
+    automatic_foreground_colour_probability: object | None = None
+    reviewed_foreground_colour_probability: object | None = None
+    foreground_automatic_evidence_authority: float = 1.0
+    background_automatic_evidence_authority: float = 1.0
     other_colour_probability: object | None = None
     other_noise_probability: object | None = None
     other_noise_frequency_profile: NoiseFrequencyProfile | None = None
+    seed_evidence_support: object | None = None
+    background_evidence_support: object | None = None
+    other_evidence_support: object | None = None
+    nonseed_evidence_support: object | None = None
+    seed_material_probability: object | None = None
+    nonseed_material_probability: object | None = None
+    material_ambiguity_probability: object | None = None
+    material_unknown_probability: object | None = None
+    conditional_background_probability: object | None = None
+    conditional_other_probability: object | None = None
+    conditional_material_subtype_ambiguity: object | None = None
+    conditional_nonseed_unknown_probability: object | None = None
+    seed_material_mask: object | None = None
+    material_source_reliabilities: tuple[tuple[str, float], ...] = ()
     background_reference_source_mask: object | None = None
     foreground_reference_source_mask: object | None = None
     reference_seed_surface_probability: object | None = None
@@ -528,6 +657,12 @@ class AnalysisLayers:
     non_edge_probability: object | None = None
     net_physical_edge_internal_scale: float = 0.50
     reference_edge_ridges: object | None = None
+    net_reference_edge_ridges: object | None = None
+    locally_normalized_net_physical_edge: object | None = None
+    normalized_net_reference_edge_ridges: object | None = None
+    hue_only_rgb: object | None = None
+    wavelet_details: tuple[object, ...] = ()
+    wavelet_residual: object | None = None
     undirected_edge_likelihood: object | None = None
     background_mode: str = "automatic"
     background_reference_count: int = 0
@@ -562,6 +697,42 @@ class AnalysisLayers:
         labels = np.asarray(self.instance_labels)
         rgb = self.instance_colours[labels]
         alpha = np.uint8(labels > 0) * 255
+        return np.dstack((rgb, alpha))
+
+    def hue_only_rgba(self) -> np.ndarray:
+        """Render source hue at fixed neutral darkness and full chroma."""
+
+        if self.hue_only_rgb is None:
+            rgb = np.zeros((*np.asarray(self.valid_mask).shape, 3), np.uint8)
+        else:
+            rgb = np.asarray(self.hue_only_rgb, dtype=np.uint8)
+        alpha = np.uint8(np.asarray(self.valid_mask) > 0) * 255
+        return np.dstack((rgb, alpha))
+
+    def wavelet_rgba(self, level: int | None = None) -> np.ndarray:
+        """Display a signed detail about neutral gray, or the low-pass residual."""
+
+        if level is None:
+            values = (
+                np.zeros((*np.asarray(self.valid_mask).shape, 3), np.float32)
+                if self.wavelet_residual is None
+                else np.asarray(self.wavelet_residual, dtype=np.float32)
+            )
+            # Stored tensors follow source BGR channel order.
+            rgb = np.uint8(np.clip(np.rint(values[..., ::-1]), 0, 255))
+        else:
+            if not 0 <= int(level) < len(self.wavelet_details):
+                values = np.zeros(
+                    (*np.asarray(self.valid_mask).shape, 3), np.float32
+                )
+            else:
+                values = np.asarray(
+                    self.wavelet_details[int(level)], dtype=np.float32
+                )
+            rgb = np.uint8(
+                np.clip(np.rint(128.0 + values[..., ::-1] * 2.0), 0, 255)
+            )
+        alpha = np.uint8(np.asarray(self.valid_mask) > 0) * 255
         return np.dstack((rgb, alpha))
 
     def background_rgba(self) -> np.ndarray:
@@ -699,6 +870,21 @@ class AnalysisLayers:
         alpha = np.uint8(valid > 0) * 255
         return np.dstack((black, black, net_physical, alpha))
 
+    def locally_normalized_net_physical_edge_rgba(self) -> np.ndarray:
+        """Render the locally normalized semantic edge margin in green-blue."""
+
+        values = (
+            np.zeros_like(np.asarray(self.valid_mask), dtype=np.uint8)
+            if self.locally_normalized_net_physical_edge is None
+            else np.asarray(
+                self.locally_normalized_net_physical_edge, dtype=np.uint8
+            )
+        )
+        black = np.zeros_like(values)
+        green = np.uint8(values.astype(np.float32) * 0.82)
+        alpha = np.uint8(np.asarray(self.valid_mask) > 0) * 255
+        return np.dstack((black, green, values, alpha))
+
     def reference_edge_ridges_rgba(self) -> np.ndarray:
         values = (
             np.zeros_like(np.asarray(self.valid_mask), dtype=np.uint8)
@@ -711,6 +897,34 @@ class AnalysisLayers:
         blue = np.uint8(normalized * 45.0)
         alpha = np.uint8(np.asarray(self.valid_mask) > 0) * 255
         return np.dstack((red, green, blue, alpha))
+
+    def net_reference_edge_ridges_rgba(self) -> np.ndarray:
+        """Render the thinned net-physical ridge in a distinct cyan-blue."""
+
+        values = (
+            np.zeros_like(np.asarray(self.valid_mask), dtype=np.uint8)
+            if self.net_reference_edge_ridges is None
+            else np.asarray(self.net_reference_edge_ridges, dtype=np.uint8)
+        )
+        black = np.zeros_like(values)
+        green = np.uint8(values.astype(np.float32) * 0.65)
+        alpha = np.uint8(np.asarray(self.valid_mask) > 0) * 255
+        return np.dstack((black, green, values, alpha))
+
+    def normalized_net_reference_edge_ridges_rgba(self) -> np.ndarray:
+        """Render thinned locally normalized net evidence in bright green."""
+
+        values = (
+            np.zeros_like(np.asarray(self.valid_mask), dtype=np.uint8)
+            if self.normalized_net_reference_edge_ridges is None
+            else np.asarray(
+                self.normalized_net_reference_edge_ridges, dtype=np.uint8
+            )
+        )
+        black = np.zeros_like(values)
+        blue = np.uint8(values.astype(np.float32) * 0.35)
+        alpha = np.uint8(np.asarray(self.valid_mask) > 0) * 255
+        return np.dstack((black, values, blue, alpha))
 
     def surrounding_noise_rgba(self) -> np.ndarray | None:
         if (
@@ -862,6 +1076,7 @@ def build_analysis_layers(
     background_reference_sample_count: int = 0,
     background_prior_lab: tuple[float, float, float] | None = None,
     background_prior_samples_lab=None,
+    background_prior_source_mask=None,
     background_colour_enabled: bool = True,
     foreground_noise_enabled: bool = True,
     reference_edge_probability_enabled: bool = True,
@@ -873,7 +1088,16 @@ def build_analysis_layers(
     frequency_noise_masks_enabled: bool = True,
     instance_masks_enabled: bool = True,
     seed_edge_curves_enabled: bool = True,
+    hue_only_enabled: bool = True,
+    wavelet_decomposition_enabled: bool = True,
     foreground_probability=None,
+    automatic_foreground_probability=None,
+    reviewed_foreground_probability=None,
+    foreground_automatic_evidence_authority: float = 1.0,
+    material_valid_mask=None,
+    material_proposal_valid_mask=None,
+    instance_nonseed_probability=None,
+    material_evidence_enabled: bool = True,
     foreground_colour_profile: ForegroundColourProfile | None = None,
     surrounding_noise_source_tensor=None,
     surrounding_noise_valid_tensor=None,
@@ -907,6 +1131,7 @@ def build_analysis_layers(
         background_reference_sample_count=background_reference_sample_count,
         background_prior_lab=background_prior_lab,
         background_prior_samples_lab=background_prior_samples_lab,
+        background_prior_source_mask=background_prior_source_mask,
         background_colour_enabled=background_colour_enabled,
         foreground_noise_enabled=foreground_noise_enabled,
         reference_edge_probability_enabled=reference_edge_probability_enabled,
@@ -918,7 +1143,18 @@ def build_analysis_layers(
         frequency_noise_masks_enabled=frequency_noise_masks_enabled,
         instance_masks_enabled=instance_masks_enabled,
         seed_edge_curves_enabled=seed_edge_curves_enabled,
+        hue_only_enabled=hue_only_enabled,
+        wavelet_decomposition_enabled=wavelet_decomposition_enabled,
         foreground_probability=foreground_probability,
+        automatic_foreground_probability=automatic_foreground_probability,
+        reviewed_foreground_probability=reviewed_foreground_probability,
+        foreground_automatic_evidence_authority=(
+            foreground_automatic_evidence_authority
+        ),
+        material_valid_mask=material_valid_mask,
+        material_proposal_valid_mask=material_proposal_valid_mask,
+        instance_nonseed_probability=instance_nonseed_probability,
+        material_evidence_enabled=material_evidence_enabled,
         foreground_colour_profile=foreground_colour_profile,
         surrounding_noise_source_tensor=surrounding_noise_source_tensor,
         surrounding_noise_valid_tensor=surrounding_noise_valid_tensor,

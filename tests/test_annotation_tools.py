@@ -161,6 +161,37 @@ class AnnotationToolTests(unittest.TestCase):
         self.assertEqual(precise_frontier, 50)
         self.assertFalse(np.any(precise[:, 51:] == 3))
 
+    def test_smart_fill_click_origin_range_stops_accumulated_colour_drift(self) -> None:
+        height, width = 31, 61
+        image = np.zeros((height, width, 3), dtype=np.uint8)
+        corrected_lab = np.zeros((height, width, 3), dtype=np.uint8)
+        corrected_lab[:, :, 0] = np.arange(80, 80 + width, dtype=np.uint8)
+        corrected_lab[:, :, 1:] = 128
+        edge = np.zeros((height, width), dtype=np.uint8)
+        labels = np.zeros((height, width), dtype=np.uint16)
+
+        limited, _added = smart_fill_instance(
+            labels,
+            image,
+            edge,
+            (10, 15),
+            9,
+            SmartFillOptions(
+                colour_tolerance_lab=3.0,
+                click_colour_tolerance_lab=12.0,
+                maximum_distance_from_cursor_px=40,
+                falloff_half_life_px=4096.0,
+                maximum_added_pixels=10_000,
+            ),
+            corrected_lab=corrected_lab,
+        )
+
+        # Every local step is only one Lab unit, but the independently enforced
+        # click-origin range stops the otherwise unlimited gradual walk.
+        self.assertEqual(int(limited[15, 22]), 9)
+        self.assertEqual(int(limited[15, 23]), 0)
+        self.assertFalse(np.any(limited[:, 23:] == 9))
+
     def test_smart_fill_tunnelling_crosses_only_a_short_weak_barrier(self) -> None:
         image = np.full((31, 55, 3), 100, dtype=np.uint8)
         edge = np.zeros((31, 55), dtype=np.float32)
@@ -191,6 +222,77 @@ class AnnotationToolTests(unittest.TestCase):
         )
         self.assertFalse(np.any(stopped[:, 27:] == 2))
         self.assertTrue(np.any(tunnelled[:, 27:] == 2))
+
+    def test_smart_fill_seals_short_holes_in_an_aligned_edge_wall(self) -> None:
+        shape = (81, 91)
+        image = np.full((*shape, 3), 120, np.uint8)
+        edge = np.zeros(shape, np.uint8)
+        edge[:, 48] = 255
+        edge[37:44, 48] = 0
+        labels = np.zeros(shape, np.uint16)
+        base = dict(
+            colour_tolerance_lab=8.0,
+            edge_stop_threshold=0.50,
+            maximum_distance_from_cursor_px=34,
+            maximum_added_pixels=20_000,
+            connectivity=4,
+        )
+
+        leaking, _ = smart_fill_instance(
+            labels,
+            image,
+            edge,
+            (25, 40),
+            3,
+            SmartFillOptions(edge_gap_sealing_px=0, **base),
+        )
+        sealed, _ = smart_fill_instance(
+            labels,
+            image,
+            edge,
+            (25, 40),
+            3,
+            SmartFillOptions(edge_gap_sealing_px=4, **base),
+        )
+
+        self.assertTrue(np.any(leaking[:, 49:] == 3))
+        self.assertFalse(np.any(sealed[:, 49:] == 3))
+        self.assertEqual(int(sealed[40, 25]), 3)
+
+    def test_edge_barrier_threshold_changes_whether_a_weak_ridge_is_crossed(self) -> None:
+        shape = (81, 81)
+        image = np.full((*shape, 3), 105, np.uint8)
+        edge = np.zeros(shape, np.float32)
+        cv2.circle(edge, (40, 40), 18, 0.50, 1)
+        labels = np.zeros(shape, np.uint16)
+        base = dict(
+            colour_tolerance_lab=8.0,
+            maximum_distance_from_cursor_px=34,
+            falloff_half_life_px=80.0,
+            edge_gap_sealing_px=1,
+            maximum_added_pixels=20_000,
+            connectivity=4,
+        )
+
+        stopped, _ = smart_fill_instance(
+            labels,
+            image,
+            edge,
+            (40, 40),
+            5,
+            SmartFillOptions(edge_stop_threshold=0.30, **base),
+        )
+        crossed, _ = smart_fill_instance(
+            labels,
+            image,
+            edge,
+            (40, 40),
+            5,
+            SmartFillOptions(edge_stop_threshold=0.90, **base),
+        )
+
+        self.assertFalse(np.any(stopped[:16] == 5))
+        self.assertTrue(np.any(crossed[:16] == 5))
 
     def test_smart_fill_never_overwrites_another_seed_id(self) -> None:
         image = np.full((35, 50, 3), 120, dtype=np.uint8)

@@ -22,6 +22,10 @@ class AnnotationEdgeSourceTests(unittest.TestCase):
     def test_trace_and_fill_selectors_expose_only_applicable_edge_sources(self) -> None:
         from PySide6.QtGui import QColor, QImage
 
+        from seedvision.annotation import (
+            ANNOTATION_EDGE_SOURCES,
+            EDGE_TRACE_EDGE_SOURCES,
+        )
         from seedvision.ui.main_window import MainWindow
 
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -123,6 +127,61 @@ class AnnotationEdgeSourceTests(unittest.TestCase):
             self.assertEqual(
                 window.edge_trace_evidence_combo.findData("net_physical"), -1
             )
+            for combo in (
+                window.edge_trace_evidence_combo,
+                window.smart_fill_evidence_combo,
+                window.shape_fill_evidence_combo,
+            ):
+                self.assertGreaterEqual(
+                    combo.findData("normalized_net_physical"), 0
+                )
+                self.assertGreaterEqual(
+                    combo.findData("normalized_reference_ridges"), 0
+                )
+
+            def sources(combo) -> set[str]:
+                return {
+                    str(combo.itemData(index)) for index in range(combo.count())
+                }
+
+            self.assertSetEqual(
+                sources(window.edge_trace_evidence_combo),
+                set(EDGE_TRACE_EDGE_SOURCES),
+            )
+            self.assertSetEqual(
+                sources(window.smart_fill_evidence_combo),
+                set(ANNOTATION_EDGE_SOURCES),
+            )
+            self.assertSetEqual(
+                sources(window.shape_fill_evidence_combo),
+                set(ANNOTATION_EDGE_SOURCES),
+            )
+
+            # Every value offered by a selector must survive the exact settings
+            # synchronization that runs while a completed analysis is installed.
+            for index in range(window.edge_trace_evidence_combo.count()):
+                window.edge_trace_evidence_combo.setCurrentIndex(index)
+                self.application.processEvents()
+                self.assertEqual(
+                    window.image_view._edge_trace_options.edge_source,
+                    window.edge_trace_evidence_combo.itemData(index),
+                )
+            for index in range(window.smart_fill_evidence_combo.count()):
+                window.smart_fill_evidence_combo.setCurrentIndex(index)
+                self.application.processEvents()
+                selected = str(window.smart_fill_evidence_combo.itemData(index))
+                self.assertEqual(window.image_view._smart_fill_edge_source, selected)
+                self.assertEqual(
+                    window.image_view._smart_fill_options.edge_source,
+                    "physical" if selected == "net_physical" else selected,
+                )
+            for index in range(window.shape_fill_evidence_combo.count()):
+                window.shape_fill_evidence_combo.setCurrentIndex(index)
+                self.application.processEvents()
+                self.assertEqual(
+                    window.image_view._shape_guided_edge_source,
+                    window.shape_fill_evidence_combo.itemData(index),
+                )
 
     def test_image_view_adapts_each_edge_source_and_invalidates_cached_values(self) -> None:
         from PySide6.QtGui import QColor, QImage
@@ -150,6 +209,11 @@ class AnnotationEdgeSourceTests(unittest.TestCase):
             non_physical[0, 6] = 0.75
             reference_ridges = np.zeros((6, 8), dtype=np.uint8)
             reference_ridges[0, 0] = 203
+            normalized = np.zeros((6, 8), dtype=np.uint8)
+            normalized[5, 5] = 140
+            normalized[0, 6] = 96
+            normalized_ridges = np.zeros((6, 8), dtype=np.uint8)
+            normalized_ridges[0, 1] = 211
 
             result = self._analysis_result(
                 ridges=ridges,
@@ -158,6 +222,8 @@ class AnnotationEdgeSourceTests(unittest.TestCase):
                 magnitude=magnitude,
                 physical=physical,
                 non_physical=non_physical,
+                normalized=normalized,
+                normalized_ridges=normalized_ridges,
                 net_scale=0.5,
             )
             view = ImageView()
@@ -171,10 +237,12 @@ class AnnotationEdgeSourceTests(unittest.TestCase):
                 for source in (
                     "ridges",
                     "reference_ridges",
+                    "normalized_reference_ridges",
                     "traces",
                     "magnitude",
                     "physical",
                     "net_physical",
+                    "normalized_net_physical",
                 )
             }
             for first_index, first in enumerate(selected):
@@ -194,15 +262,16 @@ class AnnotationEdgeSourceTests(unittest.TestCase):
             expected_adaptive = np.maximum.reduce(
                 (
                     ridges,
+                    normalized_ridges,
                     trace_evidence,
-                    np.rint(selected["physical"] * 0.45).astype(np.uint8),
+                    np.rint(normalized * 0.45).astype(np.uint8),
                     np.rint(magnitude * 0.45).astype(np.uint8),
                 )
             )
             self.assertTrue(np.array_equal(adaptive, expected_adaptive))
             self.assertEqual(int(adaptive[2, 2]), 255)
             self.assertEqual(int(adaptive[3, 3]), 255)
-            self.assertEqual(int(adaptive[5, 5]), 115)
+            self.assertEqual(int(adaptive[5, 5]), 63)
 
             expected_net = np.rint(
                 np.clip(
@@ -242,6 +311,8 @@ class AnnotationEdgeSourceTests(unittest.TestCase):
                 magnitude=magnitude,
                 physical=physical,
                 non_physical=non_physical,
+                normalized=normalized,
+                normalized_ridges=normalized_ridges,
                 net_scale=0.25,
             )
             view.show_analysis(replacement, render=False)
@@ -262,6 +333,8 @@ class AnnotationEdgeSourceTests(unittest.TestCase):
         magnitude: np.ndarray,
         physical: np.ndarray,
         non_physical: np.ndarray,
+        normalized: np.ndarray,
+        normalized_ridges: np.ndarray,
         net_scale: float,
     ) -> SimpleNamespace:
         return SimpleNamespace(
@@ -272,6 +345,8 @@ class AnnotationEdgeSourceTests(unittest.TestCase):
                 edge_likelihood=magnitude,
                 physical_edge_probability=physical,
                 non_edge_probability=non_physical,
+                locally_normalized_net_physical_edge=normalized,
+                normalized_net_reference_edge_ridges=normalized_ridges,
                 net_physical_edge_internal_scale=net_scale,
                 offset_x=0,
                 offset_y=0,

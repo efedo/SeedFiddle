@@ -21,7 +21,8 @@ from seedvision.pipeline import NodeStatus, ParameterSpec, PipelineConnection, P
 
 
 ANALYSIS_SETTINGS_FORMAT = "seedfiddle-analysis-settings"
-ANALYSIS_SETTINGS_VERSION = 1
+ANALYSIS_SETTINGS_VERSION = 5
+_LEGACY_ANALYSIS_SETTINGS_VERSIONS = frozenset({1, 2, 3, 4})
 ANALYSIS_SETTINGS_FILE_SUFFIX = ".seedfiddle-settings.json"
 
 _MAX_PROFILE_BYTES = 8 * 1024 * 1024
@@ -177,7 +178,7 @@ def analysis_settings_profile_to_payload(
 def analysis_settings_profile_from_payload(
     payload: Mapping[str, object],
 ) -> AnalysisSettingsProfile:
-    """Validate and detach one embedded version-one profile payload.
+    """Validate and detach one embedded versioned profile payload.
 
     This checks the file schema without needing a pipeline.  Compatibility
     with the current node/parameter/connection catalogue is intentionally a
@@ -195,10 +196,10 @@ def analysis_settings_profile_from_payload(
     version = root["version"]
     if isinstance(version, bool) or not isinstance(version, int):
         raise InvalidAnalysisSettingsProfile("Profile version must be an integer.")
-    if version != ANALYSIS_SETTINGS_VERSION:
+    if version not in {*_LEGACY_ANALYSIS_SETTINGS_VERSIONS, ANALYSIS_SETTINGS_VERSION}:
         raise IncompatibleAnalysisSettingsProfile(
             f"Unsupported analysis-settings version {version}; this application "
-            f"supports version {ANALYSIS_SETTINGS_VERSION}."
+            f"supports versions 1 through {ANALYSIS_SETTINGS_VERSION}."
         )
 
     node_items = _sequence(root["nodes"], "profile nodes", _MAX_NODES)
@@ -599,7 +600,21 @@ def _prepare_analysis_settings(
     )
     catalogue = _graph_catalogue(graph)
     expected_ids = set(catalogue)
-    profile_by_id = {node.identifier: node for node in canonical.nodes}
+    retired_node_ids = {
+        "directed_edges",
+        "undirected_edges",
+        "foreground_segmentation",
+        "manual_seed_centres",
+    }
+    canonical_by_id = {node.identifier: node for node in canonical.nodes}
+    profile_by_id = {
+        node.identifier: node
+        for node in canonical.nodes
+        if not (
+            canonical.version in _LEGACY_ANALYSIS_SETTINGS_VERSIONS
+            and node.identifier in retired_node_ids
+        )
+    }
     profile_ids = set(profile_by_id)
     missing_ids = expected_ids - profile_ids
     unknown_ids = profile_ids - expected_ids
@@ -617,23 +632,102 @@ def _prepare_analysis_settings(
     enabled_by_id: dict[str, bool] = {}
     connection_suspended_by_id: dict[str, bool] = {}
     parameters_by_id: dict[str, dict[str, JsonScalar]] = {}
+    supplied_parameters_by_id = {
+        node_id: dict(saved.parameters) for node_id, saved in profile_by_id.items()
+    }
+    if canonical.version in _LEGACY_ANALYSIS_SETTINGS_VERSIONS:
+        # Version five merged the two colour cards without changing either
+        # equation, and folded the centre-point input into Manual annotations.
+        # Carry the old foreground controls onto the combined background card;
+        # the old Background-node enabled flag becomes its dedicated control.
+        legacy_foreground = canonical_by_id.get("foreground_segmentation")
+        legacy_background = canonical_by_id.get("background_likelihood")
+        combined = supplied_parameters_by_id.get("background_likelihood", {})
+        if legacy_foreground is not None:
+            combined.update(dict(legacy_foreground.parameters))
+        if legacy_background is not None:
+            combined["background_colour_enabled"] = bool(
+                legacy_background.enabled
+            )
+    if canonical.version in _LEGACY_ANALYSIS_SETTINGS_VERSIONS:
+        retired_parameters = {
+            "foreground_segmentation": {
+                "foreground_otsu_fraction",
+                "foreground_background_prior_tolerance",
+                "foreground_probability_softness_fraction",
+                "foreground_local_contrast_scale_fraction",
+                "foreground_shadow_rejection_strength",
+                "foreground_distribution_fit_iterations",
+                "foreground_refinement_iterations",
+                "foreground_refinement_min_probability",
+                "foreground_automatic_evidence_floor",
+                "foreground_reviewed_authority_half_life_seed_areas",
+            },
+            "background_likelihood": {
+                "background_refinement_iterations",
+                "background_refinement_min_probability",
+            },
+            "material_evidence_decision": {
+                "material_reviewed_foreground_weight",
+            },
+        }
+        for node_id, keys in retired_parameters.items():
+            supplied = supplied_parameters_by_id.get(node_id, {})
+            for key in keys:
+                supplied.pop(key, None)
+    # Older profiles stored the edge-classifier controls on the combined
+    # prototype node. Move them to their new, visible owner before validation.
+    moved_edge_keys = {
+        "reference_texture_edge_prototypes_per_class",
+        "reference_texture_edge_working_maximum_dimension",
+        "reference_edge_minimum_working_seed_diameter_px",
+        "reference_edge_strip_normal_offset_fraction",
+        "reference_edge_strip_tangent_half_length_fraction",
+        "reference_edge_ridge_weight",
+        "reference_texture_instance_interior_buffer_fraction",
+    }
+    if canonical.version in _LEGACY_ANALYSIS_SETTINGS_VERSIONS:
+        legacy_prototypes = supplied_parameters_by_id.get(
+            "reference_texture_prototypes", {}
+        )
+        edge_parameters = supplied_parameters_by_id.get(
+            "reference_edge_probability", {}
+        )
+        for key in moved_edge_keys:
+            if key in legacy_prototypes and key not in edge_parameters:
+                edge_parameters[key] = legacy_prototypes.pop(key)
+        for new_key, legacy_key in (
+            ("reference_edge_minimum_samples_per_prototype", "reference_texture_minimum_samples_per_prototype"),
+            ("reference_edge_fit_iterations", "reference_texture_fit_iterations"),
+            ("reference_edge_similarity_scale", "reference_texture_similarity_scale"),
+        ):
+            if new_key not in edge_parameters and legacy_key in legacy_prototypes:
+                edge_parameters[new_key] = legacy_prototypes[legacy_key]
     for node_id, node in catalogue.items():
         saved = profile_by_id[node_id]
-        supplied = dict(saved.parameters)
+        supplied = supplied_parameters_by_id[node_id]
         expected_keys = {spec.key for spec in node.parameter_specs}
         supplied_keys = set(supplied)
         missing_keys = expected_keys - supplied_keys
         unknown_keys = supplied_keys - expected_keys
-        if missing_keys or unknown_keys:
+        if unknown_keys:
             details = []
-            if missing_keys:
-                details.append(f"missing parameters: {_formatted_names(missing_keys)}")
             if unknown_keys:
                 details.append(f"unknown parameters: {_formatted_names(unknown_keys)}")
             raise IncompatibleAnalysisSettingsProfile(
                 f"Settings for node {node_id!r} do not match this application "
                 f"({'; '.join(details)})."
             )
+        if missing_keys:
+            if canonical.version not in _LEGACY_ANALYSIS_SETTINGS_VERSIONS:
+                raise IncompatibleAnalysisSettingsProfile(
+                    f"Settings for node {node_id!r} do not match this application "
+                    f"(missing parameters: {_formatted_names(missing_keys)})."
+                )
+            # Version-one profiles predate these controls. They adopt the
+            # current authored defaults; current-version profiles remain strict.
+            for key in missing_keys:
+                supplied[key] = node.parameters[key]
         normalized: dict[str, JsonScalar] = {}
         for spec in node.parameter_specs:
             raw_value = supplied[spec.key]
@@ -646,7 +740,12 @@ def _prepare_analysis_settings(
                 ) from error
             normalized[spec.key] = _json_scalar(value, f"{node_id}.{spec.key}")
         active_by_id[node_id] = saved.active
-        enabled_by_id[node_id] = saved.enabled
+        enabled_by_id[node_id] = (
+            True
+            if canonical.version in _LEGACY_ANALYSIS_SETTINGS_VERSIONS
+            and node_id == "background_likelihood"
+            else saved.enabled
+        )
         connection_suspended_by_id[node_id] = saved.connection_suspended
         parameters_by_id[node_id] = normalized
 
@@ -659,20 +758,65 @@ def _prepare_analysis_settings(
                 f"{_format_connection_key(key)}."
             )
         template_by_key[key] = template
-    connected_by_key = {
-        connection.key: connection.connected for connection in canonical.connections
+    retired_foreground_targets = {
+        "reviewed_foreground",
+        "automatic_foreground_authority",
     }
+    connected_by_key: dict[ConnectionKey, bool] = {}
+    for connection in canonical.connections:
+        source = connection.source
+        target = connection.target
+        if canonical.version in _LEGACY_ANALYSIS_SETTINGS_VERSIONS:
+            if target in retired_node_ids:
+                continue
+            if source in {"directed_edges", "undirected_edges"}:
+                continue
+            if (
+                target == "material_evidence_decision"
+                and connection.target_port in retired_foreground_targets
+            ):
+                continue
+            if source == "foreground_segmentation":
+                source = "background_likelihood"
+            elif source == "manual_seed_centres":
+                source = "reference_layers"
+        key = (
+            source,
+            connection.source_port,
+            target,
+            connection.target_port,
+        )
+        connected_by_key[key] = connected_by_key.get(key, False) or bool(
+            connection.connected
+        )
+    legacy_reference_ridge_key = (
+        "reference_edge_ridges",
+        "reference_ridges",
+        "procedural_instances",
+        "reference_ridges",
+    )
+    net_reference_ridge_key = (
+        "reference_edge_ridges",
+        "net_reference_ridges",
+        "procedural_instances",
+        "reference_ridges",
+    )
+    if (
+        canonical.version in _LEGACY_ANALYSIS_SETTINGS_VERSIONS
+        and
+        legacy_reference_ridge_key in connected_by_key
+        and net_reference_ridge_key in template_by_key
+        and net_reference_ridge_key not in connected_by_key
+    ):
+        connected_by_key[net_reference_ridge_key] = connected_by_key.pop(
+            legacy_reference_ridge_key
+        )
     expected_connections = set(template_by_key)
     supplied_connections = set(connected_by_key)
     missing_connections = expected_connections - supplied_connections
     unknown_connections = supplied_connections - expected_connections
-    if missing_connections or unknown_connections:
+    if unknown_connections:
         details = []
-        if missing_connections:
-            details.append(
-                "missing connections: "
-                + _formatted_connections(missing_connections)
-            )
         if unknown_connections:
             details.append(
                 "unknown connections: "
@@ -683,6 +827,18 @@ def _prepare_analysis_settings(
             + "; ".join(details)
             + ")."
         )
+    if missing_connections:
+        if canonical.version not in _LEGACY_ANALYSIS_SETTINGS_VERSIONS:
+            raise IncompatibleAnalysisSettingsProfile(
+                "Analysis-settings connection catalogue mismatch (missing connections: "
+                + _formatted_connections(missing_connections)
+                + ")."
+            )
+        # New authored connections use their template state when loading a
+        # version-one otherwise compatible graph profile.
+        authored_connected = set(graph.connections) | set(graph.unused_connections)
+        for key in missing_connections:
+            connected_by_key[key] = template_by_key[key] in authored_connected
 
     active_ids = {node_id for node_id, active in active_by_id.items() if active}
     connected_keys = {key for key, connected in connected_by_key.items() if connected}

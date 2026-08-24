@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from hashlib import sha256
 import os
 from pathlib import Path
 import re
+import shutil
 import tempfile
 from zipfile import BadZipFile
 
@@ -155,6 +157,57 @@ class ReferenceRegionStore:
             if temporary.exists():
                 temporary.unlink()
         return destination
+
+    def backup_and_replace_invalid(
+        self,
+        image_path: Path | str,
+        replacement_shape: tuple[int, int],
+    ) -> tuple[Path, Path]:
+        """Preserve the canonical sidecar, then replace it with an empty one.
+
+        The backup is completed before :meth:`save` performs its own atomic
+        replacement. If creating the new archive fails, the original invalid
+        sidecar remains at its canonical path and the completed backup remains
+        available for recovery.
+        """
+
+        image = Path(image_path).resolve()
+        source = self.path_for(image)
+        if not source.is_file():
+            raise ReferenceRegionError(
+                f"Reference-region archive does not exist: {source}"
+            )
+        shape = _validated_shape(replacement_shape)
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        backup = source.with_name(
+            f"{source.name}.invalid-{timestamp}.bak"
+        )
+        counter = 2
+        while backup.exists():
+            backup = source.with_name(
+                f"{source.name}.invalid-{timestamp}-{counter}.bak"
+            )
+            counter += 1
+
+        descriptor, temporary_name = tempfile.mkstemp(
+            dir=source.parent,
+            prefix=f".{source.name}.backup.",
+            suffix=".tmp",
+        )
+        os.close(descriptor)
+        temporary = Path(temporary_name)
+        try:
+            shutil.copy2(source, temporary)
+            temporary.replace(backup)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
+
+        destination = self.save(
+            image,
+            ReferenceRegionBundle(shape=shape),
+        )
+        return backup, destination
 
     def load_if_present(
         self,

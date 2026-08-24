@@ -252,11 +252,11 @@ class BackgroundColourGamut(QWidget):
         )
         probability[:, neutral_width:] = hue_probability
         excluded_probability[:, neutral_width:] = hue_excluded_probability
-        probability = self._apply_contrastive_negative_evidence(
-            np.clip(probability, 0.0, 1.0),
-            np.clip(excluded_probability, 0.0, 1.0),
-            float(profile.exclusion_strength),
-        )
+        # The inspector must reproduce the raw positive-class evidence shown
+        # by the image overlay. Other is now an independent Non-seed class in
+        # the hierarchical material decision, not a hidden subtraction from
+        # either Foreground or Background.
+        probability = np.clip(probability, 0.0, 1.0)
 
         # Preserve the actual projected colour everywhere. Membership is
         # communicated exclusively by the high-contrast contour lines; dimming
@@ -414,11 +414,7 @@ class BackgroundColourGamut(QWidget):
             excluded_adjusted_weights[excluded_chromatic],
             distance_weights,
         )
-        probability = cls._apply_contrastive_negative_evidence(
-            probability,
-            excluded_probability,
-            float(profile.exclusion_strength),
-        )
+        probability = np.clip(probability, 0.0, 1.0)
         # At zero saturation hue is undefined. Keep the exact neutral result in
         # the swatch below instead of repeating it across all hue columns.
         probability[0] = 0.0
@@ -572,11 +568,7 @@ class BackgroundColourGamut(QWidget):
             excluded_adjusted_weights,
             distance_weights,
         )
-        neutral_probability = cls._apply_contrastive_negative_evidence(
-            neutral_probability,
-            neutral_excluded,
-            float(profile.exclusion_strength),
-        )
+        neutral_probability = np.clip(neutral_probability, 0.0, 1.0)
         legend_y = height - 43
         neutral_colour = QColor.fromRgb(
             int(neutral_rgb[0, 0, 0]),
@@ -634,21 +626,6 @@ class BackgroundColourGamut(QWidget):
             else:
                 probability += membership
         return np.clip(probability, 0.0, 1.0)
-
-    @staticmethod
-    def _apply_contrastive_negative_evidence(
-        positive: np.ndarray,
-        negative: np.ndarray,
-        strength: float,
-    ) -> np.ndarray:
-        """Mirror the CUDA class-relative Other-evidence calculation."""
-
-        contradiction = np.maximum(negative - positive, 0.0) / (
-            negative + positive + 1e-6
-        )
-        return positive * (
-            1.0 - np.clip(float(strength), 0.0, 1.0) * contradiction
-        )
 
     @classmethod
     def _hue_tone_probability(
@@ -880,6 +857,7 @@ class PipelineInspector(QWidget):
     """Edit node enablement and typed parameter values."""
 
     PROCEDURAL_FIT_ACTION = "fit_procedural_to_annotations"
+    REFERENCE_EDGE_FIT_ACTION = "fit_reference_edges_to_annotations"
     PROCEDURAL_CENTRES_EDIT_ACTION = "edit_manual_seed_centres"
     PROCEDURAL_CENTRES_MODE_ACTION = "set_manual_seed_centre_mode"
     PROCEDURAL_CENTRES_UNDO_ACTION = "undo_manual_seed_centres"
@@ -1059,6 +1037,20 @@ class PipelineInspector(QWidget):
             f"color: {self._secondary_colour};"
         )
         procedural_centres_layout.addWidget(self.procedural_centres_status_label)
+        self.procedural_instance_statistics_label = QLabel(
+            "Click a coloured procedural seed in the image to inspect its geometry.",
+            self.procedural_centres_container,
+        )
+        self.procedural_instance_statistics_label.setWordWrap(True)
+        self.procedural_instance_statistics_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self.procedural_instance_statistics_label.setStyleSheet(
+            "font-weight: 600; margin-top: 5px;"
+        )
+        procedural_centres_layout.addWidget(
+            self.procedural_instance_statistics_label
+        )
         self.procedural_centres_container.setVisible(False)
         self.procedural_fit_container = QWidget(self)
         procedural_fit_layout = QVBoxLayout(self.procedural_fit_container)
@@ -1197,6 +1189,35 @@ class PipelineInspector(QWidget):
         )
         procedural_fit_layout.addWidget(self.procedural_fit_status_label)
         self.procedural_fit_container.setVisible(False)
+        self.reference_edge_fit_container = QWidget(self)
+        reference_edge_fit_layout = QVBoxLayout(self.reference_edge_fit_container)
+        reference_edge_fit_layout.setContentsMargins(0, 4, 0, 2)
+        reference_edge_fit_layout.setSpacing(4)
+        reference_edge_fit_heading = QLabel(
+            "Annotation-guided edge fit", self.reference_edge_fit_container
+        )
+        reference_edge_fit_heading.setStyleSheet("font-weight: 600;")
+        reference_edge_fit_layout.addWidget(reference_edge_fit_heading)
+        reference_edge_fit_description = QLabel(
+            "Search the exposed strip geometry, tolerance, ridge blend, and interior "
+            "buffer against physical contours and internal edges derived from applied "
+            "seed instances. The proposal changes this project only after approval.",
+            self.reference_edge_fit_container,
+        )
+        reference_edge_fit_description.setWordWrap(True)
+        reference_edge_fit_description.setStyleSheet(
+            f"color: {self._secondary_colour};"
+        )
+        reference_edge_fit_layout.addWidget(reference_edge_fit_description)
+        self.reference_edge_fit_button = QPushButton(
+            "Fit edge parameters to annotations…",
+            self.reference_edge_fit_container,
+        )
+        self.reference_edge_fit_button.clicked.connect(
+            self._reference_edge_fit_requested
+        )
+        reference_edge_fit_layout.addWidget(self.reference_edge_fit_button)
+        self.reference_edge_fit_container.setVisible(False)
         self.foreground_start_heading = QLabel("Starting automatic colours", self)
         self.foreground_start_heading.setStyleSheet(
             "font-weight: 600; margin-top: 6px;"
@@ -1241,6 +1262,7 @@ class PipelineInspector(QWidget):
         layout.addWidget(self.status_label)
         layout.addWidget(self.procedural_centres_container)
         layout.addWidget(self.procedural_fit_container)
+        layout.addWidget(self.reference_edge_fit_container)
         layout.addWidget(self.foreground_start_heading)
         layout.addWidget(self.foreground_start_label)
         layout.addWidget(self.parameters_header)
@@ -1320,6 +1342,10 @@ class PipelineInspector(QWidget):
         self.parameter_container.setVisible(bool(node.parameter_specs))
         self.parameters_header.setVisible(bool(node.parameter_specs))
         self._refresh_procedural_fit_action()
+        self.reference_edge_fit_container.setVisible(
+            node.identifier == "reference_edge_probability"
+        )
+        self.reference_edge_fit_button.setEnabled(node.enabled and node.implemented)
         self._refresh_procedural_centres_action()
         self._update_colour_summary()
 
@@ -1350,9 +1376,20 @@ class PipelineInspector(QWidget):
             self.procedural_centres_edit_button.setChecked(bool(editing))
         self._refresh_procedural_centres_action()
 
+    def set_procedural_instance_statistics(self, text: str = "") -> None:
+        """Display geometry for the procedural label selected in the image."""
+
+        self.procedural_instance_statistics_label.setText(
+            str(text).strip()
+            or "Click a coloured procedural seed in the image to inspect its geometry."
+        )
+
     def _refresh_procedural_centres_action(self) -> None:
         node = self._node
-        visible = node is not None and node.identifier == "procedural_instances"
+        visible = node is not None and node.identifier in {
+            "reference_layers",
+            "procedural_instances",
+        }
         self.procedural_centres_container.setVisible(visible)
         if not visible:
             return
@@ -1390,7 +1427,10 @@ class PipelineInspector(QWidget):
     def _procedural_centres_mode_changed(self, index: int) -> None:
         del index
         node = self._node
-        if node is None or node.identifier != "procedural_instances":
+        if node is None or node.identifier not in {
+            "reference_layers",
+            "procedural_instances",
+        }:
             return
         self.node_action_requested.emit(
             node.identifier,
@@ -1398,10 +1438,25 @@ class PipelineInspector(QWidget):
             str(self.procedural_centres_mode_combo.currentData()),
         )
 
+    @Slot()
+    def _reference_edge_fit_requested(self) -> None:
+        node = self._node
+        if (
+            node is not None
+            and node.identifier == "reference_edge_probability"
+            and self.reference_edge_fit_button.isEnabled()
+        ):
+            self.node_action_requested.emit(
+                node.identifier, self.REFERENCE_EDGE_FIT_ACTION, None
+            )
+
     @Slot(bool)
     def _procedural_centres_edit_toggled(self, editing: bool) -> None:
         node = self._node
-        if node is None or node.identifier != "procedural_instances":
+        if node is None or node.identifier not in {
+            "reference_layers",
+            "procedural_instances",
+        }:
             return
         self.node_action_requested.emit(
             node.identifier,
@@ -1412,7 +1467,10 @@ class PipelineInspector(QWidget):
     @Slot()
     def _procedural_centres_undo_requested(self) -> None:
         node = self._node
-        if node is not None and node.identifier == "procedural_instances":
+        if node is not None and node.identifier in {
+            "reference_layers",
+            "procedural_instances",
+        }:
             self.node_action_requested.emit(
                 node.identifier, self.PROCEDURAL_CENTRES_UNDO_ACTION, None
             )
@@ -1420,7 +1478,10 @@ class PipelineInspector(QWidget):
     @Slot()
     def _procedural_centres_reset_requested(self) -> None:
         node = self._node
-        if node is not None and node.identifier == "procedural_instances":
+        if node is not None and node.identifier in {
+            "reference_layers",
+            "procedural_instances",
+        }:
             self.node_action_requested.emit(
                 node.identifier, self.PROCEDURAL_CENTRES_RESET_ACTION, None
             )
@@ -1573,6 +1634,8 @@ class PipelineInspector(QWidget):
     def set_analysis_result(self, result) -> None:
         """Supply the visible image result for node-specific diagnostics."""
 
+        if self._analysis_result is not result:
+            self.set_procedural_instance_statistics("")
         self._analysis_result = result
         self._update_colour_summary()
 
@@ -1589,7 +1652,7 @@ class PipelineInspector(QWidget):
 
     def _update_colour_summary(self) -> None:
         node_id = None if self._node is None else self._node.identifier
-        foreground_visible = node_id == "foreground_segmentation"
+        foreground_visible = node_id == "background_likelihood"
         self.foreground_start_heading.setVisible(foreground_visible)
         self.foreground_start_label.setVisible(foreground_visible)
         if not foreground_visible:

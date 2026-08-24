@@ -21,6 +21,9 @@ from seedvision.annotation.shape_guided import (
     shape_outward_extension_pressure,
 )
 from seedvision.annotation.tools import (
+    ANNOTATION_EDGE_SOURCES,
+    EDGE_TRACE_EDGE_SOURCES,
+    SMART_FILL_EDGE_SOURCES,
     EdgeTraceOptions,
     SmartFillOptions,
     SmartFillRegion,
@@ -31,11 +34,14 @@ from seedvision.annotation.tools import (
 )
 
 __all__ = (
+    "ANNOTATION_EDGE_SOURCES",
+    "EDGE_TRACE_EDGE_SOURCES",
     "EdgeTraceOptions",
     "EllipseHypothesis",
     "InstanceBoundaryReferences",
     "InstanceContinuitySummary",
     "SHAPE_FILL_CONNECTIVITY",
+    "SMART_FILL_EDGE_SOURCES",
     "ShapeGuidedFillOptions",
     "ShapeGuidedFillRegion",
     "SmartFillOptions",

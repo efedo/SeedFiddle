@@ -10,13 +10,26 @@ from seedvision.pipeline import NodeStatus, build_default_pipeline
 
 
 class PipelineModelTests(unittest.TestCase):
+    def test_foreground_requires_authored_evidence_and_has_no_refinement_controls(self) -> None:
+        graph = build_default_pipeline()
+        colour_keys = set(graph.node("background_likelihood").parameters)
+        foreground_keys = {key for key in colour_keys if key.startswith("foreground_")}
+        background_keys = {key for key in colour_keys if key.startswith("background_")}
+        self.assertFalse(any("automatic" in key for key in foreground_keys))
+        self.assertFalse(any("refinement" in key for key in foreground_keys))
+        self.assertFalse(any("refinement" in key for key in background_keys))
+        self.assertIn("foreground_reference_weight", foreground_keys)
+        self.assertIn(
+            "foreground_include_annotated_seed_instances", foreground_keys
+        )
+
     def test_default_pipeline_is_left_to_right_and_acyclic(self) -> None:
         graph = build_default_pipeline()
         order = graph.topological_order()
         self.assertEqual(order[0], "raw_images")
         self.assertEqual(set(order), set(graph.nodes))
         self.assertEqual(len(graph.nodes), 34)
-        self.assertEqual(len(graph.connections), 157)
+        self.assertEqual(len(graph.connections), 167)
         self.assertEqual(
             graph.upstream("perimeter_background_reference"),
             ("deskew_colour", "layout_detection", "scale_calibration"),
@@ -41,29 +54,21 @@ class PipelineModelTests(unittest.TestCase):
             (annotation_exclusion.source, annotation_exclusion.source_port),
             ("reference_layers", "annotated_seeds"),
         )
-        annotation_foreground = graph.connection_for_input(
-            "foreground_segmentation", "annotations"
-        )
-        self.assertIsNotNone(annotation_foreground)
-        self.assertEqual(
-            (annotation_foreground.source, annotation_foreground.source_port),
-            ("reference_layers", "annotated_seeds"),
-        )
         for consumer in (
             "foreground_noise_likelihood",
             "reference_texture_prototypes",
         ):
-            automatic_foreground = graph.connection_for_input(
+            annotated_foreground = graph.connection_for_input(
                 consumer, "automatic_foreground_reference"
             )
-            self.assertIsNotNone(automatic_foreground)
+            self.assertIsNotNone(annotated_foreground)
             self.assertEqual(
                 (
-                    automatic_foreground.source,
-                    automatic_foreground.source_port,
+                    annotated_foreground.source,
+                    annotated_foreground.source_port,
                 ),
                 (
-                    "foreground_segmentation",
+                    "background_likelihood",
                     "annotated_foreground_reference_source",
                 ),
             )
@@ -73,7 +78,7 @@ class PipelineModelTests(unittest.TestCase):
         self.assertIsNotNone(centre_edits)
         self.assertEqual(
             (centre_edits.source, centre_edits.source_port),
-            ("manual_seed_centres", "centres"),
+            ("reference_layers", "centres"),
         )
         for connection in graph.connections:
             self.assertLess(graph.node(connection.source).x, graph.node(connection.target).x)
@@ -82,7 +87,7 @@ class PipelineModelTests(unittest.TestCase):
         graph = build_default_pipeline()
         all_nodes = {**graph.nodes, **graph.unused_nodes}
         all_connections = (*graph.connections, *graph.unused_connections)
-        self.assertEqual(len(graph.connection_templates), 249)
+        self.assertEqual(len(graph.connection_templates), 255)
         self.assertTrue(all(node.output_ports for node in all_nodes.values()))
         self.assertEqual(
             len(all_connections),
@@ -125,23 +130,23 @@ class PipelineModelTests(unittest.TestCase):
             "raw_images": set(),
             "metadata": {"raw_images"},
             "reference_layers": set(),
-            "manual_seed_centres": set(),
             "colour_reference": {"metadata"},
             "deskew_colour": {"metadata", "colour_reference"},
+            "hue_only": {"deskew_colour", "layout_detection"},
+            "wavelet_decomposition": {"deskew_colour", "layout_detection"},
             "ruler_detection": {"deskew_colour"},
             "scale_calibration": {"deskew_colour", "ruler_detection"},
             "layout_detection": {"deskew_colour", "scale_calibration"},
-            "seed_scale_estimation": {"deskew_colour", "layout_detection"},
+            "seed_scale_estimation": {
+                "deskew_colour", "layout_detection", "reference_layers",
+            },
             "perimeter_background_reference": {
                 "deskew_colour", "layout_detection", "scale_calibration",
             },
-            "foreground_segmentation": {
-                "deskew_colour", "layout_detection", "scale_calibration",
-                "seed_scale_estimation", "reference_layers",
-            },
             "background_likelihood": {
                 "deskew_colour", "layout_detection", "seed_scale_estimation",
-                "perimeter_background_reference", "reference_layers",
+                "scale_calibration", "perimeter_background_reference",
+                "reference_layers",
             },
             "refined_background_likelihood": {
                 "background_likelihood", "deskew_colour", "layout_detection",
@@ -149,10 +154,12 @@ class PipelineModelTests(unittest.TestCase):
                 "reference_layers",
             },
             "foreground_noise_likelihood": {
-                "foreground_segmentation", "deskew_colour", "layout_detection",
+                "background_likelihood", "deskew_colour", "layout_detection",
                 "seed_scale_estimation", "reference_layers",
             },
-            "edge_gradients": {"deskew_colour", "layout_detection"},
+            "edge_gradients": {
+                "wavelet_decomposition", "deskew_colour", "layout_detection",
+            },
             "surface_darkness_gradients": {
                 "deskew_colour", "layout_detection", "seed_scale_estimation",
             },
@@ -161,25 +168,29 @@ class PipelineModelTests(unittest.TestCase):
             "frequency_noise_masks": {
                 "deskew_colour", "layout_detection", "seed_scale_estimation",
             },
-            "undirected_edges": {"edge_gradients"},
-            "directed_edges": {"edge_gradients"},
             "edge_ridges": {"edge_gradients"},
             "reference_texture_prototypes": {
                 "background_likelihood",
-                "foreground_segmentation",
                 "deskew_colour", "layout_detection", "seed_scale_estimation",
                 "reference_layers", "edge_gradients", "edge_ridges",
                 "frequency_noise_masks",
             },
+            "material_evidence_decision": {
+                "foreground_noise_likelihood", "background_likelihood",
+                "refined_background_likelihood",
+                "reference_texture_prototypes", "seed_scale_estimation",
+            },
             "reference_edge_probability": {"reference_texture_prototypes"},
             "reference_edge_ridges": {
                 "reference_edge_probability", "edge_gradients",
+                "seed_scale_estimation",
             },
             "edge_traces": {
-                "edge_ridges", "edge_gradients", "seed_scale_estimation",
+                "edge_ridges", "reference_edge_ridges", "edge_gradients",
+                "seed_scale_estimation",
             },
             "distance_candidates": {
-                "foreground_segmentation", "seed_scale_estimation",
+                "material_evidence_decision", "seed_scale_estimation",
             },
             "circle_candidates": {
                 "deskew_colour", "layout_detection", "seed_scale_estimation",
@@ -191,20 +202,18 @@ class PipelineModelTests(unittest.TestCase):
                 "seed_scale_estimation",
             },
             "instance_masks": {
-                "identification", "layout_detection", "background_likelihood",
-                "refined_background_likelihood", "seed_scale_estimation",
+                "identification", "layout_detection",
+                "material_evidence_decision", "seed_scale_estimation",
                 "reference_layers",
             },
             "seed_edge_curves": {
                 "identification", "instance_masks", "edge_traces",
                 "edge_gradients", "seed_scale_estimation",
-                "background_likelihood", "foreground_segmentation",
+                "material_evidence_decision",
                 "reference_edge_probability",
             },
             "seed_interior": {
-                "foreground_segmentation", "background_likelihood",
-                "refined_background_likelihood", "foreground_noise_likelihood",
-                "reference_texture_prototypes", "layout_detection",
+                "material_evidence_decision", "layout_detection",
                 "seed_scale_estimation",
             },
             "boundary_normals": {
@@ -213,7 +222,7 @@ class PipelineModelTests(unittest.TestCase):
             },
             "touching_split": {
                 "distance_candidates", "boundary_normals",
-                "foreground_segmentation", "layout_detection",
+                "material_evidence_decision", "layout_detection",
                 "seed_scale_estimation",
             },
             "ellipse_likelihood": {
@@ -226,7 +235,7 @@ class PipelineModelTests(unittest.TestCase):
             },
             "assignment_confidence": {
                 "identification", "instance_masks", "boundary_normals",
-                "seed_interior", "foreground_segmentation", "layout_detection",
+                "seed_interior", "material_evidence_decision", "layout_detection",
             },
             "contact_graph": {
                 "identification", "assignment_confidence", "boundary_normals",
@@ -239,16 +248,15 @@ class PipelineModelTests(unittest.TestCase):
             },
             "procedural_instances": {
                 "layout_detection", "seed_scale_estimation",
-                "foreground_segmentation", "foreground_noise_likelihood",
-                "background_likelihood", "refined_background_likelihood",
+                "material_evidence_decision",
                 "edge_gradients", "edge_ridges", "reference_edge_probability",
                 "reference_edge_ridges", "edge_traces",
-                "reference_texture_prototypes", "reference_layers",
-                "manual_seed_centres",
+                "surface_darkness_gradients", "illumination_decomposition",
+                "reference_layers",
             },
             "unet_instances": {
                 "metadata", "deskew_colour", "layout_detection",
-                "seed_scale_estimation", "foreground_segmentation",
+                "seed_scale_estimation",
                 "foreground_noise_likelihood", "background_likelihood",
                 "refined_background_likelihood", "edge_gradients",
                 "reference_edge_probability", "illumination_decomposition",
@@ -256,7 +264,7 @@ class PipelineModelTests(unittest.TestCase):
             },
             "stardist_instances": {
                 "metadata", "deskew_colour", "layout_detection",
-                "seed_scale_estimation", "foreground_segmentation",
+                "seed_scale_estimation",
                 "foreground_noise_likelihood", "background_likelihood",
                 "refined_background_likelihood", "edge_gradients",
                 "reference_edge_probability", "illumination_decomposition",
@@ -327,6 +335,7 @@ class PipelineModelTests(unittest.TestCase):
             "seed_scale_estimation", "reference_scale_factor", 0.73
         )
         self.assertIn("edge_traces", scale_affected)
+        self.assertIn("reference_edge_ridges", scale_affected)
         self.assertIn("seed_edge_curves", scale_affected)
 
     def test_disconnection_bypasses_and_reconnection_restores_only_dependents(self) -> None:
@@ -334,7 +343,7 @@ class PipelineModelTests(unittest.TestCase):
         connection = next(
             edge
             for edge in graph.connections
-            if edge.source == "foreground_segmentation"
+            if edge.source == "background_likelihood"
             and edge.target == "foreground_noise_likelihood"
         )
         graph.set_enabled("procedural_instances", False)
@@ -366,7 +375,7 @@ class PipelineModelTests(unittest.TestCase):
         connection = next(
             edge
             for edge in graph.connections
-            if edge.source == "foreground_segmentation"
+            if edge.source == "background_likelihood"
             and edge.target == "foreground_noise_likelihood"
         )
         graph.disconnect(connection)
@@ -404,12 +413,12 @@ class PipelineModelTests(unittest.TestCase):
                 "identification",
                 "instance_masks",
                 "seed_edge_curves",
-                "radial_profile",
                 "ellipse_likelihood",
                 "assignment_confidence",
-                "coat_damage",
+                "radial_profile",
                 "proposal_disagreement",
                 "contact_graph",
+                "coat_damage",
                 "review",
                 "measurements",
                 "classification",
@@ -425,14 +434,13 @@ class PipelineModelTests(unittest.TestCase):
         graph = build_default_pipeline()
         for node_id in tuple(graph.unused_nodes):
             graph.restore_unused_node(node_id)
-        self.assertTrue(graph.node("background_likelihood").bypassable)
+        self.assertFalse(graph.node("background_likelihood").bypassable)
         self.assertEqual(
             graph.upstream("instance_masks"),
             (
                 "identification",
                 "layout_detection",
-                "background_likelihood",
-                "refined_background_likelihood",
+                "material_evidence_decision",
                 "seed_scale_estimation",
                 "reference_layers",
             ),
@@ -451,7 +459,7 @@ class PipelineModelTests(unittest.TestCase):
         self.assertEqual(
             graph.upstream("foreground_noise_likelihood"),
             (
-                "foreground_segmentation",
+                "background_likelihood",
                 "deskew_colour",
                 "layout_detection",
                 "seed_scale_estimation",
@@ -464,17 +472,17 @@ class PipelineModelTests(unittest.TestCase):
                 "deskew_colour",
                 "layout_detection",
                 "seed_scale_estimation",
+                "scale_calibration",
                 "perimeter_background_reference",
                 "reference_layers",
             ),
         )
         self.assertEqual(
             graph.upstream("edge_gradients"),
-            ("deskew_colour", "layout_detection"),
+            ("wavelet_decomposition", "deskew_colour", "layout_detection"),
         )
-        self.assertEqual(graph.upstream("undirected_edges"), ("edge_gradients",))
-
-        self.assertEqual(graph.upstream("directed_edges"), ("edge_gradients",))
+        self.assertIn("undirected", dict(graph.node("edge_gradients").output_ports))
+        self.assertIn("directed", dict(graph.node("edge_gradients").output_ports))
         self.assertEqual(
             graph.upstream("surface_darkness_gradients"),
             ("deskew_colour", "layout_detection", "seed_scale_estimation"),
@@ -503,6 +511,7 @@ class PipelineModelTests(unittest.TestCase):
                 ("lightening_gradient_ceiling", "direction"): "lightening_direction",
                 ("darkening_gradient_ceiling", "magnitude"): "darkening_magnitude",
                 ("darkening_gradient_ceiling", "direction"): "darkening_direction",
+                ("procedural_instances", "surface_darkening"): "darkening_magnitude",
             },
         )
         edge_outputs = {
@@ -510,8 +519,6 @@ class PipelineModelTests(unittest.TestCase):
             for connection in graph.connections
             if connection.source == "edge_gradients"
         }
-        self.assertEqual(edge_outputs["undirected_edges"], "undirected")
-        self.assertEqual(edge_outputs["directed_edges"], "directed")
         self.assertIn("edge_ridges", edge_outputs)
         self.assertIn("edge_traces", edge_outputs)
         self.assertEqual(
@@ -520,8 +527,7 @@ class PipelineModelTests(unittest.TestCase):
                 "edge_traces",
                 "edge_gradients",
                 "seed_scale_estimation",
-                "background_likelihood",
-                "foreground_segmentation",
+                "material_evidence_decision",
                 "reference_edge_probability",
                 "instance_masks",
                 "identification",
@@ -530,7 +536,11 @@ class PipelineModelTests(unittest.TestCase):
         self.assertEqual(graph.upstream("edge_ridges"), ("edge_gradients",))
         self.assertEqual(
             set(graph.upstream("reference_edge_ridges")),
-            {"reference_edge_probability", "edge_gradients"},
+            {
+                "reference_edge_probability",
+                "edge_gradients",
+                "seed_scale_estimation",
+            },
         )
         self.assertEqual(
             graph.set_parameter(
@@ -538,11 +548,21 @@ class PipelineModelTests(unittest.TestCase):
                 "reference_ridge_high_threshold",
                 0.30,
             ),
-            ("reference_edge_ridges", "procedural_instances"),
+            (
+                "reference_edge_ridges",
+                "edge_traces",
+                "procedural_instances",
+                "seed_edge_curves",
+            ),
         )
         self.assertEqual(
             graph.upstream("edge_traces"),
-            ("edge_ridges", "edge_gradients", "seed_scale_estimation"),
+            (
+                "edge_ridges",
+                "reference_edge_ridges",
+                "edge_gradients",
+                "seed_scale_estimation",
+            ),
         )
         self.assertEqual(
             set(graph.upstream("review")),
@@ -557,11 +577,7 @@ class PipelineModelTests(unittest.TestCase):
         self.assertEqual(
             graph.upstream("seed_interior"),
             (
-                "foreground_segmentation",
-                "background_likelihood",
-                "refined_background_likelihood",
-                "foreground_noise_likelihood",
-                "reference_texture_prototypes",
+                "material_evidence_decision",
                 "layout_detection",
                 "seed_scale_estimation",
             ),
@@ -601,18 +617,15 @@ class PipelineModelTests(unittest.TestCase):
             (
                 "layout_detection",
                 "seed_scale_estimation",
-                "foreground_segmentation",
-                "foreground_noise_likelihood",
-                "background_likelihood",
-                "refined_background_likelihood",
+                "material_evidence_decision",
                 "edge_gradients",
                 "edge_ridges",
                 "reference_edge_probability",
                 "reference_edge_ridges",
                 "edge_traces",
-                "reference_texture_prototypes",
+                "surface_darkness_gradients",
+                "illumination_decomposition",
                 "reference_layers",
-                "manual_seed_centres",
             ),
         )
         graph.set_status("procedural_instances", NodeStatus.COMPLETE, "Calculated")
@@ -724,15 +737,16 @@ class PipelineModelTests(unittest.TestCase):
         self.assertIn("identification", graph.unused_nodes)
         self.assertEqual(
             graph.upstream("seed_scale_estimation"),
-            ("deskew_colour", "layout_detection"),
+            ("deskew_colour", "layout_detection", "reference_layers"),
         )
         self.assertEqual(
-            graph.upstream("foreground_segmentation"),
+            graph.upstream("background_likelihood"),
             (
                 "deskew_colour",
                 "layout_detection",
-                "scale_calibration",
                 "seed_scale_estimation",
+                "scale_calibration",
+                "perimeter_background_reference",
                 "reference_layers",
             ),
         )
@@ -743,7 +757,7 @@ class PipelineModelTests(unittest.TestCase):
         self.assertIn("scale_calibration", affected)
         self.assertIn("layout_detection", affected)
         self.assertNotIn("identification", affected)
-        self.assertIn("foreground_segmentation", affected)
+        self.assertIn("background_likelihood", affected)
         self.assertIn("foreground_noise_likelihood", affected)
         self.assertNotIn("circle_candidates", affected)
         self.assertNotIn("output", affected)
@@ -753,8 +767,8 @@ class PipelineModelTests(unittest.TestCase):
         self.assertNotIn("circle_candidates", graph.nodes)
         self.assertIn("circle_candidates", graph.unused_nodes)
         self.assertEqual(graph.node("circle_candidates").title, "Circle candidates")
-        self.assertEqual(len(graph.unused_nodes), 21)
-        self.assertEqual(len(graph.unused_connections), 92)
+        self.assertEqual(len(graph.unused_nodes), 20)
+        self.assertEqual(len(graph.unused_connections), 88)
         restored = graph.restore_unused_node("circle_candidates")
         self.assertEqual(len(restored), 8)
         self.assertIn("circle_candidates", graph.nodes)
@@ -768,33 +782,30 @@ class PipelineModelTests(unittest.TestCase):
             "illumination_decomposition",
         ))
 
-    def test_surface_darkness_branch_is_disabled_in_the_unused_toolbox(self) -> None:
+    def test_surface_darkness_is_active_while_threshold_ceiling_diagnostics_are_optional(self) -> None:
         graph = build_default_pipeline()
-        branch = {
-            "surface_darkness_gradients",
+        ceilings = {
             "lightening_gradient_ceiling",
             "darkening_gradient_ceiling",
         }
-        self.assertTrue(branch.issubset(graph.unused_nodes))
-        self.assertTrue(branch.isdisjoint(graph.nodes))
-        self.assertTrue(all(not graph.node(node_id).enabled for node_id in branch))
+        self.assertIn("surface_darkness_gradients", graph.nodes)
+        self.assertTrue(graph.node("surface_darkness_gradients").enabled)
+        self.assertTrue(ceilings.issubset(graph.unused_nodes))
+        self.assertTrue(ceilings.isdisjoint(graph.nodes))
+        self.assertTrue(all(not graph.node(node_id).enabled for node_id in ceilings))
         self.assertTrue(
-            all(graph.node(node_id).status is NodeStatus.BYPASSED for node_id in branch)
+            all(graph.node(node_id).status is NodeStatus.BYPASSED for node_id in ceilings)
         )
         preserved = {
             connection
             for connection in graph.unused_connections
-            if connection.source in branch or connection.target in branch
+            if connection.source in ceilings or connection.target in ceilings
         }
-        self.assertEqual(len(preserved), 7)
+        self.assertEqual(len(preserved), 4)
 
-        restored = graph.restore_unused_node("surface_darkness_gradients")
-        self.assertEqual(len(restored), 3)
-        self.assertEqual(
-            graph.upstream("surface_darkness_gradients"),
-            ("deskew_colour", "layout_detection", "seed_scale_estimation"),
-        )
-        self.assertFalse(graph.node("surface_darkness_gradients").enabled)
+        restored = graph.restore_unused_node("lightening_gradient_ceiling")
+        self.assertEqual(len(restored), 2)
+        self.assertFalse(graph.node("lightening_gradient_ceiling").enabled)
 
     def test_calibration_residual_risk_is_preserved_in_unused_toolbox(self) -> None:
         graph = build_default_pipeline()
@@ -825,12 +836,15 @@ class PipelineModelTests(unittest.TestCase):
         self.assertIn("Circle candidates", encoded)
         self.assertIn("InstanceProposals", encoded)
         self.assertIn("calculation_seconds", payload["nodes"][0])
-        self.assertEqual(len(payload["unused_nodes"]), 21)
+        self.assertEqual(len(payload["unused_nodes"]), 20)
 
     def test_reference_input_exposes_every_sublayer_and_model_consumer(self) -> None:
         graph = build_default_pipeline()
         node = graph.node("reference_layers")
         self.assertEqual(node.category, "Input")
+        self.assertEqual(node.title, "Manual annotations")
+        self.assertNotIn("manual_seed_centres", graph.nodes)
+        self.assertNotIn("foreground_segmentation", graph.nodes)
         self.assertEqual(
             tuple(port for port, _label in node.output_ports),
             (
@@ -838,15 +852,16 @@ class PipelineModelTests(unittest.TestCase):
                 "foreground",
                 "other",
                 "annotated_seeds",
+                "centres",
             ),
         )
         self.assertEqual(
             set(graph.downstream("reference_layers")),
             {
-                "foreground_segmentation",
                 "background_likelihood",
                 "refined_background_likelihood",
                 "foreground_noise_likelihood",
+                "seed_scale_estimation",
                 "reference_texture_prototypes",
                 "procedural_instances",
                 "unet_instances",
@@ -857,6 +872,7 @@ class PipelineModelTests(unittest.TestCase):
             "foreground",
             "other",
             "annotated_seeds",
+            "centres",
         }
         self.assertEqual(
             {
@@ -873,7 +889,6 @@ class PipelineModelTests(unittest.TestCase):
             for port_id in expected_ports
         }
         material_consumers = {
-            "foreground_segmentation",
             "background_likelihood",
             "refined_background_likelihood",
             "foreground_noise_likelihood",
@@ -882,11 +897,12 @@ class PipelineModelTests(unittest.TestCase):
         self.assertEqual(consumers_by_port["background"], material_consumers)
         self.assertEqual(consumers_by_port["foreground"], material_consumers)
         self.assertEqual(consumers_by_port["other"], material_consumers)
+        self.assertEqual(consumers_by_port["centres"], {"procedural_instances"})
         self.assertEqual(
             consumers_by_port["annotated_seeds"],
             {
                 "background_likelihood",
-                "foreground_segmentation",
+                "seed_scale_estimation",
                 "instance_masks",
                 "procedural_instances",
                 "reference_texture_prototypes",
@@ -899,7 +915,6 @@ class PipelineModelTests(unittest.TestCase):
         }
         self.assertTrue(
             {
-                "foreground_segmentation",
                 "background_likelihood",
                 "refined_background_likelihood",
                 "foreground_noise_likelihood",
@@ -926,46 +941,49 @@ class PipelineModelTests(unittest.TestCase):
         self.assertFalse(graph.node("circle_candidates").enabled)
         self.assertFalse(graph.node("distance_candidates").enabled)
         self.assertFalse(graph.node("instance_masks").enabled)
-        self.assertFalse(graph.node("surface_darkness_gradients").enabled)
+        self.assertTrue(graph.node("surface_darkness_gradients").enabled)
         self.assertFalse(graph.node("unet_instances").enabled)
         self.assertFalse(graph.node("stardist_instances").enabled)
-        self.assertIn("surface_darkness_gradients", graph.unused_nodes)
+        self.assertIn("surface_darkness_gradients", graph.nodes)
 
     def test_disabling_a_node_disables_all_dependents(self) -> None:
         graph = build_default_pipeline()
-        affected = graph.set_enabled("background_likelihood", False)
-        self.assertFalse(graph.node("background_likelihood").enabled)
-        self.assertTrue(graph.node("identification").enabled is False)
-        self.assertTrue(graph.node("foreground_noise_likelihood").enabled)
-        self.assertTrue(
-            all(not graph.node(node_id).enabled for node_id in affected)
+        affected = graph.set_parameter(
+            "background_likelihood", "background_colour_enabled", False
         )
+        self.assertFalse(
+            graph.node("background_likelihood").parameters[
+                "background_colour_enabled"
+            ]
+        )
+        self.assertTrue(graph.node("background_likelihood").enabled)
+        self.assertTrue(graph.node("foreground_noise_likelihood").enabled)
+        self.assertIn("foreground_noise_likelihood", affected)
 
     def test_reset_parameters_restores_authored_defaults(self) -> None:
         graph = build_default_pipeline()
-        original = graph.node("foreground_segmentation").parameters[
+        original = graph.node("background_likelihood").parameters[
             "foreground_reference_weight"
         ]
         graph.set_parameter(
-            "foreground_segmentation", "foreground_reference_weight", 0.25
+            "background_likelihood", "foreground_reference_weight", 0.25
         )
-        affected = graph.reset_parameters("foreground_segmentation")
+        affected = graph.reset_parameters("background_likelihood")
         self.assertEqual(
-            graph.node("foreground_segmentation").parameters[
+            graph.node("background_likelihood").parameters[
                 "foreground_reference_weight"
             ],
             original,
         )
-        self.assertIn("foreground_segmentation", affected)
-        self.assertEqual(graph.reset_parameters("foreground_segmentation"), ())
+        self.assertIn("background_likelihood", affected)
+        self.assertEqual(graph.reset_parameters("background_likelihood"), ())
 
     def test_reference_colour_capacity_controls_share_honest_naming(self) -> None:
         graph = build_default_pipeline()
-        foreground = graph.node("foreground_segmentation")
         background = graph.node("background_likelihood")
         foreground_spec = next(
             spec
-            for spec in foreground.parameter_specs
+            for spec in background.parameter_specs
             if spec.key == "foreground_reference_components"
         )
         background_spec = next(
@@ -1152,6 +1170,20 @@ class NodeTimingRecorderTests(unittest.TestCase):
             ],
         )
 
+    def test_cancellation_stops_at_the_next_timed_node_boundary(self) -> None:
+        from seedvision.timing import AnalysisCancelled, NodeTimingRecorder
+
+        cancelled = False
+        recorder = NodeTimingRecorder(
+            cancellation_requested=lambda: cancelled
+        )
+        span = recorder.start("first")
+        cancelled = True
+        with self.assertRaises(AnalysisCancelled):
+            recorder.stop(span)
+        with self.assertRaises(AnalysisCancelled):
+            recorder.start("second")
+
 
 class BaselineSettingsTests(unittest.TestCase):
     def test_out_of_range_setting_is_rejected(self) -> None:
@@ -1208,11 +1240,11 @@ class BaselineSettingsTests(unittest.TestCase):
         self.assertTrue(
             AnalysisLayerSettings().background_keep_perimeter_reference
         )
-        self.assertFalse(
+        self.assertTrue(
             BaselineSettings().foreground_include_annotated_seed_instances
         )
-        self.assertFalse(
-            build_default_pipeline().node("foreground_segmentation").parameters[
+        self.assertTrue(
+            build_default_pipeline().node("background_likelihood").parameters[
                 "foreground_include_annotated_seed_instances"
             ]
         )
@@ -1258,22 +1290,24 @@ class BaselineSettingsTests(unittest.TestCase):
             256,
         )
         graph = build_default_pipeline()
-        node = graph.node("reference_texture_prototypes")
-        specs = {spec.key: spec for spec in node.parameter_specs}
+        material_node = graph.node("reference_texture_prototypes")
+        edge_node = graph.node("reference_edge_probability")
+        material_specs = {spec.key: spec for spec in material_node.parameter_specs}
+        edge_specs = {spec.key: spec for spec in edge_node.parameter_specs}
         self.assertEqual(
-            node.parameters["reference_texture_material_prototypes_per_class"],
+            material_node.parameters["reference_texture_material_prototypes_per_class"],
             64,
         )
         self.assertEqual(
-            node.parameters["reference_texture_edge_prototypes_per_class"],
+            edge_node.parameters["reference_texture_edge_prototypes_per_class"],
             256,
         )
         self.assertEqual(
-            specs["reference_texture_material_prototypes_per_class"].maximum,
+            material_specs["reference_texture_material_prototypes_per_class"].maximum,
             256,
         )
         self.assertEqual(
-            specs["reference_texture_edge_prototypes_per_class"].maximum,
+            edge_specs["reference_texture_edge_prototypes_per_class"].maximum,
             1024,
         )
         graph.set_parameter(
@@ -1282,17 +1316,18 @@ class BaselineSettingsTests(unittest.TestCase):
             72,
         )
         graph.set_parameter(
-            "reference_texture_prototypes",
+            "reference_edge_probability",
             "reference_texture_edge_prototypes_per_class",
             320,
         )
         graph.reset_parameters("reference_texture_prototypes")
+        graph.reset_parameters("reference_edge_probability")
         self.assertEqual(
-            node.parameters["reference_texture_material_prototypes_per_class"],
+            material_node.parameters["reference_texture_material_prototypes_per_class"],
             64,
         )
         self.assertEqual(
-            node.parameters["reference_texture_edge_prototypes_per_class"],
+            edge_node.parameters["reference_texture_edge_prototypes_per_class"],
             256,
         )
         with self.assertRaises(ValueError):
@@ -1320,7 +1355,7 @@ class BaselineSettingsTests(unittest.TestCase):
         self.assertEqual(node.parameters["net_physical_edge_internal_scale"], 0.5)
         self.assertEqual(specs["net_physical_edge_internal_scale"].minimum, 0.0)
         self.assertEqual(specs["net_physical_edge_internal_scale"].maximum, 2.0)
-        self.assertTrue(specs["net_physical_edge_internal_scale"].display_only)
+        self.assertFalse(specs["net_physical_edge_internal_scale"].display_only)
         graph.node("reference_edge_probability").status = NodeStatus.COMPLETE
         graph.node("reference_edge_ridges").status = NodeStatus.COMPLETE
         graph.node("procedural_instances").status = NodeStatus.COMPLETE
@@ -1330,20 +1365,102 @@ class BaselineSettingsTests(unittest.TestCase):
             "net_physical_edge_internal_scale",
             1.25,
         )
-        self.assertEqual(affected, ("reference_edge_probability",))
-        self.assertEqual(graph.revision, revision)
-        self.assertEqual(node.status, NodeStatus.COMPLETE)
         self.assertEqual(
-            graph.node("reference_edge_ridges").status, NodeStatus.COMPLETE
+            affected,
+            (
+                "reference_edge_probability",
+                "reference_edge_ridges",
+                "unet_instances",
+                "stardist_instances",
+                "edge_traces",
+                "procedural_instances",
+            ),
         )
-        self.assertEqual(graph.node("procedural_instances").status, NodeStatus.COMPLETE)
+        self.assertEqual(graph.revision, revision + 1)
+        self.assertEqual(node.status, NodeStatus.IDLE)
+        self.assertEqual(
+            graph.node("reference_edge_ridges").status, NodeStatus.IDLE
+        )
+        self.assertEqual(graph.node("procedural_instances").status, NodeStatus.IDLE)
         self.assertEqual(
             graph.reset_parameters("reference_edge_probability"),
-            ("reference_edge_probability",),
+            affected,
         )
-        self.assertEqual(graph.revision, revision)
-        self.assertEqual(node.status, NodeStatus.COMPLETE)
+        self.assertEqual(graph.revision, revision + 2)
+        self.assertEqual(node.status, NodeStatus.IDLE)
         self.assertEqual(node.parameters["net_physical_edge_internal_scale"], 0.5)
+
+    def test_local_edge_normalization_controls_are_postclassification(self) -> None:
+        from seedvision.segmentation import AnalysisLayerSettings
+
+        defaults = AnalysisLayerSettings()
+        self.assertEqual(
+            defaults.reference_edge_normalization_radius_fraction, 0.30
+        )
+        self.assertEqual(
+            defaults.reference_edge_normalization_target_support, 0.35
+        )
+        self.assertEqual(
+            defaults.reference_edge_normalization_maximum_gain, 2.50
+        )
+        self.assertEqual(
+            defaults.reference_edge_normalization_absolute_floor, 0.04
+        )
+        with self.assertRaises(ValueError):
+            AnalysisLayerSettings(
+                reference_edge_normalization_radius_fraction=0.01
+            )
+        with self.assertRaises(ValueError):
+            AnalysisLayerSettings(reference_edge_normalization_maximum_gain=0.9)
+
+        graph = build_default_pipeline()
+        ridge_node = graph.node("reference_edge_ridges")
+        probability_node = graph.node("reference_edge_probability")
+        self.assertNotIn(
+            "reference_edge_normalization_maximum_gain",
+            probability_node.parameters,
+        )
+        self.assertEqual(
+            ridge_node.parameters["reference_edge_normalization_maximum_gain"],
+            2.50,
+        )
+        affected = graph.set_parameter(
+            "reference_edge_ridges",
+            "reference_edge_normalization_maximum_gain",
+            3.0,
+        )
+        self.assertEqual(
+            affected,
+            ("reference_edge_ridges", "edge_traces", "procedural_instances"),
+        )
+
+    def test_oriented_trace_ridge_source_is_explicit_and_computational(self) -> None:
+        from seedvision.segmentation import AnalysisLayerSettings
+
+        self.assertEqual(AnalysisLayerSettings().trace_edge_source, "generic_ridges")
+        with self.assertRaises(ValueError):
+            AnalysisLayerSettings(trace_edge_source="mystery_edges")
+        graph = build_default_pipeline()
+        node = graph.node("edge_traces")
+        self.assertEqual(node.parameters["trace_edge_source"], "generic_ridges")
+        spec = next(
+            spec for spec in node.parameter_specs if spec.key == "trace_edge_source"
+        )
+        self.assertEqual(
+            spec.choices,
+            (
+                "generic_ridges",
+                "reference_ridges",
+                "net_reference_ridges",
+                "normalized_net_reference_ridges",
+            ),
+        )
+        self.assertEqual(
+            graph.set_parameter(
+                "edge_traces", "trace_edge_source", "reference_ridges"
+            ),
+            ("edge_traces", "procedural_instances"),
+        )
 
 
 if __name__ == "__main__":

@@ -177,8 +177,8 @@ class ManualSeedCentreUiTests(unittest.TestCase):
             window._analyses[key] = result
             window.image_view._analysis_result = result
             expected_affected = {
-                "manual_seed_centres",
-                *window.pipeline.downstream("manual_seed_centres", recursive=True),
+                "procedural_instances",
+                *window.pipeline.downstream("procedural_instances", recursive=True),
             }
             revision = window.pipeline.revision
 
@@ -202,13 +202,13 @@ class ManualSeedCentreUiTests(unittest.TestCase):
             self.assertEqual(window.pipeline.revision, revision + 1)
             invalidate.assert_called_once_with(expected_affected)
             analyze.assert_called_once_with(dirty_nodes=expected_affected)
-            self.assertNotIn("foreground_segmentation", expected_affected)
+            self.assertNotIn("background_likelihood", expected_affected)
             self.assertNotIn("edge_gradients", expected_affected)
             self.assertIn("procedural_instances", expected_affected)
             self.assertNotIn(key, window._analyses)
             self.assertEqual(
                 window._cache_dirty_nodes[key],
-                expected_affected - {"manual_seed_centres"},
+                expected_affected,
             )
 
             stored = ManualSeedCentreStore(root).load_if_present(image_path, (60, 80))
@@ -369,7 +369,7 @@ class ManualSeedCentreUiTests(unittest.TestCase):
                 window.pipeline_inspector.procedural_centres_edit_button.click()
                 self.assertTrue(window.image_view.manual_seed_centre_editing)
 
-                window._pipeline_node_selected("foreground_segmentation")
+                window._pipeline_node_selected("background_likelihood")
                 self.assertFalse(window.image_view.manual_seed_centre_editing)
                 window._pipeline_node_selected("procedural_instances")
                 window._sync_procedural_centres_controls()

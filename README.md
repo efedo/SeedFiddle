@@ -48,6 +48,19 @@ python .\seed_vision.py --offline
 
 `--offline` requires compatible wheel files in `wheels/`.
 
+## Diagnostic logs
+
+Desktop launches create a rotating UTF-8 diagnostic log at
+`%LOCALAPPDATA%\Seed Fiddle\logs\seed-fiddle.log` on Windows (or the platform
+state/log directory elsewhere). Five 5 MiB backups are retained. Unexpected
+main-thread and background-thread exceptions, analysis-worker failures,
+completed-result installation failures, and Qt warnings/errors retain their
+full traceback and thread/process context. Python fatal faults additionally
+write `seed-fiddle-crash.log` in the same directory. **Help → Runtime summary**
+shows both absolute paths, and analysis/training/fitting failure dialogs point
+to the primary traceback log. Expected user-input validation remains a concise
+dialog rather than being reported as a crash.
+
 ## Projects and analysis settings
 
 The **File** menu distinguishes a complete analysis project from a portable
@@ -215,13 +228,14 @@ convexity policy can leave legacy tangent-only links unchanged, prefer
 single-turn C-shaped gap continuations, or require every non-ambiguous gap
 link to avoid an S-shaped inflection. Both clockwise and counter-clockwise
 curvature are accepted. The
-preserved **Directional surface darkness gradients** node samples one-sided
+active **Directional surface darkness gradients** node samples one-sided
 rays over a seed-relative radius and retains separate maximum lightening and
 darkening CIE L* slopes plus their query-to-target directions. Its two optional
 derivative upper-cutoff nodes set responses above an editable raw L*/pixel
 ceiling exactly to zero, deliberately removing strong edge-scale changes from
-the weak-surface views. All three nodes now live in **Unused nodes**, are
-disabled by default, and contribute no default calculation or overlay.
+the weak-surface views. The directional node is enabled in the default graph;
+its darkening magnitude supplies an independently weighted procedural-boundary
+term. The two experimental upper-cutoff views remain disabled in **Unused nodes**.
 **Multiscale darkness & colour noise** supplies six non-learned local RMS
 energy masks: fine, medium, and coarse bands for L* darkness variation and Lab
 a*/b* colour variation. These are separate from the learned foreground/background
@@ -229,9 +243,13 @@ noise-probability classifiers. The former distance-candidate, instance, final
 boundary-confirmation, review,
 measurement, classification, aggregation, and output branch is preserved in
 **Unused nodes** but does not calculate or expose overlays by default.
-The adjacent opacity slider applies to every overlay. Selecting a node also
-places a synchronized node-local overlay chooser directly below its title in
-the right inspector; nodes without image products show a disabled placeholder.
+The toolbar **Overlay:** control is a hierarchical node menu: each calculating
+node opens a right-arrow submenu containing only the overlays that node owns.
+Selecting a graph node still places the synchronized node-local chooser below
+its title in the right inspector. While the selected overlay is being rebuilt,
+the image pane displays a large red **Calculating …** banner. The adjacent
+opacity slider applies to every ordinary raster overlay; nodes without image
+products show a disabled placeholder.
 
 Additional CUDA-first analysis products are authored as nodes. The soft
 seed-interior probability now receives both foreground colour probability and
@@ -256,7 +274,9 @@ Reference annotation is divided into two independent full-resolution layers:
    dish background nor seed foreground; it supplies a competing learned model
    to both fitted colour/texture classes instead of hard-setting their output
    pixels. It reduces a class only where Other fits better, so glass or neutral
-   colours shared with a positive class cannot veto legitimate evidence.
+   colours shared with a positive class cannot veto legitimate evidence. Other
+   paint is shown in saturated orange so it remains distinct from the pale dish
+   and gray UI background.
 2. **Seed instance annotations** is the separate labelled integer layer
    described below; every seed receives its own stable colour ID. Its viewer
    overlay is drawn from viewport-requested 512-pixel tiles at one mask pixel
@@ -273,10 +293,10 @@ This keeps the two classes geometrically consistent with the instance mask and
 prevents a stale manual boundary raster from disagreeing with it.
 
 The active **Reference texture prototypes** node turns those reviewed examples
-into an image-local, non-neural pattern matcher. Its independent capacity
-controls default to 64 coverage-preserving medoids for each material class
-(Background, Foreground, and Other) and 256 for each instance-derived edge
-class (Physical edge and Non-physical edge), instead of averaging a class into
+into an image-local, non-neural pattern matcher. Independent controls default
+to 64 coverage-preserving medoids for each material class (Background,
+Foreground, and Other) and 256 for each instance-derived edge class (Physical
+edge and Non-physical edge), instead of averaging a class into
 one texture. The edge capacity can be increased to 1,024; fitting assignments
 and full-image evaluation are chunked so this does not allocate a
 samples-by-prototypes or prototypes-by-full-raster tensor. Material prototypes
@@ -304,10 +324,11 @@ with cluster support percentages and source reference counts. The squares are
 context thumbnails rather than spatial templates. Edge thumbnails mark the
 actual centre sample in yellow and the two polarity-neutral side strips in cyan.
 Its three material likelihood overlays remain available beside the existing
-physical/non-physical overlays. Separate maximum material and edge prototypes,
-minimum cluster support, fit iterations, similarity tolerance, seed-relative
-context, thumbnail size, ridge influence, strip geometry, and separate
-material/edge working dimensions are editable and computationally active. With no applied
+physical/non-physical overlays. Material capacity and fitting controls live on
+**Reference texture prototypes**; edge capacity, support, fitting, tolerance,
+ridge influence, strip geometry, interior buffer, and high-resolution working
+controls live on **Instance-derived edge probabilities**. Every exposed value
+is computationally active. With no applied
 references the expensive feature fit is skipped. When no instance annotations
 exist, the physical/non-physical classifier is neutral: unknown regions retain
 neutral generic edge/ridge support in the procedural separator, but are not
@@ -322,6 +343,15 @@ become **Non-physical edge** evidence. The intervening uncertainty band and
 unstructured interior remain unlabelled. These masks are regenerated from the
 saved instance IDs and current image evidence and are never stored as a second,
 potentially stale annotation layer.
+
+The edge-probability node's **Fit edge parameters to annotations…** action runs
+a bounded coordinate search over its tolerance, strip offset/length, ridge
+weight, and interior buffer. Each trial refits the two edge prototype banks and
+uses a balanced loss that rewards physical support on reviewed contours,
+non-physical support on safely inset internal edges, and rejection of both
+cross-matches. The proposal is in-sample and remains unapplied until confirmed.
+It is available only in a project; accepted values change that project's graph
+and become durable when **Save Project** records it.
 
 The top-bar **Material references** and **Annotate seed instances** commands
 open the applicable compact contextual controls over
@@ -340,11 +370,14 @@ Clearing the selected class returns the shared tool to Paint so the empty layer
 can immediately be redrawn.
 
 While painting **Background**, **Keep perimeter-matched source** defaults on.
-It combines the buffered perimeter-ring Lab samples and every qualifying
-in-dish pixel similar to their median colour with any manually painted
-Background marks. The ring anchors the colour model; the matching in-dish area
+The ring is first filtered by weighted Lab distance from its robust median, so
+foreign colours where it crosses a calibration card or other object are
+excluded. The retained ring samples and every qualifying in-dish pixel similar
+to their median colour are combined with any manually painted Background marks.
+The ring anchors the colour model; the matching in-dish area
 trains Background colour, noise, and material prototypes. The painting view
-fills the sampled ring and shows the accepted automatic in-dish area in cyan,
+outlines the configured annulus and shows the exact accepted ring and in-dish
+pixels in cyan,
 while manual marks remain green. Uncheck the
 control to exclude all perimeter-derived evidence; with no painted Background
 remaining, the colour model uses its generic light/low-chroma automatic source.
@@ -372,13 +405,21 @@ queue.
 atomically stores both applied annotation layers together in the
 ignored `projects/reference-regions/` workspace area. This automatic save occurs
 only after Apply; an unfinished stroke or other unapplied draft is never written.
+The annotation painting is therefore durable immediately after **Apply + save**.
+**File > Save Project** is still required to refresh the master analysis file's
+recorded sidecar digest and to persist current graph, profile, and UI settings.
 The explicit **Save applied references** command remains available. Seed Fiddle
 automatically restores the archive the next time the same image is opened, but
-only after its stored SHA-256 fingerprint and dimensions match the current
-image. A changed, corrupt, or incompatible image/archive produces a warning and
-no reference pixels are loaded. If automatic saving fails, the newly applied
-state remains available in memory and a prominent warning explains that it is
-not yet durable.
+only after its stored SHA-256 fingerprint matches the source image. When saved
+mask dimensions differ from the raw photograph, validation is deferred until
+the current calibration establishes the corrected-coordinate dimensions; this
+avoids rejecting a valid perspective-corrected mask against the raw JPEG size.
+A genuine corrected-shape mismatch loads no reference pixels. Its loose-workspace
+warning offers **Back up + replace**, which preserves the incompatible archive
+beside the canonical file and atomically replaces it with an empty valid sidecar
+for the current calibration; **Keep unchanged** remains the safe default. If
+automatic saving fails, the newly applied state remains available in memory and
+a prominent warning explains that it is not yet durable.
 
 The current reference-region archive is version 2 and contains only the
 categorical material raster and annotated seed IDs/provenance. Version-1
@@ -402,10 +443,11 @@ refined edge contour validates the fit and remains a preview/confidence datum;
 it is not a hard selection mask. Selection uses Smart fill's neighbour-relative
 Lab growth and edge-frontier logic under one-sided ellipse pressure with fixed
 natural 8-neighbour connectivity. The fitted ellipse is approximately a maximum
-extent, not a minimum: the shape prior imposes no inward limit where a seed is
-occluded, while
-outward movement receives an exponential penalty with a default 0.05-seed-
-diameter half-life and is prohibited beyond 0.10 seed diameter. Shape fill does
+extent, not a minimum: the shape prior imposes no inward cutoff where a seed is
+occluded. The soft penalty starts 0.05 seed diameter inside the oval by default,
+then halves every 0.05 seed diameter and is prohibited beyond 0.10 seed diameter
+outside it. Even a 0.005-diameter half-life now creates a real restriction
+instead of leaking unchanged to the hard cutoff. Shape fill does
 not use tangents or tunnelling, and its one-sided extent prior replaces Smart
 fill's cursor-distance and radial-falloff controls. Its preview shows a dotted
 prior, the refined boundary, and the proposed mask. Insufficient edge coverage,
@@ -417,17 +459,21 @@ brush and eraser.
 
 Trace edge, Smart fill, and Shape fill expose the exact **Edge evidence** they consume:
 **Thinned edge ridges** (the precise default), **Thinned reference edge ridge**,
+**Thinned normalized net-physical ridge**, **Locally normalized net physical edge**,
 **Oriented edge traces**, **Combined (ridge priority)**,
 **Physical-edge probability**, or the broader **Edge magnitude** raster. Smart
 fill and Shape fill additionally offer **Net physical-edge probability**
 (physical minus the node's adjustable scaled non-physical evidence). The
-reference-ridge choice applies
+reference-ridge choices apply
 independently adjustable normal-direction non-maximum suppression and CUDA
 high/low hysteresis to the broad, instance-trained physical-edge probability;
 it therefore retains instance-derived classification while placing the barrier on a
-local edge centreline. The combined option is a fixed per-pixel maximum of
-generic thinned ridges and binary oriented-trace support, with physical-edge
-probability and broad edge magnitude retained at 45% strength. Trace edge uses a
+local edge centreline. The normalized choice first separates semantic margin
+from shared class support and equalizes that support against a bounded local
+seed-scale envelope with an absolute noise floor. The combined option is a
+fixed per-pixel maximum of generic thinned ridges, the normalized ridge, and
+binary oriented-trace support, with locally normalized learned evidence and
+broad edge magnitude retained at 45% strength. Trace edge uses a
 bounded continuity-aware live-wire seam,
 locks to support connecting its two anchors when available, and evaluates
 directed/undirected tangent evidence against each local move. It therefore does
@@ -438,10 +484,16 @@ first anchor remains marked in cyan; returning to it previews and, by default,
 fills only the closed polygon interior while preserving other seed IDs. Smart fill
 compares each candidate with already accepted touching pixels rather than a
 fixed starting colour, stops at the selected edge raster, never overwrites
-another seed ID, and offers bounded growth, four/eight-neighbour connectivity,
+another seed ID, and uses fixed four-neighbour growth to avoid diagonal corner
+leaks.
 **Neighbour colour step** controls the maximum floating-range OpenCV-Lab change
 from an accepted pixel to a touching candidate (L uses the displayed value and
-a*/b* use 72%); it is not distance from the initially clicked colour. **Edge
+a*/b* use 72%); it is not distance from the initially clicked colour.
+**Click-origin colour range** is the independent hard limit from the pixel
+initially clicked to every newly added pixel. It uses that same displayed Lab
+scale and defaults to 72, so gradual changes may continue only while they
+remain inside this overall range. It is not multiplied by radial fall-off;
+existing pixels of the active seed remain preserved. **Edge
 barrier threshold** is the minimum selected edge strength that blocks growth,
 so lower values stop on weaker evidence and higher values permit more growth.
 **Maximum distance from cursor** is a hard circular limit on newly filled
@@ -452,15 +504,14 @@ to 0.40 seed diameter and applies the exact radial extension pressure
 `p(d) = 2^(-d/h)`. At distance `h`, both the allowed inward-neighbour Lab step
 and the continuous edge-barrier threshold are half their cursor values, so
 progressively weaker colour transitions or edges stop outward growth. The
-minimum Lab step is taken over inward touching neighbours permitted by the
-selected four/eight-neighbour connectivity. Zero edge evidence and uniform
+minimum Lab step is taken over inward touching neighbours. Zero edge evidence and uniform
 colour remain passable to the hard distance limit, and the output remains a
 categorical label rather than a feathered mask. Smart fill also exposes a
-separate maximum-added-pixel safety limit and five tunnelling strengths. A one-pixel
+separate maximum-added-pixel safety limit and seed-relative **Edge-gap sealing**.
+The latter closes short holes in otherwise coherent thin edge walls before the
+flood, while wider open arcs remain passable. A one-pixel
 barrier frontier lets the annotation meet a selected thinned ridge instead of
-stopping on the shoulder of a blurred magnitude band. Tunnelling opens one
-bounded passage through the nearest admissible weak barrier; it does not weaken
-every edge or broaden the colour tolerance. If a small contact gap nevertheless
+stopping on the shoulder of a blurred magnitude band. If a small contact gap nevertheless
 lets the neighbour-relative flood reach its cursor-distance limit, a local smooth
 star-convex edge contour recovers one seed instead of accepting the leaked
 radius-sized region.
@@ -487,20 +538,21 @@ every annotation tool.
 
 Every painted foreground pixel contributes to a quantized CIE Lab
 colour-frequency table, so light and dark seed patterns remain separate instead
-of being averaged into a regional colour. Editable frequency influence, colour
-tolerance, and bounded refinement controls determine how that evidence affects
+of being averaged into a regional colour. Editable frequency influence and
+colour tolerance determine how that evidence affects
 similarly coloured pixels throughout the dish. Painted foreground pixels use
 the same probability equation as every matching unpainted pixel and are never
 forced to probability one. Painted background references remain explicit
 semantic constraints and, by default, augment rather than replace the retained
 perimeter-matched source. Turn off **Use background colour
-analysis** (or bypass the **Background colour probability** node) when no reliable
+analysis** on **Material colour probabilities** when no reliable
 background reference is available. Independent foreground-noise, image-quality,
 and edge diagnostics still run; the colour and noise-frequency background maps
 are omitted.
 
-Both colour-probability nodes call their capacity control **Maximum reference
-colour modes**, but this shared name does not imply identical estimators.
+The combined **Material colour probabilities** node exposes separate foreground
+and background **Maximum reference colour modes** controls; this shared name
+does not imply identical estimators.
 Foreground modes are coverage-preserving quantized colour-frequency cells;
 background modes are adaptively fitted robust Lab mixture components. The
 background default is 32 modes and can be increased to 256 when unusually
@@ -511,8 +563,8 @@ combined as a strongest-weighted-mode fuzzy union rather than added together;
 consequently, allowing more representatives cannot inflate probability merely
 because several fitted modes overlap.
 
-Selecting either the **Background colour probability** or **Foreground colour
-probability** node offers an **Accepted ... colours (HSV)** overlay. It replaces
+Selecting either colour output on **Material colour probabilities** offers an
+**Accepted ... colours (HSV)** overlay. It replaces
 the image temporarily with a full-size, exact HSV slice: hue runs horizontally,
 saturation vertically, and the toolbar **HSV value** slider scans brightness.
 The initial slice follows the strongest visible fitted colour mode; **Peak**
@@ -522,15 +574,15 @@ meaningful hue. The 25%, 50%, 75%, and 90% contours are still evaluated by the
 unchanged CIE Lab mixture model, and the represented colours are never dimmed by
 membership probability. This exact three-coordinate view avoids the ambiguous
 hidden-saturation projection used by the former miniature inspector plot.
-The foreground diagnostic uses painted modes when supplied. Otherwise it uses
-the independently detected isolated reference seeds above the ruler as its
-starting colour-frequency samples. The foreground inspector lists the eight
-most frequent starting modes as colour swatches, hexadecimal RGB values, and
-frequencies. If no reference seed survives detection, the inspector explicitly
-labels the older high-confidence-image-pixel diagnostic fit as a fallback.
+The foreground diagnostic uses painted modes and, when enabled, safely inset
+annotated-instance interiors. The foreground inspector lists the eight most
+frequent modes as colour swatches, hexadecimal RGB values, and frequencies. If
+neither user-authored source exists, it explicitly reports missing mandatory
+Foreground evidence and returns zero rather than inventing automatic evidence.
 
-The active graph exposes one **Reference layers** input node with distinct typed
-outputs for Background, Foreground, Other, and Annotated seeds. Every
+The active graph exposes one **Manual annotations** input node with distinct
+typed outputs for Background, Foreground, Other, Annotated seeds, and Manual
+seed centres. Every
 calculation that consumes one of these sublayers has a corresponding
 connector. Painted material areas supply direct colour/texture evidence;
 colour-probability pseudo-labels remain only a fallback where a class has no
@@ -578,7 +630,7 @@ their most recent measured time. During a run, nodes begin blue and independentl
 turn green as their worker stage completes; progress messages are scoped to the
 current image and pipeline revision.
 
-The active and restorable graph is audited against a separate 53-node
+The active and restorable graph is audited against a separate 54-node
 direct-input contract rather than testing only the connectors that happen to
 exist. Dish-region, corrected-image, physical-scale, seed-diameter, mask,
 proposal, and reference inputs are therefore shown on every calculation that
@@ -636,21 +688,36 @@ The active layout-to-diagnostic span is represented by these live pipeline nodes
 3. **Seed scale estimate** examines the fixed isolated-reference region above
    the ruler in CIE Lab. Colour-difference components are morphologically
    cleaned and filtered by edge contact, area, aspect ratio, and size relative
-   to the dish. The corrected median equivalent diameter of up to three accepted
-   components becomes the global seed diameter; if none survive, the fallback
-   is 16% of dish radius. Pixels belonging to the accepted isolated components
-   also provide the independent automatic foreground colour samples.
-4. **Foreground colour probability** retains individual Lab samples from its compact
-   rim-adjacent prior and fits a multimodal background distribution without
-   allowing in-dish seed colours to redefine it. Weighted Lab distance supplies
-   the initial foreground strength. The isolated reference-seed samples are
-   quantized into individual colour-frequency modes rather than averaged, then
-   compared with the background distribution using normalized relative
-   membership. Seed-scale local lightness favours coat surfaces over dark gaps,
-   while unsupported colours are reduced in crowded dishes. Painted foreground
-   references replace the automatic colour start. The applied threshold is
-   `max(8, Otsu threshold × Foreground threshold)`, followed by seed-scale
-   elliptical opening and closing.
+   to the dish. Each accepted catchment is locally refined from its inscribed
+   foreground core so an attached cast shadow does not inflate the fitted seed.
+   Maximum convex-hull width, rather than a permissive catchment rectangle,
+   supplies the initial diameter. Applied annotated instances then override
+   that estimate when at least two complete instances exist: image-edge and
+   disconnected annotations are excluded and the mean of the largest editable
+   fraction (top 25% by default) rejects small cutoff seeds. The overlay draws
+   every exact maximum-width chord, distinguishes selected/excluded instances,
+   and shows a width histogram and final estimate. Isolated fits retain a dark-
+   haloed yellow circle even after an annotation override, and their bold yellow
+   diameter text sits on a dark contrast plate for pale backgrounds. If neither source survives,
+   the fallback is 16% of dish radius. Pixels belonging to accepted isolated
+   catchments are used only for this scale estimate; they never become
+   foreground-colour evidence.
+4. The **Foreground colour probability** output of **Material colour
+   probabilities** is deliberately user-supervised. Painted
+   Foreground pixels fit a coverage-preserving multimodal CIE Lab frequency
+   model. When explicitly enabled, safely inset interiors of applied annotated
+   seed instances are additional positive examples. There is no background-
+   distance/Otsu foreground start, isolated-reference-seed colour source, or
+   iterative self-refinement. With no user-authored Foreground source, the raw
+   probability and binary material proposal are intentionally zero and the
+   node reports the missing reference.
+
+   Background and Other marks choose training classes; they never hard-mask,
+   subtract from, or overwrite the fitted Foreground raster. The same model is
+   evaluated at every valid coordinate, including coordinates painted as
+   Background or Other. Consequently the three raw material evidence classes
+   are independent scores and need not sum to one. Only **Material evidence
+   decision** normalizes them into Seed, Non-seed, Ambiguity, and Unknown mass.
    When painted samples occupy more quantized cells than the configured mode
    budget, retained modes are selected for Lab-space coverage rather than raw
    frequency alone. Adding a large, varied affirmative region therefore cannot
@@ -659,49 +726,54 @@ The active layout-to-diagnostic span is represented by these live pipeline nodes
    confines visually neutral membership to a separate swatch, and labels only
    the leading frequencies; near-neutral dark evidence therefore cannot appear
    as an unrelated all-hue band.
-   The **Background colour probability** diagnostic consumes the separately
+   The node's **Background colour probability** diagnostic consumes the separately
    controlled perimeter reference, evaluates the same fitted colour model over
    that exact buffered annulus, and shows the resulting probability beside the
    dish-resident raster. The annulus remains outlined without an opaque colour
    tint (or uses the inside-rim fallback when necessary).
-   When **Keep perimeter-matched source** is checked (the default), those ring
-   Lab samples and their accepted similar in-dish area remain training evidence
-   even after Background paint is applied. The ring anchors colour; its matching
-   in-dish area supplies spatial noise and material examples. Background
-   painting fills the ring and shows the automatic area in cyan beside the green manual marks.
+   When **Keep perimeter-matched source** is checked (the default), only ring
+   pixels whose weighted Lab colour is close to the robust ring median remain
+   training evidence. Calibration-card or other foreign-colour intersections
+   are excluded before fitting, even after Background paint is applied. No
+   visually similar in-dish area is recruited. Background painting outlines the
+   annulus and shows the exact retained ring pixels in cyan beside green manual
+   marks.
    Unchecking it removes the complete perimeter-derived source from colour,
    noise, and material-prototype fitting.
    Its node-owned full-pane overlay shows 25%, 50%, 75%, and 90% fitted
    membership contours over the exact HSV hue/saturation slice selected by the
    toolbar Value control, with learned mode frequencies and a neutral swatch.
-   The **Background noise probability** applies its learned three-band texture
-   classifier to that same surrounding annulus and displays the resulting noise
-   likelihood alongside the dish-resident refined map.
+   The **Background noise probability** extracts its positive three-band
+   texture samples directly from that full-resolution exterior annulus, despite
+   its different coordinate frame from the dish crop, and displays the annulus
+   likelihood alongside the dish-resident map. Texture contribution is
+   adaptive: the nominal 72% weight is reduced toward zero when the fitted
+   foreground/background texture profiles have weak separation, allowing the
+   clearer colour evidence to dominate instead of classifying pale seeds as
+   background.
 
-   The background colour and noise nodes also expose **Other colour probability**
-   and **Other noise probability** diagnostics learned from painted Other material.
+   The material-colour and background-noise nodes also expose **Other colour
+   probability** and **Other noise probability** diagnostics learned from
+   painted Other material.
    Both use direct brightness (white is stronger Other evidence), do not force
    painted coordinates to probability one, and remain blank when no Other
-   reference has been painted. Other noise uses a base score of 72% learned
-   three-band texture probability plus 28% Other-colour probability before
-   directional ray integration. These class-specific diagnostics are distinct
+   reference has been painted. Other noise uses the same separation-adaptive
+   texture/colour blend before directional ray integration. These
+   class-specific diagnostics are distinct
    from **Reference Other-material probability**, which combines colour,
    texture, residual, edge, and ridge prototype features.
 
    The foreground and background colour maps are related evidence scores, not
    complementary or mutually calibrated posteriors. Background colour uses a
-   compact robust multimodal Lab fit anchored by painted background examples and,
-   by default, the adjustable perimeter source. Foreground colour instead combines distance
-   from an independently fitted background model, an Otsu-derived cutoff,
-   seed-scale lightness support, and a higher-capacity Lab frequency table for
-   painted or isolated-reference-seed colours. This extra capacity is intentional
-   for patterned seed coats, but it means equal numeric values in the two maps do
-   not imply equal confidence. The automatic foreground path also retains its
-   older compact rim prior rather than consuming the adjustable perimeter band;
-   unifying and recalibrating those starts requires fixture-level retuning.
-5. **Foreground noise probability** learns a matching three-band profile from
-   foreground-colour pseudo-labels. It continues texture evidence across
-   patterned coats without hard-forcing painted reference pixels.
+   compact robust multimodal Lab fit anchored by painted Background and, by
+   default, the adjustable perimeter source. Foreground colour uses only the
+   user-authored source above. Equal numeric values in the two raw maps do not
+   imply equal confidence.
+5. **Foreground noise probability** learns its matching three-band profile from
+   the same painted/annotated Foreground source. It does not create foreground
+   pseudo-labels; without a source it remains zero/blocked. Where trained, it
+   continues texture evidence across patterned coats without hard-forcing the
+   annotated coordinates.
 6. **Edge gradients**, **Thinned edge ridges**, **Thinned reference edge
    ridge**, and **Oriented edge traces**
    retain the strongest current evidence for visible seed boundaries without
@@ -717,9 +789,31 @@ The active layout-to-diagnostic span is represented by these live pipeline nodes
    non-physical-dominant pixels to black. Its node-owned **Internal-edge
    subtraction** coefficient `k` defaults to 0.5 and is adjustable from 0 to 2,
    allowing overlap between the two learned classes without automatically
-   punching holes through a physical trace. It changes only this diagnostic;
-   the two source probability rasters remain unchanged. These are evidence-score
-   comparisons rather than calibrated complementary probabilities.
+   punching holes through a physical trace. The two source probability rasters
+   remain unchanged. The same raw margin is thinned with normal-direction NMS
+   and hysteresis into **Thinned net-physical edge ridge**. A separate
+   **Locally normalized net physical edge** divides out shared class support,
+   uses a winsorized local RMS envelope with bounded gain, and applies an
+   absolute smooth evidence floor. Its **Thinned normalized net-physical
+   ridge** feeds the default procedural boundary term and is available to all
+   assisted annotation tools. See `docs/LOCAL_EDGE_NORMALIZATION.md` for the
+   complete equations and safeguards. These are evidence-score comparisons
+   rather than calibrated complementary probabilities.
+   Edge gradients can use Scharr, Sobel, Prewitt, or central differences and
+   can fuse the corrected original with selected signed wavelet detail levels
+   or the low-pass residual. The wavelet details plus residual reconstruct the
+   original exactly. Directed and undirected tangent overlays are outputs of
+   this one shared node rather than separate pass-through nodes. Oriented traces
+   expose both their ridge source and an explicit multiplier of the master seed
+   diameter used for trace window/minimum-length scaling.
+   **Trace continuity** is evaluated only on retained ridge pixels. Samples
+   follow the local tangent forward and backward over the configured
+   seed-relative window; each sample combines nearby 3×3 ridge occupancy with
+   tangent agreement, and the display is the geometric mean of the two
+   directional averages. Bright pixels therefore have aligned support on both
+   sides. This differs from **Trace gap confidence**, whose geometric path score
+   penalizes repeated missing samples. Neither diagnostic is itself physical-edge
+   probability or proof of a closed contour.
    Non-adjacent trace-gap links
    require a tight chord/tangent match, consistent directed gradient side, and
    an open directional endpoint. An additional **Convexity bias** defaults to
@@ -737,18 +831,29 @@ The active layout-to-diagnostic span is represented by these live pipeline nodes
    holes, and excludes a seed-relative dish margin. Edge magnitude and thinned
    ridges form the generic boundary candidate field. The instance-derived
    physical-minus-non-physical semantic margin gates that whole field (and is
-   neutral when no annotations exist), while the separately thinned physical
-   ridge and coherent convex oriented traces add narrow, continuity-aware
-   support. Sensor/noise, shadow, and internal-boundary peaks are not direct
-   boundary or centre evidence. Smoothed material geometry and seed-interior
-   depth produce automatic markers; distinct painted instance IDs replace
-   nearby automatic markers. OpenCV marker-controlled watershed performs the
-   bounded topological partition, and marker/boundary/area evidence supplies a
-   per-instance confidence. Six owned overlays expose every stage. GPU inputs
+   neutral when no annotations exist), while the net-physical ridge,
+   directional surface-darkening magnitude, and coherent convex oriented traces
+   add narrow, continuity-aware support. Sensor/noise and shadow are not direct
+   boundary or centre evidence. Seed-scale blurred illumination-flattened
+   grayscale joins smoothed material geometry and seed-interior depth for
+   automatic marker likelihood, suppressing fine coat patterns before centre
+   selection; distinct painted instance IDs replace
+   nearby automatic markers. OpenCV marker-controlled watershed evaluates
+   several material-threshold hypotheses per marker (five by default).
+   Generated candidates are hard-rejected when minimum/maximum area,
+   side-to-side width, convex-hull concavity, thin-protrusion area, solidity, or
+   minimum-area-box axis ratio is implausible. Separate soft minimum-area and
+   maximum-width limits reduce scores before the hard cutoffs; reviewed
+   annotations remain authoritative. A score-ordered overlap-aware pass chooses
+   the final non-overlapping combination. Marker/boundary/area/shape evidence
+   supplies per-instance confidence. Eight owned overlays expose every stage,
+   including retained-instance concavity and unselected alternatives coloured
+   by relative score. GPU inputs
    are resized before this topology-only CPU transfer. Labels and diagnostic
    rasters remain at that bounded working resolution and are scaled by Qt only
    for display, then the compact result is cached at the node.
-   The node inspector also provides a per-image **Manual seed centres** editor.
+   The **Manual annotations** inspector provides a per-image **Manual seed
+   centres** editor, also available beside its procedural consumer for review.
    Hollow cyan markers are automatic, solid yellow markers are manual,
    magenta markers are locked to applied instance annotations, and rejected
    edits are red with their reason. Click empty image space to add, drag to
@@ -762,8 +867,8 @@ The active layout-to-diagnostic span is represented by these live pipeline nodes
    gesture is atomically autosaved to a compact SHA-bound source-coordinate
    sidecar under `projects/manual-seed-centres/`; the current calibration maps
    those exact source floats into corrected/crop coordinates for inference.
-   A gesture invalidates and recomputes only the manual-centre input,
-   procedural separation, and its graph dependents.
+   A gesture invalidates and recomputes only procedural separation and its
+   graph dependents; the Manual annotations input status is updated immediately.
    Applied instance annotations can also supervise a bounded, image-local
    parameter search from the node inspector through **Fit settings to applied
    annotations…**. Each trial deliberately withholds the annotated IDs from
@@ -784,22 +889,25 @@ The active layout-to-diagnostic span is represented by these live pipeline nodes
    every seed in the detected dish has a complete instance mask; whole-dish
    scoring then penalizes every predicted object, including isolated background
    false positives. The fit is measured on one image, but accepting its proposal
-   changes the procedural node settings globally for every image. This is useful
-   in-sample adjustment, not evidence that settings generalize; publishable
-   validation still requires independent, complete reviewed masks.
-8. The disabled **Directional surface darkness gradients** toolbox node searches
-   independent one-sided rays and emits lightening/darkening magnitude and
-   direction products. Its lightening and darkening derivative cutoff nodes
-   retain only raw slopes at or below their editable L*/pixel ceilings,
-   suppressing strong edges. The complete three-node branch is preserved with
-   its connections in **Unused nodes**.
+   changes the procedural node for every image in the current project. This is
+   useful in-sample adjustment, not evidence that settings generalize;
+   publishable validation still requires independent, complete reviewed masks.
+   Fitting is available only after creating or opening a project; **Save Project**
+   persists accepted values, and they are never installed as application-global
+   defaults.
+8. **Directional surface darkness gradients** is enabled by default and emits
+   independent one-sided lightening/darkening magnitude and direction products.
+   The procedural separator consumes its darkening magnitude through an exposed
+   weight. Its optional lightening and darkening derivative cutoff nodes retain
+   only raw slopes at or below editable L*/pixel ceilings and remain in
+   **Unused nodes**.
 9. **Multiscale darkness & colour noise** builds a seed-relative Gaussian
    pyramid and exposes surrounding fine/medium/coarse RMS energy separately for
    L* darkness and Lab chroma. These masks are raw diagnostic evidence and do
    not learn foreground/background classes.
 
-The preserved **Circle candidates**, **Distance-peak candidates**, directional
-surface-darkness and derivative upper-cutoff nodes, plus
+The preserved **Circle candidates**, **Distance-peak candidates**, the two
+surface-derivative upper-cutoff nodes, plus
 every active-DAG descendant of the distance node, live in the graph toolbar's
 **Unused nodes** toolbox. They contribute no status, overlay, dependency, or
 calculation to the current graph. Restoring a node also restores any authored
@@ -872,19 +980,26 @@ rebuilds trace assignments and their dependents without recalculating ridge
 NMS/hysteresis.
 
 The calibration path is represented by separate **Colour-card swatches**,
-**Ruler detection**, **Deskew & colour balance**, and **Absolute ruler scale**
+**Ruler detection**, **Deskew and colour balance**, and **Absolute ruler scale**
 nodes. The colour-card detector rectifies the outer card, searches RGB edge
 support around every expected swatch boundary on GPU, and pools those responses
 across shared grid rows and columns. This locks the displayed quadrilaterals to
 the printed solid edges while requiring only one compact profile transfer back
 to the CPU. Selecting the nodes prepares the matching reference diagnostic or calibrated
-image in **Image review**. Ruler endpoints represent the large 0 and configured
-terminal scale dashes rather than the ends of the plastic ruler body. The result is stored as pixels per millimetre
+image in **Image review**. Every ruler tick's transverse length is measured
+before semantic assignment. The measured ranks must align with major metric or
+imperial increments; a coherent non-zero phase corrects the lattice, while a
+failed hierarchy withholds that scale. Metric and imperial estimates and their
+hierarchy/cross-scale sanity scores remain separate. The transparent-plastic
+outline is a four-line mildly projective quadrilateral fitted outside the tick
+roots and terminal ticks rather than a forced rectangle. Ruler endpoints
+represent the large 0 and configured terminal scale dashes rather than the ends of the plastic ruler body. The result is stored as pixels per millimetre
 and displayed as a physical scale bar; batch CSV reports include swatch count,
 deskew angle, scale, and scale confidence.
 
-The active implemented evidence layers are first-class pipeline nodes:
-foreground/background colour and noise probability, shared edge gradients,
+The active implemented evidence layers are first-class pipeline outputs:
+combined foreground/background/Other colour probabilities, separate noise
+probabilities, shared edge gradients,
 undirected/directed tangents, one-sided lightening/darkening surface gradients,
 six multiscale darkness/colour noise masks,
 thinned ridges, oriented traces, illumination, image quality, and calibration
@@ -892,14 +1007,15 @@ residuals. The active procedural node consumes those products and exposes
 review-oriented seed identities and confidence. The former distance-based
 instance, boundary, review, and output nodes remain serialized in the toolbox
 alongside the optional strong-slope cutoff views.
-The background-colour node is bypassable. Its user-painted reference mask
-augments the perimeter-matched source by default; uncheck **Keep
+Background colour fitting has an independent enable control on the combined
+material-colour node. Its user-painted reference mask augments the
+perimeter-matched source by default; uncheck **Keep
 perimeter-matched source** when paint should replace that automatic evidence.
 Their node headers follow analysis running/completion/failure state. Selecting
 one of these nodes selects the corresponding layer for the **Image review** tab.
 
-Background colour probability and **Edge gradients** derive directly from **Deskew & colour
-balance**, rather than from seed identification. The shared gradient outputs
+**Material colour probabilities** and **Edge gradients** derive directly from
+**Deskew and colour balance**, rather than from seed identification. The shared gradient outputs
 feed both tangent displays and the active ridge/trace branch.
 
 The procedural output is not a validated count or reviewed instance mask.

@@ -19,6 +19,20 @@ import numpy as np
 MANUAL_CENTRE_SUPPRESSION_DIAMETER_FRACTION = 0.45
 
 
+def _alternative_candidate_colour(score: float) -> np.ndarray:
+    """Return the bounded red-to-green colour used for rejected candidates."""
+
+    bounded_score = float(np.clip(score, 0.0, 1.0))
+    channels = np.rint(
+        (
+            235.0 * (1.0 - bounded_score) + 35.0,
+            220.0 * bounded_score + 30.0,
+            55.0,
+        )
+    )
+    return np.asarray(np.clip(channels, 0.0, 255.0), dtype=np.uint8)
+
+
 class ManualSeedCentreMode(StrEnum):
     """How edited point markers interact with automatic centre proposals."""
 
@@ -117,20 +131,31 @@ class ProceduralInstanceSettings:
     boundary_nonphysical_discount: float = 0.95
     boundary_physical_ridge_weight: float = 0.55
     boundary_trace_weight: float = 0.45
+    boundary_surface_darkening_weight: float = 0.30
     trace_minimum_length_fraction: float = 0.22
     trace_convexity_weight: float = 0.60
     reference_texture_weight: float = 0.35
     centre_geometry_smoothing_fraction: float = 0.14
-    centre_material_weight: float = 0.55
-    centre_distance_weight: float = 0.45
+    centre_material_weight: float = 0.20
+    centre_distance_weight: float = 0.20
+    centre_flattened_grayscale_weight: float = 0.60
     centre_minimum_separation_fraction: float = 0.42
     sparse_centre_minimum_separation_fraction: float = 0.58
     sparse_seed_area_fraction: float = 0.47
     packed_seed_cell_fraction: float = 0.72
     marker_count_multiplier: float = 1.02
     minimum_marker_score: float = 0.12
-    minimum_instance_area_fraction: float = 0.18
+    minimum_instance_area_fraction: float = 0.26
+    soft_minimum_instance_area_fraction: float = 0.39
     maximum_instance_area_fraction: float = 1.45
+    soft_maximum_instance_width_fraction: float = 1.15
+    hard_maximum_instance_width_fraction: float = 1.35
+    maximum_internal_concavity_fraction: float = 0.15
+    maximum_protrusion_area_fraction: float = 0.10
+    minimum_instance_solidity: float = 0.62
+    maximum_instance_axis_ratio: float = 2.80
+    candidate_hypotheses_per_marker: int = 5
+    candidate_overlap_fraction: float = 0.02
 
     def __post_init__(self) -> None:
         if not 256 <= self.working_maximum_dimension <= 4096:
@@ -146,13 +171,19 @@ class ProceduralInstanceSettings:
             raise ValueError("Physical-ridge weight must be between zero and one.")
         if not 0.0 <= self.boundary_trace_weight <= 1.0:
             raise ValueError("Oriented-trace weight must be between zero and one.")
+        if not 0.0 <= self.boundary_surface_darkening_weight <= 1.0:
+            raise ValueError("Surface-darkening weight must be between zero and one.")
         if not 0.02 <= self.trace_minimum_length_fraction <= 2.0:
             raise ValueError("Minimum trace length must be between 0.02 and 2 seed diameters.")
         if not 0.0 <= self.trace_convexity_weight <= 1.0:
             raise ValueError("Trace convexity weight must be between zero and one.")
         if not 0.0 <= self.reference_texture_weight <= 1.0:
             raise ValueError("Reference texture weight must be between zero and one.")
-        centre_weights = (self.centre_material_weight, self.centre_distance_weight)
+        centre_weights = (
+            self.centre_material_weight,
+            self.centre_distance_weight,
+            self.centre_flattened_grayscale_weight,
+        )
         if any(value < 0.0 for value in centre_weights) or sum(centre_weights) <= 0.0:
             raise ValueError("Centre evidence weights must be non-negative and non-zero.")
         if not 0.0 < self.foreground_threshold_scale <= 2.0:
@@ -169,8 +200,34 @@ class ProceduralInstanceSettings:
             raise ValueError("Sparse centre separation must be between 0.1 and 1.0 seed diameters.")
         if not 0.5 <= self.marker_count_multiplier <= 2.0:
             raise ValueError("Marker-count multiplier must be between 0.5 and 2.0.")
-        if not 0.05 <= self.minimum_instance_area_fraction < self.maximum_instance_area_fraction:
+        if not (
+            0.05
+            <= self.minimum_instance_area_fraction
+            < self.maximum_instance_area_fraction
+            and 0.05
+            <= self.soft_minimum_instance_area_fraction
+            < self.maximum_instance_area_fraction
+        ):
             raise ValueError("Instance area fractions are inconsistent.")
+        if not (
+            0.50
+            <= self.soft_maximum_instance_width_fraction
+            < self.hard_maximum_instance_width_fraction
+            <= 4.0
+        ):
+            raise ValueError("Soft and hard instance-width limits are inconsistent.")
+        if not 0.0 <= self.maximum_internal_concavity_fraction <= 1.0:
+            raise ValueError("Maximum internal concavity must be between zero and one.")
+        if not 0.0 <= self.maximum_protrusion_area_fraction <= 1.0:
+            raise ValueError("Maximum protrusion area must be between zero and one.")
+        if not 0.10 <= self.minimum_instance_solidity <= 1.0:
+            raise ValueError("Minimum instance solidity must be between 0.1 and 1.")
+        if not 1.0 <= self.maximum_instance_axis_ratio <= 8.0:
+            raise ValueError("Maximum instance axis ratio must be between 1 and 8.")
+        if not 1 <= self.candidate_hypotheses_per_marker <= 9:
+            raise ValueError("Candidate hypotheses per marker must be between 1 and 9.")
+        if not 0.0 <= self.candidate_overlap_fraction <= 0.25:
+            raise ValueError("Candidate overlap fraction must be between zero and 0.25.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,6 +259,39 @@ class ProceduralInstanceResult:
         default_factory=lambda: np.empty((0, 2), np.float32)
     )
     rejected_manual_centre_reasons: tuple[str, ...] = ()
+    concavity: np.ndarray = field(
+        default_factory=lambda: np.zeros((1, 1), np.uint8)
+    )
+    alternative_candidates_rgba: np.ndarray = field(
+        default_factory=lambda: np.zeros((1, 1, 4), np.uint8)
+    )
+    candidate_scores: np.ndarray = field(
+        default_factory=lambda: np.empty(0, np.float32)
+    )
+    candidate_selected: np.ndarray = field(
+        default_factory=lambda: np.empty(0, bool)
+    )
+    instance_area_px2: np.ndarray = field(
+        default_factory=lambda: np.empty(0, np.float32)
+    )
+    instance_maximum_width_px: np.ndarray = field(
+        default_factory=lambda: np.empty(0, np.float32)
+    )
+    instance_width_fractions: np.ndarray = field(
+        default_factory=lambda: np.empty(0, np.float32)
+    )
+    instance_concavity_fractions: np.ndarray = field(
+        default_factory=lambda: np.empty(0, np.float32)
+    )
+    instance_protrusion_fractions: np.ndarray = field(
+        default_factory=lambda: np.empty(0, np.float32)
+    )
+    instance_solidities: np.ndarray = field(
+        default_factory=lambda: np.empty(0, np.float32)
+    )
+    instance_axis_ratios: np.ndarray = field(
+        default_factory=lambda: np.empty(0, np.float32)
+    )
 
     @property
     def count(self) -> int:
@@ -244,6 +334,54 @@ class ProceduralInstanceResult:
             lookup[1 : available + 1] = self.instance_confidences[:available]
         return np.uint8(np.clip(np.rint(lookup[self.labels] * 255.0), 0, 255))
 
+    def statistics_for_label(self, label: int) -> dict[str, float | int]:
+        """Return compact, source-resolution geometry for one visible label."""
+
+        index = int(label) - 1
+        if index < 0 or index >= self.count:
+            raise ValueError(f"Procedural label {label} is not present.")
+        return {
+            "label": int(label),
+            "area_px2": float(self.instance_area_px2[index]),
+            "maximum_width_px": float(self.instance_maximum_width_px[index]),
+            "width_fraction": float(self.instance_width_fractions[index]),
+            "concavity_fraction": float(self.instance_concavity_fractions[index]),
+            "protrusion_fraction": float(self.instance_protrusion_fractions[index]),
+            "solidity": float(self.instance_solidities[index]),
+            "axis_ratio": float(self.instance_axis_ratios[index]),
+            "confidence": float(self.instance_confidences[index]),
+            "marker_score": float(self.marker_scores[index]),
+        }
+
+
+@dataclass(slots=True)
+class _InstanceCandidate:
+    """One compact marker-conditioned mask hypothesis at working resolution."""
+
+    marker_index: int
+    hypothesis_index: int
+    x0: int
+    y0: int
+    mask: np.ndarray
+    score: float
+    area: float
+    width_fraction: float
+    concavity_fraction: float
+    concavity_mask: np.ndarray
+    protrusion_fraction: float
+    solidity: float
+    axis_ratio: float
+    boundary_support: float
+    selected: bool = False
+
+    @property
+    def x1(self) -> int:
+        return self.x0 + int(self.mask.shape[1])
+
+    @property
+    def y1(self) -> int:
+        return self.y0 + int(self.mask.shape[0])
+
 
 @dataclass(frozen=True, slots=True)
 class PreparedProceduralInstanceInputs:
@@ -260,6 +398,7 @@ class PreparedProceduralInstanceInputs:
     working_maximum_dimension: int
     seed_diameter_px: float
     valid_mask: np.ndarray
+    material_probability: np.ndarray | None
     foreground_probability: np.ndarray
     foreground_noise_probability: np.ndarray
     background_probability: np.ndarray
@@ -268,11 +407,14 @@ class PreparedProceduralInstanceInputs:
     edge_ridges: np.ndarray
     physical_edge_probability: np.ndarray
     non_edge_probability: np.ndarray
+    normalized_net_physical_edge_probability: np.ndarray
     thinned_reference_edge_ridges: np.ndarray
     oriented_edge_trace_labels: np.ndarray
     oriented_edge_trace_continuity: np.ndarray
     semantic_edge_evidence_available: bool
     reference_surface_probability: np.ndarray | None
+    flattened_grayscale: np.ndarray | None
+    surface_darkening_magnitude: np.ndarray | None
 
     @property
     def working_shape(self) -> tuple[int, int]:
@@ -515,6 +657,216 @@ def _renumber_labels(labels: np.ndarray) -> np.ndarray:
     return lookup[np.asarray(labels, dtype=np.int32)]
 
 
+def _material_occupancy(
+    occupancy_u8: np.ndarray,
+    threshold: float,
+    interior_valid: np.ndarray,
+    diameter: float,
+    settings: ProceduralInstanceSettings,
+) -> np.ndarray:
+    """Build one material support hypothesis from an absolute threshold."""
+
+    occupancy = (occupancy_u8 >= float(threshold)) & interior_valid
+    occupancy = cv2.morphologyEx(
+        np.uint8(occupancy) * 255,
+        cv2.MORPH_CLOSE,
+        _ellipse_kernel(diameter * settings.occupancy_closing_fraction),
+    ) > 0
+    occupancy &= interior_valid
+    flood = np.uint8(occupancy) * 255
+    cv2.floodFill(flood, None, (0, 0), 255)
+    holes = cv2.bitwise_not(flood)
+    _count, component_labels, component_stats, _centroids = (
+        cv2.connectedComponentsWithStats(np.uint8(holes > 0), connectivity=8)
+    )
+    maximum_hole_area = (
+        diameter * diameter * settings.occupancy_hole_area_fraction
+    )
+    fill_component = component_stats[:, cv2.CC_STAT_AREA] <= maximum_hole_area
+    fill_component[0] = False
+    occupancy |= fill_component[component_labels]
+    return cv2.morphologyEx(
+        np.uint8(occupancy) * 255,
+        cv2.MORPH_OPEN,
+        _ellipse_kernel(max(1.0, diameter * 0.025)),
+    ) > 0
+
+
+def _candidate_overlap_pixels(
+    first: _InstanceCandidate, second: _InstanceCandidate
+) -> int:
+    left = max(first.x0, second.x0)
+    top = max(first.y0, second.y0)
+    right = min(first.x1, second.x1)
+    bottom = min(first.y1, second.y1)
+    if right <= left or bottom <= top:
+        return 0
+    first_roi = first.mask[
+        top - first.y0 : bottom - first.y0,
+        left - first.x0 : right - first.x0,
+    ]
+    second_roi = second.mask[
+        top - second.y0 : bottom - second.y0,
+        left - second.x0 : right - second.x0,
+    ]
+    return int(np.count_nonzero(first_roi & second_roi))
+
+
+def _candidate_from_component(
+    component: np.ndarray,
+    *,
+    marker_index: int,
+    hypothesis_index: int,
+    marker_score: float,
+    marker_source: int,
+    boundary: np.ndarray,
+    diameter: float,
+    expected_area_fraction: float,
+    settings: ProceduralInstanceSettings,
+    origin_xy: tuple[int, int] = (0, 0),
+) -> tuple[_InstanceCandidate | None, str]:
+    """Measure, hard-filter, and softly score one compact candidate mask."""
+
+    rows, columns = np.nonzero(component)
+    if not len(rows):
+        return None, "instance_below_minimum_area"
+    local_x0, local_x1 = int(columns.min()), int(columns.max()) + 1
+    local_y0, local_y1 = int(rows.min()), int(rows.max()) + 1
+    local = np.asarray(
+        component[local_y0:local_y1, local_x0:local_x1], dtype=np.uint8
+    )
+    x0 = int(origin_xy[0]) + local_x0
+    y0 = int(origin_xy[1]) + local_y0
+    area = float(np.count_nonzero(local))
+    hard_minimum_area = diameter * diameter * settings.minimum_instance_area_fraction
+    soft_minimum_area = (
+        diameter * diameter * settings.soft_minimum_instance_area_fraction
+    )
+    maximum_area = diameter * diameter * settings.maximum_instance_area_fraction
+    annotated = marker_source == int(ProceduralMarkerSource.ANNOTATED)
+    if not annotated and area < hard_minimum_area:
+        return None, "instance_below_minimum_area"
+    if area > maximum_area:
+        return None, "instance_above_maximum_area"
+    contours, _hierarchy = cv2.findContours(
+        local, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+    if not contours:
+        return None, "instance_missing_contour"
+    contour = max(contours, key=cv2.contourArea)
+    hull = cv2.convexHull(contour)
+    hull_area = float(cv2.contourArea(hull))
+    solidity = area / max(1.0, hull_area)
+    concavity = max(0.0, hull_area - area) / max(1.0, area)
+    # Visualize only exterior-connected pockets between the observed perimeter
+    # and its convex envelope. Enclosed internal holes are intentionally not
+    # called perimeter concavity.
+    padded = np.pad(local > 0, 1, mode="constant", constant_values=False)
+    hull_mask = np.zeros_like(padded, np.uint8)
+    cv2.fillConvexPoly(hull_mask, np.int32(hull[:, 0, :] + 1), 1)
+    background_components, background_labels = cv2.connectedComponents(
+        np.uint8(~padded), connectivity=8
+    )
+    del background_components
+    exterior_label = int(background_labels[0, 0])
+    concavity_mask = (
+        (hull_mask > 0) & (background_labels == exterior_label)
+    )[1:-1, 1:-1]
+    (_centre, (box_width, box_height), _angle) = cv2.minAreaRect(contour)
+    width_fraction = max(float(box_width), float(box_height)) / max(1.0, diameter)
+    axis_ratio = max(box_width, box_height) / max(
+        1.0, min(box_width, box_height)
+    )
+    opened = cv2.morphologyEx(
+        local,
+        cv2.MORPH_OPEN,
+        _ellipse_kernel(max(1.0, diameter * 0.10)),
+    ) > 0
+    protrusion = float(np.count_nonzero((local > 0) & ~opened)) / max(1.0, area)
+    # Annotation-derived markers identify trusted centres, not permission for
+    # the surrounding watershed to grow into an implausible Frankenstein
+    # region. The hard upper-area/width/concavity/protrusion/solidity/axis
+    # constraints therefore apply to every inferred candidate. Only the hard
+    # minimum-area rule is waived for a deliberately tiny reviewed instance.
+    if concavity > settings.maximum_internal_concavity_fraction:
+        return None, "instance_above_maximum_concavity"
+    if protrusion > settings.maximum_protrusion_area_fraction:
+        return None, "instance_above_maximum_protrusion"
+    if solidity < settings.minimum_instance_solidity:
+        return None, "instance_below_minimum_solidity"
+    if axis_ratio > settings.maximum_instance_axis_ratio:
+        return None, "instance_above_maximum_axis_ratio"
+    if width_fraction > settings.hard_maximum_instance_width_fraction:
+        return None, "instance_above_hard_maximum_width"
+
+    perimeter = cv2.morphologyEx(local, cv2.MORPH_GRADIENT, np.ones((3, 3), np.uint8)) > 0
+    boundary_values = boundary[y0 : y0 + local.shape[0], x0 : x0 + local.shape[1]][
+        perimeter
+    ]
+    boundary_support = (
+        float(np.mean(boundary_values)) if boundary_values.size else 0.0
+    )
+    expected_area = max(1.0, diameter * diameter * expected_area_fraction)
+    area_confidence = float(
+        np.exp(-0.5 * (np.log(max(area / expected_area, 1e-4)) / 0.58) ** 2)
+    )
+    minimum_penalty = min(1.0, area / max(1.0, soft_minimum_area))
+    if width_fraction <= settings.soft_maximum_instance_width_fraction:
+        width_penalty = 1.0
+    else:
+        width_penalty = max(
+            0.0,
+            1.0
+            - (
+                width_fraction - settings.soft_maximum_instance_width_fraction
+            )
+            / max(
+                1e-6,
+                settings.hard_maximum_instance_width_fraction
+                - settings.soft_maximum_instance_width_fraction,
+            ),
+        )
+    shape_penalty = (
+        max(0.0, 1.0 - concavity / max(1e-6, settings.maximum_internal_concavity_fraction))
+        * max(0.0, 1.0 - protrusion / max(1e-6, settings.maximum_protrusion_area_fraction))
+    ) ** 0.25
+    score = float(
+        np.clip(
+            (
+                0.42 * float(marker_score)
+                + 0.36 * boundary_support
+                + 0.22 * area_confidence
+            )
+            * minimum_penalty
+            * width_penalty
+            * shape_penalty,
+            0.0,
+            1.0,
+        )
+    )
+    if annotated:
+        score = 1.0
+    return (
+        _InstanceCandidate(
+            marker_index=marker_index,
+            hypothesis_index=hypothesis_index,
+            x0=x0,
+            y0=y0,
+            mask=local > 0,
+            score=score,
+            area=area,
+            width_fraction=width_fraction,
+            concavity_fraction=concavity,
+            concavity_mask=concavity_mask,
+            protrusion_fraction=protrusion,
+            solidity=solidity,
+            axis_ratio=axis_ratio,
+            boundary_support=boundary_support,
+        ),
+        "",
+    )
+
+
 def _manual_centres_at_working_scale(
     edits: ManualSeedCentres | None,
     prepared: PreparedProceduralInstanceInputs,
@@ -739,6 +1091,7 @@ def prepare_procedural_instance_inputs(
     valid_mask,
     seed_diameter_px: float,
     *,
+    material_probability=None,
     foreground_probability,
     foreground_noise_probability,
     background_probability,
@@ -747,10 +1100,13 @@ def prepare_procedural_instance_inputs(
     edge_ridges,
     physical_edge_probability=None,
     non_edge_probability=None,
+    normalized_net_physical_edge_probability=None,
     thinned_reference_edge_ridges=None,
     oriented_edge_trace_labels=None,
     oriented_edge_trace_continuity=None,
     reference_surface_probability=None,
+    flattened_grayscale=None,
+    surface_darkening_magnitude=None,
     working_maximum_dimension: int = 1600,
 ) -> PreparedProceduralInstanceInputs:
     """Materialize the separator's bounded, parameter-independent inputs once."""
@@ -767,6 +1123,13 @@ def prepare_procedural_instance_inputs(
     size = (width, height)
 
     valid = _readonly(_working_u8(valid_mask, size, cv2.INTER_NEAREST) > 0)
+    material = (
+        None
+        if material_probability is None
+        else _readonly(
+            _working_u8(material_probability, size, cv2.INTER_AREA) / 255.0
+        )
+    )
     foreground = _readonly(
         _working_u8(foreground_probability, size, cv2.INTER_AREA) / 255.0
     )
@@ -795,6 +1158,18 @@ def prepare_procedural_instance_inputs(
             _working_u8(non_edge_probability, size, cv2.INTER_AREA) / 255.0
         )
     )
+    normalized_net_probability = (
+        _readonly(np.zeros_like(edge))
+        if normalized_net_physical_edge_probability is None
+        else _readonly(
+            _working_u8(
+                normalized_net_physical_edge_probability,
+                size,
+                cv2.INTER_AREA,
+            )
+            / 255.0
+        )
+    )
     reference_ridges = (
         _readonly(np.zeros_like(edge))
         if thinned_reference_edge_ridges is None
@@ -821,6 +1196,7 @@ def prepare_procedural_instance_inputs(
     semantic_available = bool(
         np.any(physical_probability > (1.0 / 255.0))
         or np.any(nonphysical_probability > (1.0 / 255.0))
+        or np.any(normalized_net_probability > (1.0 / 255.0))
     )
     reference_surface = (
         None
@@ -829,12 +1205,27 @@ def prepare_procedural_instance_inputs(
             _working_u8(reference_surface_probability, size, cv2.INTER_AREA) / 255.0
         )
     )
+    flattened = (
+        None
+        if flattened_grayscale is None
+        else _readonly(
+            _working_u8(flattened_grayscale, size, cv2.INTER_AREA) / 255.0
+        )
+    )
+    surface_darkening = (
+        None
+        if surface_darkening_magnitude is None
+        else _readonly(
+            _working_u8(surface_darkening_magnitude, size, cv2.INTER_AREA) / 255.0
+        )
+    )
     return PreparedProceduralInstanceInputs(
         source_shape=(source_height, source_width),
         working_scale=float(scale),
         working_maximum_dimension=int(working_maximum_dimension),
         seed_diameter_px=max(6.0, float(seed_diameter_px) * scale),
         valid_mask=valid,
+        material_probability=material,
         foreground_probability=foreground,
         foreground_noise_probability=foreground_noise,
         background_probability=background,
@@ -843,11 +1234,14 @@ def prepare_procedural_instance_inputs(
         edge_ridges=ridges,
         physical_edge_probability=physical_probability,
         non_edge_probability=nonphysical_probability,
+        normalized_net_physical_edge_probability=normalized_net_probability,
         thinned_reference_edge_ridges=reference_ridges,
         oriented_edge_trace_labels=trace_labels,
         oriented_edge_trace_continuity=trace_continuity,
         semantic_edge_evidence_available=semantic_available,
         reference_surface_probability=reference_surface,
+        flattened_grayscale=flattened,
+        surface_darkening_magnitude=surface_darkening,
     )
 
 
@@ -893,19 +1287,33 @@ def procedural_seed_instances_from_prepared(
     ridges = prepared.edge_ridges
     physical_probability = prepared.physical_edge_probability
     nonphysical_probability = prepared.non_edge_probability
+    normalized_net_probability = (
+        prepared.normalized_net_physical_edge_probability
+    )
     reference_ridges = prepared.thinned_reference_edge_ridges
     trace_labels = prepared.oriented_edge_trace_labels
     trace_continuity = prepared.oriented_edge_trace_continuity
     reference_surface = prepared.reference_surface_probability
+    flattened_grayscale = prepared.flattened_grayscale
+    surface_darkening = prepared.surface_darkening_magnitude
 
-    inverse_background = 1.0 - np.minimum(background, refined_background)
-    occupancy_likelihood = np.maximum(foreground, foreground_noise)
-    if reference_surface is not None:
-        occupancy_likelihood = (
-            occupancy_likelihood * (1.0 - settings.reference_texture_weight)
-            + reference_surface * settings.reference_texture_weight
-        )
-    occupancy_likelihood *= 0.30 + 0.70 * inverse_background
+    if prepared.material_probability is not None:
+        # The hierarchical material node has already combined colour, texture,
+        # prototypes, Background, Other, contradiction, and unknown evidence.
+        # Recombining raw channels here would recreate the permissive max/min
+        # failure mode and make the procedural overlay disagree with its graph
+        # input.
+        occupancy_likelihood = prepared.material_probability.copy()
+    else:
+        # Compatibility for direct callers and historical fitting fixtures.
+        inverse_background = 1.0 - np.minimum(background, refined_background)
+        occupancy_likelihood = np.maximum(foreground, foreground_noise)
+        if reference_surface is not None:
+            occupancy_likelihood = (
+                occupancy_likelihood * (1.0 - settings.reference_texture_weight)
+                + reference_surface * settings.reference_texture_weight
+            )
+        occupancy_likelihood *= 0.30 + 0.70 * inverse_background
     occupancy_likelihood *= valid
     occupancy_u8 = np.uint8(np.clip(np.rint(occupancy_likelihood * 255.0), 0, 255))
     valid_values = occupancy_u8[valid]
@@ -922,34 +1330,12 @@ def procedural_seed_instances_from_prepared(
         np.uint8(valid) * 255,
         _ellipse_kernel(diameter * settings.dish_margin_fraction),
     ) > 0
-    # Suppress the bright dish rim before closing.  Otherwise a nearly closed
-    # rim can be mistaken for one enormous foreground object.
-    occupancy = (occupancy_u8 >= threshold) & interior_valid
-    close_kernel = _ellipse_kernel(diameter * settings.occupancy_closing_fraction)
-    occupancy = cv2.morphologyEx(
-        np.uint8(occupancy) * 255,
-        cv2.MORPH_CLOSE,
-        close_kernel,
-    ) > 0
-    occupancy &= interior_valid
-    # Colour/noise likelihood often responds to a seed's patterned perimeter
-    # while assigning its pale or dark centre a low score.  Fill only enclosed,
-    # seed-sized holes; open background and large gaps remain background.
-    flood = np.uint8(occupancy) * 255
-    cv2.floodFill(flood, None, (0, 0), 255)
-    holes = cv2.bitwise_not(flood)
-    component_count, component_labels, component_stats, _ = cv2.connectedComponentsWithStats(
-        np.uint8(holes > 0), connectivity=8
+    # Suppress the bright dish rim before closing. Colour/noise likelihood can
+    # respond mainly to a patterned perimeter, so each hypothesis also fills
+    # only enclosed seed-sized holes.
+    occupancy = _material_occupancy(
+        occupancy_u8, threshold, interior_valid, diameter, settings
     )
-    maximum_hole_area = diameter * diameter * settings.occupancy_hole_area_fraction
-    fill_component = component_stats[:, cv2.CC_STAT_AREA] <= maximum_hole_area
-    fill_component[0] = False
-    occupancy |= fill_component[component_labels]
-    occupancy = cv2.morphologyEx(
-        np.uint8(occupancy) * 255,
-        cv2.MORPH_OPEN,
-        _ellipse_kernel(max(1.0, diameter * 0.025)),
-    ) > 0
 
     # Broad Lab edges merely nominate boundary locations.  Precise ridges and
     # long, coherent convex-oriented traces improve localization, but none of
@@ -959,13 +1345,23 @@ def procedural_seed_instances_from_prepared(
     # cost.  This is deliberately unlike the former additive reference branch,
     # whose discount could not suppress the dominant generic contribution.
     boundary_weights = np.asarray(
-        (settings.boundary_edge_weight, settings.boundary_ridge_weight),
+        (
+            settings.boundary_edge_weight,
+            settings.boundary_ridge_weight,
+            (
+                settings.boundary_surface_darkening_weight
+                if surface_darkening is not None
+                else 0.0
+            ),
+        ),
         dtype=np.float32,
     )
     boundary_weights /= boundary_weights.sum()
     candidate_boundary = (
         boundary_weights[0] * edge + boundary_weights[1] * ridges
     )
+    if surface_darkening is not None:
+        candidate_boundary += boundary_weights[2] * surface_darkening
     candidate_boundary += (
         settings.boundary_physical_ridge_weight
         * reference_ridges
@@ -994,8 +1390,12 @@ def procedural_seed_instances_from_prepared(
         candidate_boundary / max(1e-5, candidate_scale), 0.0, 1.0
     )
     if prepared.semantic_edge_evidence_available:
-        semantic_margin = np.clip(
-            physical_probability - nonphysical_probability, 0.0, 1.0
+        semantic_margin = (
+            normalized_net_probability
+            if np.any(normalized_net_probability > (1.0 / 255.0))
+            else np.clip(
+                physical_probability - nonphysical_probability, 0.0, 1.0
+            )
         )
         classified_gate = (
             settings.boundary_semantic_floor
@@ -1008,6 +1408,9 @@ def procedural_seed_instances_from_prepared(
         # of its physical/non-physical memberships.
         classification_strength = np.maximum(
             physical_probability, nonphysical_probability
+        )
+        classification_strength = np.maximum(
+            classification_strength, normalized_net_probability
         )
         semantic_gate = (
             1.0 - classification_strength
@@ -1064,14 +1467,40 @@ def procedural_seed_instances_from_prepared(
         else 1.0
     )
     material_core = material_core / (material_core + max(1e-5, material_scale))
+    if flattened_grayscale is None:
+        flattened_core = np.zeros_like(material_core)
+        flattened_weight = 0.0
+    else:
+        # The flattened image is centred on locally expected brightness.  A
+        # seed-scale normalized convolution suppresses coat stripes while the
+        # absolute residual retains either dark- or light-coated seed centres.
+        occupancy_float = occupancy.astype(np.float32)
+        normalization = cv2.GaussianBlur(
+            occupancy_float, (0, 0), sigmaX=geometry_sigma
+        )
+        blurred_flattened = cv2.GaussianBlur(
+            flattened_grayscale * occupancy_float,
+            (0, 0),
+            sigmaX=geometry_sigma,
+        ) / np.maximum(normalization, 1e-4)
+        flattened_core = np.clip(
+            np.abs(blurred_flattened - 0.5) * 2.0, 0.0, 1.0
+        )
+        flattened_core *= np.clip(normalization, 0.0, 1.0)
+        flattened_weight = settings.centre_flattened_grayscale_weight
     centre_weights = np.asarray(
-        (settings.centre_material_weight, settings.centre_distance_weight),
+        (
+            settings.centre_material_weight,
+            settings.centre_distance_weight,
+            flattened_weight,
+        ),
         dtype=np.float32,
     )
     centre_weights /= max(1e-6, float(centre_weights.sum()))
     centre = (
         centre_weights[0] * material_core
         + centre_weights[1] * distance_score
+        + centre_weights[2] * flattened_core
     )
     centre *= cv2.GaussianBlur(
         occupancy.astype(np.float32), (0, 0), sigmaX=max(0.7, diameter * 0.05)
@@ -1288,33 +1717,256 @@ def procedural_seed_instances_from_prepared(
         )
     )
 
-    markers = np.zeros((height, width), dtype=np.int32)
-    markers[~occupancy] = 1
-    for identifier, (x, y) in enumerate(zip(peak_x, peak_y, strict=True), start=2):
-        cv2.circle(markers, (int(x), int(y)), max(1, int(round(diameter * 0.035))), identifier, -1)
-    # Whole annotated masks are authoritative, not just centre hints.  Apply
-    # them after automatic marker discs so a nearby proposal can never punch a
-    # different identifier through a reviewed seed.
+    topography = np.uint8(np.clip(np.rint(boundary * 255.0), 0, 255))
+    annotation_lookup = None
     if annotations is not None and len(annotation_ids):
         annotation_lookup = np.zeros(int(annotation_ids[-1]) + 1, np.int32)
         annotation_lookup[annotation_ids] = np.arange(
             2, len(annotation_ids) + 2, dtype=np.int32
         )
-        selected_annotations = annotations > 0
-        markers[selected_annotations] = annotation_lookup[annotations[selected_annotations]]
-    topography = np.uint8(np.clip(np.rint(boundary * 255.0), 0, 255))
-    watershed = cv2.watershed(cv2.cvtColor(topography, cv2.COLOR_GRAY2BGR), markers)
-    labels = np.where((watershed >= 2) & occupancy, watershed - 1, 0).astype(np.int32)
 
-    minimum_area = diameter * diameter * settings.minimum_instance_area_fraction
-    maximum_area = diameter * diameter * settings.maximum_instance_area_fraction
+    hypothesis_count = int(settings.candidate_hypotheses_per_marker)
+    threshold_scales = np.linspace(0.65, 1.35, hypothesis_count, dtype=np.float32)
+    # An odd default naturally contains 1.0; explicitly replace the nearest
+    # entry so every configured count retains the exact current material mask.
+    threshold_scales[int(np.argmin(np.abs(threshold_scales - 1.0)))] = 1.0
+    candidates: list[_InstanceCandidate] = []
+    candidates_by_marker: list[list[_InstanceCandidate]] = [
+        [] for _ in range(len(peak_x))
+    ]
+    rejection_reasons = ["instance_below_minimum_area"] * len(peak_x)
+    marker_radius = max(1, int(round(diameter * 0.035)))
+    for hypothesis_index, threshold_scale in enumerate(threshold_scales):
+        candidate_occupancy = _material_occupancy(
+            occupancy_u8,
+            threshold * float(threshold_scale),
+            interior_valid,
+            diameter,
+            settings,
+        )
+        if annotations is not None:
+            candidate_occupancy[annotations > 0] = True
+        markers = np.zeros((height, width), dtype=np.int32)
+        markers[~candidate_occupancy] = 1
+        for identifier, (x, y) in enumerate(
+            zip(peak_x, peak_y, strict=True), start=2
+        ):
+            cv2.circle(
+                markers,
+                (int(x), int(y)),
+                marker_radius,
+                identifier,
+                -1,
+            )
+        # Reviewed masks remain authoritative marker regions under every
+        # hypothesis, so a nearby proposal cannot punch through them.
+        if annotation_lookup is not None and annotations is not None:
+            selected_annotations = annotations > 0
+            markers[selected_annotations] = annotation_lookup[
+                annotations[selected_annotations]
+            ]
+        watershed = cv2.watershed(
+            cv2.cvtColor(topography, cv2.COLOR_GRAY2BGR), markers
+        )
+        hypothesis_labels = np.where(
+            (watershed >= 2) & candidate_occupancy,
+            watershed - 1,
+            0,
+        ).astype(np.int32)
+        nonzero_y, nonzero_x = np.nonzero(hypothesis_labels)
+        nonzero_ids = hypothesis_labels[nonzero_y, nonzero_x]
+        bbox_min_x = np.full(len(peak_x) + 1, width, np.int32)
+        bbox_min_y = np.full(len(peak_x) + 1, height, np.int32)
+        bbox_max_x = np.full(len(peak_x) + 1, -1, np.int32)
+        bbox_max_y = np.full(len(peak_x) + 1, -1, np.int32)
+        if len(nonzero_ids):
+            np.minimum.at(bbox_min_x, nonzero_ids, nonzero_x)
+            np.minimum.at(bbox_min_y, nonzero_ids, nonzero_y)
+            np.maximum.at(bbox_max_x, nonzero_ids, nonzero_x)
+            np.maximum.at(bbox_max_y, nonzero_ids, nonzero_y)
+        for marker_index in range(len(peak_x)):
+            label_id = marker_index + 1
+            if bbox_max_x[label_id] < bbox_min_x[label_id]:
+                rejection_reasons[marker_index] = "instance_below_minimum_area"
+                continue
+            component_x0 = int(bbox_min_x[label_id])
+            component_y0 = int(bbox_min_y[label_id])
+            component_x1 = int(bbox_max_x[label_id]) + 1
+            component_y1 = int(bbox_max_y[label_id]) + 1
+            component_mask = (
+                hypothesis_labels[
+                    component_y0:component_y1,
+                    component_x0:component_x1,
+                ]
+                == label_id
+            )
+            if (
+                annotations is not None
+                and marker_index < len(annotation_ids)
+            ):
+                reviewed_mask = (
+                    annotations[
+                        component_y0:component_y1,
+                        component_x0:component_x1,
+                    ]
+                    == int(annotation_ids[marker_index])
+                )
+                # A full reviewed instance is authoritative geometry, not
+                # merely a centre from which watershed may absorb neighbours.
+                # Very small legacy marker blobs are still treated as centres
+                # and allowed to grow, preserving that older workflow.
+                if np.count_nonzero(reviewed_mask) >= (
+                    diameter
+                    * diameter
+                    * settings.minimum_instance_area_fraction
+                ):
+                    component_mask = reviewed_mask
+            candidate, rejection = _candidate_from_component(
+                component_mask,
+                marker_index=marker_index,
+                hypothesis_index=hypothesis_index,
+                marker_score=float(peak_scores[marker_index]),
+                marker_source=int(peak_sources[marker_index]),
+                boundary=boundary,
+                diameter=diameter,
+                expected_area_fraction=area_fraction,
+                settings=settings,
+                origin_xy=(component_x0, component_y0),
+            )
+            if candidate is None:
+                rejection_reasons[marker_index] = rejection
+                continue
+            duplicate = False
+            for existing in candidates_by_marker[marker_index]:
+                overlap = _candidate_overlap_pixels(candidate, existing)
+                union = candidate.area + existing.area - overlap
+                if overlap / max(1.0, union) >= 0.985:
+                    duplicate = True
+                    if candidate.score > existing.score:
+                        existing.score = candidate.score
+                    break
+            if duplicate:
+                continue
+            candidates.append(candidate)
+            candidates_by_marker[marker_index].append(candidate)
+
+    # Approximate maximum-weight independent-set selection. Annotation-derived
+    # candidates are fixed first; remaining masks are ranked by their complete
+    # evidence/geometry score and may not substantially overlap an already
+    # retained mask or provide a second shape for the same marker.
+    selected_candidates: list[_InstanceCandidate] = []
+    selected_markers: set[int] = set()
+    ordered_candidates = sorted(
+        candidates,
+        key=lambda candidate: (
+            peak_sources[candidate.marker_index]
+            == int(ProceduralMarkerSource.ANNOTATED),
+            candidate.score,
+            candidate.area,
+        ),
+        reverse=True,
+    )
+    for candidate in ordered_candidates:
+        if candidate.marker_index in selected_markers:
+            continue
+        conflicts = False
+        for selected_candidate in selected_candidates:
+            overlap = _candidate_overlap_pixels(candidate, selected_candidate)
+            if overlap > (
+                min(candidate.area, selected_candidate.area)
+                * settings.candidate_overlap_fraction
+            ):
+                conflicts = True
+                break
+        if conflicts:
+            continue
+        candidate.selected = True
+        selected_candidates.append(candidate)
+        selected_markers.add(candidate.marker_index)
+
+    # Two bounded local-improvement passes repair the common greedy failure in
+    # which one early mediocre mask blocks a better later combination (or vice
+    # versa). This is a deterministic weighted set-packing heuristic rather
+    # than an exponential exact solver over thousands of masks.
+    for _pass in range(2):
+        improved = False
+        for candidate in ordered_candidates:
+            if candidate.selected:
+                continue
+            conflicts = [
+                selected_candidate
+                for selected_candidate in selected_candidates
+                if selected_candidate.marker_index == candidate.marker_index
+                or _candidate_overlap_pixels(candidate, selected_candidate)
+                > (
+                    min(candidate.area, selected_candidate.area)
+                    * settings.candidate_overlap_fraction
+                )
+            ]
+            if not conflicts:
+                continue
+            if any(
+                peak_sources[item.marker_index]
+                == int(ProceduralMarkerSource.ANNOTATED)
+                for item in conflicts
+            ):
+                continue
+            if candidate.score <= sum(item.score for item in conflicts) + 1e-6:
+                continue
+            for item in conflicts:
+                item.selected = False
+                selected_candidates.remove(item)
+                selected_markers.discard(item.marker_index)
+            candidate.selected = True
+            selected_candidates.append(candidate)
+            selected_markers.add(candidate.marker_index)
+            improved = True
+        if not improved:
+            break
+    for candidate in ordered_candidates:
+        if candidate.selected or candidate.marker_index in selected_markers:
+            continue
+        if any(
+            _candidate_overlap_pixels(candidate, item)
+            > min(candidate.area, item.area) * settings.candidate_overlap_fraction
+            for item in selected_candidates
+        ):
+            continue
+        candidate.selected = True
+        selected_candidates.append(candidate)
+        selected_markers.add(candidate.marker_index)
+
+    selected_candidates.sort(key=lambda candidate: candidate.marker_index)
+    labels = np.zeros((height, width), np.int32)
+    concavity_raster = np.zeros((height, width), np.uint8)
     surviving_markers = np.zeros(len(peak_x), dtype=bool)
-    if labels.max() > 0:
-        areas = np.bincount(labels.reshape(-1), minlength=len(peak_x) + 1)
-        retained_labels = areas >= minimum_area
-        retained_labels[0] = False
-        surviving_markers[:] = retained_labels[1 : len(peak_x) + 1]
-        labels = np.where(retained_labels[labels], labels, 0).astype(np.int32)
+    assigned_candidates: list[_InstanceCandidate] = []
+    for label_id, candidate in enumerate(selected_candidates, start=1):
+        label_roi = labels[candidate.y0 : candidate.y1, candidate.x0 : candidate.x1]
+        assign = candidate.mask & (label_roi == 0)
+        if not np.any(assign):
+            candidate.selected = False
+            continue
+        label_roi[assign] = label_id
+        concavity_value = np.uint8(
+            np.clip(
+                np.rint(
+                    candidate.concavity_fraction
+                    / max(1e-6, settings.maximum_internal_concavity_fraction)
+                    * 255.0
+                ),
+                0,
+                255,
+            )
+        )
+        concavity_roi = concavity_raster[
+            candidate.y0 : candidate.y1, candidate.x0 : candidate.x1
+        ]
+        concavity_roi[candidate.concavity_mask] = np.maximum(
+            concavity_roi[candidate.concavity_mask], concavity_value
+        )
+        surviving_markers[candidate.marker_index] = True
+        assigned_candidates.append(candidate)
     labels = _renumber_labels(labels)
 
     manual_start = len(annotation_x)
@@ -1325,10 +1977,12 @@ def procedural_seed_instances_from_prepared(
             (rejected_manual_xy, accepted_manual_source_xy[culled_manual]),
             axis=0,
         )
-        rejected_manual_reasons = (
-            *rejected_manual_reasons,
-            *("instance_below_minimum_area" for _ in range(np.count_nonzero(culled_manual))),
+        manual_reasons = tuple(
+            rejection_reasons[index]
+            for index in range(manual_start, manual_stop)
+            if culled_manual[index - manual_start]
         )
+        rejected_manual_reasons = (*rejected_manual_reasons, *manual_reasons)
     marker_centres = np.column_stack(
         (
             peak_x[surviving_markers] / scale,
@@ -1349,51 +2003,42 @@ def procedural_seed_instances_from_prepared(
         centre_x = sum_x[1:] / np.maximum(area_values[1:], 1.0)
         centre_y = sum_y[1:] / np.maximum(area_values[1:], 1.0)
 
-        perimeter = np.zeros(labels.shape, dtype=bool)
-        difference = labels[:, 1:] != labels[:, :-1]
-        perimeter[:, 1:] |= difference
-        perimeter[:, :-1] |= difference
-        difference = labels[1:, :] != labels[:-1, :]
-        perimeter[1:, :] |= difference
-        perimeter[:-1, :] |= difference
-        perimeter &= labels > 0
-        perimeter_labels = labels[perimeter]
-        boundary_totals = np.bincount(
-            perimeter_labels,
-            weights=boundary[perimeter],
-            minlength=label_count + 1,
+        marker_scores = np.asarray(
+            [peak_scores[item.marker_index] for item in assigned_candidates],
+            np.float32,
         )
-        boundary_counts = np.bincount(perimeter_labels, minlength=label_count + 1)
-        boundary_support = boundary_totals[1:] / np.maximum(boundary_counts[1:], 1)
-
-        area_ratio = area_values[1:] / max(1.0, diameter * diameter * area_fraction)
-        area_confidence = np.exp(
-            -0.5 * (np.log(np.maximum(area_ratio, 1e-4)) / 0.58) ** 2
+        confidences = np.asarray(
+            [item.score for item in assigned_candidates], np.float32
         )
-        if len(peak_x):
-            squared_distances = (
-                (centre_x[:, None] - peak_x[None, :]) ** 2
-                + (centre_y[:, None] - peak_y[None, :]) ** 2
-            )
-            marker_scores = peak_scores[np.argmin(squared_distances, axis=1)]
-        else:
-            marker_scores = np.zeros(label_count, np.float32)
-        oversized_penalty = np.minimum(1.0, maximum_area / np.maximum(area_values[1:], 1.0))
-        confidences = np.clip(
-            (
-                0.42 * marker_scores
-                + 0.36 * boundary_support
-                + 0.22 * area_confidence
-            )
-            * oversized_penalty,
-            0.0,
-            1.0,
-        ).astype(np.float32)
         centres = np.column_stack((centre_x / scale, centre_y / scale)).astype(np.float32)
     else:
         centres = np.empty((0, 2), np.float32)
         marker_scores = np.empty(0, np.float32)
         confidences = np.empty(0, np.float32)
+
+    alternative_rgba = np.zeros((height, width, 4), np.uint8)
+    for candidate in sorted(candidates, key=lambda item: item.score):
+        if candidate.selected:
+            continue
+        score = float(np.clip(candidate.score, 0.0, 1.0))
+        colour = _alternative_candidate_colour(score)
+        roi = alternative_rgba[
+            candidate.y0 : candidate.y1, candidate.x0 : candidate.x1
+        ]
+        roi[candidate.mask, :3] = colour
+        roi[candidate.mask, 3] = np.maximum(
+            roi[candidate.mask, 3], np.uint8(round(20 + score * 45))
+        )
+        contours, _hierarchy = cv2.findContours(
+            np.uint8(candidate.mask), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
+        cv2.drawContours(
+            roi,
+            contours,
+            -1,
+            (*[int(value) for value in colour], round(130 + score * 125)),
+            1,
+        )
 
     maximum_label = int(np.max(labels, initial=0))
     label_dtype = np.uint16 if maximum_label <= np.iinfo(np.uint16).max else np.uint32
@@ -1414,6 +2059,37 @@ def procedural_seed_instances_from_prepared(
             rejected_manual_xy, np.float32
         ).reshape(-1, 2),
         rejected_manual_centre_reasons=tuple(rejected_manual_reasons),
+        concavity=concavity_raster,
+        alternative_candidates_rgba=alternative_rgba,
+        candidate_scores=np.asarray(
+            [candidate.score for candidate in candidates], np.float32
+        ),
+        candidate_selected=np.asarray(
+            [candidate.selected for candidate in candidates], bool
+        ),
+        instance_area_px2=np.asarray(
+            [candidate.area / max(scale * scale, 1e-12) for candidate in assigned_candidates],
+            np.float32,
+        ),
+        instance_maximum_width_px=np.asarray(
+            [candidate.width_fraction * diameter / max(scale, 1e-12) for candidate in assigned_candidates],
+            np.float32,
+        ),
+        instance_width_fractions=np.asarray(
+            [candidate.width_fraction for candidate in assigned_candidates], np.float32
+        ),
+        instance_concavity_fractions=np.asarray(
+            [candidate.concavity_fraction for candidate in assigned_candidates], np.float32
+        ),
+        instance_protrusion_fractions=np.asarray(
+            [candidate.protrusion_fraction for candidate in assigned_candidates], np.float32
+        ),
+        instance_solidities=np.asarray(
+            [candidate.solidity for candidate in assigned_candidates], np.float32
+        ),
+        instance_axis_ratios=np.asarray(
+            [candidate.axis_ratio for candidate in assigned_candidates], np.float32
+        ),
     )
 
 
@@ -1421,6 +2097,7 @@ def procedural_seed_instances(
     valid_mask,
     seed_diameter_px: float,
     *,
+    material_probability=None,
     foreground_probability,
     foreground_noise_probability,
     background_probability,
@@ -1429,10 +2106,13 @@ def procedural_seed_instances(
     edge_ridges,
     physical_edge_probability=None,
     non_edge_probability=None,
+    normalized_net_physical_edge_probability=None,
     thinned_reference_edge_ridges=None,
     oriented_edge_trace_labels=None,
     oriented_edge_trace_continuity=None,
     reference_surface_probability=None,
+    flattened_grayscale=None,
+    surface_darkening_magnitude=None,
     seed_instance_annotations=None,
     manual_seed_centres: ManualSeedCentres | None = None,
     settings: ProceduralInstanceSettings = ProceduralInstanceSettings(),
@@ -1442,6 +2122,7 @@ def procedural_seed_instances(
     prepared = prepare_procedural_instance_inputs(
         valid_mask,
         seed_diameter_px,
+        material_probability=material_probability,
         foreground_probability=foreground_probability,
         foreground_noise_probability=foreground_noise_probability,
         background_probability=background_probability,
@@ -1450,10 +2131,15 @@ def procedural_seed_instances(
         edge_ridges=edge_ridges,
         physical_edge_probability=physical_edge_probability,
         non_edge_probability=non_edge_probability,
+        normalized_net_physical_edge_probability=(
+            normalized_net_physical_edge_probability
+        ),
         thinned_reference_edge_ridges=thinned_reference_edge_ridges,
         oriented_edge_trace_labels=oriented_edge_trace_labels,
         oriented_edge_trace_continuity=oriented_edge_trace_continuity,
         reference_surface_probability=reference_surface_probability,
+        flattened_grayscale=flattened_grayscale,
+        surface_darkening_magnitude=surface_darkening_magnitude,
         working_maximum_dimension=settings.working_maximum_dimension,
     )
     return procedural_seed_instances_from_prepared(

@@ -209,7 +209,10 @@ class SelectedInstanceMainWindowTests(unittest.TestCase):
             window._active_tasks[key] = object()
             try:
                 window._sync_background_controls()
-                self.assertFalse(checkbox.isEnabled())
+                # The displayed result remains valid while an ordinary
+                # revision recomputes in the background, so inspection and
+                # annotation controls remain available.
+                self.assertTrue(checkbox.isEnabled())
             finally:
                 window._active_tasks.pop(key, None)
 

@@ -98,6 +98,7 @@ class ShapeGuidedFillTests(unittest.TestCase):
             delegated_options = delegated_call.args[5]
             self.assertIsInstance(delegated_options, SmartFillOptions)
             self.assertEqual(delegated_options.colour_tolerance_lab, 23.0)
+            self.assertEqual(delegated_options.click_colour_tolerance_lab, 360.0)
             self.assertEqual(delegated_options.edge_stop_threshold, 0.47)
             self.assertEqual(delegated_options.tunnel_strength, 0.0)
             self.assertGreater(delegated_options.maximum_distance_from_cursor_px, 51)
@@ -111,14 +112,31 @@ class ShapeGuidedFillTests(unittest.TestCase):
                 delegated_call.kwargs["extension_pressure_mask"]
             )
 
-    def test_one_sided_shape_pressure_is_unrestricted_inward_and_cut_off_outward(self) -> None:
+    def test_shape_pressure_starts_inside_and_is_cut_off_outward(self) -> None:
         pressure = shape_outward_extension_pressure(
             np.asarray((-40.0, 0.0, 5.0, 10.0, 10.01), np.float32),
             100.0,
         )
         np.testing.assert_allclose(
             pressure,
-            np.asarray((1.0, 1.0, 0.5, 0.25, 0.0), np.float32),
+            np.asarray((1.0, 0.5, 0.25, 0.125, 0.0), np.float32),
+            rtol=1.0e-5,
+            atol=1.0e-5,
+        )
+
+    def test_tiny_shape_half_life_produces_a_genuinely_narrow_allowance(self) -> None:
+        pressure = shape_outward_extension_pressure(
+            np.asarray((-1.0, -0.5, 0.0, 0.5, 1.0), np.float32),
+            100.0,
+            ShapeGuidedFillOptions(
+                penalty_start_inside_fraction=0.01,
+                outward_penalty_half_life_fraction=0.005,
+                outward_hard_cutoff_fraction=0.10,
+            ),
+        )
+        np.testing.assert_allclose(
+            pressure,
+            np.asarray((1.0, 0.5, 0.25, 0.125, 0.0625), np.float32),
             rtol=1.0e-5,
             atol=1.0e-5,
         )

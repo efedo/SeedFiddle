@@ -576,9 +576,7 @@ class ReferenceEdgeStripDescriptorTests(unittest.TestCase):
             profile.sample_count_unit_for("physical_edge"),
             "edge-working-resolution strip samples",
         )
-        self.assertGreater(
-            int(np.asarray(layers.reference_seed_surface_probability).max()), 0
-        )
+        self.assertIsNone(layers.reference_seed_surface_probability)
         self.assertEqual(int(np.asarray(layers.physical_edge_probability).max()), 0)
         self.assertEqual(int(np.asarray(layers.non_edge_probability).max()), 0)
 

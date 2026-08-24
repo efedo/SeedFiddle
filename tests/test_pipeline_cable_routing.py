@@ -234,6 +234,8 @@ class PipelineCableRoutingTests(unittest.TestCase):
         canvas.close()
 
     def test_same_source_and_direction_form_one_deterministic_cable(self) -> None:
+        from PySide6.QtGui import QPainterPath
+
         from seedvision.ui.pipeline_canvas import PipelineCanvas
 
         canvas = PipelineCanvas(_bundle_graph())
@@ -268,6 +270,25 @@ class PipelineCableRoutingTests(unittest.TestCase):
         split = trunk[-1]
         self.assertTrue(all(route.index(split) < len(route) - 1 for route in routes))
         self.assertNotEqual(routes[0][-1], routes[1][-1])
+        for item in (*forward, cable):
+            element_types = {
+                item.path().elementAt(index).type
+                for index in range(item.path().elementCount())
+            }
+            self.assertIn(QPainterPath.ElementType.CurveToElement, element_types)
+            self.assertNotIn(QPainterPath.ElementType.LineToElement, element_types)
+
+        colours = [edge.base_colour for edge in canvas.edge_items]
+        self.assertGreater(len({colour.rgb() for colour in colours}), 1)
+        hues = [colour.hsvHueF() for colour in colours]
+        self.assertLessEqual(
+            max(
+                min(abs(first - second), 1.0 - abs(first - second))
+                for first in hues
+                for second in hues
+            ),
+            0.101,
+        )
 
         first_layout = (cable.bundle_key, trunk, routes)
         canvas.set_cable_bundling_enabled(False)
@@ -288,6 +309,16 @@ class PipelineCableRoutingTests(unittest.TestCase):
                 _points(second_cable.route_points),
                 tuple(_points(edge.route_points) for edge in second_forward),
             ),
+        )
+        self.assertEqual(
+            {
+                edge.connection.target: edge.base_colour.rgb()
+                for edge in canvas.edge_items
+            },
+            {
+                edge.connection.target: edge.base_colour.rgb()
+                for edge in (*second_forward, reverse)
+            },
         )
         canvas.close()
 

@@ -49,6 +49,20 @@ class ReferenceTextureCollageTests(unittest.TestCase):
         self.assertEqual(clipped_sides, ())
         self.assertEqual((_centre.x1(), _centre.x2()), (0.0, 40.0))
 
+    def test_tangent_aligned_prototype_patch_rotates_edge_horizontal(self) -> None:
+        import cv2
+
+        from seedvision.cuda.layers import _reference_patch
+
+        source = np.zeros((81, 81, 3), np.uint8)
+        cv2.line(source, (15, 15), (65, 65), (255, 255, 255), 3)
+        patch = _reference_patch(source, (40.0, 40.0), 40, 45.0)
+        ys, xs = np.nonzero(patch[:, :, 0] >= 128)
+
+        self.assertGreater(len(xs), 20)
+        self.assertGreater(float(np.std(xs)), float(np.std(ys)) * 4.0)
+        self.assertAlmostEqual(float(np.mean(ys)), 19.5, delta=1.5)
+
     def test_edge_collage_marks_descriptor_lines_and_explains_context(self) -> None:
         from PySide6.QtGui import QColor, QImage
 

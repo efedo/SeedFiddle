@@ -59,7 +59,12 @@ DEFAULT_PROCEDURAL_FIT_PARAMETERS = (
     ),
     ProceduralFitParameter("marker_count_multiplier", 0.70, 1.40, 0.12),
     ProceduralFitParameter("minimum_marker_score", 0.04, 0.36, 0.06),
-    ProceduralFitParameter("minimum_instance_area_fraction", 0.06, 0.48, 0.07),
+    ProceduralFitParameter("minimum_instance_area_fraction", 0.12, 0.30, 0.04),
+    ProceduralFitParameter("soft_minimum_instance_area_fraction", 0.32, 0.60, 0.06),
+    ProceduralFitParameter("soft_maximum_instance_width_fraction", 0.95, 1.25, 0.06),
+    ProceduralFitParameter("hard_maximum_instance_width_fraction", 1.28, 1.60, 0.06),
+    ProceduralFitParameter("maximum_internal_concavity_fraction", 0.08, 0.30, 0.04),
+    ProceduralFitParameter("maximum_protrusion_area_fraction", 0.05, 0.22, 0.03),
 )
 
 _FITTABLE_PARAMETER_NAMES = {
@@ -68,7 +73,6 @@ _FITTABLE_PARAMETER_NAMES = {
     "occupancy_closing_fraction",
     "occupancy_hole_area_fraction",
     "dish_margin_fraction",
-    "reference_texture_weight",
     # Watershed boundary cost.
     "boundary_edge_weight",
     "boundary_ridge_weight",
@@ -87,6 +91,14 @@ _FITTABLE_PARAMETER_NAMES = {
     "marker_count_multiplier",
     "minimum_marker_score",
     "minimum_instance_area_fraction",
+    "soft_minimum_instance_area_fraction",
+    "maximum_instance_area_fraction",
+    "soft_maximum_instance_width_fraction",
+    "hard_maximum_instance_width_fraction",
+    "maximum_internal_concavity_fraction",
+    "maximum_protrusion_area_fraction",
+    "minimum_instance_solidity",
+    "maximum_instance_axis_ratio",
 }
 
 
@@ -94,7 +106,7 @@ _FITTABLE_PARAMETER_NAMES = {
 class ProceduralFitOptions:
     """Bounds and loss weights for a short coordinate-search fit."""
 
-    maximum_evaluations: int = 33
+    maximum_evaluations: int = 35
     passes: int = 2
     step_decay: float = 0.50
     false_positive_weight: float = 2.0

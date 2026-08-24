@@ -1,0 +1,33 @@
+Seed Fiddler
+
+---
+
+- When an editor node is selected, please also select adjacent nodes (but with a different outline colour; maybe purple?)
+- Instance colour masks are not currently working, add an "Enabled" check-box to this node that defaults to disabled for now. Obviously this should also disable all dependent nodes. Come to think of it, also disable by default distance-peak candidates, circle candidates, seed-interior probabilities, and all downstream nodes, since none of these are working either.
+- The Layout detection is having a lot of difficulties detecting the upper/outside petri dish border (should be on the exterior edge of this border), but it should be very obvious visually. Try to fix this and verify the fix by looking at the test output yourself.
+- The user should be able to overlay nodes if they want. Add a button to a one-line node editor control panel to automatically reposition nodes (which should eliminate overlaps while minimizing edge criss-crossing).
+- Add zoom indicators and controls to both the image viewer and node editor.
+- Make the application tray icon larger. Actually, start fresh and make it look like the bow of a fiddle being played over a seed. Also rename the application "Seed Fiddle" and get rid of the "-- visual analysis pipeline" from the title.
+- For the background and foreground colour b*/a* plots, don't dim the plots according to contour probabilities; this makes it impossible to tell which areas are selected.
+- The foreground mask still thinks seed patterns are background. Painting patterns as references does not help except directly under the painted region. Also, you should not ever be "cheating" with the painting by directly forcing the foreground probability under a manually-painted reference region to 1. The foreground calculation should instead be corrected until this occurs naturally (or close to it, anyway).
+- For the foreground mask, it seems like painted foreground reference pixels are just being averaged. That's not how it's supposed to work, and that method doesn't work with complex seed patterns (which have both light and dark patches). Reference pixel colours should be accumulated and colour probabilities calculated from individual colour frequencies, not from regional averages.
+- Add a reset button to the "Settings" section of the right (detailed) node settings panel, which resets all parameters to default.
+
+---
+
+1. For automatic background colour reference selection from the dish-surrounding ring (enabled via "Keep perimeter-matched source"), only include dish-surrounding regions with colour close to the median ring colour (so that e.g. parts of the ring that intersect the colour calibration card are excluded).
+2. Use a colour other than light gray for painting "Other" regions: currently very hard to see where has been painted as "Other"
+3. For the Reference texture prototypes, the "yellow centre line" and the "two polarity-neutral cyan side strips" do not seem to be aligned correctly with edges in prototype images.
+4. Expose parameters for the instance-derived edge probabilities node, and then add instance-based parameter optimization for physical edge probability and non-physical edge probability.
+5. Add a thinned net-physical edge ridge overlay.
+6. Procedural centre likelihoods are one of the worst part of the prediction model at the moment (although physical boundary costs are also pretty bad compared to plain physical edge probabilities or net physical edge probabilities), and are throwing everything else off. It would not be possible to do much worse by just throwing darts at an image. In particular, using blurred flattened grayscale images could work much better for centre assignment with many seed coat patterns.
+7. Procedural seed instances often generate improbable Frankentein seeds whose shape and size should both be prohibited by any reasonable model. It is not very clear from the settings exactly how these final instance shapes are being determined.
+8. For seed instance annotation, it's not clear whether the "Apply + save" button saves the annotation painting locally (within the open project) or globally, or whether File > Save Project is still required to permanent save the painted refence instances.
+9. For seed instance annotation, smart fill should probably be improved to not just blindly flood through narrow gaps in edges. This is particularly egregeous with oriented edge traces that are almost fully complete minus a couple of hole pixels. Maybe a pressure/waterfall model?
+10. "Fit procedural settings" should only apply within a given project for now (not globally in the broad sense; unclear what is meant by the current warning box)
+11. Add Directional surface darkness gradients back to the default graph, and enable them by default. Visually, they clearly extract useful information as many seeds can be readily distinguished by eye in the surface darkening direction overlay (and to a lesser extent in the surface darkening magnitude and surface lightening direction plots). They should theoretically be extracting additional information beyond that extracted by directional edge gradients. The problem is that I have no idea what to do with this information or how to incorporate it into seed edge finding or centre positioning.
+12. The outward soft half-life for the shape fill tool needs to start working inside the oval to account for seeds that have divets/are not perfectly oval. Also something is wrong with the current half-life implementation: Even setting it to 0.005 x preferred diameter makes no difference, it floods way outside of the oval.
+13. What exactly does the trace continuity overlay show? It seems like it could be quite useful.
+14. Changing the "Maximum edge prototypes / class" seems to disable the buttons material reference and seed annotation painting, as well as for saving the project via the file menu.
+
+---

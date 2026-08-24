@@ -195,6 +195,9 @@ def _run_with_interpreter(
 
 
 def _launch_application() -> int:
+    from seedvision.diagnostics import configure_error_logging
+
+    configure_error_logging(ROOT)
     # Third-party imports begin only inside this delayed entry point.
     try:
         from seedvision.application import run
@@ -552,6 +555,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             forwarded_arguments=_learning_arguments(args),
         )
     except BootstrapError as error:
+        from seedvision.diagnostics import LOGGER
+
+        LOGGER.exception("Seed Fiddle bootstrap or launch failure")
         print(f"Seed Fiddle bootstrap error: {error}", file=sys.stderr)
         return 2
 

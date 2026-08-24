@@ -13,6 +13,11 @@ def run(root: Path) -> int:
     from PySide6.QtGui import QIcon
     from PySide6.QtWidgets import QApplication
 
+    from seedvision.diagnostics import (
+        LOGGER,
+        current_log_path,
+        install_qt_message_logging,
+    )
     from seedvision.ui.main_window import MainWindow
 
     QCoreApplication.setOrganizationName("Seed Fiddle")
@@ -20,6 +25,7 @@ def run(root: Path) -> int:
     QCoreApplication.setApplicationVersion("0.1.0-dev")
 
     application = QApplication.instance() or QApplication(sys.argv)
+    install_qt_message_logging()
     application.setStyle("Fusion")
     icon_path = Path(__file__).resolve().parent / "assets" / "seed_vision_icon.png"
     icon = QIcon(str(icon_path))
@@ -27,4 +33,7 @@ def run(root: Path) -> int:
     window = MainWindow(root)
     window.setWindowIcon(icon)
     window.showMaximized()
-    return application.exec()
+    LOGGER.info("Desktop application started; log=%s", current_log_path())
+    exit_code = application.exec()
+    LOGGER.info("Desktop application stopped; exit_code=%d", exit_code)
+    return exit_code

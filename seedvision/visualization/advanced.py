@@ -537,48 +537,6 @@ def build_advanced_analysis_layers(
             "bilinear",
         ).clamp(0.0, 1.0)
     )
-    fg_noise_probability = (
-        None
-        if foreground_noise_probability is None or not active("seed_interior")
-        else _resize_numpy(
-            torch,
-            functional,
-            foreground_noise_probability,
-            device,
-            height,
-            width,
-            "bilinear",
-        ).clamp(0.0, 1.0)
-    )
-    reference_probability = (
-        None
-        if reference_surface_probability is None or not active("seed_interior")
-        else _resize_numpy(
-            torch,
-            functional,
-            reference_surface_probability,
-            device,
-            height,
-            width,
-            "bilinear",
-        ).clamp(0.0, 1.0)
-    )
-    background_probabilities = tuple(
-        _resize_numpy(
-            torch,
-            functional,
-            probability,
-            device,
-            height,
-            width,
-            "bilinear",
-        ).clamp(0.0, 1.0)
-        for probability in (
-            background_colour_probability,
-            background_noise_probability,
-        )
-        if probability is not None and active("seed_interior")
-    )
     distance = _resize_numpy(
         torch, functional, distance_transform, device, height, width, "bilinear",
         normalize=False,
@@ -634,40 +592,13 @@ def build_advanced_analysis_layers(
             feature_probability = _gaussian(
                 torch, functional, fg_probability, smoothing
             )
-        noise_probability = (
-            feature_probability
-            if fg_noise_probability is None
-            else _gaussian(torch, functional, fg_noise_probability, smoothing)
-        )
-        foreground_evidence = (
-            feature_probability
-            * (1.0 - settings.interior_foreground_noise_weight)
-            + noise_probability * settings.interior_foreground_noise_weight
-        )
-        if reference_probability is not None:
-            reference_weight = settings.interior_reference_texture_weight
-            foreground_evidence = (
-                foreground_evidence * (1.0 - reference_weight)
-                + _gaussian(
-                    torch, functional, reference_probability, smoothing
-                )
-                * reference_weight
-            )
-        if background_probabilities:
-            background_probability = torch.stack(
-                background_probabilities, dim=0
-            ).mean(dim=0)
-            background_hint = 1.0 - _gaussian(
-                torch, functional, background_probability, smoothing
-            )
-        else:
-            background_hint = 1.0 - _gaussian(
-                torch, functional, 1.0 - fg_mask, smoothing
-            )
-        interior = (
-            foreground_evidence * (1.0 - settings.interior_background_weight)
-            + background_hint * settings.interior_background_weight
-        ).clamp(0.0, 1.0) * valid
+        # Foreground colour, directional texture, material prototypes,
+        # Background, and Other have already been reconciled by the
+        # hierarchical material decision. Recombining the raw channels here
+        # double-counted several sources and could undo explicit ambiguity.
+        # This diagnostic now has one job: produce a seed-scale-smoothed view
+        # of the authoritative resolved Seed mass.
+        interior = feature_probability.clamp(0.0, 1.0) * valid
         stop_timing(node_timing)
     else:
         interior = cached_scalar("seed_interior_probability")

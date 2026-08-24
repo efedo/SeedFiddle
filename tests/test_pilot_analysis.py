@@ -16,7 +16,7 @@ class PilotAnalysisTests(unittest.TestCase):
         except ImportError as error:
             raise unittest.SkipTest(f"OpenCV baseline dependencies unavailable: {error}")
 
-    def test_sparse_pilot_generates_sixteen_proposals(self) -> None:
+    def test_sparse_pilot_runs_diagnostics_without_foreground_references(self) -> None:
         import numpy as np
 
         from seedvision.segmentation.baseline import BaselineSettings, analyze_path
@@ -31,7 +31,7 @@ class PilotAnalysisTests(unittest.TestCase):
                 (node_id, state)
             ),
         )
-        self.assertEqual(result.count, 16)
+        self.assertGreater(result.count, 0)
         self.assertEqual(result.crowding, "low")
         self.assertTrue(result.approximate)
         self.assertGreater(result.dish.confidence, 0.5)
@@ -72,8 +72,19 @@ class PilotAnalysisTests(unittest.TestCase):
         surrounding_noise = np.asarray(result.layers.surrounding_noise_likelihood)
         self.assertEqual(surrounding_noise.shape, surrounding_valid.shape)
         self.assertEqual(int(np.count_nonzero(surrounding_valid)), band.sample_count)
-        self.assertGreater(
-            surrounding_valid.shape[0], result.layers.valid_mask.shape[0]
+        # Every probability layer now shares the crop that reaches the outer
+        # edge of the perimeter Background band; the annulus is no longer a
+        # larger one-off texture-only raster.
+        self.assertEqual(surrounding_valid.shape, result.layers.valid_mask.shape)
+        self.assertEqual(
+            result.foreground_colour_probability.shape,
+            result.layers.valid_mask.shape,
+        )
+        expected_outer_area = np.pi * band.outer_radius_px**2
+        self.assertAlmostEqual(
+            int(np.count_nonzero(np.asarray(result.layers.valid_mask))),
+            expected_outer_area,
+            delta=expected_outer_area * 0.01,
         )
         self.assertTrue(
             all(
@@ -85,10 +96,11 @@ class PilotAnalysisTests(unittest.TestCase):
         self.assertIsNotNone(result.calibration.ruler)
         self.assertIsNotNone(result.pixels_per_mm)
         self.assertGreater(result.calibration.colour_card.detected_swatch_count, 16)
-        self.assertGreaterEqual(result.foreground_threshold, 8.0)
-        self.assertGreater(result.foreground_pixel_count, 0)
+        self.assertEqual(result.foreground_threshold, 0.0)
+        self.assertEqual(result.foreground_pixel_count, 0)
+        self.assertFalse(np.any(result.foreground_colour_probability))
         self.assertGreater(result.analysis_region_pixel_count, result.foreground_pixel_count)
-        self.assertGreater(result.distance_candidate_count, 0)
+        self.assertEqual(result.distance_candidate_count, 0)
         self.assertGreater(result.circle_candidate_count, 0)
         labels = result.layers.instance_labels
         colours = result.layers.instance_colours[1:]
@@ -115,7 +127,40 @@ class PilotAnalysisTests(unittest.TestCase):
             self.assertIn((node_id, "started"), progress_events)
             self.assertIn((node_id, "completed"), progress_events)
 
-    def test_dense_lupin_uses_outer_background_prior_and_soft_foreground(self) -> None:
+    def test_annotated_seed_scale_uses_largest_complete_fraction(self) -> None:
+        import numpy as np
+
+        from seedvision.segmentation.baseline import (
+            _annotated_seed_diameter_measurements,
+        )
+
+        labels = np.zeros((140, 430), dtype=np.uint16)
+        widths = (20, 28, 36, 44, 52, 60, 68, 76)
+        for identifier, width in enumerate(widths, start=1):
+            row = (identifier - 1) // 4
+            column = (identifier - 1) % 4
+            y0 = 16 + row * 58
+            x0 = 12 + column * 100
+            labels[y0 : y0 + 4, x0 : x0 + width] = identifier
+        # A wide but image-cutoff annotation must remain visible diagnostically
+        # without entering the selected top fraction.
+        labels[120:140, 0:90] = 99
+
+        measurements = _annotated_seed_diameter_measurements(
+            labels, top_fraction=0.25
+        )
+
+        selected = sorted(
+            item.diameter_px for item in measurements if item.selected
+        )
+        self.assertEqual(len(selected), 2)
+        self.assertAlmostEqual(selected[0], 67.0, delta=1.0)
+        self.assertAlmostEqual(selected[1], 75.0, delta=1.0)
+        cutoff = next(item for item in measurements if item.identifier == 99)
+        self.assertFalse(cutoff.complete)
+        self.assertFalse(cutoff.selected)
+
+    def test_dense_lupin_requires_user_authored_foreground_reference(self) -> None:
         import numpy as np
 
         from seedvision.segmentation import PipelineAnalysisCache, analyze_path
@@ -128,12 +173,8 @@ class PilotAnalysisTests(unittest.TestCase):
 
         self.assertIsNotNone(automatic.perimeter_background_lab)
         self.assertLess(automatic.background_prior_deviation, 30.0)
-        self.assertGreater(len(np.unique(automatic.foreground_probability)), 32)
-        self.assertGreater(int(automatic.foreground_probability.max()), 245)
-        self.assertLess(
-            automatic.foreground_pixel_count / automatic.analysis_region_pixel_count,
-            0.75,
-        )
+        self.assertFalse(np.any(automatic.foreground_colour_probability))
+        self.assertEqual(automatic.foreground_pixel_count, 0)
 
         reference = (
             float(automatic.dish.center_x),
@@ -196,7 +237,44 @@ class PilotAnalysisTests(unittest.TestCase):
         self.assertAlmostEqual(fallback_inner, inner)
         self.assertAlmostEqual(fallback_outer, outer)
 
-    def test_painted_background_samples_remain_multimodal_in_foreground_branch(self) -> None:
+    def test_perimeter_background_band_rejects_colour_card_contamination(self) -> None:
+        import cv2
+        import numpy as np
+
+        from seedvision.calibration.geometry import DishCircle
+        from seedvision.cuda import CudaContext
+        from seedvision.segmentation.baseline import _dish_perimeter_background_lab
+
+        height = width = 160
+        image = np.full((height, width, 3), (218, 222, 226), np.uint8)
+        yy, xx = np.indices((height, width))
+        radius = np.sqrt((xx - 80.0) ** 2 + (yy - 80.0) ** 2)
+        ring = (radius >= 50.0) & (radius <= 65.0)
+        colour_card = ring & (xx >= 80) & (yy <= 80)
+        image[colour_card] = (25, 45, 220)
+
+        median_lab, band, samples = _dish_perimeter_background_lab(
+            image,
+            DishCircle(80, 80, 40, 1.0),
+            None,
+            CudaContext.resolve(requested="cpu"),
+            colour_tolerance=10.0,
+            band_radii_px=(50.0, 65.0),
+        )
+
+        self.assertIsNotNone(band.accepted_sample_mask)
+        accepted = np.asarray(band.accepted_sample_mask) > 0
+        self.assertGreater(int(np.count_nonzero(accepted & ring & ~colour_card)), 100)
+        self.assertEqual(int(np.count_nonzero(accepted & colour_card)), 0)
+        self.assertEqual(band.sample_count, int(np.count_nonzero(accepted)))
+        self.assertEqual(int(samples.shape[0]), band.sample_count)
+        expected_lab = cv2.cvtColor(
+            np.asarray((218, 222, 226), np.uint8).reshape(1, 1, 3),
+            cv2.COLOR_BGR2LAB,
+        )[0, 0]
+        np.testing.assert_allclose(median_lab, expected_lab, atol=2.0)
+
+    def test_background_samples_do_not_synthesize_foreground_evidence(self) -> None:
         import cv2
         import numpy as np
 
@@ -224,9 +302,7 @@ class PilotAnalysisTests(unittest.TestCase):
             seed_diameter=28.0,
         )
 
-        self.assertLess(float(feature[12, 12]), 3.0)
-        self.assertLess(float(feature[12, 82]), 3.0)
-        self.assertGreater(float(feature[55, 48]), 30.0)
+        self.assertFalse(np.any(feature))
 
     def test_foreground_mask_colour_distribution_propagates_beyond_paint(self) -> None:
         import numpy as np
@@ -493,7 +569,7 @@ class PilotAnalysisTests(unittest.TestCase):
             int(painted_foreground.sum()),
         )
 
-    def test_isolated_reference_seed_colours_drive_automatic_foreground(self) -> None:
+    def test_isolated_scale_reference_colours_do_not_become_foreground(self) -> None:
         import numpy as np
 
         from seedvision.cuda import CudaContext
@@ -534,15 +610,9 @@ class PilotAnalysisTests(unittest.TestCase):
         automatic = automatic_result[1]
         profile = automatic_result[-2]
 
-        matching_loss = int(unreferenced[50, 96]) - int(automatic[50, 96])
-        distractor_loss = int(unreferenced[60, 32]) - int(automatic[60, 32])
-        self.assertLess(matching_loss, 30)
-        self.assertGreater(distractor_loss, matching_loss + 25)
-        self.assertIsNotNone(profile)
-        assert profile is not None
-        self.assertEqual(profile.source, "isolated_reference_seeds")
-        self.assertEqual(profile.source_sample_count, 512)
-        self.assertGreaterEqual(len(profile.component_centres_lab), 1)
+        np.testing.assert_array_equal(automatic, unreferenced)
+        self.assertFalse(np.any(automatic))
+        self.assertIsNone(profile)
 
     def test_zero_reference_weight_never_forces_painted_foreground(self) -> None:
         import numpy as np
@@ -620,6 +690,32 @@ class PilotAnalysisTests(unittest.TestCase):
                 + (proposal.center_y - result.dish.center_y) ** 2
             ) ** 0.5
             self.assertLessEqual(distance, result.dish.outer_radius * 0.91)
+
+    def test_candidate_fusion_keeps_primary_marker_as_suppression_anchor(self) -> None:
+        from seedvision.segmentation.baseline import (
+            BaselineSettings,
+            _Candidate,
+            _fuse_candidates,
+        )
+
+        primary = [_Candidate(0.0, 0.0, 20.0, 0.48, "distance")]
+        # Both circles describe the same primary marker. Fusing the positive
+        # observation first moves the weighted centre far enough that a mutable-
+        # centre suppression pass would incorrectly admit the negative one.
+        secondary = [
+            _Candidate(45.0, 0.0, 20.0, 0.62, "circle"),
+            _Candidate(-45.0, 0.0, 20.0, 0.62, "circle"),
+        ]
+
+        fused = _fuse_candidates(
+            primary,
+            secondary,
+            seed_diameter=100.0,
+            settings=BaselineSettings(),
+        )
+
+        self.assertEqual(len(fused), 1)
+        self.assertEqual(fused[0].source, "fused")
 
     def test_default_disabled_branches_do_not_execute_candidate_or_instance_math(self) -> None:
         from seedvision.pipeline import build_default_pipeline
@@ -747,6 +843,8 @@ class PilotAnalysisTests(unittest.TestCase):
             self.assertAlmostEqual(nearest.radius, 18.0, delta=2.0)
 
     def test_node_cache_reuses_upstream_stages_for_edge_change(self) -> None:
+        import numpy as np
+
         from seedvision.segmentation import (
             AdvancedAnalysisSettings,
             AnalysisLayerSettings,
@@ -766,21 +864,19 @@ class PilotAnalysisTests(unittest.TestCase):
         second = analyze_path(
             path,
             node_cache=cache,
-            dirty_nodes={"directed_edges", "seed_edge_curves"},
+            dirty_nodes={"edge_gradients", "seed_edge_curves"},
         )
         self.assertIs(second.calibration, calibration)
         self.assertIs(second.layers.background_likelihood, background)
         self.assertIn("deskew_colour", cache.last_reused_nodes)
         self.assertIn("background_likelihood", cache.last_reused_nodes)
-        self.assertIn("directed_edges", cache.last_computed_nodes)
+        self.assertIn("edge_gradients", cache.last_computed_nodes)
         self.assertIn("seed_edge_curves", cache.last_computed_nodes)
-        self.assertIn("edge_gradients", cache.last_reused_nodes)
-        self.assertNotIn("undirected_edges", cache.last_computed_nodes)
-        self.assertIs(cache.values["layer.edge_gradients"], shared_gradients)
+        self.assertIsNot(cache.values["layer.edge_gradients"], shared_gradients)
         self.assertEqual(
             second.node_timings_seconds["layout_detection"], layout_timing
         )
-        self.assertGreater(second.node_timings_seconds["directed_edges"], 0.0)
+        self.assertGreater(second.node_timings_seconds["edge_gradients"], 0.0)
         colour_probabilities = second.advanced.colour_probabilities
         third = analyze_path(
             path,
@@ -800,8 +896,6 @@ class PilotAnalysisTests(unittest.TestCase):
             dirty_nodes={"edge_gradients"},
         )
         self.assertIn("edge_gradients", cache.last_computed_nodes)
-        self.assertIn("directed_edges", cache.last_computed_nodes)
-        self.assertIn("undirected_edges", cache.last_computed_nodes)
         self.assertIn("seed_edge_curves", cache.last_computed_nodes)
         adjusted = analyze_path(
             path,
@@ -825,12 +919,27 @@ class PilotAnalysisTests(unittest.TestCase):
             adjusted.pixels_per_mm * 2.0,
             delta=0.5,
         )
-        self.assertIs(adjusted.foreground_probability, third.foreground_probability)
+        self.assertIsNot(
+            adjusted.foreground_colour_probability,
+            third.foreground_colour_probability,
+        )
+        self.assertEqual(
+            adjusted.foreground_colour_probability.shape,
+            adjusted.layers.valid_mask.shape,
+        )
+        self.assertFalse(np.any(adjusted.foreground_colour_probability))
+        self.assertIsNot(
+            adjusted.foreground_probability,
+            third.foreground_probability,
+        )
+        self.assertIn(
+            "material_evidence_decision", cache.last_computed_nodes
+        )
         self.assertIn(
             "perimeter_background_reference", cache.last_computed_nodes
         )
         self.assertIn("background_likelihood", cache.last_computed_nodes)
-        self.assertNotIn("foreground_segmentation", cache.last_computed_nodes)
+        self.assertIn("foreground_segmentation", cache.last_computed_nodes)
 
 
 if __name__ == "__main__":

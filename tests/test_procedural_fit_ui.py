@@ -33,7 +33,13 @@ class ProceduralFitMainWindowTests(unittest.TestCase):
             return_value=None,
         ):
             window = MainWindow(ROOT)
-        self.addCleanup(window.close)
+        def dispose() -> None:
+            window._project_tracking_enabled = False
+            window._project_dirty = False
+            window._procedural_fit_task = None
+            window.close()
+
+        self.addCleanup(dispose)
         key = window._current_image_key()
         if key is None:
             self.skipTest("No workspace image is present")
@@ -43,6 +49,8 @@ class ProceduralFitMainWindowTests(unittest.TestCase):
         window._draft_instance_annotations.pop(key, None)
         window._instance_annotations_dirty.discard(key)
         window._instance_continuity_cache.pop(key, None)
+        window._project_tracking_enabled = True
+        window._update_project_chrome()
         return window, key
 
     @staticmethod
@@ -156,16 +164,24 @@ class ProceduralFitMainWindowTests(unittest.TestCase):
             physical_edge_probability=None,
             non_edge_probability=None,
             reference_edge_ridges=object(),
+            net_reference_edge_ridges=object(),
+            locally_normalized_net_physical_edge=object(),
+            normalized_net_reference_edge_ridges=object(),
             edge_trace_labels=object(),
             edge_trace_continuity=object(),
             reference_seed_surface_probability=None,
+            darkening_surface_gradient=object(),
         )
         analysis = SimpleNamespace(
             layers=layers,
             estimated_seed_diameter_px=24.0,
             foreground_probability=None,
             advanced=SimpleNamespace(
-                rasters={"sensor_noise": None, "shadow_likelihood": None}
+                rasters={
+                    "sensor_noise": None,
+                    "shadow_likelihood": None,
+                    "flattened_grayscale": object(),
+                }
             ),
         )
         task = _ProceduralFitTask(
@@ -201,7 +217,11 @@ class ProceduralFitMainWindowTests(unittest.TestCase):
         prepare_kwargs = prepare.call_args.kwargs
         self.assertIs(
             prepare_kwargs["thinned_reference_edge_ridges"],
-            layers.reference_edge_ridges,
+            layers.normalized_net_reference_edge_ridges,
+        )
+        self.assertIs(
+            prepare_kwargs["normalized_net_physical_edge_probability"],
+            layers.locally_normalized_net_physical_edge,
         )
         self.assertIs(
             prepare_kwargs["oriented_edge_trace_labels"],

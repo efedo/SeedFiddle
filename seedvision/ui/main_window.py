@@ -6,9 +6,10 @@ import json
 import os
 import weakref
 from collections import OrderedDict
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from threading import Event
+from time import monotonic
 
 import numpy as np
 from PySide6.QtCore import (
@@ -19,6 +20,7 @@ from PySide6.QtCore import (
     QSize,
     Qt,
     QThreadPool,
+    QTimer,
     Signal,
     Slot,
 )
@@ -56,6 +58,12 @@ from PySide6.QtWidgets import (
 )
 
 from seedvision.pipeline import NodeStatus, build_default_pipeline
+from seedvision.diagnostics import (
+    LOGGER,
+    current_crash_log_path,
+    current_log_path,
+    diagnostic_log_note,
+)
 from seedvision.persistence import (
     ANALYSIS_SETTINGS_FILE_SUFFIX,
     MANUAL_SEED_CENTRES_SIDECAR,
@@ -109,6 +117,9 @@ from seedvision.segmentation import (
     ManualSeedCentres,
     ProceduralFitOptions,
     ProceduralInstanceSettings,
+    ReferenceEdgeFitResult,
+    evaluate_reference_edge_settings,
+    fit_reference_edge_parameters,
     fit_procedural_settings,
     prepare_procedural_instance_inputs,
     procedural_seed_instances_from_prepared,
@@ -124,6 +135,7 @@ from seedvision.ui.learning_workflow import (
 )
 from seedvision.ui.pipeline_canvas import PipelineCanvas
 from seedvision.ui.pipeline_inspector import PipelineInspector
+from seedvision.timing import AnalysisCancelled
 
 
 FALLBACK_SPECIES = (
@@ -133,6 +145,8 @@ FALLBACK_SPECIES = (
     "Lupinus mexicanus",
 )
 OVERLAY_NODE_IDS = (
+    "hue_only",
+    "wavelet_decomposition",
     "instance_masks",
     "background_likelihood",
     "refined_background_likelihood",
@@ -142,10 +156,9 @@ OVERLAY_NODE_IDS = (
     "lightening_gradient_ceiling",
     "darkening_gradient_ceiling",
     "frequency_noise_masks",
-    "undirected_edges",
-    "directed_edges",
     "edge_ridges",
     "reference_texture_prototypes",
+    "material_evidence_decision",
     "reference_edge_probability",
     "reference_edge_ridges",
     "edge_traces",
@@ -164,7 +177,7 @@ CALIBRATION_NODE_IDS = (
 IDENTIFICATION_STAGE_NODE_IDS = (
     "seed_scale_estimation",
     "perimeter_background_reference",
-    "foreground_segmentation",
+    "background_likelihood",
 )
 
 
@@ -198,7 +211,8 @@ VIEWER_NODE_MODES = {
     "scale_calibration": "calibrated_image",
     "seed_scale_estimation": "seed_scale_estimation",
     "perimeter_background_reference": "perimeter_background_reference",
-    "foreground_segmentation": "foreground_mask",
+    "background_likelihood": "background_likelihood",
+    "material_evidence_decision": "material_seed_probability",
     "distance_candidates": "distance_candidates",
     "circle_candidates": "circle_candidates",
     "identification": "proposals",
@@ -210,12 +224,15 @@ VIEWER_NODE_MODES = {
 }
 VIEWER_NODE_MODES.update(
     {
+        "hue_only": "hue_only",
+        "wavelet_decomposition": "wavelet_detail_1",
         "surface_darkness_gradients": "surface_lightening_gradient",
         "lightening_gradient_ceiling": "weak_lightening_gradient",
         "darkening_gradient_ceiling": "weak_darkening_gradient",
         "frequency_noise_masks": "darkness_noise_fine",
         "reference_texture_prototypes": "reference_texture_prototypes",
-        "reference_edge_probability": "physical_edge_probability",
+        "material_evidence_decision": "material_seed_probability",
+        "reference_edge_probability": "reference_edge_comparison",
     }
 )
 
@@ -224,14 +241,20 @@ OVERLAY_NODE_OWNERS = {
     "calibrated_image": "scale_calibration",
     "deskew_colour": "deskew_colour",
     "colour_reference": "colour_reference",
+    "ruler_evidence": "ruler_detection",
     "ruler_detection": "ruler_detection",
     "layout_detection": "layout_detection",
+    "hue_only": "hue_only",
+    "wavelet_detail_1": "wavelet_decomposition",
+    "wavelet_detail_2": "wavelet_decomposition",
+    "wavelet_detail_3": "wavelet_decomposition",
+    "wavelet_detail_4": "wavelet_decomposition",
+    "wavelet_residual": "wavelet_decomposition",
     "perimeter_background_reference": "perimeter_background_reference",
     "seed_scale_estimation": "seed_scale_estimation",
-    "foreground_feature": "foreground_segmentation",
-    "foreground_mask": "foreground_segmentation",
-    "foreground_colour_gamut": "foreground_segmentation",
-    "foreground_binary_mask": "foreground_segmentation",
+    "foreground_mask": "background_likelihood",
+    "foreground_colour_gamut": "background_likelihood",
+    "foreground_binary_mask": "material_evidence_decision",
     "distance_transform": "distance_candidates",
     "distance_candidates": "distance_candidates",
     "circle_candidates": "circle_candidates",
@@ -243,6 +266,18 @@ OVERLAY_NODE_OWNERS = {
     "refined_background_likelihood": "refined_background_likelihood",
     "other_noise_probability": "refined_background_likelihood",
     "foreground_noise_likelihood": "foreground_noise_likelihood",
+    "material_seed_support": "material_evidence_decision",
+    "material_background_support": "material_evidence_decision",
+    "material_other_support": "material_evidence_decision",
+    "material_nonseed_support": "material_evidence_decision",
+    "material_seed_probability": "material_evidence_decision",
+    "material_nonseed_probability": "material_evidence_decision",
+    "material_ambiguity_probability": "material_evidence_decision",
+    "material_unknown_probability": "material_evidence_decision",
+    "material_background_subtype": "material_evidence_decision",
+    "material_other_subtype": "material_evidence_decision",
+    "material_subtype_ambiguity": "material_evidence_decision",
+    "material_subtype_unknown": "material_evidence_decision",
     "edge_gradients": "edge_gradients",
     "surface_lightening_gradient": "surface_darkness_gradients",
     "surface_lightening_magnitude": "surface_darkness_gradients",
@@ -258,18 +293,21 @@ OVERLAY_NODE_OWNERS = {
     "colour_noise_fine": "frequency_noise_masks",
     "colour_noise_medium": "frequency_noise_masks",
     "colour_noise_coarse": "frequency_noise_masks",
-    "undirected_edges": "undirected_edges",
-    "directed_edges": "directed_edges",
+    "undirected_edges": "edge_gradients",
+    "directed_edges": "edge_gradients",
     "edge_ridges": "edge_ridges",
     "reference_texture_prototypes": "reference_texture_prototypes",
     "reference_seed_surface_probability": "reference_texture_prototypes",
     "reference_background_texture_probability": "reference_texture_prototypes",
     "reference_other_texture_probability": "reference_texture_prototypes",
-    "physical_edge_probability": "reference_edge_probability",
-    "non_edge_probability": "reference_edge_probability",
+    "physical_edge_probability": "reference_texture_prototypes",
+    "non_edge_probability": "reference_texture_prototypes",
     "reference_edge_comparison": "reference_edge_probability",
     "net_physical_edge_probability": "reference_edge_probability",
+    "locally_normalized_net_physical_edge": "reference_edge_ridges",
     "reference_edge_ridges": "reference_edge_ridges",
+    "net_reference_edge_ridges": "reference_edge_ridges",
+    "normalized_net_reference_edge_ridges": "reference_edge_ridges",
     "edge_traces": "edge_traces",
     "edge_trace_continuity": "edge_traces",
     "edge_trace_gap_confidence": "edge_traces",
@@ -288,6 +326,8 @@ OVERLAY_NODE_OWNERS = {
     "procedural_centres": "procedural_instances",
     "procedural_instances": "procedural_instances",
     "procedural_confidence": "procedural_instances",
+    "procedural_concavity": "procedural_instances",
+    "procedural_alternative_candidates": "procedural_instances",
     "unet_interior": "unet_instances",
     "unet_physical_boundary": "unet_instances",
     "unet_pattern_boundary": "unet_instances",
@@ -308,6 +348,7 @@ OVERLAY_NODE_OWNERS.update(
         "boundary_magnitude": "boundary_normals",
         "contested_pixels": "assignment_confidence",
         "flattened_grayscale": "illumination_decomposition",
+        "illumination_field": "illumination_decomposition",
         "shadow_likelihood": "illumination_decomposition",
         "highlight_likelihood": "illumination_decomposition",
         "reflectance_image": "illumination_decomposition",
@@ -331,10 +372,66 @@ def _overlay_node_owner(mode: str) -> str | None:
     return OVERLAY_NODE_OWNERS.get(mode)
 
 
+def _overlay_output_port_id(mode: str) -> str:
+    """Return the unconnected viewer-socket identifier for one overlay mode."""
+
+    normalized = "".join(
+        character if character.isalnum() else "_" for character in str(mode)
+    ).strip("_")
+    return f"viewer_{normalized or 'overlay'}"
+
+
+def _install_overlay_output_connectors(
+    pipeline,
+    entries: tuple[tuple[str, str], ...] | list[tuple[str, str]],
+) -> None:
+    """Mirror every selectable overlay as an identically labelled node output."""
+
+    complete_entries = [*entries]
+    complete_entries.extend(
+        (f"Colour probability: {name}", f"colour_probability:{index}")
+        for index, name in enumerate(("white", "yellow", "green", "red", "brown", "black"))
+    )
+    complete_entries.extend(
+        (f"Pattern probability: {name}", f"pattern_probability:{index}")
+        for index, name in enumerate(("plain", "spots", "mottled", "patches", "striped", "bicolour"))
+    )
+    for label, mode in complete_entries:
+        owner = _overlay_node_owner(mode)
+        if owner is None:
+            raise ValueError(f"Viewer overlay {mode!r} has no pipeline-node owner.")
+        node = pipeline.node(owner)
+        if label in dict(node.output_ports).values():
+            continue
+        port_id = _overlay_output_port_id(mode)
+        existing = dict(node.output_ports)
+        suffix = 2
+        candidate = port_id
+        while candidate in existing:
+            candidate = f"{port_id}_{suffix}"
+            suffix += 1
+        node.output_ports = (*node.output_ports, (candidate, label))
+        node.output_port_types[candidate] = f"ViewerOverlay:{mode}"
+
+
 class _AnalysisSignals(QObject):
     completed = Signal(object, int)
     failed = Signal(str, str, int)
+    cancelled = Signal(str, int)
     node_progress = Signal(str, str, str, int)
+
+
+@dataclass(slots=True)
+class _AnalysisActivity:
+    """Qt-thread telemetry for one serialized analysis request."""
+
+    path: Path
+    pipeline_revision: int
+    started_at: float
+    last_progress_at: float
+    current_node: str | None = None
+    current_node_started_at: float | None = None
+    cancellation_requested_at: float | None = None
 
 
 class _AnalysisTask(QRunnable):
@@ -425,6 +522,16 @@ class _AnalysisTask(QRunnable):
         self.node_cache = node_cache
         self.dirty_nodes = dirty_nodes
         self.signals = _AnalysisSignals()
+        self._cancel_requested = Event()
+
+    def cancel(self) -> None:
+        """Request a stop when the computation next reaches a node boundary."""
+
+        self._cancel_requested.set()
+
+    @property
+    def cancellation_requested(self) -> bool:
+        return self._cancel_requested.is_set()
 
     @Slot()
     def run(self) -> None:
@@ -458,13 +565,29 @@ class _AnalysisTask(QRunnable):
                 progress_callback=lambda node_id, state: self.signals.node_progress.emit(
                     str(self.path), node_id, state, self.pipeline_revision
                 ),
+                cancellation_requested=self._cancel_requested.is_set,
                 learning_root=self.learning_root,
                 species=self.species,
             )
-        except Exception as error:  # noqa: BLE001 - cross-thread error boundary
-            self.signals.failed.emit(
-                str(self.path), str(error), self.pipeline_revision
+        except AnalysisCancelled:
+            self.signals.cancelled.emit(
+                str(self.path), self.pipeline_revision
             )
+            return
+        except BaseException as error:  # noqa: BLE001 - cross-thread error boundary
+            LOGGER.exception(
+                "Analysis worker failed; image=%s; pipeline_revision=%d",
+                self.path,
+                self.pipeline_revision,
+            )
+            self.signals.failed.emit(
+                str(self.path),
+                f"{type(error).__name__}: {error}",
+                self.pipeline_revision,
+            )
+            return
+        if self._cancel_requested.is_set():
+            self.signals.cancelled.emit(str(self.path), self.pipeline_revision)
             return
         self.signals.completed.emit(result, self.pipeline_revision)
 
@@ -510,6 +633,10 @@ class _LearningTrainingTask(QRunnable):
                 self.signals.cancelled.emit()
                 return
         except Exception as error:  # noqa: BLE001 - cross-thread error boundary
+            LOGGER.exception(
+                "Learning training worker failed; output=%s",
+                self.request.output_path,
+            )
             self.signals.failed.emit(str(error))
             return
         self.signals.completed.emit(report)
@@ -520,6 +647,90 @@ class _ProceduralFitSignals(QObject):
     completed = Signal(object)
     failed = Signal(str)
     cancelled = Signal()
+
+
+class _ReferenceEdgeFitSignals(QObject):
+    progress = Signal(int, int, float)
+    completed = Signal(object)
+    failed = Signal(str)
+    cancelled = Signal()
+
+
+class _ReferenceEdgeFitTask(QRunnable):
+    """Fit edge-strip classifier settings against applied instance geometry."""
+
+    def __init__(
+        self,
+        cache: PipelineAnalysisCache,
+        annotations: np.ndarray,
+        seed_diameter_px: float,
+        settings: AnalysisLayerSettings,
+        *,
+        image_key: str,
+        pipeline_revision: int,
+        annotation_source: np.ndarray,
+    ) -> None:
+        super().__init__()
+        self.cache = cache
+        self.annotations = np.asarray(annotations, dtype=np.uint16)
+        self.seed_diameter_px = float(seed_diameter_px)
+        self.settings = settings
+        self.image_key = str(image_key)
+        self.pipeline_revision = int(pipeline_revision)
+        self.annotation_source = annotation_source
+        self.signals = _ReferenceEdgeFitSignals()
+        self._cancel_requested = Event()
+
+    def cancel(self) -> None:
+        self._cancel_requested.set()
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            values = self.cache.values
+            crop_value = values.get("crop")
+            if not isinstance(crop_value, tuple) or len(crop_value) < 1:
+                raise ValueError("The current corrected dish crop is not cached.")
+            crop = np.asarray(crop_value[0])
+            gradients = values.get("layer.edge_gradients")
+            ridges = values.get("layer.edge_ridges")
+            frequency_noise = values.get("layer.frequency_noise_masks")
+            if gradients is None or ridges is None or frequency_noise is None:
+                raise ValueError(
+                    "Run the current edge, ridge, and frequency-noise analysis before "
+                    "fitting instance-derived edge parameters."
+                )
+
+            def evaluate(settings: AnalysisLayerSettings):
+                return evaluate_reference_edge_settings(
+                    crop,
+                    gradients,
+                    ridges,
+                    frequency_noise,
+                    self.seed_diameter_px,
+                    self.annotations,
+                    settings,
+                )
+
+            report = fit_reference_edge_parameters(
+                self.settings,
+                evaluate,
+                progress_callback=lambda current, maximum, score: self.signals.progress.emit(
+                    current, maximum, float(score.loss)
+                ),
+                cancellation_requested=self._cancel_requested.is_set,
+            )
+            if report.cancelled:
+                self.signals.cancelled.emit()
+                return
+        except Exception as error:  # noqa: BLE001 - cross-thread error boundary
+            LOGGER.exception(
+                "Instance-derived edge fitting worker failed; image_key=%s",
+                self.image_key,
+            )
+            self.signals.failed.emit(str(error))
+            return
+        self.signals.completed.emit(report)
 
 
 class _ProceduralFitTask(QRunnable):
@@ -563,6 +774,9 @@ class _ProceduralFitTask(QRunnable):
             prepared = prepare_procedural_instance_inputs(
                 result.layers.valid_mask,
                 result.estimated_seed_diameter_px,
+                material_probability=getattr(
+                    result.layers, "seed_material_probability", None
+                ),
                 foreground_probability=result.foreground_probability,
                 foreground_noise_probability=(
                     result.layers.foreground_noise_likelihood
@@ -575,13 +789,24 @@ class _ProceduralFitTask(QRunnable):
                 edge_ridges=result.layers.edge_ridges,
                 physical_edge_probability=result.layers.physical_edge_probability,
                 non_edge_probability=result.layers.non_edge_probability,
-                thinned_reference_edge_ridges=result.layers.reference_edge_ridges,
+                normalized_net_physical_edge_probability=(
+                    result.layers.locally_normalized_net_physical_edge
+                ),
+                thinned_reference_edge_ridges=(
+                    result.layers.normalized_net_reference_edge_ridges
+                ),
                 oriented_edge_trace_labels=result.layers.edge_trace_labels,
                 oriented_edge_trace_continuity=(
                     result.layers.edge_trace_continuity
                 ),
                 reference_surface_probability=(
                     result.layers.reference_seed_surface_probability
+                ),
+                flattened_grayscale=(
+                    result.advanced.rasters.get("flattened_grayscale")
+                ),
+                surface_darkening_magnitude=(
+                    result.layers.darkening_surface_gradient
                 ),
                 working_maximum_dimension=(
                     self.settings.working_maximum_dimension
@@ -626,6 +851,10 @@ class _ProceduralFitTask(QRunnable):
                 cancelled=self._cancel_requested.is_set,
             )
         except Exception as error:  # noqa: BLE001 - worker error boundary
+            LOGGER.exception(
+                "Procedural fitting worker failed; image_key=%s",
+                self.image_key,
+            )
             self.signals.failed.emit(str(error))
             return
         if report.cancelled or self._cancel_requested.is_set():
@@ -660,6 +889,7 @@ class MainWindow(QMainWindow):
         self._manual_seed_centre_store = ManualSeedCentreStore(root)
         self._project_analysis_store = ProjectAnalysisStore(root)
         self._reference_region_autoload_attempted: set[str] = set()
+        self._reference_region_load_status: dict[str, tuple[str, str]] = {}
         self._manual_seed_centre_autoload_attempted: set[str] = set()
         self._reference_layer_shapes: dict[str, tuple[int, int]] = {}
         self._project_unbound_reference_loads: set[str] = set()
@@ -716,11 +946,15 @@ class MainWindow(QMainWindow):
             str, list[_ManualSeedCentreState]
         ] = {}
         self._active_tasks: dict[str, _AnalysisTask] = {}
+        self._analysis_activities: dict[str, _AnalysisActivity] = {}
         self._learning_training_task: _LearningTrainingTask | None = None
         self._learning_training_progress: QProgressDialog | None = None
         self._procedural_fit_task: _ProceduralFitTask | None = None
         self._procedural_fit_progress: QProgressDialog | None = None
+        self._reference_edge_fit_task: _ReferenceEdgeFitTask | None = None
+        self._reference_edge_fit_progress: QProgressDialog | None = None
         self._pending_analysis_key: str | None = None
+        self._pending_analysis_scope: frozenset[str] | None = None
         self._thread_pool = QThreadPool(self)
         # A single CUDA context gains no useful throughput from full-image jobs
         # competing in parallel, while their peak allocations readily add up to
@@ -756,8 +990,14 @@ class MainWindow(QMainWindow):
         self.image_view.manual_seed_centre_editing_cancelled.connect(
             self._stop_manual_seed_centre_editing
         )
+        self.image_view.procedural_instance_selected.connect(
+            self._procedural_instance_selected
+        )
         self.pipeline_canvas = PipelineCanvas(self.pipeline, self)
         self.pipeline_canvas.node_selected.connect(self._pipeline_node_selected)
+        self.pipeline_canvas.run_to_node_requested.connect(
+            self._run_pipeline_to_node
+        )
         self.pipeline_canvas.unused_node_restored.connect(
             self._pipeline_unused_node_restored
         )
@@ -803,6 +1043,12 @@ class MainWindow(QMainWindow):
         self._build_menu()
         self._build_toolbar()
         self._build_layout()
+        self._analysis_activity_timer = QTimer(self)
+        self._analysis_activity_timer.setInterval(1000)
+        self._analysis_activity_timer.timeout.connect(
+            self._refresh_analysis_activity_panel
+        )
+        self._analysis_activity_timer.start()
         self.pipeline_canvas.select_node(self._selected_pipeline_node)
         self._load_workspace_images()
         if self.image_view.image_path is None:
@@ -1049,6 +1295,11 @@ class MainWindow(QMainWindow):
             self._project_reference_sidecar_paths[key] = (
                 self._reference_region_store.path_for(path)
             )
+            self._set_reference_region_load_status(
+                key,
+                "saved",
+                "A previously memory-only applied snapshot was saved successfully.",
+            )
 
         for key in tuple(self._unsaved_manual_centre_sidecars):
             path = self._image_paths.get(key)
@@ -1225,12 +1476,12 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _save_project(self) -> bool:
-        if self._background_work_is_active():
+        if self._exclusive_background_work_is_active():
             QMessageBox.information(
                 self,
                 "Analysis is busy",
-                "Wait for the current analysis, training, or parameter fit to finish "
-                "before saving the project.",
+                "Wait for training or parameter fitting to finish before saving the "
+                "project. Ordinary image analysis can continue while a project is saved.",
             )
             return False
         if not self._resolve_unapplied_project_drafts():
@@ -1241,12 +1492,12 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _save_project_as(self, *, drafts_resolved: bool = False) -> bool:
-        if self._background_work_is_active():
+        if self._exclusive_background_work_is_active():
             QMessageBox.information(
                 self,
                 "Analysis is busy",
-                "Wait for the current analysis, training, or parameter fit to finish "
-                "before saving the project.",
+                "Wait for training or parameter fitting to finish before saving the "
+                "project. Ordinary image analysis can continue while a project is saved.",
             )
             return False
         if not drafts_resolved and not self._resolve_unapplied_project_drafts():
@@ -1582,6 +1833,7 @@ class MainWindow(QMainWindow):
         """Purge every image-local value before installing another project."""
 
         self._pending_analysis_key = None
+        self._pending_analysis_scope = None
         # Clearing the controller values first makes teardown independent of
         # any stale editor payload and lets the controls fall back to defaults.
         self._manual_seed_centre_states.clear()
@@ -1626,6 +1878,7 @@ class MainWindow(QMainWindow):
         self._reference_masks_dirty.clear()
         self._instance_annotations_dirty.clear()
         self._reference_region_autoload_attempted.clear()
+        self._reference_region_load_status.clear()
         self._manual_seed_centre_autoload_attempted.clear()
         self._unsaved_reference_sidecars.clear()
         self._unsaved_manual_centre_sidecars.clear()
@@ -1644,6 +1897,7 @@ class MainWindow(QMainWindow):
         self._project_unresolved_selected_image_id = None
         self._image_paths.clear()
         self.image_list.clear()
+        self._analysis_activities.clear()
 
         self.image_view.clear_image()
         with QSignalBlocker(self.paint_background_action):
@@ -1659,6 +1913,8 @@ class MainWindow(QMainWindow):
         )
         self.pipeline.invalidate(catalogue_ids, preserve_bypassed=True)
         self._show_pending_result()
+        self._refresh_reference_association_panel()
+        self._refresh_analysis_activity_panel()
         self._release_unused_cuda_blocks()
 
     def _unapplied_project_draft_keys(self) -> set[str]:
@@ -1899,6 +2155,12 @@ class MainWindow(QMainWindow):
                 self._reference_region_store.path_for(path)
             )
             self._reference_layer_shapes[key] = shape
+            self._set_reference_region_load_status(
+                key,
+                "saved",
+                "The applied project draft was atomically saved and installed in "
+                "memory for analysis.",
+            )
             committed.add(key)
 
         self._finish_bulk_project_reference_change(
@@ -1997,6 +2259,9 @@ class MainWindow(QMainWindow):
 
         self.open_action = QAction("Open images…", self)
         self.open_action.setShortcut(QKeySequence.StandardKey.Open)
+        self.open_action.setToolTip(
+            "Add one or more images to the project and open the last selected image."
+        )
         self.open_action.triggered.connect(self._choose_images)
 
         self.load_analysis_settings_action = QAction(
@@ -2192,16 +2457,34 @@ class MainWindow(QMainWindow):
         """Create the compact viewer controls shared by the top toolbar."""
 
         self.overlay_combo = QComboBox(self)
+        # Kept as the single state model (and for keyboard/accessibility
+        # compatibility); the visible selector is a node -> overlay menu.
+        self.overlay_combo.hide()
+        self.overlay_menu = QMenu(self)
+        self.overlay_button = QToolButton(self)
+        self.overlay_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.overlay_button.setMenu(self.overlay_menu)
+        self.overlay_button.setMinimumWidth(220)
+        self.overlay_button.setMaximumWidth(380)
+        self.overlay_button.setToolTip(
+            "Choose a calculating node, then one of the overlays that node owns."
+        )
         self._overlay_entries: list[tuple[str, str]] = [
             ("Raw image", "raw_image"),
             ("Detected colour swatches", "colour_reference"),
             ("Deskewed colour image + swatches", "deskew_colour"),
+            ("Ruler evidence", "ruler_evidence"),
             ("Detected ruler", "ruler_detection"),
             ("Calibrated image & 5 cm scale", "calibrated_image"),
             ("Detected vessel layout", "layout_detection"),
+            ("Hue only", "hue_only"),
+            ("Wavelet detail 1", "wavelet_detail_1"),
+            ("Wavelet detail 2", "wavelet_detail_2"),
+            ("Wavelet detail 3", "wavelet_detail_3"),
+            ("Wavelet detail 4", "wavelet_detail_4"),
+            ("Wavelet low-pass residual", "wavelet_residual"),
             ("Perimeter background reference", "perimeter_background_reference"),
             ("Reference seed scale", "seed_scale_estimation"),
-            ("Foreground strength", "foreground_feature"),
             ("Foreground colour probability", "foreground_mask"),
             ("Accepted foreground colours (HSV)", "foreground_colour_gamut"),
             ("Foreground binary proposal mask", "foreground_binary_mask"),
@@ -2216,6 +2499,18 @@ class MainWindow(QMainWindow):
             ("Background noise probability", "refined_background_likelihood"),
             ("Other noise probability", "other_noise_probability"),
             ("Foreground noise probability", "foreground_noise_likelihood"),
+            ("Aggregated Seed support", "material_seed_support"),
+            ("Aggregated Background support", "material_background_support"),
+            ("Aggregated Other support", "material_other_support"),
+            ("Aggregated Non-seed support", "material_nonseed_support"),
+            ("Resolved Seed probability", "material_seed_probability"),
+            ("Resolved Non-seed probability", "material_nonseed_probability"),
+            ("Material evidence ambiguity", "material_ambiguity_probability"),
+            ("Unknown material evidence", "material_unknown_probability"),
+            ("Background subtype given Non-seed", "material_background_subtype"),
+            ("Other subtype given Non-seed", "material_other_subtype"),
+            ("Background/Other subtype ambiguity", "material_subtype_ambiguity"),
+            ("Unknown Non-seed subtype", "material_subtype_unknown"),
             ("Shared edge magnitude", "edge_gradients"),
             ("Surface lightening direction", "surface_lightening_gradient"),
             ("Surface lightening magnitude", "surface_lightening_magnitude"),
@@ -2238,8 +2533,8 @@ class MainWindow(QMainWindow):
             ("Edge tangent (undirected)", "undirected_edges"),
             ("Edge tangent (directed)", "directed_edges"),
             ("Thinned edge ridges", "edge_ridges"),
-            ("Physical-edge probability", "physical_edge_probability"),
-            ("Non-physical edge probability", "non_edge_probability"),
+            ("Physical-edge prototype probability", "physical_edge_probability"),
+            ("Non-physical prototype probability", "non_edge_probability"),
             (
                 "Physical blue / non-physical red",
                 "reference_edge_comparison",
@@ -2248,7 +2543,16 @@ class MainWindow(QMainWindow):
                 "Net physical-edge probability",
                 "net_physical_edge_probability",
             ),
+            (
+                "Locally normalized net physical edge",
+                "locally_normalized_net_physical_edge",
+            ),
             ("Thinned reference edge ridge", "reference_edge_ridges"),
+            ("Thinned net-physical edge ridge", "net_reference_edge_ridges"),
+            (
+                "Thinned normalized net-physical ridge",
+                "normalized_net_reference_edge_ridges",
+            ),
             ("Oriented edge traces", "edge_traces"),
             ("Trace continuity", "edge_trace_continuity"),
             ("Trace gap confidence", "edge_trace_gap_confidence"),
@@ -2267,6 +2571,8 @@ class MainWindow(QMainWindow):
             ("Procedural centre likelihood", "procedural_centres"),
             ("Procedural seed instances", "procedural_instances"),
             ("Procedural instance confidence", "procedural_confidence"),
+            ("Procedural internal concavity", "procedural_concavity"),
+            ("Procedural alternative candidates", "procedural_alternative_candidates"),
             ("U-Net seed interior", "unet_interior"),
             ("U-Net physical boundary", "unet_physical_boundary"),
             ("U-Net coat-pattern boundary", "unet_pattern_boundary"),
@@ -2280,10 +2586,12 @@ class MainWindow(QMainWindow):
             ("StarDist seed instances", "stardist_instances"),
             ("StarDist instance confidence", "stardist_confidence"),
             *ADVANCED_OVERLAY_LABELS,
-            ("None", "none"),
         ]
+        _install_overlay_output_connectors(self.pipeline, self._overlay_entries)
+        self.pipeline_canvas.rebuild_graph_items()
         self._rebuild_overlay_combo("raw_image")
         self.overlay_combo.setEnabled(False)
+        self.overlay_button.setEnabled(False)
         self.overlay_combo.currentIndexChanged.connect(self._overlay_changed)
 
         self.overlay_opacity_slider = QSlider(Qt.Orientation.Horizontal, self)
@@ -2330,27 +2638,34 @@ class MainWindow(QMainWindow):
         return tuple(
             (label, mode)
             for label, mode in self._overlay_entries
-            if (
-                (owner := _overlay_node_owner(mode)) is None
-                or self.pipeline.is_active(owner)
-            )
+            if (owner := _overlay_node_owner(mode)) is not None
+            and self.pipeline.is_active(owner)
         )
 
     def _rebuild_overlay_combo(self, selected_mode: str | None = None) -> None:
-        """Group selectable overlays beneath disabled owning-node headings."""
+        """Rebuild the state combo and visible node -> overlay menu."""
 
         selected_mode = selected_mode or str(self.overlay_combo.currentData() or "")
-        grouped: dict[str | None, list[tuple[str, str]]] = {}
+        grouped: dict[str, list[tuple[str, str]]] = {}
         for label, mode in self._active_overlay_entries():
-            grouped.setdefault(_overlay_node_owner(mode), []).append((label, mode))
+            owner = _overlay_node_owner(mode)
+            if owner is not None:
+                grouped.setdefault(owner, []).append((label, mode))
         with QSignalBlocker(self.overlay_combo):
             self.overlay_combo.clear()
-            for owner, entries in grouped.items():
-                heading = (
-                    "Viewer"
-                    if owner is None
-                    else self.pipeline.node(owner).title
-                )
+            owner_order: list[str] = list(
+                node_id
+                for node_id in self.pipeline.topological_order()
+                if node_id in grouped
+            )
+            owner_order.extend(
+                owner for owner in grouped if owner not in owner_order
+            )
+            for owner in owner_order:
+                entries = grouped.get(owner)
+                if not entries:
+                    continue
+                heading = self.pipeline.node(owner).title
                 self.overlay_combo.addItem(heading, f"__overlay_group__:{owner}")
                 heading_item = self.overlay_combo.model().item(
                     self.overlay_combo.count() - 1
@@ -2366,8 +2681,46 @@ class MainWindow(QMainWindow):
                 index = self.overlay_combo.findData("raw_image")
             if index >= 0:
                 self.overlay_combo.setCurrentIndex(index)
+        self._rebuild_overlay_menu(str(self.overlay_combo.currentData() or "raw_image"))
         if hasattr(self, "pipeline_inspector"):
             self._sync_inspector_overlay_options()
+
+    def _rebuild_overlay_menu(self, selected_mode: str) -> None:
+        """Expose overlays as node submenus so ownership stays obvious."""
+
+        self.overlay_menu.clear()
+        grouped: dict[str, list[tuple[str, str]]] = {}
+        for label, mode in self._active_overlay_entries():
+            owner = _overlay_node_owner(mode)
+            if owner is not None:
+                grouped.setdefault(owner, []).append((label, mode))
+        owner_order: list[str] = list(
+            node_id
+            for node_id in self.pipeline.topological_order()
+            if node_id in grouped
+        )
+        owner_order.extend(owner for owner in grouped if owner not in owner_order)
+        selected_label = "Raw image"
+        for owner in owner_order:
+            entries = grouped.get(owner)
+            if not entries:
+                continue
+            title = self.pipeline.node(owner).title
+            submenu = self.overlay_menu.addMenu(title)
+            for label, mode in entries:
+                action = submenu.addAction(label)
+                action.triggered.connect(
+                    lambda _checked=False, selected=mode: self._select_overlay_mode(selected)
+                )
+                if mode == selected_mode:
+                    selected_label = label
+        self.overlay_button.setText(selected_label)
+
+    def _select_overlay_mode(self, mode: str) -> None:
+        index = self.overlay_combo.findData(mode)
+        if index >= 0:
+            self.overlay_combo.setCurrentIndex(index)
+        self._rebuild_overlay_menu(str(self.overlay_combo.currentData() or "raw_image"))
 
     def _overlay_options_for_node(self, node_id: str) -> tuple[tuple[str, str], ...]:
         return tuple(
@@ -2524,14 +2877,13 @@ class MainWindow(QMainWindow):
             self.keep_perimeter_background_reference_checkbox.isChecked()
         )
         self.keep_perimeter_background_reference_checkbox.setToolTip(
-            "Keep the buffered perimeter ring's Lab colours and the in-dish area "
-            "matching its median in addition to any painted Background marks. The "
-            "ring anchors the colour model; matching in-dish pixels train Background "
-            "colour, noise, and material-prototype models. While Background painting "
-            "is active, the retained in-dish area is shown in cyan and painted marks "
-            "in green. Uncheck to remove the perimeter-derived source; if no "
-            "Background is painted, the colour model uses its generic automatic "
-            "chroma/lightness source instead."
+            "Keep only the colour-filtered pixels in the buffered perimeter ring "
+            "in addition to any painted Background marks. Similar-coloured pixels "
+            "inside the dish are not recruited. While Background painting is active, "
+            "the retained ring pixels are shown in cyan and painted marks in green. "
+            "Uncheck to remove the perimeter-derived source; if no Background is "
+            "painted, the colour model uses its generic automatic chroma/lightness "
+            "source instead."
         )
         self.keep_perimeter_background_reference_checkbox.toggled.connect(
             self._keep_perimeter_background_reference_toggled
@@ -2545,8 +2897,8 @@ class MainWindow(QMainWindow):
         )
         self.include_seed_instances_as_foreground_checkbox.setChecked(
             bool(
-                self.pipeline.node("foreground_segmentation").parameters.get(
-                    "foreground_include_annotated_seed_instances", False
+                self.pipeline.node("background_likelihood").parameters.get(
+                    "foreground_include_annotated_seed_instances", True
                 )
             )
         )
@@ -2900,7 +3252,7 @@ class MainWindow(QMainWindow):
         self.instance_id_spin.setRange(1, np.iinfo(np.uint16).max)
         self.instance_id_spin.setPrefix("Seed ")
         self.instance_id_spin.valueChanged.connect(self._instance_id_changed)
-        self.new_instance_button = QPushButton("New seed", instance_selector)
+        self.new_instance_button = QPushButton("Next empty seed", instance_selector)
         self.new_instance_button.clicked.connect(self._new_instance_annotation)
         selector_layout.addWidget(self.instance_colour_swatch)
         selector_layout.addWidget(self.instance_id_spin, 1)
@@ -3257,6 +3609,16 @@ class MainWindow(QMainWindow):
             "the first barrier pixel so the annotation reaches a one-pixel ridge "
             "without crossing it."
         )
+        self.shape_fill_gap_sealing_spin = QDoubleSpinBox(shape_fill_page)
+        self.shape_fill_gap_sealing_spin.setRange(0.0, 0.10)
+        self.shape_fill_gap_sealing_spin.setSingleStep(0.005)
+        self.shape_fill_gap_sealing_spin.setDecimals(3)
+        self.shape_fill_gap_sealing_spin.setValue(0.02)
+        self.shape_fill_gap_sealing_spin.setSuffix(" × preferred diameter")
+        self.shape_fill_gap_sealing_spin.setToolTip(
+            "Seal short holes in otherwise coherent edge barriers before Shape fill "
+            "grows. Wider genuinely open arcs remain traversable."
+        )
         self.shape_fill_pixel_limit_spin = QSpinBox(shape_fill_page)
         self.shape_fill_pixel_limit_spin.setRange(1_000, 10_000_000)
         self.shape_fill_pixel_limit_spin.setSingleStep(10_000)
@@ -3268,10 +3630,21 @@ class MainWindow(QMainWindow):
         self.shape_fill_outward_half_life_spin.setValue(0.05)
         self.shape_fill_outward_half_life_spin.setSuffix(" × preferred diameter")
         self.shape_fill_outward_half_life_spin.setToolTip(
-            "Outside the fitted oval prior, fill support decays with this "
-            "half-life. The default 0.05 diameter permits a soft one-edge-pixel "
-            "correction without reverting to cursor-centred radial fall-off. It "
-            "cannot exceed the hard cutoff."
+            "After the inward start point, fill support halves over this distance. "
+            "Very short half-lives now stop uniform-area growth once pressure falls "
+            "below one byte of effective support; they no longer flood unchanged to "
+            "the hard cutoff."
+        )
+        self.shape_fill_penalty_start_spin = QDoubleSpinBox(shape_fill_page)
+        self.shape_fill_penalty_start_spin.setRange(0.0, 0.50)
+        self.shape_fill_penalty_start_spin.setSingleStep(0.01)
+        self.shape_fill_penalty_start_spin.setDecimals(2)
+        self.shape_fill_penalty_start_spin.setValue(0.05)
+        self.shape_fill_penalty_start_spin.setSuffix(" × preferred diameter inside")
+        self.shape_fill_penalty_start_spin.setToolTip(
+            "Distance inside the fitted oval where the soft penalty begins. This "
+            "allows divets and non-elliptical indentations to be selected before the "
+            "nominal oval boundary is reached."
         )
         self.shape_fill_outward_cutoff_spin = QDoubleSpinBox(shape_fill_page)
         self.shape_fill_outward_cutoff_spin.setRange(0.01, 0.50)
@@ -3299,6 +3672,10 @@ class MainWindow(QMainWindow):
         shape_fill_form.addRow("Maximum unsupported arc", self.shape_fill_max_gap_spin)
         shape_fill_form.addRow("Neighbour colour step", self.shape_fill_colour_step_spin)
         shape_fill_form.addRow("Edge barrier threshold", self.shape_fill_barrier_spin)
+        shape_fill_form.addRow("Edge-gap sealing", self.shape_fill_gap_sealing_spin)
+        shape_fill_form.addRow(
+            "Soft penalty starts inside", self.shape_fill_penalty_start_spin
+        )
         shape_fill_form.addRow(
             "Outward soft half-life", self.shape_fill_outward_half_life_spin
         )
@@ -3329,6 +3706,18 @@ class MainWindow(QMainWindow):
             "cross stronger local pattern changes and may drift through gradual "
             "gradients; this is not distance from the initial click colour."
         )
+        self.smart_fill_click_colour_tolerance_spin = QDoubleSpinBox(fill_page)
+        self.smart_fill_click_colour_tolerance_spin.setRange(1.0, 360.0)
+        self.smart_fill_click_colour_tolerance_spin.setDecimals(1)
+        self.smart_fill_click_colour_tolerance_spin.setValue(72.0)
+        self.smart_fill_click_colour_tolerance_spin.setToolTip(
+            "Largest total colour change allowed from the pixel initially clicked "
+            "to any newly added pixel. L uses this value and a*/b* use 72%, "
+            "matching the Neighbour colour step scale. This hard range prevents "
+            "many individually small steps from drifting into a different colour; "
+            "it is independent of distance and Fall-off half-life. Existing pixels "
+            "already assigned to the active seed are preserved."
+        )
         self.smart_fill_edge_stop_spin = QSpinBox(fill_page)
         self.smart_fill_edge_stop_spin.setRange(0, 100)
         self.smart_fill_edge_stop_spin.setValue(58)
@@ -3339,19 +3728,17 @@ class MainWindow(QMainWindow):
             "edge and permit more growth. The fill includes the first barrier pixel "
             "so it meets the ridge without crossing it."
         )
-        self.smart_fill_tunnel_combo = QComboBox(fill_page)
-        for label, strength in (
-            ("Off", 0.0),
-            ("Gentle", 0.25),
-            ("Medium", 0.50),
-            ("Strong", 0.75),
-            ("Maximum", 1.0),
-        ):
-            self.smart_fill_tunnel_combo.addItem(label, strength)
-        self.smart_fill_tunnel_combo.setToolTip(
-            "Optionally open one small passage through the nearest weak edge "
-            "barrier. Higher strengths accept a somewhat stronger barrier and a "
-            "wider local passage; other barriers are not weakened."
+        self.smart_fill_gap_sealing_spin = QDoubleSpinBox(fill_page)
+        self.smart_fill_gap_sealing_spin.setRange(0.0, 0.10)
+        self.smart_fill_gap_sealing_spin.setSingleStep(0.005)
+        self.smart_fill_gap_sealing_spin.setDecimals(3)
+        self.smart_fill_gap_sealing_spin.setValue(0.02)
+        self.smart_fill_gap_sealing_spin.setSuffix(" × seed diameter")
+        self.smart_fill_gap_sealing_spin.setToolTip(
+            "Pressure-wall gap sealing: holes no wider than this seed-relative "
+            "radius are closed when nearby edge pixels support the same barrier. "
+            "This prevents one- or two-pixel holes in oriented traces from becoming "
+            "large flood leaks."
         )
         self.smart_fill_radius_spin = QDoubleSpinBox(fill_page)
         self.smart_fill_radius_spin.setRange(0.30, 5.0)
@@ -3385,9 +3772,6 @@ class MainWindow(QMainWindow):
         self.smart_fill_pixel_limit_spin.setRange(1_000, 10_000_000)
         self.smart_fill_pixel_limit_spin.setSingleStep(10_000)
         self.smart_fill_pixel_limit_spin.setValue(150_000)
-        self.smart_fill_connectivity_combo = QComboBox(fill_page)
-        self.smart_fill_connectivity_combo.addItem("8 neighbours", 8)
-        self.smart_fill_connectivity_combo.addItem("4 neighbours", 4)
         self.smart_fill_evidence_combo = QComboBox(fill_page)
         self._populate_annotation_edge_sources(
             self.smart_fill_evidence_combo, include_net_physical=True
@@ -3396,14 +3780,17 @@ class MainWindow(QMainWindow):
         fill_form.addRow(
             "Neighbour colour step", self.smart_fill_colour_tolerance_spin
         )
+        fill_form.addRow(
+            "Click-origin colour range",
+            self.smart_fill_click_colour_tolerance_spin,
+        )
         fill_form.addRow("Edge barrier threshold", self.smart_fill_edge_stop_spin)
-        fill_form.addRow("Tunnelling", self.smart_fill_tunnel_combo)
+        fill_form.addRow("Edge-gap sealing", self.smart_fill_gap_sealing_spin)
         fill_form.addRow(
             "Maximum distance from cursor", self.smart_fill_radius_spin
         )
         fill_form.addRow("Fall-off half-life", self.smart_fill_falloff_spin)
         fill_form.addRow("Maximum added pixels", self.smart_fill_pixel_limit_spin)
-        fill_form.addRow("Connectivity", self.smart_fill_connectivity_combo)
         self.instance_tool_pages["smart_fill"] = fill_page
         self.instance_tool_options_stack.addWidget(fill_page)
 
@@ -3436,17 +3823,19 @@ class MainWindow(QMainWindow):
             self.shape_fill_max_gap_spin,
             self.shape_fill_colour_step_spin,
             self.shape_fill_barrier_spin,
+            self.shape_fill_gap_sealing_spin,
+            self.shape_fill_penalty_start_spin,
             self.shape_fill_outward_half_life_spin,
             self.shape_fill_outward_cutoff_spin,
             self.shape_fill_pixel_limit_spin,
             self.smart_fill_colour_tolerance_spin,
+            self.smart_fill_click_colour_tolerance_spin,
             self.smart_fill_evidence_combo,
             self.smart_fill_edge_stop_spin,
-            self.smart_fill_tunnel_combo,
+            self.smart_fill_gap_sealing_spin,
             self.smart_fill_radius_spin,
             self.smart_fill_falloff_spin,
             self.smart_fill_pixel_limit_spin,
-            self.smart_fill_connectivity_combo,
         ):
             signal = (
                 control.currentIndexChanged
@@ -3488,7 +3877,10 @@ class MainWindow(QMainWindow):
         )
         self.apply_instance_annotations_button.setToolTip(
             "Confirm the seed-instance draft and atomically save it with the "
-            "other applied reference layers. Unapplied strokes are never saved."
+            "other applied reference layers in the project's canonical per-image "
+            "reference sidecar. Unapplied strokes are never saved. This makes the "
+            "painting durable immediately; File > Save Project is still required "
+            "to update the master file's sidecar digest and other project settings."
         )
         self.apply_instance_annotations_button.clicked.connect(
             self._apply_instance_annotations
@@ -3555,10 +3947,8 @@ class MainWindow(QMainWindow):
 
         overlay_label = QLabel("Overlay:", self.workflow_toolbar)
         overlay_label.setObjectName("overlayToolbarLabel")
-        self.overlay_combo.setMinimumContentsLength(18)
-        self.overlay_combo.setMaximumWidth(340)
         self.workflow_toolbar.addWidget(overlay_label)
-        self.workflow_toolbar.addWidget(self.overlay_combo)
+        self.workflow_toolbar.addWidget(self.overlay_button)
         self.workflow_toolbar.addSeparator()
 
         self.opacity_toolbar_label = QLabel("Opacity:", self.workflow_toolbar)
@@ -3624,15 +4014,52 @@ class MainWindow(QMainWindow):
     def _build_image_panel(self) -> QWidget:
         panel = QWidget(self)
         panel.setMinimumWidth(190)
-        panel.setMaximumWidth(360)
+        panel.setMaximumWidth(390)
         layout = QVBoxLayout(panel)
         heading = QLabel("Images", panel)
         heading.setStyleSheet("font-size: 16px; font-weight: 600;")
         layout.addWidget(heading)
         layout.addWidget(self.image_list, 1)
-        add_button = QPushButton("Add images…", panel)
-        add_button.clicked.connect(self._choose_images)
-        layout.addWidget(add_button)
+
+        activity_heading = QLabel("Analysis activity", panel)
+        activity_heading.setStyleSheet("font-size: 13px; font-weight: 600;")
+        layout.addWidget(activity_heading)
+        self.analysis_activity_label = QLabel("Idle", panel)
+        self.analysis_activity_label.setObjectName("analysisActivityLabel")
+        self.analysis_activity_label.setWordWrap(True)
+        self.analysis_activity_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self.analysis_activity_label.setStyleSheet(
+            "QLabel { background: #eef2f5; border: 1px solid #c5cdd4; "
+            "border-radius: 3px; padding: 6px; }"
+        )
+        layout.addWidget(self.analysis_activity_label)
+
+        association_heading = QLabel("References and annotations", panel)
+        association_heading.setStyleSheet("font-size: 13px; font-weight: 600;")
+        layout.addWidget(association_heading)
+        self.reference_association_scroll = QScrollArea(panel)
+        self.reference_association_scroll.setWidgetResizable(True)
+        self.reference_association_scroll.setFrameShape(QFrame.Shape.StyledPanel)
+        self.reference_association_scroll.setMinimumHeight(170)
+        self.reference_association_scroll.setMaximumHeight(285)
+        self.reference_association_label = QLabel(
+            "Select an image to inspect its saved associations.",
+            self.reference_association_scroll,
+        )
+        self.reference_association_label.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
+        )
+        self.reference_association_label.setWordWrap(True)
+        self.reference_association_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self.reference_association_label.setMargin(6)
+        self.reference_association_scroll.setWidget(
+            self.reference_association_label
+        )
+        layout.addWidget(self.reference_association_scroll)
         return panel
 
     def _build_metadata_panel(self) -> QScrollArea:
@@ -3724,6 +4151,254 @@ class MainWindow(QMainWindow):
         )
         return self.metadata_scroll
 
+    def _set_reference_region_load_status(
+        self, key: str, status: str, detail: str
+    ) -> None:
+        """Record a durable, user-visible sidecar discovery/load outcome."""
+
+        self._reference_region_load_status[str(key)] = (
+            str(status),
+            str(detail),
+        )
+        if self._current_image_key() == key:
+            self._refresh_reference_association_panel()
+
+    @staticmethod
+    def _reference_content_counts(
+        background: np.ndarray | None,
+        foreground: np.ndarray | None,
+        other: np.ndarray | None,
+        annotations: np.ndarray | None,
+    ) -> tuple[int, int, int, int, int]:
+        annotation_pixels = (
+            0 if annotations is None else int(np.count_nonzero(annotations))
+        )
+        if annotation_pixels:
+            identifier_counts = np.bincount(
+                np.asarray(annotations, dtype=np.uint16).reshape(-1)
+            )
+            annotation_ids = int(np.count_nonzero(identifier_counts[1:]))
+        else:
+            annotation_ids = 0
+        return (
+            0 if background is None else int(np.count_nonzero(background)),
+            0 if foreground is None else int(np.count_nonzero(foreground)),
+            0 if other is None else int(np.count_nonzero(other)),
+            annotation_ids,
+            annotation_pixels,
+        )
+
+    def _bundled_instance_association_text(self, path: Path) -> str:
+        """Describe a declared source-coordinate bootstrap without loading it."""
+
+        manifest = self._root / "seed-instance-references" / "manifest.json"
+        if not manifest.is_file():
+            return "Bundled pre-annotation: none"
+        try:
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+            entries = payload.get("entries")
+            if not isinstance(entries, list):
+                raise ValueError("manifest entries are invalid")
+            matches = []
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                image_value = entry.get("image_path")
+                if not isinstance(image_value, str):
+                    continue
+                candidate = (self._root / image_value).resolve()
+                if _path_identity(candidate) == _path_identity(path):
+                    matches.append(entry)
+            if not matches:
+                return "Bundled pre-annotation: none associated"
+            if len(matches) != 1:
+                return (
+                    "Bundled pre-annotation: invalid ambiguous association "
+                    f"({len(matches)} entries)"
+                )
+            entry = matches[0]
+            mask_path = (
+                self._root
+                / "seed-instance-references"
+                / str(entry.get("mask_path"))
+            ).resolve()
+            reviewed_text = (
+                "reviewed" if entry.get("reviewed") is True else "not reviewed"
+            )
+            count = entry.get("instance_count")
+            count_text = (
+                f"{int(count):,} declared seed IDs"
+                if isinstance(count, int) and not isinstance(count, bool)
+                else "unknown declared count"
+            )
+            availability = "available" if mask_path.is_file() else "mask missing"
+            return (
+                f"Bundled pre-annotation: {availability}; {count_text}; "
+                f"{reviewed_text}\n{mask_path}"
+            )
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
+            return f"Bundled pre-annotation: manifest error — {error}"
+
+    def _refresh_reference_association_panel(self) -> None:
+        """Show disk, project, pending, and in-memory associations for one image."""
+
+        if not hasattr(self, "reference_association_label"):
+            return
+        path = self.image_view.image_path
+        key = self._current_image_key()
+        if path is None or key is None:
+            self.reference_association_label.setText(
+                "Select an image to inspect its saved associations."
+            )
+            return
+
+        canonical = self._reference_region_store.path_for(path)
+        explicit = self._project_reference_sidecar_paths.get(key)
+        archive = explicit if explicit is not None else canonical
+        archive_role = (
+            "Project sidecar" if explicit is not None else "Canonical applied archive"
+        )
+        archive_presence = "exists" if archive.is_file() else "not found"
+
+        status, detail = self._reference_region_load_status.get(
+            key,
+            (
+                "withheld"
+                if key in self._withheld_reference_sidecars
+                else "not checked",
+                (
+                    "The open project does not authorize this loose-workspace "
+                    "sidecar."
+                    if key in self._withheld_reference_sidecars
+                    else "No load attempt has been recorded in this session."
+                ),
+            ),
+        )
+        status_labels = {
+            "loaded": "Loaded and available to analysis",
+            "pending": "Validated; waiting for corrected-image calibration",
+            "missing": "No applied archive associated",
+            "rejected": "Found but not loaded",
+            "withheld": "Withheld by project association policy",
+            "saved": "Saved and available to analysis",
+            "memory_only": "Applied in memory; disk save failed",
+            "not checked": "Not checked",
+        }
+        status_text = status_labels.get(status, status.replace("_", " ").title())
+
+        pending = self._pending_unbound_reference_bundles.get(key)
+        if pending is not None:
+            shape = tuple(int(value) for value in pending.shape)
+            counts = self._reference_content_counts(
+                pending.background,
+                pending.foreground,
+                pending.other,
+                pending.annotated_seeds,
+            )
+        else:
+            shape = self._reference_layer_shapes.get(key)
+            annotations = self._draft_instance_annotations.get(
+                key, self._applied_instance_annotations.get(key)
+            )
+            counts = self._reference_content_counts(
+                self._draft_background_reference_masks.get(
+                    key, self._applied_background_reference_masks.get(key)
+                ),
+                self._draft_foreground_reference_masks.get(
+                    key, self._applied_foreground_reference_masks.get(key)
+                ),
+                self._draft_background_exclusion_masks.get(
+                    key, self._applied_background_exclusion_masks.get(key)
+                ),
+                annotations,
+            )
+
+        lines = [
+            f"Current image: {path.name}",
+            f"State: {status_text}",
+            detail,
+            "",
+            f"{archive_role}: {archive_presence}",
+            str(archive),
+        ]
+        if explicit is not None and canonical != explicit and canonical.is_file():
+            lines.extend(
+                (
+                    "",
+                    "Additional loose-workspace archive (not selected by the project):",
+                    str(canonical),
+                )
+            )
+        if shape is not None:
+            lines.append(
+                f"Saved corrected coordinates: {shape[1]:,} × {shape[0]:,} px"
+            )
+        if any(counts):
+            lines.extend(
+                (
+                    "",
+                    "Known content:",
+                    f"Background {counts[0]:,} px; Foreground {counts[1]:,} px; "
+                    f"Other {counts[2]:,} px",
+                    f"Annotated seeds {counts[3]:,} IDs / {counts[4]:,} px",
+                )
+            )
+        elif status in {"loaded", "pending", "saved"}:
+            lines.extend(("", "Known content: empty archive"))
+        if key in self._reference_masks_dirty or key in self._instance_annotations_dirty:
+            lines.extend(("", "Draft edits: unapplied (not yet analytical)"))
+        lines.extend(("", self._bundled_instance_association_text(path)))
+        text = "\n".join(lines)
+        self.reference_association_label.setText(text)
+        self.reference_association_label.setToolTip(text)
+
+    def _refresh_analysis_activity_panel(self) -> None:
+        """Keep long or superseded work visible even between node boundaries."""
+
+        if not hasattr(self, "analysis_activity_label"):
+            return
+        if not self._analysis_activities:
+            self.analysis_activity_label.setText(
+                "Queued; waiting for the serialized GPU worker."
+                if self._pending_analysis_key is not None
+                else "Idle"
+            )
+            return
+        activity = next(iter(self._analysis_activities.values()))
+        now = monotonic()
+        elapsed = max(0.0, now - activity.started_at)
+        node_title = (
+            self.pipeline.node(activity.current_node).title
+            if activity.current_node in self.pipeline.nodes
+            else "Preparing analysis"
+        )
+        node_elapsed = (
+            0.0
+            if activity.current_node_started_at is None
+            else max(0.0, now - activity.current_node_started_at)
+        )
+        lines = [
+            f"Running {activity.path.name}",
+            f"Current: {node_title} ({node_elapsed:.0f}s)",
+            f"Total elapsed: {elapsed:.0f}s",
+        ]
+        if activity.pipeline_revision != self.pipeline.revision:
+            lines.append("This run is superseded; an updated rerun is queued.")
+        if activity.cancellation_requested_at is not None:
+            cancel_elapsed = max(0.0, now - activity.cancellation_requested_at)
+            lines.append(
+                "Cancellation requested; waiting for the current calculation "
+                f"to reach a safe node boundary ({cancel_elapsed:.0f}s)."
+            )
+        elif now - activity.last_progress_at >= 30.0:
+            lines.append(
+                "No node boundary has been reached for 30+ seconds; the named "
+                "calculation is still executing."
+            )
+        if self._pending_analysis_key is not None:
+            lines.append("Latest analysis request: queued")
+        self.analysis_activity_label.setText("\n".join(lines))
+
     def _separator(self) -> QFrame:
         line = QFrame(self)
         line.setFrameShape(QFrame.Shape.HLine)
@@ -3748,6 +4423,16 @@ class MainWindow(QMainWindow):
             self._active_tasks
             or self._learning_training_task is not None
             or self._procedural_fit_task is not None
+            or self._reference_edge_fit_task is not None
+        )
+
+    def _exclusive_background_work_is_active(self) -> bool:
+        """Return work that mutates fitted state and cannot be serialized mid-run."""
+
+        return bool(
+            self._learning_training_task is not None
+            or self._procedural_fit_task is not None
+            or self._reference_edge_fit_task is not None
         )
 
     def _analysis_settings_dialog_directory(self) -> str:
@@ -3877,12 +4562,7 @@ class MainWindow(QMainWindow):
                 self._analyze_current_image(dirty_nodes=affected)
         else:
             current_key = self._current_image_key()
-            current_result = None
-            for image_key, analysis in tuple(self._analyses.items()):
-                normalized = self._normalize_display_only_analysis_result(analysis)
-                self._analyses[image_key] = normalized
-                if image_key == current_key:
-                    current_result = normalized
+            current_result = self._analyses.get(current_key or "")
             if current_result is not None:
                 self.image_view.show_analysis(current_result, render=False)
                 self.pipeline_inspector.set_analysis_result(current_result)
@@ -3895,7 +4575,7 @@ class MainWindow(QMainWindow):
         detail = (
             "recomputing affected analysis nodes"
             if result.analytical_changed
-            else "updated display-only analysis settings from cached results"
+            else "updated presentation-only graph settings from cached results"
         )
         self.statusBar().showMessage(
             f"Loaded analysis settings from {source}; {detail}."
@@ -3965,6 +4645,13 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Could not open image", f"{path}\n\n{error}")
             return
         self.filename_label.setText(path.name)
+        for index in range(self.image_list.count()):
+            item = self.image_list.item(index)
+            item_path = item.data(Qt.ItemDataRole.UserRole)
+            if item_path is not None and _path_identity(Path(item_path)) == _path_identity(path):
+                self.image_list.setCurrentItem(item)
+                self.image_list.scrollToItem(item)
+                break
         width, height = self.image_view.image_size or (0, 0)
         self.dimensions_label.setText(f"{width:,} × {height:,} px")
         key = _path_identity(path)
@@ -3982,6 +4669,14 @@ class MainWindow(QMainWindow):
             not self._project_manifest_sidecar_policy_active
             or key in self._project_unbound_reference_loads
         )
+        if not reference_load_allowed:
+            self._set_reference_region_load_status(
+                key,
+                "withheld",
+                "The open project has no verified reference-region sidecar "
+                "association for this image; a same-named loose archive is not "
+                "loaded implicitly.",
+            )
         if (
             reference_load_allowed
             and key not in self._reference_region_autoload_attempted
@@ -4011,28 +4706,39 @@ class MainWindow(QMainWindow):
                 archive_path=self._project_manual_centre_sidecar_paths.get(key),
                 quiet=self._project_manifest_sidecar_policy_active,
             )
-        # load_image() intentionally clears all graphics-scene annotation
-        # buffers. Restore the current per-image draft/applied state even when
-        # this window already attempted disk auto-load on an earlier visit.
-        self._sync_reference_masks_to_view(key, render=False)
-        self.image_view.set_instance_annotations(
-            self._draft_instance_annotations.get(
-                key, self._applied_instance_annotations.get(key)
-            ),
-            copy=False,
-            render=False,
-        )
+        # load_image() clears the scene back to raw source coordinates. Restore
+        # an in-memory corrected-coordinate layer here only when its shape is
+        # identical; otherwise the cached/new analysis below first installs the
+        # corrected base. This avoids binding (for example) a 6508×4294 sidecar
+        # to a still-raw 6240×4160 scene.
+        saved_shape = self._reference_layer_shapes.get(key)
+        raw_shape = (height, width)
+        if saved_shape is None or tuple(saved_shape) == raw_shape:
+            self._sync_reference_masks_to_view(key, render=False)
+            self.image_view.set_instance_annotations(
+                self._draft_instance_annotations.get(
+                    key, self._applied_instance_annotations.get(key)
+                ),
+                copy=False,
+                render=False,
+            )
         self._pipeline_image_loaded(path)
         self._update_analysis_availability()
         cached = self._analyses.get(key)
         if cached is None:
             self._show_pending_result()
+            # clear_analysis() resets the corrected base but intentionally does
+            # not discard the just-restored per-image buffers. Repaint them on
+            # the raw source scene now so switching away and back can never
+            # make saved references silently disappear while analysis is idle.
+            self.image_view.render_reference_annotations_without_analysis()
         else:
             if key in self._analysis_caches:
                 self._analysis_caches.move_to_end(key)
             self._mark_analysis_complete(cached)
             self._show_analysis_result(cached)
         self._sync_background_controls()
+        self._refresh_reference_association_panel()
         self.statusBar().showMessage(
             f"Loaded {path}"
             + (
@@ -4052,6 +4758,7 @@ class MainWindow(QMainWindow):
         self.image_view.clear_analysis()
         self.pipeline_inspector.set_analysis_result(None)
         self.overlay_combo.setEnabled(False)
+        self.overlay_button.setEnabled(False)
         self.overlay_opacity_slider.setEnabled(False)
         self.overlay_legend_label.setText(
             "Run the analysis to inspect its intermediate raster layers."
@@ -4074,7 +4781,7 @@ class MainWindow(QMainWindow):
         values: dict[str, object] = {}
         for node_id in (
             "seed_scale_estimation",
-            "foreground_segmentation",
+            "background_likelihood",
             "distance_candidates",
             "identification",
         ):
@@ -4082,7 +4789,8 @@ class MainWindow(QMainWindow):
                 values.update(self.pipeline.node(node_id).parameters)
         if self.pipeline.is_active("circle_candidates"):
             values.update(self.pipeline.node("circle_candidates").parameters)
-        return BaselineSettings(**values)
+        allowed = set(BaselineSettings.__dataclass_fields__)
+        return BaselineSettings(**{key: value for key, value in values.items() if key in allowed})
 
     def _dish_settings(self) -> DishDetectionSettings:
         return DishDetectionSettings(**self.pipeline.node("layout_detection").parameters)
@@ -4090,6 +4798,7 @@ class MainWindow(QMainWindow):
     def _layer_settings(self) -> AnalysisLayerSettings:
         values: dict[str, object] = {}
         for node_id in (
+            "wavelet_decomposition",
             "perimeter_background_reference",
             "background_likelihood",
             "refined_background_likelihood",
@@ -4101,6 +4810,7 @@ class MainWindow(QMainWindow):
             "frequency_noise_masks",
             "edge_ridges",
             "reference_texture_prototypes",
+            "material_evidence_decision",
             "reference_edge_probability",
             "reference_edge_ridges",
             "edge_traces",
@@ -4109,7 +4819,10 @@ class MainWindow(QMainWindow):
         ):
             if self.pipeline.is_active(node_id):
                 values.update(self.pipeline.node(node_id).parameters)
-        return AnalysisLayerSettings(**values)
+        allowed = set(AnalysisLayerSettings.__dataclass_fields__)
+        return AnalysisLayerSettings(
+            **{key: value for key, value in values.items() if key in allowed}
+        )
 
     def _advanced_settings(self) -> AdvancedAnalysisSettings:
         values: dict[str, object] = {}
@@ -4179,7 +4892,10 @@ class MainWindow(QMainWindow):
         )
 
     def _analyze_current_image(
-        self, *, dirty_nodes: set[str] | frozenset[str] | None = None
+        self,
+        *,
+        dirty_nodes: set[str] | frozenset[str] | None = None,
+        enabled_node_scope: frozenset[str] | None = None,
     ) -> None:
         path = self.image_view.image_path
         if path is None:
@@ -4192,15 +4908,38 @@ class MainWindow(QMainWindow):
             self._active_tasks
             or self._learning_training_task is not None
             or self._procedural_fit_task is not None
+            or self._reference_edge_fit_task is not None
         ):
             # Keep only the most recently requested image. Dirty-node sets are
             # retained per image, so a coalesced rerun still has exact scope.
             self._pending_analysis_key = key
+            self._pending_analysis_scope = enabled_node_scope
+            now = monotonic()
+            for active_key, active_task in self._active_tasks.items():
+                active_task.cancel()
+                activity = self._analysis_activities.get(active_key)
+                if activity is not None and activity.cancellation_requested_at is None:
+                    activity.cancellation_requested_at = now
+                    if (
+                        self.image_view.image_path is not None
+                        and _path_identity(self.image_view.image_path) == active_key
+                        and activity.current_node in self.pipeline.nodes
+                    ):
+                        self.pipeline.set_status(
+                            activity.current_node,
+                            NodeStatus.RUNNING,
+                            "Cancelling superseded run; updated rerun queued",
+                        )
+                        self.pipeline_canvas.refresh((activity.current_node,))
+                        if self._selected_pipeline_node == activity.current_node:
+                            self.pipeline_inspector.refresh_status()
+            self._refresh_analysis_activity_panel()
             self._update_analysis_availability()
             return
         requested_dirty = frozenset(pending_dirty)
         pending_dirty.clear()
         self._pending_analysis_key = None
+        self._pending_analysis_scope = None
         self._trim_analysis_caches(protected={key})
         node_cache = self._analysis_caches.setdefault(
             key, PipelineAnalysisCache()
@@ -4228,11 +4967,19 @@ class MainWindow(QMainWindow):
             self._applied_non_edge_reference_masks.get(key),
             self._applied_instance_annotations.get(key),
             self._manual_seed_centres_for_analysis(key),
-            self.pipeline.node("background_likelihood").enabled,
-            frozenset(
-                node.identifier
-                for node in self.pipeline.nodes.values()
-                if node.enabled
+            bool(
+                self.pipeline.node("background_likelihood").parameters.get(
+                    "background_colour_enabled", True
+                )
+            ),
+            (
+                enabled_node_scope
+                if enabled_node_scope is not None
+                else frozenset(
+                    node.identifier
+                    for node in self.pipeline.nodes.values()
+                    if node.enabled
+                )
             ),
             self.pipeline.revision,
             node_cache,
@@ -4240,16 +4987,63 @@ class MainWindow(QMainWindow):
         )
         task.signals.completed.connect(self._analysis_completed)
         task.signals.failed.connect(self._analysis_failed)
+        task.signals.cancelled.connect(self._analysis_cancelled)
         task.signals.node_progress.connect(self._analysis_node_progress)
         self._active_tasks[key] = task
-        self._set_analysis_running(path, requested_dirty)
+        now = monotonic()
+        self._analysis_activities[key] = _AnalysisActivity(
+            path=Path(path),
+            pipeline_revision=self.pipeline.revision,
+            started_at=now,
+            last_progress_at=now,
+        )
+        self._set_analysis_running(path, requested_dirty, enabled_node_scope)
+        self._refresh_analysis_activity_panel()
         self._update_analysis_availability()
         self.count_label.setText("Analysing…")
         self.warning_label.setText(
             "Executing the active calibration and diagnostic pipeline in the background."
         )
-        self.statusBar().showMessage(f"Analysing {path.name}…")
+        self.statusBar().showMessage(
+            f"Analysing {path.name}"
+            + (
+                " to the selected node…"
+                if enabled_node_scope is not None
+                else "…"
+            )
+        )
         self._thread_pool.start(task)
+
+    @Slot(str)
+    def _run_pipeline_to_node(self, node_id: str) -> None:
+        """Execute the selected active node with only its enabled ancestors."""
+
+        if node_id not in self.pipeline.nodes:
+            return
+        node = self.pipeline.node(node_id)
+        if not node.enabled or not node.implemented:
+            self.statusBar().showMessage(
+                f"{node.title} is disabled and cannot be run."
+            )
+            return
+        scope: set[str] = set()
+        pending = [node_id]
+        while pending:
+            current = pending.pop()
+            if current in scope or current not in self.pipeline.nodes:
+                continue
+            current_node = self.pipeline.node(current)
+            if not current_node.enabled or not current_node.implemented:
+                continue
+            scope.add(current)
+            pending.extend(self.pipeline.upstream(current))
+        self.statusBar().showMessage(
+            f"Running enabled prerequisites through {node.title}…"
+        )
+        self._analyze_current_image(
+            dirty_nodes={node_id},
+            enabled_node_scope=frozenset(scope),
+        )
 
     def _start_pending_analysis(self) -> None:
         """Start the latest coalesced request after the single GPU worker exits."""
@@ -4258,18 +5052,22 @@ class MainWindow(QMainWindow):
             self._active_tasks
             or self._learning_training_task is not None
             or self._procedural_fit_task is not None
+            or self._reference_edge_fit_task is not None
         ):
             return
         current_key = self._current_image_key()
         if current_key is None:
             self._pending_analysis_key = None
+            self._pending_analysis_scope = None
             return
         if (
             self._pending_analysis_key == current_key
             or bool(self._cache_dirty_nodes.get(current_key))
         ):
+            pending_scope = self._pending_analysis_scope
             self._pending_analysis_key = None
-            self._analyze_current_image()
+            self._pending_analysis_scope = None
+            self._analyze_current_image(enabled_node_scope=pending_scope)
 
     @Slot(str, str, str, int)
     def _analysis_node_progress(
@@ -4281,26 +5079,59 @@ class MainWindow(QMainWindow):
     ) -> None:
         """Apply worker progress to the currently visible graph on the Qt thread."""
 
+        if node_id == "foreground_segmentation":
+            # Foreground and background retain separate cached calculations,
+            # but share one visible Material colour probabilities card.
+            node_id = "background_likelihood"
         current_path = self.image_view.image_path
+        key = _path_identity(path_text)
+        activity = self._analysis_activities.get(key)
+        if activity is not None and activity.pipeline_revision == pipeline_revision:
+            now = monotonic()
+            activity.last_progress_at = now
+            if state == "started":
+                activity.current_node = node_id
+                activity.current_node_started_at = now
+            elif state == "completed" and activity.current_node == node_id:
+                activity.current_node_started_at = None
+            self._refresh_analysis_activity_panel()
         if (
-            pipeline_revision != self.pipeline.revision
-            or current_path is None
+            current_path is None
             or _path_identity(current_path) != _path_identity(path_text)
             or node_id not in self.pipeline.nodes
         ):
+            return
+        superseded = pipeline_revision != self.pipeline.revision
+        if superseded and activity is None:
             return
         node = self.pipeline.node(node_id)
         if state == "started":
             if node.enabled and node.implemented:
                 node.status = NodeStatus.RUNNING
+                if superseded:
+                    node.status_detail = (
+                        "Finishing superseded run; updated rerun queued"
+                    )
+            if _overlay_node_owner(str(self.overlay_combo.currentData() or "")) == node_id:
+                label = next(
+                    (label for label, mode in self._overlay_entries if mode == self.overlay_combo.currentData()),
+                    self.pipeline.node(node_id).title,
+                )
+                self.image_view.set_overlay_calculating(f"Calculating {label} …")
         elif state == "completed":
             if node.enabled and node.implemented:
-                node.status = NodeStatus.COMPLETE
-                node.status_detail = (
-                    Path(path_text).name
-                    if node_id == "raw_images"
-                    else "Calculated"
-                )
+                if superseded:
+                    node.status = NodeStatus.IDLE
+                    node.status_detail = "Superseded; updated rerun queued"
+                else:
+                    node.status = NodeStatus.COMPLETE
+                    node.status_detail = (
+                        Path(path_text).name
+                        if node_id == "raw_images"
+                        else "Calculated"
+                    )
+            if _overlay_node_owner(str(self.overlay_combo.currentData() or "")) == node_id:
+                self.image_view.set_overlay_calculating(None)
         else:
             return
         self.pipeline_canvas.refresh((node_id,))
@@ -4309,9 +5140,31 @@ class MainWindow(QMainWindow):
 
     @Slot(object, int)
     def _analysis_completed(self, result, pipeline_revision: int) -> None:
+        """Install a worker result through an explicit Qt-slot error boundary."""
+
+        try:
+            self._install_completed_analysis(result, pipeline_revision)
+        except Exception as error:  # noqa: BLE001 - GUI completion boundary
+            path = getattr(result, "image_path", None)
+            LOGGER.exception(
+                "Could not install completed analysis; image=%s; "
+                "pipeline_revision=%d",
+                path,
+                pipeline_revision,
+            )
+            self._analysis_failed(
+                str(path or self.image_view.image_path or "unknown image"),
+                "Could not install the completed analysis in the image review "
+                f"panel: {type(error).__name__}: {error}",
+                pipeline_revision,
+            )
+
+    def _install_completed_analysis(self, result, pipeline_revision: int) -> None:
         path = result.image_path
         key = _path_identity(path) if path is not None else ""
         self._active_tasks.pop(key, None)
+        self._analysis_activities.pop(key, None)
+        self._refresh_analysis_activity_panel()
         if pipeline_revision != self.pipeline.revision:
             self.statusBar().showMessage(
                 "Discarded an analysis completed with superseded pipeline settings."
@@ -4321,17 +5174,13 @@ class MainWindow(QMainWindow):
                 self._pending_analysis_key = key
             self._start_pending_analysis()
             return
-        # Display-only controls deliberately do not supersede an in-flight
-        # analytical task. Normalize its immutable wrapper to the latest live
-        # presentation value before caching it, so an older worker snapshot
-        # cannot visually undo a slider edit when it completes.
-        result = self._normalize_display_only_analysis_result(result)
         if key in self._analysis_caches:
             self._analysis_caches.move_to_end(key)
         self._analyses[key] = result
         self._mark_analysis_complete(result)
         if self.image_view.image_path == path:
             self._show_analysis_result(result)
+            self.image_view.set_overlay_calculating(None)
         self._update_analysis_availability()
         self._sync_background_controls()
         learned_result = (
@@ -4377,10 +5226,20 @@ class MainWindow(QMainWindow):
         del pipeline_revision
         path = Path(path_text)
         key = _path_identity(path)
+        activity = self._analysis_activities.get(key)
+        LOGGER.error(
+            "Analysis failed; image=%s; active_node=%s; error=%s",
+            path,
+            None if activity is None else activity.current_node,
+            error,
+        )
         self._active_tasks.pop(key, None)
+        self._analysis_activities.pop(key, None)
+        self._refresh_analysis_activity_panel()
         self._discard_analysis_cache(key)
         if self.image_view.image_path == path:
             self.image_view.clear_analysis()
+            self.image_view.set_overlay_calculating(None)
             self.pipeline_inspector.set_analysis_result(None)
         for node_id in (
             *CALIBRATION_NODE_IDS,
@@ -4413,7 +5272,45 @@ class MainWindow(QMainWindow):
         if self.image_view.image_path == path:
             self.count_label.setText("Failed")
             self.warning_label.setText(error)
-        QMessageBox.warning(self, "Analysis failed", f"{path}\n\n{error}")
+        # Release the serialized worker slot before entering a modal dialog.
+        # Otherwise a queued image looks stalled until this warning is closed.
+        self._start_pending_analysis()
+        QMessageBox.warning(
+            self,
+            "Analysis failed",
+            f"{path}\n\n{error}{diagnostic_log_note()}",
+        )
+
+    @Slot(str, int)
+    def _analysis_cancelled(self, path_text: str, pipeline_revision: int) -> None:
+        """Release a superseded partial run and immediately start the latest one."""
+
+        del pipeline_revision
+        path = Path(path_text)
+        key = _path_identity(path)
+        self._active_tasks.pop(key, None)
+        self._analysis_activities.pop(key, None)
+        self._discard_analysis_cache(key)
+        current_path = self.image_view.image_path
+        if current_path is not None and _path_identity(current_path) == key:
+            self.image_view.set_overlay_calculating(None)
+            changed = []
+            for node_id, node in self.pipeline.nodes.items():
+                if node.status == NodeStatus.RUNNING:
+                    self.pipeline.set_status(
+                        node_id,
+                        NodeStatus.IDLE,
+                        "Superseded run cancelled; updated rerun queued",
+                    )
+                    changed.append(node_id)
+            if changed:
+                self.pipeline_canvas.refresh(changed)
+                self.pipeline_inspector.refresh_status()
+        self._update_analysis_availability()
+        self._refresh_analysis_activity_panel()
+        self.statusBar().showMessage(
+            f"Cancelled superseded analysis for {path.name}; starting latest request."
+        )
         self._start_pending_analysis()
 
     def _show_analysis_result(self, result) -> None:
@@ -4421,6 +5318,7 @@ class MainWindow(QMainWindow):
         key = _path_identity(path) if path is not None else ""
         self._sync_directional_overlay_choices(result)
         self.image_view.show_analysis(result, render=False)
+        self.image_view.prepare_analysis_coordinates()
         pending_reference_affected = (
             self._resolve_pending_project_reference_bundle(key, result)
             if key
@@ -4487,9 +5385,17 @@ class MainWindow(QMainWindow):
         ruler = calibration.ruler
         if ruler is None:
             self.ruler_status_label.setText("Not found")
+        elif not ruler.scale_reliable:
+            self.ruler_status_label.setText(
+                f"Outline found; {ruler.matched_tick_count:,} likely metric ticks, "
+                "scale unresolved"
+            )
         else:
             self.ruler_status_label.setText(
-                f"Found; angle {ruler.angle_degrees:+.2f}°; "
+                f"Mapped {len(ruler.metric_tick_points):,} metric ticks "
+                f"({ruler.matched_tick_count:,} directly supported); "
+                f"length hierarchy {ruler.metric_hierarchy_consistency:.0%}; "
+                f"angle {ruler.angle_degrees:+.2f}°; "
                 f"confidence {ruler.confidence:.0%}"
             )
         self.deskew_status_label.setText(
@@ -4513,6 +5419,7 @@ class MainWindow(QMainWindow):
             f"diagnostic maps {backend.elapsed_seconds:.2f}s"
         )
         self.overlay_combo.setEnabled(True)
+        self.overlay_button.setEnabled(True)
         self.overlay_opacity_slider.setEnabled(True)
         selected_overlay = str(self.overlay_combo.currentData())
         self._sync_overlay_display_controls(selected_overlay)
@@ -4526,15 +5433,10 @@ class MainWindow(QMainWindow):
             f"Petri dish; lower {dish.inner_radius:,} px, upper "
             f"{dish.outer_radius:,} px; confidence {dish.confidence:.0%}"
         )
-        if result.reference_seed_count:
-            self.reference_status_label.setText(
-                f"{result.reference_seed_count} seed(s); diameter ≈ "
-                f"{result.estimated_seed_diameter_px:.0f} px"
-            )
-        else:
-            self.reference_status_label.setText(
-                f"Fallback estimate ≈ {result.estimated_seed_diameter_px:.0f} px"
-            )
+        self.reference_status_label.setText(
+            f"{result.estimated_seed_diameter_px:.0f} px — "
+            f"{result.seed_diameter_source}"
+        )
         displayed_count = (
             result.unet_instances.count
             if self.pipeline.node("unet_instances").enabled
@@ -4566,7 +5468,6 @@ class MainWindow(QMainWindow):
                 "colour_probability:",
                 "pattern_probability:",
             ))
-            and mode != "none"
         ]
         for probability_index, class_name in enumerate(
             result.advanced.colour_class_names
@@ -4586,7 +5487,6 @@ class MainWindow(QMainWindow):
                     f"pattern_probability:{probability_index}",
                 )
             )
-        self._overlay_entries.append(("None", "none"))
         self._rebuild_overlay_combo(selected)
 
     def _current_image_key(self) -> str | None:
@@ -5094,18 +5994,18 @@ class MainWindow(QMainWindow):
         destination = self._persist_manual_seed_centres(key, state)
         self._set_project_dirty()
         affected = {
-            "manual_seed_centres",
-            *self.pipeline.downstream("manual_seed_centres", recursive=True),
+            "procedural_instances",
+            *self.pipeline.downstream("procedural_instances", recursive=True),
         }
-        # Manual centres are a typed graph input even though their per-image
-        # payload lives outside node parameters. Supersede any in-flight task
-        # exactly once so a pre-edit result cannot be accepted as current.
+        # Manual centres share the Manual annotations input card, but only its
+        # centre output changed. Supersede the procedural branch without
+        # invalidating the independent material-reference consumers.
         self.pipeline.revision += 1
         self.pipeline.invalidate(affected)
         self.pipeline.set_status(
-            "manual_seed_centres",
+            "reference_layers",
             NodeStatus.COMPLETE,
-            f"{len(state.centres_source_xy):,} point(s); "
+            f"Manual annotations; {len(state.centres_source_xy):,} centre point(s); "
             + (
                 "augmenting automatic markers"
                 if state.mode == "augment"
@@ -5114,13 +6014,11 @@ class MainWindow(QMainWindow):
         )
         if self.pipeline.is_active("procedural_instances"):
             self.pipeline.set_status(
-                "procedural_instances", NodeStatus.WARNING, "Manual centres changed; updating"
+                "procedural_instances", NodeStatus.IDLE, "Manual centres changed; updating"
             )
         self.pipeline_canvas.refresh(affected)
         self.pipeline_inspector.refresh_status()
-        self._cache_dirty_nodes.setdefault(key, set()).update(
-            affected - {"manual_seed_centres"}
-        )
+        self._cache_dirty_nodes.setdefault(key, set()).update(affected)
         self._analyses.pop(key, None)
         self._sync_procedural_centres_controls()
         self._analyze_current_image(dirty_nodes=affected)
@@ -5169,19 +6067,36 @@ class MainWindow(QMainWindow):
         )
         if tuple(bundle.shape) != corrected_shape:
             self._withheld_reference_sidecars.add(key)
-            self._project_unresolved_reference_sidecars.add(key)
-            self._set_project_dirty()
             path = self._image_paths.get(key, result.image_path)
-            QMessageBox.warning(
-                self,
-                "Saved reference regions withheld",
-                "The project sidecar is bound to the unchanged source image, but "
-                "its corrected-coordinate dimensions do not match the current "
-                "calibration. No saved regions were applied. Save newly applied "
-                "references to replace it for the current calibration.\n\n"
-                f"Saved: {bundle.shape[1]:,} × {bundle.shape[0]:,} px\n"
-                f"Current: {corrected_shape[1]:,} × {corrected_shape[0]:,} px\n\n"
-                f"Image: {path}",
+            if self._project_manifest_sidecar_policy_active:
+                self._project_unresolved_reference_sidecars.add(key)
+                self._set_project_dirty()
+                QMessageBox.warning(
+                    self,
+                    "Saved reference regions withheld",
+                    "The project sidecar is bound to the unchanged source image, but "
+                    "its corrected-coordinate dimensions do not match the current "
+                    "calibration. No saved regions were applied. Save newly applied "
+                    "references to replace it for the current calibration.\n\n"
+                    f"Saved: {bundle.shape[1]:,} × {bundle.shape[0]:,} px\n"
+                    f"Current: {corrected_shape[1]:,} × {corrected_shape[0]:,} px\n\n"
+                    f"Image: {path}",
+                )
+            else:
+                repaired = self._offer_reference_region_archive_repair(
+                    path,
+                    saved_shape=tuple(int(value) for value in bundle.shape),
+                    corrected_shape=corrected_shape,
+                )
+                if repaired:
+                    return set()
+            self._set_reference_region_load_status(
+                key,
+                "rejected",
+                "The source fingerprint matched, but the saved corrected-coordinate "
+                f"size {bundle.shape[1]:,} × {bundle.shape[0]:,} does not match "
+                f"the current calibration {corrected_shape[1]:,} × "
+                f"{corrected_shape[0]:,}.",
             )
             return set()
 
@@ -5190,6 +6105,12 @@ class MainWindow(QMainWindow):
         self._withheld_reference_sidecars.discard(key)
         self._project_unresolved_reference_sidecars.discard(key)
         self._unsaved_reference_sidecars.discard(key)
+        self._set_reference_region_load_status(
+            key,
+            "loaded",
+            "The fingerprinted archive passed corrected-coordinate validation; "
+            "its applied material regions and seed IDs are installed in memory.",
+        )
         affected = {
             "reference_layers",
             *self.pipeline.downstream("reference_layers", recursive=True),
@@ -5200,6 +6121,83 @@ class MainWindow(QMainWindow):
         )
         self._analyses.pop(key, None)
         return affected
+
+    def _offer_reference_region_archive_repair(
+        self,
+        path: Path,
+        *,
+        saved_shape: tuple[int, int],
+        corrected_shape: tuple[int, int],
+    ) -> bool:
+        """Offer a recoverable replacement for one loose invalid sidecar."""
+
+        archive_path = self._reference_region_store.path_for(path)
+        dialog = QMessageBox(self)
+        dialog.setIcon(QMessageBox.Icon.Warning)
+        dialog.setWindowTitle("Saved reference regions not loaded")
+        dialog.setText(
+            "Seed Fiddle could not safely load the saved reference regions for "
+            f"{path.name}. No saved regions were applied."
+        )
+        dialog.setInformativeText(
+            "The saved corrected-coordinate dimensions do not match the current "
+            "calibration. Categorical material regions and seed IDs cannot be safely "
+            "resized automatically.\n\n"
+            f"Saved: {saved_shape[1]:,} × {saved_shape[0]:,} px\n"
+            f"Current: {corrected_shape[1]:,} × {corrected_shape[0]:,} px\n\n"
+            "Back up + replace preserves the invalid archive beside the original, "
+            "then writes an empty valid sidecar for the current calibration. Keeping "
+            "it unchanged will show this warning again on a future load.\n\n"
+            f"Archive: {archive_path}"
+        )
+        replace_button = dialog.addButton(
+            "Back up + replace", QMessageBox.ButtonRole.AcceptRole
+        )
+        keep_button = dialog.addButton(
+            "Keep unchanged", QMessageBox.ButtonRole.RejectRole
+        )
+        dialog.setDefaultButton(keep_button)
+        dialog.setEscapeButton(keep_button)
+        dialog.exec()
+        if dialog.clickedButton() is not replace_button:
+            return False
+
+        try:
+            backup_path, replacement_path = (
+                self._reference_region_store.backup_and_replace_invalid(
+                    path, corrected_shape
+                )
+            )
+        except (ReferenceRegionError, OSError) as error:
+            QMessageBox.critical(
+                self,
+                "Could not replace reference regions",
+                "The invalid archive was not replaced.\n\n" + str(error),
+            )
+            return False
+
+        key = _path_identity(path)
+        self._reference_layer_shapes[key] = corrected_shape
+        self._withheld_reference_sidecars.discard(key)
+        self._project_unresolved_reference_sidecars.discard(key)
+        self._unsaved_reference_sidecars.discard(key)
+        self._project_reference_sidecar_paths[key] = replacement_path
+        self._project_unbound_reference_loads.add(key)
+        self._set_reference_region_load_status(
+            key,
+            "saved",
+            "The invalid archive was backed up and replaced by an empty valid "
+            "archive for the current corrected coordinates.",
+        )
+        self._set_project_dirty()
+        QMessageBox.information(
+            self,
+            "Reference regions replaced",
+            "The invalid archive was preserved and replaced with an empty valid "
+            "reference-region file.\n\n"
+            f"Backup: {backup_path}\n\nReplacement: {replacement_path}",
+        )
+        return True
 
     def _auto_load_reference_regions(
         self,
@@ -5214,10 +6212,10 @@ class MainWindow(QMainWindow):
         try:
             bundle = (
                 self._reference_region_store.load_project_archive(
-                    path, archive_path, image_shape
+                    path, archive_path, None
                 )
                 if archive_path is not None
-                else self._reference_region_store.load_if_present(path, image_shape)
+                else self._reference_region_store.load_if_present(path, None)
             )
         except ImageFingerprintMismatch as error:
             self._withheld_reference_sidecars.add(key)
@@ -5234,6 +6232,13 @@ class MainWindow(QMainWindow):
                     f"Current SHA-256: {error.actual_sha256}\n\n"
                     f"The saved archive was left unchanged at:\n{error.archive_path}",
                 )
+            self._set_reference_region_load_status(
+                key,
+                "rejected",
+                "Source fingerprint mismatch: the archive is associated with "
+                f"SHA-256 {error.expected_sha256}, while this file is "
+                f"{error.actual_sha256}.",
+            )
             return False
         except (InvalidReferenceArchive, ReferenceRegionError, OSError) as error:
             self._withheld_reference_sidecars.add(key)
@@ -5248,20 +6253,38 @@ class MainWindow(QMainWindow):
                     "The saved archive was left unchanged at:\n"
                     f"{self._reference_region_store.path_for(path)}",
                 )
+            self._set_reference_region_load_status(
+                key,
+                "rejected",
+                f"Archive validation failed: {error}",
+            )
             return False
         if bundle is None:
             if self._project_manifest_sidecar_policy_active:
                 self._withheld_reference_sidecars.add(key)
                 if archive_path is not None:
                     self._project_unresolved_reference_sidecars.add(key)
+            self._set_reference_region_load_status(
+                key,
+                "missing",
+                "No saved applied reference-region archive was found for this "
+                "exact image association.",
+            )
             return False
 
         self._reference_layer_shapes[key] = tuple(
             int(value) for value in bundle.shape
         )
         self._unsaved_reference_sidecars.discard(key)
-        if image_shape is None:
+        if image_shape is None or tuple(bundle.shape) != tuple(image_shape):
             self._pending_unbound_reference_bundles[key] = bundle
+            self._set_reference_region_load_status(
+                key,
+                "pending",
+                "The source fingerprint and archive schema are valid. The masks "
+                "use corrected-image coordinates, so they will be installed "
+                "automatically as soon as calibration confirms the saved size.",
+            )
             return True
 
         self._install_reference_region_bundle(key, bundle)
@@ -5286,6 +6309,12 @@ class MainWindow(QMainWindow):
         self.pipeline.invalidate(affected)
         self._cache_dirty_nodes.setdefault(key, set()).update(
             affected - {"reference_layers"}
+        )
+        self._set_reference_region_load_status(
+            key,
+            "loaded",
+            "The fingerprinted archive matches this image and is installed in "
+            "memory for analysis.",
         )
         return True
 
@@ -5403,7 +6432,29 @@ class MainWindow(QMainWindow):
         image_size = self.image_view.image_size
         if key is None or path is None or image_size is None:
             return None
-        width, height = image_size
+        applied_rasters = tuple(
+            raster
+            for raster in (
+                self._applied_background_reference_masks.get(key),
+                self._applied_foreground_reference_masks.get(key),
+                self._applied_background_exclusion_masks.get(key),
+                self._applied_instance_annotations.get(key),
+            )
+            if raster is not None
+        )
+        result = self._analyses.get(key)
+        if applied_rasters:
+            height, width = (
+                int(applied_rasters[0].shape[0]),
+                int(applied_rasters[0].shape[1]),
+            )
+        elif result is not None:
+            height, width = tuple(
+                int(value)
+                for value in result.calibration.corrected_bgr.shape[:2]
+            )
+        else:
+            width, height = image_size
         self._reference_layer_shapes[key] = (height, width)
         bundle = ReferenceRegionBundle(
             shape=(height, width),
@@ -5424,6 +6475,11 @@ class MainWindow(QMainWindow):
         except (ReferenceRegionError, OSError) as error:
             self._unsaved_reference_sidecars.add(key)
             self._set_project_dirty()
+            self._set_reference_region_load_status(
+                key,
+                "memory_only",
+                f"Applied state remains in memory, but its disk save failed: {error}",
+            )
             QMessageBox.critical(
                 self,
                 (
@@ -5449,6 +6505,12 @@ class MainWindow(QMainWindow):
         self._project_unbound_reference_loads.add(key)
         self._project_reference_sidecar_paths[key] = (
             self._reference_region_store.path_for(path)
+        )
+        self._set_reference_region_load_status(
+            key,
+            "saved",
+            "The applied material regions and seed IDs were atomically saved and "
+            "are installed in memory for analysis.",
         )
         return destination
 
@@ -5544,6 +6606,8 @@ class MainWindow(QMainWindow):
         protected_keys = set(protected) | set(self._active_tasks)
         if self._procedural_fit_task is not None:
             protected_keys.add(self._procedural_fit_task.image_key)
+        if self._reference_edge_fit_task is not None:
+            protected_keys.add(self._reference_edge_fit_task.image_key)
         evicted: list[str] = []
 
         def cuda_total() -> int:
@@ -5659,6 +6723,7 @@ class MainWindow(QMainWindow):
                     (key is not None and key in self._active_tasks)
                     or self._learning_training_task is not None
                     or self._procedural_fit_task is not None
+                    or self._reference_edge_fit_task is not None
                 ),
             )
 
@@ -5698,14 +6763,17 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "background_point_button"):
             return
         key = self._current_image_key()
-        enabled = self.pipeline.node("background_likelihood").enabled
+        enabled = bool(
+            self.pipeline.node("background_likelihood").parameters.get(
+                "background_colour_enabled", True
+            )
+        )
         with QSignalBlocker(self.background_enabled_checkbox):
             self.background_enabled_checkbox.setChecked(enabled)
-        running = (
-            key in self._active_tasks if key is not None else False
-        ) or self._learning_training_task is not None or (
-            self._procedural_fit_task is not None
-        )
+        # Draft painting is image-local and revisioned, so ordinary analysis is
+        # safe to run concurrently.  Only jobs that may replace fitted state
+        # lock annotation controls.
+        running = self._exclusive_background_work_is_active()
         has_result = self.image_view._analysis_result is not None
         can_edit = enabled and has_result and not running
         keep_perimeter_source = bool(
@@ -5726,8 +6794,8 @@ class MainWindow(QMainWindow):
             keep_perimeter_source
         )
         include_annotated_instances = bool(
-            self.pipeline.node("foreground_segmentation").parameters.get(
-                "foreground_include_annotated_seed_instances", False
+            self.pipeline.node("background_likelihood").parameters.get(
+                "foreground_include_annotated_seed_instances", True
             )
         )
         with QSignalBlocker(
@@ -5737,9 +6805,7 @@ class MainWindow(QMainWindow):
                 include_annotated_instances
             )
         self.include_seed_instances_as_foreground_checkbox.setEnabled(
-            self.pipeline.node("foreground_segmentation").enabled
-            and has_result
-            and not running
+            has_result and not running
         )
         self.background_point_button.setEnabled(can_edit)
         self.foreground_point_button.setEnabled(has_result and not running)
@@ -5967,8 +7033,9 @@ class MainWindow(QMainWindow):
             "Draft changed. Apply + save when complete; downstream calculations and "
             "the saved file still use the previous annotations."
             if annotations_dirty
-            else "Applied annotations are saved automatically and constrain the "
-            "instance branch."
+            else "Applied annotations are already saved in the canonical per-image "
+            "sidecar and constrain the instance branch. Save Project separately to "
+            "refresh the master file's recorded sidecar digest and project settings."
         )
         self._sync_reference_undo_controls(
             key, has_result=has_result, running=running
@@ -6004,7 +7071,9 @@ class MainWindow(QMainWindow):
 
     @Slot(bool)
     def _background_enabled_toggled(self, enabled: bool) -> None:
-        self._pipeline_enabled_changed("background_likelihood", enabled)
+        self._pipeline_parameter_changed(
+            "background_likelihood", "background_colour_enabled", bool(enabled)
+        )
 
     @Slot(bool)
     def _keep_perimeter_background_reference_toggled(self, keep: bool) -> None:
@@ -6020,7 +7089,7 @@ class MainWindow(QMainWindow):
         self, include: bool
     ) -> None:
         self._pipeline_parameter_changed(
-            "foreground_segmentation",
+            "background_likelihood",
             "foreground_include_annotated_seed_instances",
             bool(include),
         )
@@ -6305,6 +7374,14 @@ class MainWindow(QMainWindow):
         sources = [
             ("Thinned edge ridges", "ridges"),
             ("Thinned reference edge ridge", "reference_ridges"),
+            (
+                "Thinned normalized net-physical ridge",
+                "normalized_reference_ridges",
+            ),
+            (
+                "Locally normalized net physical edge",
+                "normalized_net_physical",
+            ),
             ("Oriented edge traces", "traces"),
             ("Combined (ridge priority)", "adaptive"),
             ("Physical-edge probability", "physical"),
@@ -6321,11 +7398,15 @@ class MainWindow(QMainWindow):
             "Select the exact edge raster used for snapping or as the fill "
             "barrier. Generic thinned ridges are the precise default; the "
             "reference-ridge option similarly thins learned physical-edge "
-            "probability. Combined uses the per-pixel maximum of generic ridges "
-            "and binary oriented traces, plus physical-edge probability and broad "
-            "edge magnitude at 45% strength. Net physical-edge probability uses "
-            "the node's live display-only subtraction of non-physical evidence; "
-            "changing that existing node control does not rerun analysis. Edge "
+            "probability. The locally normalized source separates semantic class "
+            "margin from shared absolute support, equalizes it within a bounded "
+            "seed-scale neighborhood, and retains an absolute noise floor. Combined "
+            "uses the per-pixel maximum of generic ridges and binary oriented traces, "
+            "plus locally normalized learned evidence and broad edge magnitude at "
+            "45% strength. Raw net physical-edge probability uses "
+            "the edge-probability node's scaled subtraction of non-physical "
+            "evidence; changing that control recomputes its thinned net ridge and "
+            "downstream consumers. Edge "
             "magnitude alone is broader and can stop short of the visible ridge."
         )
 
@@ -6428,6 +7509,12 @@ class MainWindow(QMainWindow):
                 colour_tolerance_lab=self.shape_fill_colour_step_spin.value(),
                 edge_barrier_threshold=self.shape_fill_barrier_spin.value()
                 / 100.0,
+                edge_gap_sealing_fraction=(
+                    self.shape_fill_gap_sealing_spin.value()
+                ),
+                penalty_start_inside_fraction=(
+                    self.shape_fill_penalty_start_spin.value()
+                ),
                 outward_penalty_half_life_fraction=outward_half_life,
                 outward_hard_cutoff_fraction=outward_cutoff,
                 maximum_added_pixels=self.shape_fill_pixel_limit_spin.value(),
@@ -6459,12 +7546,22 @@ class MainWindow(QMainWindow):
                     else smart_fill_edge_source
                 ),
                 colour_tolerance_lab=self.smart_fill_colour_tolerance_spin.value(),
+                click_colour_tolerance_lab=(
+                    self.smart_fill_click_colour_tolerance_spin.value()
+                ),
                 edge_stop_threshold=self.smart_fill_edge_stop_spin.value() / 100.0,
-                tunnel_strength=float(self.smart_fill_tunnel_combo.currentData()),
+                tunnel_strength=0.0,
                 maximum_distance_from_cursor_px=maximum_distance,
                 falloff_half_life_px=falloff_half_life,
+                edge_gap_sealing_px=max(
+                    0,
+                    min(
+                        64,
+                        int(round(diameter * self.smart_fill_gap_sealing_spin.value())),
+                    ),
+                ),
                 maximum_added_pixels=self.smart_fill_pixel_limit_spin.value(),
-                connectivity=int(self.smart_fill_connectivity_combo.currentData()),
+                connectivity=4,
             ),
             edge_source=smart_fill_edge_source,
         )
@@ -6629,6 +7726,7 @@ class MainWindow(QMainWindow):
         # both the view's drawing buffer and a second controller snapshot.
         self._sync_reference_masks_to_view(key, render=False)
         self._sync_background_controls()
+        self._refresh_reference_association_panel()
         self.statusBar().showMessage(
             f"{class_name.replace('_', ' ').capitalize()} references edited; "
             "Apply when painting is complete."
@@ -6670,6 +7768,7 @@ class MainWindow(QMainWindow):
             return
         self._set_instance_draft_state(key, values, before_origin)
         self._sync_background_controls()
+        self._refresh_reference_association_panel()
         self.statusBar().showMessage(
             "Seed instance marks edited; foreground references are unchanged. "
             "Apply the annotations when the interior marks are complete."
@@ -6834,6 +7933,7 @@ class MainWindow(QMainWindow):
         self._instance_undo_histories.pop(key, None)
         self.image_view.set_instance_annotations(applied, copy=False)
         self._sync_background_controls()
+        self._refresh_reference_association_panel()
         self.statusBar().showMessage("Discarded unapplied instance-annotation edits.")
 
     @Slot()
@@ -6871,6 +7971,7 @@ class MainWindow(QMainWindow):
         self._reference_undo_histories.pop(key, None)
         self._sync_reference_masks_to_view(key)
         self._sync_background_controls()
+        self._refresh_reference_association_panel()
         self.statusBar().showMessage("Discarded unapplied reference-mask edits.")
 
     def _sync_reference_masks_to_view(
@@ -6988,6 +8089,7 @@ class MainWindow(QMainWindow):
             self._analyses.pop(key, None)
             self._analyze_current_image(dirty_nodes=affected)
         self._sync_background_controls()
+        self._refresh_reference_association_panel()
         self.statusBar().showMessage(
             f"Applied {count:,} seed instance annotations."
             + (
@@ -7262,6 +8364,7 @@ class MainWindow(QMainWindow):
         if (
             self._learning_training_task is not None
             or self._procedural_fit_task is not None
+            or self._reference_edge_fit_task is not None
             or self._active_tasks
         ):
             QMessageBox.information(
@@ -7387,7 +8490,11 @@ class MainWindow(QMainWindow):
     def _learning_training_failed(self, error: str) -> None:
         self._finish_learning_training_ui()
         self._start_pending_analysis()
-        QMessageBox.critical(self, "Learned-model training failed", error)
+        QMessageBox.critical(
+            self,
+            "Learned-model training failed",
+            error + diagnostic_log_note(),
+        )
 
     @Slot()
     def _learning_training_cancelled(self) -> None:
@@ -7408,9 +8515,15 @@ class MainWindow(QMainWindow):
     def _pipeline_node_action_requested(
         self, node_id: str, action_id: str, payload: object
     ) -> None:
-        if node_id != "procedural_instances":
+        if (
+            node_id == "reference_edge_probability"
+            and action_id == PipelineInspector.REFERENCE_EDGE_FIT_ACTION
+        ):
+            self._start_reference_edge_fit()
             return
         if action_id == PipelineInspector.PROCEDURAL_FIT_ACTION:
+            if node_id != "procedural_instances":
+                return
             values = payload if isinstance(payload, dict) else {}
             self._start_procedural_fit(
                 float(values.get("false_positive_weight", 2.0)),
@@ -7418,15 +8531,23 @@ class MainWindow(QMainWindow):
                 bool(values.get("annotations_are_complete", False)),
             )
         elif action_id == PipelineInspector.PROCEDURAL_CENTRES_EDIT_ACTION:
+            if node_id not in {"reference_layers", "procedural_instances"}:
+                return
             if bool(payload):
                 self._start_manual_seed_centre_editing()
             else:
                 self._stop_manual_seed_centre_editing()
         elif action_id == PipelineInspector.PROCEDURAL_CENTRES_MODE_ACTION:
+            if node_id not in {"reference_layers", "procedural_instances"}:
+                return
             self._change_manual_seed_centre_mode(str(payload))
         elif action_id == PipelineInspector.PROCEDURAL_CENTRES_UNDO_ACTION:
+            if node_id not in {"reference_layers", "procedural_instances"}:
+                return
             self._undo_manual_seed_centres()
         elif action_id == PipelineInspector.PROCEDURAL_CENTRES_RESET_ACTION:
+            if node_id not in {"reference_layers", "procedural_instances"}:
+                return
             self._reset_manual_seed_centres()
 
     def _start_manual_seed_centre_editing(self) -> None:
@@ -7439,6 +8560,7 @@ class MainWindow(QMainWindow):
             or self._active_tasks
             or self._learning_training_task is not None
             or self._procedural_fit_task is not None
+            or self._reference_edge_fit_task is not None
         ):
             self._sync_procedural_centres_controls()
             return
@@ -7500,6 +8622,7 @@ class MainWindow(QMainWindow):
             self._active_tasks
             or self._learning_training_task is not None
             or self._procedural_fit_task is not None
+            or self._reference_edge_fit_task is not None
         )
         can_edit = bool(
             key is not None
@@ -7541,6 +8664,223 @@ class MainWindow(QMainWindow):
             rejected_count=rejected_count,
         )
 
+    def _start_reference_edge_fit(self) -> None:
+        """Fit exposed edge-classifier controls without mutating the graph."""
+
+        key = self._current_image_key()
+        result = None if key is None else self._analyses.get(key)
+        annotations = (
+            None if key is None else self._applied_instance_annotations.get(key)
+        )
+        if not self._project_tracking_enabled:
+            QMessageBox.information(
+                self,
+                "Create a project first",
+                "Save or create a project before fitting edge parameters. Accepted "
+                "values are project-local and are persisted by Save Project.",
+            )
+            return
+        if (
+            key is None
+            or result is None
+            or annotations is None
+            or not np.any(annotations)
+            or key in self._instance_annotations_dirty
+        ):
+            QMessageBox.information(
+                self,
+                "Applied seed instances required",
+                "Apply + save complete seed-instance annotations and run the current "
+                "analysis before fitting edge probabilities.",
+            )
+            return
+        if self._background_work_is_active():
+            return
+        continuity = self._instance_continuity_summary(key, annotations)
+        if continuity.disconnected:
+            QMessageBox.warning(
+                self,
+                "Disconnected seed annotations",
+                "Repair disconnected seed IDs before fitting edge probabilities.",
+            )
+            return
+        answer = QMessageBox.question(
+            self,
+            "Fit instance-derived edge probabilities?",
+            "This is an in-sample fit to physical contours and internal edge candidates "
+            "derived from the currently applied seed instances. It is useful for project "
+            "adaptation but is not independent validation.\n\nThe search does not alter "
+            "settings until you approve its proposal. Accepted values apply to every "
+            "image in this project; Save Project records them in the master file.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        offset_x, offset_y = result.crop_offset
+        height, width = tuple(int(v) for v in result.layers.valid_mask.shape[-2:])
+        local_annotations = np.asarray(
+            annotations[
+                offset_y : offset_y + height,
+                offset_x : offset_x + width,
+            ],
+            dtype=np.uint16,
+        )
+        cache = self._analysis_caches.get(key)
+        if cache is None or not np.any(local_annotations):
+            QMessageBox.warning(
+                self,
+                "Edge fit unavailable",
+                "The current dish crop or its cached edge inputs are unavailable. Run "
+                "the analysis again.",
+            )
+            return
+        task = _ReferenceEdgeFitTask(
+            cache,
+            local_annotations,
+            result.estimated_seed_diameter_px,
+            self._layer_settings(),
+            image_key=key,
+            pipeline_revision=self.pipeline.revision,
+            annotation_source=annotations,
+        )
+        progress = QProgressDialog(
+            "Evaluating edge-probability setting 0/21…",
+            "Cancel",
+            0,
+            21,
+            self,
+        )
+        progress.setWindowTitle("Fit instance-derived edge probabilities")
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.canceled.connect(task.cancel)
+        task.signals.progress.connect(self._reference_edge_fit_progressed)
+        task.signals.completed.connect(self._reference_edge_fit_completed)
+        task.signals.failed.connect(self._reference_edge_fit_failed)
+        task.signals.cancelled.connect(self._reference_edge_fit_cancelled)
+        self._reference_edge_fit_task = task
+        self._reference_edge_fit_progress = progress
+        self._update_analysis_availability()
+        self._sync_background_controls()
+        progress.show()
+        self._thread_pool.start(task)
+
+    @Slot(int, int, float)
+    def _reference_edge_fit_progressed(
+        self, current: int, maximum: int, loss: float
+    ) -> None:
+        progress = self._reference_edge_fit_progress
+        if progress is None:
+            return
+        progress.setMaximum(maximum)
+        progress.setValue(current)
+        progress.setLabelText(
+            f"Evaluating edge-probability setting {current}/{maximum} — "
+            f"balanced loss {loss:.4f}"
+        )
+
+    @Slot(object)
+    def _reference_edge_fit_completed(self, report: ReferenceEdgeFitResult) -> None:
+        task = self._reference_edge_fit_task
+        self._finish_reference_edge_fit_ui()
+        if task is None:
+            return
+        current_annotations = self._applied_instance_annotations.get(task.image_key)
+        if (
+            task.pipeline_revision != self.pipeline.revision
+            or current_annotations is not task.annotation_source
+        ):
+            QMessageBox.warning(
+                self,
+                "Edge fit result is stale",
+                "The pipeline or applied annotations changed while fitting. The proposal "
+                "was discarded.",
+            )
+            self._start_pending_analysis()
+            return
+        initial = report.initial_score
+        proposed = report.proposed_score
+        summary = (
+            f"Balanced loss {initial.loss:.4f} → {proposed.loss:.4f}; "
+            f"physical support {initial.physical_recall:.1%} → "
+            f"{proposed.physical_recall:.1%}; internal-edge support "
+            f"{initial.nonphysical_recall:.1%} → {proposed.nonphysical_recall:.1%}; "
+            f"{report.evaluations} evaluations."
+        )
+        if not report.improved:
+            QMessageBox.information(
+                self,
+                "Edge fit found no improvement",
+                summary + "\n\nThe active node settings were not changed.",
+            )
+            self._start_pending_analysis()
+            return
+        node = self.pipeline.node("reference_edge_probability")
+        changes = {
+            key: getattr(report.proposed_settings, key)
+            for key in node.parameters
+            if hasattr(report.proposed_settings, key)
+            and getattr(report.proposed_settings, key) != node.parameters[key]
+        }
+        labels = {spec.key: spec.label for spec in node.parameter_specs}
+        changed_lines = "\n".join(
+            f"• {labels.get(key, key)}: {node.parameters[key]:.4g} → {value:.4g}"
+            for key, value in changes.items()
+        )
+        answer = QMessageBox.question(
+            self,
+            "Apply fitted edge parameters?",
+            summary
+            + "\n\nProposed project-local changes:\n"
+            + (changed_lines or "No parameter values changed.")
+            + "\n\nApply and recompute edge probabilities?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes or not changes:
+            self._start_pending_analysis()
+            return
+        affected = set(
+            self.pipeline.set_parameters("reference_edge_probability", changes)
+        )
+        self._set_project_dirty()
+        for image_key in set(self._analysis_caches) | set(self._analyses):
+            self._cache_dirty_nodes.setdefault(image_key, set()).update(affected)
+            self._analyses.pop(image_key, None)
+        self.pipeline_canvas.refresh(affected or {"reference_edge_probability"})
+        self.pipeline_inspector.set_node(node)
+        current_key = self._current_image_key()
+        if current_key is not None and current_key in self._analysis_caches:
+            self._analyze_current_image(dirty_nodes=affected)
+        self.statusBar().showMessage(
+            "Applied project-local annotation-fitted edge parameters; recomputing."
+        )
+
+    @Slot(str)
+    def _reference_edge_fit_failed(self, error: str) -> None:
+        self._finish_reference_edge_fit_ui()
+        self._start_pending_analysis()
+        QMessageBox.critical(
+            self,
+            "Edge-probability fit failed",
+            error + diagnostic_log_note(),
+        )
+
+    @Slot()
+    def _reference_edge_fit_cancelled(self) -> None:
+        self._finish_reference_edge_fit_ui()
+        self._start_pending_analysis()
+        self.statusBar().showMessage("Edge-probability fitting cancelled.")
+
+    def _finish_reference_edge_fit_ui(self) -> None:
+        if self._reference_edge_fit_progress is not None:
+            self._reference_edge_fit_progress.close()
+        self._reference_edge_fit_progress = None
+        self._reference_edge_fit_task = None
+        self._update_analysis_availability()
+        self._sync_background_controls()
+
     def _sync_procedural_fit_controls(self) -> None:
         """Explain whether the current image supplies safe fitting targets."""
 
@@ -7557,6 +8897,13 @@ class MainWindow(QMainWindow):
         if key is None:
             self.pipeline_inspector.set_procedural_fit_eligibility(
                 False, "Open and analyse an image before fitting."
+            )
+            return
+        if not self._project_tracking_enabled:
+            self.pipeline_inspector.set_procedural_fit_eligibility(
+                False,
+                "Create or save a project before fitting; fitted settings belong only "
+                "to that project's analysis graph.",
             )
             return
         if not self.pipeline.is_active("procedural_instances") or not (
@@ -7592,9 +8939,15 @@ class MainWindow(QMainWindow):
                 False, "Run the current analysis before fitting procedural settings."
             )
             return
-        if self._active_tasks or self._learning_training_task is not None:
+        if (
+            self._active_tasks
+            or self._learning_training_task is not None
+            or self._reference_edge_fit_task is not None
+        ):
             self.pipeline_inspector.set_procedural_fit_eligibility(
-                False, "Wait for the current analysis or training job to finish."
+                False,
+                "Wait for the current analysis, training, or edge-parameter fit "
+                "to finish.",
             )
             return
         self.pipeline_inspector.set_procedural_fit_eligibility(True)
@@ -7609,7 +8962,13 @@ class MainWindow(QMainWindow):
         """Search current-image procedural settings without mutating the graph."""
 
         self._sync_procedural_fit_controls()
-        if self._procedural_fit_task is not None:
+        if (
+            not self._project_tracking_enabled
+            or self._procedural_fit_task is not None
+            or self._reference_edge_fit_task is not None
+            or self._learning_training_task is not None
+            or self._active_tasks
+        ):
             return
         key = self._current_image_key()
         if key is None:
@@ -7640,8 +8999,9 @@ class MainWindow(QMainWindow):
             f"{overreach_distance_scale_fraction:.2f} seed diameters costs "
             f"{false_positive_weight:.2f}× a missing pixel, immediately adjacent "
             "pixels cost very little, and farther pixels cost exponentially more.",
-            "Although the fit is measured on this one image, accepting its proposal "
-            "changes the procedural node settings globally for every image.",
+            "Accepting the proposal changes the procedural node for every image in "
+            "this project only. Save Project to record the fitted values in the master "
+            "analysis file.",
         ]
         origin = self._applied_instance_annotation_origins.get(key, "manual")
         if origin.startswith("pipeline:"):
@@ -7696,10 +9056,10 @@ class MainWindow(QMainWindow):
             annotation_source=annotations,
         )
         progress = QProgressDialog(
-            "Evaluating procedural setting 0/33…",
+            "Evaluating procedural setting 0/35…",
             "Cancel",
             0,
-            33,
+            35,
             self,
         )
         progress.setWindowTitle("Fit procedural seed separation")
@@ -7819,8 +9179,9 @@ class MainWindow(QMainWindow):
             summary
             + "\n\nProposed changes:\n"
             + (changed_lines or "No parameter values changed.")
-            + "\n\nThe fit was measured on this image, but accepting applies these "
-            "settings globally to the procedural node for every image. Apply them?",
+            + "\n\nThe fit was measured on this image. Accepting applies these values "
+            "to every image in the current project, and Save Project records them in "
+            "the master analysis file. Apply them?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -7859,7 +9220,11 @@ class MainWindow(QMainWindow):
     def _procedural_fit_failed(self, error: str) -> None:
         self._finish_procedural_fit_ui()
         self._start_pending_analysis()
-        QMessageBox.critical(self, "Procedural parameter fit failed", error)
+        QMessageBox.critical(
+            self,
+            "Procedural parameter fit failed",
+            error + diagnostic_log_note(),
+        )
 
     @Slot()
     def _procedural_fit_cancelled(self) -> None:
@@ -7966,11 +9331,10 @@ class MainWindow(QMainWindow):
             else "Automatic selection; updating"
         )
         if material_changed or not dirty_classes:
-            self.pipeline.set_status("background_likelihood", NodeStatus.WARNING, detail)
             self.pipeline.set_status(
-                "foreground_segmentation",
-                NodeStatus.WARNING,
-                f"{foreground_count:,} confirmed reference pixels; updating",
+                "background_likelihood",
+                NodeStatus.IDLE,
+                f"BG {background_count:,}; FG {foreground_count:,} confirmed pixels; updating",
             )
             self.pipeline.set_status(
                 "refined_background_likelihood", NodeStatus.IDLE, "Updating"
@@ -7989,6 +9353,7 @@ class MainWindow(QMainWindow):
             self._cache_dirty_nodes.setdefault(key, set()).update(computational)
             self._analyses.pop(key, None)
         self._sync_background_controls()
+        self._refresh_reference_association_panel()
         if computational:
             self._analyze_current_image()
         else:
@@ -8051,6 +9416,7 @@ class MainWindow(QMainWindow):
     def _overlay_changed(self, index: int) -> None:
         del index
         mode = str(self.overlay_combo.currentData())
+        self._rebuild_overlay_menu(mode)
         if not self._installing_project:
             self._set_project_dirty()
         self._sync_overlay_display_controls(mode)
@@ -8058,9 +9424,20 @@ class MainWindow(QMainWindow):
         self._update_overlay_legend(mode)
         owner = _overlay_node_owner(mode)
         if owner is None:
+            self.image_view.set_overlay_calculating(None)
             self.overlay_owner_label.setText("No graph node")
             self._sync_inspector_overlay_options()
             return
+        if self.pipeline.node(owner).status == NodeStatus.RUNNING:
+            selected_label = next(
+                (label for label, entry_mode in self._overlay_entries if entry_mode == mode),
+                self.pipeline.node(owner).title,
+            )
+            self.image_view.set_overlay_calculating(
+                f"Calculating {selected_label} …"
+            )
+        else:
+            self.image_view.set_overlay_calculating(None)
         self.overlay_owner_label.setText(self.pipeline.node(owner).title)
         if (
             owner != self._selected_pipeline_node
@@ -8122,7 +9499,7 @@ class MainWindow(QMainWindow):
             ),
             "foreground_colour_gamut": (
                 "foreground",
-                "foreground_segmentation",
+                "background_likelihood",
             ),
         }
         gamut = mode in gamut_modes
@@ -8201,10 +9578,39 @@ class MainWindow(QMainWindow):
                 "Magenta: the calibrated span between the large 0 cm and "
                 "15 cm scale dashes. White circles: those scale endpoints."
             ),
+            "ruler_evidence": (
+                "Tick-lattice ruler evidence — green: four independently fitted "
+                "plastic edges forming a mildly projective quadrilateral outside "
+                "the tick roots/terminals; red: every mapped "
+                "metric tick; orange: every mapped imperial tick; dark red and "
+                "dark orange boxes/text: metric and imperial number/unit evidence "
+                "associated with inferred long unit-divider ticks. Tick lengths are "
+                "measured before class assignment; weak individual dashes inherit a "
+                "class only after the measured hierarchy validates its phase. "
+                "Metric and imperial px/mm are calculated independently; the overlay "
+                "reports their hierarchy scores and symmetric percentage error. Metric "
+                "remains authoritative."
+            ),
             "layout_detection": (
                 "Petri dish — magenta: lower/inner glass edge; cyan: upper/outer "
-                "glass edge used by every downstream analysis. Dashed circles indicate an "
+                "glass edge used by every downstream analysis. A mildly elliptical fit "
+                "is retained when residual perspective makes the vessel ovular, while "
+                "the conservative major radius protects downstream masks from clipping. "
+                "Dashed outlines indicate an "
                 "inferred pair when two supported radial peaks were unavailable."
+            ),
+            "hue_only": (
+                "Corrected-image hue at fixed 62% display value. Saturated pixels differ "
+                "only by hue; achromatic pixels are neutral gray rather than receiving "
+                "an arbitrary hue."
+            ),
+            "wavelet_detail_1": "Finest signed à trous wavelet detail. Neutral gray is zero; lighter and darker deviations have opposite sign.",
+            "wavelet_detail_2": "Second signed à trous wavelet detail. Neutral gray is zero; lighter and darker deviations have opposite sign.",
+            "wavelet_detail_3": "Third signed à trous wavelet detail. Neutral gray is zero; lighter and darker deviations have opposite sign.",
+            "wavelet_detail_4": "Coarsest enabled signed à trous wavelet detail. Neutral gray is zero; disabled bands are exactly zero.",
+            "wavelet_residual": (
+                "Final B3-spline low-pass residual. Adding it to every signed detail "
+                "layer reconstructs the corrected crop exactly apart from floating-point roundoff."
             ),
             "perimeter_background_reference": (
                 "Cyan outlines the detected upper/outer dish edge. The filled annulus "
@@ -8213,16 +9619,28 @@ class MainWindow(QMainWindow):
                 "fallback when too little outer band is visible. The swatch shows the "
                 "selected median starting colour and remains undimmed by overlay opacity."
             ),
-            "seed_scale_estimation": "Cyan: isolated-reference search region. Yellow: the image-specific master seed diameter.",
-            "foreground_feature": "Brightness is Lab colour distance from the estimated dish background before thresholding.",
-            "foreground_mask": "Soft foreground probability: black is tray, rim, or dark inter-seed gap; white is seed-surface evidence. The binary proposal mask is available separately.",
+            "seed_scale_estimation": (
+                "Cyan: isolated-reference search region. Yellow circles/text: local "
+                "shadow-resistant isolated-seed fits. Annotated maximum-Feret widths "
+                "are green when selected from the configured largest fraction, gray "
+                "when smaller, and dashed red when cutoff/disconnected. The histogram "
+                "and green line show the reviewed-width distribution and final master diameter."
+            ),
+            "foreground_mask": (
+                "Raw Foreground colour evidence: black = low and white = high. It is "
+                "fitted only from painted Foreground and, when enabled, safely inset "
+                "annotated-seed interiors. Background and Other marks do not zero, "
+                "subtract, or overwrite this map. This raw map, "
+                "Background, and Other need not sum to one; the Material evidence "
+                "decision performs the normalized classification."
+            ),
             "foreground_colour_gamut": (
                 "Full-size exact HSV hue/saturation slice of the fitted foreground "
                 "Lab probability model. Adjust HSV value to scan brightness; contour "
                 "lines show 25/50/75/90% membership and the neutral swatch reports "
                 "achromatic membership without repeating undefined hue."
             ),
-            "foreground_binary_mask": "Binary, morphologically cleaned foreground supplied to the distance-transform proposal branch.",
+            "foreground_binary_mask": "Authoritative binary Seed-material proposal from resolved Seed mass after ambiguity/unknown handling and seed-scaled morphology.",
             "distance_transform": "Brightness is distance from the nearest foreground boundary; local maxima can become seed centres.",
             "distance_candidates": "Yellow circles are the centres/radii proposed by distance-transform peaks before fusion.",
             "circle_candidates": "Yellow circles are CUDA multiradius proposals supported by edge, sensor/noise, flattened-grayscale, shadow, and highlight boundaries.",
@@ -8240,8 +9658,9 @@ class MainWindow(QMainWindow):
                 "outer-rim band sampled for the initial colour estimate; orange "
                 "indicates the inside-rim fallback when too little outer band was "
                 "visible. While Background painting is active and the automatic "
-                "source is kept, cyan also marks every retained perimeter-matching "
-                "in-dish source pixel; manually painted references remain green."
+                "source is kept, cyan marks only the retained pixels in that ring; "
+                "similar-coloured pixels inside the dish are excluded and manually "
+                "painted references remain green."
             ),
             "other_colour_probability": (
                 "Other-colour probability learned from painted Other references: black = "
@@ -8252,16 +9671,19 @@ class MainWindow(QMainWindow):
             "refined_background_likelihood": (
                 "Noise-frequency likelihood: dark = background-like local "
                 "texture; light = non-background-like texture. Fine, medium, "
-                "and coarse profiles are learned per image from confident "
-                "pixels in the colour layer, using equal class priors. The same "
-                "learned texture classifier is also displayed across the initial "
-                "dish-surrounding sampling annulus."
+                "and coarse profiles learn Background directly from the retained "
+                "outside-dish annulus (or painted Background) and non-Background "
+                "from reviewed Foreground evidence when available. Texture authority "
+                "rises only with measured class separation; a weak texture fit cannot "
+                "overrule the clearer colour model. The annulus uses the same blended "
+                "score and colour scale as the dish crop."
             ),
             "other_noise_probability": (
                 "Other-texture probability learned from painted Other versus non-Other "
                 "references: black = non-Other-like local frequency; white = Other-like "
-                "evidence. Its base score is 72% learned three-band texture probability "
-                "plus 28% Other-colour probability. Directional continuation then uses "
+                "evidence. Its texture contribution rises up to 72% only when measured "
+                "three-band class separation supports that authority; otherwise the "
+                "Other-colour model dominates. Directional continuation then uses "
                 "the noise node's configured ray integration. This class-specific "
                 "diagnostic is distinct from the "
                 "multifeature Reference Other-material probability."
@@ -8275,22 +9697,43 @@ class MainWindow(QMainWindow):
             "foreground_noise_likelihood": (
                 "Foreground texture probability: black = non-foreground-like local "
                 "frequency; white = foreground-like texture. Fine, medium, and coarse "
-                "profiles are learned from foreground-colour pseudo-labels without "
-                "forcing painted reference pixels to one."
+                "profiles are learned from reviewed Foreground when available, with "
+                "colour pseudo-labels only as fallback. Weakly separated texture is "
+                "automatically suppressed relative to the colour evidence; painted "
+                "reference pixels are never forced to one."
             ),
+            "material_seed_support": "Calibrated Seed support from colour, directional texture, valid multiclass prototypes, and reviewed Foreground membership. Automatic authority and reviewed target/non-target discrimination scale contribution; raw source rasters stay unchanged.",
+            "material_background_support": "Calibrated Background support. Reviewed Foreground matches discount generic Background support; source reliability rejects broad cross-matches, and Other never subtracts from it.",
+            "material_other_support": "Calibrated Other support from colour, texture, and valid prototype evidence. Other is positive Non-seed evidence, not merely a suppressor; it calibrates against Foreground but never against Background.",
+            "material_nonseed_support": "Union of Background and Other support. Their overlap reinforces the top-level Non-seed decision instead of cancelling either subtype.",
+            "material_seed_probability": "Resolved Seed mass after joint normalization with resolved Non-seed, conflicting/ambiguous, and insufficient/unknown mass. The four decision maps sum to one at every valid pixel.",
+            "material_nonseed_probability": "Resolved Non-seed mass after the same four-way normalization. Background and Other both provide positive support.",
+            "material_ambiguity_probability": "Conflicting material evidence: bright pixels receive substantial support from both Seed and Non-seed and are deliberately not forced into either class.",
+            "material_unknown_probability": "Insufficient material evidence: bright pixels are unsupported by both Seed and Non-seed models and retain explicit unknown mass.",
+            "material_background_subtype": "Resolved Background mass conditional on the pixel being Non-seed. It is normalized jointly with resolved Other, Background/Other conflict, and an unknown subtype.",
+            "material_other_subtype": "Resolved Other mass conditional on the pixel being Non-seed. Background overlap is allowed and moves into the explicit subtype-ambiguity map rather than suppressing either raw support.",
+            "material_subtype_ambiguity": "Conflicting Non-seed subtype evidence: bright pixels strongly match both Background and Other, as glass rims often legitimately do.",
+            "material_subtype_unknown": "Unknown Non-seed subtype: bright pixels match neither the Background nor Other evidence chains strongly enough to resolve the subtype.",
             "reference_texture_prototypes": (
                 "Full-pane collage of every retained image-local material and boundary "
                 "feature medoid. Edge patches are rotated to a common tangent; percentages "
                 "report cluster support, not forced probability."
             ),
             "reference_seed_surface_probability": (
-                "Seed-surface likelihood from the nearest supported Foreground prototype "
-                "relative to Background and Other prototype banks. Painted and unpainted "
-                "pixels are evaluated identically."
+                "Seed-surface likelihood from supported Foreground prototypes in the "
+                "shared material descriptor. Foreground, Background and Other prototype "
+                "scores are jointly normalized with an explicit unassigned/no-match mass; "
+                "the three displayed probabilities may therefore sum to less than 1. "
+                "Painted and unpainted pixels are evaluated identically. A one-class "
+                "bank is only a similarity descriptor, so it remains visible in the "
+                "collage but publishes no probability raster."
             ),
             "reference_background_texture_probability": (
-                "Background-texture likelihood from the many reviewed Background prototypes, "
-                "attenuated only where Foreground or Other prototypes fit more specifically."
+                "Background-material probability from reviewed Background prototypes in the "
+                "same descriptor and normalization as Foreground and Other. Seed spots and "
+                "pale surfaces compete with Background instead of merely suppressing one "
+                "another after separate fits; an explicit no-match mass prevents unsupported "
+                "pixels from being forced into a class."
             ),
             "reference_other_texture_probability": (
                 "Other-material likelihood from reviewed glass, rim, ruler, or other neither-"
@@ -8375,18 +9818,42 @@ class MainWindow(QMainWindow):
                 "black floor. This diagnostic difference is not a calibrated posterior "
                 "probability and does not modify either source raster."
             ),
+            "locally_normalized_net_physical_edge": (
+                "The physical-minus-scaled-internal semantic margin after separating "
+                "shared absolute support, equalizing that support against a robust "
+                "seed-scale local envelope, limiting gain, and applying an absolute "
+                "smooth floor. Green-blue brightness is the normalized continuous "
+                "barrier evidence; the raw class and net overlays remain unchanged."
+            ),
             "reference_edge_ridges": (
                 "Reference-trained physical-edge probability after normal-direction "
                 "non-maximum suppression and CUDA high/low hysteresis. Yellow "
                 "brightness preserves the retained continuous probability."
             ),
+            "net_reference_edge_ridges": (
+                "Net physical-edge evidence after scaled internal-edge subtraction, "
+                "normal-direction non-maximum suppression, and high/low hysteresis. "
+                "This is the thinned form of the blue net-probability overlay."
+            ),
+            "normalized_net_reference_edge_ridges": (
+                "The locally normalized net-physical field after normal-direction "
+                "non-maximum suppression and high/low hysteresis. Connected weak "
+                "arcs can continue a strong boundary, while the upstream absolute "
+                "floor prevents locally quiet noise from being promoted."
+            ),
             "edge_traces": (
-                "Unique colours identify tangent-compatible connected traces. "
+                "Unique colours identify tangent-compatible connected traces. Ridge source: "
+                f"{str(self.pipeline.node('edge_traces').parameters['trace_edge_source']).replace('_', ' ')}. "
                 "Crossing junctions are split and short aligned gaps may be bridged."
             ),
             "edge_trace_continuity": (
-                "Tangent-following support on both sides of every ridge pixel. "
-                "Bright traces remain coherent across a seed-relative window."
+                "For each retained ridge pixel, samples follow its tangent in both "
+                "directions across the configured seed-relative window. Each sample "
+                "combines nearby 3×3 ridge occupancy with tangent agreement; the "
+                "overlay is the geometric mean of the two directional averages. "
+                "Bright pixels therefore have aligned ridge support ahead and behind. "
+                "This is continuity evidence, not physical-edge probability or proof "
+                "that a contour is closed."
             ),
             "edge_trace_gap_confidence": (
                 "Geometric path support that penalizes repeated missing samples "
@@ -8411,12 +9878,14 @@ class MainWindow(QMainWindow):
                 "continuity, dense arc radii, centre voting, circle/ellipse residuals, "
                 "and soft semantic/lightness confirmation."
             ),
-            "procedural_seed_material": "Combined foreground colour/noise and inverse-background likelihood used to gate procedural instances.",
+            "procedural_seed_material": "The resolved Seed probability supplied directly by Material evidence decision; procedural separation no longer recombines raw Foreground, Background, Other, or prototype channels.",
             "procedural_seed_mask": "Thresholded seed material after dish-margin removal and seed-sized enclosed coat-hole filling.",
             "procedural_boundary_cost": "Normalized physical boundary cost fused from edges, sensor/noise, ridges and local shadow.",
             "procedural_centres": "Marker likelihood from smoothed material, physical-boundary depth and annular boundary support; dots are retained markers.",
-            "procedural_instances": "Marker-controlled watershed instance identities. Dot colour runs red to green with per-instance confidence.",
+            "procedural_instances": "Marker-controlled watershed instance identities. Dot colour runs red to green with per-instance confidence. Click a coloured seed to outline it and show its area, maximum width, concavity, protrusion, solidity, axis ratio and score in the Procedural node panel.",
             "procedural_confidence": "Per-instance marker, boundary and calibrated-area confidence mapped back onto every assigned pixel.",
+            "procedural_concavity": "Convex-hull deficit for each retained instance, scaled to the configured hard concavity cutoff; brighter regions are more internally concave.",
+            "procedural_alternative_candidates": "Unselected candidate masks from the multi-hypothesis search. Red is low score, green is high score, and brighter outlines have higher relative support.",
             "unet_interior": "Learned probability that each pixel belongs to visible seed material.",
             "unet_physical_boundary": "Learned probability of a true physical seed/background or seed/seed boundary.",
             "unet_pattern_boundary": "Learned probability of an apparent but non-physical internal coat-pattern boundary.",
@@ -8470,6 +9939,49 @@ class MainWindow(QMainWindow):
             text = f"Per-pixel broad {name} pattern probability from seed-relative spatial-frequency evidence."
         else:
             text = legends.get(mode, "")
+        inverse_probability_modes = {
+            "background_likelihood",
+            "refined_background_likelihood",
+        }
+        direct_probability_modes = {
+            "foreground_mask",
+            "other_colour_probability",
+            "other_noise_probability",
+            "foreground_noise_likelihood",
+            "material_seed_support",
+            "material_background_support",
+            "material_other_support",
+            "material_nonseed_support",
+            "material_background_subtype",
+            "material_other_subtype",
+            "material_subtype_ambiguity",
+            "material_subtype_unknown",
+            "reference_seed_surface_probability",
+            "reference_background_texture_probability",
+            "reference_other_texture_probability",
+            "physical_edge_probability",
+            "non_edge_probability",
+            "net_physical_edge_probability",
+            "locally_normalized_net_physical_edge",
+            "procedural_seed_material",
+            "procedural_centres",
+            "procedural_confidence",
+            "unet_interior",
+            "unet_physical_boundary",
+            "unet_pattern_boundary",
+            "unet_centres",
+            "stardist_object_probability",
+            "seed_interior_probability",
+        }
+        if mode in inverse_probability_modes:
+            text = "Scale key: white = low displayed probability/evidence; black = high. " + text
+        elif (
+            mode in direct_probability_modes
+            or mode.startswith(("colour_probability:", "pattern_probability:"))
+            or "probability" in mode
+            or "likelihood" in mode
+        ):
+            text = "Scale key: black = low displayed probability/evidence; white or maximum semantic-colour brightness = high. " + text
         self.overlay_legend_label.setText(text)
 
     def _mark_analysis_complete(self, result) -> None:
@@ -8492,12 +10004,24 @@ class MainWindow(QMainWindow):
         ruler = calibration.ruler
         self.pipeline.set_status(
             "ruler_detection",
-            NodeStatus.COMPLETE if ruler is not None else NodeStatus.WARNING,
             (
-                f"Angle {ruler.angle_degrees:+.2f}°; "
+                NodeStatus.COMPLETE
+                if ruler is not None and ruler.scale_reliable
+                else NodeStatus.WARNING
+            ),
+            (
+                f"{len(ruler.metric_tick_points):,} mapped metric ticks "
+                f"({ruler.matched_tick_count:,} supported); "
+                f"length hierarchy {ruler.metric_hierarchy_consistency:.0%}; "
+                f"angle {ruler.angle_degrees:+.2f}°; "
                 f"confidence {ruler.confidence:.0%}"
-                if ruler is not None
-                else "Ruler not found"
+                if ruler is not None and ruler.scale_reliable
+                else (
+                    f"Ruler outline found; {ruler.matched_tick_count:,} likely "
+                    "metric ticks; scale unresolved"
+                    if ruler is not None
+                    else "Ruler not found"
+                )
             ),
         )
         self.pipeline.set_status(
@@ -8520,7 +10044,17 @@ class MainWindow(QMainWindow):
                 else NodeStatus.WARNING
             ),
             (
-                f"{calibration.pixels_per_mm:.3f} px/mm"
+                (
+                    f"metric {calibration.pixels_per_mm:.3f} px/mm"
+                    + (
+                        f"; imperial {calibration.ruler.imperial_pixels_per_mm:.3f}; "
+                        f"error {calibration.ruler.scale_disagreement_percent:.2f}%"
+                        if calibration.ruler is not None
+                        and calibration.ruler.imperial_pixels_per_mm > 0.0
+                        and calibration.ruler.scale_disagreement_percent is not None
+                        else "; imperial unresolved"
+                    )
+                )
                 if calibration.pixels_per_mm is not None
                 else "Tick spacing unresolved"
             ),
@@ -8546,13 +10080,25 @@ class MainWindow(QMainWindow):
         )
         self.pipeline.set_status(
             "seed_scale_estimation",
-            NodeStatus.COMPLETE if result.reference_seed_count else NodeStatus.WARNING,
             (
-                f"{result.reference_seed_count} reference component(s); "
-                f"diameter {result.estimated_seed_diameter_px:.1f}px"
-                if result.reference_seed_count
-                else f"Dish fallback diameter {result.estimated_seed_diameter_px:.1f}px"
+                NodeStatus.COMPLETE
+                if result.seed_diameter_source != "dish fallback"
+                else NodeStatus.WARNING
             ),
+            f"{result.estimated_seed_diameter_px:.1f}px from "
+            f"{result.seed_diameter_source}; "
+            f"{result.reference_seed_count} isolated fit(s), "
+            f"{sum(1 for item in result.annotated_seed_diameters if item.complete)} complete annotated width(s)",
+        )
+        self.pipeline.set_status(
+            "hue_only",
+            NodeStatus.COMPLETE,
+            "Corrected hue encoded at fixed 62% value",
+        )
+        self.pipeline.set_status(
+            "wavelet_decomposition",
+            NodeStatus.COMPLETE,
+            f"{int(self.pipeline.node('wavelet_decomposition').parameters['wavelet_level_count'])} exact-reconstruction detail band(s) plus residual",
         )
         sampling_band = result.perimeter_background_band
         self.pipeline.set_status(
@@ -8568,14 +10114,16 @@ class MainWindow(QMainWindow):
         foreground_fraction = result.foreground_pixel_count / max(
             1, result.analysis_region_pixel_count
         )
-        self.pipeline.set_status(
-            "foreground_segmentation",
-            NodeStatus.COMPLETE,
-            (
-                f"Threshold {result.foreground_threshold:.1f}; "
-                f"{result.foreground_pixel_count:,} pixels ({foreground_fraction:.1%}); "
-                f"{getattr(result, 'foreground_reference_count', 0):,} painted reference pixels"
-            ),
+        foreground_colour_profile = getattr(
+            result.layers, "foreground_colour_profile", None
+        )
+        foreground_colour_detail = (
+            f"Foreground threshold {result.foreground_threshold:.1f}; "
+            f"{result.foreground_pixel_count:,} pixels ({foreground_fraction:.1%}); "
+            f"{getattr(result, 'foreground_reference_count', 0):,} painted reference pixels"
+            if foreground_colour_profile is not None
+            else "Foreground has no painted or enabled annotated-seed reference; "
+            "probability is intentionally zero"
         )
         self.pipeline.set_status(
             "distance_candidates",
@@ -8606,7 +10154,7 @@ class MainWindow(QMainWindow):
             )
             self.pipeline.set_status(
                 "procedural_instances",
-                NodeStatus.WARNING if low_fraction >= 0.20 else NodeStatus.COMPLETE,
+                NodeStatus.COMPLETE,
                 f"{procedural.count:,} instances; median confidence "
                 f"{median_confidence:.0%}; {low_fraction:.0%} require review",
             )
@@ -8653,25 +10201,26 @@ class MainWindow(QMainWindow):
                 f"{sampling_band.thickness_cm:.2f} cm thickness"
             )
         if background_mode == "disabled":
-            self.pipeline.set_status(
-                "background_likelihood", NodeStatus.BYPASSED, "Disabled for this run"
-            )
+            background_colour_detail = "Background colour disabled"
         elif background_mode == "manual":
-            self.pipeline.set_status(
-                "background_likelihood",
-                NodeStatus.WARNING if prior_warning else NodeStatus.COMPLETE,
-                _background_profile_detail(
-                    colour_profile,
-                    f"{result.layers.background_reference_count:,} painted reference pixels",
-                ) + prior_suffix,
-            )
+            background_colour_detail = _background_profile_detail(
+                colour_profile,
+                f"{result.layers.background_reference_count:,} painted reference pixels",
+            ) + prior_suffix
         else:
-            self.pipeline.set_status(
-                "background_likelihood",
-                NodeStatus.WARNING if prior_warning else NodeStatus.COMPLETE,
+            background_colour_detail = (
                 _background_profile_detail(colour_profile, "Automatic range")
-                + prior_suffix,
+                + prior_suffix
             )
+        self.pipeline.set_status(
+            "background_likelihood",
+            (
+                NodeStatus.COMPLETE
+                if foreground_colour_profile is not None
+                else NodeStatus.WARNING
+            ),
+            background_colour_detail + "; " + foreground_colour_detail,
+        )
         self.pipeline.set_status(
             "instance_masks",
             NodeStatus.COMPLETE,
@@ -8689,10 +10238,18 @@ class MainWindow(QMainWindow):
                 "refined_background_likelihood",
                 NodeStatus.COMPLETE,
                 f"{len(result.layers.directional_background_angles_degrees)} directions integrated; "
-                f"three-band separation {profile.separation:.2f}; surrounding annulus shown",
+                f"three-band separation {profile.separation:.2f}; "
+                f"texture blend {72.0 * max(0.0, min(1.0, (profile.separation - 0.5) / 2.0)):.0f}%; "
+                "direct exterior-annulus positives shown",
             )
         foreground_noise_profile = result.layers.foreground_noise_frequency_profile
-        if foreground_noise_profile is not None:
+        if foreground_colour_profile is None:
+            self.pipeline.set_status(
+                "foreground_noise_likelihood",
+                NodeStatus.BLOCKED,
+                "Requires painted Foreground or enabled annotated-seed reference",
+            )
+        elif foreground_noise_profile is not None:
             self.pipeline.set_status(
                 "foreground_noise_likelihood",
                 NodeStatus.COMPLETE,
@@ -8702,7 +10259,10 @@ class MainWindow(QMainWindow):
         self.pipeline.set_status(
             "edge_gradients",
             NodeStatus.COMPLETE,
-            "Shared Lab/Scharr magnitude and continuous tangent field cached",
+            str(self.pipeline.node("edge_gradients").parameters["edge_gradient_method"]).replace("_", " ").title()
+            + " gradients; "
+            + str(self.pipeline.node("edge_gradients").parameters["edge_gradient_source_fusion"]).replace("_", " ")
+            + " source fusion; magnitude plus directed/undirected tangents cached",
         )
         if (
             self.pipeline.is_active("surface_darkness_gradients")
@@ -8752,16 +10312,6 @@ class MainWindow(QMainWindow):
             "Darkness/colour RMS masks at "
             + ", ".join(f"{value:.1f}px" for value in noise_scales),
         )
-        self.pipeline.set_status(
-            "undirected_edges",
-            NodeStatus.COMPLETE,
-            "Axial hue map ready (0° = 180°)",
-        )
-        self.pipeline.set_status(
-            "directed_edges",
-            NodeStatus.COMPLETE,
-            "Polarity-aware hue map ready (0° = 360°)",
-        )
         curve_raster = result.layers.seed_edge_curve_likelihood
         supported_curve_pixels = (
             curve_raster.count_above(128)
@@ -8793,6 +10343,14 @@ class MainWindow(QMainWindow):
             int(texture_counts.get(name, 0))
             for name in ("physical_edge", "non_edge")
         )
+        material_class_count = sum(
+            int(texture_counts.get(name, 0)) > 0
+            for name in ("background", "foreground", "other")
+        )
+        edge_class_count = sum(
+            int(texture_counts.get(name, 0)) > 0
+            for name in ("physical_edge", "non_edge")
+        )
         prototype_parts = []
         if material_reference_count:
             prototype_parts.append(f"{material_reference_count:,} material samples")
@@ -8802,10 +10360,19 @@ class MainWindow(QMainWindow):
             )
         self.pipeline.set_status(
             "reference_texture_prototypes",
-            NodeStatus.COMPLETE,
+            (
+                NodeStatus.COMPLETE
+                if material_class_count >= 2 or edge_class_count >= 2
+                else NodeStatus.WARNING
+            ),
             (
                 f"{len(texture_profile.prototypes):,} prototypes from "
                 + " and ".join(prototype_parts)
+                + (
+                    "; one-class banks are collage-only similarities"
+                    if material_class_count == 1 or edge_class_count == 1
+                    else ""
+                )
                 if texture_profile is not None
                 and texture_profile.prototypes
                 and prototype_parts
@@ -8814,13 +10381,32 @@ class MainWindow(QMainWindow):
         )
         self.pipeline.set_status(
             "reference_edge_probability",
-            NodeStatus.COMPLETE if edge_reference_count else NodeStatus.WARNING,
+            NodeStatus.COMPLETE if edge_class_count >= 2 else NodeStatus.WARNING,
             (
                 "Physical/non-physical supervision derived from annotated seed instances"
-                if edge_reference_count
-                else "No complete instance annotations; semantic edge evidence is neutral"
+                if edge_class_count >= 2
+                else "Both physical and non-physical examples are required; semantic edge probability is neutral"
             ),
         )
+        if self.pipeline.is_active("material_evidence_decision"):
+            seed_mask = result.layers.seed_material_mask
+            seed_pixels = (
+                0
+                if seed_mask is None
+                else seed_mask.count_above(1)
+                if hasattr(seed_mask, "count_above")
+                else int((np.asarray(seed_mask) > 0).sum())
+            )
+            self.pipeline.set_status(
+                "material_evidence_decision",
+                NodeStatus.COMPLETE,
+                f"{seed_pixels:,} resolved Seed pixels; perimeter authority "
+                f"{result.layers.background_automatic_evidence_authority:.2f}; source reliability "
+                + ", ".join(
+                    f"{name.replace('_', ' ')} {value:.2f}"
+                    for name, value in result.layers.material_source_reliabilities
+                ),
+            )
         reference_ridge_raster = result.layers.reference_edge_ridges
         reference_ridge_pixels = (
             reference_ridge_raster.count_above(1)
@@ -8833,7 +10419,14 @@ class MainWindow(QMainWindow):
             f"{reference_ridge_pixels:,} thinned reference-edge pixels",
         )
         self.pipeline.set_status(
-            "edge_traces", NodeStatus.COMPLETE, f"{trace_pixels:,} oriented trace pixels"
+            "edge_traces",
+            NodeStatus.COMPLETE,
+            f"{trace_pixels:,} oriented trace pixels from "
+            + str(
+                self.pipeline.node("edge_traces").parameters["trace_edge_source"]
+            ).replace("_", " ")
+            + "; trace scale "
+            + f"{self.pipeline.node('edge_traces').parameters['trace_diameter_multiplier']:.2f} × master diameter",
         )
         self.pipeline.set_status(
             "seed_edge_curves",
@@ -8850,7 +10443,7 @@ class MainWindow(QMainWindow):
             result.advanced.seed_pattern_proportions,
         )
         advanced_details = {
-            "seed_interior": "Foreground colour/noise and background probability fused",
+            "seed_interior": "Resolved Seed material probability smoothed at seed scale",
             "boundary_normals": "Boundary magnitude and directed normals ready",
             "touching_split": "Neck and distance-saddle evidence ready",
             "ellipse_likelihood": "Multiscale orientation and radial support ready",
@@ -8928,21 +10521,19 @@ class MainWindow(QMainWindow):
             ),
         )
         manual_state = self._manual_seed_centre_state(key)
-        self.pipeline.set_status(
-            "manual_seed_centres",
-            NodeStatus.COMPLETE,
-            f"{len(manual_state.centres_source_xy):,} point(s); "
-            + (
-                "augment"
-                if manual_state.mode == "augment"
-                else "replace automatic"
-            ),
-        )
+        if len(manual_state.centres_source_xy):
+            reference_node = self.pipeline.node("reference_layers")
+            reference_node.status_detail += (
+                f"; centres {len(manual_state.centres_source_xy):,} "
+                + ("augment" if manual_state.mode == "augment" else "replace automatic")
+            )
         for node_id in (*CALIBRATION_NODE_IDS, "layout_detection"):
             self.pipeline.set_status(node_id, NodeStatus.IDLE, "Ready")
         for node_id in IDENTIFICATION_STAGE_NODE_IDS:
             self.pipeline.set_status(node_id, NodeStatus.IDLE, "Ready")
         for node_id in (
+            "hue_only",
+            "wavelet_decomposition",
             "background_likelihood",
             "refined_background_likelihood",
             "foreground_noise_likelihood",
@@ -8951,10 +10542,9 @@ class MainWindow(QMainWindow):
             "lightening_gradient_ceiling",
             "darkening_gradient_ceiling",
             "frequency_noise_masks",
-            "undirected_edges",
-            "directed_edges",
             "edge_ridges",
             "reference_texture_prototypes",
+            "material_evidence_decision",
             "reference_edge_probability",
             "reference_edge_ridges",
             "edge_traces",
@@ -9011,7 +10601,10 @@ class MainWindow(QMainWindow):
         self.pipeline_inspector.refresh_status()
 
     def _set_analysis_running(
-        self, path: Path, dirty_nodes: frozenset[str] = frozenset()
+        self,
+        path: Path,
+        dirty_nodes: frozenset[str] = frozenset(),
+        enabled_node_scope: frozenset[str] | None = None,
     ) -> None:
         self._stop_manual_seed_centre_editing()
         details = {
@@ -9020,22 +10613,23 @@ class MainWindow(QMainWindow):
             "deskew_colour": "Deskewing and balancing colour",
             "scale_calibration": "Resolving ruler tick spacing",
             "layout_detection": "Detecting both corrected Petri-dish glass edges",
+            "hue_only": "Encoding corrected-image hue at fixed value",
+            "wavelet_decomposition": "Computing exact-reconstruction stationary wavelet bands",
             "seed_scale_estimation": "Measuring isolated reference components",
             "perimeter_background_reference": "Sampling the buffered outside-dish colour band",
-            "foreground_segmentation": "Estimating Lab background and thresholding",
+            "background_likelihood": "Fitting foreground, background, and Other colour evidence",
             "distance_candidates": "Finding distance-transform peaks",
             "circle_candidates": "Fusing edge and local-lighting ring evidence",
             "identification": "Fusing candidate centres",
             "instance_masks": "Separating provisional instances",
-            "edge_gradients": "Computing shared Lab/Scharr gradient field",
+            "edge_gradients": "Computing selected original/wavelet gradient field and tangent encodings",
             "surface_darkness_gradients": "Searching one-sided lightening and darkening surface slopes",
             "lightening_gradient_ceiling": "Suppressing strong lightening edges",
             "darkening_gradient_ceiling": "Suppressing strong darkening edges",
             "frequency_noise_masks": "Calculating multiscale darkness and colour RMS energy",
-            "undirected_edges": "Encoding axial edge tangents",
-            "directed_edges": "Resolving edge polarity",
             "edge_ridges": "Thinning float edges and reconstructing hysteresis",
             "reference_texture_prototypes": "Fitting many material and edge prototypes from reviewed examples",
+            "material_evidence_decision": "Calibrating Seed versus Non-seed, ambiguity, and unknown evidence",
             "reference_edge_probability": "Classifying physical and apparent edges from reviewed examples",
             "reference_edge_ridges": "Thinning reference-trained physical-edge probability",
             "edge_traces": "Linking orientation-compatible ridge fragments",
@@ -9052,6 +10646,9 @@ class MainWindow(QMainWindow):
             "contact_graph": "Resolving touching and overlapping proposals",
             "illumination_decomposition": "Flattening grayscale and classifying local lighting extremes",
             "image_quality": "Mapping focus, exposure, glare, and noise",
+            "procedural_instances": "Optimizing and selecting procedural seed candidates",
+            "unet_instances": "Inferring U-Net seed interiors and boundaries",
+            "stardist_instances": "Inferring and suppressing StarDist polygons",
             "radial_profile": "Accumulating seed radial profiles",
             "wrinkling": "Detecting seed-scaled ridge texture",
             "coat_damage": "Fusing coat-anomaly evidence",
@@ -9060,6 +10657,18 @@ class MainWindow(QMainWindow):
             "calibration_residuals": "Mapping calibration extrapolation risk",
         }
         targets = set(dirty_nodes) if dirty_nodes else set(details)
+        if enabled_node_scope is not None:
+            targets &= set(enabled_node_scope)
+        selected_mode = str(self.overlay_combo.currentData() or "")
+        selected_owner = _overlay_node_owner(selected_mode)
+        if selected_owner in targets:
+            selected_label = next(
+                (label for label, mode in self._overlay_entries if mode == selected_mode),
+                self.pipeline.node(selected_owner).title,
+            )
+            self.image_view.set_overlay_calculating(
+                f"Calculating {selected_label} …"
+            )
         if not dirty_nodes:
             self.pipeline.set_status("raw_images", NodeStatus.COMPLETE, path.name)
             self.pipeline.set_status(
@@ -9110,6 +10719,35 @@ class MainWindow(QMainWindow):
                     self._selecting_overlay_from_node = False
         self._sync_inspector_overlay_options()
         self._sync_procedural_centres_controls()
+
+    @Slot(int)
+    def _procedural_instance_selected(self, label: int) -> None:
+        """Expose calibrated geometry for the clicked procedural candidate."""
+
+        result = self.image_view._analysis_result
+        procedural = (
+            None if result is None else getattr(result, "procedural_instances", None)
+        )
+        if procedural is None:
+            return
+        try:
+            values = procedural.statistics_for_label(label)
+        except ValueError:
+            return
+        if self._selected_pipeline_node != "procedural_instances":
+            self.pipeline_canvas.select_node("procedural_instances")
+        text = (
+            f"Selected seed {int(values['label'])}: "
+            f"area {values['area_px2']:,.0f} px²; maximum width "
+            f"{values['maximum_width_px']:,.1f} px "
+            f"({values['width_fraction']:.3f} × reference diameter); "
+            f"concavity {values['concavity_fraction']:.1%}; protrusion "
+            f"{values['protrusion_fraction']:.1%}; solidity "
+            f"{values['solidity']:.3f}; axis ratio {values['axis_ratio']:.3f}; "
+            f"confidence {values['confidence']:.1%}."
+        )
+        self.pipeline_inspector.set_procedural_instance_statistics(text)
+        self.statusBar().showMessage(text, 12000)
 
     @Slot(str)
     def _pipeline_unused_node_restored(self, node_id: str) -> None:
@@ -9181,7 +10819,14 @@ class MainWindow(QMainWindow):
                 keep_perimeter_source
             )
         if (
-            node_id == "foreground_segmentation"
+            node_id == "background_likelihood"
+            and key == "background_colour_enabled"
+            and hasattr(self, "background_enabled_checkbox")
+        ):
+            with QSignalBlocker(self.background_enabled_checkbox):
+                self.background_enabled_checkbox.setChecked(bool(value))
+        if (
+            node_id == "background_likelihood"
             and key == "foreground_include_annotated_seed_instances"
             and hasattr(self, "include_seed_instances_as_foreground_checkbox")
         ):
@@ -9267,29 +10912,7 @@ class MainWindow(QMainWindow):
     ) -> None:
         """Refresh a diagnostic setting without scheduling analytical work."""
 
-        if (
-            node_id != "reference_edge_probability"
-            or key != "net_physical_edge_internal_scale"
-        ):
-            # Future display-only controls still get an honest graph-card
-            # refresh.  A control that affects an AnalysisLayers field must add
-            # its explicit immutable-result replacement below.
-            self.pipeline_canvas.refresh((node_id,))
-            self.pipeline_inspector.refresh_status()
-            return
-
-        current_key = self._current_image_key()
-        current_result = None
-        for image_key, result in tuple(self._analyses.items()):
-            updated_result = self._normalize_display_only_analysis_result(result)
-            self._analyses[image_key] = updated_result
-            if image_key == current_key:
-                current_result = updated_result
-
-        if current_result is not None:
-            self.image_view.show_analysis(current_result, render=False)
-            self.pipeline_inspector.set_analysis_result(current_result)
-            self.image_view.refresh_analysis()
+        del key
         selected_overlay = str(self.overlay_combo.currentData() or "")
         self._update_overlay_legend(selected_overlay)
         self.pipeline_canvas.refresh((node_id,))
@@ -9299,33 +10922,12 @@ class MainWindow(QMainWindow):
             "reused all cached analysis products."
         )
 
-    def _normalize_display_only_analysis_result(self, result):
-        """Return a result wrapper carrying the current presentation settings."""
-
-        layers = getattr(result, "layers", None)
-        if layers is None:
-            return result
-        value = float(
-            self.pipeline.node("reference_edge_probability").parameters[
-                "net_physical_edge_internal_scale"
-            ]
-        )
-        if float(layers.net_physical_edge_internal_scale) == value:
-            return result
-        return replace(
-            result,
-            layers=replace(
-                layers,
-                net_physical_edge_internal_scale=value,
-            ),
-        )
-
     def _validate_settings_override(
         self, node_id: str, key: str, value: object
     ) -> None:
         baseline_nodes = {
             "seed_scale_estimation",
-            "foreground_segmentation",
+            "background_likelihood",
             "distance_candidates",
             "identification",
         }
@@ -9343,6 +10945,7 @@ class MainWindow(QMainWindow):
             "frequency_noise_masks",
             "edge_ridges",
             "reference_texture_prototypes",
+            "material_evidence_decision",
             "reference_edge_probability",
             "reference_edge_ridges",
             "edge_traces",
@@ -9354,18 +10957,27 @@ class MainWindow(QMainWindow):
             values = dict(self.pipeline.node(node_id).parameters)
             values[key] = value
             DishDetectionSettings(**values)
-        elif node_id in baseline_nodes:
-            values: dict[str, object] = {}
-            for stage_id in baseline_nodes:
-                values.update(self.pipeline.node(stage_id).parameters)
-            values[key] = value
-            BaselineSettings(**values)
-        elif node_id in layer_nodes:
-            values = {}
-            for layer_id in layer_nodes:
-                values.update(self.pipeline.node(layer_id).parameters)
-            values[key] = value
-            AnalysisLayerSettings(**values)
+        elif node_id in baseline_nodes or node_id in layer_nodes:
+            baseline_fields = set(BaselineSettings.__dataclass_fields__)
+            layer_fields = set(AnalysisLayerSettings.__dataclass_fields__)
+            if key in baseline_fields:
+                baseline_values = {
+                    field: current
+                    for stage_id in baseline_nodes
+                    for field, current in self.pipeline.node(stage_id).parameters.items()
+                    if field in baseline_fields
+                }
+                baseline_values[key] = value
+                BaselineSettings(**baseline_values)
+            if key in layer_fields:
+                layer_values = {
+                    field: current
+                    for layer_id in layer_nodes
+                    for field, current in self.pipeline.node(layer_id).parameters.items()
+                    if field in layer_fields
+                }
+                layer_values[key] = value
+                AnalysisLayerSettings(**layer_values)
         elif node_id in advanced_nodes:
             values = {}
             for advanced_id in advanced_nodes:
@@ -9516,6 +11128,7 @@ class MainWindow(QMainWindow):
             bool(self._active_tasks)
             or self._learning_training_task is not None
             or self._procedural_fit_task is not None
+            or self._reference_edge_fit_task is not None
         )
         available = (
             path is not None
@@ -9531,8 +11144,9 @@ class MainWindow(QMainWindow):
         if hasattr(self, "open_project_action"):
             self.new_project_action.setEnabled(not running)
             self.open_project_action.setEnabled(not running)
-            self.save_project_action.setEnabled(not running)
-            self.save_project_as_action.setEnabled(not running)
+            project_save_available = not self._exclusive_background_work_is_active()
+            self.save_project_action.setEnabled(project_save_available)
+            self.save_project_as_action.setEnabled(project_save_available)
         self._sync_procedural_centres_controls()
 
     def _show_pipeline_workspace(self) -> None:
@@ -9561,11 +11175,16 @@ class MainWindow(QMainWindow):
     def _show_runtime_summary(self) -> None:
         from seedvision import __version__
 
+        log_path = current_log_path()
+        crash_path = current_crash_log_path()
+
         QMessageBox.information(
             self,
             "Seed Fiddle runtime",
             f"Seed Fiddle {__version__}\n"
             f"Application folder: {self._root}\n\n"
+            f"Diagnostic log: {log_path or 'not configured'}\n"
+            f"Fatal-crash log: {crash_path or 'not configured'}\n\n"
             "Run seed_vision.py --diagnostics for package and GPU details.",
         )
 
@@ -9619,14 +11238,24 @@ class MainWindow(QMainWindow):
                     return
 
         self._pending_analysis_key = None
+        self._pending_analysis_scope = None
+        if hasattr(self, "_analysis_activity_timer"):
+            self._analysis_activity_timer.stop()
+        for task in self._active_tasks.values():
+            cancel = getattr(task, "cancel", None)
+            if cancel is not None:
+                cancel()
         if self._learning_training_task is not None:
             self._learning_training_task.cancel()
         if self._procedural_fit_task is not None:
             self._procedural_fit_task.cancel()
+        if self._reference_edge_fit_task is not None:
+            self._reference_edge_fit_task.cancel()
         self._thread_pool.clear()
         if not self._thread_pool.waitForDone(10_000):
             self._thread_pool.waitForDone()
         self._active_tasks.clear()
+        self._analysis_activities.clear()
         if self._learning_training_progress is not None:
             self._learning_training_progress.close()
         self._learning_training_progress = None
@@ -9634,6 +11263,11 @@ class MainWindow(QMainWindow):
         if self._procedural_fit_progress is not None:
             self._procedural_fit_progress.close()
         self._procedural_fit_progress = None
+        self._procedural_fit_task = None
+        if self._reference_edge_fit_progress is not None:
+            self._reference_edge_fit_progress.close()
+        self._reference_edge_fit_progress = None
+        self._reference_edge_fit_task = None
         self._procedural_fit_task = None
         self.image_view.clear_analysis()
         self.pipeline_inspector.set_analysis_result(None)

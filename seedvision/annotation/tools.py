@@ -14,6 +14,27 @@ import cv2
 import numpy as np
 
 
+ANNOTATION_EDGE_SOURCES = frozenset(
+    {
+        "adaptive",
+        "ridges",
+        "reference_ridges",
+        "normalized_reference_ridges",
+        "traces",
+        "magnitude",
+        "physical",
+        "net_physical",
+        "normalized_net_physical",
+    }
+)
+EDGE_TRACE_EDGE_SOURCES = ANNOTATION_EDGE_SOURCES - {"net_physical"}
+SMART_FILL_EDGE_SOURCES = ANNOTATION_EDGE_SOURCES
+
+
+def _edge_source_error(allowed: frozenset[str]) -> str:
+    return "Edge source must be one of: " + ", ".join(sorted(allowed)) + "."
+
+
 @dataclass(frozen=True, slots=True)
 class EdgeTraceOptions:
     """Controls for a magnetic edge path between two user points."""
@@ -37,18 +58,8 @@ class EdgeTraceOptions:
             raise ValueError("Tangent weight must be between zero and one.")
         if not 0 <= self.smoothing <= 8:
             raise ValueError("Path smoothing must be between zero and eight.")
-        if self.edge_source not in {
-            "adaptive",
-            "ridges",
-            "reference_ridges",
-            "traces",
-            "magnitude",
-            "physical",
-        }:
-            raise ValueError(
-                "Edge source must be adaptive, ridges, reference_ridges, traces, "
-                "magnitude, or physical."
-            )
+        if self.edge_source not in EDGE_TRACE_EDGE_SOURCES:
+            raise ValueError(_edge_source_error(EDGE_TRACE_EDGE_SOURCES))
         if not isinstance(self.fill_closed_loops, bool):
             raise ValueError("Fill closed loops must be enabled or disabled.")
 
@@ -62,13 +73,19 @@ class SmartFillOptions:
     tunnel_strength: float = 0.0
     maximum_distance_from_cursor_px: int = 60
     falloff_half_life_px: float = 40.0
+    edge_gap_sealing_px: int = 2
     maximum_added_pixels: int = 150_000
     connectivity: int = 8
     edge_source: str = "magnitude"
+    click_colour_tolerance_lab: float = 72.0
 
     def __post_init__(self) -> None:
         if not 1.0 <= self.colour_tolerance_lab <= 100.0:
             raise ValueError("Lab tolerance must be between 1 and 100.")
+        if not 1.0 <= self.click_colour_tolerance_lab <= 360.0:
+            raise ValueError(
+                "Click-origin Lab tolerance must be between 1 and 360."
+            )
         if not 0.0 <= self.edge_stop_threshold <= 1.0:
             raise ValueError("Edge stop threshold must be between zero and one.")
         if not 0.0 <= self.tunnel_strength <= 1.0:
@@ -81,23 +98,14 @@ class SmartFillOptions:
             raise ValueError(
                 "Fall-off half-life must be between 1 and 4096 pixels."
             )
+        if not 0 <= int(self.edge_gap_sealing_px) <= 64:
+            raise ValueError("Edge-gap sealing must be between 0 and 64 pixels.")
         if not 1 <= self.maximum_added_pixels <= 10_000_000:
             raise ValueError("Maximum added pixels must be positive.")
         if self.connectivity not in {4, 8}:
             raise ValueError("Connectivity must be four or eight.")
-        if self.edge_source not in {
-            "adaptive",
-            "ridges",
-            "reference_ridges",
-            "traces",
-            "magnitude",
-            "physical",
-            "net_physical",
-        }:
-            raise ValueError(
-                "Edge source must be adaptive, ridges, reference_ridges, traces, "
-                "magnitude, physical, or net_physical."
-            )
+        if self.edge_source not in SMART_FILL_EDGE_SOURCES:
+            raise ValueError(_edge_source_error(SMART_FILL_EDGE_SOURCES))
 
 
 @dataclass(frozen=True, slots=True)
@@ -562,16 +570,15 @@ def smart_fill_region(
     """Return a fast locally adaptive fill region suitable for live preview.
 
     OpenCV's floating-range flood fill compares each candidate with an already
-    accepted neighbour rather than the original click colour. That preserves
-    gradual traversal across patterned coats while running in native code fast
-    enough for a debounced hover preview. Existing marks are optional: an empty
-    instance starts directly at the clicked pixel. ``allowed_mask`` optionally
+    accepted neighbour. A separate hard click-origin range prevents those
+    individually acceptable steps from accumulating into unlimited colour
+    drift. Existing marks are optional: an empty instance starts directly at
+    the clicked pixel. ``allowed_mask`` optionally
     supplies a compact full-image-coordinate envelope. It is used by Shape fill
     to reuse this exact growth method without allocating a full-resolution mask.
     ``extension_pressure_mask`` can replace the ordinary cursor-radial pressure
     with a compact caller-authored pressure field; Shape fill uses this for its
-    one-sided outside-the-ellipse decay while keeping unit pressure everywhere
-    inside the fitted prior.
+    signed ellipse-relative decay, including the configured inward start.
     """
 
     source_labels = np.asarray(labels)
@@ -683,6 +690,22 @@ def smart_fill_region(
     # to stop growth farther from the cursor. Binary ridges remain hard edges.
     edge_barrier = (roi_edge > 0.0) & (roi_edge >= edge_limit)
     edge_barrier &= roi_labels != int(instance_id)
+    gap_radius = int(options.edge_gap_sealing_px)
+    if gap_radius > 0 and np.any(edge_barrier):
+        # Treat short holes in an otherwise coherent ridge as pressure leaks in
+        # a thin wall. Closing seals only gaps bounded by nearby barrier support;
+        # genuinely open arcs wider than the configured radius stay traversable.
+        kernel_size = gap_radius * 2 + 1
+        # A rectangular closing element is intentional here. An ellipse erodes
+        # a one-pixel oriented trace back open after dilation, so it fails at
+        # exactly the nearly-complete thin ridges this control is meant to seal.
+        gap_kernel = cv2.getStructuringElement(
+            cv2.MORPH_RECT, (kernel_size, kernel_size)
+        )
+        edge_barrier = cv2.morphologyEx(
+            edge_barrier.astype(np.uint8), cv2.MORPH_CLOSE, gap_kernel
+        ).astype(bool)
+        edge_barrier &= roi_labels != int(instance_id)
     # OpenCV's fast floating-range fill uses one fixed neighbour tolerance.
     # Add an exact, vectorized radial prior over the selected connectivity. For
     # each candidate, find the smallest normalized Lab step to any touching
@@ -691,6 +714,28 @@ def smart_fill_region(
     # The ordinary floating-range check below remains the connected-growth
     # engine and handles local continuity in every direction.
     lab_int = roi_lab.astype(np.int16)
+    anchor_lab = lab_int[local_anchor[1], local_anchor[0]]
+    click_colour_distance = np.abs(
+        lab_int[:, :, 0] - anchor_lab[0]
+    ).astype(np.float32)
+    np.maximum(
+        click_colour_distance,
+        np.abs(lab_int[:, :, 1] - anchor_lab[1]) / 0.72,
+        out=click_colour_distance,
+    )
+    np.maximum(
+        click_colour_distance,
+        np.abs(lab_int[:, :, 2] - anchor_lab[2]) / 0.72,
+        out=click_colour_distance,
+    )
+    click_colour_barrier = (
+        click_colour_distance > float(options.click_colour_tolerance_lab)
+    )
+    click_colour_barrier[local_anchor[1], local_anchor[0]] = False
+    # Existing parts of the active instance are never erased by a fill. They
+    # may differ from the click colour, but newly added pixels must still pass
+    # the click-origin range below.
+    click_colour_barrier &= roi_labels != int(instance_id)
     minimum_inward_step = np.full(roi_labels.shape, np.inf, dtype=np.float32)
     neighbour_offsets = [(-1, 0), (0, -1), (0, 1), (1, 0)]
     if options.connectivity == 8:
@@ -769,6 +814,7 @@ def smart_fill_region(
         | other_instance
         | edge_barrier
         | radial_colour_barrier
+        | click_colour_barrier
     )
     blocked[local_anchor[1], local_anchor[0]] = False
     flood_mask = np.zeros(
@@ -800,7 +846,12 @@ def smart_fill_region(
         np.ones((3, 3), dtype=np.uint8),
         iterations=1,
     ).astype(bool)
-    accepted |= frontier & edge_barrier & ~other_instance
+    accepted |= (
+        frontier
+        & edge_barrier
+        & ~other_instance
+        & ~click_colour_barrier
+    )
     roi_is_unclipped = (
         x0 > 0 and y0 > 0 and x1 < width and y1 < height
     )
@@ -821,13 +872,36 @@ def smart_fill_region(
             options,
         )
         if np.any(recovered):
+            recovered &= ~click_colour_barrier
             accepted = recovered
             accepted |= roi_labels == int(instance_id)
             accepted &= ~other_instance
     accepted &= allowed_roi
     accepted |= roi_labels == int(instance_id)
+    accepted &= ~click_colour_barrier | (roi_labels == int(instance_id))
     if compact_allowed is not None:
         accepted &= allowed_roi
+
+    existing_active = roi_labels == int(instance_id)
+
+    def retain_click_connected_additions(values: np.ndarray) -> np.ndarray:
+        """Preserve old marks but reject detached recovery/limit fragments."""
+
+        _count, components = cv2.connectedComponents(
+            np.uint8(values), connectivity=int(options.connectivity)
+        )
+        click_component = int(components[local_anchor[1], local_anchor[0]])
+        connected = (
+            components == click_component
+            if click_component > 0
+            else np.zeros_like(values, dtype=bool)
+        )
+        return existing_active | (connected & ~existing_active)
+
+    # Star-convex recovery and click-origin clipping are not themselves growth
+    # operations. Reassert the defining Smart-fill invariant afterwards so a
+    # narrow detached trail or island cannot survive as if tunnelling were on.
+    accepted = retain_click_connected_additions(accepted)
     added_mask = accepted & (roi_labels != int(instance_id))
     added = int(np.count_nonzero(added_mask))
     if added > options.maximum_added_pixels:
@@ -841,8 +915,8 @@ def smart_fill_region(
         )[: options.maximum_added_pixels]
         limited = roi_labels == int(instance_id)
         limited[added_y[keep], added_x[keep]] = True
-        accepted = limited
-        added = int(options.maximum_added_pixels)
+        accepted = retain_click_connected_additions(limited)
+        added = int(np.count_nonzero(accepted & ~existing_active))
     return SmartFillRegion(x0, y0, accepted, added)
 
 

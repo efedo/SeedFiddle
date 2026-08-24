@@ -7,6 +7,10 @@ from dataclasses import dataclass
 from time import perf_counter
 
 
+class AnalysisCancelled(RuntimeError):
+    """A background analysis was superseded at a safe node boundary."""
+
+
 @dataclass(slots=True)
 class _TimingSpan:
     node_id: str
@@ -26,9 +30,15 @@ class NodeTimingRecorder:
     normal pipeline.
     """
 
-    def __init__(self, device=None, progress_callback=None) -> None:
+    def __init__(
+        self,
+        device=None,
+        progress_callback=None,
+        cancellation_requested=None,
+    ) -> None:
         self._device = device
         self._progress_callback = progress_callback
+        self._cancellation_requested = cancellation_requested
         self._spans: list[_TimingSpan] = []
         self._explicit: dict[str, float] = {}
         self._cuda = False
@@ -44,6 +54,7 @@ class NodeTimingRecorder:
             self._cuda = False
 
     def start(self, node_id: str, *, report_progress: bool = True) -> _TimingSpan:
+        self.raise_if_cancelled()
         node_id = str(node_id)
         if report_progress:
             self._report(node_id, "started")
@@ -70,6 +81,8 @@ class NodeTimingRecorder:
         self._spans.append(span)
         if span.report_progress and completed:
             self._report(span.node_id, "completed")
+        if completed:
+            self.raise_if_cancelled()
 
     @contextmanager
     def measure(self, node_id: str):
@@ -91,12 +104,22 @@ class NodeTimingRecorder:
             # UI telemetry must never be able to fail an analysis.
             pass
 
+    def raise_if_cancelled(self) -> None:
+        """Stop before another node starts when a newer run supersedes this one."""
+
+        if (
+            self._cancellation_requested is not None
+            and self._cancellation_requested()
+        ):
+            raise AnalysisCancelled("Analysis superseded by a newer request.")
+
     def add_seconds(self, node_id: str, seconds: float) -> None:
         self._explicit[str(node_id)] = self._explicit.get(str(node_id), 0.0) + max(
             0.0, float(seconds)
         )
 
     def finalize(self) -> dict[str, float]:
+        self.raise_if_cancelled()
         if self._cuda:
             final_event = next(
                 (

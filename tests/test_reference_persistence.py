@@ -4,7 +4,8 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 
@@ -147,6 +148,39 @@ class ReferenceRegionStoreTests(unittest.TestCase):
             with self.assertRaises(InvalidReferenceArchive):
                 store.load_if_present(image_path, (4, 5))
 
+    def test_invalid_archive_can_be_backed_up_and_replaced_with_empty_current_shape(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image_path = root / "capture.png"
+            image_path.write_bytes(b"source")
+            store = ReferenceRegionStore(root)
+            destination = store.save(
+                image_path,
+                ReferenceRegionBundle(
+                    shape=(7, 9),
+                    foreground=np.ones((7, 9), dtype=bool),
+                ),
+            )
+            original_bytes = destination.read_bytes()
+
+            backup, replacement = store.backup_and_replace_invalid(
+                image_path, (4, 5)
+            )
+
+            self.assertEqual(replacement, destination)
+            self.assertTrue(backup.is_file())
+            self.assertEqual(backup.read_bytes(), original_bytes)
+            self.assertIn(".invalid-", backup.name)
+            self.assertTrue(backup.name.endswith(".bak"))
+            loaded = store.load_if_present(image_path, (4, 5))
+            self.assertIsNotNone(loaded)
+            assert loaded is not None
+            self.assertEqual(loaded.shape, (4, 5))
+            self.assertIsNone(loaded.background)
+            self.assertIsNone(loaded.foreground)
+            self.assertIsNone(loaded.other)
+            self.assertIsNone(loaded.annotated_seeds)
+
     def test_same_named_external_images_receive_distinct_paths(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "project"
@@ -250,6 +284,107 @@ class ReferenceRegionMainWindowTests(unittest.TestCase):
             self.assertNotIn(key, restored._instance_annotations_dirty)
             restored.close()
 
+    def test_loose_corrected_shape_is_deferred_instead_of_rejected_against_raw_image(self) -> None:
+        from types import SimpleNamespace
+
+        from seedvision.ui.main_window import MainWindow, _path_identity
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image_path = root / "images" / "capture.png"
+            self._write_image(image_path, "#38684a")
+            corrected_shape = (54, 70)
+            foreground = np.zeros(corrected_shape, dtype=bool)
+            foreground[8:24, 13:31] = True
+            ReferenceRegionStore(root).save(
+                image_path,
+                ReferenceRegionBundle(
+                    shape=corrected_shape, foreground=foreground
+                ),
+            )
+
+            with patch("seedvision.ui.main_window.QMessageBox.warning") as warning:
+                window = MainWindow(root)
+            key = _path_identity(image_path)
+            self.assertIn(key, window._pending_unbound_reference_bundles)
+            self.assertNotIn(key, window._applied_foreground_reference_masks)
+            warning.assert_not_called()
+
+            result = SimpleNamespace(
+                image_path=image_path,
+                calibration=SimpleNamespace(
+                    corrected_bgr=np.zeros((*corrected_shape, 3), np.uint8)
+                ),
+            )
+            affected = window._resolve_pending_project_reference_bundle(key, result)
+
+            self.assertIn("reference_layers", affected)
+            np.testing.assert_array_equal(
+                window._applied_foreground_reference_masks[key], foreground
+            )
+            self.assertNotIn(key, window._withheld_reference_sidecars)
+            window.close()
+
+    def test_genuine_loose_shape_mismatch_offers_backup_and_empty_replacement(self) -> None:
+        from types import SimpleNamespace
+
+        from seedvision.ui.main_window import MainWindow, _path_identity
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image_path = root / "images" / "capture.png"
+            self._write_image(image_path, "#38684a")
+            saved_shape = (54, 70)
+            corrected_shape = (56, 72)
+            foreground = np.zeros(saved_shape, dtype=bool)
+            foreground[8:24, 13:31] = True
+            store = ReferenceRegionStore(root)
+            archive = store.save(
+                image_path,
+                ReferenceRegionBundle(shape=saved_shape, foreground=foreground),
+            )
+            original_bytes = archive.read_bytes()
+            window = MainWindow(root)
+            key = _path_identity(image_path)
+            self.assertIn(key, window._pending_unbound_reference_bundles)
+            result = SimpleNamespace(
+                image_path=image_path,
+                calibration=SimpleNamespace(
+                    corrected_bgr=np.zeros((*corrected_shape, 3), np.uint8)
+                ),
+            )
+            dialog = MagicMock()
+            replace_button = object()
+            keep_button = object()
+            dialog.addButton.side_effect = (replace_button, keep_button)
+            dialog.clickedButton.return_value = replace_button
+
+            with patch(
+                "seedvision.ui.main_window.QMessageBox", return_value=dialog
+            ) as message_box:
+                affected = window._resolve_pending_project_reference_bundle(
+                    key, result
+                )
+
+            self.assertEqual(affected, set())
+            self.assertEqual(
+                [call.args[0] for call in dialog.addButton.call_args_list],
+                ["Back up + replace", "Keep unchanged"],
+            )
+            message_box.information.assert_called_once()
+            backups = tuple(
+                archive.parent.glob(f"{archive.name}.invalid-*.bak")
+            )
+            self.assertEqual(len(backups), 1)
+            self.assertEqual(backups[0].read_bytes(), original_bytes)
+            replacement = store.load_if_present(image_path, corrected_shape)
+            self.assertIsNotNone(replacement)
+            assert replacement is not None
+            self.assertIsNone(replacement.foreground)
+            self.assertIsNone(replacement.annotated_seeds)
+            self.assertNotIn(key, window._withheld_reference_sidecars)
+            window.close()
+
     def test_switching_images_keeps_newer_unsaved_in_memory_applied_state(self) -> None:
         from seedvision.ui.main_window import MainWindow
 
@@ -280,6 +415,80 @@ class ReferenceRegionMainWindowTests(unittest.TestCase):
             self.assertIs(window._applied_background_reference_masks[key], newer)
             self.assertFalse(window.image_view.reference_mask("background")[3, 3])
             self.assertTrue(window.image_view.reference_mask("background")[32, 42])
+            self.assertGreater(
+                len(window.image_view._overlay_items),
+                0,
+                "Restored references must be repainted even without a cached analysis.",
+            )
+            window.close()
+
+    def test_association_panel_explains_pending_corrected_seed_annotations(self) -> None:
+        from seedvision.ui.main_window import MainWindow
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image_path = root / "images" / "capture.png"
+            self._write_image(image_path, "#38684a")
+            saved_shape = (52, 68)
+            background = np.zeros(saved_shape, dtype=bool)
+            foreground = np.zeros(saved_shape, dtype=bool)
+            other = np.zeros(saved_shape, dtype=bool)
+            labels = np.zeros(saved_shape, dtype=np.uint16)
+            background[1:5, 2:8] = True
+            foreground[10:18, 12:21] = True
+            other[30:34, 40:47] = True
+            labels[10:18, 12:21] = 3
+            labels[33:41, 48:59] = 9
+            ReferenceRegionStore(root).save(
+                image_path,
+                ReferenceRegionBundle(
+                    shape=saved_shape,
+                    background=background,
+                    foreground=foreground,
+                    other=other,
+                    annotated_seeds=labels,
+                ),
+            )
+
+            window = MainWindow(root)
+            key = window._current_image_key()
+            self.assertIsNotNone(key)
+            assert key is not None
+            panel = window.reference_association_label.text()
+            self.assertIn(
+                "Validated; waiting for corrected-image calibration", panel
+            )
+            self.assertIn("Saved corrected coordinates: 68 × 52 px", panel)
+            self.assertIn("Annotated seeds 2 IDs / 160 px", panel)
+            self.assertIn(str(ReferenceRegionStore(root).path_for(image_path)), panel)
+            self.assertNotIn(key, window._applied_instance_annotations)
+
+            result = SimpleNamespace(
+                calibration=SimpleNamespace(
+                    corrected_bgr=np.zeros((*saved_shape, 3), dtype=np.uint8)
+                ),
+                image_path=image_path,
+            )
+            affected = window._resolve_pending_project_reference_bundle(key, result)
+            self.assertTrue(affected)
+            self.assertTrue(
+                np.array_equal(window._applied_instance_annotations[key], labels)
+            )
+            # The completion handler must adopt corrected dimensions before it
+            # binds the newly installed corrected-coordinate sidecar.
+            window.image_view.show_analysis(result, render=False)
+            window.image_view.prepare_analysis_coordinates()
+            self.assertEqual(window.image_view.image_size, (68, 52))
+            window._sync_reference_masks_to_view(key, render=False)
+            window.image_view.set_instance_annotations(
+                window._applied_instance_annotations[key],
+                copy=False,
+                render=False,
+            )
+            self.assertIn(
+                "Loaded and available to analysis",
+                window.reference_association_label.text(),
+            )
             window.close()
 
     def test_empty_applied_snapshot_overwrites_an_older_nonempty_archive(self) -> None:

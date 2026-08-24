@@ -109,6 +109,12 @@ class DishCircle:
     upper_edge_confidence: float = 0.0
     vessel_type: str = "petri_dish"
     rim_pair_detected: bool = False
+    outer_radius_x: float | None = None
+    outer_radius_y: float | None = None
+    inner_radius_x: float | None = None
+    inner_radius_y: float | None = None
+    ellipse_angle_degrees: float = 0.0
+    ellipse_confidence: float = 0.0
 
     @property
     def inner_radius(self) -> int:
@@ -119,13 +125,31 @@ class DishCircle:
         return int(self.upper_edge_radius or self.radius)
 
     @property
-    def bounds(self) -> tuple[int, int, int, int]:
-        radius = self.outer_radius
+    def outer_axes(self) -> tuple[float, float]:
         return (
-            self.center_x - radius,
-            self.center_y - radius,
-            self.center_x + radius,
-            self.center_y + radius,
+            float(self.outer_radius_x or self.outer_radius),
+            float(self.outer_radius_y or self.outer_radius),
+        )
+
+    @property
+    def inner_axes(self) -> tuple[float, float]:
+        return (
+            float(self.inner_radius_x or self.inner_radius),
+            float(self.inner_radius_y or self.inner_radius),
+        )
+
+    @property
+    def bounds(self) -> tuple[int, int, int, int]:
+        axis_x, axis_y = self.outer_axes
+        angle = np.deg2rad(float(self.ellipse_angle_degrees))
+        cosine, sine = float(np.cos(angle)), float(np.sin(angle))
+        extent_x = np.sqrt((axis_x * cosine) ** 2 + (axis_y * sine) ** 2)
+        extent_y = np.sqrt((axis_x * sine) ** 2 + (axis_y * cosine) ** 2)
+        return (
+            int(np.floor(self.center_x - extent_x)),
+            int(np.floor(self.center_y - extent_y)),
+            int(np.ceil(self.center_x + extent_x)),
+            int(np.ceil(self.center_y + extent_y)),
         )
 
 
@@ -273,18 +297,20 @@ def detect_dish(
         )
         score = support - error * 0.22
         if calibrated_primary_radius_range is not None:
+            # Ruler scale is valuable when the image evidence is ambiguous, but
+            # it is not infallible: a partly occluded ruler or a perspective
+            # correction can bias px/mm while the circular glass rim remains
+            # exceptionally clear.  Keep the physical diameter as a soft
+            # tie-breaker instead of excluding every circle outside a narrow
+            # calibrated interval.  The full-circle sector statistic above is
+            # what prevents a crowded seed-mass edge from winning.
             calibrated_minimum_radius, calibrated_maximum_radius = (
                 calibrated_primary_radius_range
             )
-            admissible = (
-                (candidate[:, 2] >= calibrated_minimum_radius)
-                & (candidate[:, 2] <= calibrated_maximum_radius)
-            )
-            score = torch.where(
-                admissible,
-                score,
-                torch.full_like(score, -torch.inf),
-            )
+            below = torch.clamp(calibrated_minimum_radius - candidate[:, 2], min=0.0)
+            above = torch.clamp(candidate[:, 2] - calibrated_maximum_radius, min=0.0)
+            calibrated_deviation = (below + above) / max(small_height, 1)
+            score = score - calibrated_deviation * 0.04
         index = torch.argmax(score)
         if score[index] > best_score:
             best_score = score[index]
@@ -318,11 +344,63 @@ def detect_dish(
             maximum_radius,
             settings,
             context,
-            outer_radius_range=calibrated_outer_radius_range,
+            outer_radius_range=None,
         )
     )
-    lower_radius = round(lower_radius_small * inverse_scale)
-    upper_radius = round(upper_radius_small * inverse_scale)
+    # If the visual profile cannot resolve two coherent rims, retry with the
+    # calibrated outer interval as a fallback. A successfully detected visual
+    # pair is never moved merely to agree with a potentially biased ruler.
+    if not rim_pair_detected and calibrated_outer_radius_range is not None:
+        calibrated_pair = _detect_petri_rim_pair(
+            edge,
+            gradient_x,
+            gradient_y,
+            float(selected[0]),
+            float(selected[1]),
+            float(selected[2]),
+            minimum_radius,
+            maximum_radius,
+            settings,
+            context,
+            outer_radius_range=calibrated_outer_radius_range,
+        )
+        if calibrated_pair[4]:
+            (
+                lower_radius_small,
+                upper_radius_small,
+                lower_support,
+                upper_support,
+                rim_pair_detected,
+            ) = calibrated_pair
+    ellipse_fit = _fit_mild_dish_ellipse(
+        edge,
+        float(selected[0]),
+        float(selected[1]),
+        float(upper_radius_small),
+    )
+    if ellipse_fit is None:
+        fitted_center_x_small = float(selected[0])
+        fitted_center_y_small = float(selected[1])
+        outer_axis_x_small = float(upper_radius_small)
+        outer_axis_y_small = float(upper_radius_small)
+        ellipse_angle_degrees = 0.0
+        ellipse_confidence = 0.0
+    else:
+        (
+            fitted_center_x_small,
+            fitted_center_y_small,
+            outer_axis_x_small,
+            outer_axis_y_small,
+            ellipse_angle_degrees,
+            ellipse_confidence,
+        ) = ellipse_fit
+    lower_ratio = float(lower_radius_small) / max(float(upper_radius_small), 1e-6)
+    outer_axis_x = outer_axis_x_small * inverse_scale
+    outer_axis_y = outer_axis_y_small * inverse_scale
+    inner_axis_x = outer_axis_x * lower_ratio
+    inner_axis_y = outer_axis_y * lower_ratio
+    lower_radius = round(max(inner_axis_x, inner_axis_y))
+    upper_radius = int(np.ceil(max(outer_axis_x, outer_axis_y)))
     minimum_pair_support = minimum_support * 0.70
 
     def edge_confidence(support: float) -> float:
@@ -331,8 +409,8 @@ def detect_dish(
         return float(np.clip(relative * 0.55 + (absolute - 0.5) * 0.45, 0.0, 1.0))
 
     return DishCircle(
-        center_x=round(float(selected[0]) * inverse_scale),
-        center_y=round(float(selected[1]) * inverse_scale),
+        center_x=round(fitted_center_x_small * inverse_scale),
+        center_y=round(fitted_center_y_small * inverse_scale),
         radius=upper_radius,
         confidence=max(
             0.0,
@@ -347,6 +425,76 @@ def detect_dish(
         lower_edge_confidence=edge_confidence(lower_support),
         upper_edge_confidence=edge_confidence(upper_support),
         rim_pair_detected=rim_pair_detected,
+        outer_radius_x=float(outer_axis_x),
+        outer_radius_y=float(outer_axis_y),
+        inner_radius_x=float(inner_axis_x),
+        inner_radius_y=float(inner_axis_y),
+        ellipse_angle_degrees=float(ellipse_angle_degrees),
+        ellipse_confidence=float(ellipse_confidence),
+    )
+
+
+def _fit_mild_dish_ellipse(
+    edge,
+    center_x: float,
+    center_y: float,
+    radius: float,
+) -> tuple[float, float, float, float, float, float] | None:
+    """Fit a conservative, mildly elliptical outer rim to bounded edge pixels."""
+
+    import cv2
+    import torch
+
+    height, width = edge.shape[-2:]
+    yy, xx = torch.meshgrid(
+        torch.arange(height, device=edge.device, dtype=torch.float32),
+        torch.arange(width, device=edge.device, dtype=torch.float32),
+        indexing="ij",
+    )
+    radial = torch.sqrt((xx - center_x).square() + (yy - center_y).square())
+    half_band = max(3.0, radius * 0.045)
+    annulus = (radial >= radius - half_band) & (radial <= radius + half_band)
+    values = edge[0, 0][annulus]
+    if values.numel() < 80:
+        return None
+    threshold = torch.quantile(values, 0.62).clamp_min(0.06)
+    selected = annulus & (edge[0, 0] >= threshold)
+    points_yx = torch.nonzero(selected, as_tuple=False)
+    if points_yx.shape[0] < 80:
+        return None
+    if points_yx.shape[0] > 24000:
+        step = max(1, int(points_yx.shape[0]) // 24000)
+        points_yx = points_yx[::step]
+    points_xy = points_yx[:, (1, 0)].detach().cpu().numpy().astype(np.float32)
+    (_fit_center, _fit_size, _fit_angle) = cv2.fitEllipse(points_xy[:, None, :])
+    fit_center_x, fit_center_y = (float(value) for value in _fit_center)
+    diameter_x, diameter_y = (float(value) for value in _fit_size)
+    axis_x, axis_y = diameter_x * 0.5, diameter_y * 0.5
+    mean_radius = (axis_x + axis_y) * 0.5
+    axis_ratio = max(axis_x, axis_y) / max(1e-6, min(axis_x, axis_y))
+    center_error = float(np.hypot(fit_center_x - center_x, fit_center_y - center_y))
+    if not 0.90 <= mean_radius / max(radius, 1e-6) <= 1.10:
+        return None
+    if axis_ratio > 1.15 or center_error > radius * 0.045:
+        return None
+    # Circular fits do not need an arbitrary unstable orientation.
+    angle = float(_fit_angle) if axis_ratio >= 1.006 else 0.0
+    confidence = float(
+        np.clip(
+            1.0
+            - center_error / max(radius * 0.045, 1e-6) * 0.35
+            - abs(mean_radius - radius) / max(radius * 0.10, 1e-6) * 0.35,
+            0.0,
+            1.0,
+        )
+    )
+    return (
+        fit_center_x,
+        fit_center_y,
+        axis_x,
+        axis_y,
+        angle,
+        confidence,
     )
 
 

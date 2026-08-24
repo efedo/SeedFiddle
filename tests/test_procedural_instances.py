@@ -14,6 +14,7 @@ from seedvision.segmentation.procedural import (
     ManualSeedCentres,
     ProceduralInstanceSettings,
     ProceduralMarkerSource,
+    _alternative_candidate_colour,
     prepare_procedural_instance_inputs,
     procedural_seed_instances,
     procedural_seed_instances_from_prepared,
@@ -21,6 +22,17 @@ from seedvision.segmentation.procedural import (
 
 
 class ProceduralInstanceTests(unittest.TestCase):
+    def test_alternative_candidate_colour_is_uint8_safe_at_low_scores(self) -> None:
+        self.assertEqual(
+            _alternative_candidate_colour(0.0).tolist(), [255, 30, 55]
+        )
+        self.assertEqual(
+            _alternative_candidate_colour(1.0).tolist(), [35, 250, 55]
+        )
+        self.assertEqual(
+            _alternative_candidate_colour(-10.0).tolist(), [255, 30, 55]
+        )
+
     @staticmethod
     def _touching_seed_scene():
         shape = (240, 240)
@@ -53,6 +65,239 @@ class ProceduralInstanceTests(unittest.TestCase):
         material = np.zeros(shape, np.uint8)
         cv2.circle(material, (160, 160), 135, 235, -1)
         return valid, material, 255 - material
+
+    def test_blurred_flattened_grayscale_can_drive_centre_likelihood(self) -> None:
+        shape = (128, 128)
+        valid = np.full(shape, 255, np.uint8)
+        material = np.zeros(shape, np.uint8)
+        cv2.circle(material, (64, 64), 38, 240, -1)
+        flattened = np.full(shape, 128, np.uint8)
+        cv2.circle(flattened, (50, 64), 8, 255, -1)
+        zeros = np.zeros(shape, np.uint8)
+        result = procedural_seed_instances(
+            valid,
+            40.0,
+            foreground_probability=material,
+            foreground_noise_probability=material,
+            background_probability=255 - material,
+            refined_background_probability=255 - material,
+            edge_magnitude=zeros,
+            edge_ridges=zeros,
+            flattened_grayscale=flattened,
+            settings=ProceduralInstanceSettings(
+                centre_material_weight=0.0,
+                centre_distance_weight=0.0,
+                centre_flattened_grayscale_weight=1.0,
+                minimum_marker_score=0.01,
+            ),
+        )
+
+        peak_y, peak_x = np.unravel_index(
+            int(np.argmax(result.centre_likelihood)), shape
+        )
+        self.assertAlmostEqual(float(peak_x), 50.0, delta=4.0)
+        self.assertAlmostEqual(float(peak_y), 64.0, delta=4.0)
+        self.assertGreater(
+            float(result.centre_likelihood[64, 50]),
+            float(result.centre_likelihood[64, 64]) + 0.2,
+        )
+
+    def test_generated_frankenstein_region_is_hard_rejected_by_axis_ratio(self) -> None:
+        shape = (128, 180)
+        valid = np.full(shape, 255, np.uint8)
+        material = np.zeros(shape, np.uint8)
+        cv2.rectangle(material, (30, 54), (150, 73), 245, -1)
+        boundary = cv2.morphologyEx(
+            material, cv2.MORPH_GRADIENT, np.ones((3, 3), np.uint8)
+        )
+        result = procedural_seed_instances(
+            valid,
+            40.0,
+            foreground_probability=material,
+            foreground_noise_probability=material,
+            background_probability=255 - material,
+            refined_background_probability=255 - material,
+            edge_magnitude=boundary,
+            edge_ridges=boundary,
+            manual_seed_centres=ManualSeedCentres(
+                ((90.0, 64.0),), ManualSeedCentreMode.REPLACE_AUTOMATIC
+            ),
+            settings=ProceduralInstanceSettings(
+                maximum_instance_area_fraction=2.0,
+                minimum_instance_solidity=0.10,
+                maximum_instance_axis_ratio=2.0,
+            ),
+        )
+
+        self.assertEqual(result.count, 0)
+        self.assertEqual(
+            result.rejected_manual_centre_reasons,
+            ("instance_above_maximum_axis_ratio",),
+        )
+
+    def test_multi_hypothesis_candidates_are_scored_and_exposed(self) -> None:
+        shape = (160, 160)
+        valid = np.full(shape, 255, np.uint8)
+        material = np.zeros(shape, np.uint8)
+        cv2.circle(material, (80, 80), 34, 25, -1)
+        cv2.circle(material, (80, 80), 29, 100, -1)
+        cv2.circle(material, (80, 80), 23, 235, -1)
+        boundary = cv2.morphologyEx(
+            np.uint8(material > 0) * 255,
+            cv2.MORPH_GRADIENT,
+            np.ones((3, 3), np.uint8),
+        )
+        result = procedural_seed_instances(
+            valid,
+            58.0,
+            foreground_probability=material,
+            foreground_noise_probability=material,
+            background_probability=255 - material,
+            refined_background_probability=255 - material,
+            edge_magnitude=boundary,
+            edge_ridges=boundary,
+            manual_seed_centres=ManualSeedCentres(
+                ((80.0, 80.0),), ManualSeedCentreMode.REPLACE_AUTOMATIC
+            ),
+            settings=ProceduralInstanceSettings(
+                minimum_instance_area_fraction=0.05,
+                soft_minimum_instance_area_fraction=0.08,
+                maximum_instance_area_fraction=2.0,
+                soft_maximum_instance_width_fraction=1.4,
+                hard_maximum_instance_width_fraction=1.8,
+                maximum_internal_concavity_fraction=0.5,
+                maximum_protrusion_area_fraction=1.0,
+                minimum_instance_solidity=0.1,
+                maximum_instance_axis_ratio=8.0,
+                candidate_hypotheses_per_marker=5,
+            ),
+        )
+
+        self.assertEqual(result.count, 1)
+        self.assertGreater(result.candidate_scores.size, result.count)
+        self.assertEqual(int(np.count_nonzero(result.candidate_selected)), 1)
+        self.assertEqual(result.alternative_candidates_rgba.shape, (*shape, 4))
+        self.assertTrue(np.any(result.alternative_candidates_rgba[:, :, 3]))
+
+    def test_candidate_geometry_rejects_concavity_and_thin_protrusions(self) -> None:
+        from seedvision.segmentation.procedural import _candidate_from_component
+
+        boundary = np.ones((140, 140), np.float32)
+        concave = np.zeros((140, 140), np.uint8)
+        cv2.circle(concave, (70, 70), 34, 1, -1)
+        cv2.rectangle(concave, (70, 48), (112, 92), 0, -1)
+        permissive, reason = _candidate_from_component(
+            concave,
+            marker_index=0,
+            hypothesis_index=0,
+            marker_score=1.0,
+            marker_source=0,
+            boundary=boundary,
+            diameter=68.0,
+            expected_area_fraction=0.72,
+            settings=ProceduralInstanceSettings(
+                minimum_instance_area_fraction=0.05,
+                soft_minimum_instance_area_fraction=0.08,
+                maximum_instance_area_fraction=2.0,
+                hard_maximum_instance_width_fraction=2.0,
+                maximum_internal_concavity_fraction=1.0,
+                maximum_protrusion_area_fraction=1.0,
+                minimum_instance_solidity=0.1,
+                maximum_instance_axis_ratio=8.0,
+            ),
+        )
+        self.assertEqual(reason, "")
+        self.assertIsNotNone(permissive)
+        self.assertGreater(int(np.count_nonzero(permissive.concavity_mask)), 0)
+        self.assertFalse(
+            np.any(permissive.concavity_mask & permissive.mask),
+            "Concavity overlay must contain perimeter pockets, not seed interior",
+        )
+        candidate, reason = _candidate_from_component(
+            concave,
+            marker_index=0,
+            hypothesis_index=0,
+            marker_score=1.0,
+            marker_source=0,
+            boundary=boundary,
+            diameter=68.0,
+            expected_area_fraction=0.72,
+            settings=ProceduralInstanceSettings(
+                minimum_instance_area_fraction=0.05,
+                soft_minimum_instance_area_fraction=0.08,
+                maximum_instance_area_fraction=2.0,
+                hard_maximum_instance_width_fraction=2.0,
+                maximum_internal_concavity_fraction=0.10,
+                maximum_protrusion_area_fraction=1.0,
+                minimum_instance_solidity=0.1,
+                maximum_instance_axis_ratio=8.0,
+            ),
+        )
+        self.assertIsNone(candidate)
+        self.assertEqual(reason, "instance_above_maximum_concavity")
+
+        protruding = np.zeros((140, 140), np.uint8)
+        cv2.circle(protruding, (60, 75), 28, 1, -1)
+        cv2.rectangle(protruding, (84, 70), (124, 78), 1, -1)
+        candidate, reason = _candidate_from_component(
+            protruding,
+            marker_index=0,
+            hypothesis_index=0,
+            marker_score=1.0,
+            marker_source=0,
+            boundary=boundary,
+            diameter=56.0,
+            expected_area_fraction=0.72,
+            settings=ProceduralInstanceSettings(
+                minimum_instance_area_fraction=0.05,
+                soft_minimum_instance_area_fraction=0.08,
+                maximum_instance_area_fraction=2.0,
+                hard_maximum_instance_width_fraction=3.0,
+                maximum_internal_concavity_fraction=1.0,
+                maximum_protrusion_area_fraction=0.08,
+                minimum_instance_solidity=0.1,
+                maximum_instance_axis_ratio=8.0,
+            ),
+        )
+        self.assertIsNone(candidate)
+        self.assertEqual(reason, "instance_above_maximum_protrusion")
+
+    def test_soft_width_limit_penalizes_before_the_hard_cutoff(self) -> None:
+        from seedvision.segmentation.procedural import _candidate_from_component
+
+        component = np.zeros((140, 140), np.uint8)
+        cv2.ellipse(component, (70, 70), (39, 24), 0, 0, 360, 1, -1)
+        common = dict(
+            minimum_instance_area_fraction=0.05,
+            soft_minimum_instance_area_fraction=0.08,
+            maximum_instance_area_fraction=2.0,
+            hard_maximum_instance_width_fraction=1.50,
+            maximum_internal_concavity_fraction=0.5,
+            maximum_protrusion_area_fraction=1.0,
+            minimum_instance_solidity=0.1,
+            maximum_instance_axis_ratio=8.0,
+        )
+
+        def score(soft_width: float) -> float:
+            candidate, reason = _candidate_from_component(
+                component,
+                marker_index=0,
+                hypothesis_index=0,
+                marker_score=1.0,
+                marker_source=0,
+                boundary=np.ones(component.shape, np.float32),
+                diameter=60.0,
+                expected_area_fraction=0.72,
+                settings=ProceduralInstanceSettings(
+                    soft_maximum_instance_width_fraction=soft_width,
+                    **common,
+                ),
+            )
+            self.assertEqual(reason, "")
+            self.assertIsNotNone(candidate)
+            return candidate.score
+
+        self.assertLess(score(1.05), score(1.40))
 
     @classmethod
     def _manual_centre_scene_arguments(cls):
@@ -408,6 +653,10 @@ class ProceduralInstanceTests(unittest.TestCase):
 
     def test_separates_touching_seed_shapes_and_exposes_diagnostics(self) -> None:
         valid, _identities, material, background, boundary = self._touching_seed_scene()
+        settings = ProceduralInstanceSettings(
+            centre_minimum_separation_fraction=0.58,
+            minimum_marker_score=0.10,
+        )
         result = procedural_seed_instances(
             valid,
             54.0,
@@ -417,10 +666,7 @@ class ProceduralInstanceTests(unittest.TestCase):
             refined_background_probability=background,
             edge_magnitude=boundary,
             edge_ridges=boundary,
-            settings=ProceduralInstanceSettings(
-                centre_minimum_separation_fraction=0.58,
-                minimum_marker_score=0.10,
-            ),
+            settings=settings,
         )
         self.assertEqual(result.labels.shape, valid.shape)
         self.assertGreaterEqual(result.count, 3)
@@ -429,6 +675,21 @@ class ProceduralInstanceTests(unittest.TestCase):
         self.assertEqual(result.confidence_raster().shape, valid.shape)
         self.assertGreater(np.count_nonzero(result.boundary_cost), 0)
         self.assertGreater(np.count_nonzero(result.centre_likelihood), 0)
+        statistics = result.statistics_for_label(1)
+        self.assertGreater(statistics["area_px2"], 0.0)
+        self.assertGreater(statistics["maximum_width_px"], 0.0)
+        self.assertLessEqual(
+            statistics["width_fraction"],
+            settings.hard_maximum_instance_width_fraction,
+        )
+        self.assertLessEqual(
+            statistics["concavity_fraction"],
+            settings.maximum_internal_concavity_fraction,
+        )
+        self.assertLessEqual(
+            statistics["protrusion_fraction"],
+            settings.maximum_protrusion_area_fraction,
+        )
 
     def test_dense_component_supplements_suppressed_regional_maxima(self) -> None:
         valid, material, background = self._packed_material_scene()
@@ -735,6 +996,51 @@ class ProceduralInstanceTests(unittest.TestCase):
         self.assertGreater(
             float(np.mean(boundary_cost[outer_edge > 0])),
             4.0 * float(np.mean(boundary_cost[stripe > 0])),
+        )
+
+    def test_normalized_net_probability_controls_semantic_boundary_strength(self) -> None:
+        shape = (180, 180)
+        valid = np.full(shape, 255, np.uint8)
+        material = np.zeros(shape, np.uint8)
+        cv2.circle(material, (90, 90), 58, 255, -1)
+        candidate = cv2.morphologyEx(
+            material, cv2.MORPH_GRADIENT, np.ones((3, 3), np.uint8)
+        )
+        weak_normalized = np.uint8(candidate > 0) * 64
+        strong_normalized = np.uint8(candidate > 0) * 255
+        common = dict(
+            foreground_probability=material,
+            foreground_noise_probability=material,
+            background_probability=255 - material,
+            refined_background_probability=255 - material,
+            edge_magnitude=candidate,
+            edge_ridges=candidate,
+            physical_edge_probability=np.zeros(shape, np.uint8),
+            non_edge_probability=np.zeros(shape, np.uint8),
+            thinned_reference_edge_ridges=candidate,
+            settings=ProceduralInstanceSettings(
+                boundary_trace_weight=0.0,
+                minimum_marker_score=0.08,
+            ),
+        )
+
+        weak = procedural_seed_instances(
+            valid,
+            64.0,
+            **common,
+            normalized_net_physical_edge_probability=weak_normalized,
+        )
+        strong = procedural_seed_instances(
+            valid,
+            64.0,
+            **common,
+            normalized_net_physical_edge_probability=strong_normalized,
+        )
+
+        edge_pixels = candidate > 0
+        self.assertGreater(
+            float(np.mean(strong.boundary_cost[edge_pixels])),
+            1.15 * float(np.mean(weak.boundary_cost[edge_pixels])),
         )
 
     def test_true_touching_boundary_remains_a_watershed_cut(self) -> None:
