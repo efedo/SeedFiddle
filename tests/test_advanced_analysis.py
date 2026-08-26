@@ -63,10 +63,10 @@ class AdvancedAnalysisTests(unittest.TestCase):
             ),
         )
 
-    def test_all_fifteen_products_and_intermediates_are_renderable(self) -> None:
+    def test_all_fourteen_products_and_intermediates_are_renderable(self) -> None:
         layers = self._build("cpu")
         self.assertEqual(layers.backend.used, "cpu")
-        self.assertEqual(len(ADVANCED_NODE_MODES), 15)
+        self.assertEqual(len(ADVANCED_NODE_MODES), 14)
         for mode in ADVANCED_NODE_MODES.values():
             rgba = layers.rgba(mode)
             self.assertEqual(rgba.shape, (96, 96, 4), mode)

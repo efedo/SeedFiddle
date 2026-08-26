@@ -155,11 +155,9 @@ OVERLAY_NODE_IDS = (
     "lightening_gradient_ceiling",
     "darkening_gradient_ceiling",
     "frequency_noise_masks",
-    "edge_ridges",
     "reference_texture_prototypes",
     "material_evidence_decision",
     "reference_edge_probability",
-    "reference_edge_ridges",
     "edge_traces",
     "seed_edge_curves",
     "procedural_instances",
@@ -168,10 +166,8 @@ OVERLAY_NODE_IDS = (
     *ADVANCED_NODE_MODES.keys(),
 )
 CALIBRATION_NODE_IDS = (
-    "colour_reference",
     "ruler_detection",
     "deskew_colour",
-    "scale_calibration",
 )
 IDENTIFICATION_STAGE_NODE_IDS = (
     "seed_scale_estimation",
@@ -201,13 +197,10 @@ class _ManualSeedCentreState:
         object.__setattr__(self, "centres_source_xy", values)
         object.__setattr__(self, "mode", str(self.mode))
 VIEWER_NODE_MODES = {
-    "raw_images": "raw_image",
-    "metadata": "raw_image",
-    "colour_reference": "colour_reference",
+    "project": "raw_image",
     "ruler_detection": "ruler_detection",
     "deskew_colour": "deskew_colour",
     "layout_detection": "layout_detection",
-    "scale_calibration": "calibrated_image",
     "seed_scale_estimation": "seed_scale_estimation",
     "perimeter_background_reference": "perimeter_background_reference",
     "background_likelihood": "background_likelihood",
@@ -236,10 +229,10 @@ VIEWER_NODE_MODES.update(
 )
 
 OVERLAY_NODE_OWNERS = {
-    "raw_image": "raw_images",
-    "calibrated_image": "scale_calibration",
+    "raw_image": "project",
+    "calibrated_image": "ruler_detection",
     "deskew_colour": "deskew_colour",
-    "colour_reference": "colour_reference",
+    "colour_reference": "deskew_colour",
     "ruler_evidence": "ruler_detection",
     "ruler_detection": "ruler_detection",
     "layout_detection": "layout_detection",
@@ -294,8 +287,9 @@ OVERLAY_NODE_OWNERS = {
     "colour_noise_coarse": "frequency_noise_masks",
     "undirected_edges": "edge_gradients",
     "directed_edges": "edge_gradients",
-    "edge_ridges": "edge_ridges",
+    "edge_ridges": "edge_gradients",
     "reference_texture_prototypes": "reference_texture_prototypes",
+    "reference_prototype_footprints": "reference_texture_prototypes",
     "reference_seed_surface_probability": "reference_texture_prototypes",
     "reference_background_texture_probability": "reference_texture_prototypes",
     "reference_other_texture_probability": "reference_texture_prototypes",
@@ -303,10 +297,10 @@ OVERLAY_NODE_OWNERS = {
     "non_edge_probability": "reference_texture_prototypes",
     "reference_edge_comparison": "reference_edge_probability",
     "net_physical_edge_probability": "reference_edge_probability",
-    "locally_normalized_net_physical_edge": "reference_edge_ridges",
-    "reference_edge_ridges": "reference_edge_ridges",
-    "net_reference_edge_ridges": "reference_edge_ridges",
-    "normalized_net_reference_edge_ridges": "reference_edge_ridges",
+    "locally_normalized_net_physical_edge": "reference_edge_probability",
+    "reference_edge_ridges": "reference_edge_probability",
+    "net_reference_edge_ridges": "reference_edge_probability",
+    "normalized_net_reference_edge_ridges": "reference_edge_probability",
     "edge_traces": "edge_traces",
     "edge_trace_continuity": "edge_traces",
     "edge_trace_gap_confidence": "edge_traces",
@@ -315,11 +309,12 @@ OVERLAY_NODE_OWNERS = {
     "edge_ellipse_fit": "seed_edge_curves",
     "edge_fit_residual": "seed_edge_curves",
     "edge_centre_votes": "seed_edge_curves",
+    "oval_centre_probability": "seed_edge_curves",
     "edge_semantic_sides": "seed_edge_curves",
     "edge_rejections": "seed_edge_curves",
     "edge_fit_geometry": "seed_edge_curves",
+    "edge_oval_hypotheses": "seed_edge_curves",
     "seed_edge_curves": "seed_edge_curves",
-    "procedural_seed_material": "procedural_instances",
     "procedural_seed_mask": "procedural_instances",
     "procedural_boundary_cost": "procedural_instances",
     "procedural_centres": "procedural_instances",
@@ -380,6 +375,57 @@ def _overlay_output_port_id(mode: str) -> str:
     return f"viewer_{normalized or 'overlay'}"
 
 
+# Reuse the calculating node's real typed connector whenever an overlay is a
+# direct view of that datum. This prevents stale pairs such as "Thinned
+# ridges" plus "Thinned edge ridges" from accumulating on one card.
+OVERLAY_DATA_PORTS = {
+    "hue_only": "hue",
+    "wavelet_detail_1": "detail_1",
+    "wavelet_detail_2": "detail_2",
+    "wavelet_detail_3": "detail_3",
+    "wavelet_detail_4": "detail_4",
+    "wavelet_residual": "residual",
+    "edge_gradients": "magnitude",
+    "undirected_edges": "undirected",
+    "directed_edges": "directed",
+    "edge_ridges": "ridges",
+    "reference_texture_prototypes": "prototype_profile",
+    "reference_prototype_footprints": "prototype_footprints",
+    "reference_seed_surface_probability": "seed_surface",
+    "reference_background_texture_probability": "background_texture",
+    "reference_other_texture_probability": "other_texture",
+    "physical_edge_probability": "physical_probability",
+    "non_edge_probability": "non_edge_probability",
+    "reference_edge_comparison": "comparison",
+    "net_physical_edge_probability": "net_probability",
+    "locally_normalized_net_physical_edge": "normalized_net_probability",
+    "reference_edge_ridges": "reference_ridges",
+    "net_reference_edge_ridges": "net_reference_ridges",
+    "normalized_net_reference_edge_ridges": "normalized_net_ridges",
+    "edge_traces": "trace_labels",
+    "edge_trace_continuity": "continuity",
+    "edge_trace_gap_confidence": "gap_confidence",
+    "oval_centre_probability": "oval_centre_probability",
+    "edge_oval_hypotheses": "oval_hypotheses",
+    "material_seed_probability": "seed_probability",
+    "material_nonseed_probability": "nonseed_probability",
+    "material_ambiguity_probability": "ambiguity",
+    "material_unknown_probability": "unknown",
+    "material_background_subtype": "background_subtype",
+    "material_other_subtype": "other_subtype",
+    "material_subtype_ambiguity": "subtype_ambiguity",
+    "material_subtype_unknown": "subtype_unknown",
+    "foreground_binary_mask": "seed_mask",
+    "procedural_seed_mask": "material_mask",
+    "procedural_boundary_cost": "boundary_cost",
+    "procedural_centres": "centre_likelihood",
+    "procedural_instances": "instances",
+    "procedural_confidence": "confidence",
+    "procedural_concavity": "concavity",
+    "procedural_alternative_candidates": "alternatives",
+}
+
+
 def _install_overlay_output_connectors(
     pipeline,
     entries: tuple[tuple[str, str], ...] | list[tuple[str, str]],
@@ -400,6 +446,13 @@ def _install_overlay_output_connectors(
         if owner is None:
             raise ValueError(f"Viewer overlay {mode!r} has no pipeline-node owner.")
         node = pipeline.node(owner)
+        data_port = OVERLAY_DATA_PORTS.get(mode)
+        if data_port is not None and data_port in dict(node.output_ports):
+            node.output_ports = tuple(
+                (port_id, label if port_id == data_port else port_label)
+                for port_id, port_label in node.output_ports
+            )
+            continue
         if label in dict(node.output_ports).values():
             continue
         port_id = _overlay_output_port_id(mode)
@@ -770,37 +823,41 @@ class _ProceduralFitTask(QRunnable):
     def run(self) -> None:
         try:
             result = self.result
+            # Build fit inputs only from annotation-independent evidence. The
+            # displayed result may contain Foreground/prototype/semantic-edge
+            # rasters trained from the very masks being scored; reusing those
+            # rasters is target leakage even when labels are withheld from the
+            # watershed call itself. Background references, generic gradients,
+            # and illumination are independent of seed-instance identities.
+            background = np.asarray(result.layers.background_likelihood)
+            refined_background = np.asarray(
+                result.layers.refined_background_likelihood
+            )
+            inverse_background = np.uint8(
+                255
+                - np.minimum(
+                    background.astype(np.uint8, copy=False),
+                    refined_background.astype(np.uint8, copy=False),
+                )
+            )
+            zero_evidence = np.zeros_like(inverse_background, dtype=np.uint8)
             prepared = prepare_procedural_instance_inputs(
                 result.layers.valid_mask,
                 result.estimated_seed_diameter_px,
-                material_probability=getattr(
-                    result.layers, "seed_material_probability", None
-                ),
-                foreground_probability=result.foreground_probability,
-                foreground_noise_probability=(
-                    result.layers.foreground_noise_likelihood
-                ),
-                background_probability=result.layers.background_likelihood,
-                refined_background_probability=(
-                    result.layers.refined_background_likelihood
-                ),
+                material_probability=None,
+                foreground_probability=inverse_background,
+                foreground_noise_probability=zero_evidence,
+                background_probability=background,
+                refined_background_probability=refined_background,
                 edge_magnitude=result.layers.edge_likelihood,
                 edge_ridges=result.layers.edge_ridges,
-                physical_edge_probability=result.layers.physical_edge_probability,
-                non_edge_probability=result.layers.non_edge_probability,
-                normalized_net_physical_edge_probability=(
-                    result.layers.locally_normalized_net_physical_edge
-                ),
-                thinned_reference_edge_ridges=(
-                    result.layers.normalized_net_reference_edge_ridges
-                ),
-                oriented_edge_trace_labels=result.layers.edge_trace_labels,
-                oriented_edge_trace_continuity=(
-                    result.layers.edge_trace_continuity
-                ),
-                reference_surface_probability=(
-                    result.layers.reference_seed_surface_probability
-                ),
+                physical_edge_probability=None,
+                non_edge_probability=None,
+                normalized_net_physical_edge_probability=None,
+                thinned_reference_edge_ridges=None,
+                oriented_edge_trace_labels=None,
+                oriented_edge_trace_continuity=None,
+                reference_surface_probability=None,
                 flattened_grayscale=(
                     result.advanced.rasters.get("flattened_grayscale")
                 ),
@@ -1135,22 +1192,110 @@ class MainWindow(QMainWindow):
                 self.project_status_label.setToolTip(
                     "Loose workspace — use Save Project to create a master file."
                 )
-            return
-        name = (
-            self._current_project_path.name
-            if self._current_project_path is not None
-            else "Untitled"
+        else:
+            name = (
+                self._current_project_path.name
+                if self._current_project_path is not None
+                else "Untitled"
+            )
+            modified = " *" if self._project_dirty else ""
+            self.setWindowTitle(f"Seed Fiddle — {name}{modified}")
+            if hasattr(self, "project_status_label"):
+                self.project_status_label.setText(f"Project: {name}{modified}")
+                self.project_status_label.setToolTip(
+                    str(self._current_project_path)
+                    if self._current_project_path is not None
+                    else "No master project file has been saved yet."
+                )
+        self._refresh_project_node()
+
+    def _project_summary_text(self) -> str:
+        """Return the live master/image/annotation inventory for the root node."""
+
+        if self._project_tracking_enabled:
+            master = (
+                str(self._current_project_path)
+                if self._current_project_path is not None
+                else "Untitled — not yet saved"
+            )
+            save_state = "Modified" if self._project_dirty else "Saved"
+        else:
+            master = "Loose workspace — no project master"
+            save_state = "Not tracked"
+        available_count = len(self._image_paths)
+        unresolved_count = len(self._project_unresolved_image_records)
+        path = getattr(getattr(self, "image_view", None), "image_path", None)
+        species = (
+            self.species_combo.currentText()
+            if hasattr(self, "species_combo")
+            else "Not selected"
         )
-        modified = " *" if self._project_dirty else ""
-        self.setWindowTitle(f"Seed Fiddle — {name}{modified}")
-        if not hasattr(self, "project_status_label"):
-            return
-        self.project_status_label.setText(f"Project: {name}{modified}")
-        self.project_status_label.setToolTip(
-            str(self._current_project_path)
-            if self._current_project_path is not None
-            else "No master project file has been saved yet."
+        lines = [
+            f"Master: {master}",
+            f"State: {save_state}",
+            f"Images: {available_count:,} available; {unresolved_count:,} unresolved",
+        ]
+        if path is None:
+            lines.extend(("Current image: none", f"Species: {species}"))
+            return "\n".join(lines)
+        size = getattr(self.image_view, "image_size", None)
+        size_text = (
+            f" — {size[0]:,} × {size[1]:,} px" if size is not None else ""
         )
+        key = _path_identity(path)
+        background = self._mask_pixel_count(
+            self._applied_background_reference_masks.get(key)
+        )
+        foreground = self._mask_pixel_count(
+            self._applied_foreground_reference_masks.get(key)
+        )
+        other = max(
+            self._mask_pixel_count(
+                self._applied_background_exclusion_masks.get(key)
+            ),
+            self._mask_pixel_count(
+                self._applied_foreground_exclusion_masks.get(key)
+            ),
+        )
+        seeds = len(
+            self._instance_ids(self._applied_instance_annotations.get(key))
+        )
+        centres = len(self._manual_seed_centre_state(key).centres_source_xy)
+        lines.extend(
+            (
+                f"Current image: {path.name}{size_text}",
+                f"Species: {species}",
+                f"Applied material annotations: Background {background:,} px; "
+                f"Foreground {foreground:,} px; Other {other:,} px",
+                f"Applied seed annotations: {seeds:,} instance(s); "
+                f"manual centres {centres:,}",
+            )
+        )
+        return "\n".join(lines)
+
+    def _refresh_project_node(self) -> None:
+        """Synchronize the sole graph root and its right-pane information."""
+
+        if not hasattr(self, "pipeline") or not self.pipeline.is_active("project"):
+            return
+        path = getattr(getattr(self, "image_view", None), "image_path", None)
+        self.pipeline.set_status(
+            "project",
+            NodeStatus.COMPLETE if path is not None else NodeStatus.WARNING,
+            (
+                f"{Path(path).name}; {len(self._image_paths):,} project image(s)"
+                if path is not None
+                else "No image selected"
+            ),
+        )
+        if hasattr(self, "pipeline_inspector"):
+            self.pipeline_inspector.set_project_summary(
+                self._project_summary_text()
+            )
+            if self._selected_pipeline_node == "project":
+                self.pipeline_inspector.refresh_status()
+        if hasattr(self, "pipeline_canvas"):
+            self.pipeline_canvas.refresh(("project",))
 
     def _refresh_recent_projects_menu(self) -> None:
         self.recent_projects_menu.clear()
@@ -2207,13 +2352,15 @@ class MainWindow(QMainWindow):
         if not keys:
             return
         affected = {
-            "reference_layers",
-            *self.pipeline.downstream("reference_layers", recursive=True),
+            "project",
+            *self.pipeline.downstream_from_port(
+                "project", "annotations", recursive=True
+            ),
         }
         self.pipeline.invalidate(affected)
         for key in keys:
             self._cache_dirty_nodes.setdefault(key, set()).update(
-                affected - {"reference_layers"}
+                affected - {"project"}
             )
             self._analyses.pop(key, None)
         current_key = self._current_image_key()
@@ -2526,6 +2673,7 @@ class MainWindow(QMainWindow):
             ("Medium colour noise", "colour_noise_medium"),
             ("Coarse colour noise", "colour_noise_coarse"),
             ("Reference texture prototype collage", "reference_texture_prototypes"),
+            ("Reference prototype source footprints", "reference_prototype_footprints"),
             ("Reference seed-surface probability", "reference_seed_surface_probability"),
             ("Reference background-texture probability", "reference_background_texture_probability"),
             ("Reference Other-material probability", "reference_other_texture_probability"),
@@ -2560,11 +2708,15 @@ class MainWindow(QMainWindow):
             ("Ellipse-fit confidence", "edge_ellipse_fit"),
             ("Circle/ellipse fit residual", "edge_fit_residual"),
             ("Seed-centre votes", "edge_centre_votes"),
+            (
+                "Oval-derived seed-centre probability",
+                "oval_centre_probability",
+            ),
             ("Semantic boundary side", "edge_semantic_sides"),
             ("Rejected edge reasons", "edge_rejections"),
-            ("Fitted centres and ellipses", "edge_fit_geometry"),
+            ("Raw centre-vote peaks", "edge_fit_geometry"),
+            ("Most likely edge ovals", "edge_oval_hypotheses"),
             ("Final seed-boundary confidence", "seed_edge_curves"),
-            ("Seed-material likelihood", "procedural_seed_material"),
             ("Seed-material mask", "procedural_seed_mask"),
             ("Physical boundary cost", "procedural_boundary_cost"),
             ("Procedural centre likelihood", "procedural_centres"),
@@ -4249,6 +4401,7 @@ class MainWindow(QMainWindow):
             self.reference_association_label.setText(
                 "Select an image to inspect its saved associations."
             )
+            self._refresh_project_node()
             return
 
         canonical = self._reference_region_store.path_for(path)
@@ -4350,6 +4503,7 @@ class MainWindow(QMainWindow):
         text = "\n".join(lines)
         self.reference_association_label.setText(text)
         self.reference_association_label.setToolTip(text)
+        self._refresh_project_node()
 
     def _refresh_analysis_activity_panel(self) -> None:
         """Keep long or superseded work visible even between node boundaries."""
@@ -4569,6 +4723,7 @@ class MainWindow(QMainWindow):
 
         self.pipeline_canvas.refresh()
         self.pipeline_inspector.refresh_status()
+        self._refresh_project_node()
         self._update_analysis_availability()
         self._set_project_dirty()
         detail = (
@@ -4806,11 +4961,9 @@ class MainWindow(QMainWindow):
             "lightening_gradient_ceiling",
             "darkening_gradient_ceiling",
             "frequency_noise_masks",
-            "edge_ridges",
             "reference_texture_prototypes",
             "material_evidence_decision",
             "reference_edge_probability",
-            "reference_edge_ridges",
             "edge_traces",
             "instance_masks",
             "seed_edge_curves",
@@ -4865,7 +5018,7 @@ class MainWindow(QMainWindow):
                 self.pipeline.node("ruler_detection").parameters["ruler_length_mm"]
             ),
             minor_tick_mm=float(
-                self.pipeline.node("scale_calibration").parameters["minor_tick_mm"]
+                self.pipeline.node("ruler_detection").parameters["minor_tick_mm"]
             ),
             max_deskew_degrees=float(
                 self.pipeline.node("deskew_colour").parameters[
@@ -4873,7 +5026,7 @@ class MainWindow(QMainWindow):
                 ]
             ),
             apply_colour_balance=bool(
-                self.pipeline.node("colour_reference").parameters[
+                self.pipeline.node("deskew_colour").parameters[
                     "apply_colour_balance"
                 ]
             ),
@@ -5077,14 +5230,14 @@ class MainWindow(QMainWindow):
     ) -> None:
         """Apply worker progress to the currently visible graph on the Qt thread."""
 
-        if node_id == "foreground_segmentation":
-            # Foreground and background retain separate cached calculations,
-            # but share one visible Material colour probabilities card.
-            node_id = "background_likelihood"
-        elif node_id == "foreground_noise_likelihood":
-            # The two directional texture calculations likewise retain their
-            # separate caches while sharing one visible Material noise card.
-            node_id = "refined_background_likelihood"
+        node_id = {
+            "foreground_segmentation": "background_likelihood",
+            "foreground_noise_likelihood": "refined_background_likelihood",
+            "colour_reference": "deskew_colour",
+            "scale_calibration": "ruler_detection",
+            "edge_ridges": "edge_gradients",
+            "reference_edge_ridges": "reference_edge_probability",
+        }.get(node_id, node_id)
         current_path = self.image_view.image_path
         key = _path_identity(path_text)
         activity = self._analysis_activities.get(key)
@@ -5129,7 +5282,7 @@ class MainWindow(QMainWindow):
                     node.status = NodeStatus.COMPLETE
                     node.status_detail = (
                         Path(path_text).name
-                        if node_id == "raw_images"
+                        if node_id == "project"
                         else "Calculated"
                     )
             if _overlay_node_owner(str(self.overlay_combo.currentData() or "")) == node_id:
@@ -6005,7 +6158,7 @@ class MainWindow(QMainWindow):
         self.pipeline.revision += 1
         self.pipeline.invalidate(affected)
         self.pipeline.set_status(
-            "reference_layers",
+            "project",
             NodeStatus.COMPLETE,
             f"Manual annotations; {len(state.centres_source_xy):,} centre point(s); "
             + (
@@ -6020,6 +6173,7 @@ class MainWindow(QMainWindow):
             )
         self.pipeline_canvas.refresh(affected)
         self.pipeline_inspector.refresh_status()
+        self._refresh_project_node()
         self._cache_dirty_nodes.setdefault(key, set()).update(affected)
         self._analyses.pop(key, None)
         self._sync_procedural_centres_controls()
@@ -6114,12 +6268,14 @@ class MainWindow(QMainWindow):
             "its applied material regions and seed IDs are installed in memory.",
         )
         affected = {
-            "reference_layers",
-            *self.pipeline.downstream("reference_layers", recursive=True),
+            "project",
+            *self.pipeline.downstream_from_port(
+                "project", "annotations", recursive=True
+            ),
         }
         self.pipeline.invalidate(affected)
         self._cache_dirty_nodes.setdefault(key, set()).update(
-            affected - {"reference_layers"}
+            affected - {"project"}
         )
         self._analyses.pop(key, None)
         return affected
@@ -6294,23 +6450,15 @@ class MainWindow(QMainWindow):
         self._project_unresolved_reference_sidecars.discard(key)
         self._unsaved_reference_sidecars.discard(key)
         self._discard_analysis_cache(key)
-        affected = {"reference_layers"}
-        for port_id in (
-            "background",
-            "foreground",
-            "other",
-            "physical_edge",
-            "non_edge",
-            "annotated_seeds",
-        ):
-            affected.update(
-                self.pipeline.downstream_from_port(
-                    "reference_layers", port_id, recursive=True
-                )
-            )
+        affected = {
+            "project",
+            *self.pipeline.downstream_from_port(
+                "project", "annotations", recursive=True
+            ),
+        }
         self.pipeline.invalidate(affected)
         self._cache_dirty_nodes.setdefault(key, set()).update(
-            affected - {"reference_layers"}
+            affected - {"project"}
         )
         self._set_reference_region_load_status(
             key,
@@ -8049,16 +8197,16 @@ class MainWindow(QMainWindow):
         )
         self._set_project_dirty()
         affected = {
-            "reference_layers",
+            "project",
             "instance_masks",
             *self.pipeline.downstream_from_port(
-                "reference_layers", "annotated_seeds", recursive=True
+                "project", "annotations", recursive=True
             ),
         }
         self.pipeline.invalidate(affected)
         count = len(self._instance_ids(self._applied_instance_annotations.get(key)))
         self.pipeline.set_status(
-            "reference_layers",
+            "project",
             NodeStatus.COMPLETE,
             f"{count:,} applied seed ID(s)" if count else "No applied references",
         )
@@ -8085,7 +8233,7 @@ class MainWindow(QMainWindow):
         )
         self.pipeline_canvas.refresh(affected)
         self.pipeline_inspector.refresh_status()
-        computational = affected - {"reference_layers"}
+        computational = affected - {"project"}
         self._cache_dirty_nodes.setdefault(key, set()).update(computational)
         if computational:
             self._analyses.pop(key, None)
@@ -8533,22 +8681,22 @@ class MainWindow(QMainWindow):
                 bool(values.get("annotations_are_complete", False)),
             )
         elif action_id == PipelineInspector.PROCEDURAL_CENTRES_EDIT_ACTION:
-            if node_id not in {"reference_layers", "procedural_instances"}:
+            if node_id not in {"project", "procedural_instances"}:
                 return
             if bool(payload):
                 self._start_manual_seed_centre_editing()
             else:
                 self._stop_manual_seed_centre_editing()
         elif action_id == PipelineInspector.PROCEDURAL_CENTRES_MODE_ACTION:
-            if node_id not in {"reference_layers", "procedural_instances"}:
+            if node_id not in {"project", "procedural_instances"}:
                 return
             self._change_manual_seed_centre_mode(str(payload))
         elif action_id == PipelineInspector.PROCEDURAL_CENTRES_UNDO_ACTION:
-            if node_id not in {"reference_layers", "procedural_instances"}:
+            if node_id not in {"project", "procedural_instances"}:
                 return
             self._undo_manual_seed_centres()
         elif action_id == PipelineInspector.PROCEDURAL_CENTRES_RESET_ACTION:
-            if node_id not in {"reference_layers", "procedural_instances"}:
+            if node_id not in {"project", "procedural_instances"}:
                 return
             self._reset_manual_seed_centres()
 
@@ -9300,14 +9448,13 @@ class MainWindow(QMainWindow):
             dirty_classes
             & {"background", "foreground", "other", "background_exclusion", "foreground_exclusion"}
         )
-        affected = {"reference_layers"}
+        affected = {"project"}
         if material_changed or not dirty_classes:
-            for port_id in ("background", "foreground", "other"):
-                affected.update(
-                    self.pipeline.downstream_from_port(
-                        "reference_layers", port_id, recursive=True
-                    )
+            affected.update(
+                self.pipeline.downstream_from_port(
+                    "project", "annotations", recursive=True
                 )
+            )
         self.pipeline.invalidate(affected)
         background_count = self._mask_pixel_count(
             self._applied_background_reference_masks.get(key)
@@ -9322,7 +9469,7 @@ class MainWindow(QMainWindow):
             self._applied_foreground_exclusion_masks.get(key)
         )
         self.pipeline.set_status(
-            "reference_layers",
+            "project",
             NodeStatus.COMPLETE,
             f"BG {background_count:,}; FG {foreground_count:,}; "
             f"Other {max(background_exclusion_count, foreground_exclusion_count):,}",
@@ -9347,7 +9494,7 @@ class MainWindow(QMainWindow):
             )
         self.pipeline_canvas.refresh(affected)
         self.pipeline_inspector.refresh_status()
-        computational = affected - {"reference_layers"}
+        computational = affected - {"project"}
         if computational:
             self._cache_dirty_nodes.setdefault(key, set()).update(computational)
             self._analyses.pop(key, None)
@@ -9715,8 +9862,22 @@ class MainWindow(QMainWindow):
             "material_subtype_unknown": "Unknown Non-seed subtype: bright pixels match neither the Background nor Other evidence chains strongly enough to resolve the subtype.",
             "reference_texture_prototypes": (
                 "Full-pane collage of every retained image-local material and boundary "
-                "feature medoid. Edge patches are rotated to a common tangent; percentages "
-                "report cluster support, not forced probability."
+                "feature medoid. Thumbnail squares are context only and are never fitted "
+                "as templates. Material medoids are query-centred feature vectors. Each "
+                "edge descriptor pools exactly five weighted samples along each of the "
+                "yellow centre line and two cyan side lines; it does not fit the whole "
+                "region between them. Edge patches are rotated to a common tangent; "
+                "percentages report cluster support, not forced probability."
+            ),
+            "reference_prototype_footprints": (
+                "Retained prototype source locations on the corrected photograph. "
+                "Background is blue, Foreground green, Other orange, Physical edge "
+                "yellow, and Non-physical edge purple. Material crosses mark the single "
+                "medoid pixel and their circles show the local residual/density context; "
+                "the painted swatch only supplies candidate pixels. Edge markers show the "
+                "three actual tangent-aligned pooled sample lines: yellow/purple at the "
+                "edge centre and cyan on both sides. Five weighted points are sampled on "
+                "each line; neither the thumbnail nor the area between lines is matched."
             ),
             "reference_seed_surface_probability": (
                 "Seed-surface likelihood from supported Foreground prototypes in the "
@@ -9811,11 +9972,13 @@ class MainWindow(QMainWindow):
                 "Magenta marks overlap where both interpretations receive support."
             ),
             "net_physical_edge_probability": (
-                "Positive physical-edge evidence margin: max(physical - "
+                "Authoritative cached positive physical-edge evidence margin: max(physical - "
                 f"{float(self.pipeline.node('reference_edge_probability').parameters['net_physical_edge_internal_scale']):g} "
-                "× internal edge, 0). Ties and negative results are clamped to a "
-                "black floor. This diagnostic difference is not a calibrated posterior "
-                "probability and does not modify either source raster."
+                "× non-physical edge, 0). Ties and negative results are clamped to a "
+                "black floor. This exact cached raster is also used by assisted fill tools "
+                "and as the source of the thinned net ridge; it is not a calibrated posterior "
+                "and does not modify either source raster. Adjust Non-physical subtraction "
+                "weight at the top of the Reference edges settings."
             ),
             "locally_normalized_net_physical_edge": (
                 "The physical-minus-scaled-internal semantic margin after separating "
@@ -9863,21 +10026,22 @@ class MainWindow(QMainWindow):
                 "wheel); brightness combines arc, circle, ellipse and centre-vote support."
             ),
             "edge_circle_fit": "Circle-arc and proposal-conditioned radial fit confidence.",
-            "edge_ellipse_fit": "Batched proposal-conditioned ellipse/conic fit confidence, including elongated lupin boundaries.",
+            "edge_ellipse_fit": "Confidence painted along proposal-independent oval perimeters accepted from distributed curved-edge and tangent support.",
             "edge_fit_residual": "Bright pixels have high residual under both fitted circle and ellipse models.",
-            "edge_centre_votes": "Normal-and-radius votes accumulated from fragmented oriented traces; bright maxima are plausible seed centres.",
+            "edge_centre_votes": "Normal/radius votes with seed-scaled tangent offsets accumulated from fragmented oriented traces; bright maxima are raw oval-centre hypotheses before perimeter validation.",
+            "oval_centre_probability": "Fit-validated probability that a pixel is the centre of a plausible oval supported by distributed curved-edge and tangent evidence. Blue is low; red is high.",
             "edge_semantic_sides": "Soft agreement that the inferred inside is foreground/non-background. It boosts but never gates an edge.",
             "edge_rejections": (
                 "Hue categorizes rejection: weak hysteresis, junction/short trace, "
                 "poor continuity, implausible shape/radius, or low combined confidence."
             ),
-            "edge_fit_geometry": "Vector centres from trace-normal voting and fitted per-proposal ellipses; compact geometry transfers only when selected.",
+            "edge_fit_geometry": "Raw reverse-transform centre peaks before full oval validation; compact geometry transfers only when selected.",
+            "edge_oval_hypotheses": "Proposal-independent ovals reconstructed backward from curved edge fragments. Brighter, thicker cyan outlines have stronger distributed perimeter and tangent support.",
             "seed_edge_curves": (
                 "Final seed-boundary confidence after ridge thinning, oriented trace "
                 "continuity, dense arc radii, centre voting, circle/ellipse residuals, "
                 "and soft semantic/lightness confirmation."
             ),
-            "procedural_seed_material": "The resolved Seed probability supplied directly by Material evidence decision; procedural separation no longer recombines raw Foreground, Background, Other, or prototype channels.",
             "procedural_seed_mask": "Thresholded seed material after dish-margin removal and seed-sized enclosed coat-hole filling.",
             "procedural_boundary_cost": "Normalized physical boundary cost fused from edges, sensor/noise, ridges and local shadow.",
             "procedural_centres": "Marker likelihood from smoothed material, physical-boundary depth and annular boundary support; dots are retained markers.",
@@ -9897,7 +10061,6 @@ class MainWindow(QMainWindow):
             "stardist_radial_uncertainty": "Learned uncertainty of the StarDist radial boundary regression.",
             "stardist_instances": "Star-convex seed polygons retained after score ordering and overlap-aware non-maximum suppression.",
             "stardist_confidence": "Per-polygon StarDist score mapped onto decoded pixels; it is not a validation guarantee.",
-            "seed_interior_probability": "Soft seed-interior evidence from foreground colour, learned foreground noise, and inverse background support.",
             "boundary_confidence": "Hue is the continuous directed boundary normal (0° = 360°); brightness is boundary confidence.",
             "boundary_magnitude": "Boundary confidence without direction encoding.",
             "touching_split_likelihood": "High values mark shallow foreground necks and concave distance-transform saddles that may separate touching seeds.",
@@ -9962,7 +10125,6 @@ class MainWindow(QMainWindow):
             "non_edge_probability",
             "net_physical_edge_probability",
             "locally_normalized_net_physical_edge",
-            "procedural_seed_material",
             "procedural_centres",
             "procedural_confidence",
             "unet_interior",
@@ -9970,7 +10132,6 @@ class MainWindow(QMainWindow):
             "unet_pattern_boundary",
             "unet_centres",
             "stardist_object_probability",
-            "seed_interior_probability",
         }
         if mode in inverse_probability_modes:
             text = "Scale key: white = low displayed probability/evidence; black = high. " + text
@@ -10000,6 +10161,22 @@ class MainWindow(QMainWindow):
                     "foreground_noise_likelihood",
                 ),
             ),
+            (
+                "deskew_colour",
+                ("colour_reference", "deskew_colour"),
+            ),
+            (
+                "ruler_detection",
+                ("ruler_detection", "scale_calibration"),
+            ),
+            (
+                "edge_gradients",
+                ("edge_gradients", "edge_ridges"),
+            ),
+            (
+                "reference_edge_probability",
+                ("reference_edge_probability", "reference_edge_ridges"),
+            ),
         ):
             elapsed_parts = [
                 float(node_timings[node_id])
@@ -10012,16 +10189,6 @@ class MainWindow(QMainWindow):
                 )
         calibration = result.calibration
         card = calibration.colour_card
-        self.pipeline.set_status(
-            "colour_reference",
-            NodeStatus.COMPLETE if card is not None else NodeStatus.WARNING,
-            (
-                f"{card.detected_swatch_count}/24 swatches; "
-                f"confidence {card.confidence:.0%}"
-                if card is not None
-                else "Swatch grid not found"
-            ),
-        )
         ruler = calibration.ruler
         self.pipeline.set_status(
             "ruler_detection",
@@ -10035,7 +10202,12 @@ class MainWindow(QMainWindow):
                 f"({ruler.matched_tick_count:,} supported); "
                 f"length hierarchy {ruler.metric_hierarchy_consistency:.0%}; "
                 f"angle {ruler.angle_degrees:+.2f}°; "
-                f"confidence {ruler.confidence:.0%}"
+                f"confidence {ruler.confidence:.0%}; "
+                + (
+                    f"metric {calibration.pixels_per_mm:.3f} px/mm"
+                    if calibration.pixels_per_mm is not None
+                    else "absolute scale unresolved"
+                )
                 if ruler is not None and ruler.scale_reliable
                 else (
                     f"Ruler outline found; {ruler.matched_tick_count:,} likely "
@@ -10047,8 +10219,13 @@ class MainWindow(QMainWindow):
         )
         self.pipeline.set_status(
             "deskew_colour",
-            NodeStatus.COMPLETE,
-            f"Rotated {calibration.deskew_degrees:+.2f}° and balanced colour",
+            NodeStatus.COMPLETE if card is not None else NodeStatus.WARNING,
+            (
+                f"Rotated {calibration.deskew_degrees:+.2f}°; "
+                f"{card.detected_swatch_count}/24 swatches; balanced colour"
+                if card is not None
+                else f"Rotated {calibration.deskew_degrees:+.2f}°; swatch grid not found"
+            ),
         )
         if calibration.perspective_corrected:
             self.pipeline.set_status(
@@ -10057,29 +10234,6 @@ class MainWindow(QMainWindow):
                 f"Projective tilt {calibration.perspective_strength:.3f}; "
                 f"rotation {calibration.deskew_degrees:+.2f}°; balanced colour",
             )
-        self.pipeline.set_status(
-            "scale_calibration",
-            (
-                NodeStatus.COMPLETE
-                if calibration.pixels_per_mm is not None
-                else NodeStatus.WARNING
-            ),
-            (
-                (
-                    f"metric {calibration.pixels_per_mm:.3f} px/mm"
-                    + (
-                        f"; imperial {calibration.ruler.imperial_pixels_per_mm:.3f}; "
-                        f"error {calibration.ruler.scale_disagreement_percent:.2f}%"
-                        if calibration.ruler is not None
-                        and calibration.ruler.imperial_pixels_per_mm > 0.0
-                        and calibration.ruler.scale_disagreement_percent is not None
-                        else "; imperial unresolved"
-                    )
-                )
-                if calibration.pixels_per_mm is not None
-                else "Tick spacing unresolved"
-            ),
-        )
         self.pipeline.set_status(
             "layout_detection",
             (
@@ -10369,9 +10523,6 @@ class MainWindow(QMainWindow):
             if hasattr(trace_raster, "count_above")
             else int((trace_raster >= 1).sum())
         )
-        self.pipeline.set_status(
-            "edge_ridges", NodeStatus.COMPLETE, "Float NMS and hysteresis cached on GPU"
-        )
         texture_profile = getattr(
             result.layers, "reference_texture_profile", None
         )
@@ -10458,10 +10609,9 @@ class MainWindow(QMainWindow):
             if hasattr(reference_ridge_raster, "count_above")
             else int((reference_ridge_raster >= 1).sum())
         )
-        self.pipeline.set_status(
-            "reference_edge_ridges",
-            NodeStatus.COMPLETE,
-            f"{reference_ridge_pixels:,} thinned reference-edge pixels",
+        reference_node = self.pipeline.node("reference_edge_probability")
+        reference_node.status_detail += (
+            f"; {reference_ridge_pixels:,} thinned reference-edge pixels"
         )
         self.pipeline.set_status(
             "edge_traces",
@@ -10488,7 +10638,6 @@ class MainWindow(QMainWindow):
             result.advanced.seed_pattern_proportions,
         )
         advanced_details = {
-            "seed_interior": "Resolved Seed material probability smoothed at seed scale",
             "boundary_normals": "Boundary magnitude and directed normals ready",
             "touching_split": "Neck and distance-saddle evidence ready",
             "ellipse_likelihood": "Multiscale orientation and radial support ready",
@@ -10534,7 +10683,7 @@ class MainWindow(QMainWindow):
     def _pipeline_image_loaded(self, path: Path) -> None:
         for node in self.pipeline.nodes.values():
             node.calculation_seconds = None
-        self.pipeline.set_status("raw_images", NodeStatus.COMPLETE, path.name)
+        self.pipeline.set_status("project", NodeStatus.COMPLETE, path.name)
         self.pipeline.set_status(
             "metadata", NodeStatus.COMPLETE, self.species_combo.currentText()
         )
@@ -10555,7 +10704,7 @@ class MainWindow(QMainWindow):
             len(self._instance_ids(self._applied_instance_annotations.get(key))),
         )
         self.pipeline.set_status(
-            "reference_layers",
+            "project",
             NodeStatus.COMPLETE,
             (
                 f"BG {reference_counts[0]:,}; FG {reference_counts[1]:,}; "
@@ -10567,7 +10716,7 @@ class MainWindow(QMainWindow):
         )
         manual_state = self._manual_seed_centre_state(key)
         if len(manual_state.centres_source_xy):
-            reference_node = self.pipeline.node("reference_layers")
+            reference_node = self.pipeline.node("project")
             reference_node.status_detail += (
                 f"; centres {len(manual_state.centres_source_xy):,} "
                 + ("augment" if manual_state.mode == "augment" else "replace automatic")
@@ -10586,11 +10735,9 @@ class MainWindow(QMainWindow):
             "lightening_gradient_ceiling",
             "darkening_gradient_ceiling",
             "frequency_noise_masks",
-            "edge_ridges",
             "reference_texture_prototypes",
             "material_evidence_decision",
             "reference_edge_probability",
-            "reference_edge_ridges",
             "edge_traces",
             "procedural_instances",
             "unet_instances",
@@ -10643,6 +10790,7 @@ class MainWindow(QMainWindow):
                 )
         self.pipeline_canvas.refresh()
         self.pipeline_inspector.refresh_status()
+        self._refresh_project_node()
 
     def _set_analysis_running(
         self,
@@ -10652,10 +10800,8 @@ class MainWindow(QMainWindow):
     ) -> None:
         self._stop_manual_seed_centre_editing()
         details = {
-            "colour_reference": "Detecting the 4×6 swatch grid",
             "ruler_detection": "Locating 0 and terminal scale dashes",
             "deskew_colour": "Deskewing and balancing colour",
-            "scale_calibration": "Resolving ruler tick spacing",
             "layout_detection": "Detecting both corrected Petri-dish glass edges",
             "hue_only": "Encoding corrected-image hue at fixed value",
             "wavelet_decomposition": "Computing exact-reconstruction stationary wavelet bands",
@@ -10671,16 +10817,13 @@ class MainWindow(QMainWindow):
             "lightening_gradient_ceiling": "Suppressing strong lightening edges",
             "darkening_gradient_ceiling": "Suppressing strong darkening edges",
             "frequency_noise_masks": "Calculating multiscale darkness and colour RMS energy",
-            "edge_ridges": "Thinning float edges and reconstructing hysteresis",
             "reference_texture_prototypes": "Fitting many material and edge prototypes from reviewed examples",
             "material_evidence_decision": "Calibrating Seed versus Non-seed, ambiguity, and unknown evidence",
             "reference_edge_probability": "Classifying physical and apparent edges from reviewed examples",
-            "reference_edge_ridges": "Thinning reference-trained physical-edge probability",
             "edge_traces": "Linking orientation-compatible ridge fragments",
-            "seed_edge_curves": "Confirming radii, circles, ellipses, centres, and semantic sides",
+            "seed_edge_curves": "Voting backward from curved edges and fitting proposal-independent ovals",
             "background_likelihood": "Estimating the likely colour range",
             "refined_background_likelihood": "Evaluating foreground, background, and Other texture rays",
-            "seed_interior": "Fusing seed-interior evidence on the tensor device",
             "boundary_normals": "Estimating boundary confidence and normals",
             "touching_split": "Scoring necks and distance saddles",
             "ellipse_likelihood": "Testing multiscale elliptical support",
@@ -10713,7 +10856,7 @@ class MainWindow(QMainWindow):
                 f"Calculating {selected_label} …"
             )
         if not dirty_nodes:
-            self.pipeline.set_status("raw_images", NodeStatus.COMPLETE, path.name)
+            self.pipeline.set_status("project", NodeStatus.COMPLETE, path.name)
             self.pipeline.set_status(
                 "metadata", NodeStatus.COMPLETE, self.species_combo.currentText()
             )
@@ -10977,6 +11120,7 @@ class MainWindow(QMainWindow):
         if self.pipeline.is_active("circle_candidates"):
             baseline_nodes.add("circle_candidates")
         layer_nodes = {
+            "wavelet_decomposition",
             "perimeter_background_reference",
             "background_likelihood",
             "refined_background_likelihood",
@@ -10985,17 +11129,24 @@ class MainWindow(QMainWindow):
             "lightening_gradient_ceiling",
             "darkening_gradient_ceiling",
             "frequency_noise_masks",
-            "edge_ridges",
             "reference_texture_prototypes",
             "material_evidence_decision",
             "reference_edge_probability",
-            "reference_edge_ridges",
             "edge_traces",
             "instance_masks",
             "seed_edge_curves",
         }
         advanced_nodes = set(ADVANCED_NODE_MODES)
-        if node_id == "layout_detection":
+        calibration_nodes = {"ruler_detection", "deskew_colour"}
+        if node_id in calibration_nodes:
+            values = {
+                field: current
+                for calibration_id in calibration_nodes
+                for field, current in self.pipeline.node(calibration_id).parameters.items()
+            }
+            values[key] = value
+            CalibrationSettings(**values)
+        elif node_id == "layout_detection":
             values = dict(self.pipeline.node(node_id).parameters)
             values[key] = value
             DishDetectionSettings(**values)
@@ -11146,6 +11297,7 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def _species_changed(self, species: str) -> None:
         self._set_project_dirty()
+        self._refresh_project_node()
         if self.image_view.image_path is None:
             return
         self.pipeline.set_status("metadata", NodeStatus.COMPLETE, species)

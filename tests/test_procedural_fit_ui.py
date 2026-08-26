@@ -154,13 +154,15 @@ class ProceduralFitMainWindowTests(unittest.TestCase):
 
         annotations = np.zeros((8, 8), np.uint16)
         annotations[2:6, 2:6] = 1
+        background = np.full((8, 8), 80, np.uint8)
+        refined_background = np.full((8, 8), 96, np.uint8)
         layers = SimpleNamespace(
-            valid_mask=None,
+            valid_mask=np.ones((8, 8), np.uint8) * 255,
             foreground_noise_likelihood=None,
-            background_likelihood=None,
-            refined_background_likelihood=None,
-            edge_likelihood=None,
-            edge_ridges=None,
+            background_likelihood=background,
+            refined_background_likelihood=refined_background,
+            edge_likelihood=np.zeros((8, 8), np.uint8),
+            edge_ridges=np.zeros((8, 8), np.uint8),
             physical_edge_probability=None,
             non_edge_probability=None,
             reference_edge_ridges=object(),
@@ -215,21 +217,23 @@ class ProceduralFitMainWindowTests(unittest.TestCase):
         self.assertEqual(options.overreach_distance_scale_fraction, 0.25)
         self.assertEqual(fit.call_args.kwargs["seed_diameter_px"], 19.5)
         prepare_kwargs = prepare.call_args.kwargs
-        self.assertIs(
-            prepare_kwargs["thinned_reference_edge_ridges"],
-            layers.normalized_net_reference_edge_ridges,
+        self.assertIsNone(prepare_kwargs["material_probability"])
+        self.assertIsNone(prepare_kwargs["physical_edge_probability"])
+        self.assertIsNone(prepare_kwargs["non_edge_probability"])
+        self.assertIsNone(
+            prepare_kwargs["normalized_net_physical_edge_probability"]
         )
-        self.assertIs(
-            prepare_kwargs["normalized_net_physical_edge_probability"],
-            layers.locally_normalized_net_physical_edge,
+        self.assertIsNone(prepare_kwargs["thinned_reference_edge_ridges"])
+        self.assertIsNone(prepare_kwargs["oriented_edge_trace_labels"])
+        self.assertIsNone(prepare_kwargs["oriented_edge_trace_continuity"])
+        self.assertIsNone(prepare_kwargs["reference_surface_probability"])
+        np.testing.assert_array_equal(
+            prepare_kwargs["foreground_probability"],
+            np.full((8, 8), 175, np.uint8),
         )
-        self.assertIs(
-            prepare_kwargs["oriented_edge_trace_labels"],
-            layers.edge_trace_labels,
-        )
-        self.assertIs(
-            prepare_kwargs["oriented_edge_trace_continuity"],
-            layers.edge_trace_continuity,
+        np.testing.assert_array_equal(
+            prepare_kwargs["foreground_noise_probability"],
+            np.zeros((8, 8), np.uint8),
         )
         self.assertNotIn("sensor_noise", prepare_kwargs)
         self.assertNotIn("shadow_likelihood", prepare_kwargs)

@@ -89,6 +89,7 @@ class ReferenceTextureProfile:
     working_scale: float = 1.0
     edge_working_scale: float = 1.0
     edge_working_seed_diameter_px: float = 0.0
+    material_context_radius_px: float = 0.0
     edge_strip_normal_offset_px: float = 0.0
     edge_strip_tangent_half_length_px: float = 0.0
     patch_size_px: int = 0
@@ -139,8 +140,6 @@ class AnalysisLayerSettings:
     noise_vector_sample_count: int = 9
     noise_vector_decay: float = 0.86
     noise_direction_integration: str = "maximum"
-    noise_background_min_likelihood: int = 190
-    noise_nonbackground_max_likelihood: int = 65
     noise_working_maximum_dimension: int = 1280
     foreground_noise_medium_scale_fraction: float = 0.03
     foreground_noise_coarse_scale_fraction: float = 0.08
@@ -149,8 +148,6 @@ class AnalysisLayerSettings:
     foreground_noise_vector_sample_count: int = 9
     foreground_noise_vector_decay: float = 0.86
     foreground_noise_direction_integration: str = "1st tertile"
-    foreground_noise_foreground_min_likelihood: int = 190
-    foreground_noise_nonforeground_max_likelihood: int = 65
     foreground_noise_working_maximum_dimension: int = 1280
     edge_gradient_method: str = "scharr"
     edge_gradient_source_fusion: str = "maximum"
@@ -315,12 +312,8 @@ class AnalysisLayerSettings:
             raise ValueError("curve_lightness_boost must be between 0 and 3.")
         if self.noise_medium_scale_fraction >= self.noise_coarse_scale_fraction:
             raise ValueError("Medium noise scale must be below coarse noise scale.")
-        if self.noise_nonbackground_max_likelihood >= self.noise_background_min_likelihood:
-            raise ValueError("Non-background likelihood maximum must be below background minimum.")
         if self.foreground_noise_medium_scale_fraction >= self.foreground_noise_coarse_scale_fraction:
             raise ValueError("Medium foreground-noise scale must be below its coarse scale.")
-        if self.foreground_noise_nonforeground_max_likelihood >= self.foreground_noise_foreground_min_likelihood:
-            raise ValueError("Non-foreground likelihood maximum must be below foreground minimum.")
         if self.instance_min_extent_fraction >= self.instance_max_extent_fraction:
             raise ValueError("Minimum instance extent must be below maximum extent.")
         if not 0.0001 <= self.background_minimum_sample_fraction <= 0.25:
@@ -657,6 +650,7 @@ class AnalysisLayers:
     reference_texture_profile: ReferenceTextureProfile | None = None
     physical_edge_probability: object | None = None
     non_edge_probability: object | None = None
+    net_physical_edge_probability: object | None = None
     net_physical_edge_internal_scale: float = 0.50
     reference_edge_ridges: object | None = None
     net_reference_edge_ridges: object | None = None
@@ -682,6 +676,7 @@ class AnalysisLayers:
     edge_ellipse_confidence: object | None = None
     edge_fit_residual: object | None = None
     edge_centre_votes: object | None = None
+    oval_centre_probability: object | None = None
     edge_semantic_sides: object | None = None
     edge_rejection_hue: object | None = None
     edge_rejection_strength: object | None = None
@@ -845,29 +840,148 @@ class AnalysisLayers:
         alpha = np.uint8(valid > 0) * 255
         return np.dstack((non_edge, green, physical, alpha))
 
+    def reference_prototype_footprints_rgba(self) -> np.ndarray:
+        """Draw the actual retained medoid centres and descriptor footprints.
+
+        Material circles show the local context used by residual/density
+        features around a single centre feature vector. Edge markers show the
+        three exact tangent-aligned pooled sample lines; the area between those
+        lines and the source thumbnail itself are not matched as templates.
+        """
+
+        import cv2
+
+        valid = np.asarray(self.valid_mask)
+        height, width = valid.shape
+        rgba = np.zeros((height, width, 4), dtype=np.uint8)
+        profile = self.reference_texture_profile
+        if profile is None:
+            return rgba
+        colours = {
+            "background": (90, 183, 255, 230),
+            "foreground": (73, 230, 167, 230),
+            "other": (255, 173, 85, 230),
+            "physical_edge": (255, 226, 92, 245),
+            "non_edge": (186, 140, 255, 245),
+        }
+        thickness = max(1, int(round(max(height, width) / 1400.0)))
+        context_radius = max(2, int(round(profile.material_context_radius_px)))
+        tangent_half_length = max(
+            1.0, float(profile.edge_strip_tangent_half_length_px)
+        )
+        normal_offset = max(1.0, float(profile.edge_strip_normal_offset_px))
+
+        def point(x: float, y: float) -> tuple[int, int]:
+            return int(round(x)), int(round(y))
+
+        for prototype in profile.prototypes:
+            colour = colours.get(prototype.class_name, (255, 255, 255, 220))
+            centre_x, centre_y = prototype.centre_xy
+            centre = point(centre_x, centre_y)
+            if prototype.class_name not in {"physical_edge", "non_edge"}:
+                cv2.circle(
+                    rgba,
+                    centre,
+                    context_radius,
+                    colour,
+                    thickness,
+                    lineType=cv2.LINE_AA,
+                )
+                cross = max(3, thickness * 3)
+                cv2.line(
+                    rgba,
+                    (centre[0] - cross, centre[1]),
+                    (centre[0] + cross, centre[1]),
+                    colour,
+                    thickness,
+                    lineType=cv2.LINE_AA,
+                )
+                cv2.line(
+                    rgba,
+                    (centre[0], centre[1] - cross),
+                    (centre[0], centre[1] + cross),
+                    colour,
+                    thickness,
+                    lineType=cv2.LINE_AA,
+                )
+                continue
+
+            angle = np.deg2rad(float(prototype.tangent_degrees or 0.0))
+            tangent = np.asarray((np.cos(angle), np.sin(angle)), np.float32)
+            normal = np.asarray((-tangent[1], tangent[0]), np.float32)
+            centre_vector = np.asarray((centre_x, centre_y), np.float32)
+            for offset, line_colour in (
+                (-normal_offset, (56, 221, 255, 230)),
+                (0.0, colour),
+                (normal_offset, (56, 221, 255, 230)),
+            ):
+                line_centre = centre_vector + normal * float(offset)
+                start = line_centre - tangent * tangent_half_length
+                end = line_centre + tangent * tangent_half_length
+                cv2.line(
+                    rgba,
+                    point(float(start[0]), float(start[1])),
+                    point(float(end[0]), float(end[1])),
+                    line_colour,
+                    thickness + (1 if offset == 0.0 else 0),
+                    lineType=cv2.LINE_AA,
+                )
+                # The descriptor does not integrate every pixel on the drawn
+                # guide line. Mark its five bilinear samples explicitly; dot
+                # radius mirrors the 1:2:3:2:1 pooling weights.
+                for tangent_fraction, sample_weight in zip(
+                    (-1.0, -0.5, 0.0, 0.5, 1.0),
+                    (1, 2, 3, 2, 1),
+                    strict=True,
+                ):
+                    sample = (
+                        line_centre
+                        + tangent * tangent_half_length * tangent_fraction
+                    )
+                    cv2.circle(
+                        rgba,
+                        point(float(sample[0]), float(sample[1])),
+                        max(1, thickness + sample_weight - 1),
+                        line_colour,
+                        -1,
+                        lineType=cv2.LINE_AA,
+                    )
+        rgba[..., 3] = np.minimum(
+            rgba[..., 3], np.uint8(valid > 0) * np.uint8(255)
+        )
+        return rgba
+
     def net_physical_edge_probability_rgba(self) -> np.ndarray:
-        """Render the scaled positive physical-edge evidence margin in blue."""
+        """Render the authoritative cached physical-minus-non-physical field."""
 
         valid = np.asarray(self.valid_mask)
         shape = valid.shape
-        physical = (
-            np.zeros(shape, dtype=np.uint8)
-            if self.physical_edge_probability is None
-            else np.asarray(self.physical_edge_probability, dtype=np.uint8)
-        )
-        non_edge = (
-            np.zeros(shape, dtype=np.uint8)
-            if self.non_edge_probability is None
-            else np.asarray(self.non_edge_probability, dtype=np.uint8)
-        )
-        net_physical = np.rint(
-            np.maximum(
-                physical.astype(np.float32)
-                - float(self.net_physical_edge_internal_scale)
-                * non_edge.astype(np.float32),
-                0.0,
+        if self.net_physical_edge_probability is not None:
+            net_physical = np.asarray(
+                self.net_physical_edge_probability, dtype=np.uint8
             )
-        ).astype(np.uint8)
+        else:
+            # Retain compatibility for compact callers/tests that construct an
+            # AnalysisLayers object directly. Production analysis always
+            # supplies the cached node output above.
+            physical = (
+                np.zeros(shape, dtype=np.uint8)
+                if self.physical_edge_probability is None
+                else np.asarray(self.physical_edge_probability, dtype=np.uint8)
+            )
+            non_edge = (
+                np.zeros(shape, dtype=np.uint8)
+                if self.non_edge_probability is None
+                else np.asarray(self.non_edge_probability, dtype=np.uint8)
+            )
+            net_physical = np.rint(
+                np.maximum(
+                    physical.astype(np.float32)
+                    - float(self.net_physical_edge_internal_scale)
+                    * non_edge.astype(np.float32),
+                    0.0,
+                )
+            ).astype(np.uint8)
         black = np.zeros(shape, dtype=np.uint8)
         alpha = np.uint8(valid > 0) * 255
         return np.dstack((black, black, net_physical, alpha))

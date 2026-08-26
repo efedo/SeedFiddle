@@ -198,6 +198,14 @@ class ProceduralInstanceSettings:
             raise ValueError("Centre separation must be between 0.1 and 1.0 seed diameters.")
         if not 0.1 <= self.sparse_centre_minimum_separation_fraction <= 1.0:
             raise ValueError("Sparse centre separation must be between 0.1 and 1.0 seed diameters.")
+        if not 0.05 <= self.sparse_seed_area_fraction <= 2.0:
+            raise ValueError(
+                "Expected sparse seed area must be between 0.05 and 2 diameter squared."
+            )
+        if not 0.05 <= self.packed_seed_cell_fraction <= 2.0:
+            raise ValueError(
+                "Expected packed seed-cell area must be between 0.05 and 2 diameter squared."
+            )
         if not 0.5 <= self.marker_count_multiplier <= 2.0:
             raise ValueError("Marker-count multiplier must be between 0.5 and 2.0.")
         if not (

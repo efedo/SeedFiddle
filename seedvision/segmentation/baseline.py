@@ -447,7 +447,9 @@ def analyze_path(
         raise AnalysisCancelled("Analysis superseded before image decoding.")
     cache_values = None if node_cache is None else node_cache.values
     resolved_path = str(path.resolve()).casefold()
-    raw_is_dirty = "raw_images" in dirty_nodes
+    # Per-image caches are keyed by source path, so annotation changes on the
+    # Project root must not force the same raw raster to be decoded again.
+    raw_is_dirty = "project_image" in dirty_nodes or "raw_images" in dirty_nodes
     raw_elapsed = None
     if (
         cache_values is not None
@@ -459,7 +461,7 @@ def analyze_path(
     else:
         if progress_callback is not None:
             try:
-                progress_callback("raw_images", "started")
+                progress_callback("project", "started")
             except Exception:
                 pass
         raw_started = perf_counter()
@@ -467,7 +469,7 @@ def analyze_path(
         raw_elapsed = perf_counter() - raw_started
         if image is not None and progress_callback is not None:
             try:
-                progress_callback("raw_images", "completed")
+                progress_callback("project", "completed")
             except Exception:
                 pass
         if cache_values is not None and image is not None:
@@ -509,7 +511,7 @@ def analyze_path(
         learning_root=learning_root,
         species=species,
         _initial_timings=(
-            {"raw_images": raw_elapsed}
+            {"project": raw_elapsed}
             if raw_elapsed is not None
             else None
         ),
@@ -571,21 +573,21 @@ def analyze_image(
         timings.add_seconds(node_id, elapsed)
     values = {} if node_cache is None else node_cache.values
     dirty = set(dirty_nodes)
-    painted_reference_dirty = "reference_layers" in dirty
+    painted_reference_dirty = "project" in dirty or "reference_layers" in dirty
     computed: list[str] = []
     reused: list[str] = []
 
     def node_enabled(node_id: str) -> bool:
-        visible_node_id = (
-            "refined_background_likelihood"
-            if node_id == "foreground_noise_likelihood"
-            else node_id
-        )
+        visible_node_id = {
+            "foreground_noise_likelihood": "refined_background_likelihood",
+            "colour_reference": "deskew_colour",
+            "scale_calibration": "ruler_detection",
+            "edge_ridges": "edge_gradients",
+            "reference_edge_ridges": "reference_edge_probability",
+        }.get(node_id, node_id)
         return enabled_nodes is None or visible_node_id in enabled_nodes
 
-    calibration_nodes = {
-        "colour_reference", "ruler_detection", "deskew_colour", "scale_calibration"
-    }
+    calibration_nodes = {"ruler_detection", "deskew_colour"}
     calibration_dirty = bool(dirty & calibration_nodes) or "calibration" not in values
     if calibration_dirty:
         calibration = calibrate_image(
@@ -1324,7 +1326,7 @@ def analyze_image(
             }
         )
     if identification_dirty:
-        layer_dirty.update({"instance_masks", "seed_edge_curves"})
+        layer_dirty.add("instance_masks")
     if foreground_dirty:
         layer_dirty.update(
             {
@@ -1403,8 +1405,6 @@ def analyze_image(
                 "seed_edge_curves",
             }
         )
-    if "instance_masks" in layer_dirty:
-        layer_dirty.add("seed_edge_curves")
     if layer_dirty & {
         "background_likelihood",
         "refined_background_likelihood",
@@ -1579,6 +1579,7 @@ def analyze_image(
     staged_candidate_consumers = (
         node_enabled("material_evidence_decision")
         and node_enabled("distance_candidates")
+        and node_enabled("instance_masks")
     )
     layers = build_candidate_layers(
         ordered_candidates,
@@ -1587,7 +1588,7 @@ def analyze_image(
             node_enabled("instance_masks") and not staged_candidate_consumers
         ),
         enable_curves=(
-            node_enabled("seed_edge_curves") and not staged_candidate_consumers
+            node_enabled("seed_edge_curves")
         ),
     )
     foreground_colour_probability = foreground_probability
@@ -1688,10 +1689,7 @@ def analyze_image(
             )
             for index, candidate in enumerate(ordered_candidates, start=1)
         )
-        candidate_consumer_dirty = {
-            "instance_masks",
-            "seed_edge_curves",
-        }
+        candidate_consumer_dirty = {"instance_masks"}
         layers = build_candidate_layers(
             ordered_candidates,
             requested_dirty=candidate_consumer_dirty,
@@ -1911,7 +1909,10 @@ def analyze_image(
                     if "surface_darkness_gradients" in enabled_nodes
                     else None
                 ),
-                seed_instance_annotations=local_seed_instance_annotations,
+                # Applied instance masks train upstream evidence and score
+                # fitting, but automatic inference must never receive their
+                # pixels as watershed markers or authoritative output shapes.
+                seed_instance_annotations=None,
                 manual_seed_centres=local_manual_seed_centres,
                 settings=procedural_settings,
             )
@@ -1993,13 +1994,6 @@ def analyze_image(
         decoder_signature = (
             *branch_settings.decoder_signature,
             round(float(seed_diameter), 5),
-            (
-                None
-                if local_seed_instance_annotations is None
-                else hash(local_seed_instance_annotations.tobytes())
-            )
-            if family is ModelFamily.UNET_WATERSHED
-            else None,
         )
         decoder_dirty = (
             inference_dirty
@@ -2031,11 +2025,10 @@ def analyze_image(
                     outputs,
                     settings=branch_settings,
                     seed_diameter_px=seed_diameter,
-                    painted_instances=(
-                        local_seed_instance_annotations
-                        if family is ModelFamily.UNET_WATERSHED
-                        else None
-                    ),
+                    # Ground-truth masks are training/evaluation targets, not
+                    # inference-time markers. Passing them here reproduced
+                    # reviewed shapes exactly and invalidated model auditing.
+                    painted_instances=None,
                     valid_mask=layers.valid_mask,
                     checkpoint_id=checkpoint_id,
                 )

@@ -273,33 +273,27 @@ class AnnotationEdgeSourceTests(unittest.TestCase):
             self.assertEqual(int(adaptive[3, 3]), 255)
             self.assertEqual(int(adaptive[5, 5]), 63)
 
-            expected_net = np.rint(
-                np.clip(
-                    selected["physical"].astype(np.float32)
-                    - 0.5
-                    * (non_physical * 255.0).astype(np.uint8).astype(np.float32),
-                    0.0,
-                    255.0,
-                )
-            ).astype(np.uint8)
+            expected_net = np.asarray(
+                result.layers.net_physical_edge_probability, dtype=np.uint8
+            )
             self.assertTrue(
                 np.array_equal(selected["net_physical"], expected_net)
             )
-            self.assertEqual(int(selected["net_physical"][5, 5]), 224)
+            self.assertEqual(int(selected["net_physical"][5, 5]), 223)
             self.assertEqual(int(selected["net_physical"][0, 6]), 32)
             self.assertIs(
                 view._annotation_edge_evidence("net_physical"),
                 selected["net_physical"],
             )
 
-            # The node's display-only coefficient is live evidence, not a
-            # baked analysis product. A changed scale must not return the
-            # raster cached for the previous scale.
+            # The subtraction coefficient is baked into one authoritative
+            # cached Reference-edges output. Merely changing adjacent metadata
+            # cannot make the fill tools disagree with the displayed net map.
             result.layers.net_physical_edge_internal_scale = 1.0
             updated_net = view._annotation_edge_evidence("net_physical")
-            self.assertIsNot(updated_net, selected["net_physical"])
-            self.assertEqual(int(updated_net[5, 5]), 192)
-            self.assertEqual(int(updated_net[0, 6]), 0)
+            self.assertIs(updated_net, selected["net_physical"])
+            self.assertEqual(int(updated_net[5, 5]), 223)
+            self.assertEqual(int(updated_net[0, 6]), 32)
 
             old_cached_ridges = selected["ridges"]
             replacement_ridges = np.zeros_like(ridges)
@@ -337,6 +331,26 @@ class AnnotationEdgeSourceTests(unittest.TestCase):
         normalized_ridges: np.ndarray,
         net_scale: float,
     ) -> SimpleNamespace:
+        physical_u8 = np.rint(
+            np.asarray(physical, dtype=np.float32)
+            * (255.0 if np.asarray(physical).max(initial=0.0) <= 1.0 else 1.0)
+        ).clip(0.0, 255.0).astype(np.uint8)
+        non_physical_u8 = np.rint(
+            np.asarray(non_physical, dtype=np.float32)
+            * (
+                255.0
+                if np.asarray(non_physical).max(initial=0.0) <= 1.0
+                else 1.0
+            )
+        ).clip(0.0, 255.0).astype(np.uint8)
+        net_physical = np.rint(
+            np.clip(
+                physical_u8.astype(np.float32)
+                - float(net_scale) * non_physical_u8.astype(np.float32),
+                0.0,
+                255.0,
+            )
+        ).astype(np.uint8)
         return SimpleNamespace(
             layers=SimpleNamespace(
                 edge_ridges=ridges,
@@ -345,6 +359,7 @@ class AnnotationEdgeSourceTests(unittest.TestCase):
                 edge_likelihood=magnitude,
                 physical_edge_probability=physical,
                 non_edge_probability=non_physical,
+                net_physical_edge_probability=net_physical,
                 locally_normalized_net_physical_edge=normalized,
                 normalized_net_reference_edge_ridges=normalized_ridges,
                 net_physical_edge_internal_scale=net_scale,

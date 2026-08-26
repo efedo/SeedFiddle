@@ -21,8 +21,8 @@ from seedvision.pipeline import NodeStatus, ParameterSpec, PipelineConnection, P
 
 
 ANALYSIS_SETTINGS_FORMAT = "seedfiddle-analysis-settings"
-ANALYSIS_SETTINGS_VERSION = 6
-_LEGACY_ANALYSIS_SETTINGS_VERSIONS = frozenset({1, 2, 3, 4, 5})
+ANALYSIS_SETTINGS_VERSION = 9
+_LEGACY_ANALYSIS_SETTINGS_VERSIONS = frozenset({1, 2, 3, 4, 5, 6, 7, 8})
 _PRE_COLOUR_MERGE_VERSIONS = frozenset({1, 2, 3, 4})
 _PRE_NOISE_MERGE_VERSIONS = frozenset({1, 2, 3, 4, 5})
 ANALYSIS_SETTINGS_FILE_SUFFIX = ".seedfiddle-settings.json"
@@ -608,6 +608,13 @@ def _prepare_analysis_settings(
         "foreground_segmentation",
         "foreground_noise_likelihood",
         "manual_seed_centres",
+        "colour_reference",
+        "scale_calibration",
+        "edge_ridges",
+        "reference_edge_ridges",
+        "seed_interior",
+        "raw_images",
+        "reference_layers",
     }
     canonical_by_id = {node.identifier: node for node in canonical.nodes}
     profile_by_id = {
@@ -618,6 +625,21 @@ def _prepare_analysis_settings(
             and node.identifier in retired_node_ids
         )
     }
+    if (
+        canonical.version in _LEGACY_ANALYSIS_SETTINGS_VERSIONS
+        and "project" in expected_ids
+        and "project" not in profile_by_id
+    ):
+        # Version nine replaces the Raw images and Manual annotations pseudo-
+        # roots with one per-image Project root. It has no analytical settings,
+        # so the authored current defaults are the complete migration.
+        profile_by_id["project"] = AnalysisNodeSettings(
+            identifier="project",
+            active=True,
+            enabled=True,
+            connection_suspended=False,
+            parameters=(),
+        )
     profile_ids = set(profile_by_id)
     missing_ids = expected_ids - profile_ids
     unknown_ids = profile_ids - expected_ids
@@ -638,6 +660,20 @@ def _prepare_analysis_settings(
     supplied_parameters_by_id = {
         node_id: dict(saved.parameters) for node_id, saved in profile_by_id.items()
     }
+    if canonical.version in _LEGACY_ANALYSIS_SETTINGS_VERSIONS:
+        # Version seven removes graph-only wrappers while preserving every
+        # calculating control on the surviving owner.
+        for retired_id, owner_id in (
+            ("colour_reference", "deskew_colour"),
+            ("scale_calibration", "ruler_detection"),
+            ("edge_ridges", "edge_gradients"),
+            ("reference_edge_ridges", "reference_edge_probability"),
+        ):
+            retired = canonical_by_id.get(retired_id)
+            if retired is not None:
+                supplied_parameters_by_id[owner_id].update(
+                    dict(retired.parameters)
+                )
     if canonical.version in _PRE_COLOUR_MERGE_VERSIONS:
         # Version five merged the two colour cards without changing either
         # equation, and folded the centre-point input into Manual annotations.
@@ -693,6 +729,12 @@ def _prepare_analysis_settings(
             },
             "material_evidence_decision": {
                 "material_reviewed_foreground_weight",
+            },
+            "refined_background_likelihood": {
+                "noise_background_min_likelihood",
+                "noise_nonbackground_max_likelihood",
+                "foreground_noise_foreground_min_likelihood",
+                "foreground_noise_nonforeground_max_likelihood",
             },
         }
         for node_id, keys in retired_parameters.items():
@@ -792,9 +834,14 @@ def _prepare_analysis_settings(
         "reviewed_foreground",
         "automatic_foreground_authority",
     }
-    connected_by_key: dict[ConnectionKey, bool] = {}
+    connected_by_key: dict[ConnectionKey, bool] = (
+        {key: True for key in template_by_key}
+        if canonical.version in _LEGACY_ANALYSIS_SETTINGS_VERSIONS
+        else {}
+    )
     for connection in canonical.connections:
         source = connection.source
+        source_port = connection.source_port
         target = connection.target
         if canonical.version in _LEGACY_ANALYSIS_SETTINGS_VERSIONS:
             if target == "foreground_noise_likelihood":
@@ -808,21 +855,61 @@ def _prepare_analysis_settings(
                 and connection.target_port in retired_foreground_targets
             ):
                 continue
+            if (
+                target == "refined_background_likelihood"
+                and connection.target_port
+                in {"background_probability", "foreground_probability"}
+            ):
+                continue
             if source == "foreground_segmentation":
                 source = "background_likelihood"
             elif source == "foreground_noise_likelihood":
                 source = "refined_background_likelihood"
             elif source == "manual_seed_centres":
-                source = "reference_layers"
+                source = "project"
+                source_port = "annotations"
+            elif source == "raw_images":
+                source = "project"
+                source_port = "raw_image"
+            elif source == "reference_layers":
+                source = "project"
+                source_port = "annotations"
+            source = {
+                "colour_reference": "deskew_colour",
+                "scale_calibration": "ruler_detection",
+                "edge_ridges": "edge_gradients",
+                "reference_edge_ridges": "reference_edge_probability",
+                "seed_interior": "material_evidence_decision",
+            }.get(source, source)
+            target = {
+                "scale_calibration": "ruler_detection",
+                "edge_ridges": "edge_gradients",
+                "reference_edge_ridges": "reference_edge_probability",
+            }.get(target, target)
+            if target in {"colour_reference", "seed_interior"}:
+                continue
+            if source == target:
+                continue
+            if (
+                target in {"procedural_instances", "unet_instances", "instance_masks"}
+                and connection.target_port == "annotations"
+            ):
+                continue
         key = (
             source,
-            connection.source_port,
+            source_port,
             target,
             connection.target_port,
         )
-        connected_by_key[key] = connected_by_key.get(key, False) or bool(
-            connection.connected
-        )
+        if key in template_by_key:
+            connected_by_key[key] = bool(connection.connected)
+        else:
+            # Keep an unrecognised endpoint so the catalogue comparison below
+            # rejects it. Silently dropping arbitrary current or legacy wires
+            # would turn a corrupt/profile-from-the-future connection into a
+            # deceptively successful load. Every genuinely retired endpoint is
+            # handled explicitly by the migration rules above.
+            connected_by_key[key] = bool(connection.connected)
     legacy_reference_ridge_key = (
         "reference_edge_ridges",
         "reference_ridges",

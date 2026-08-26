@@ -874,6 +874,7 @@ class PipelineInspector(QWidget):
         self._node: PipelineNode | None = None
         self._analysis_result = None
         self._parameter_widgets: list[QWidget] = []
+        self._parameter_section_labels: list[QLabel] = []
         self._procedural_fit_eligible = False
         self._procedural_fit_eligibility_text = (
             "Apply complete seed-instance annotations to enable fitting."
@@ -933,6 +934,27 @@ class PipelineInspector(QWidget):
         self.status_label = QLabel("", self)
         self.status_label.setWordWrap(True)
         self.status_label.setStyleSheet(f"color: {self._secondary_colour};")
+        self.project_info_container = QWidget(self)
+        project_info_layout = QVBoxLayout(self.project_info_container)
+        project_info_layout.setContentsMargins(0, 5, 0, 5)
+        project_info_layout.setSpacing(4)
+        self.project_info_heading = QLabel(
+            "Current project", self.project_info_container
+        )
+        self.project_info_heading.setStyleSheet("font-weight: 600;")
+        project_info_layout.addWidget(self.project_info_heading)
+        self.project_info_label = QLabel(
+            "No project information is available.", self.project_info_container
+        )
+        self.project_info_label.setWordWrap(True)
+        self.project_info_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self.project_info_label.setStyleSheet(
+            f"color: {self._secondary_colour};"
+        )
+        project_info_layout.addWidget(self.project_info_label)
+        self.project_info_container.setVisible(False)
         self.procedural_centres_container = QWidget(self)
         procedural_centres_layout = QVBoxLayout(self.procedural_centres_container)
         procedural_centres_layout.setContentsMargins(0, 4, 0, 4)
@@ -1260,6 +1282,7 @@ class PipelineInspector(QWidget):
         layout.addWidget(self.details_label)
         layout.addWidget(self.enabled_checkbox)
         layout.addWidget(self.status_label)
+        layout.addWidget(self.project_info_container)
         layout.addWidget(self.procedural_centres_container)
         layout.addWidget(self.procedural_fit_container)
         layout.addWidget(self.reference_edge_fit_container)
@@ -1283,62 +1306,82 @@ class PipelineInspector(QWidget):
         self.status_label.setText(
             f"Status: {node.status.value}. {node.status_detail}"
         )
+        self.project_info_container.setVisible(node.identifier == "project")
         self.enabled_checkbox.blockSignals(True)
         self.enabled_checkbox.setChecked(node.enabled)
         self.enabled_checkbox.setEnabled(node.implemented and node.bypassable)
         self.enabled_checkbox.setVisible(True)
         self.enabled_checkbox.blockSignals(False)
         self._clear_parameters()
-        for spec in node.parameter_specs:
-            value = node.parameters[spec.key]
-            if spec.kind == "float":
-                editor = QDoubleSpinBox(self.parameter_container)
-                editor.setDecimals(3)
-                editor.setRange(float(spec.minimum), float(spec.maximum))
-                editor.setSingleStep(float(spec.step or 0.01))
-                editor.setValue(float(value))
-                editor.editingFinished.connect(
-                    lambda key=spec.key, widget=editor: self._parameter_edited(
-                        key, widget.value()
+        specs_by_key = {spec.key: spec for spec in node.parameter_specs}
+        for section_index, section in enumerate(node.parameter_sections):
+            section_label = QLabel(section.title, self.parameter_container)
+            section_label.setObjectName("parameterSectionHeading")
+            section_label.setStyleSheet(
+                "font-weight: 650; color: #27465e; "
+                f"margin-top: {2 if section_index == 0 else 9}px; "
+                "padding: 2px 0 1px 0;"
+            )
+            section_label.setToolTip(
+                f"{node.title} settings: {section.title}"
+            )
+            self.parameter_form.addRow(section_label)
+            self._parameter_section_labels.append(section_label)
+            for key in section.keys:
+                spec = specs_by_key[key]
+                value = node.parameters[spec.key]
+                if spec.kind == "float":
+                    editor = QDoubleSpinBox(self.parameter_container)
+                    editor.setDecimals(3)
+                    editor.setRange(float(spec.minimum), float(spec.maximum))
+                    editor.setSingleStep(float(spec.step or 0.01))
+                    editor.setValue(float(value))
+                    editor.editingFinished.connect(
+                        lambda key=spec.key, widget=editor: self._parameter_edited(
+                            key, widget.value()
+                        )
                     )
-                )
-            elif spec.kind == "int":
-                editor = QSpinBox(self.parameter_container)
-                editor.setRange(int(spec.minimum), int(spec.maximum))
-                editor.setSingleStep(int(spec.step or 1))
-                editor.setValue(int(value))
-                editor.editingFinished.connect(
-                    lambda key=spec.key, widget=editor: self._parameter_edited(
-                        key, widget.value()
+                elif spec.kind == "int":
+                    editor = QSpinBox(self.parameter_container)
+                    editor.setRange(int(spec.minimum), int(spec.maximum))
+                    editor.setSingleStep(int(spec.step or 1))
+                    editor.setValue(int(value))
+                    editor.editingFinished.connect(
+                        lambda key=spec.key, widget=editor: self._parameter_edited(
+                            key, widget.value()
+                        )
                     )
-                )
-            elif spec.kind == "choice":
-                editor = QComboBox(self.parameter_container)
-                editor.addItems(spec.choices)
-                editor.setCurrentText(str(value))
-                editor.currentTextChanged.connect(
-                    lambda selected, key=spec.key: self._parameter_edited(key, selected)
-                )
-            elif spec.kind == "text":
-                editor = QLineEdit(self.parameter_container)
-                editor.setText(str(value))
-                editor.editingFinished.connect(
-                    lambda key=spec.key, widget=editor: self._parameter_edited(
-                        key, widget.text()
+                elif spec.kind == "choice":
+                    editor = QComboBox(self.parameter_container)
+                    editor.addItems(spec.choices)
+                    editor.setCurrentText(str(value))
+                    editor.currentTextChanged.connect(
+                        lambda selected, key=spec.key: self._parameter_edited(
+                            key, selected
+                        )
                     )
-                )
-            else:
-                editor = QCheckBox(self.parameter_container)
-                editor.setChecked(bool(value))
-                editor.toggled.connect(
-                    lambda checked, key=spec.key: self._parameter_edited(key, checked)
-                )
-            editor.setEnabled(node.enabled and node.implemented)
-            editor.setToolTip(spec.description)
-            field_label = QLabel(spec.label, self.parameter_container)
-            field_label.setToolTip(spec.description)
-            self.parameter_form.addRow(field_label, editor)
-            self._parameter_widgets.append(editor)
+                elif spec.kind == "text":
+                    editor = QLineEdit(self.parameter_container)
+                    editor.setText(str(value))
+                    editor.editingFinished.connect(
+                        lambda key=spec.key, widget=editor: self._parameter_edited(
+                            key, widget.text()
+                        )
+                    )
+                else:
+                    editor = QCheckBox(self.parameter_container)
+                    editor.setChecked(bool(value))
+                    editor.toggled.connect(
+                        lambda checked, key=spec.key: self._parameter_edited(
+                            key, checked
+                        )
+                    )
+                editor.setEnabled(node.enabled and node.implemented)
+                editor.setToolTip(spec.description)
+                field_label = QLabel(spec.label, self.parameter_container)
+                field_label.setToolTip(spec.description)
+                self.parameter_form.addRow(field_label, editor)
+                self._parameter_widgets.append(editor)
         self.parameter_container.setVisible(bool(node.parameter_specs))
         self.parameters_header.setVisible(bool(node.parameter_specs))
         self._refresh_procedural_fit_action()
@@ -1376,6 +1419,13 @@ class PipelineInspector(QWidget):
             self.procedural_centres_edit_button.setChecked(bool(editing))
         self._refresh_procedural_centres_action()
 
+    def set_project_summary(self, text: str) -> None:
+        """Display current master/image/annotation state on the Project node."""
+
+        summary = str(text).strip() or "No project information is available."
+        self.project_info_label.setText(summary)
+        self.project_info_label.setToolTip(summary)
+
     def set_procedural_instance_statistics(self, text: str = "") -> None:
         """Display geometry for the procedural label selected in the image."""
 
@@ -1387,7 +1437,7 @@ class PipelineInspector(QWidget):
     def _refresh_procedural_centres_action(self) -> None:
         node = self._node
         visible = node is not None and node.identifier in {
-            "reference_layers",
+            "project",
             "procedural_instances",
         }
         self.procedural_centres_container.setVisible(visible)
@@ -1428,7 +1478,7 @@ class PipelineInspector(QWidget):
         del index
         node = self._node
         if node is None or node.identifier not in {
-            "reference_layers",
+            "project",
             "procedural_instances",
         }:
             return
@@ -1454,7 +1504,7 @@ class PipelineInspector(QWidget):
     def _procedural_centres_edit_toggled(self, editing: bool) -> None:
         node = self._node
         if node is None or node.identifier not in {
-            "reference_layers",
+            "project",
             "procedural_instances",
         }:
             return
@@ -1468,7 +1518,7 @@ class PipelineInspector(QWidget):
     def _procedural_centres_undo_requested(self) -> None:
         node = self._node
         if node is not None and node.identifier in {
-            "reference_layers",
+            "project",
             "procedural_instances",
         }:
             self.node_action_requested.emit(
@@ -1479,7 +1529,7 @@ class PipelineInspector(QWidget):
     def _procedural_centres_reset_requested(self) -> None:
         node = self._node
         if node is not None and node.identifier in {
-            "reference_layers",
+            "project",
             "procedural_instances",
         }:
             self.node_action_requested.emit(
@@ -1649,6 +1699,7 @@ class PipelineInspector(QWidget):
         while self.parameter_form.rowCount():
             self.parameter_form.removeRow(0)
         self._parameter_widgets.clear()
+        self._parameter_section_labels.clear()
 
     def _update_colour_summary(self) -> None:
         node_id = None if self._node is None else self._node.identifier

@@ -52,8 +52,11 @@ class ReferenceEdgeProducts:
 
     physical_probability: GpuRaster
     non_edge_probability: GpuRaster
+    net_probability: GpuRaster
     physical_field: GpuRaster
     non_edge_field: GpuRaster
+    net_field: GpuRaster
+    subtraction_weight: float
     physical_sample_count: int
     non_edge_sample_count: int
 
@@ -133,6 +136,7 @@ class BoundaryTraceProducts:
     ellipse_confidence: GpuRaster
     fit_residual: GpuRaster
     centre_votes: GpuRaster
+    oval_centre_probability: GpuRaster
     semantic_sides: GpuRaster
     rejection_hue: GpuRaster
     rejection_strength: GpuRaster
@@ -185,6 +189,10 @@ class GpuBoundaryGeometry:
     ellipse_axes_xy: object
     ellipse_angle_radians: object
     ellipse_confidence: object
+    oval_centres_xy: object
+    oval_axes_xy: object
+    oval_angle_radians: object
+    oval_confidence: object
     _host_cache: dict[str, np.ndarray] | None = field(
         default=None, init=False, repr=False
     )
@@ -199,6 +207,10 @@ class GpuBoundaryGeometry:
                 "ellipse_axes_xy": self.ellipse_axes_xy.detach().cpu().numpy(),
                 "ellipse_angle_radians": self.ellipse_angle_radians.detach().cpu().numpy(),
                 "ellipse_confidence": self.ellipse_confidence.detach().cpu().numpy(),
+                "oval_centres_xy": self.oval_centres_xy.detach().cpu().numpy(),
+                "oval_axes_xy": self.oval_axes_xy.detach().cpu().numpy(),
+                "oval_angle_radians": self.oval_angle_radians.detach().cpu().numpy(),
+                "oval_confidence": self.oval_confidence.detach().cpu().numpy(),
             }
             self.download_count += 1
         return self._host_cache
@@ -515,7 +527,7 @@ def build_cuda_analysis_layers(
             timing_recorder.stop(wavelet_timing)
     else:
         wavelet_details, wavelet_residual = values["layer.wavelet_decomposition"]
-    painted_reference_dirty = "reference_layers" in dirty
+    painted_reference_dirty = "project" in dirty or "reference_layers" in dirty
     background_dirty = (
         painted_reference_dirty
         or "background_likelihood" in dirty
@@ -612,7 +624,7 @@ def build_cuda_analysis_layers(
         or "layer.refined_background" not in values
     )
     refined_timing = None
-    if refined_dirty and background_colour_enabled and background_noise_enabled:
+    if refined_dirty and background_noise_enabled:
         refined_timing = (
             None
             if timing_recorder is None
@@ -621,7 +633,7 @@ def build_cuda_analysis_layers(
         refined_result = noise_frequency_background_likelihood(
             crop,
             valid_mask,
-            background,
+            None,
             seed_diameter,
             settings,
             background_reference_points=background_reference_points,
@@ -643,7 +655,7 @@ def build_cuda_analysis_layers(
             foreground_reference_mask=foreground_reference_mask,
             target_exclusion_mask=None,
             other_reference_mask=background_exclusion_mask,
-            other_colour_likelihood=other_colour_probability,
+            other_colour_likelihood=None,
             include_other_probability=True,
             reference_radius=max(
                 2,
@@ -698,7 +710,7 @@ def build_cuda_analysis_layers(
         foreground_noise_result = noise_frequency_foreground_likelihood(
             crop,
             valid_mask,
-            foreground_probability,
+            None,
             seed_diameter,
             settings,
             background_reference_points=background_reference_points,
@@ -748,7 +760,6 @@ def build_cuda_analysis_layers(
     )
     if (
         surrounding_dirty
-        and background_colour_enabled
         and background_noise_enabled
         and surrounding_noise_source_tensor is not None
         and surrounding_noise_valid_tensor is not None
@@ -759,7 +770,7 @@ def build_cuda_analysis_layers(
             seed_diameter,
             settings,
             noise_profile,
-            colour_likelihood=surrounding_background,
+            colour_likelihood=None,
             cuda_context=context,
         )
         values["layer.surrounding_noise"] = surrounding_result
@@ -1075,7 +1086,6 @@ def build_cuda_analysis_layers(
         or frequency_noise_dirty
         or ridges_dirty
         or "reference_texture_prototypes" in dirty
-        or "reference_edge_probability" in dirty
         or "layer.reference_texture_prototypes" not in values
         or values.get("layer.reference_texture_signature")
         != reference_texture_signature
@@ -1231,11 +1241,43 @@ def build_cuda_analysis_layers(
             if timing_recorder is None
             else timing_recorder.start("reference_edge_probability")
         )
+        import torch
+
+        subtraction_weight = float(settings.net_physical_edge_internal_scale)
+        net_field_tensor = torch.clamp(
+            reference_textures.physical_edge_field.gpu_tensor(dtype=torch.float32)
+            - subtraction_weight
+            * reference_textures.non_edge_field.gpu_tensor(dtype=torch.float32),
+            min=0.0,
+            max=1.0,
+        )
+        net_source_tensor = torch.clamp(
+            reference_textures.physical_edge_probability.gpu_tensor(
+                dtype=torch.float32
+            )
+            / 255.0
+            - subtraction_weight
+            * reference_textures.non_edge_probability.gpu_tensor(
+                dtype=torch.float32
+            )
+            / 255.0,
+            min=0.0,
+            max=1.0,
+        )
         reference_edges = ReferenceEdgeProducts(
             reference_textures.physical_edge_probability,
             reference_textures.non_edge_probability,
+            _lazy_u8(
+                net_source_tensor * 255.0,
+                "net physical edge probability",
+            ),
             reference_textures.physical_edge_field,
             reference_textures.non_edge_field,
+            _lazy_float(
+                net_field_tensor,
+                "continuous net physical edge probability",
+            ),
+            subtraction_weight,
             reference_textures.physical_sample_count,
             reference_textures.non_edge_sample_count,
         )
@@ -1249,6 +1291,7 @@ def build_cuda_analysis_layers(
         reference_edges = ReferenceEdgeProducts(
             zero,
             zero,
+            zero,
             _lazy_float(
                 valid_tensor.float() * 0.0,
                 "disabled continuous reference edge probability",
@@ -1257,6 +1300,11 @@ def build_cuda_analysis_layers(
                 valid_tensor.float() * 0.0,
                 "disabled continuous non-physical edge probability",
             ),
+            _lazy_float(
+                valid_tensor.float() * 0.0,
+                "disabled continuous net physical edge probability",
+            ),
+            float(settings.net_physical_edge_internal_scale),
             0,
             0,
         )
@@ -1274,6 +1322,8 @@ def build_cuda_analysis_layers(
         or "layer.normalized_net_reference_edge_ridges" not in values
     )
     if reference_ridges_dirty and reference_edge_ridges_enabled:
+        import torch
+
         reference_ridge_timing = (
             None
             if timing_recorder is None
@@ -1285,21 +1335,8 @@ def build_cuda_analysis_layers(
             settings,
             cuda_context=context,
         )
-        import torch
-
-        net_reference_field = GpuRaster(
-            torch.clamp(
-                reference_edges.physical_field.gpu_tensor(dtype=torch.float32)
-                - float(settings.net_physical_edge_internal_scale)
-                * reference_edges.non_edge_field.gpu_tensor(dtype=torch.float32),
-                min=0.0,
-                max=1.0,
-            ),
-            numpy_dtype=np.float32,
-            name="continuous net physical edge probability",
-        )
         net_reference_edge_ridge = reference_probability_ridges(
-            net_reference_field,
+            reference_edges.net_field,
             gradient_result,
             settings,
             cuda_context=context,
@@ -1320,6 +1357,7 @@ def build_cuda_analysis_layers(
             normalized_net_reference_field,
             gradient_result,
             settings,
+            include_gradient_strength=False,
             cuda_context=context,
         )
         if reference_ridge_timing is not None:
@@ -1405,7 +1443,6 @@ def build_cuda_analysis_layers(
         traces_dirty
         or reference_edge_dirty
         or background_dirty
-        or instance_dirty
         or "seed_edge_curves" in dirty
         or previous_curve_result is None
     )
@@ -1426,9 +1463,6 @@ def build_cuda_analysis_layers(
             ),
             physical_edge_probability=reference_edges.physical_probability,
             non_edge_probability=reference_edges.non_edge_probability,
-            instance_labels=labels,
-            centers=centers,
-            radii=radii,
             cuda_context=context,
             previous=trace_products,
             recompute_ridges=False,
@@ -1513,8 +1547,9 @@ def build_cuda_analysis_layers(
         reference_texture_profile=reference_textures.profile,
         physical_edge_probability=reference_edges.physical_probability,
         non_edge_probability=reference_edges.non_edge_probability,
+        net_physical_edge_probability=reference_edges.net_probability,
         net_physical_edge_internal_scale=(
-            settings.net_physical_edge_internal_scale
+            reference_edges.subtraction_weight
         ),
         reference_edge_ridges=reference_edge_ridge,
         net_reference_edge_ridges=net_reference_edge_ridge,
@@ -1561,6 +1596,7 @@ def build_cuda_analysis_layers(
         edge_ellipse_confidence=curve_result.ellipse_confidence,
         edge_fit_residual=curve_result.fit_residual,
         edge_centre_votes=curve_result.centre_votes,
+        oval_centre_probability=curve_result.oval_centre_probability,
         edge_semantic_sides=curve_result.semantic_sides,
         edge_rejection_hue=curve_result.rejection_hue,
         edge_rejection_strength=curve_result.rejection_strength,
@@ -2382,7 +2418,11 @@ def noise_frequency_background_likelihood(
         if valid_tensor is None
         else valid_tensor.bool()
     )
-    full_colour = _raster_tensor(colour_likelihood, context, normalized=True)
+    full_colour = (
+        full_valid.float() * 0.5
+        if colour_likelihood is None
+        else _raster_tensor(colour_likelihood, context, normalized=True)
+    )
     full_other_colour = (
         None
         if other_colour_likelihood is None
@@ -2689,26 +2729,25 @@ def noise_frequency_background_likelihood(
         target_reference = (
             manual_target_reference | automatic_target_reference
         )
-    automatic_target = (
-        eligible
-        & ~target_exclusion[None, None]
-        & ~nontarget_reference[None, None]
-        & (colour >= settings.noise_background_min_likelihood / 255.0)
-    )
-    automatic_nontarget = (
-        eligible
-        & ~target_reference[None, None]
-        & (colour <= settings.noise_nonbackground_max_likelihood / 255.0)
-    )
     minimum_samples = max(32, round(int(valid.sum().item()) * 0.002))
     has_external_target = bool(
         external_feature_values is not None
         and int(external_feature_values.shape[0]) > 0
     )
+    texture_energy = feature.mean(dim=1, keepdim=True)
+    automatic_target = torch.zeros_like(eligible)
+    if not bool(target_reference.any().item()) and not has_external_target:
+        target_candidates = (
+            eligible
+            & ~target_exclusion[None, None]
+            & ~nontarget_reference[None, None]
+        )
+        if bool(target_candidates.any().item()):
+            threshold = torch.quantile(texture_energy[target_candidates], 0.25)
+            automatic_target = target_candidates & (texture_energy <= threshold)
     if bool(target_reference.any().item()):
         # Painted target regions and any exact retained perimeter-ring pixels
-        # inside this raster supply actual texture observations. Colour
-        # pseudo-labels are used only when neither direct source is available.
+        # inside this raster supply actual texture observations.
         confident_background = target_reference[None, None]
     elif has_external_target:
         # The exact outside-dish annulus has different coordinates. Its compact
@@ -2721,28 +2760,7 @@ def noise_frequency_background_likelihood(
         and not has_external_target
         and int(confident_background.sum().item()) < minimum_samples
     ):
-        threshold = torch.quantile(colour[eligible], 0.75)
-        confident_background = (
-            eligible
-            & ~target_exclusion[None, None]
-            & ~nontarget_reference[None, None]
-            & (colour >= threshold)
-        )
-    manual_nontarget = nontarget_reference | target_exclusion
-    if bool(manual_nontarget.any().item()):
-        confident_nonbackground = manual_nontarget[None, None]
-    else:
-        confident_nonbackground = automatic_nontarget
-    if (
-        not bool(manual_nontarget.any().item())
-        and int(confident_nonbackground.sum().item()) < minimum_samples
-    ):
-        threshold = torch.quantile(colour[eligible], 0.25)
-        confident_nonbackground = (
-            eligible
-            & ~target_reference[None, None]
-            & (colour <= threshold)
-        )
+        confident_background = automatic_target
 
     feature_values = feature.permute(0, 2, 3, 1)
 
@@ -2800,10 +2818,40 @@ def noise_frequency_background_likelihood(
         bg_values = mask_feature_values(confident_background)
         if int(bg_values.shape[0]) > 32768:
             bg_values = resampled_rows(bg_values, 32768)
+    bg_center, bg_scale = _robust_tensor_distribution(bg_values)
+    manual_nontarget = nontarget_reference | target_exclusion
+    if bool(manual_nontarget.any().item()):
+        confident_nonbackground = manual_nontarget[None, None]
+    else:
+        # Select contrastive examples by texture distance from the target
+        # distribution itself. This replaces the former low-colour-probability
+        # pseudo-label and keeps the noise classifier evidentially independent.
+        standardized_target_distance = (
+            (
+                feature
+                - bg_center[None, :, None, None]
+            )
+            / bg_scale[None, :, None, None]
+        ).square().mean(dim=1, keepdim=True)
+        candidates = eligible & ~target_reference[None, None]
+        if bool(candidates.any().item()):
+            distance_threshold = torch.quantile(
+                standardized_target_distance[candidates], 0.75
+            )
+            confident_nonbackground = candidates & (
+                standardized_target_distance >= distance_threshold
+            )
+            if int(confident_nonbackground.sum().item()) < minimum_samples:
+                confident_nonbackground = candidates
+        else:
+            confident_nonbackground = torch.zeros_like(eligible)
     non_values = mask_feature_values(confident_nonbackground)
+    if int(non_values.shape[0]) == 0:
+        # Degenerate all-target images carry neutral evidence instead of
+        # raising or borrowing a colour class as an invented texture negative.
+        non_values = bg_values
     if int(non_values.shape[0]) > 32768:
         non_values = resampled_rows(non_values, 32768)
-    bg_center, bg_scale = _robust_tensor_distribution(bg_values)
     non_center, non_scale = _robust_tensor_distribution(non_values)
     values = feature.permute(0, 2, 3, 1)
     bg_log = -0.5 * (((values - bg_center) / bg_scale).square() + 2.0 * torch.log(bg_scale)).sum(dim=-1, keepdim=True)
@@ -2815,52 +2863,28 @@ def noise_frequency_background_likelihood(
     separation = float(
         2.0 * torch.linalg.vector_norm((bg_center - non_center) / pooled_scale).item()
     )
-    # A weak single-Gaussian texture fit must not overrule a much clearer colour
-    # model. This was the IMG_9533 regression: the exterior ring and diverse
-    # seed interiors had only 0.66 standardized separation, yet the fixed 72%
-    # texture weight made pale seeds look *more* background-like than the ring.
-    texture_authority = float(np.clip((separation - 0.50) / 2.0, 0.0, 1.0))
-    texture_weight = 0.72 * texture_authority
-    base = (
-        texture_weight * texture_probability
-        + (1.0 - texture_weight) * colour
     # Keep learned evidence probabilistic rather than turning a naturally
     # saturated colour/texture match into an implicit hard annotation. Manual
     # regions train the distributions above; they deliberately do not overwrite
     # their coordinates with exact probability zero or one.
-    ).clamp(1e-4, 1.0 - (1.0 / 255.0)) * valid
+    base = texture_probability.clamp(1e-4, 1.0 - (1.0 / 255.0)) * valid
 
     other_base = None
     other_profile = None
     if (
-        other_colour is not None
-        and bool(other_reference.any().item())
+        bool(other_reference.any().item())
         and bool((valid[0, 0] & ~other_reference).any().item())
     ):
         # Other is a real positive texture class here, not the pooled negative
         # side of either the Background or Foreground binary classifier. Use
         # painted Background/Foreground as direct non-Other examples whenever
-        # available; otherwise take conservative low-Other colour pseudo-labels.
+        # available; otherwise use the remaining valid texture observations.
         other_reference &= valid[0, 0]
         other_nontarget_reference &= valid[0, 0] & ~other_reference
         if bool(other_nontarget_reference.any().item()):
             confident_nonother = other_nontarget_reference[None, None]
         else:
-            confident_nonother = (
-                eligible
-                & ~other_reference[None, None]
-                & (
-                    other_colour
-                    <= settings.noise_nonbackground_max_likelihood / 255.0
-                )
-            )
-        if int(confident_nonother.sum().item()) < minimum_samples:
-            nonother_threshold = torch.quantile(other_colour[eligible], 0.25)
-            confident_nonother = (
-                eligible
-                & ~other_reference[None, None]
-                & (other_colour <= nonother_threshold)
-            )
+            confident_nonother = eligible & ~other_reference[None, None]
         if not bool(confident_nonother.any().item()):
             # A nearly all-Other reference mask can leave the conservative
             # colour cutoff empty. Use every remaining valid coordinate rather
@@ -2899,14 +2923,9 @@ def noise_frequency_background_likelihood(
                 (other_center - nonother_center) / other_pooled_scale
             ).item()
         )
-        other_texture_authority = float(
-            np.clip((other_separation - 0.50) / 2.0, 0.0, 1.0)
-        )
-        other_texture_weight = 0.72 * other_texture_authority
-        other_base = (
-            other_texture_weight * other_texture_probability
-            + (1.0 - other_texture_weight) * other_colour
-        ).clamp(1e-4, 1.0 - (1.0 / 255.0)) * valid
+        other_base = other_texture_probability.clamp(
+            1e-4, 1.0 - (1.0 / 255.0)
+        ) * valid
         other_profile = NoiseFrequencyProfile(
             band_scales_px=reported_scales,
             background_log_rms=tuple(
@@ -3099,31 +3118,7 @@ def surrounding_band_noise_likelihood(
         + 2.0 * torch.log(non_scale)
     ).sum(dim=-1)
     texture_probability = torch.sigmoid((bg_log - non_log) * 0.72)[0]
-    if colour_likelihood is None:
-        probability = texture_probability
-    else:
-        colour_probability = _raster_tensor(
-            colour_likelihood, context, normalized=True
-        )
-        if colour_probability.shape[-2:] != (source_height, source_width):
-            raise ValueError(
-                "Surrounding background colour and texture rasters must align."
-            )
-        if colour_probability.shape[-2:] != (height, width):
-            colour_probability = functional.interpolate(
-                colour_probability,
-                (height, width),
-                mode="bilinear",
-                align_corners=False,
-            )
-        texture_authority = float(
-            np.clip((float(profile.separation) - 0.50) / 2.0, 0.0, 1.0)
-        )
-        texture_weight = 0.72 * texture_authority
-        probability = (
-            texture_weight * texture_probability
-            + (1.0 - texture_weight) * colour_probability[0, 0]
-        )
+    probability = texture_probability
     probability = probability * valid[0, 0]
     raster = probability[None, None]
     if raster.shape[-2:] != (source_height, source_width):
@@ -3926,7 +3921,9 @@ def _prototype_bank_similarity(features, bank, tolerance: float):
     return best
 
 
-def _candidate_internal_edge_mask(edge, ridge, safe_interior):
+def _candidate_internal_edge_mask(
+    edge, ridge, safe_interior, *, ridge_weight: float = 0.35
+):
     """Select sparse edge-like negative examples inside reviewed instances.
 
     The safe interior is deliberately *not* itself a non-physical-edge class:
@@ -3943,7 +3940,11 @@ def _candidate_internal_edge_mask(edge, ridge, safe_interior):
     safe = safe_interior.bool()
     if not bool(safe.any().item()):
         return torch.zeros_like(safe)
-    interior_strength = edge[safe]
+    ridge_weight = min(1.0, max(0.0, float(ridge_weight)))
+    candidate_strength = (
+        (1.0 - ridge_weight) * edge + ridge_weight * ridge
+    ).clamp(0.0, 1.0)
+    interior_strength = candidate_strength[safe]
     quantile_position = 0.65 * (int(interior_strength.numel()) - 1)
     lower_index = int(np.floor(quantile_position))
     upper_index = int(np.ceil(quantile_position))
@@ -3958,13 +3959,17 @@ def _candidate_internal_edge_mask(edge, ridge, safe_interior):
             quantile_position - lower_index,
         )
     adaptive = adaptive.clamp_min(0.08)
-    local_high = functional.max_pool2d(edge, 3, stride=1, padding=1)
-    local_low = -functional.max_pool2d(-edge, 3, stride=1, padding=1)
-    local_maximum = (edge >= local_high - 1e-6) & (
+    local_high = functional.max_pool2d(
+        candidate_strength, 3, stride=1, padding=1
+    )
+    local_low = -functional.max_pool2d(
+        -candidate_strength, 3, stride=1, padding=1
+    )
+    local_maximum = (candidate_strength >= local_high - 1e-6) & (
         local_high - local_low >= 0.02
     )
     ridge_candidate = ridge >= 0.05
-    broad_candidate = local_maximum & (edge >= adaptive)
+    broad_candidate = local_maximum & (candidate_strength >= adaptive)
     return safe & (ridge_candidate | broad_candidate)
 
 
@@ -4273,7 +4278,11 @@ def _edge_strip_feature_maps(
             support / maximum_support
         )[None, None]
 
-    base_features = torch.cat((lab, edge, ridge), dim=1)
+    # Semantic classes describe which kind of transition is present. Absolute
+    # edge/ridge amplitude is combined later by Reference edges when a precise
+    # ridge is requested; embedding it here merely disguises edge strength as
+    # a class probability.
+    base_features = lab
     interior, interior_support = pooled_at(base_features, -normal_offset)
     centre, centre_support = pooled_at(base_features, 0.0)
     exterior, exterior_support = pooled_at(base_features, normal_offset)
@@ -4300,8 +4309,6 @@ def _edge_strip_feature_maps(
                 zone[:, 0:1] / 255.0,
                 (zone[:, 1:2] - 128.0) / 128.0,
                 (zone[:, 2:3] - 128.0) / 128.0,
-                zone[:, 3:4],
-                zone[:, 4:5],
                 zone_residual,
             ),
             dim=1,
@@ -4339,8 +4346,8 @@ def _edge_strip_feature_maps(
         ),
         dim=1,
     )
-    # Zone width is seven (Lab, edge, ridge, L residual, chroma residual).
-    zone_width = 7
+    # Zone width is five (Lab plus L/chroma residual).
+    zone_width = 5
     reverse = (
         torch.cat(
             (
@@ -4425,8 +4432,6 @@ def reference_texture_probabilities(
         "Lab lightness",
         "Lab a*",
         "Lab b*",
-        "edge magnitude",
-        "ridge support",
         "local lightness residual",
         "local colour residual",
     )
@@ -4571,6 +4576,11 @@ def reference_texture_probabilities(
         edge_diameter
         * float(settings.reference_edge_strip_tangent_half_length_fraction),
     ) / max(edge_work_scale, 1e-8)
+    material_context_radius_px = max(
+        0.7,
+        max(6.0, float(seed_diameter) * work_scale)
+        * float(settings.reference_texture_context_fraction),
+    ) / max(work_scale, 1e-8)
 
     def resized(values, *, mode="bilinear"):
         tensor = values.float()
@@ -4671,6 +4681,7 @@ def reference_texture_probabilities(
                 working_scale=work_scale,
                 edge_working_scale=edge_work_scale,
                 edge_working_seed_diameter_px=edge_diameter,
+                material_context_radius_px=material_context_radius_px,
                 edge_strip_normal_offset_px=edge_strip_normal_offset_px,
                 edge_strip_tangent_half_length_px=(
                     edge_strip_tangent_half_length_px
@@ -4904,6 +4915,7 @@ def reference_texture_probabilities(
                 working_scale=work_scale,
                 edge_working_scale=edge_work_scale,
                 edge_working_seed_diameter_px=edge_diameter,
+                material_context_radius_px=material_context_radius_px,
                 edge_strip_normal_offset_px=edge_strip_normal_offset_px,
                 edge_strip_tangent_half_length_px=(
                     edge_strip_tangent_half_length_px
@@ -5038,6 +5050,7 @@ def reference_texture_probabilities(
             edge_strength,
             edge_ridge,
             safe_interior,
+            ridge_weight=float(settings.reference_edge_ridge_weight),
         ) & training_strip_valid
 
     edge_overlap = physical_mask & non_edge_mask
@@ -5138,21 +5151,16 @@ def reference_texture_probabilities(
         if edge_banks["non_edge"] is None
         else polarity_ambiguous_similarity(edge_banks["non_edge"])
     )
-    ridge_weight = float(settings.reference_edge_ridge_weight)
-    edge_support = (
-        (1.0 - ridge_weight) * edge_strength
-        + ridge_weight * edge_ridge
-    ).clamp(0.0, 1.0)
     if physical_similarity is not None and non_edge_similarity is not None:
         normalizer = physical_similarity + non_edge_similarity + 0.10
-        physical_probability = edge_support * physical_similarity / normalizer
-        non_edge_probability = edge_support * non_edge_similarity / normalizer
+        physical_probability = physical_similarity / normalizer
+        non_edge_probability = non_edge_similarity / normalizer
     else:
         # A single semantic edge bank is only a similarity descriptor. Without
         # both physical and non-physical examples its absolute scale is not a
         # class probability and must not enter a boundary cost.
-        physical_probability = torch.zeros_like(edge_support)
-        non_edge_probability = torch.zeros_like(edge_support)
+        physical_probability = torch.zeros_like(edge_strength)
+        non_edge_probability = torch.zeros_like(edge_strength)
     semantic_valid = edge_valid & strip_valid
     physical_probability *= semantic_valid
     non_edge_probability *= semantic_valid
@@ -5236,6 +5244,7 @@ def reference_texture_probabilities(
         working_scale=work_scale,
         edge_working_scale=edge_work_scale,
         edge_working_seed_diameter_px=edge_diameter,
+        material_context_radius_px=material_context_radius_px,
         edge_strip_normal_offset_px=edge_strip_normal_offset_px,
         edge_strip_tangent_half_length_px=(
             edge_strip_tangent_half_length_px
@@ -5283,12 +5292,13 @@ def locally_normalized_net_physical_edge(
     *,
     cuda_context=None,
 ) -> GpuRaster:
-    """Normalize learned edge support locally without inventing flat-region edges.
+    """Combine semantic edge class with locally normalized image-edge support.
 
-    Physical and non-physical fields share one multiplicative edge-support
-    factor. Their positive margin divided by their sum therefore isolates the
-    semantic decision. A bounded, winsorized local RMS envelope then calibrates
-    the total learned support before an absolute smooth gate rejects weak noise.
+    Physical and non-physical inputs are conditional semantic probabilities;
+    neither contains absolute gradient strength. A bounded, winsorized local
+    RMS envelope equalizes the independent image-gradient support, while an
+    absolute smooth gate prevents a confident semantic match in a flat region
+    from becoming a boundary.
     """
 
     import torch
@@ -5358,17 +5368,14 @@ def locally_normalized_net_physical_edge(
     non_edge = resized(non_edge_probability_field).clamp(0.0, 1.0)
     valid = resized(gradients.valid.float(), mode="nearest") > 0.5
     valid_float = valid.float()
-    # Keep the full class-evidence sum here (range 0..2). Clamping before the
-    # division would stop the shared support factor from cancelling where both
-    # prototype classes respond strongly to the same ambiguous edge.
-    total = (physical + non_edge) * valid_float
-    epsilon = torch.finfo(total.dtype).eps
+    semantic_total = (physical + non_edge) * valid_float
+    epsilon = torch.finfo(semantic_total.dtype).eps
     semantic_margin = torch.clamp(
         (
             physical
             - float(settings.net_physical_edge_internal_scale) * non_edge
         )
-        / (total + epsilon),
+        / (semantic_total + epsilon),
         min=0.0,
         max=1.0,
     )
@@ -5381,8 +5388,11 @@ def locally_normalized_net_physical_edge(
             * float(settings.reference_edge_normalization_radius_fraction)
         ),
     )
+    edge_support = resized(gradients.strength).clamp(0.0, 1.0) * valid_float
     preliminary_rms = torch.sqrt(
-        valid_box_mean(total.square(), valid_float, radius).clamp_min(0.0)
+        valid_box_mean(
+            edge_support.square(), valid_float, radius
+        ).clamp_min(0.0)
     )
     absolute_floor = float(
         settings.reference_edge_normalization_absolute_floor
@@ -5391,7 +5401,7 @@ def locally_normalized_net_physical_edge(
         preliminary_rms * 2.5,
         torch.full_like(preliminary_rms, absolute_floor),
     )
-    clipped_total = torch.minimum(total, winsor_cap)
+    clipped_total = torch.minimum(edge_support, winsor_cap)
     local_envelope = torch.sqrt(
         valid_box_mean(
             clipped_total.square(), valid_float, radius
@@ -5404,10 +5414,10 @@ def locally_normalized_net_physical_edge(
         min=1.0 / maximum_gain,
         max=maximum_gain,
     )
-    normalized_support = torch.clamp(total * gain, 0.0, 1.0)
+    normalized_support = torch.clamp(edge_support * gain, 0.0, 1.0)
     if absolute_floor > 0.0:
         gate_coordinate = torch.clamp(
-            (total - absolute_floor) / absolute_floor,
+            (edge_support - absolute_floor) / absolute_floor,
             min=0.0,
             max=1.0,
         )
@@ -5415,9 +5425,14 @@ def locally_normalized_net_physical_edge(
             3.0 - 2.0 * gate_coordinate
         )
     else:
-        absolute_gate = (total > 0.0).to(total.dtype)
+        absolute_gate = (edge_support > 0.0).to(edge_support.dtype)
+    semantic_confidence = semantic_total.clamp(0.0, 1.0)
     normalized = (
-        semantic_margin * normalized_support * absolute_gate * valid_float
+        semantic_margin
+        * semantic_confidence
+        * normalized_support
+        * absolute_gate
+        * valid_float
     ).clamp(0.0, 1.0)
     if normalized.shape[-2:] != (source_height, source_width):
         normalized = functional.interpolate(
@@ -5439,6 +5454,7 @@ def reference_probability_ridges(
     gradients: EdgeGradientProducts,
     settings,
     *,
+    include_gradient_strength: bool = True,
     cuda_context=None,
 ) -> GpuRaster:
     """Thin reference-trained physical-edge probability without a CPU round trip."""
@@ -5471,6 +5487,8 @@ def reference_probability_ridges(
     probability = resized(
         _raster_tensor(physical_probability_field, context)
     ).clamp(0.0, 1.0)
+    if include_gradient_strength:
+        probability *= resized(gradients.strength).clamp(0.0, 1.0)
     normal_x = resized(gradients.normal_x)
     normal_y = resized(gradients.normal_y)
     valid = resized(gradients.valid.float(), mode="nearest") > 0.5
@@ -5677,7 +5695,28 @@ def seed_boundary_tracing(
             trace_ridge_override, context, normalized=True
         )
         trace_ridge = resized(trace_ridge)
-        trace_accepted = (trace_ridge[0, 0] > 0.0) & valid[0, 0]
+        # Bilinear restoration/resizing creates low-valued halos beside a
+        # one-pixel semantic ridge. The former >0 rule promoted those halos to
+        # parallel boundaries. Re-thin against the live continuous normal and
+        # break flat ties deterministically.
+        trace_values = trace_ridge[0, 0]
+        trace_step = max(0.25, float(settings.ridge_nms_step_px) * scale)
+        trace_forward = bilinear_sample(
+            trace_ridge,
+            xx + normal_x[0, 0] * trace_step,
+            yy + normal_y[0, 0] * trace_step,
+        )
+        trace_backward = bilinear_sample(
+            trace_ridge,
+            xx - normal_x[0, 0] * trace_step,
+            yy - normal_y[0, 0] * trace_step,
+        )
+        trace_accepted = (
+            (trace_values > 0.0)
+            & (trace_values >= trace_forward)
+            & (trace_values > trace_backward)
+            & valid[0, 0]
+        )
     trace_signature = (
         ridge_signature,
         str(trace_source_name),
@@ -5851,6 +5890,7 @@ def seed_boundary_tracing(
             ellipse_confidence=zero_u8,
             fit_residual=zero_u8,
             centre_votes=zero_u8,
+            oval_centre_probability=zero_u8,
             semantic_sides=zero_u8,
             rejection_hue=zero_u8,
             rejection_strength=zero_u8,
@@ -5921,6 +5961,11 @@ def seed_boundary_tracing(
     best_centre_x = torch.zeros_like(nms)
     best_centre_y = torch.zeros_like(nms)
     vote_accumulator = torch.zeros_like(nms)
+    vote_y, vote_x = torch.nonzero(trace_seed, as_tuple=True)
+    # Ellipse centres do not generally lie exactly on a boundary point's
+    # normal. Tangential offsets broaden the reverse transform just enough to
+    # include plausible oval centres while retaining a centred soft prior.
+    oval_tangent_offsets = (-0.60, -0.30, 0.0, 0.30, 0.60)
 
     for radius in radii_tested:
         radius_prior = torch.exp(
@@ -6006,12 +6051,34 @@ def seed_boundary_tracing(
             centre_y = yy + inward_y * radius
             best_centre_x = torch.where(update, centre_x, best_centre_x)
             best_centre_y = torch.where(update, centre_y, best_centre_y)
-            rounded_x = torch.round(centre_x).long().clamp(0, width - 1)
-            rounded_y = torch.round(centre_y).long().clamp(0, height - 1)
-            flat_index = (rounded_y * width + rounded_x).reshape(-1)
-            vote_accumulator.reshape(-1).scatter_add_(
-                0, flat_index, circle.reshape(-1)
-            )
+            for tangent_offset in oval_tangent_offsets:
+                offset_x = (
+                    centre_x
+                    + tangent_x[0, 0] * radius * tangent_offset
+                )
+                offset_y = (
+                    centre_y
+                    + tangent_y[0, 0] * radius * tangent_offset
+                )
+                rounded_x = (
+                    torch.round(offset_x[vote_y, vote_x])
+                    .long()
+                    .clamp(0, width - 1)
+                )
+                rounded_y = (
+                    torch.round(offset_y[vote_y, vote_x])
+                    .long()
+                    .clamp(0, height - 1)
+                )
+                flat_index = rounded_y * width + rounded_x
+                offset_prior = float(
+                    np.exp(-0.5 * (tangent_offset / 0.50) ** 2)
+                )
+                vote_accumulator.reshape(-1).scatter_add_(
+                    0,
+                    flat_index,
+                    circle[vote_y, vote_x] * offset_prior,
+                )
 
     vote_blur = max(0.7, diameter * settings.boundary_center_vote_blur_fraction)
     vote_accumulator = gaussian_blur(
@@ -6020,7 +6087,8 @@ def seed_boundary_tracing(
     vote_scale = torch.quantile(
         vote_accumulator.reshape(-1), 0.995
     ).clamp_min(1e-6)
-    vote_probability = (vote_accumulator / vote_scale).clamp(0.0, 1.0)
+    vote_ranking = vote_accumulator / vote_scale
+    vote_probability = vote_ranking.clamp(0.0, 1.0)
     centre_support = bilinear_sample(
         vote_probability, best_centre_x, best_centre_y
     ) * trace_seed
@@ -6177,26 +6245,378 @@ def seed_boundary_tracing(
     rejection_hue = (rejection_reason / 6.0).clamp(0.0, 1.0)
     rejection_strength = (rejection_reason > 0).float() * nms
 
-    local_maxima = vote_probability == functional.max_pool2d(
-        vote_probability[None, None],
+    local_maxima = vote_ranking == functional.max_pool2d(
+        vote_ranking[None, None],
         max(3, round(diameter * 0.25)) | 1,
         stride=1,
         padding=(max(3, round(diameter * 0.25)) | 1) // 2,
     )[0, 0]
     candidate_votes = torch.where(
-        local_maxima & (vote_probability >= 0.20),
-        vote_probability,
-        torch.zeros_like(vote_probability),
+        local_maxima & (vote_ranking >= 0.20),
+        vote_ranking,
+        torch.zeros_like(vote_ranking),
     )
     top_count = min(
         int(settings.boundary_geometry_max_candidates),
         int(candidate_votes.numel()),
     )
-    vote_values, vote_indices = torch.topk(candidate_votes.reshape(-1), top_count)
+    vote_rank_values, vote_indices = torch.topk(
+        candidate_votes.reshape(-1), top_count
+    )
+    vote_values = vote_rank_values.clamp(0.0, 1.0)
     vote_centres = torch.stack(
         ((vote_indices % width).float() / scale, (vote_indices // width).float() / scale),
         dim=1,
     )
+
+    # Fit proposal-independent ovals by working backward from curved ridge
+    # fragments. Each accepted ridge pixel already has a locally supported
+    # normal/radius projection (best_centre_x/y). Associate those projections
+    # with nearby centre-vote maxima, accumulate edge-coordinate moments, then
+    # validate the resulting ellipse against its complete sampled perimeter.
+    # Procedural proposals and annotation-derived instance labels are never
+    # inputs to this fit.
+    candidate_centres_working = torch.stack(
+        ((vote_indices % width).float(), (vote_indices // width).float()), dim=1
+    )
+    candidate_enabled = vote_values >= max(
+        0.10, float(settings.boundary_minimum_confidence) * 0.75
+    )
+    edge_mask = trace_seed & (nms >= float(settings.ridge_low_threshold))
+    edge_yx = torch.nonzero(edge_mask, as_tuple=False)
+    totals = torch.zeros(top_count, device=context.device)
+    moment_xx = torch.zeros_like(totals)
+    moment_xy = torch.zeros_like(totals)
+    moment_yy = torch.zeros_like(totals)
+    radius_totals = torch.zeros_like(totals)
+    minimum_axis = diameter * float(settings.boundary_radius_min_fraction)
+    maximum_axis = diameter * float(settings.boundary_radius_max_fraction)
+    association_chunk = 32768
+    for start in range(0, int(edge_yx.shape[0]), association_chunk):
+        points_yx = edge_yx[start : start + association_chunk]
+        point_y = points_yx[:, 0]
+        point_x = points_yx[:, 1]
+        edge_points = torch.stack((point_x.float(), point_y.float()), dim=1)
+        centre_distance_sq = (
+            edge_points[:, None, :]
+            - candidate_centres_working[None, :, :]
+        ).square().sum(dim=2)
+        plausible_radius = (
+            (centre_distance_sq >= minimum_axis**2)
+            & (centre_distance_sq <= maximum_axis**2)
+        )
+        centre_distance_sq = torch.where(
+            candidate_enabled[None, :] & plausible_radius,
+            centre_distance_sq,
+            torch.full_like(centre_distance_sq, float("inf")),
+        )
+        nearest_distance_sq, assigned = torch.min(centre_distance_sq, dim=1)
+        weight = (
+            nms[point_y, point_x]
+            * (0.25 + 0.75 * trace_confidence[point_y, point_x])
+            * torch.isfinite(nearest_distance_sq)
+        )
+        assigned_centres = candidate_centres_working[assigned]
+        relative_x = point_x.float() - assigned_centres[:, 0]
+        relative_y = point_y.float() - assigned_centres[:, 1]
+        totals.scatter_add_(0, assigned, weight)
+        moment_xx.scatter_add_(0, assigned, weight * relative_x.square())
+        moment_xy.scatter_add_(0, assigned, weight * relative_x * relative_y)
+        moment_yy.scatter_add_(0, assigned, weight * relative_y.square())
+        radius_totals.scatter_add_(
+            0, assigned, weight * best_radius[point_y, point_x]
+        )
+
+    safe_totals = totals.clamp_min(1e-5)
+    covariance_xx = moment_xx / safe_totals
+    covariance_xy = moment_xy / safe_totals
+    covariance_yy = moment_yy / safe_totals
+    covariance_trace = covariance_xx + covariance_yy
+    covariance_discriminant = torch.sqrt(
+        (covariance_xx - covariance_yy).square()
+        + 4.0 * covariance_xy.square()
+    )
+    eigen_major = (
+        (covariance_trace + covariance_discriminant) * 0.5
+    ).clamp_min(1.0)
+    eigen_minor = (
+        (covariance_trace - covariance_discriminant) * 0.5
+    ).clamp_min(1.0)
+    moment_major = torch.sqrt(2.0 * eigen_major)
+    moment_minor = torch.sqrt(2.0 * eigen_minor)
+    supported_radius = radius_totals / safe_totals
+    supported_radius = torch.where(
+        totals > 0.0,
+        supported_radius,
+        torch.full_like(supported_radius, diameter * 0.5),
+    )
+    oval_major = 0.78 * moment_major + 0.22 * supported_radius
+    oval_minor = 0.78 * moment_minor + 0.22 * supported_radius
+    oval_major = oval_major.clamp(min=minimum_axis, max=maximum_axis)
+    oval_minor = oval_minor.clamp(min=minimum_axis, max=maximum_axis)
+    oval_major, oval_minor = torch.maximum(
+        oval_major, oval_minor
+    ), torch.minimum(oval_major, oval_minor)
+    oval_minor = torch.maximum(
+        oval_minor,
+        oval_major / float(settings.boundary_max_axis_ratio),
+    )
+    oval_angles = 0.5 * torch.atan2(
+        2.0 * covariance_xy, covariance_xx - covariance_yy
+    )
+
+    # Uniform angular sectors make a short, excellent arc insufficient by
+    # itself: confidence requires distributed support around the proposed oval.
+    perimeter_sector_count = 16
+    perimeter_samples_per_sector = max(
+        4, int(np.ceil(settings.boundary_arc_sample_count / 2.0))
+    )
+    perimeter_sample_count = (
+        perimeter_sector_count * perimeter_samples_per_sector
+    )
+    perimeter_angles = torch.arange(
+        perimeter_sample_count,
+        device=context.device,
+        dtype=torch.float32,
+    ) * (2.0 * np.pi / perimeter_sample_count)
+    perimeter_cos = torch.cos(perimeter_angles)[None, None, :]
+    perimeter_sin = torch.sin(perimeter_angles)[None, None, :]
+
+    # Moment fits provide orientation and one useful axis hypothesis, but
+    # fragmented traces can bias their eccentricity. Search a compact bank of
+    # seed-scaled semi-axis pairs at that orientation and retain the one with
+    # the best complete-perimeter support.
+    axis_ratio_count = max(
+        3,
+        int(np.ceil((settings.boundary_max_axis_ratio - 1.0) / 0.20)) + 1,
+    )
+    axis_ratios = torch.linspace(
+        1.0,
+        float(settings.boundary_max_axis_ratio),
+        axis_ratio_count,
+        device=context.device,
+    )
+    radius_bank, ratio_bank = torch.meshgrid(
+        radii_tested,
+        axis_ratios,
+        indexing="ij",
+    )
+    ratio_root = torch.sqrt(ratio_bank)
+    grid_major = (radius_bank * ratio_root).reshape(-1)
+    grid_minor = (radius_bank / ratio_root).reshape(-1)
+    grid_valid = (
+        (grid_major <= maximum_axis)
+        & (grid_minor >= minimum_axis)
+    )
+    hypothesis_major = torch.cat(
+        (
+            oval_major[:, None],
+            grid_major[None, :].expand(top_count, -1),
+        ),
+        dim=1,
+    )
+    hypothesis_minor = torch.cat(
+        (
+            oval_minor[:, None],
+            grid_minor[None, :].expand(top_count, -1),
+        ),
+        dim=1,
+    )
+    hypothesis_valid = torch.cat(
+        (
+            torch.ones((top_count, 1), device=context.device, dtype=torch.bool),
+            grid_valid[None, :].expand(top_count, -1),
+        ),
+        dim=1,
+    )
+    angle_cos = torch.cos(oval_angles)[:, None, None]
+    angle_sin = torch.sin(oval_angles)[:, None, None]
+    local_x = hypothesis_major[:, :, None] * perimeter_cos
+    local_y = hypothesis_minor[:, :, None] * perimeter_sin
+    sample_x = (
+        candidate_centres_working[:, 0:1, None]
+        + local_x * angle_cos
+        - local_y * angle_sin
+    )
+    sample_y = (
+        candidate_centres_working[:, 1:2, None]
+        + local_x * angle_sin
+        + local_y * angle_cos
+    )
+    expected_tangent_x = (
+        -hypothesis_major[:, :, None] * perimeter_sin * angle_cos
+        - hypothesis_minor[:, :, None] * perimeter_cos * angle_sin
+    )
+    expected_tangent_y = (
+        -hypothesis_major[:, :, None] * perimeter_sin * angle_sin
+        + hypothesis_minor[:, :, None] * perimeter_cos * angle_cos
+    )
+    expected_tangent_norm = torch.sqrt(
+        expected_tangent_x.square() + expected_tangent_y.square()
+    ).clamp_min(1e-5)
+    expected_tangent_x /= expected_tangent_norm
+    expected_tangent_y /= expected_tangent_norm
+    sampled_edge = bilinear_sample(ridge_support, sample_x, sample_y)
+    sampled_tangent_x = bilinear_sample(tangent_x, sample_x, sample_y)
+    sampled_tangent_y = bilinear_sample(tangent_y, sample_x, sample_y)
+    tangent_agreement = torch.abs(
+        sampled_tangent_x * expected_tangent_x
+        + sampled_tangent_y * expected_tangent_y
+    ).clamp(0.0, 1.0)
+    tangent_floor = float(
+        np.cos(np.deg2rad(settings.boundary_orientation_tolerance_degrees))
+    )
+    oriented_support = sampled_edge * (
+        (tangent_agreement - tangent_floor)
+        / max(1e-5, 1.0 - tangent_floor)
+    ).clamp(0.0, 1.0)
+    sector_support = oriented_support.reshape(
+        top_count,
+        hypothesis_major.shape[1],
+        perimeter_sector_count,
+        perimeter_samples_per_sector,
+    ).amax(dim=3)
+    hypothesis_coverage = (
+        sector_support >= float(settings.ridge_low_threshold) * 0.70
+    ).float().mean(dim=2)
+    hypothesis_mean_support = sector_support.mean(dim=2)
+    hypothesis_fit = (
+        0.72 * hypothesis_coverage + 0.28 * hypothesis_mean_support
+    ) * hypothesis_valid
+    best_hypothesis = torch.argmax(hypothesis_fit, dim=1)
+    oval_major = hypothesis_major.gather(
+        1, best_hypothesis[:, None]
+    )[:, 0]
+    oval_minor = hypothesis_minor.gather(
+        1, best_hypothesis[:, None]
+    )[:, 0]
+    distributed_coverage = hypothesis_coverage.gather(
+        1, best_hypothesis[:, None]
+    )[:, 0]
+    mean_perimeter_support = hypothesis_mean_support.gather(
+        1, best_hypothesis[:, None]
+    )[:, 0]
+    approximate_circumference = 2.0 * np.pi * torch.sqrt(
+        (oval_major.square() + oval_minor.square()) * 0.5
+    ).clamp_min(1.0)
+    accumulated_support = (
+        totals / approximate_circumference
+    ).clamp(0.0, 1.0)
+    perimeter_fit = (
+        0.60 * distributed_coverage
+        + 0.25 * mean_perimeter_support
+        + 0.15 * accumulated_support
+    ).clamp(0.0, 1.0)
+    oval_scores = torch.sqrt(
+        vote_values.clamp(0.0, 1.0) * perimeter_fit
+    )
+    oval_scores *= candidate_enabled
+
+    # Suppress duplicate centres on the tensor device. A candidate survives
+    # only if no stronger (or earlier equal-strength) hypothesis lies within a
+    # seed-scaled neighbourhood.
+    pairwise_distance_sq = (
+        candidate_centres_working[:, None, :]
+        - candidate_centres_working[None, :, :]
+    ).square().sum(dim=2)
+    candidate_indices = torch.arange(top_count, device=context.device)
+    stronger = oval_scores[None, :] > oval_scores[:, None]
+    equal_earlier = (
+        (oval_scores[None, :] == oval_scores[:, None])
+        & (candidate_indices[None, :] < candidate_indices[:, None])
+    )
+    duplicate_radius_sq = max(2.0, diameter * 0.30) ** 2
+    suppressed = (
+        (pairwise_distance_sq < duplicate_radius_sq)
+        & (stronger | equal_earlier)
+    ).any(dim=1)
+    accepted_ovals = (
+        ~suppressed
+        & candidate_enabled
+        & (oval_scores >= float(settings.boundary_minimum_confidence))
+        & (distributed_coverage >= 0.20)
+    )
+    oval_scores = oval_scores * accepted_ovals
+
+    # Preserve a raster diagnostic for the accepted ellipse fits. It is a
+    # sampled fitted perimeter, not a copy of the source ridge strength.
+    final_angle_cos = torch.cos(oval_angles)[:, None]
+    final_angle_sin = torch.sin(oval_angles)[:, None]
+    final_local_x = oval_major[:, None] * perimeter_cos[:, 0]
+    final_local_y = oval_minor[:, None] * perimeter_sin[:, 0]
+    final_sample_x = (
+        candidate_centres_working[:, 0:1]
+        + final_local_x * final_angle_cos
+        - final_local_y * final_angle_sin
+    )
+    final_sample_y = (
+        candidate_centres_working[:, 1:2]
+        + final_local_x * final_angle_sin
+        + final_local_y * final_angle_cos
+    )
+    oval_edge_indices = (
+        torch.round(final_sample_y).long().clamp(0, height - 1) * width
+        + torch.round(final_sample_x).long().clamp(0, width - 1)
+    )
+    oval_edge_values = oval_scores[:, None].expand_as(final_sample_x)
+    oval_edge_confidence = torch.zeros(height * width, device=context.device)
+    oval_edge_confidence.scatter_reduce_(
+        0,
+        oval_edge_indices.reshape(-1),
+        oval_edge_values.reshape(-1),
+        reduce="amax",
+        include_self=True,
+    )
+    oval_edge_confidence = functional.max_pool2d(
+        oval_edge_confidence.reshape(1, 1, height, width),
+        3,
+        stride=1,
+        padding=1,
+    )[0, 0]
+    ellipse_confidence = torch.maximum(
+        ellipse_confidence, oval_edge_confidence
+    )
+
+    oval_impulses = torch.zeros(height * width, device=context.device)
+    oval_indices = (
+        torch.round(candidate_centres_working[:, 1])
+        .long()
+        .clamp(0, height - 1)
+        * width
+        + torch.round(candidate_centres_working[:, 0])
+        .long()
+        .clamp(0, width - 1)
+    )
+    oval_impulses.scatter_reduce_(
+        0,
+        oval_indices,
+        oval_scores,
+        reduce="amax",
+        include_self=True,
+    )
+    oval_impulses = oval_impulses.reshape(1, 1, height, width)
+    oval_blur_sigma = max(
+        0.7,
+        diameter * float(settings.boundary_center_vote_blur_fraction),
+    )
+    oval_centre_probability = gaussian_blur(
+        oval_impulses, oval_blur_sigma
+    )[0, 0]
+    blur_radius = min(96, max(1, round(oval_blur_sigma * 3.0)))
+    blur_positions = torch.arange(
+        -blur_radius,
+        blur_radius + 1,
+        device=context.device,
+        dtype=torch.float32,
+    )
+    blur_kernel = torch.exp(
+        -0.5 * (blur_positions / oval_blur_sigma).square()
+    )
+    blur_peak = (1.0 / blur_kernel.sum()).square()
+    oval_centre_probability = (
+        oval_centre_probability / blur_peak.clamp_min(1e-6)
+    ).clamp(0.0, 1.0) * valid[0, 0]
+
     geometry = GpuBoundaryGeometry(
         vote_centres_xy=vote_centres,
         vote_confidence=vote_values,
@@ -6204,6 +6624,15 @@ def seed_boundary_tracing(
         ellipse_axes_xy=ellipse_axes / max(scale, 1e-6),
         ellipse_angle_radians=ellipse_angles,
         ellipse_confidence=ellipse_fit_values,
+        oval_centres_xy=(
+            candidate_centres_working / max(scale, 1e-6)
+        ),
+        oval_axes_xy=(
+            torch.stack((oval_major, oval_minor), dim=1)
+            / max(scale, 1e-6)
+        ),
+        oval_angle_radians=oval_angles,
+        oval_confidence=oval_scores,
     )
 
     products = BoundaryTraceProducts(
@@ -6229,6 +6658,10 @@ def seed_boundary_tracing(
         ellipse_confidence=full_u8(ellipse_confidence[None, None], "ellipse fit confidence"),
         fit_residual=full_u8(fit_residual[None, None], "shape fit residual"),
         centre_votes=full_u8(vote_probability[None, None], "seed centre votes"),
+        oval_centre_probability=full_u8(
+            oval_centre_probability[None, None],
+            "oval-derived seed centre probability",
+        ),
         semantic_sides=full_u8(best_semantic[None, None], "semantic side confidence"),
         rejection_hue=full_u8(rejection_hue[None, None], "boundary rejection reason hue", multiplier=179.0),
         rejection_strength=full_u8(rejection_strength[None, None], "boundary rejection strength"),
@@ -6351,8 +6784,6 @@ def _foreground_noise_settings(settings):
         noise_vector_sample_count=settings.foreground_noise_vector_sample_count,
         noise_vector_decay=settings.foreground_noise_vector_decay,
         noise_direction_integration=settings.foreground_noise_direction_integration,
-        noise_background_min_likelihood=settings.foreground_noise_foreground_min_likelihood,
-        noise_nonbackground_max_likelihood=settings.foreground_noise_nonforeground_max_likelihood,
         noise_working_maximum_dimension=settings.foreground_noise_working_maximum_dimension,
     )
 

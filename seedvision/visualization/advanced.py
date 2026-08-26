@@ -20,7 +20,6 @@ if TYPE_CHECKING:
 
 
 ADVANCED_NODE_MODES = {
-    "seed_interior": "seed_interior_probability",
     "boundary_normals": "boundary_confidence",
     "touching_split": "touching_split_likelihood",
     "ellipse_likelihood": "ellipse_likelihood",
@@ -38,7 +37,6 @@ ADVANCED_NODE_MODES = {
 }
 
 ADVANCED_OVERLAY_LABELS = (
-    ("Seed-interior probability", "seed_interior_probability"),
     ("Boundary confidence + normals", "boundary_confidence"),
     ("Boundary magnitude", "boundary_magnitude"),
     ("Touching-seed split likelihood", "touching_split_likelihood"),
@@ -577,8 +575,17 @@ def build_advanced_analysis_layers(
     gradient = torch.sqrt(grad_x.square() + grad_y.square() + 1e-8)
     gradient_n = _normalize(torch, gradient, valid)
     stop_timing(setup_timing)
-    if active("seed_interior"):
-        node_timing = start_timing("seed_interior")
+    interior_consumers = {
+        "boundary_normals",
+        "proposal_disagreement",
+        "assignment_confidence",
+        "wrinkling",
+        "coat_damage",
+        "pattern_decomposition",
+        "colour_probabilities",
+    }
+    if any(active(node_id) for node_id in interior_consumers):
+        node_timing = None
         smoothing = max(0.8, diameter * settings.interior_smoothing_fraction)
         if fg_probability is None:
             smooth_feature = _gaussian(torch, functional, fg_feature, smoothing)
@@ -1097,7 +1104,7 @@ def build_advanced_analysis_layers(
         "calibration_residual_risk": calibration_risk,
     }
     scalar_owners = {
-        "seed_interior_probability": "seed_interior",
+        "seed_interior_probability": "boundary_normals",
         "boundary_magnitude": "boundary_normals",
         "touching_split_likelihood": "touching_split",
         "proposal_disagreement": "proposal_disagreement",
@@ -1223,7 +1230,7 @@ def build_advanced_analysis_layers(
             for index in range(len(PATTERN_CLASS_NAMES))
         )
         stop_timing(output_timing)
-    summary_owner = setup_owner or "seed_interior"
+    summary_owner = setup_owner or "boundary_normals"
     summary_timing = start_timing(summary_owner, report_progress=False)
     instance_summaries = _summarize_instances(
         torch,

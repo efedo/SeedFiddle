@@ -1,7 +1,9 @@
 """Configurable analysis-pipeline graph."""
 
 from seedvision.pipeline.model import (
+    INTENTIONALLY_UNEXPOSED_SETTINGS,
     NodeStatus,
+    ParameterSection,
     ParameterSpec,
     PipelineConnection,
     PipelineGraph,
@@ -10,7 +12,9 @@ from seedvision.pipeline.model import (
 )
 
 __all__ = [
+    "INTENTIONALLY_UNEXPOSED_SETTINGS",
     "NodeStatus",
+    "ParameterSection",
     "ParameterSpec",
     "PipelineConnection",
     "PipelineGraph",

@@ -250,13 +250,13 @@ class ReferenceEdgeStripDescriptorTests(unittest.TestCase):
             )
         )
 
-        self.assertEqual(tuple(forward.shape), (1, 26, height, width))
+        self.assertEqual(tuple(forward.shape), (1, 20, height, width))
         self.assertEqual(tuple(reverse.shape), tuple(forward.shape))
-        torch.testing.assert_close(reverse[:, :7], forward[:, 14:21])
-        torch.testing.assert_close(reverse[:, 7:14], forward[:, 7:14])
-        torch.testing.assert_close(reverse[:, 14:21], forward[:, :7])
-        torch.testing.assert_close(reverse[:, 21:24], -forward[:, 21:24])
-        torch.testing.assert_close(reverse[:, 24:], forward[:, 24:])
+        torch.testing.assert_close(reverse[:, :5], forward[:, 10:15])
+        torch.testing.assert_close(reverse[:, 5:10], forward[:, 5:10])
+        torch.testing.assert_close(reverse[:, 10:15], forward[:, :5])
+        torch.testing.assert_close(reverse[:, 15:18], -forward[:, 15:18])
+        torch.testing.assert_close(reverse[:, 18:], forward[:, 18:])
         self.assertTrue(bool(strip_valid[0, 0, 12, 15]))
         torch.testing.assert_close(normal_x, -torch.ones_like(normal_x))
         torch.testing.assert_close(normal_y, torch.zeros_like(normal_y))
@@ -379,6 +379,50 @@ class ReferenceEdgeStripDescriptorTests(unittest.TestCase):
         self.assertTrue(bool(torch.isfinite(forward).all()))
         self.assertTrue(bool(torch.isfinite(reverse).all()))
 
+    def test_semantic_strip_descriptor_excludes_absolute_edge_strength(self) -> None:
+        import torch
+
+        from seedvision.cuda.layers import _edge_strip_feature_maps
+
+        height = width = 21
+        lightness = torch.linspace(30.0, 220.0, width)[None, None, None, :]
+        lab = torch.cat(
+            (
+                lightness.expand(1, 1, height, width),
+                torch.full((1, 1, height, width), 128.0),
+                torch.full((1, 1, height, width), 128.0),
+            ),
+            dim=1,
+        )
+        tangent_x = torch.zeros((1, 1, height, width))
+        tangent_y = torch.ones_like(tangent_x)
+        valid = torch.ones_like(tangent_x, dtype=torch.bool)
+
+        weak = _edge_strip_feature_maps(
+            lab,
+            torch.zeros_like(tangent_x),
+            torch.zeros_like(tangent_x),
+            tangent_x,
+            tangent_y,
+            valid,
+            20.0,
+            normal_offset_fraction=0.08,
+            tangent_half_length_fraction=0.08,
+        )[0]
+        strong = _edge_strip_feature_maps(
+            lab,
+            torch.ones_like(tangent_x),
+            torch.ones_like(tangent_x),
+            tangent_x,
+            tangent_y,
+            valid,
+            20.0,
+            normal_offset_fraction=0.08,
+            tangent_half_length_fraction=0.08,
+        )[0]
+
+        torch.testing.assert_close(weak, strong, rtol=0.0, atol=0.0)
+
     def test_public_edge_classifier_uses_the_independent_high_resolution_scale(self) -> None:
         import cv2
         import numpy as np
@@ -424,7 +468,7 @@ class ReferenceEdgeStripDescriptorTests(unittest.TestCase):
         self.assertAlmostEqual(profile.edge_strip_normal_offset_px, 2.0)
         self.assertAlmostEqual(profile.edge_strip_tangent_half_length_px, 3.2)
         self.assertGreater(profile.edge_working_scale, profile.working_scale)
-        self.assertEqual(len(profile.edge_feature_names), 26)
+        self.assertEqual(len(profile.edge_feature_names), 20)
         self.assertTrue(
             any(name.startswith("interior strip") for name in profile.edge_feature_names)
         )
@@ -503,6 +547,17 @@ class ReferenceEdgeStripDescriptorTests(unittest.TestCase):
 
         physical = np.asarray(layers.physical_edge_probability, dtype=np.float32)
         internal = np.asarray(layers.non_edge_probability, dtype=np.float32)
+        net_physical = np.asarray(
+            layers.net_physical_edge_probability, dtype=np.uint8
+        )
+        np.testing.assert_allclose(
+            net_physical,
+            np.rint(np.clip(physical - 0.5 * internal, 0.0, 255.0)).astype(
+                np.uint8
+            ),
+            atol=1,
+        )
+        self.assertTrue(np.any(net_physical[internal > 0] < physical[internal > 0]))
         query_rim = np.zeros((height, width), np.uint8)
         cv2.circle(query_rim, centres[1], radius, 255, 2)
         query_rim = query_rim > 0

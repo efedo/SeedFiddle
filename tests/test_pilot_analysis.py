@@ -109,7 +109,7 @@ class PilotAnalysisTests(unittest.TestCase):
         for identifier in range(1, result.count + 1):
             self.assertTrue((labels == identifier).any())
         for node_id in (
-            "raw_images",
+            "project",
             "colour_reference",
             "deskew_colour",
             "layout_detection",
@@ -119,7 +119,6 @@ class PilotAnalysisTests(unittest.TestCase):
             "edge_ridges",
             "edge_traces",
             "seed_edge_curves",
-            "seed_interior",
             "colour_probabilities",
         ):
             self.assertIn(node_id, result.node_timings_seconds)

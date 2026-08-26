@@ -135,7 +135,13 @@ def evaluate_reference_edge_settings(
     *,
     cuda_context=None,
 ) -> ReferenceEdgeFitScore:
-    """Refit one proposal and score its working-resolution fields on the GPU."""
+    """Fit on one deterministic instance fold and score a disjoint fold.
+
+    Pixels from a held-out instance never enter the prototype bank whose
+    settings are being evaluated. This prevents the former resubstitution
+    score from rewarding a descriptor for memorizing its own contour and coat
+    pattern.
+    """
 
     import cv2
     import torch
@@ -147,6 +153,26 @@ def evaluate_reference_edge_settings(
     from seedvision.cuda.ops import CudaContext, image_to_tensor
 
     context = cuda_context or CudaContext.resolve()
+    annotations = np.asarray(annotations, dtype=np.uint16)
+    identifiers = np.unique(annotations)
+    identifiers = identifiers[identifiers > 0]
+    if len(identifiers) < 2:
+        raise ValueError(
+            "Leakage-safe edge fitting needs at least two annotated seed "
+            "instances so one can be withheld from prototype training."
+        )
+    # Alternate sorted IDs to make the split stable across runs and ensure
+    # arbitrary label magnitudes cannot affect fold membership.
+    holdout_ids = identifiers[1::2]
+    if not len(holdout_ids):
+        holdout_ids = identifiers[-1:]
+    training_ids = identifiers[~np.isin(identifiers, holdout_ids)]
+    training_annotations = np.where(
+        np.isin(annotations, training_ids), annotations, 0
+    ).astype(np.uint16, copy=False)
+    holdout_annotations = np.where(
+        np.isin(annotations, holdout_ids), annotations, 0
+    ).astype(np.uint16, copy=False)
     products = reference_texture_probabilities(
         crop,
         gradients,
@@ -154,7 +180,7 @@ def evaluate_reference_edge_settings(
         frequency_noise,
         seed_diameter_px,
         settings,
-        seed_instance_annotations=annotations,
+        seed_instance_annotations=training_annotations,
         cuda_context=context,
     )
     physical = products.physical_edge_field.gpu_tensor(
@@ -164,12 +190,12 @@ def evaluate_reference_edge_settings(
         device=context.device, dtype=torch.float32
     ).clamp(1e-5, 1.0 - 1e-5)
     height, width = physical.shape[-2:]
-    source_height, source_width = annotations.shape
+    source_height, source_width = holdout_annotations.shape
     if (height, width) == (source_height, source_width):
-        working_annotations = np.asarray(annotations)
+        working_annotations = holdout_annotations
     else:
         working_annotations = cv2.resize(
-            np.asarray(annotations, dtype=np.float32),
+            np.asarray(holdout_annotations, dtype=np.float32),
             (width, height),
             interpolation=cv2.INTER_NEAREST,
         ).astype(np.uint16)

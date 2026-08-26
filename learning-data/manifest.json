@@ -1,0 +1,52 @@
+{
+  "dataset_id": "seed-fiddle-human-annotations",
+  "feature_spec": {
+    "channels": [
+      "lab_l",
+      "lab_a",
+      "lab_b",
+      "valid_dish",
+      "foreground_colour",
+      "foreground_noise",
+      "inverse_background_colour",
+      "inverse_background_noise",
+      "edge_magnitude",
+      "sensor_noise",
+      "flattened_grayscale",
+      "shadow",
+      "highlight"
+    ],
+    "include_species_planes": true,
+    "nominal_seed_diameter_px": 48.0,
+    "species": [
+      "unknown",
+      "soybean",
+      "lupinus_mutabilis",
+      "lupinus_polyphyllus",
+      "lupinus_mexicanus"
+    ],
+    "version": 1
+  },
+  "provenance": "observational",
+  "samples": [
+    {
+      "annotation_author": null,
+      "annotation_revision": "1",
+      "features": "IMG_0002c.features.npz",
+      "group": "IMG_0002c",
+      "identifier": "IMG_0002c",
+      "image": "IMG_0002c.png",
+      "instances": "IMG_0002c.instances.png",
+      "notes": "Exported from applied Seed Fiddle instance annotations; draft origin=manual; no additional notes",
+      "pattern_boundary": "IMG_0002c.pattern.png",
+      "pattern_valid": "IMG_0002c.pattern_valid.png",
+      "physical_boundary": null,
+      "physical_valid": null,
+      "reviewed": false,
+      "species": "Soybean",
+      "split": "train"
+    }
+  ],
+  "scientific_validation_eligible": false,
+  "version": 1
+}

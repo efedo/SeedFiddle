@@ -97,6 +97,7 @@ OVERLAY_MODES = {
     "material_background_subtype",
     "material_other_subtype",
     "reference_texture_prototypes",
+    "reference_prototype_footprints",
     "reference_seed_surface_probability",
     "reference_background_texture_probability",
     "reference_other_texture_probability",
@@ -134,9 +135,11 @@ OVERLAY_MODES = {
     "edge_ellipse_fit",
     "edge_fit_residual",
     "edge_centre_votes",
+    "oval_centre_probability",
     "edge_semantic_sides",
     "edge_rejections",
     "edge_fit_geometry",
+    "edge_oval_hypotheses",
     "seed_edge_curves",
     "procedural_seed_material",
     "procedural_seed_mask",
@@ -2081,6 +2084,8 @@ class ImageView(QGraphicsView):
             rgba = layers.frequency_noise_rgba(channel, band_index)
         elif self._overlay_mode == "edge_ridges":
             rgba = layers.edge_ridges_rgba()
+        elif self._overlay_mode == "reference_prototype_footprints":
+            rgba = layers.reference_prototype_footprints_rgba()
         elif self._overlay_mode == "physical_edge_probability":
             rgba = layers.reference_edge_probability_rgba(True)
         elif self._overlay_mode == "non_edge_probability":
@@ -2113,12 +2118,18 @@ class ImageView(QGraphicsView):
             rgba = layers._heat_rgba(layers.edge_fit_residual)
         elif self._overlay_mode == "edge_centre_votes":
             rgba = layers._heat_rgba(layers.edge_centre_votes)
+        elif self._overlay_mode == "oval_centre_probability":
+            rgba = layers._heat_rgba(layers.oval_centre_probability)
         elif self._overlay_mode == "edge_semantic_sides":
             rgba = layers._heat_rgba(layers.edge_semantic_sides)
         elif self._overlay_mode == "edge_rejections":
             rgba = layers.edge_rejection_rgba()
         elif self._overlay_mode == "edge_fit_geometry":
             self._render_edge_fit_geometry(result)
+            self._render_context_annotations(result)
+            return
+        elif self._overlay_mode == "edge_oval_hypotheses":
+            self._render_edge_oval_hypotheses(result)
             self._render_context_annotations(result)
             return
         elif self._overlay_mode == "undirected_edges":
@@ -2496,6 +2507,42 @@ class ImageView(QGraphicsView):
             )
             item.setOpacity(self._overlay_opacity)
             item.setZValue(15)
+            self._overlay_items.append(item)
+
+    def _render_edge_oval_hypotheses(self, result) -> None:
+        """Draw only proposal-independent ovals inferred from curved edges."""
+
+        geometry = result.layers.edge_fit_geometry
+        if geometry is None:
+            return
+        values = geometry.materialize()
+        offset_x, offset_y = result.crop_offset
+        for centre, axes, angle, confidence in zip(
+            values["oval_centres_xy"],
+            values["oval_axes_xy"],
+            values["oval_angle_radians"],
+            values["oval_confidence"],
+            strict=True,
+        ):
+            confidence = float(confidence)
+            if confidence <= 0.0:
+                continue
+            major, minor = float(axes[0]), float(axes[1])
+            pen = QPen(QColor("#32e6ff"), 2.0 + 2.0 * confidence)
+            pen.setCosmetic(True)
+            item = self._scene.addEllipse(
+                -major,
+                -minor,
+                major * 2.0,
+                minor * 2.0,
+                pen,
+            )
+            item.setPos(float(centre[0] + offset_x), float(centre[1] + offset_y))
+            item.setRotation(float(np.rad2deg(angle)))
+            item.setOpacity(
+                self._overlay_opacity * min(1.0, 0.30 + 0.70 * confidence)
+            )
+            item.setZValue(20)
             self._overlay_items.append(item)
 
     def _render_contact_graph(self, result) -> None:
@@ -3395,6 +3442,7 @@ class ImageView(QGraphicsView):
             id(profile),
             len(profile.prototypes),
             profile.patch_size_px,
+            round(float(profile.material_context_radius_px), 4),
             round(float(profile.edge_strip_normal_offset_px), 4),
             round(float(profile.edge_strip_tangent_half_length_px), 4),
         )
@@ -3425,7 +3473,7 @@ class ImageView(QGraphicsView):
             tile_width = 82
             tile_height = 98
             left = 30
-            top = 104
+            top = 174
             canvas_width = max(960, left * 2 + columns * tile_width)
             canvas_height = top + 30
             for name, _label, _colour in class_details:
@@ -3451,14 +3499,21 @@ class ImageView(QGraphicsView):
             painter.setFont(QFont("Segoe UI", 10))
             painter.setPen(QColor("#c8d1da"))
             painter.drawText(
-                QRectF(40, 47, canvas_width - 80, 43),
+                QRectF(40, 47, canvas_width - 80, 112),
                 Qt.AlignmentFlag.AlignHCenter
                 | Qt.AlignmentFlag.AlignTop
                 | Qt.TextFlag.TextWordWrap,
-                "Thumbnails are visual context only; matching does not treat the "
-                "whole square as a prototype. Edge descriptors sample the yellow "
-                "centre line and two polarity-neutral cyan side strips; both side "
-                "assignments are tested.",
+                "Thumbnails are visual context only; the whole square is never a "
+                "matching template. Material references contribute candidate centre "
+                "pixels: each medoid stores one per-pixel Lab/noise/edge/ridge vector "
+                f"plus local residual/density context (radius {profile.material_context_radius_px:.1f} source px). "
+                "Each edge medoid is an amalgam of three separate tangent-aligned "
+                f"lines (side offset {profile.edge_strip_normal_offset_px:.1f} px; "
+                f"half-length {profile.edge_strip_tangent_half_length_px:.1f} px). "
+                "Exactly five weighted points are pooled on each yellow/cyan line; "
+                "pixels between the lines are not sampled. At every query pixel, all "
+                "retained medoids are compared and the best supported class similarity "
+                "is used; edge inference tests both side assignments.",
             )
             sample_counts = dict(profile.class_sample_counts)
             y = top
@@ -3531,10 +3586,11 @@ class ImageView(QGraphicsView):
         self._image_item.setPixmap(self._prototype_collage_pixmap)
         self._image_item.setToolTip(
             "Prototype squares provide source-image context only; they are not "
-            "matched as image patches. On tangent-aligned edge thumbnails, the "
-            "yellow line marks the centre edge sample and the two cyan lines "
-            "mark the polarity-neutral side samples. Matching evaluates both "
-            "possible side assignments."
+            "matched as image patches. Material medoids are individual centre feature "
+            "vectors with local residual/density context. On tangent-aligned edge "
+            "thumbnails, each yellow/cyan line pools five weighted points; the area "
+            "between lines is not sampled. Matching evaluates both possible side "
+            "assignments."
         )
         self._scene.setSceneRect(self._image_item.boundingRect())
         self._displayed_base = "prototype_collage"
@@ -4533,20 +4589,29 @@ class ImageView(QGraphicsView):
         """Return the exact user-selected edge raster for assisted tools."""
 
         source = str(source)
+        analysis_layers = getattr(self._analysis_result, "layers", None)
+        has_cached_net = bool(
+            source == "net_physical"
+            and getattr(
+                analysis_layers, "net_physical_edge_probability", None
+            ) is not None
+        )
         net_scale = (
             float(
                 getattr(
-                    getattr(self._analysis_result, "layers", None),
+                    analysis_layers,
                     "net_physical_edge_internal_scale",
                     0.50,
                 )
             )
-            if source == "net_physical"
+            if source == "net_physical" and not has_cached_net
             else None
         )
         cache_key = (
             f"edge_source:{source}:{net_scale:.6f}"
             if net_scale is not None
+            else f"edge_source:{source}:cached"
+            if has_cached_net
             else f"edge_source:{source}"
         )
         cached = self._annotation_evidence_cache.get(cache_key)
@@ -4586,18 +4651,31 @@ class ImageView(QGraphicsView):
                 attributes[source], binary=source == "traces"
             )
         elif source == "net_physical":
-            physical = display_u8("physical_edge_probability").astype(
-                np.float32
+            cached_net = getattr(
+                analysis_layers, "net_physical_edge_probability", None
             )
-            try:
-                non_physical = display_u8("non_edge_probability").astype(
+            if cached_net is not None:
+                result = display_u8("net_physical_edge_probability")
+            else:
+                # Compatibility for compact test/draft results made before the
+                # Reference-edges node acquired an authoritative cached net
+                # output. Production analysis takes the branch above.
+                physical = display_u8("physical_edge_probability").astype(
                     np.float32
                 )
-            except RuntimeError:
-                non_physical = np.zeros_like(physical)
-            result = np.rint(
-                np.clip(physical - float(net_scale) * non_physical, 0.0, 255.0)
-            ).astype(np.uint8)
+                try:
+                    non_physical = display_u8("non_edge_probability").astype(
+                        np.float32
+                    )
+                except RuntimeError:
+                    non_physical = np.zeros_like(physical)
+                result = np.rint(
+                    np.clip(
+                        physical - float(net_scale) * non_physical,
+                        0.0,
+                        255.0,
+                    )
+                ).astype(np.uint8)
         elif source == "adaptive":
             precise = []
             for attribute, binary in (

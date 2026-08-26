@@ -78,8 +78,8 @@ class AnalysisSettingsPersistenceTests(unittest.TestCase):
         disconnected = next(
             connection
             for connection in source.connections
-            if connection.source == "reference_layers"
-            and connection.source_port == "centres"
+            if connection.source == "project"
+            and connection.source_port == "annotations"
             and connection.target == "procedural_instances"
         )
         source.disconnect(disconnected)
@@ -149,8 +149,8 @@ class AnalysisSettingsPersistenceTests(unittest.TestCase):
             result.affected_node_ids,
             (
                 "reference_edge_probability",
-                "reference_edge_ridges",
                 "edge_traces",
+                "seed_edge_curves",
                 "procedural_instances",
                 "unet_instances",
                 "stardist_instances",
@@ -213,6 +213,34 @@ class AnalysisSettingsPersistenceTests(unittest.TestCase):
             "maximum_protrusion_area_fraction",
             "candidate_hypotheses_per_marker",
             "candidate_overlap_fraction",
+        }
+        for key in new_keys:
+            parameters.pop(key)
+
+        target = build_default_pipeline()
+        apply_analysis_settings_profile(
+            target, analysis_settings_profile_from_payload(payload)
+        )
+
+        for key in new_keys:
+            self.assertEqual(
+                target.node("procedural_instances").parameters[key],
+                graph.node("procedural_instances").parameters[key],
+            )
+
+    def test_version_seven_profile_adopts_new_procedural_evidence_defaults(self) -> None:
+        graph = build_default_pipeline()
+        payload = analysis_settings_profile_to_payload(
+            analysis_settings_profile_from_graph(graph)
+        )
+        payload["version"] = 7
+        procedural = _node_payload(payload, "procedural_instances")
+        parameters = procedural["parameters"]
+        assert isinstance(parameters, dict)
+        new_keys = {
+            "reference_texture_weight",
+            "sparse_seed_area_fraction",
+            "packed_seed_cell_fraction",
         }
         for key in new_keys:
             parameters.pop(key)
@@ -303,7 +331,79 @@ class AnalysisSettingsPersistenceTests(unittest.TestCase):
         self.assertIsNotNone(centre_connection)
         self.assertEqual(
             (centre_connection.source, centre_connection.source_port),
-            ("reference_layers", "centres"),
+            ("project", "annotations"),
+        )
+
+    def test_version_eight_profile_migrates_project_image_and_annotations_root(self) -> None:
+        source = build_default_pipeline()
+        payload = analysis_settings_profile_to_payload(
+            analysis_settings_profile_from_graph(source)
+        )
+        payload["version"] = 8
+        payload["nodes"] = [
+            node for node in payload["nodes"] if node["id"] != "project"
+        ]
+        for node_id in ("raw_images", "reference_layers"):
+            payload["nodes"].append(
+                {
+                    "id": node_id,
+                    "active": True,
+                    "enabled": True,
+                    "connection_suspended": False,
+                    "parameters": {},
+                }
+            )
+        annotation_ports = {
+            "background_reference": "background",
+            "foreground_reference": "foreground",
+            "other_reference": "other",
+            "annotations": "annotated_seeds",
+            "manual_centres": "centres",
+        }
+        legacy_connections = []
+        for connection in payload["connections"]:
+            if connection["source"] != "project":
+                legacy_connections.append(connection)
+                continue
+            if connection["target"] == "metadata":
+                continue
+            migrated = dict(connection)
+            if connection["source_port"] == "raw_image":
+                migrated["source"] = "raw_images"
+                migrated["source_port"] = "image_batch"
+            else:
+                migrated["source"] = "reference_layers"
+                migrated["source_port"] = annotation_ports[
+                    connection["target_port"]
+                ]
+            legacy_connections.append(migrated)
+        payload["connections"] = legacy_connections
+
+        target = build_default_pipeline()
+        apply_analysis_settings_profile(
+            target, analysis_settings_profile_from_payload(payload)
+        )
+
+        self.assertIn("project", target.nodes)
+        self.assertNotIn("raw_images", target.nodes)
+        self.assertNotIn("reference_layers", target.nodes)
+        self.assertEqual(
+            (
+                target.connection_for_input("deskew_colour", "image").source,
+                target.connection_for_input("deskew_colour", "image").source_port,
+            ),
+            ("project", "raw_image"),
+        )
+        self.assertEqual(
+            (
+                target.connection_for_input(
+                    "procedural_instances", "manual_centres"
+                ).source,
+                target.connection_for_input(
+                    "procedural_instances", "manual_centres"
+                ).source_port,
+            ),
+            ("project", "annotations"),
         )
 
     def test_version_five_profile_migrates_combined_noise_node(self) -> None:

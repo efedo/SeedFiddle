@@ -76,16 +76,49 @@ repository or `images/` while troubleshooting the environment.
 
 ## Current implementation
 
+- **The complete right-pane node-control catalogue is audited and grouped by
+  operation.** All 269 controls across 39 configurable active/toolbox nodes are
+  assigned to 99 exhaustive node-owned sections. Graph construction rejects a
+  missing, duplicate, unknown, or unsectioned control; tests also require every
+  computational setting to be either visible or explicitly documented as a
+  private/compatibility field. The audit exposed three previously fixed
+  procedural controls (reference-surface occupancy weight and sparse/packed
+  marker-area priors), corrected misleading control descriptions, added
+  calibration/wavelet edit-time validation. See `docs/NODE_CONTROL_AUDIT.md`.
+- **Project is the sole root of every per-image graph.** It replaces the former
+  Raw images and Manual annotations pseudo-roots and exposes one typed **Raw
+  image** plus one typed **Annotations** bundle. The annotation bundle retains
+  separate Background, Foreground, Other, annotated-instance, and manual-centre
+  layers internally. The right pane shows the current master path, saved or
+  modified state, available/unresolved image counts, selected image and
+  dimensions, species, and applied annotation counts. Metadata now consumes
+  the Project image context, so every active and restored toolbox node has
+  Project in its ancestry. Settings schema version 9 migrates versions 1--8 by
+  folding the two retired roots and their wires into Project.
+- **Seed-boundary confirmation** is now an active, proposal-independent edge
+  diagnostic rather than a consumer of provisional/annotated instance shapes.
+  Curved trace pixels perform a reverse centre transform over seed-scaled
+  normal radii and bounded tangent offsets (required because a true ellipse
+  centre is not generally on each boundary normal). Local vote maxima gather
+  compatible ridge coordinates; CUDA moment reduction estimates orientation,
+  then a compact radius/axis-ratio bank is scored against 16 perimeter sectors
+  for ridge coverage and tangent agreement. Implausible sizes/axis ratios and
+  duplicate centres are rejected before output. **Most likely edge ovals**
+  draws the retained compact geometry, while **Oval-derived seed-centre
+  probability** rasterizes only retained oval scores and applies the configured
+  seed-relative centre blur. Raw centre votes remain a separate pre-validation
+  diagnostic. The full raster remains lazy/on-device and compact oval geometry
+  transfers only when its vector overlay is selected. Candidate-instance
+  changes invalidate only candidate consumers and cannot alter these fits.
 - The overlay selector is a node-first menu whose headings exactly match the
   active pipeline cards and inspector titles. It has no checkable children,
   synthetic Viewer/None group, or Qt mnemonic ampersands. Every selectable
   overlay is mirrored by an identically labelled output connector on its owner
   node, including dynamically generated colour/pattern overlays; a Qt contract
   test selects every owner and checks all three surfaces.
-- **Manual annotations** now combines the former Reference layers and Manual
-  seed centres inputs. Its explicit Background, Foreground, Other, Annotated
-  seeds, and Manual seed centres connectors preserve the separate evidence
-  types and their image-local persistence.
+- The Project annotation bundle combines the former Reference layers and Manual
+  seed-centre inputs while preserving each evidence type and its image-local
+  persistence.
 - **Material colour probabilities** now combines the foreground and background
   colour cards and controls without combining their calculations. Foreground,
   Background, and Other remain independent evidence rasters with their prior
@@ -198,9 +231,8 @@ repository or `images/` while troubleshooting the environment.
   to keep connections out of intervening node cards. Disconnection bypasses enabled consumers
   and their dependents; reconnection restores only the cards automatically
   suspended by that missing input, leaving deliberately disabled experimental
-  nodes off. One **Manual annotations** input exposes separately typed
-  Background, Foreground, Other, Annotated seeds, and Manual seed centres
-  outputs, with explicit connections to every calculation that consumes them.
+  nodes off. The **Project** input exposes a typed image-local annotation bundle
+  to every calculation that consumes authored evidence.
   Physical and non-physical edge training
   masks are regenerated from the annotated IDs and are not separately painted
   graph inputs. The one-line toolbar includes an
@@ -351,7 +383,7 @@ repository or `images/` while troubleshooting the environment.
   level stationary B3-spline à trous decomposition with selectable detail
   layers and a residual; all layers stay at full image resolution and the four
   details plus residual reconstruct the original corrected RGB tensor exactly.
-- **Manual annotations** is an explicit active input node for the mutually
+- The **Project annotations** bundle contains the mutually
   exclusive Background/Foreground/Other material layer, integer annotated seed
   instances, and source-coordinate manual centre points. Painting a
   class clears the other two at that pixel; Other supplies a competing learned
@@ -431,7 +463,7 @@ repository or `images/` while troubleshooting the environment.
   bounded working size and Qt scales them only for display. The compact result
   is node-cached, and
   distinct painted instance IDs suppress nearby automatic markers.
-  The **Manual annotations** graph input and its inspector editor allow
+  The **Project annotations** graph input and its inspector editor allow
   per-image placement and adjustment of the actual watershed markers rather
   than the final region centroids. Automatic markers are hollow cyan, manual
   or replacement markers solid yellow, annotation-authoritative markers locked
@@ -713,13 +745,12 @@ repository or `images/` while troubleshooting the environment.
 - Every probability raster now shares the valid crop reaching the outer edge of
   the configured perimeter Background band. Only the binary seed-proposal gate
   remains limited to the interior analysis region.
-- The independent seed-interior branch remains visible but disabled. It now
-  consumes foreground colour probability, learned foreground-noise probability,
-  reference-prototype seed-surface probability, and background evidence;
-  independent editable weights control both learned texture and reference
-  texture before background support is incorporated. The
-  distance, instance, final boundary, review, measurement, classification,
-  aggregation, and output branch is outside the active DAG in **Unused nodes**.
+- The redundant visible **Seed-interior probability** node has been retired.
+  Downstream diagnostics consume the authoritative **Resolved Seed
+  probability** from Material evidence decision, and the procedural node no
+  longer publishes a duplicate Seed-material-likelihood overlay. A private
+  smoothed raster may still be reused inside dormant advanced diagnostics, but
+  it is not a graph node or selectable overlay.
 - The application is branded **Seed Fiddle** and uses a tightly framed rounded
   soybean plus a high-contrast, separately readable fiddle bow under
   `seedvision/assets/seed_vision_icon.png`; a 32-pixel occupancy regression test
@@ -881,6 +912,68 @@ overlay, and device-cache regressions pass, as do all 65 broader pilot,
 material-evidence, project, inspector, learning, and procedural-fit integration
 tests.
 
+## 2026-08-24 pipeline consolidation and evidence audit
+
+The visible graph now uses calculation owners instead of legacy wrapper cards:
+metadata is a peer of Raw images; colour-card work belongs to **Deskew and
+colour balance**; ruler geometry and absolute scale belong to **Ruler detection
+and scale**; generic ridges belong to **Edge gradients**; and semantic ridges
+belong to **Reference edges**. Settings versions 1--6 migrate into the merged
+owners while genuinely unknown nodes, controls, and wires remain hard errors.
+
+The material-noise audit found and removed two unintended colour dependencies:
+colour thresholds formerly invented texture pseudo-labels, and the final
+texture result was blended with colour probability. Material-noise outputs are
+now texture-only. The surviving graph dependency carries only the safely inset,
+option-controlled annotated-Foreground reference region so cache invalidation
+remains honest. The edge-prototype audit likewise found that absolute ridge
+amplitude was embedded in the descriptor and multiplied into the class output.
+The descriptor now contains semantic strip appearance only; gradient strength
+is introduced downstream when constructing boundary/ridge products.
+
+Normalized-reference trace doubling was a bilinear restoration halo: every
+positive halo pixel was treated as a separate ridge. Semantic ridge sources are
+now re-thinned along their live normal before component linking. Shared edge
+magnitude is tested to change with derivative method, and graph invalidation is
+tested to stop at upstream owners and recompute only the changed node and its
+descendants.
+
+Automatic procedural, provisional, U-Net, and StarDist inference no longer
+receive painted instance IDs. Procedural fitting uses annotation-independent
+image/material/edge evidence and treats masks only as scoring targets.
+Reference-edge fitting trains and evaluates on disjoint alternating instance
+IDs. See `docs/PIPELINE_CONSOLIDATION_AND_EVIDENCE_AUDIT.md` for the full chain-
+by-chain findings, equations/ownership decisions, and regression inventory.
+
+The 2026-08-24 validation covered all 511 tests in clean process groups: 508
+passed, 2 fixture/platform-dependent tests were skipped, and the sole failure
+is the established user-worktree deletion of `images/IMG_9689c.JPG`; its
+reference-manifest integrity test correctly rejects the missing source. The 19
+real-image pilot tests pass, as do all 331 post-pilot graph, Qt, persistence,
+procedural, reference, shape-fill, and visualization tests. A single monolithic
+process exhibited retained-state degradation after the learning tests (a
+17-second clean fixture analysis grew beyond 30 minutes while still consuming
+CPU); isolated process groups complete normally and expose no application
+pipeline stall.
+
+The 2026-08-26 node-control audit validation ran 518 tests in one process: 515
+passed, 2 platform/fixture-dependent tests were skipped, and the sole failure
+remains the established user-worktree deletion of `images/IMG_9689c.JPG`.
+Before that full run, all 120 focused graph/inspector/UI/settings-persistence
+tests and all 65 procedural-fit/learning tests passed. `git diff --check` also
+passes; its output contains only the repository's existing LF-to-CRLF notices.
+
+The 2026-08-26 Project-root migration passed all 119 focused pipeline-model,
+pipeline-UI, and analysis-settings tests, plus the broader 233-test graph/UI/
+project/reference/visualization group. A full-suite run was also attempted, but
+the open desktop workload had the 8 GiB GPU at 99% utilization with about
+7.9 GiB allocated; the real-image dense-lupin pilot continued to make forward
+progress through existing directional-noise and boundary-tracing CUDA stages
+but could not finish in a reasonable hand-off window. Timed stack traces showed
+no wait in Project routing, persistence, annotation loading, or raw-image cache
+invalidation. The only completed-suite failure before that contention point was
+the established missing `images/IMG_9689c.JPG` fixture.
+
 ## Learned instance-segmentation implementation
 
 Work continues on branch `codex/learned-instance-segmentation`. Two independent
@@ -950,6 +1043,24 @@ within-seed coat boundaries can have equally strong edges. The next justified
 step is to review masks produced by this node and train a small
 species-conditioned boundary/instance model (U-Net plus watershed or StarDist).
 Do not start with a transformer: eleven unlabelled fixtures do not support it.
+
+## Net reference-edge subtraction and prototype diagnostics
+
+The Reference edges node now owns one authoritative cached net probability,
+`max(physical - weight * non-physical, 0)`. Its **Non-physical subtraction
+weight** is the first full inspector control and first inline control (default
+0.5). The display, assisted Smart/Shape fill edge source, raw net ridge, local
+normalization and downstream invalidation all derive from that node result;
+changing only the weight reuses the upstream learned prototype banks.
+
+Reference texture prototypes also publishes a **Reference prototype source
+footprints** overlay. Material markers show the retained medoid pixel and its
+context radius. Edge markers show the three tangent-aligned interior/centre/
+exterior lines and the five actual bilinear samples on each, with dot sizes
+encoding the 1:2:3:2:1 pooling weights. The prototype collage and inspector
+help now state explicitly that thumbnail patches are presentation context, not
+fitted templates, and that no filled region between the strip guides is
+matched.
 
 ## First actions for the next agent
 

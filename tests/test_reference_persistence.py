@@ -318,7 +318,7 @@ class ReferenceRegionMainWindowTests(unittest.TestCase):
             )
             affected = window._resolve_pending_project_reference_bundle(key, result)
 
-            self.assertIn("reference_layers", affected)
+            self.assertIn("project", affected)
             np.testing.assert_array_equal(
                 window._applied_foreground_reference_masks[key], foreground
             )

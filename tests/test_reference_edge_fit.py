@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 
@@ -8,12 +10,79 @@ from seedvision.segmentation.reference_edge_fit import (
     ReferenceEdgeFitParameter,
     ReferenceEdgeFitScore,
     fit_reference_edge_parameters,
+    evaluate_reference_edge_settings,
     score_reference_edge_probabilities,
 )
 from seedvision.visualization import AnalysisLayerSettings
 
 
 class ReferenceEdgeFitTests(unittest.TestCase):
+    def test_evaluation_trains_and_scores_disjoint_instance_ids(self) -> None:
+        import torch
+
+        from seedvision.cuda import CudaContext
+
+        annotations = np.zeros((6, 8), np.uint16)
+        annotations[:3, :2] = 1
+        annotations[:3, 2:4] = 2
+        annotations[3:, :2] = 3
+        annotations[3:, 2:4] = 4
+        captured: dict[str, np.ndarray] = {}
+
+        class Field:
+            def __init__(self, value: float) -> None:
+                self.tensor = torch.full((1, 1, 6, 8), value)
+
+            def gpu_tensor(self, *, device=None, dtype=None):
+                return self.tensor.to(device=device, dtype=dtype)
+
+        def prototypes(*_args, seed_instance_annotations=None, **_kwargs):
+            captured["training"] = np.asarray(seed_instance_annotations).copy()
+            return SimpleNamespace(
+                physical_edge_field=Field(0.8),
+                non_edge_field=Field(0.2),
+            )
+
+        def references(held_out, *_args, **_kwargs):
+            captured["holdout"] = np.asarray(held_out).copy()
+            locations = np.argwhere(np.asarray(held_out) > 0)
+            physical = np.zeros((6, 8), bool)
+            nonphysical = np.zeros((6, 8), bool)
+            physical[tuple(locations[0])] = True
+            nonphysical[tuple(locations[-1])] = True
+            return SimpleNamespace(
+                physical_edge=physical,
+                non_edge=nonphysical,
+            )
+
+        gradients = SimpleNamespace(strength=torch.ones((1, 1, 6, 8)))
+        with patch(
+            "seedvision.cuda.layers.reference_texture_probabilities",
+            side_effect=prototypes,
+        ), patch(
+            "seedvision.annotation.instance_references."
+            "instance_boundary_references_from_edge_evidence",
+            side_effect=references,
+        ):
+            evaluate_reference_edge_settings(
+                np.zeros((6, 8, 3), np.uint8),
+                gradients,
+                np.zeros((6, 8), np.uint8),
+                None,
+                12.0,
+                annotations,
+                AnalysisLayerSettings(),
+                cuda_context=CudaContext.resolve(requested="cpu"),
+            )
+
+        self.assertEqual(set(np.unique(captured["training"])), {0, 1, 3})
+        self.assertEqual(set(np.unique(captured["holdout"])), {0, 2, 4})
+        self.assertFalse(
+            np.any(
+                (captured["training"] > 0)
+                & (captured["holdout"] > 0)
+            )
+        )
     def test_balanced_score_rewards_correct_support_and_rejects_cross_matches(self) -> None:
         physical_target = np.asarray(((1, 1), (0, 0)), dtype=bool)
         nonphysical_target = ~physical_target
