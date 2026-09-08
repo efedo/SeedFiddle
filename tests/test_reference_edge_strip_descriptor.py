@@ -44,6 +44,37 @@ class ReferenceEdgeStripDescriptorTests(unittest.TestCase):
         self.assertLess(20.0 * capped_scale, 32.0)
         self.assertEqual(max(capped_height, capped_width), 320)
 
+    def test_physical_edge_direction_uses_polarity_without_mutating_probability(self) -> None:
+        import torch
+
+        from seedvision.cuda.layers import _physical_edge_interior_direction
+
+        forward = torch.tensor([[[[0.9, 0.1, 0.5, 0.8]]]])
+        reverse = torch.tensor([[[[0.1, 0.9, 0.5, 0.2]]]])
+        probability = torch.tensor([[[[0.8, 0.8, 1.0, 0.6]]]])
+        probability_before = probability.clone()
+        normal_x = torch.ones_like(forward)
+        normal_y = torch.zeros_like(forward)
+        valid = torch.tensor([[[[True, True, True, False]]]])
+
+        inward_x, inward_y, confidence = _physical_edge_interior_direction(
+            forward,
+            reverse,
+            probability,
+            normal_x,
+            normal_y,
+            valid,
+        )
+
+        torch.testing.assert_close(probability, probability_before)
+        self.assertEqual(float(inward_x[0, 0, 0, 0]), -1.0)
+        self.assertEqual(float(inward_x[0, 0, 0, 1]), 1.0)
+        self.assertEqual(float(inward_y.abs().max()), 0.0)
+        self.assertAlmostEqual(float(confidence[0, 0, 0, 0]), 0.64, places=6)
+        self.assertAlmostEqual(float(confidence[0, 0, 0, 1]), 0.64, places=6)
+        self.assertEqual(float(confidence[0, 0, 0, 2]), 0.0)
+        self.assertEqual(float(confidence[0, 0, 0, 3]), 0.0)
+
     def test_all_strip_geometry_settings_participate_in_cache_identity(self) -> None:
         from dataclasses import replace
         from unittest.mock import patch

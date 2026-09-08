@@ -89,7 +89,7 @@ class PilotAnalysisTests(unittest.TestCase):
         self.assertTrue(
             all(
                 value > 0.0
-                for value in result.layers.noise_frequency_profile.background_log_scale
+                for value in result.layers.noise_frequency_profile.descriptor_scale
             )
         )
         self.assertIsNotNone(result.calibration.colour_card)
@@ -113,7 +113,6 @@ class PilotAnalysisTests(unittest.TestCase):
             "colour_reference",
             "deskew_colour",
             "layout_detection",
-            "perimeter_background_reference",
             "foreground_segmentation",
             "edge_gradients",
             "edge_ridges",
@@ -126,7 +125,7 @@ class PilotAnalysisTests(unittest.TestCase):
             self.assertIn((node_id, "started"), progress_events)
             self.assertIn((node_id, "completed"), progress_events)
 
-    def test_annotated_seed_scale_uses_largest_complete_fraction(self) -> None:
+    def test_annotated_seed_scale_uses_all_explicitly_complete_masks(self) -> None:
         import numpy as np
 
         from seedvision.segmentation.baseline import (
@@ -142,19 +141,19 @@ class PilotAnalysisTests(unittest.TestCase):
             x0 = 12 + column * 100
             labels[y0 : y0 + 4, x0 : x0 + width] = identifier
         # A wide but image-cutoff annotation must remain visible diagnostically
-        # without entering the selected top fraction.
+        # without entering the full-length distribution.
         labels[120:140, 0:90] = 99
 
-        measurements = _annotated_seed_diameter_measurements(
-            labels, top_fraction=0.25
-        )
+        from seedvision.persistence.reference_regions import SeedInstanceAnnotation
+        measurements = _annotated_seed_diameter_measurements(labels, annotations=tuple(
+            SeedInstanceAnnotation(i, outline_visibility="complete") for i in range(1, 9)))
 
         selected = sorted(
             item.diameter_px for item in measurements if item.selected
         )
-        self.assertEqual(len(selected), 2)
-        self.assertAlmostEqual(selected[0], 67.0, delta=1.0)
-        self.assertAlmostEqual(selected[1], 75.0, delta=1.0)
+        self.assertEqual(len(selected), 8)
+        self.assertAlmostEqual(selected[0], 19.0, delta=1.0)
+        self.assertAlmostEqual(selected[-1], 75.0, delta=1.0)
         cutoff = next(item for item in measurements if item.identifier == 99)
         self.assertFalse(cutoff.complete)
         self.assertFalse(cutoff.selected)
@@ -903,7 +902,7 @@ class PilotAnalysisTests(unittest.TestCase):
                 perimeter_background_buffer_cm=0.60,
                 perimeter_background_band_thickness_cm=0.20,
             ),
-            dirty_nodes={"perimeter_background_reference"},
+            dirty_nodes={"layout_detection"},
         )
         adjusted_band = adjusted.perimeter_background_band
         self.assertAlmostEqual(adjusted_band.buffer_cm, 0.60)
@@ -935,7 +934,7 @@ class PilotAnalysisTests(unittest.TestCase):
             "material_evidence_decision", cache.last_computed_nodes
         )
         self.assertIn(
-            "perimeter_background_reference", cache.last_computed_nodes
+            "layout_detection", cache.last_computed_nodes
         )
         self.assertIn("background_likelihood", cache.last_computed_nodes)
         self.assertIn("foreground_segmentation", cache.last_computed_nodes)

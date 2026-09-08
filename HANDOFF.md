@@ -77,7 +77,7 @@ repository or `images/` while troubleshooting the environment.
 ## Current implementation
 
 - **The complete right-pane node-control catalogue is audited and grouped by
-  operation.** All 269 controls across 39 configurable active/toolbox nodes are
+  operation.** All 271 controls across 38 configurable active/toolbox nodes are
   assigned to 99 exhaustive node-owned sections. Graph construction rejects a
   missing, duplicate, unknown, or unsectioned control; tests also require every
   computational setting to be either visible or explicitly documented as a
@@ -249,8 +249,8 @@ repository or `images/` while troubleshooting the environment.
   dish region and **Oriented edge traces** consumes **Seed scale estimate**;
   scale-only changes rebuild traces while retaining cached ridges. Oriented
   traces expose their selected source in the node and overlay legend and can use
-  generic ridges, physical-reference ridges, raw net-reference ridges, or the
-  locally normalized net-reference ridges. Trace-gap
+  generic ridges, the authoritative supported reference ridge, the optional
+  conservative net-reference ridge, or the normalized supported reference ridge. Trace-gap
   bridges additionally require tight tangent alignment, the same directed
   gradient side, and a facing endpoint, preventing the former gap-4 collapse of
   adjacent parallel seed rims into one component. An explicit `off | prefer |
@@ -372,12 +372,17 @@ repository or `images/` while troubleshooting the environment.
   Material colour/noise nodes also expose direct-bright **Other colour
   probability** and **Other noise probability** overlays when Other examples
   have been painted.
-  The colour view is the raw competing Lab membership already used by the
-  background model; the noise view fits Other against painted Background and
-  Foreground texture, blends 72% three-band texture with 28% Other-colour
-  probability, and applies the background node's directional integration.
-  These diagnostics remain blank without Other paint and are separate from the
-  multifeature Reference Other-material prototype probability.
+  The colour view is raw target-model Lab membership; the noise view is raw
+  target-only texture compatibility and receives no semantic counterclass or
+  colour blend. These diagnostics remain blank without Other paint and are
+  separate from the multifeature Reference Other-material prototype
+  probability. Each node also exposes a viewer-only **Foreground vs
+  Background/Other excess** diagnostic. At every pixel the stronger of
+  Background and Other is compared with Foreground; positive Foreground excess
+  is blue, positive Background/Other excess is red, and ties are black. The
+  sibling Non-seed scores use a maximum rather than an addition because the raw
+  evidence maps are independent and may legitimately overlap. These views do
+  not enter material decisions, node caches, or downstream invalidation.
 - **Hue only** displays corrected hue at fixed neutral brightness/chroma, with
   achromatic pixels shown neutral gray. **Wavelet decomposition** is a four-
   level stationary B3-spline à trous decomposition with selectable detail
@@ -405,30 +410,43 @@ repository or `images/` while troubleshooting the environment.
   contributes its one-pixel contour as physical-edge supervision, while only strong edge/ridge
   candidates safely inset from that contour contribute sparse non-physical-edge
   supervision. Flat interior and the contour uncertainty band remain unlabelled.
-  These derived examples fit an image-local **Instance-derived edge probabilities**
-  classifier from corrected Lab values, edge magnitude, tangent coherence, and thinned ridges.
-  Its physical/non-physical outputs feed boundary confirmation and procedural
-  watershed. Two derived, viewer-only diagnostics materialize those existing
-  lazy rasters only when selected: **Physical blue / non-physical red** uses
-  magenta for overlapping support, while **Net physical-edge probability**
-  displays `max(physical - k × non-physical, 0)` in blue with a black floor.
-  Its node-owned **Internal-edge subtraction** coefficient defaults to 0.5 and
-  supports 0--2 without modifying either source raster. The subtraction is a
-  positive evidence margin, not a calibrated posterior. A
-  separately cached **Thinned reference edge ridge** node applies
-  normal-direction NMS and CUDA hysteresis to the continuous physical-edge and
-  raw-net fields. It also publishes **Locally normalized net physical edge**
-  and a thinned normalized ridge. The normalized path separates the
-  physical-versus-internal margin from their shared absolute support, estimates
-  a seed-scale winsorized local RMS envelope, applies bounded symmetric gain,
-  and finally applies an absolute smooth floor so quiet-region noise is not
-  promoted. Its default radius, target support, maximum gain, and floor are
+  These derived examples fit image-local Physical and Non-physical tangent-strip
+  prototype banks from corrected Lab context and polarity-neutral edge geometry.
+  Their spatially broad outputs are explicitly labelled **prototype
+  compatibility** and retained only as diagnostics: the two-channel view uses
+  magenta for overlap, the excess view shows the unscaled signed margin, and
+  **Net physical-edge prototype compatibility** shows
+  `max(Pphysical - k × Pnonphysical, 0)` with a black floor.
+  The Reference edges node's **Non-physical subtraction weight** defaults to
+  0.5 and supports 0--2 without modifying either source compatibility raster.
+  The authoritative **Reference-edge probability** is
+  `thinned_true_edge_support × Pphysical` at full
+  resolution. Descriptor/restoration halos are therefore exactly zero away
+  from a real ridge. Assisted fill, curve confirmation, learned-instance
+  inputs, and procedural separation receive only this supported field, its
+  normalized/thinned derivatives, or separately edge-supported Physical and
+  Non-physical channels; raw compatibility never serves as a barrier.
+  The previous supported subtraction is retained separately as **Conservative
+  net physical-edge evidence**, with explicit Smart/Shape-fill and thinned-ridge
+  choices. Only this conservative branch and the raw Net compatibility diagnostic
+  depend on the subtraction weight.
+  Local normalization acts on the thinned true-edge support before reapplying
+  Physical probability, estimates a seed-scale winsorized local RMS envelope,
+  and applies a bounded one-sided gain that can enhance but does not attenuate
+  above-floor supported evidence. The exact full-resolution ridge mask is
+  reapplied after interpolation. The per-pixel gain denominator is capped by
+  current support so a neighbouring strong arc cannot suppress its weak
+  continuation. A smooth absolute gate keeps zero-ridge regions at zero, and
+  ridge hysteresis admits enhanced weak maxima only when they connect to a
+  strong seed. Its default
+  radius, target support, maximum gain, and floor are
   respectively 0.30 seed diameter, 0.35, 2.5x, and 0.04. The full rationale,
   equations, safeguards, and validation plan are in
   `docs/LOCAL_EDGE_NORMALIZATION.md`. The node owns those four controls plus
   independent NMS step, low/high threshold, hysteresis-reach, and working-size
-  controls. Raw Physical, Non-physical, Net, and raw thinned-ridge diagnostics
-  remain unchanged. The formerly black continuous normalized overlay was a
+  controls. Raw compatibility diagnostics remain viewable but are not
+  operational edge sources.
+  The formerly black continuous normalized overlay was a
   display-quantization bug: its `[0, 1]` raster is now multiplied to display
   range before conversion to `uint8`; its derivative overlays were already
   generated through a separate correctly scaled path. When no annotated seed
@@ -436,11 +454,11 @@ repository or `images/` while troubleshooting the environment.
   image edge as a physical reference. Learning export derives both boundary
   targets and their sparse validity raster from the instance labels.
 - Active **Procedural seed separation** combines seed-material evidence,
-  generic edge/ridge candidates, instance-derived semantic margin, separately
-  thinned physical ridges, and coherent convex oriented traces into its
-  physical-boundary cost. The locally normalized net margin gates the whole
-  candidate field while raw non-physical probability remains an explicit
-  negative-evidence discount; the gate is neutral with no annotations. Centre markers
+  generic edge/ridge candidates, supported instance-derived semantic evidence,
+  normalized reference-edge ridges, and coherent convex oriented traces into
+  its physical-boundary cost. Edge-supported class channels and the normalized
+  authoritative field gate/discount the candidate without admitting broad
+  descriptor halos; the gate is neutral with no annotations. Centre markers
   come from smoothed material geometry and seed-interior depth, not sensor/noise,
   shadow, or internal-boundary peaks. Each centre is evaluated at several
   material thresholds (default five). Hard minimum area, maximum width,
@@ -498,8 +516,9 @@ repository or `images/` while troubleshooting the environment.
   update and invalidates the procedural node and dependents once. The fit is
   image-local and in-sample, but accepted settings are global to every image;
   neither mode is held-out validation.
-- **Perimeter background reference** is a separate cached active node. Its
-  ruler-calibrated outer-rim buffer defaults to 0.35 cm and its independently
+- **Layout detection** now also owns the perimeter Background reference instead
+  of exposing a redundant separate node. Its ruler-calibrated outer-rim buffer
+  defaults to 0.35 cm and its independently
   adjustable median-colour band thickness defaults to 0.5 cm; both are shown
   exactly in a dedicated overlay, with a nominal-dish scale fallback. The
   overlay includes an opacity-independent swatch and hex label for the selected
@@ -645,9 +664,14 @@ repository or `images/` while troubleshooting the environment.
   matching adaptively targets 28 pixels per seed diameter up to an independent
   2,048-pixel hard cap. It produces Foreground/seed-surface, Background, Other,
   Physical-edge, and Non-physical-edge likelihoods without hard-writing reviewed
-  pixels. The three material classes compete through one shared normalization
-  with reserved unknown mass rather than three unrelated high scores; this
-  improves the ambiguous pale-seed/spot/background-texture case. Every
+  pixels. Gaussian-kernel matches are calibrated in two stages: the unsharpened
+  best match determines known-versus-unknown confidence, while separate exposed
+  material and edge class contrasts sharpen only relative Background/
+  Foreground/Other or Physical/Non-physical competition.
+  This avoids the former middling ceiling for ordinary in-class descriptors
+  while preserving weak-match unknown mass and exact subtype ties. The
+  calibration receives no masks or reference coordinates, and reviewed pixels
+  are never hard-written. Every
   probability/likelihood overlay now states its low and high display colours in
   the image legend (direct maps are black-to-bright, while inverse background
   evidence is explicitly labelled white-low/black-high).
@@ -810,7 +834,7 @@ continuity-aware Trace Edge, leak-recovering Smart Fill, parallel-safe
 oriented trace-gap linking, and winding-independent local convexity preference
 and requirement modes. It also covers exact first-tertile foreground-noise
 direction integration as the foreground default, plus the independently cached,
-selectable Thinned reference edge ridge and its CUDA NMS/hysteresis controls.
+tool-selectable internal physical-reference ridge and its CUDA NMS/hysteresis controls.
 It also locks exact one-pixel open Trace Edge commits and protected inward fills
 when an instance contour returns to its first anchor, annotation-derived
 Physical-edge/Non-physical-edge evidence, and the non-mutating
@@ -1046,12 +1070,17 @@ Do not start with a transformer: eleven unlabelled fixtures do not support it.
 
 ## Net reference-edge subtraction and prototype diagnostics
 
-The Reference edges node now owns one authoritative cached net probability,
-`max(physical - weight * non-physical, 0)`. Its **Non-physical subtraction
+The Reference edges node owns a raw cached diagnostic margin,
+`max(Pphysical - weight * Pnonphysical, 0)`, and a distinct authoritative
+Reference-edge probability formed by multiplying Pphysical by the generic
+full-resolution thinned true-edge support. The supported margin is separately
+available as **Conservative net physical-edge evidence**. Its **Non-physical subtraction
 weight** is the first full inspector control and first inline control (default
-0.5). The display, assisted Smart/Shape fill edge source, raw net ridge, local
-normalization and downstream invalidation all derive from that node result;
-changing only the weight reuses the upstream learned prototype banks.
+0.5) in the **Optional conservative net evidence** section. Assisted Smart/Shape
+fill can explicitly choose either supported field; the normalized probability,
+canonical ridge, and default downstream reference input use Physical probability
+without the extra subtraction. Changing only the weight reuses upstream learned
+prototype banks and cannot change authoritative or normalized probability.
 
 Reference texture prototypes also publishes a **Reference prototype source
 footprints** overlay. Material markers show the retained medoid pixel and its
@@ -1061,6 +1090,423 @@ encoding the 1:2:3:2:1 pooling weights. The prototype collage and inspector
 help now state explicitly that thumbnail patches are presentation context, not
 fitted templates, and that no filled region between the strip guides is
 matched.
+
+## Overlay and normalized-reference-edge cleanup
+
+The foreground binary proposal viewer mode was removed: it rendered the old
+baseline foreground mask rather than the material-decision node's own product
+and had no active consumer. The Background/Other subtype ambiguity and unknown
+maps were valid computed products but were missing from the image viewer's
+renderable-mode registry; they are now normal probability overlays with their
+original node ports and legends. **Boundary confidence and normals** remains a
+dormant legacy toolbox diagnostic. It is disabled and shelved by default with
+no active segmentation consumer, so its bypass maps are intentionally zero;
+the node details and overlay legends now say so explicitly.
+
+The separate Perimeter background reference node has been retired. Layout
+detection now owns its two annulus controls, typed output port, overlay, status,
+cache unit, and downstream connections. Settings-profile format 10 migrates the
+old node's parameters and rewires its output to Layout detection. The Reference
+edges viewer calls the continuous product **Normalized reference-edge
+probability** and no longer exposes raw prototype compatibility as an
+assisted-tool source. Supported and normalized products share the same blue
+scale for direct comparison.
+
+Normalized reference-edge support is one-sided: local gain is clamped to
+`[1, maximum_gain]`, so normalization cannot make above-floor ridge support
+weaker. The gain denominator is capped at current pixel support so a strong arc
+inside the seed-scale window cannot block amplification of its immediately
+adjacent weak continuation. The smooth absolute gate reaches full weight at
+the configured floor, and high/low ridge hysteresis—not local intensity
+leakage—decides whether an enhanced weak maximum belongs to a coherent ridge.
+
+The 2026-08-27 focused graph/UI/persistence/material/cache/edge run passed all
+209 tests. Full discovery ran 524 tests in 307 seconds: 521 passed, 2 expected
+environment/platform tests were skipped, and the sole failure remains the
+pre-existing committed deletion of `images/IMG_9689c.JPG` while the reference
+manifest still names that source fixture. `git diff --check` passes apart from
+the repository's existing LF-to-CRLF notices.
+
+## Material-prototype probability calibration
+
+The Reference texture prototypes node no longer treats its Gaussian-kernel
+similarities as posterior masses. That interpretation gave an ordinary
+one-robust-scale in-class descriptor a score near `exp(-0.5)` and then divided
+it again by all class scores plus unknown mass, creating a second artificial
+middling ceiling. The new global calibration separates unsharpened
+known-material confidence from relative class competition, with an exposed
+**Material class contrast** default of 4.0. Uniformly weak matches remain
+unknown and exact Background/Other ties remain ties.
+
+The transform receives only score rasters and the valid-image mask, never
+reference masks or coordinates. A regression test gives identical score
+vectors at two nominal locations and requires bit-identical output, alongside
+tie and uniformly-weak cases. On the saved `IMG_9405.JPG` sidecar, painted Other
+pixels changed from mean/median Reference Other-material probability
+0.536/0.541 to 0.775/0.828; competing Foreground and Background means there are
+0.087 and 0.032. Painted Foreground and Background target means are 0.810 and
+0.706. These are learned global responses, not hard-written reference values.
+Settings format 11 persists the contrast control and version 10 or older
+profiles adopt the current 4.0 default. The prototype cache signature includes
+the control.
+
+## Edge-prototype probability calibration
+
+Physical-edge and Non-physical-edge prototype similarities now use the same
+two-stage, mask-blind calibration as material prototypes. The former direct
+`score / (physical + nonphysical + 0.10)` conversion treated Gaussian-kernel
+similarity as posterior mass and imposed an artificial middling ceiling.
+Unsharpened strongest similarity now determines known-edge confidence, while
+the exposed **Edge class contrast** (default 4.0) affects only relative class
+competition. Exact ties remain ties and uniformly weak matches retain mostly
+unknown mass. The transform receives descriptor scores and a generic valid
+strip mask, never annotation targets or coordinates, so reviewed pixels cannot
+be hard-written. The leakage-safe held-out-instance edge fitter includes the
+new contrast in its bounded optimization. Settings format 12 persists it;
+version 11 and older profiles adopt 4.0. Prototype cache identity includes both
+material and edge contrast controls.
+
+The focused graph/UI/persistence/material/edge/cache/pilot run passed all 216
+tests in 190 seconds. Full discovery ran 527 tests in 289 seconds: 524 passed,
+2 platform/environment tests were skipped, and the sole failure is still the
+pre-existing missing `images/IMG_9689c.JPG` fixture referenced by the committed
+instance-reference manifest. `git diff --check` reports only the repository's
+existing LF-to-CRLF notices.
+
+## Material-noise class-balance redesign
+
+Material-noise classification now uses nine fixed, texture-only descriptor
+channels: residual RMS plus principal- and cross-axis local variation at fine,
+medium, and coarse scales. This adds oriented multiscale structure without
+creating a second general-purpose prototype bank alongside Reference texture
+prototypes. Each class is now a target-only compatibility model: the robust
+target distribution and its 95th-percentile positive distance define the
+global half-support distance, and no semantic counterclass enters another
+class's calibration or pixel score. Cross-class reliability and all semantic
+contrast occur exclusively in Material evidence decision. Reference pixels
+remain training examples and are never hard-overridden.
+
+Cross-class invariance regressions change sibling annotations to genuinely
+different texture types—not merely duplicated pixels—and require bit-identical
+Foreground, Background, and Other raw rasters while still requiring a changed
+target reference to change its own result. The saved `IMG_9405.JPG` audit now
+reports painted-Other mean/median Other-texture compatibility 0.892/0.918 and
+Foreground-texture compatibility 0.455/0.486. Painted Background can
+legitimately score as both Background (0.947 mean) and Other (0.655 mean),
+while painted Foreground scores 0.793 mean as Foreground and 0.094 mean as
+Other. These are learned target-only responses, not mask-written values.
+
+All 65 visualization-layer tests, 139 focused material/pipeline/UI/settings
+tests, and all 19 real-image pilot tests pass after the target-only change. The
+pilot run took 513 seconds under simultaneous desktop GPU load. After removing
+the obsolete counterclass fields from the public texture profile, final full
+discovery ran 534 tests in 414 seconds: 531 passed, 2 expected tests were
+skipped, and the sole failure remains the pre-existing missing
+`images/IMG_9689c.JPG` source still named by the committed reference manifest.
+
+## Semantic reference-seed traits
+
+Reference seed instances can now carry one optional species-specific,
+mutually-exclusive coat-pattern label plus independently overlapping condition
+labels. `Lupinus mutabilis` currently exposes White, Banded light, Banded dark,
+and Other coat patterns; the shared condition vocabulary is Immature, Split,
+Wrinkled, and Stained. A separate Reviewed control distinguishes an explicitly
+sound/absent condition example from an unreviewed seed, so unchecked conditions
+are never silently used as negatives. The selected seed's controls live in the
+existing seed-instance editor and are enabled only after that seed ID has a
+painted mask.
+
+Reference-region format 3 stores the semantic records and their species
+vocabulary as strict scalar JSON metadata beside the full-resolution uint16
+instance raster, preserving `allow_pickle=False`. Versions 1 and 2 still load
+with empty semantic labels. Orphan IDs, malformed identifiers, duplicate
+conditions, and positive conditions without explicit review are rejected. The
+project/reference association panel reports saved coat and condition-review
+counts. Semantic-only Apply + save invalidates only the new diagnostic branch;
+painting or deleting instance pixels retains the established full annotation
+dependency behavior.
+
+The terminal **Reference seed traits** node learns separate image-local Lab,
+multiscale texture, edge/ridge, and local-residual prototype banks from safely
+inset labelled seed material. Coat probabilities compete only with one another
+and are renormalized to sum to one on the resolved seed-material domain when at
+least two classes have support. Each condition is a separate
+reviewed-present-versus-reviewed-absent probability and may overlap other
+conditions. Missing calibration yields black/unavailable output. The node only
+consumes the current resolved seed mask and has no downstream connection, so it
+cannot alter Background, Foreground, Other, or physical/non-physical edge
+calculations. Painted semantic labels train the models but never overwrite
+their output pixels. Settings-profile format 14 adds the node; version 13 and
+older profiles adopt its terminal default configuration and connections.
+
+Clean-process verification covered all 544 tests: 541 passed, 2 expected
+fixture/platform cases skipped, and the sole failure remains the established
+missing tracked `images/IMG_9689c.JPG` file named by the committed reference
+manifest. All 19 real-image pilots and the semantic archive/editor/cache/
+normalization regressions pass. A monolithic discovery process again exhibited
+the documented retained-state slowdown after earlier suites; clean process
+groups completed normally. `git diff --check` reports only the repository's
+existing LF-to-CRLF notices.
+
+## Signed probability-excess diagnostics
+
+The combined **Material colour probabilities** and **Material noise
+probabilities** nodes now each publish a display-only signed comparison of raw
+Foreground evidence with the strongest raw Background/Other response. For
+each pixel, `d = Foreground - max(Background, Other)`; blue is `max(d, 0)`, red
+is `max(-d, 0)`, and a tie is black. The comparison deliberately neither adds
+the two independent Non-seed compatibilities nor normalizes the three raw
+classes. It reuses the existing lazy rasters only when selected and creates no
+new calculation, cached tensor, graph dependency, or downstream evidence.
+
+**Reference edges** similarly publishes **Physical vs non-physical edge
+excess**, an unscaled direct margin with Physical blue and Non-physical red.
+It complements the overlap-preserving magenta-capable comparison and is
+deliberately independent of the separate weighted/clamped Net physical-edge
+calculation.
+
+All 112 visualization/model calculation tests and all 64 pipeline-UI tests pass
+in clean processes. Repository-wide clean-process coverage completed every
+test except the two-pass dense-lupin pilot, which remained compute-bound while
+the host GPU was externally saturated at 99% and 7.9/8.0 GiB; it was stopped
+without an exception. The other 18 pilot methods pass separately. Across the
+544 uniquely completed tests, 541 passed, 2 expected platform tests skipped,
+and the sole failure remains the established missing tracked
+`images/IMG_9689c.JPG` fixture named by the committed reference manifest.
+`compileall` passes and `git diff --check` reports only the repository's
+existing LF-to-CRLF notices.
+
+## Edge-supported reference-edge authority
+
+Raw Physical, Non-physical, and weighted-net edge descriptor responses are now
+explicitly presented as **prototype compatibility** diagnostics. They remain
+available for inspecting how the strip descriptors classify context, but no
+fill or procedural boundary path consumes their spatially broad fields.
+
+The canonical full-resolution product is now exactly
+`thinned_true_edge_support * Pphysical`.
+The Reference edges node exposes this as **Reference-edge probability** and
+receives its true-edge ridge through an explicit typed graph connection. Its
+normalized and hysteresis-thinned derivatives are masked back to the exact
+full-resolution true-edge footprint after resizing, so descriptor and
+interpolation halos cannot create barriers. Assisted fills map their persisted
+`net_physical` source to this supported field, and procedural separation now
+receives the canonical product through its own typed input instead of
+reconstructing an unweighted raw-class difference. Curve and learned branches
+that require separate edge classes receive edge-supported Physical and
+Non-physical compatibility maps.
+
+The previous lambda-based supported margin remains a separate optional product,
+**Conservative net physical-edge evidence**, selected explicitly by assisted
+fills with `conservative_net_physical`. The existing `net_reference_ridges`
+trace source now names its actual conservative ridge, while `reference_ridges`
+and the normalized branch use authoritative Physical probability. Existing
+normalized storage/port IDs retain their legacy `net` spelling for saved-graph
+compatibility; their UI labels say Reference-edge probability. Neither the
+prototype classifier, unknown confidence, annotation masks, nor fill growth
+algorithm is changed by this split.
+
+Settings-profile format 15 adds the true-edge-support input and authoritative
+procedural-edge connection; version-14 and older profiles adopt both current
+connections during migration. Formula, zero-off-ridge, cache, graph, migration,
+fill-source, procedural, visualization, and UI regressions pass. Full discovery
+ran 546 tests in 315 seconds: 543 passed, 2 expected platform/environment tests
+were skipped, and the sole failure remains the pre-existing missing
+`images/IMG_9689c.JPG` fixture referenced by the committed instance-reference
+manifest. `compileall` and `git diff --check` pass; the latter reports only the
+repository's existing LF-to-CRLF notices.
+
+## Annotation-guided Reference edges fit application
+
+Starting the Reference edges fit now explicitly confirms a fit-and-apply
+operation. A genuinely improving best proposal is applied directly to the live
+node when the worker completes; the former second default-No question no longer
+silently discards a completed proposal. The node is selected and its inspector
+controls are rebuilt from the applied values, while the status bar enumerates
+every old-to-new setting change. The application log records the image, loss
+change, and complete fitted-value mapping.
+
+Applying these controls now also invalidates the combined Reference texture
+prototype cache, which currently owns the raw physical/non-physical class-map
+calculation, plus all of that producer's dependents. This prevents updated live
+settings from being paired with resident pre-fit prototype rasters. A UI
+regression covers automatic application, live node values, producer-cache
+invalidation, and recomputation dispatch. Fit progress reports best-so-far loss
+rather than whichever candidate happened to run most recently. The 10 focused
+fit/inspector/application tests pass. All 528 non-pilot tests ran in 202 seconds:
+525 passed, 2 expected platform/environment tests skipped, and the sole failure
+remains the pre-existing missing `images/IMG_9689c.JPG` fixture. A monolithic
+discovery run was stopped after roughly 29 minutes in the already documented
+retained-state real-image pilot slowdown; it was still CPU-active, several
+pilots had completed, and no additional failure marker had appeared.
+
+## 2026-08-31 authoritative Physical probability and conservative evidence
+
+Reference-edge probability is `R * Pphysical`, where `R` is the existing
+full-resolution thinned true-edge support. Its normalized and thinned
+derivatives use the same Physical probability and are bit-identical when only
+the Non-physical subtraction weight changes. The classifier still retains its
+known-versus-unknown confidence; no conditional ratio or second subtraction
+is applied to the authoritative probability.
+
+The previous `R * max(Pphysical - lambda * Pnonphysical, 0)` is retained as
+**Conservative net physical-edge evidence**, with a separate blue overlay,
+typed output, Smart/Shape-fill source, and thinned ridge. Trace sources can
+select the conservative ridge explicitly. Both products are exactly zero off
+the true-edge footprint. The canonical probability shares its lazy GPU raster
+with the already supported Physical class input. Raw prototype compatibility,
+annotation handling, and the fill growth algorithms are unchanged. Stable
+graph/tool IDs preserve existing settings profiles without a schema bump.
+
+The full suite ran in two clean process groups: 530 non-pilot tests in 179
+seconds and all 19 real-image pilots in 99 seconds. Across all 549 tests,
+546 passed, 2 expected platform/environment cases skipped, and the sole failure
+remains the pre-existing missing `images/IMG_9689c.JPG` source named by the
+committed reference manifest. Formula, lambda-invariance, cache reuse,
+zero-off-ridge, source-adapter/fallback, overlay-port naming, UI, fit, and
+settings-persistence checks pass. `compileall` and `git diff --check` pass.
+
+## Layout vessel selection
+
+Layout detection's inspector begins with a **Seed vessel type** dropdown pinned
+to **Glass Petri-dish**. This disabled, single-option capability indicator is
+deliberately separate from computational parameters: other vessel/surface
+detectors are not implemented, and opening the inspector cannot change settings
+or invalidate analysis caches. The existing Petri-dish calculations, profiles,
+and geometry are unchanged. A Qt regression covers ordering, locking, node
+switches, and absence of parameter-change emissions.
+
+Verification: both focused inspector tests pass, and the rendered settings panel
+was checked with the application's Windows font. Full discovery in clean
+non-pilot/pilot processes ran all 550 tests: 547 passed, 2 expected tests skipped,
+and the only failure remains the missing `images/IMG_9689c.JPG` manifest fixture.
+All 19 real-image pilots pass. Compilation and `git diff --check` pass.
+
+## Species libraries and reference dimensions/shape implementation
+
+`docs/SPECIES_REFERENCE_LIBRARIES.md` and
+`docs/REFERENCE_SEED_DIMENSIONS_AND_SHAPE.md` are now implementation records,
+not unstarted proposals. One shared immutable library framework publishes and
+resolves source-balanced foreground colour/noise, material prototypes, aligned
+edge prototypes, seed traits, shape summaries, and joint dimensions/shape
+banks. Projects pin an exact ID/version/content hash; runtime assembly excludes
+the current source; missing pins offer exact bundle import and never follow
+latest. The manager supports build, grouped validation, publish, fork,
+import/export, retirement, and pinning.
+
+Shape reference metadata, robust 2-D measurements, coherent-boundary
+uncertainty, physical-seed repeated-view grouping, pose-conditioned contour
+families, species/lineage/accession/lot partial pooling, overlays, and opt-in
+geometry consumers are implemented. Uncalibrated masks contribute only
+dimensionless shape. The legacy scalar diameter is preserved as a compatibility
+adapter. Intrinsic 3-D recovery remains explicitly deferred pending paired views
+or physical thickness data.
+
+Library extraction now calls the production descriptor seams and uses bounded
+source/seed-balanced compact transfers rather than approximate CPU features.
+Descriptor schema IDs were advanced so older approximate artifacts cannot be
+silently interpreted as compatible. The focused library/shape/persistence/
+pipeline/UI/procedural/visualization regression set passes 264 tests. After the
+project-schema expectation was updated, final full discovery ran 565 tests in
+287 seconds: 562 passed, 2 expected tests skipped, and the sole failure is the
+established absent `images/IMG_9689c.JPG` source named by the
+instance-reference manifest.
+
+## Procedural centres, reference-error diagnostics, and annotation/library UX
+
+Procedural centre likelihood now consumes the proposal-independent,
+fit-validated oval-centre probability from Seed-boundary confirmation. The
+editable positive-only weight defaults to 0.85 and probabilistic-union fusion
+can boost a retained oval centre without suppressing the existing material,
+interior-depth, and flattened-grayscale fallback. The raw centre-vote field,
+raw peak markers, and fit-validated oval-centre probability have explicit names
+and remain separate diagnostics. The graph dependency is typed, cached, and
+causes only the procedural branch and its dependents to be invalidated.
+
+Procedural seed separation also exposes **Reference underreach / overreach
+cost**. After automatic inference is complete, annotated and predicted labels
+are globally matched one-to-one above a minimum IoU, with explicit unmatched
+choices. Blue represents underreach; red distance-weighted overreach; amber
+missed references; magenta incorrect concavity pockets. The exact same pixel
+cost implementation serves fitting and display. The annotation raster is never
+passed into centre discovery, watershed, candidate selection, shape filtering,
+or confidence. Shared matching and cost controls affect the fitting objective
+and post-inference comparison, never the automatic prediction directly.
+
+The seed-trait editor no longer permits the invalid combination that caused the
+opaque project-save failure: a seed cannot be included in shape modelling while
+Outline or Pose is Unknown. Outline and Pose now precede the inclusion control,
+an inline status explains eligibility, and old invalid in-memory records remain
+editable. Persistence errors name the exact seed and repair action; project-save
+errors explicitly state that saving is paused and no in-memory data was lost.
+
+The species-library manager is reorganized into three numbered workflows:
+**Use a library**, **Create a version**, and **Inspect selected version**.
+Pin/import/export/retire actions, reviewed source selection, optional biological
+context, forked-source retention, immutable publication, product coverage, and
+validation are now grouped and explained where they are used. Selection counts,
+dynamic action labels, fork requirements, tooltips, and build status are visible
+without switching between disconnected tabs. Analysis-settings format 17 adds
+the new procedural controls and connections; version 16 and older profiles
+adopt authored defaults.
+
+## Annotation and shape-controls revision — 2026-09-05
+
+See `docs/ANNOTATION_SHAPE_AND_EDGE_REVIEW_2026_09_05.md` for the rationale,
+measurement semantics, compatibility notes and punctate-edge classifier audit.
+Detected ruler now also shows the independently measured imperial span. The
+annotation panel has a draggable title bar and resize grip; the tool-settings
+stack sizes to the active page (hidden fill pages caused the large brush gaps).
+Existing-ID selection, a red empty marker, adjacent selected-only control,
+exclusive No defects versus defect labels, and an on-image hilum target/vector
+editor are implemented. Physical seed ID is no longer exposed but old values
+are preserved.
+
+Maximum span uses all explicitly complete or full-length-visible annotations,
+never a top fraction. Partial full-length masks contribute size only, not shape.
+Complete reviewed masks additionally supply mean internal concavity and signed,
+seed-balanced turning/curvature distributions. A typed compact summary feeds
+soft trace/boundary priors; upstream gradient/ridge caching is preserved.
+The Reviewed measurements, size–ovality, uncertainty and new curvature overlays
+now explain their quantities. Uncertainty is sensitivity, not a validated CI.
+
+Fixed the reversed major-axis comparison in OpenCV ellipse-angle conversion
+(it rotated bodies 90 degrees and corrupted robust-fit residuals). Added inward/
+outward perturbations to uncertainty, raster-consistent convex-hull concavity,
+and cropped per-seed morphology. Shape-library descriptor schemas are now v3;
+old shape banks are disabled with a rebuild warning, while other products stay
+usable. Old shape observations are not silently promoted during fork recovery.
+Reference archives are v5 (v1–v4 still load), analysis settings v18 (retired top-
+fraction parameter migrates away). Existing saved source data is not overwritten.
+
+`tests/test_annotation_shape_revision.py` covers the new UI, geometry, migration,
+no-mask hilum editing, shape-bank compatibility, and curvature/cache contracts.
+Generated UI screenshots are only in ignored `artifacts/`.
+
+Validation: final full discovery ran 585 tests in 273.069 seconds: 582 passed,
+2 skipped, and the sole failure remains the pre-existing missing manifest image
+`images/IMG_9689c.JPG`. Compileall and scoped diff whitespace checks passed.
+
+## Procedural reference assignment and cost repair — 2026-09-05
+
+See `docs/PROCEDURAL_REFERENCE_MATCHING_AND_COSTS.md`. Replaced greedy raw-area
+matching with component-local global IoU assignment and unmatched choices.
+Incidental contacts no longer turn neighbouring unreviewed seeds into costly
+false correspondences. Missed references are now visible and have a lower
+default pixel cost (0.5). Incorrect exterior-connected candidate-concavity
+pockets incur a +2 surcharge; correct natural indentations and enclosed holes
+do not. Pixel loss uses fixed reviewed area, so omission weights actually affect
+the score. Overlay and fitter share summed pixel costs, with blue/red/amber/
+magenta diagnostics and a fixed cost-4 alpha scale. Cost knobs cannot be fitted
+away and cannot alter automatic predictions directly. The existing fit-action
+controls now alias the node's persisted values; settings schema 19 adds the
+new matching, missing, concavity, and coverage defaults.
+
+Validation: 135 focused tests pass. Full discovery ran 595 tests in 268.691
+seconds: 592 passed, 2 skipped, and the only failure is the pre-existing missing
+`images/IMG_9689c.JPG` manifest fixture. Compilation, diff whitespace checks and
+CUDA runtime diagnostics pass. The synthetic cost-overlay contact sheet was
+visually checked and is retained only in ignored `artifacts/`.
 
 ## First actions for the next agent
 

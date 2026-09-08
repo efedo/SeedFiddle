@@ -1085,7 +1085,9 @@ class PipelineInspector(QWidget):
         procedural_fit_layout.addWidget(self.procedural_fit_heading)
         self.procedural_fit_description_label = QLabel(
             "Search a small bounded set of procedural settings against the applied "
-            "seed-instance masks. This is an image-local fit, not validation.",
+            "seed-instance masks. Matching and cost weights are shared with the "
+            "Reference matching and fitting costs section and cost overlay. "
+            "This is an image-local fit, not validation.",
             self.procedural_fit_container,
         )
         self.procedural_fit_description_label.setWordWrap(True)
@@ -1099,8 +1101,8 @@ class PipelineInspector(QWidget):
         )
         self.procedural_fit_complete_annotations_checkbox.setChecked(False)
         self.procedural_fit_complete_annotations_checkbox.setToolTip(
-            "Leave this off when only some seeds have been annotated: wholly disjoint "
-            "predictions that never overlap an annotated seed are then outside the "
+            "Leave this off when only some seeds have been annotated: disjoint predictions "
+            "and incidental contacts below the matching threshold are outside the "
             "reviewed subset and are not scored. Turn it on only when every seed in "
             "the detected dish has a complete applied instance mask; then every "
             "predicted object, including a standalone background false object, "
@@ -1130,18 +1132,19 @@ class PipelineInspector(QWidget):
         self.procedural_fit_overreach_penalty_spin = QDoubleSpinBox(
             procedural_fit_penalty_row
         )
-        self.procedural_fit_overreach_penalty_spin.setRange(1.01, 10.0)
+        self.procedural_fit_overreach_penalty_spin.setRange(0.05, 10.0)
         self.procedural_fit_overreach_penalty_spin.setDecimals(2)
         self.procedural_fit_overreach_penalty_spin.setSingleStep(0.10)
         self.procedural_fit_overreach_penalty_spin.setValue(2.0)
         self.procedural_fit_overreach_penalty_spin.setSuffix(" ×")
         self.procedural_fit_overreach_penalty_spin.setToolTip(penalty_tooltip)
         self.procedural_fit_missing_penalty_label = QLabel(
-            "Missing: 1.0×", procedural_fit_penalty_row
+            "Underreach: 1.0×; missed seed: 0.5×", procedural_fit_penalty_row
         )
         self.procedural_fit_missing_penalty_label.setToolTip(
-            "Every missing annotated seed pixel retains the fixed unit penalty; "
-            "only outside/overreach pixels are distance weighted."
+            "A partially matched seed has unit underreach cost. An entirely missed "
+            "reference has the lower configured pixel cost. Incorrect concavity "
+            "pockets receive the extra cost set in the shared matching section."
         )
         procedural_fit_penalty_layout.addWidget(procedural_fit_penalty_label)
         procedural_fit_penalty_layout.addWidget(
@@ -1172,7 +1175,7 @@ class PipelineInspector(QWidget):
         self.procedural_fit_overreach_distance_scale_spin = QDoubleSpinBox(
             procedural_fit_distance_row
         )
-        self.procedural_fit_overreach_distance_scale_spin.setRange(0.05, 2.0)
+        self.procedural_fit_overreach_distance_scale_spin.setRange(0.02, 2.0)
         self.procedural_fit_overreach_distance_scale_spin.setDecimals(2)
         self.procedural_fit_overreach_distance_scale_spin.setSingleStep(0.05)
         self.procedural_fit_overreach_distance_scale_spin.setValue(0.50)
@@ -1186,6 +1189,12 @@ class PipelineInspector(QWidget):
         )
         procedural_fit_distance_layout.addStretch(1)
         procedural_fit_layout.addWidget(procedural_fit_distance_row)
+        self.procedural_fit_overreach_penalty_spin.valueChanged.connect(
+            lambda value: self._parameter_edited("reference_error_overreach_weight", value)
+        )
+        self.procedural_fit_overreach_distance_scale_spin.valueChanged.connect(
+            lambda value: self._parameter_edited("reference_error_distance_scale_fraction", value)
+        )
 
         self.procedural_fit_button = QPushButton(
             "Fit settings to applied annotations…", self.procedural_fit_container
@@ -1223,7 +1232,8 @@ class PipelineInspector(QWidget):
         reference_edge_fit_description = QLabel(
             "Search the exposed strip geometry, tolerance, ridge blend, and interior "
             "buffer against physical contours and internal edges derived from applied "
-            "seed instances. The proposal changes this project only after approval.",
+            "seed instances. After the fit confirmation, the best genuine improvement "
+            "is applied to this project's Reference edges settings and recomputed.",
             self.reference_edge_fit_container,
         )
         reference_edge_fit_description.setWordWrap(True)
@@ -1313,6 +1323,24 @@ class PipelineInspector(QWidget):
         self.enabled_checkbox.setVisible(True)
         self.enabled_checkbox.blockSignals(False)
         self._clear_parameters()
+        if node.identifier == "layout_detection":
+            # Fixed detector capability, not an adjustable analysis parameter:
+            # unsupported vessels must not appear selectable or invalidate caches.
+            vessel_combo = QComboBox(self.parameter_container)
+            vessel_combo.setObjectName("seedVesselTypeCombo")
+            vessel_combo.addItem("Glass Petri-dish", "petri_dish")
+            vessel_combo.setEditable(False)
+            vessel_combo.setEnabled(False)
+            vessel_help = (
+                "Pinned to Glass Petri-dish: this is the only supported layout "
+                "detector. Blue weigh boats, paper sheets, and other seed "
+                "surfaces are not supported yet."
+            )
+            vessel_combo.setToolTip(vessel_help)
+            vessel_combo.setAccessibleName("Seed vessel type")
+            vessel_label = QLabel("Seed vessel type", self.parameter_container)
+            vessel_label.setToolTip(vessel_help)
+            self.parameter_form.addRow(vessel_label, vessel_combo)
         specs_by_key = {spec.key: spec for spec in node.parameter_specs}
         for section_index, section in enumerate(node.parameter_sections):
             section_label = QLabel(section.title, self.parameter_container)
@@ -1564,6 +1592,21 @@ class PipelineInspector(QWidget):
         self.procedural_fit_container.setVisible(visible)
         if not visible:
             return
+        for control, key in (
+            (self.procedural_fit_overreach_penalty_spin, "reference_error_overreach_weight"),
+            (self.procedural_fit_overreach_distance_scale_spin, "reference_error_distance_scale_fraction"),
+            (self.procedural_fit_complete_annotations_checkbox, "reference_error_annotations_complete"),
+        ):
+            with QSignalBlocker(control):
+                if isinstance(control, QCheckBox):
+                    control.setChecked(bool(node.parameters[key]))
+                else:
+                    control.setValue(float(node.parameters[key]))
+        self.procedural_fit_missing_penalty_label.setText(
+            "Underreach: 1.0×; missed seed: "
+            f"{node.parameters['reference_error_missed_seed_weight']:.2g}×; "
+            f"concavity: +{node.parameters['reference_error_concavity_weight']:.2g}"
+        )
         runnable = bool(node.enabled and node.implemented)
         self.procedural_fit_button.setEnabled(
             runnable and self._procedural_fit_eligible and not self._procedural_fit_busy
@@ -1605,7 +1648,7 @@ class PipelineInspector(QWidget):
 
     @Slot(bool)
     def _procedural_fit_coverage_changed(self, checked: bool) -> None:
-        del checked
+        self._parameter_edited("reference_error_annotations_complete", bool(checked))
         self._procedural_fit_result_summary = ""
         self._refresh_procedural_fit_action()
 

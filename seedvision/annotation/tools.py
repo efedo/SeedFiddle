@@ -19,15 +19,18 @@ ANNOTATION_EDGE_SOURCES = frozenset(
         "adaptive",
         "ridges",
         "reference_ridges",
+        "conservative_reference_ridges",
         "normalized_reference_ridges",
         "traces",
         "magnitude",
-        "physical",
         "net_physical",
+        "conservative_net_physical",
         "normalized_net_physical",
     }
 )
-EDGE_TRACE_EDGE_SOURCES = ANNOTATION_EDGE_SOURCES - {"net_physical"}
+EDGE_TRACE_EDGE_SOURCES = ANNOTATION_EDGE_SOURCES - {
+    "net_physical", "conservative_net_physical"
+}
 SMART_FILL_EDGE_SOURCES = ANNOTATION_EDGE_SOURCES
 
 
@@ -173,7 +176,7 @@ def _anchored_support_component(
         return None
     if source == "traces":
         threshold = 0.5
-    elif source in {"ridges", "reference_ridges"}:
+    elif source in {"ridges", "reference_ridges", "conservative_reference_ridges"}:
         threshold = max(0.04, min(0.35, float(np.quantile(positive, 0.20))))
     else:
         threshold = max(0.08, min(0.55, float(np.quantile(positive, 0.55))))

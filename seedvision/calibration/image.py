@@ -175,6 +175,22 @@ class ImageCalibration:
             return points.astype(np.float32)
         return _transform_points(points, self.affine_matrix)
 
+    def imperial_measurement_endpoints_corrected(self) -> np.ndarray:
+        """Outer roots of the first/last independently detected inch dividers.
+
+        Falls back to the observed tick span, never extrapolates a metric line.
+        """
+        ruler = self.ruler
+        if ruler is None or len(ruler.imperial_tick_segments) < 2:
+            return np.empty((0, 2), dtype=np.float32)
+        segments = ruler.imperial_tick_segments
+        indices = [i for i in ruler.imperial_unit_divider_indices if 0 <= i < len(segments)]
+        if len(indices) < 2:
+            indices = [0, len(segments) - 1]
+        points = np.asarray((segments[min(indices)][0], segments[max(indices)][0]), float)
+        return (points.astype(np.float32) if self.ruler_in_corrected_coordinates
+                else _transform_points(points, self.affine_matrix))
+
 
 def calibrate_image(
     image: np.ndarray,

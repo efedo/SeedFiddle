@@ -160,7 +160,15 @@ class ProjectAnalysisPersistenceTests(unittest.TestCase):
             )
             self.assertEqual(
                 set(payload["images"][0]),
-                {"id", "source", "image_sha256", "source_shape", "sidecars"},
+                {
+                    "id",
+                    "source",
+                    "image_sha256",
+                    "source_shape",
+                    "sidecars",
+                    "biological_context",
+                    "capture_group_id",
+                },
             )
             encoded = destination.read_text(encoding="utf-8")
             self.assertNotIn("corrected_bgr", encoded)

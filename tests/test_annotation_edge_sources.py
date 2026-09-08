@@ -108,7 +108,7 @@ class AnnotationEdgeSourceTests(unittest.TestCase):
             self.assertGreaterEqual(shape_net_index, 0)
             self.assertEqual(
                 window.smart_fill_evidence_combo.itemText(smart_net_index),
-                "Net physical-edge probability",
+                "Reference-edge probability",
             )
             window.smart_fill_evidence_combo.setCurrentIndex(smart_net_index)
             window.shape_fill_evidence_combo.setCurrentIndex(shape_net_index)
@@ -116,16 +116,28 @@ class AnnotationEdgeSourceTests(unittest.TestCase):
             self.assertEqual(
                 window.image_view._smart_fill_edge_source, "net_physical"
             )
-            # SmartFillOptions retains its core-library-compatible physical
-            # source while ImageView remembers the exact net raster selected.
             self.assertEqual(
-                window.image_view._smart_fill_options.edge_source, "physical"
+                window.image_view._smart_fill_options.edge_source,
+                "net_physical",
             )
             self.assertEqual(
                 window.image_view._shape_guided_edge_source, "net_physical"
             )
             self.assertEqual(
                 window.edge_trace_evidence_combo.findData("net_physical"), -1
+            )
+            for combo in (window.smart_fill_evidence_combo, window.shape_fill_evidence_combo):
+                conservative_index = combo.findData("conservative_net_physical")
+                self.assertGreaterEqual(conservative_index, 0)
+                self.assertEqual(
+                    combo.itemText(conservative_index),
+                    "Conservative net physical-edge evidence",
+                )
+            self.assertEqual(
+                window.smart_fill_evidence_combo.findData("physical"), -1
+            )
+            self.assertEqual(
+                window.shape_fill_evidence_combo.findData("physical"), -1
             )
             for combo in (
                 window.edge_trace_evidence_combo,
@@ -173,7 +185,7 @@ class AnnotationEdgeSourceTests(unittest.TestCase):
                 self.assertEqual(window.image_view._smart_fill_edge_source, selected)
                 self.assertEqual(
                     window.image_view._smart_fill_options.edge_source,
-                    "physical" if selected == "net_physical" else selected,
+                    selected,
                 )
             for index in range(window.shape_fill_evidence_combo.count()):
                 window.shape_fill_evidence_combo.setCurrentIndex(index)
@@ -196,6 +208,8 @@ class AnnotationEdgeSourceTests(unittest.TestCase):
 
             ridges = np.zeros((6, 8), dtype=np.uint8)
             ridges[1, 1] = 180
+            ridges[5, 5] = 128
+            ridges[0, 6] = 192
             traces = np.zeros((6, 8), dtype=np.uint16)
             traces[2, 2] = 1
             traces[3, 3] = 300
@@ -237,11 +251,12 @@ class AnnotationEdgeSourceTests(unittest.TestCase):
                 for source in (
                     "ridges",
                     "reference_ridges",
+                    "conservative_reference_ridges",
                     "normalized_reference_ridges",
                     "traces",
                     "magnitude",
-                    "physical",
                     "net_physical",
+                    "conservative_net_physical",
                     "normalized_net_physical",
                 )
             }
@@ -271,29 +286,38 @@ class AnnotationEdgeSourceTests(unittest.TestCase):
             self.assertTrue(np.array_equal(adaptive, expected_adaptive))
             self.assertEqual(int(adaptive[2, 2]), 255)
             self.assertEqual(int(adaptive[3, 3]), 255)
-            self.assertEqual(int(adaptive[5, 5]), 63)
+            self.assertEqual(int(adaptive[5, 5]), 128)
 
             expected_net = np.asarray(
-                result.layers.net_physical_edge_probability, dtype=np.uint8
+                result.layers.reference_edge_probability, dtype=np.uint8
             )
             self.assertTrue(
                 np.array_equal(selected["net_physical"], expected_net)
             )
-            self.assertEqual(int(selected["net_physical"][5, 5]), 223)
-            self.assertEqual(int(selected["net_physical"][0, 6]), 32)
+            self.assertEqual(int(selected["net_physical"][5, 5]), 128)
+            self.assertEqual(int(selected["net_physical"][0, 6]), 96)
+            self.assertEqual(int(selected["conservative_net_physical"][5, 5]), 112)
+            self.assertEqual(int(selected["conservative_net_physical"][0, 6]), 24)
+            np.testing.assert_array_equal(
+                selected["conservative_reference_ridges"], result.layers.net_reference_edge_ridges
+            )
             self.assertIs(
                 view._annotation_edge_evidence("net_physical"),
                 selected["net_physical"],
             )
 
-            # The subtraction coefficient is baked into one authoritative
-            # cached Reference-edges output. Merely changing adjacent metadata
-            # cannot make the fill tools disagree with the displayed net map.
+            # Only conservative evidence includes the subtraction coefficient.
+            # Both sources use their cached outputs. Merely changing adjacent
+            # metadata cannot make fill disagree with the displayed field.
             result.layers.net_physical_edge_internal_scale = 1.0
             updated_net = view._annotation_edge_evidence("net_physical")
             self.assertIs(updated_net, selected["net_physical"])
-            self.assertEqual(int(updated_net[5, 5]), 223)
-            self.assertEqual(int(updated_net[0, 6]), 32)
+            self.assertEqual(int(updated_net[5, 5]), 128)
+            self.assertEqual(int(updated_net[0, 6]), 96)
+            self.assertIs(
+                view._annotation_edge_evidence("conservative_net_physical"),
+                selected["conservative_net_physical"],
+            )
 
             old_cached_ridges = selected["ridges"]
             replacement_ridges = np.zeros_like(ridges)
@@ -316,7 +340,33 @@ class AnnotationEdgeSourceTests(unittest.TestCase):
             self.assertEqual(int(refreshed_ridges[0, 7]), 231)
             self.assertEqual(int(refreshed_ridges[1, 1]), 0)
             refreshed_net = view._annotation_edge_evidence("net_physical")
-            self.assertEqual(int(refreshed_net[5, 5]), 239)
+            self.assertEqual(int(refreshed_net[5, 5]), 0)
+            self.assertEqual(int(refreshed_net[0, 7]), 0)
+
+    def test_compact_fallback_separates_probability_from_conservative_evidence(self) -> None:
+        from unittest.mock import patch
+
+        from seedvision.ui.image_view import ImageView
+
+        view = ImageView()
+        self.addCleanup(view.close)
+        layers = SimpleNamespace(net_physical_edge_internal_scale=0.5)
+        view._analysis_result = SimpleNamespace(layers=layers)
+        rasters = {
+            "physical_edge_probability": np.asarray(((200, 200, 40),), np.uint8),
+            "non_edge_probability": np.asarray(((160, 160, 200),), np.uint8),
+            "edge_ridges": np.asarray(((128, 0, 255),), np.uint8),
+        }
+        with patch.object(view, "_full_annotation_evidence", side_effect=rasters.__getitem__):
+            probability = view._annotation_edge_evidence("net_physical")
+            conservative = view._annotation_edge_evidence("conservative_net_physical")
+            np.testing.assert_array_equal(probability, ((100, 0, 40),))
+            np.testing.assert_array_equal(conservative, ((60, 0, 0),))
+            layers.net_physical_edge_internal_scale = 2.0
+            self.assertIs(view._annotation_edge_evidence("net_physical"), probability)
+            np.testing.assert_array_equal(
+                view._annotation_edge_evidence("conservative_net_physical"), ((0, 0, 0),)
+            )
 
     @staticmethod
     def _analysis_result(
@@ -351,15 +401,28 @@ class AnnotationEdgeSourceTests(unittest.TestCase):
                 255.0,
             )
         ).astype(np.uint8)
+        reference_edge_probability = np.rint(
+            physical_u8.astype(np.float32)
+            * np.asarray(ridges, dtype=np.float32)
+            / 255.0
+        ).astype(np.uint8)
+        conservative_evidence = np.rint(
+            net_physical.astype(np.float32)
+            * np.asarray(ridges, dtype=np.float32)
+            / 255.0
+        ).astype(np.uint8)
         return SimpleNamespace(
             layers=SimpleNamespace(
                 edge_ridges=ridges,
                 reference_edge_ridges=reference_ridges,
+                net_reference_edge_ridges=np.rint(reference_ridges * 0.5).astype(np.uint8),
                 edge_trace_labels=traces,
                 edge_likelihood=magnitude,
                 physical_edge_probability=physical,
                 non_edge_probability=non_physical,
                 net_physical_edge_probability=net_physical,
+                reference_edge_probability=reference_edge_probability,
+                conservative_net_physical_edge_evidence=conservative_evidence,
                 locally_normalized_net_physical_edge=normalized,
                 normalized_net_reference_edge_ridges=normalized_ridges,
                 net_physical_edge_internal_scale=net_scale,

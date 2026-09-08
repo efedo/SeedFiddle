@@ -139,6 +139,7 @@ class ProceduralInstanceSettings:
     centre_material_weight: float = 0.20
     centre_distance_weight: float = 0.20
     centre_flattened_grayscale_weight: float = 0.60
+    centre_validated_oval_weight: float = 0.85
     centre_minimum_separation_fraction: float = 0.42
     sparse_centre_minimum_separation_fraction: float = 0.58
     sparse_seed_area_fraction: float = 0.47
@@ -156,6 +157,12 @@ class ProceduralInstanceSettings:
     maximum_instance_axis_ratio: float = 2.80
     candidate_hypotheses_per_marker: int = 5
     candidate_overlap_fraction: float = 0.02
+    reference_error_overreach_weight: float = 2.0
+    reference_error_distance_scale_fraction: float = 0.50
+    reference_error_minimum_match_iou: float = 0.20
+    reference_error_missed_seed_weight: float = 0.50
+    reference_error_concavity_weight: float = 2.0
+    reference_error_annotations_complete: bool = False
 
     def __post_init__(self) -> None:
         if not 256 <= self.working_maximum_dimension <= 4096:
@@ -186,6 +193,8 @@ class ProceduralInstanceSettings:
         )
         if any(value < 0.0 for value in centre_weights) or sum(centre_weights) <= 0.0:
             raise ValueError("Centre evidence weights must be non-negative and non-zero.")
+        if not 0.0 <= self.centre_validated_oval_weight <= 1.0:
+            raise ValueError("Validated oval-centre weight must be between zero and one.")
         if not 0.0 < self.foreground_threshold_scale <= 2.0:
             raise ValueError("Foreground threshold scale must be positive.")
         if not 0.0 <= self.dish_margin_fraction <= 0.5:
@@ -236,6 +245,16 @@ class ProceduralInstanceSettings:
             raise ValueError("Candidate hypotheses per marker must be between 1 and 9.")
         if not 0.0 <= self.candidate_overlap_fraction <= 0.25:
             raise ValueError("Candidate overlap fraction must be between zero and 0.25.")
+        if self.reference_error_overreach_weight <= 0.0:
+            raise ValueError("Reference overreach cost weight must be positive.")
+        if self.reference_error_distance_scale_fraction <= 0.0:
+            raise ValueError("Reference error distance scale must be positive.")
+        if not 0.0 <= self.reference_error_minimum_match_iou < 1.0:
+            raise ValueError("Minimum reference match IoU must be in [0, 1).")
+        if not 0.0 < self.reference_error_missed_seed_weight <= 1.0:
+            raise ValueError("Missed reference cost must be in (0, 1].")
+        if not np.isfinite(self.reference_error_concavity_weight) or self.reference_error_concavity_weight < 0.0:
+            raise ValueError("Incorrect-concavity cost must be finite and non-negative.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -257,6 +276,15 @@ class ProceduralInstanceResult:
     centre_likelihood: np.ndarray
     source_shape: tuple[int, int]
     working_scale: float
+    reference_error_rgba: np.ndarray = field(
+        default_factory=lambda: np.zeros((1, 1, 4), np.uint8)
+    )
+    reference_error_matched_instances: int = 0
+    reference_error_underreach_pixels: int = 0
+    reference_error_overreach_pixels: int = 0
+    reference_error_missed_instances: int = 0
+    reference_error_missed_pixels: int = 0
+    reference_error_concavity_pixels: int = 0
     marker_centres_xy: np.ndarray = field(
         default_factory=lambda: np.empty((0, 2), np.float32)
     )
@@ -298,6 +326,9 @@ class ProceduralInstanceResult:
         default_factory=lambda: np.empty(0, np.float32)
     )
     instance_axis_ratios: np.ndarray = field(
+        default_factory=lambda: np.empty(0, np.float32)
+    )
+    instance_shape_prior_compatibilities: np.ndarray = field(
         default_factory=lambda: np.empty(0, np.float32)
     )
 
@@ -357,6 +388,11 @@ class ProceduralInstanceResult:
             "protrusion_fraction": float(self.instance_protrusion_fractions[index]),
             "solidity": float(self.instance_solidities[index]),
             "axis_ratio": float(self.instance_axis_ratios[index]),
+            "shape_prior_compatibility": float(
+                self.instance_shape_prior_compatibilities[index]
+                if index < len(self.instance_shape_prior_compatibilities)
+                else 0.0
+            ),
             "confidence": float(self.instance_confidences[index]),
             "marker_score": float(self.marker_scores[index]),
         }
@@ -380,6 +416,7 @@ class _InstanceCandidate:
     solidity: float
     axis_ratio: float
     boundary_support: float
+    shape_prior_compatibility: float = 1.0
     selected: bool = False
 
     @property
@@ -415,6 +452,7 @@ class PreparedProceduralInstanceInputs:
     edge_ridges: np.ndarray
     physical_edge_probability: np.ndarray
     non_edge_probability: np.ndarray
+    reference_edge_probability: np.ndarray
     normalized_net_physical_edge_probability: np.ndarray
     thinned_reference_edge_ridges: np.ndarray
     oriented_edge_trace_labels: np.ndarray
@@ -423,6 +461,7 @@ class PreparedProceduralInstanceInputs:
     reference_surface_probability: np.ndarray | None
     flattened_grayscale: np.ndarray | None
     surface_darkening_magnitude: np.ndarray | None
+    validated_oval_centre_probability: np.ndarray | None
 
     @property
     def working_shape(self) -> tuple[int, int]:
@@ -731,6 +770,7 @@ def _candidate_from_component(
     diameter: float,
     expected_area_fraction: float,
     settings: ProceduralInstanceSettings,
+    shape_component=None,
     origin_xy: tuple[int, int] = (0, 0),
 ) -> tuple[_InstanceCandidate | None, str]:
     """Measure, hard-filter, and softly score one compact candidate mask."""
@@ -838,6 +878,59 @@ def _candidate_from_component(
         max(0.0, 1.0 - concavity / max(1e-6, settings.maximum_internal_concavity_fraction))
         * max(0.0, 1.0 - protrusion / max(1e-6, settings.maximum_protrusion_area_fraction))
     ) ** 0.25
+    shape_prior_compatibility = 1.0
+    if shape_component is not None:
+        mean = np.asarray(shape_component.mean, np.float64)
+        covariance = np.asarray(shape_component.covariance, np.float64)
+        maximum_span = max(1.0, width_fraction * diameter)
+        candidate_values = np.asarray(
+            (
+                axis_ratio,
+                area / (maximum_span * maximum_span),
+                solidity,
+                concavity,
+                protrusion,
+            ),
+            np.float64,
+        )
+        expected_area_ratio = (
+            mean[4] / max(mean[0] * mean[0], 1e-9)
+            if shape_component.physical_dimensions_available
+            else np.pi / (4.0 * max(mean[3], 1.0))
+        )
+        expected_values = np.asarray(
+            (
+                mean[3],
+                expected_area_ratio,
+                mean[8],
+                mean[9],
+                mean[10],
+            ),
+            np.float64,
+        )
+        variances = np.asarray(
+            (
+                covariance[3, 3],
+                (
+                    max(covariance[4, 4], 0.0)
+                    / max(mean[0] ** 4, 1e-9)
+                    if shape_component.physical_dimensions_available
+                    else 0.05 ** 2
+                ),
+                covariance[8, 8],
+                covariance[9, 9],
+                covariance[10, 10],
+            ),
+            np.float64,
+        )
+        floors = np.asarray((0.08, 0.05, 0.04, 0.03, 0.03)) ** 2
+        distance = np.mean(
+            (candidate_values - expected_values) ** 2
+            / np.maximum(variances, floors)
+        )
+        shape_prior_compatibility = float(
+            np.exp(-0.5 * min(float(distance), 40.0))
+        )
     score = float(
         np.clip(
             (
@@ -847,7 +940,8 @@ def _candidate_from_component(
             )
             * minimum_penalty
             * width_penalty
-            * shape_penalty,
+            * shape_penalty
+            * (0.65 + 0.35 * shape_prior_compatibility),
             0.0,
             1.0,
         )
@@ -870,6 +964,7 @@ def _candidate_from_component(
             solidity=solidity,
             axis_ratio=axis_ratio,
             boundary_support=boundary_support,
+            shape_prior_compatibility=shape_prior_compatibility,
         ),
         "",
     )
@@ -1108,6 +1203,7 @@ def prepare_procedural_instance_inputs(
     edge_ridges,
     physical_edge_probability=None,
     non_edge_probability=None,
+    reference_edge_probability=None,
     normalized_net_physical_edge_probability=None,
     thinned_reference_edge_ridges=None,
     oriented_edge_trace_labels=None,
@@ -1115,6 +1211,7 @@ def prepare_procedural_instance_inputs(
     reference_surface_probability=None,
     flattened_grayscale=None,
     surface_darkening_magnitude=None,
+    validated_oval_centre_probability=None,
     working_maximum_dimension: int = 1600,
 ) -> PreparedProceduralInstanceInputs:
     """Materialize the separator's bounded, parameter-independent inputs once."""
@@ -1166,6 +1263,18 @@ def prepare_procedural_instance_inputs(
             _working_u8(non_edge_probability, size, cv2.INTER_AREA) / 255.0
         )
     )
+    authoritative_reference_probability = (
+        _readonly(np.zeros_like(edge))
+        if reference_edge_probability is None
+        else _readonly(
+            _working_u8(
+                reference_edge_probability,
+                size,
+                cv2.INTER_AREA,
+            )
+            / 255.0
+        )
+    )
     normalized_net_probability = (
         _readonly(np.zeros_like(edge))
         if normalized_net_physical_edge_probability is None
@@ -1204,6 +1313,7 @@ def prepare_procedural_instance_inputs(
     semantic_available = bool(
         np.any(physical_probability > (1.0 / 255.0))
         or np.any(nonphysical_probability > (1.0 / 255.0))
+        or np.any(authoritative_reference_probability > (1.0 / 255.0))
         or np.any(normalized_net_probability > (1.0 / 255.0))
     )
     reference_surface = (
@@ -1227,6 +1337,16 @@ def prepare_procedural_instance_inputs(
             _working_u8(surface_darkening_magnitude, size, cv2.INTER_AREA) / 255.0
         )
     )
+    validated_oval_centres = (
+        None
+        if validated_oval_centre_probability is None
+        else _readonly(
+            _working_u8(
+                validated_oval_centre_probability, size, cv2.INTER_AREA
+            )
+            / 255.0
+        )
+    )
     return PreparedProceduralInstanceInputs(
         source_shape=(source_height, source_width),
         working_scale=float(scale),
@@ -1242,6 +1362,7 @@ def prepare_procedural_instance_inputs(
         edge_ridges=ridges,
         physical_edge_probability=physical_probability,
         non_edge_probability=nonphysical_probability,
+        reference_edge_probability=authoritative_reference_probability,
         normalized_net_physical_edge_probability=normalized_net_probability,
         thinned_reference_edge_ridges=reference_ridges,
         oriented_edge_trace_labels=trace_labels,
@@ -1250,6 +1371,7 @@ def prepare_procedural_instance_inputs(
         reference_surface_probability=reference_surface,
         flattened_grayscale=flattened,
         surface_darkening_magnitude=surface_darkening,
+        validated_oval_centre_probability=validated_oval_centres,
     )
 
 
@@ -1259,6 +1381,7 @@ def procedural_seed_instances_from_prepared(
     seed_instance_annotations=None,
     manual_seed_centres: ManualSeedCentres | None = None,
     settings: ProceduralInstanceSettings = ProceduralInstanceSettings(),
+    shape_model=None,
 ) -> ProceduralInstanceResult:
     """Run only parameter-dependent CPU topology on a prepared working set."""
 
@@ -1286,6 +1409,12 @@ def procedural_seed_instances_from_prepared(
     size = (width, height)
     valid = prepared.valid_mask
     diameter = prepared.seed_diameter_px
+    flat_shape_family = (
+        None if shape_model is None else shape_model.family("flat")
+    )
+    shape_component = (
+        None if flat_shape_family is None else flat_shape_family.component
+    )
 
     foreground = prepared.foreground_probability
     foreground_noise = prepared.foreground_noise_probability
@@ -1295,6 +1424,9 @@ def procedural_seed_instances_from_prepared(
     ridges = prepared.edge_ridges
     physical_probability = prepared.physical_edge_probability
     nonphysical_probability = prepared.non_edge_probability
+    authoritative_reference_probability = (
+        prepared.reference_edge_probability
+    )
     normalized_net_probability = (
         prepared.normalized_net_physical_edge_probability
     )
@@ -1304,6 +1436,7 @@ def procedural_seed_instances_from_prepared(
     reference_surface = prepared.reference_surface_probability
     flattened_grayscale = prepared.flattened_grayscale
     surface_darkening = prepared.surface_darkening_magnitude
+    validated_oval_centres = prepared.validated_oval_centre_probability
 
     if prepared.material_probability is not None:
         # The hierarchical material node has already combined colour, texture,
@@ -1349,7 +1482,7 @@ def procedural_seed_instances_from_prepared(
     # long, coherent convex-oriented traces improve localization, but none of
     # these generic signals can by itself declare a physical boundary: coat
     # pattern edges can be equally strong.  Where annotation-trained semantics
-    # exist, the physical-minus-nonphysical margin gates the *entire* candidate
+    # exist, authoritative supported Physical probability gates the *entire* candidate
     # cost.  This is deliberately unlike the former additive reference branch,
     # whose discount could not suppress the dominant generic contribution.
     boundary_weights = np.asarray(
@@ -1398,16 +1531,14 @@ def procedural_seed_instances_from_prepared(
         candidate_boundary / max(1e-5, candidate_scale), 0.0, 1.0
     )
     if prepared.semantic_edge_evidence_available:
-        semantic_margin = (
+        semantic_probability = (
             normalized_net_probability
             if np.any(normalized_net_probability > (1.0 / 255.0))
-            else np.clip(
-                physical_probability - nonphysical_probability, 0.0, 1.0
-            )
+            else authoritative_reference_probability
         )
         classified_gate = (
             settings.boundary_semantic_floor
-            + (1.0 - settings.boundary_semantic_floor) * semantic_margin
+            + (1.0 - settings.boundary_semantic_floor) * semantic_probability
         )
         # A sparse set of annotated instances cannot classify every edge in
         # the dish.  Where both learned class memberships are near zero, keep
@@ -1419,6 +1550,9 @@ def procedural_seed_instances_from_prepared(
         )
         classification_strength = np.maximum(
             classification_strength, normalized_net_probability
+        )
+        classification_strength = np.maximum(
+            classification_strength, authoritative_reference_probability
         )
         semantic_gate = (
             1.0 - classification_strength
@@ -1513,6 +1647,21 @@ def procedural_seed_instances_from_prepared(
     centre *= cv2.GaussianBlur(
         occupancy.astype(np.float32), (0, 0), sigmaX=max(0.7, diameter * 0.05)
     )
+    if (
+        validated_oval_centres is not None
+        and settings.centre_validated_oval_weight > 0.0
+    ):
+        # Accepted oval centres have already passed perimeter coverage,
+        # tangent-agreement, size, ovality, and duplicate checks in the
+        # proposal-independent boundary-confirmation node.  Fuse them as
+        # positive-only evidence so an incomplete oval fit cannot suppress the
+        # material/depth fallback and so no annotation raster enters inference.
+        oval_support = np.clip(
+            validated_oval_centres * settings.centre_validated_oval_weight,
+            0.0,
+            1.0,
+        )
+        centre = 1.0 - (1.0 - np.clip(centre, 0.0, 1.0)) * (1.0 - oval_support)
     centre *= valid
 
     coverage = float(np.count_nonzero(occupancy)) / max(1, np.count_nonzero(valid))
@@ -1839,6 +1988,7 @@ def procedural_seed_instances_from_prepared(
                 diameter=diameter,
                 expected_area_fraction=area_fraction,
                 settings=settings,
+                shape_component=shape_component,
                 origin_xy=(component_x0, component_y0),
             )
             if candidate is None:
@@ -2098,6 +2248,13 @@ def procedural_seed_instances_from_prepared(
         instance_axis_ratios=np.asarray(
             [candidate.axis_ratio for candidate in assigned_candidates], np.float32
         ),
+        instance_shape_prior_compatibilities=np.asarray(
+            [
+                candidate.shape_prior_compatibility
+                for candidate in assigned_candidates
+            ],
+            np.float32,
+        ),
     )
 
 
@@ -2114,6 +2271,7 @@ def procedural_seed_instances(
     edge_ridges,
     physical_edge_probability=None,
     non_edge_probability=None,
+    reference_edge_probability=None,
     normalized_net_physical_edge_probability=None,
     thinned_reference_edge_ridges=None,
     oriented_edge_trace_labels=None,
@@ -2121,9 +2279,11 @@ def procedural_seed_instances(
     reference_surface_probability=None,
     flattened_grayscale=None,
     surface_darkening_magnitude=None,
+    validated_oval_centre_probability=None,
     seed_instance_annotations=None,
     manual_seed_centres: ManualSeedCentres | None = None,
     settings: ProceduralInstanceSettings = ProceduralInstanceSettings(),
+    shape_model=None,
 ) -> ProceduralInstanceResult:
     """Separate visible seeds, preparing one bounded copy of every input."""
 
@@ -2139,6 +2299,7 @@ def procedural_seed_instances(
         edge_ridges=edge_ridges,
         physical_edge_probability=physical_edge_probability,
         non_edge_probability=non_edge_probability,
+        reference_edge_probability=reference_edge_probability,
         normalized_net_physical_edge_probability=(
             normalized_net_physical_edge_probability
         ),
@@ -2148,6 +2309,7 @@ def procedural_seed_instances(
         reference_surface_probability=reference_surface_probability,
         flattened_grayscale=flattened_grayscale,
         surface_darkening_magnitude=surface_darkening_magnitude,
+        validated_oval_centre_probability=validated_oval_centre_probability,
         working_maximum_dimension=settings.working_maximum_dimension,
     )
     return procedural_seed_instances_from_prepared(
@@ -2155,4 +2317,5 @@ def procedural_seed_instances(
         seed_instance_annotations=seed_instance_annotations,
         manual_seed_centres=manual_seed_centres,
         settings=settings,
+        shape_model=shape_model,
     )

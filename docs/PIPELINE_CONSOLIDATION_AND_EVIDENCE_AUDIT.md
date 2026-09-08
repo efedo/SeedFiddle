@@ -72,11 +72,12 @@ The corrected node is texture-only:
 
 - direct painted, perimeter, and safely inset annotated-instance regions define
   target texture samples;
-- painted counterclasses define contrastive samples;
-- if counterexamples are missing, they are selected by standardized texture
-  distance from the fitted target rather than low colour probability;
-- Background, Foreground, and Other output probabilities use only their fitted
-  multiscale texture distributions and directional continuation;
+- each class is calibrated only from robust distances within its own target
+  examples; no counterclass distribution enters another class's score;
+- Background, Foreground, and Other compatibility rasters use only their fitted
+  multiscale target distribution and directional continuation;
+- cross-class reliability and all semantic contrast occur later in Material
+  evidence decision, preserving inspectable overlaps and unknown mass;
 - disabling Background colour no longer disables Background texture analysis;
 - the retired colour-pseudo-label threshold controls were removed.
 
@@ -97,7 +98,10 @@ interior, edge-centre, and exterior Lab strips; local L/chroma residuals; signed
 cross-edge Lab contrast; axial tangent coherence; and valid support. Absolute
 edge and ridge magnitudes are excluded. Physical and non-physical outputs are
 conditional class probabilities derived from their competing prototype
-similarities. Reference edges combines those semantics with the independent
+similarities. Kernel similarity is separated into unsharpened known-edge
+confidence and relative class competition; an exposed edge-class contrast
+sharpens only a clear Physical/Non-physical winner. Uniformly weak matches
+remain unknown and equal scores remain tied. Reference edges combines those semantics with the independent
 selected gradient strength only when constructing raw/net/normalized ridge or
 barrier products.
 

@@ -72,8 +72,10 @@ from seedvision.persistence.reference_regions import (
     ReferenceRegionBundle,
     ReferenceRegionError,
     ReferenceRegionStore,
+    SeedInstanceAnnotation,
     file_sha256,
 )
+from seedvision.reference_library.contracts import BiologicalContext, SpeciesLibraryPin
 
 __all__ = [
     "ANALYSIS_SETTINGS_FILE_SUFFIX",
@@ -85,6 +87,7 @@ __all__ = [
     "AnalysisSettingsError",
     "AnalysisSettingsIOError",
     "AnalysisSettingsProfile",
+    "BiologicalContext",
     "EXTERNAL_ABSOLUTE",
     "INSTANCE_REFERENCE_DIRECTORY",
     "INSTANCE_REFERENCE_MANIFEST",
@@ -125,6 +128,8 @@ __all__ = [
     "ReferenceRegionBundle",
     "ReferenceRegionError",
     "ReferenceRegionStore",
+    "SeedInstanceAnnotation",
+    "SpeciesLibraryPin",
     "StoredManualSeedCentres",
     "ResolvedProjectImage",
     "ResolvedProjectSidecar",

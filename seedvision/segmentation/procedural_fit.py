@@ -113,6 +113,9 @@ class ProceduralFitOptions:
     false_negative_weight: float = 1.0
     overreach_distance_scale_fraction: float = 0.50
     instance_penalty_weight: float = 0.10
+    minimum_match_iou: float = 0.20
+    missed_seed_weight: float = 0.50
+    incorrect_concavity_weight: float = 2.0
     annotations_are_complete: bool = False
     parameters: tuple[ProceduralFitParameter, ...] = DEFAULT_PROCEDURAL_FIT_PARAMETERS
 
@@ -123,20 +126,22 @@ class ProceduralFitOptions:
             raise ValueError("At least one procedural fit pass is required.")
         if not 0.0 < self.step_decay <= 1.0:
             raise ValueError("Procedural fit step decay must be in (0, 1].")
-        if self.false_negative_weight <= 0.0:
+        if not isfinite(self.false_negative_weight) or self.false_negative_weight <= 0.0:
             raise ValueError("False-negative weight must be positive.")
-        if self.false_positive_weight <= self.false_negative_weight:
-            raise ValueError(
-                "False-positive weight must exceed the false-negative weight."
-            )
+        if not isfinite(self.false_positive_weight) or self.false_positive_weight <= 0.0:
+            raise ValueError("False-positive weight must be positive.")
         if not isfinite(self.overreach_distance_scale_fraction) or (
             self.overreach_distance_scale_fraction <= 0.0
         ):
             raise ValueError(
                 "Overreach distance scale fraction must be positive."
             )
-        if self.instance_penalty_weight < 0.0:
+        if not isfinite(self.instance_penalty_weight) or self.instance_penalty_weight < 0.0:
             raise ValueError("Instance penalty weight must be non-negative.")
+        _validate_reference_costs(
+            self.minimum_match_iou, self.missed_seed_weight,
+            self.incorrect_concavity_weight,
+        )
         names: set[str] = set()
         for parameter in self.parameters:
             if parameter.name not in _FITTABLE_PARAMETER_NAMES:
@@ -176,10 +181,47 @@ class ProceduralFitScore:
     pixel_recall: float
     distance_weighted_false_positive_pixels: float = 0.0
     overreach_distance_scale_px: float = 1.0
+    missed_reference_pixels: int = 0
+    incorrect_concavity_pixels: int = 0
+    incorrect_concavity_cost: float = 0.0
+    total_pixel_cost: float = 0.0
 
     @property
     def perfect_fit(self) -> bool:
         return self.loss <= 1e-12
+
+
+@dataclass(frozen=True, slots=True)
+class ProceduralReferenceErrorMap:
+    """Post-inference pixel costs, shared exactly with the fitting objective.
+
+    Blue: underreach; red: overreach; amber: unmatched reference; magenta:
+    incorrect perimeter-concavity pocket. Alpha represents total cost at that
+    pixel, capped at ``maximum_display_cost``. Unreviewed objects are ignored.
+    """
+
+    rgba: np.ndarray
+    matched_instances: int
+    underreach_pixels: int
+    overreach_pixels: int
+    maximum_display_cost: float
+    missed_reference_instances: int
+    missed_reference_pixels: int
+    incorrect_concavity_pixels: int
+    pixel_costs: np.ndarray
+    matched_pairs: tuple[tuple[int, int], ...]
+
+
+def _validate_reference_costs(
+    minimum_match_iou: float, missed_seed_weight: float,
+    incorrect_concavity_weight: float,
+) -> None:
+    if not isfinite(minimum_match_iou) or not 0.0 <= minimum_match_iou < 1.0:
+        raise ValueError("Minimum match IoU must be in [0, 1).")
+    if not isfinite(missed_seed_weight) or not 0.0 < missed_seed_weight <= 1.0:
+        raise ValueError("Missed-seed cost must be in (0, 1].")
+    if not isfinite(incorrect_concavity_weight) or incorrect_concavity_weight < 0.0:
+        raise ValueError("Incorrect-concavity cost must be finite and non-negative.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -349,69 +391,337 @@ def _prepare_scoring_context(
     )
 
 
-def _distance_weighted_overreach(
+def _maximum_weight_assignment(weights: np.ndarray) -> list[tuple[int, int]]:
+    """Rectangular Hungarian assignment; private zero-weight skip columns.
+
+    Only compact metadata is handled here, never an image tensor. Rows are
+    references, columns are predictions plus one dummy per reference.
+    """
+    rows, columns = weights.shape
+    costs = np.concatenate((-weights, np.zeros((rows, rows))), axis=1)
+    column_count = costs.shape[1]
+    u = np.zeros(rows + 1)
+    v = np.zeros(column_count + 1)
+    owner = np.zeros(column_count + 1, np.int32)
+    way = np.zeros(column_count + 1, np.int32)
+    for row in range(1, rows + 1):
+        owner[0] = row
+        minimum = np.full(column_count + 1, np.inf)
+        used = np.zeros(column_count + 1, bool)
+        column = 0
+        while True:
+            used[column] = True
+            current = int(owner[column])
+            available = np.flatnonzero(~used[1:]) + 1
+            reduced = costs[current - 1, available - 1] - u[current] - v[available]
+            improved = reduced < minimum[available]
+            changed = available[improved]
+            minimum[changed] = reduced[improved]
+            way[changed] = column
+            next_column = int(available[np.argmin(minimum[available])])
+            delta = minimum[next_column]
+            u[owner[used]] += delta
+            v[used] -= delta
+            minimum[~used] -= delta
+            column = next_column
+            if owner[column] == 0:
+                break
+        while column:
+            previous = int(way[column])
+            owner[column] = owner[previous]
+            column = previous
+    return [
+        (int(owner[column]) - 1, column - 1)
+        for column in range(1, columns + 1)
+        if owner[column] and weights[int(owner[column]) - 1, column - 1] > 0.0
+    ]
+
+
+def _match_instances(
     target: np.ndarray,
     predicted: np.ndarray,
+    target_areas: np.ndarray,
     *,
-    accepted: list[tuple[int, int, int]],
-    false_positive_prediction_ids: set[int],
-    target_bounds: np.ndarray,
-    distance_to_annotation: np.ndarray,
-    prediction_count: int,
-    distance_scale_px: float,
-) -> tuple[float, float]:
-    """Return exponential FP-pixel equivalents and their scale in pixels.
+    minimum_match_iou: float = 0.20,
+) -> tuple[
+    list[tuple[int, int, int]], set[int], set[int], set[int], np.ndarray,
+]:
+    """Globally maximize normalized overlap, with explicit unmatched choices.
 
-    Leakage from a matched component is measured from *its own* annotated
-    seed, rather than from the union of annotations.  This ensures that a
-    component merging into an adjacent annotated seed remains costly.  An
-    unmatched evaluated component is measured from the nearest annotation.
+    A slight touch cannot pair two neighbouring seeds. The reward is IoU minus
+    the minimum acceptable IoU, so marginal pairs cannot force a stronger pair
+    apart merely to increase match count. Independent overlap components are
+    solved separately to avoid a dense whole-dish assignment matrix.
     """
+    prediction_count = int(predicted.max(initial=0))
+    prediction_areas = np.bincount(
+        predicted.reshape(-1), minlength=prediction_count + 1
+    )
+    overlap = (target > 0) & (predicted > 0)
+    pairs: dict[tuple[int, int], tuple[int, float]] = {}
+    by_target: dict[int, set[int]] = {}
+    by_prediction: dict[int, set[int]] = {}
+    if np.any(overlap):
+        stride = prediction_count + 1
+        codes, intersections = np.unique(
+            target[overlap].astype(np.int64) * stride + predicted[overlap],
+            return_counts=True,
+        )
+        for code, intersection in zip(codes, intersections, strict=True):
+            target_id, prediction_id = int(code // stride), int(code % stride)
+            union = int(target_areas[target_id]) + int(
+                prediction_areas[prediction_id]
+            ) - int(intersection)
+            iou = float(intersection) / max(1, union)
+            if iou <= minimum_match_iou:
+                continue
+            pairs[target_id, prediction_id] = (int(intersection), iou)
+            by_target.setdefault(target_id, set()).add(prediction_id)
+            by_prediction.setdefault(prediction_id, set()).add(target_id)
 
-    if not accepted and not false_positive_prediction_ids:
-        return 0.0, distance_scale_px
+    accepted: list[tuple[int, int, int]] = []
+    remaining = set(by_target)
+    while remaining:
+        targets: set[int] = set()
+        predictions: set[int] = set()
+        pending = {min(remaining)}
+        while pending:
+            target_id = pending.pop()
+            targets.add(target_id)
+            for prediction_id in by_target[target_id] - predictions:
+                predictions.add(prediction_id)
+                pending.update(by_prediction[prediction_id] - targets)
+        remaining.difference_update(targets)
+        target_ids, prediction_ids = sorted(targets), sorted(predictions)
+        weights = np.zeros((len(target_ids), len(prediction_ids)))
+        for row, target_id in enumerate(target_ids):
+            for column, prediction_id in enumerate(prediction_ids):
+                pair = pairs.get((target_id, prediction_id))
+                if pair is not None:
+                    weights[row, column] = pair[1] - minimum_match_iou
+        for row, column in _maximum_weight_assignment(weights):
+            target_id, prediction_id = target_ids[row], prediction_ids[column]
+            accepted.append((target_id, prediction_id, pairs[target_id, prediction_id][0]))
+    accepted.sort()
+    return (
+        accepted, {item[0] for item in accepted}, {item[1] for item in accepted},
+        set(by_prediction), prediction_areas,
+    )
 
-    prediction_bounds = _label_bounds(predicted, prediction_count)
-    weighted_pixels = 0.0
 
-    for target_id, prediction_id, _intersection in accepted:
-        tx0, ty0, tx1, ty1 = target_bounds[target_id]
+def _perimeter_concavity_pockets(mask: np.ndarray) -> np.ndarray:
+    """Exterior-connected hull deficits, separately per connected component.
+
+    Holes and spaces between disconnected components are not concavities.
+    This is the same perimeter-pocket definition as the procedural overlay.
+    """
+    padded = np.pad(np.asarray(mask, np.uint8), 1)
+    hulls = np.zeros_like(padded)
+    contours, _ = cv2.findContours(
+        padded, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+    for contour in contours:
+        if len(contour) >= 3:
+            cv2.fillConvexPoly(hulls, cv2.convexHull(contour), 1)
+    _, exterior = cv2.connectedComponents(np.uint8(padded == 0), connectivity=8)
+    return ((hulls > 0) & (exterior == exterior[0, 0]))[1:-1, 1:-1]
+
+
+def _compare_instances(
+    predicted: np.ndarray,
+    context: _ProceduralFitScoringContext,
+    *,
+    false_positive_weight: float,
+    false_negative_weight: float,
+    instance_penalty_weight: float,
+    annotations_are_complete: bool,
+    minimum_match_iou: float,
+    missed_seed_weight: float,
+    incorrect_concavity_weight: float,
+    render: bool = False,
+) -> tuple[ProceduralFitScore, ProceduralReferenceErrorMap | None]:
+    """Single source of truth for both fitting costs and the diagnostic map."""
+    target = context.target
+    count = int(predicted.max(initial=0))
+    accepted, matched_targets, matched_predictions, eligible, prediction_areas = (
+        _match_instances(target, predicted, context.target_areas,
+                         minimum_match_iou=minimum_match_iou)
+    )
+    evaluated = set(range(1, count + 1)) if annotations_are_complete else eligible
+    extra_predictions = evaluated - matched_predictions
+    prediction_bounds = _label_bounds(predicted, count)
+    tp = fp = fn = missed_pixels = concavity_pixels = 0
+    weighted_overreach = 0.0
+    pixel_cost = 0.0
+    costs = np.zeros(predicted.shape, np.float32) if render else None
+    colours = np.zeros(predicted.shape, np.uint8) if render else None
+    strongest = np.zeros(predicted.shape, np.float32) if render else None
+    concavity_display = np.zeros(predicted.shape, bool) if render else None
+
+    def add(kind: int, region, mask: np.ndarray, values) -> None:
+        nonlocal pixel_cost
+        value = np.broadcast_to(np.asarray(values, np.float32), (np.count_nonzero(mask),))
+        pixel_cost += float(np.sum(value, dtype=np.float64))
+        if costs is not None:
+            costs[region][mask] += value
+            # Strongest term wins; equal costs use a fixed category priority.
+            # Sum all contributions instead of overwriting crossed-pair costs.
+            win = mask.copy()
+            win[mask] = (value > strongest[region][mask]) | (
+                (value == strongest[region][mask]) & (kind > colours[region][mask])
+            )
+            strongest[region][win] = np.broadcast_to(
+                np.asarray(values, np.float32), (np.count_nonzero(mask),)
+            )[win[mask]]
+            colours[region][win] = kind
+
+    for target_id, prediction_id, intersection in accepted:
+        tx0, ty0, tx1, ty1 = context.target_bounds[target_id]
         px0, py0, px1, py1 = prediction_bounds[prediction_id]
-        x0, y0 = min(tx0, px0), min(ty0, py0)
-        x1, y1 = max(tx1, px1), max(ty1, py1)
-        target_roi = target[y0:y1, x0:x1]
-        predicted_roi = predicted[y0:y1, x0:x1]
-        false_positive = (predicted_roi == prediction_id) & (
-            target_roi != target_id
-        )
-        if not np.any(false_positive):
-            continue
-        distance = cv2.distanceTransform(
-            np.asarray(target_roi != target_id, dtype=np.uint8),
-            cv2.DIST_L2,
-            cv2.DIST_MASK_PRECISE,
-        )
-        weighted_pixels += float(
-            np.sum(
-                _overreach_multiplier(
-                    distance[false_positive], distance_scale_px
-                ),
-                dtype=np.float64,
+        region = np.s_[min(ty0, py0):max(ty1, py1), min(tx0, px0):max(tx1, px1)]
+        target_roi = target[region] == target_id
+        predicted_roi = predicted[region] == prediction_id
+        underreach = target_roi & ~predicted_roi
+        overreach = predicted_roi & ~target_roi
+        tp += intersection
+        fp += int(prediction_areas[prediction_id]) - intersection
+        fn += int(context.target_areas[target_id]) - intersection
+        add(1, region, underreach, false_negative_weight)
+        if np.any(overreach):
+            distance = cv2.distanceTransform(
+                np.uint8(~target_roi), cv2.DIST_L2, cv2.DIST_MASK_PRECISE
             )
-        )
+            multiplier = _overreach_multiplier(
+                distance[overreach], context.overreach_distance_scale_px
+            )
+            weighted_overreach += float(np.sum(multiplier, dtype=np.float64))
+            add(3, region, overreach, false_positive_weight * multiplier)
+        # A correctly reproduced hilum or notch has no error pixels here.
+        # Do not call enclosed holes or an entire candidate's interior concave.
+        concave_error = underreach & _perimeter_concavity_pockets(predicted_roi)
+        concavity_pixels += int(np.count_nonzero(concave_error))
+        add(4, region, concave_error, incorrect_concavity_weight)
+        if concavity_display is not None and incorrect_concavity_weight > 0.0:
+            concavity_display[region] |= concave_error
 
-    if false_positive_prediction_ids:
-        for prediction_id in false_positive_prediction_ids:
-            px0, py0, px1, py1 = prediction_bounds[prediction_id]
-            prediction_roi = predicted[py0:py1, px0:px1] == prediction_id
-            distances = distance_to_annotation[py0:py1, px0:px1][prediction_roi]
-            weighted_pixels += float(
-                np.sum(
-                    _overreach_multiplier(distances, distance_scale_px),
-                    dtype=np.float64,
-                )
-            )
-    return weighted_pixels, distance_scale_px
+    for target_id in range(1, context.target_count + 1):
+        if target_id in matched_targets:
+            continue
+        x0, y0, x1, y1 = context.target_bounds[target_id]
+        region = np.s_[y0:y1, x0:x1]
+        mask = target[region] == target_id
+        area = int(context.target_areas[target_id])
+        fn += area
+        missed_pixels += area
+        add(2, region, mask, false_negative_weight * missed_seed_weight)
+
+    for prediction_id in sorted(extra_predictions):
+        x0, y0, x1, y1 = prediction_bounds[prediction_id]
+        region = np.s_[y0:y1, x0:x1]
+        mask = predicted[region] == prediction_id
+        fp += int(prediction_areas[prediction_id])
+        multiplier = _overreach_multiplier(
+            context.distance_to_annotation[region][mask],
+            context.overreach_distance_scale_px,
+        )
+        weighted_overreach += float(np.sum(multiplier, dtype=np.float64))
+        add(3, region, mask, false_positive_weight * multiplier)
+
+    missed_count = context.target_count - len(matched_targets)
+    # Fixed reviewed-area denominator. The former TP+error normalization made
+    # every empty prediction cost 1 regardless of its missed-seed weight.
+    area = max(1, int(np.sum(context.target_areas[1:])))
+    count_cost = instance_penalty_weight * (
+        false_positive_weight * len(extra_predictions)
+        + false_negative_weight * missed_seed_weight * missed_count
+    ) / max(1, context.target_count)
+    score = ProceduralFitScore(
+        loss=pixel_cost / area + count_cost,
+        true_positive_pixels=tp, false_positive_pixels=fp,
+        false_negative_pixels=fn, matched_instances=len(accepted),
+        annotated_instances=context.target_count,
+        evaluated_predictions=len(evaluated),
+        false_positive_instances=len(extra_predictions),
+        false_negative_instances=missed_count,
+        pixel_precision=tp / max(1, tp + fp), pixel_recall=tp / max(1, tp + fn),
+        distance_weighted_false_positive_pixels=weighted_overreach,
+        overreach_distance_scale_px=context.overreach_distance_scale_px,
+        missed_reference_pixels=missed_pixels,
+        incorrect_concavity_pixels=concavity_pixels,
+        incorrect_concavity_cost=incorrect_concavity_weight * concavity_pixels,
+        total_pixel_cost=pixel_cost,
+    )
+    if costs is None:
+        return score, None
+    # Fixed units, never normalized to this image's maximum: changing a weight
+    # changes brightness honestly. Exact unsaturated costs remain available.
+    maximum_display_cost = 4.0
+    colours[concavity_display] = 4
+    palette = np.asarray(
+        ((0, 0, 0), (40, 120, 255), (255, 180, 25), (255, 55, 35), (235, 45, 235)),
+        np.uint8,
+    )
+    rgba = np.zeros((*predicted.shape, 4), np.uint8)
+    rgba[..., :3] = palette[colours]
+    rgba[..., 3] = np.uint8(np.clip(np.rint(255 * costs / maximum_display_cost), 0, 255))
+    return score, ProceduralReferenceErrorMap(
+        rgba=rgba, matched_instances=len(accepted), underreach_pixels=fn - missed_pixels,
+        overreach_pixels=fp, maximum_display_cost=maximum_display_cost,
+        missed_reference_instances=missed_count, missed_reference_pixels=missed_pixels,
+        incorrect_concavity_pixels=concavity_pixels, pixel_costs=costs,
+        matched_pairs=tuple((item[0], item[1]) for item in accepted),
+    )
+
+
+def procedural_reference_error_map(
+    annotations: np.ndarray,
+    prediction: np.ndarray,
+    *,
+    overreach_weight: float = 2.0,
+    overreach_distance_scale_fraction: float = 0.50,
+    seed_diameter_px: float | None = None,
+    minimum_match_iou: float = 0.20,
+    missed_seed_weight: float = 0.50,
+    incorrect_concavity_weight: float = 2.0,
+    annotations_are_complete: bool = False,
+) -> ProceduralReferenceErrorMap:
+    """Render the exact fitting pixel costs, without altering any prediction."""
+    options = ProceduralFitOptions(
+        false_positive_weight=overreach_weight,
+        overreach_distance_scale_fraction=overreach_distance_scale_fraction,
+        minimum_match_iou=minimum_match_iou, missed_seed_weight=missed_seed_weight,
+        incorrect_concavity_weight=incorrect_concavity_weight,
+        annotations_are_complete=annotations_are_complete,
+    )
+    predicted = _consecutive_labels(prediction, label="Prediction")
+    context = _prepare_scoring_context(
+        annotations, predicted.shape,
+        overreach_distance_scale_fraction=options.overreach_distance_scale_fraction,
+        seed_diameter_px=seed_diameter_px,
+    )
+    _, comparison = _compare_instances(
+        predicted, context, false_positive_weight=overreach_weight,
+        false_negative_weight=1.0, instance_penalty_weight=0.10,
+        annotations_are_complete=annotations_are_complete,
+        minimum_match_iou=minimum_match_iou, missed_seed_weight=missed_seed_weight,
+        incorrect_concavity_weight=incorrect_concavity_weight, render=True,
+    )
+    assert comparison is not None
+    # Compact IDs in the solver are an implementation detail, not annotation IDs.
+    target_ids = np.unique(annotations)
+    target_ids = target_ids[target_ids > 0]
+    prediction_ids = np.unique(prediction)
+    prediction_ids = prediction_ids[prediction_ids > 0]
+    # Resampling can erase small IDs; use the exact same nearest-neighbour grid.
+    resized = np.asarray(annotations)
+    if resized.shape != predicted.shape:
+        resized = cv2.resize(resized, (predicted.shape[1], predicted.shape[0]),
+                             interpolation=cv2.INTER_NEAREST)
+        target_ids = np.unique(resized[resized > 0])
+    return replace(comparison, matched_pairs=tuple(
+        (int(target_ids[a - 1]), int(prediction_ids[b - 1]))
+        for a, b in comparison.matched_pairs
+    ))
 
 
 def score_procedural_instances(
@@ -424,161 +734,42 @@ def score_procedural_instances(
     seed_diameter_px: float | None = None,
     instance_penalty_weight: float = 0.10,
     annotations_are_complete: bool = False,
+    minimum_match_iou: float = 0.20,
+    missed_seed_weight: float = 0.50,
+    incorrect_concavity_weight: float = 2.0,
     _scoring_context: _ProceduralFitScoringContext | None = None,
 ) -> ProceduralFitScore:
-    """Score a prediction with exponentially distance-weighted overreach.
+    """Global overlap assignment and explicit, reviewed-area-normalized costs.
 
-    Instance identifiers need not correspond.  A deterministic greedy
-    one-to-one overlap match is used.  An unmatched predicted fragment that
-    overlaps an annotated seed is still scored as a false-positive instance;
-    a wholly disjoint prediction is evaluated only when annotations are marked
-    complete.
+    Weak incidental contacts are ignored in partial-review mode, not converted
+    into large false-positive objects. Substantial unmatched fragments are
+    scored; whole-dish review additionally scores every disjoint prediction.
     """
-
-    if false_negative_weight <= 0.0:
-        raise ValueError("False-negative weight must be positive.")
-    if false_positive_weight <= false_negative_weight:
-        raise ValueError(
-            "False-positive weight must exceed the false-negative weight."
-        )
-    if not isfinite(overreach_distance_scale_fraction) or (
-        overreach_distance_scale_fraction <= 0.0
-    ):
-        raise ValueError("Overreach distance scale fraction must be positive.")
-    if instance_penalty_weight < 0.0:
-        raise ValueError("Instance penalty weight must be non-negative.")
-
+    ProceduralFitOptions(
+        false_positive_weight=false_positive_weight,
+        false_negative_weight=false_negative_weight,
+        overreach_distance_scale_fraction=overreach_distance_scale_fraction,
+        instance_penalty_weight=instance_penalty_weight,
+        minimum_match_iou=minimum_match_iou, missed_seed_weight=missed_seed_weight,
+        incorrect_concavity_weight=incorrect_concavity_weight,
+    )
     predicted = _consecutive_labels(prediction, label="Prediction")
     context = _scoring_context or _prepare_scoring_context(
-        annotations,
-        predicted.shape,
+        annotations, predicted.shape,
         overreach_distance_scale_fraction=overreach_distance_scale_fraction,
         seed_diameter_px=seed_diameter_px,
     )
     if context.target.shape != predicted.shape:
         raise ValueError("Procedural fit predictions changed shape between trials.")
-    target = context.target
-    target_count = context.target_count
-    prediction_count = int(predicted.max(initial=0))
-    target_areas = context.target_areas
-    prediction_areas = np.bincount(
-        predicted.reshape(-1), minlength=prediction_count + 1
+    score, _ = _compare_instances(
+        predicted, context, false_positive_weight=false_positive_weight,
+        false_negative_weight=false_negative_weight,
+        instance_penalty_weight=instance_penalty_weight,
+        annotations_are_complete=annotations_are_complete,
+        minimum_match_iou=minimum_match_iou, missed_seed_weight=missed_seed_weight,
+        incorrect_concavity_weight=incorrect_concavity_weight,
     )
-
-    overlap = (target > 0) & (predicted > 0)
-    if np.any(overlap):
-        stride = prediction_count + 1
-        codes, intersections = np.unique(
-            target[overlap].astype(np.int64) * stride + predicted[overlap],
-            return_counts=True,
-        )
-        target_ids = (codes // stride).astype(np.int32)
-        prediction_ids = (codes % stride).astype(np.int32)
-        pairs = []
-        for target_id, prediction_id, intersection in zip(
-            target_ids, prediction_ids, intersections, strict=True
-        ):
-            union = (
-                int(target_areas[target_id])
-                + int(prediction_areas[prediction_id])
-                - int(intersection)
-            )
-            pairs.append(
-                (
-                    int(intersection),
-                    float(intersection) / max(1, union),
-                    int(target_id),
-                    int(prediction_id),
-                )
-            )
-    else:
-        pairs = []
-
-    matched_target: set[int] = set()
-    matched_prediction: set[int] = set()
-    accepted: list[tuple[int, int, int]] = []
-    for intersection, iou, target_id, prediction_id in sorted(
-        pairs,
-        key=lambda item: (-item[0], -item[1], item[2], item[3]),
-    ):
-        if target_id in matched_target or prediction_id in matched_prediction:
-            continue
-        matched_target.add(target_id)
-        matched_prediction.add(prediction_id)
-        accepted.append((target_id, prediction_id, intersection))
-
-    true_positive_pixels = 0
-    false_positive_pixels = 0
-    false_negative_pixels = 0
-    for target_id, prediction_id, intersection in accepted:
-        true_positive_pixels += intersection
-        false_positive_pixels += int(prediction_areas[prediction_id]) - intersection
-        false_negative_pixels += int(target_areas[target_id]) - intersection
-    for target_id in range(1, target_count + 1):
-        if target_id not in matched_target:
-            false_negative_pixels += int(target_areas[target_id])
-
-    overlapping_predictions = {pair[3] for pair in pairs}
-    evaluated_predictions = (
-        set(range(1, prediction_count + 1))
-        if annotations_are_complete
-        else overlapping_predictions
-    )
-    false_positive_prediction_ids = evaluated_predictions - matched_prediction
-    for prediction_id in false_positive_prediction_ids:
-        false_positive_pixels += int(prediction_areas[prediction_id])
-
-    false_positive_instances = len(false_positive_prediction_ids)
-    false_negative_instances = target_count - len(matched_target)
-    (
-        distance_weighted_false_positive_pixels,
-        overreach_distance_scale_px,
-    ) = _distance_weighted_overreach(
-        target,
-        predicted,
-        accepted=accepted,
-        false_positive_prediction_ids=false_positive_prediction_ids,
-        target_bounds=context.target_bounds,
-        distance_to_annotation=context.distance_to_annotation,
-        prediction_count=prediction_count,
-        distance_scale_px=context.overreach_distance_scale_px,
-    )
-    weighted_pixel_error = (
-        false_positive_weight * distance_weighted_false_positive_pixels
-        + false_negative_weight * false_negative_pixels
-    )
-    # Tversky-style error with target-distance-weighted overreach; exact
-    # one-to-one agreement remains the unique zero.
-    pixel_loss = weighted_pixel_error / max(
-        1.0, true_positive_pixels + weighted_pixel_error
-    )
-    weighted_instance_error = instance_penalty_weight * (
-        false_positive_weight * false_positive_instances
-        + false_negative_weight * false_negative_instances
-    ) / max(1, target_count)
-    pixel_precision = true_positive_pixels / max(
-        1, true_positive_pixels + false_positive_pixels
-    )
-    pixel_recall = true_positive_pixels / max(
-        1, true_positive_pixels + false_negative_pixels
-    )
-    return ProceduralFitScore(
-        loss=float(pixel_loss + weighted_instance_error),
-        true_positive_pixels=int(true_positive_pixels),
-        false_positive_pixels=int(false_positive_pixels),
-        false_negative_pixels=int(false_negative_pixels),
-        matched_instances=len(matched_target),
-        annotated_instances=target_count,
-        evaluated_predictions=len(evaluated_predictions),
-        false_positive_instances=false_positive_instances,
-        false_negative_instances=false_negative_instances,
-        pixel_precision=float(pixel_precision),
-        pixel_recall=float(pixel_recall),
-        distance_weighted_false_positive_pixels=float(
-            distance_weighted_false_positive_pixels
-        ),
-        overreach_distance_scale_px=float(overreach_distance_scale_px),
-    )
+    return score
 
 
 def fit_procedural_settings(
@@ -642,6 +833,9 @@ def fit_procedural_settings(
             seed_diameter_px=seed_diameter_px,
             instance_penalty_weight=options.instance_penalty_weight,
             annotations_are_complete=options.annotations_are_complete,
+            minimum_match_iou=options.minimum_match_iou,
+            missed_seed_weight=options.missed_seed_weight,
+            incorrect_concavity_weight=options.incorrect_concavity_weight,
             _scoring_context=scoring_context,
         )
         cache[candidate] = score

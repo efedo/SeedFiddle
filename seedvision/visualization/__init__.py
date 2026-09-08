@@ -18,6 +18,7 @@ from seedvision.visualization.layers import (
     ForegroundColourProfile,
     NoiseFrequencyProfile,
     ReferenceTextureProfile,
+    ReferenceSeedTraitProfile,
     ReferenceTexturePrototype,
     build_analysis_layers,
 )
@@ -36,6 +37,7 @@ __all__ = [
     "ComputeBackendInfo",
     "NoiseFrequencyProfile",
     "ReferenceTextureProfile",
+    "ReferenceSeedTraitProfile",
     "ReferenceTexturePrototype",
     "SeedDiagnosticSummary",
     "build_advanced_analysis_layers",

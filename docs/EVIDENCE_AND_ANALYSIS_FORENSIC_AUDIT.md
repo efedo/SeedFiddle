@@ -29,12 +29,12 @@ The audit distinguishes three meanings that were previously conflated:
 | Broad sources cross-matched reviewed non-targets | On `IMG_9533.JPG`, raw Other maps strongly matched annotated seeds and initially moved about 73% of their decision mass into ambiguity. | Each source now earns reliability from target median minus the 90th-percentile reviewed non-target response. Reliability changes influence only; raw maps remain visible. Background and Other calibrate against Seed, never against one another. |
 | Other was a hidden contrastive subtraction in Foreground, Background, and the colour inspector | Depending on the path, painting Other could erase Background, erase Foreground, or make procedural occupancy more permissive. | Removed every runtime and viewer subtraction. Other is positive Non-seed evidence and an independent conditional subtype. The obsolete public contrastive helper was removed. |
 | Background/Other overlap was forced to a 50/50 subtype split | Glass compatible with both appeared resolved even though it was genuinely ambiguous. | Conditional Non-seed classification now has resolved Background, resolved Other, subtype ambiguity, and subtype unknown masses. |
-| One-class prototype similarities were published as probabilities | Annotation-only Foreground prototypes could produce high “probability” without any contrast class. | Material prototype rasters require at least two valid material banks. Physical/non-physical edge probabilities require both edge banks. One-bank medoids remain visible only as provenance. |
+| One-class prototype similarities were published as probabilities | Annotation-only Foreground prototypes could produce high “probability” without any contrast class. | Material prototype rasters require at least two valid material banks. Physical/non-physical prototype compatibility requires both edge banks. One-bank medoids remain visible only as provenance. |
 | Distance peaks consumed the raw colour mask despite a graph wire from the resolved material mask | The displayed graph and runtime disagreed; restored toolbox branches could reproduce old overshoot. | Material evidence is evaluated first; distance/circle/fusion and candidate-dependent diagnostics are refreshed afterward without recomputing evidence producers. |
 | Seed-interior probability recombined final Seed mass with raw Foreground noise, prototype, and Background maps | Sources were double-counted and ambiguity could be silently undone. | Seed interior is now only a seed-scale smoothing of resolved Seed mass; the obsolete weights and graph wires were removed. |
 | Provisional instance assignment used `min(background colour, background noise)` | One weak Background modality removed the assignment barrier. | Restored candidate assignment consumes resolved Non-seed probability. |
 | Edge-curve semantic sides used final Seed but raw Background | The two sides came from different decision systems. | Curve confirmation consumes resolved Seed and resolved Non-seed probabilities. |
-| Procedural fitting used raw net-edge products in one path | Fitted settings did not match the default normalized-edge inference path. | Fitting now receives locally normalized net physical edge and its thinned ridge, matching inference. |
+| Procedural fitting reused annotation-trained evidence while scoring those annotations | The target masks could leak into fitted boundary evidence. | Fitting deliberately excludes instance-trained material/reference-edge evidence and scores only annotation-independent background, generic gradients, and illumination. Inference separately receives authoritative supported reference-edge evidence. |
 
 ## Material chain after redesign
 
@@ -46,20 +46,24 @@ The audit distinguishes three meanings that were previously conflated:
 2. **Reviewed Foreground colour** is the multimodal Lab-frequency response fit
    from painted Foreground and safely inset applied seed-instance interiors.
    Reference coordinates are examples, not hard-coded output pixels.
-3. **Foreground texture** is a two-sided directional residual classifier. It
-   uses painted/annotated Foreground as target and Background/Other as
-   non-target evidence.
+3. **Foreground texture** is a directional, orientation-aware multiscale
+   residual compatibility model fitted only from painted/annotated Foreground.
+   Background and Other do not enter its calibration or pixel score.
 4. **Background colour** uses painted Background plus the accepted,
    colour-filtered exterior annulus. The annulus is never recruited from inside
    the dish. Its fit authority decays with painted Background coverage.
-5. **Background texture** uses direct painted/annulus target texture and safely
-   inset annotated seeds as non-target texture. Other is not a negative for
-   Background, preserving glass overlap.
-6. **Other colour and texture** are independent positive models. They are not
-   subtractions from either Foreground or Background.
+5. **Background texture** uses only direct painted/annulus target texture.
+   Foreground and Other annotations can exclude mislabeled source pixels but
+   neither class enters Background compatibility calibration or scoring.
+6. **Other colour and texture** are independent positive models. Other texture
+   is fitted and calibrated only from Other examples. Foreground and Background
+   cannot suppress it, so either reference layer can change arbitrarily without
+   changing the Other raster.
 7. **Reference material prototypes** use the common 14-channel descriptor and
-   publish jointly normalized probabilities only when two or more material
-   classes have valid banks.
+   publish calibrated competing probabilities only when two or more material
+   classes have valid banks. Gaussian-kernel similarity is separated into an
+   unsharpened known-material confidence and an exposed relative class-contrast
+   term; the calibration receives no annotation masks or coordinates.
 
 ### Reliability and authority
 
@@ -69,8 +73,8 @@ Automatic coverage authority is
 floor + (1 - floor) * 2 ** (-reviewed_seed_areas / half_life)
 ```
 
-For every available colour, texture, or prototype source, target-vs-non-target
-reliability is
+For every available colour, texture, or prototype source, Material evidence
+decision—not the raw source model—calculates target-vs-non-target reliability as
 
 ```
 clip((median(target) - percentile90(non_target)) / 0.20, 0, 1)
@@ -135,7 +139,7 @@ the saved reviewed-seed means above the threshold.
 | Ruler detection and scale | Tick lengths are measured before semantic assignment; their independently clustered ranks must put the longest marks on major increments, and a coherent phase can realign the lattice. Both hierarchy scores are shown. The plastic outline independently fits four close exterior lines as a mildly projective quadrilateral. Each tick family produces an independent pixels/mm estimate; their reported symmetric disagreement is a second sanity check, while only reliable metric scale drives calibration. Failed detection does not fabricate a physical scale. |
 | Dish layout | Mild ellipse support is retained for non-fronto-parallel vessels. The accepted vessel defines crop/valid geometry; the material proposal inset is independently explicit. |
 | Seed scale | Shadow-resistant maximum-width fits of isolated ruler-reference seeds supply the initial diameter and optional automatic Foreground samples. When sufficient applied annotations exist, the largest configurable fraction of complete annotated maximum widths overrides that estimate; cutoff/disconnected instances remain visible but excluded. Their pixels do not become hard labels. |
-| Perimeter Background | Colour and texture consume the same accepted, median-filtered exterior annulus. Texture features are extracted directly in the annulus coordinate frame, and their blend weight falls when class separation is weak. The displayed source mask is exactly the fitted annulus; no inside-plate lookalikes are recruited. |
+| Perimeter Background | Colour and texture consume the same accepted, median-filtered exterior annulus. Texture features are extracted directly in the annulus coordinate frame. Colour and texture remain separate raw evidence inputs to the material decision. The displayed source mask is exactly the fitted annulus; no inside-plate lookalikes are recruited. |
 
 ## Edge and boundary evidence audit
 
@@ -145,9 +149,9 @@ the saved reviewed-seed means above the threshold.
 | Surface gradients | Lightening/darkening direction and magnitude are independent seed-scale one-sided slopes. Procedural inference uses surface darkening only through its explicit boundary weight. Ceiling nodes remain optional transforms. |
 | Frequency bands and wavelets | Frequency masks are local residual-energy evidence. The undecimated B3-spline wavelet details plus residual reconstruct the source exactly; wavelets are diagnostic and do not silently enter material classification. |
 | Generic ridges and traces | NMS/hysteresis localizes generic gradients. Trace continuity measures tangent/curvature-compatible continuation and reports its selected source. It is geometric support, not physical-edge probability. |
-| Instance-derived edge classes | Training uses annotation geometry, narrow tangent-aligned interior/edge/exterior strips, signed cross-edge Lab contrast, and adaptive high resolution. Both physical and internal-edge banks are mandatory. |
-| Net and normalized physical edge | Net physical edge subtracts the configured internal-edge scale with a black floor. Local normalization uses semantic margin plus a winsorized local envelope and an absolute weak-edge gate; its ridge is the default semantic trace/procedural source. |
-| Procedural boundary cost | Generic edge/ridge/surface/trace evidence nominates boundaries. When semantic classes exist, normalized physical margin gates generic support and non-physical probability discounts it. Missing semantic classification remains neutral rather than crushing generic edges. |
+| Instance-derived edge classes | Training uses annotation geometry, narrow tangent-aligned interior/edge/exterior strips, signed cross-edge Lab contrast, and adaptive high resolution. Both physical and internal-edge banks are mandatory. Gaussian-kernel scores are calibrated into unsharpened known-edge confidence and exposed relative class contrast; the transform cannot see annotation targets or coordinates. |
+| Reference-edge compatibility and support | Raw Physical, Non-physical, and weighted Net outputs are broad prototype-compatibility diagnostics only. Authoritative Reference-edge probability is full-resolution thinned true-edge support times Physical probability, retaining unknown confidence and without a second class subtraction. Local normalization acts only on true-edge support, reapplies Physical probability, and remasks to the exact ridge footprint after restoration. The previous supported weighted margin survives separately as optional Conservative net physical-edge evidence and its own ridge. Changing its weight cannot change authoritative or normalized probability. |
+| Procedural boundary cost | Generic edge/ridge/surface/trace evidence nominates boundaries. When semantic classes exist, normalized supported Reference-edge evidence and separately edge-supported class channels gate/discount candidates. Raw prototype compatibility never enters the boundary path. Missing semantic classification remains neutral rather than crushing generic edges. |
 
 ## Instance and analytical consumer audit
 

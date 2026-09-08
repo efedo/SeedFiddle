@@ -6,7 +6,7 @@ import json
 import os
 import weakref
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from threading import Event
 from time import monotonic
@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QLayout,
     QListWidget,
     QListWidgetItem,
@@ -58,6 +59,7 @@ from PySide6.QtWidgets import (
 )
 
 from seedvision.pipeline import NodeStatus, build_default_pipeline
+from seedvision.ui.annotation_panel import AnnotationPanel, CurrentPageStack
 from seedvision.diagnostics import (
     LOGGER,
     current_crash_log_path,
@@ -70,6 +72,7 @@ from seedvision.persistence import (
     PROJECT_ANALYSIS_EXTENSION,
     REFERENCE_REGIONS_SIDECAR,
     AnalysisSettingsError,
+    BiologicalContext,
     ImageFingerprintMismatch,
     ImportedInstanceMask,
     InvalidReferenceArchive,
@@ -88,6 +91,8 @@ from seedvision.persistence import (
     ReferenceRegionBundle,
     ReferenceRegionError,
     ReferenceRegionStore,
+    SeedInstanceAnnotation,
+    SpeciesLibraryPin,
     analysis_settings_profile_from_graph,
     apply_analysis_settings_profile,
     load_analysis_settings_profile,
@@ -95,7 +100,13 @@ from seedvision.persistence import (
     load_corrected_instance_mask,
     read_source_raster_shape,
     save_analysis_settings_profile,
+    file_sha256,
 )
+from seedvision.reference_library import (
+    SPECIES_LIBRARY_EXTENSION,
+    SpeciesLibraryService,
+)
+from seedvision.reference_library import LibrarySourceInput
 from seedvision.resources import release_host_caches, resident_bytes
 from seedvision.learning.pipeline import StarDistPipelineSettings, UNetPipelineSettings
 from seedvision.annotation import (
@@ -103,6 +114,10 @@ from seedvision.annotation import (
     InstanceContinuitySummary,
     ShapeGuidedFillOptions,
     SmartFillOptions,
+    SeedTraitCatalogue,
+    SpeciesSeedTraitVocabulary,
+    load_seed_trait_catalogue,
+    trait_display_name,
     summarize_instance_continuity,
 )
 from seedvision.segmentation import (
@@ -157,6 +172,7 @@ OVERLAY_NODE_IDS = (
     "frequency_noise_masks",
     "reference_texture_prototypes",
     "material_evidence_decision",
+    "reference_seed_traits",
     "reference_edge_probability",
     "edge_traces",
     "seed_edge_curves",
@@ -171,7 +187,6 @@ CALIBRATION_NODE_IDS = (
 )
 IDENTIFICATION_STAGE_NODE_IDS = (
     "seed_scale_estimation",
-    "perimeter_background_reference",
     "background_likelihood",
 )
 
@@ -202,7 +217,11 @@ VIEWER_NODE_MODES = {
     "deskew_colour": "deskew_colour",
     "layout_detection": "layout_detection",
     "seed_scale_estimation": "seed_scale_estimation",
-    "perimeter_background_reference": "perimeter_background_reference",
+    "seed_size_ovality_distribution": "seed_scale_estimation",
+    "seed_pose_shape_distributions": "seed_scale_estimation",
+    "seed_mean_shape_atlas": "seed_scale_estimation",
+    "seed_shape_uncertainty": "seed_scale_estimation",
+    "seed_boundary_curvature_distribution": "seed_scale_estimation",
     "background_likelihood": "background_likelihood",
     "material_evidence_decision": "material_seed_probability",
     "distance_candidates": "distance_candidates",
@@ -224,8 +243,17 @@ VIEWER_NODE_MODES.update(
         "frequency_noise_masks": "darkness_noise_fine",
         "reference_texture_prototypes": "reference_texture_prototypes",
         "material_evidence_decision": "material_seed_probability",
+        "reference_seed_traits": "seed_coat_white_probability",
         "reference_edge_probability": "reference_edge_comparison",
     }
+)
+# Boundary confidence and normals is retained only as dormant legacy graph
+# state. It has no selectable viewer product, even if restored from the unused
+# toolbox, because its bypass rasters are intentionally empty and it has no
+# active consumer.
+VIEWER_NODE_MODES.pop("boundary_normals", None)
+NON_SELECTABLE_OVERLAY_MODES = frozenset(
+    {"boundary_confidence", "boundary_magnitude"}
 )
 
 OVERLAY_NODE_OWNERS = {
@@ -242,11 +270,15 @@ OVERLAY_NODE_OWNERS = {
     "wavelet_detail_3": "wavelet_decomposition",
     "wavelet_detail_4": "wavelet_decomposition",
     "wavelet_residual": "wavelet_decomposition",
-    "perimeter_background_reference": "perimeter_background_reference",
+    "perimeter_background_reference": "layout_detection",
     "seed_scale_estimation": "seed_scale_estimation",
+    "seed_size_ovality_distribution": "seed_scale_estimation",
+    "seed_pose_shape_distributions": "seed_scale_estimation",
+    "seed_mean_shape_atlas": "seed_scale_estimation",
+    "seed_shape_uncertainty": "seed_scale_estimation",
+    "seed_boundary_curvature_distribution": "seed_scale_estimation",
     "foreground_mask": "background_likelihood",
     "foreground_colour_gamut": "background_likelihood",
-    "foreground_binary_mask": "material_evidence_decision",
     "distance_transform": "distance_candidates",
     "distance_candidates": "distance_candidates",
     "circle_candidates": "circle_candidates",
@@ -254,10 +286,12 @@ OVERLAY_NODE_OWNERS = {
     "instance_masks": "instance_masks",
     "background_likelihood": "background_likelihood",
     "other_colour_probability": "background_likelihood",
+    "foreground_colour_excess": "background_likelihood",
     "background_colour_gamut": "background_likelihood",
     "refined_background_likelihood": "refined_background_likelihood",
     "other_noise_probability": "refined_background_likelihood",
     "foreground_noise_likelihood": "refined_background_likelihood",
+    "foreground_noise_excess": "refined_background_likelihood",
     "material_seed_support": "material_evidence_decision",
     "material_background_support": "material_evidence_decision",
     "material_other_support": "material_evidence_decision",
@@ -270,6 +304,14 @@ OVERLAY_NODE_OWNERS = {
     "material_other_subtype": "material_evidence_decision",
     "material_subtype_ambiguity": "material_evidence_decision",
     "material_subtype_unknown": "material_evidence_decision",
+    "seed_coat_white_probability": "reference_seed_traits",
+    "seed_coat_banded_light_probability": "reference_seed_traits",
+    "seed_coat_banded_dark_probability": "reference_seed_traits",
+    "seed_coat_other_probability": "reference_seed_traits",
+    "seed_condition_immature_probability": "reference_seed_traits",
+    "seed_condition_split_probability": "reference_seed_traits",
+    "seed_condition_wrinkled_probability": "reference_seed_traits",
+    "seed_condition_stained_probability": "reference_seed_traits",
     "edge_gradients": "edge_gradients",
     "surface_lightening_gradient": "surface_darkness_gradients",
     "surface_lightening_magnitude": "surface_darkness_gradients",
@@ -296,9 +338,13 @@ OVERLAY_NODE_OWNERS = {
     "physical_edge_probability": "reference_texture_prototypes",
     "non_edge_probability": "reference_texture_prototypes",
     "reference_edge_comparison": "reference_edge_probability",
+    "reference_edge_excess": "reference_edge_probability",
+    "physical_edge_interior_direction": "reference_edge_probability",
     "net_physical_edge_probability": "reference_edge_probability",
-    "locally_normalized_net_physical_edge": "reference_edge_probability",
+    "reference_edge_probability": "reference_edge_probability",
+    "conservative_net_physical_edge_evidence": "reference_edge_probability",
     "reference_edge_ridges": "reference_edge_probability",
+    "locally_normalized_net_physical_edge": "reference_edge_probability",
     "net_reference_edge_ridges": "reference_edge_probability",
     "normalized_net_reference_edge_ridges": "reference_edge_probability",
     "edge_traces": "edge_traces",
@@ -322,6 +368,7 @@ OVERLAY_NODE_OWNERS = {
     "procedural_confidence": "procedural_instances",
     "procedural_concavity": "procedural_instances",
     "procedural_alternative_candidates": "procedural_instances",
+    "procedural_reference_error": "procedural_instances",
     "unet_interior": "unet_instances",
     "unet_physical_boundary": "unet_instances",
     "unet_pattern_boundary": "unet_instances",
@@ -342,6 +389,8 @@ OVERLAY_NODE_OWNERS.update(
         "boundary_magnitude": "boundary_normals",
         "contested_pixels": "assignment_confidence",
         "flattened_grayscale": "illumination_decomposition",
+        "despeckled_flattened_grayscale": "illumination_decomposition",
+        "removed_dark_speckles": "illumination_decomposition",
         "illumination_field": "illumination_decomposition",
         "shadow_likelihood": "illumination_decomposition",
         "highlight_likelihood": "illumination_decomposition",
@@ -389,6 +438,8 @@ OVERLAY_DATA_PORTS = {
     "undirected_edges": "undirected",
     "directed_edges": "directed",
     "edge_ridges": "ridges",
+    "despeckled_flattened_grayscale": "despeckled",
+    "removed_dark_speckles": "speckle_mask",
     "reference_texture_prototypes": "prototype_profile",
     "reference_prototype_footprints": "prototype_footprints",
     "reference_seed_surface_probability": "seed_surface",
@@ -397,9 +448,13 @@ OVERLAY_DATA_PORTS = {
     "physical_edge_probability": "physical_probability",
     "non_edge_probability": "non_edge_probability",
     "reference_edge_comparison": "comparison",
-    "net_physical_edge_probability": "net_probability",
-    "locally_normalized_net_physical_edge": "normalized_net_probability",
+    "reference_edge_excess": "excess_comparison",
+    "physical_edge_interior_direction": "interior_direction",
+    "net_physical_edge_probability": "net_compatibility",
+    "reference_edge_probability": "edge_probability",
+    "conservative_net_physical_edge_evidence": "conservative_net_evidence",
     "reference_edge_ridges": "reference_ridges",
+    "locally_normalized_net_physical_edge": "normalized_net_probability",
     "net_reference_edge_ridges": "net_reference_ridges",
     "normalized_net_reference_edge_ridges": "normalized_net_ridges",
     "edge_traces": "trace_labels",
@@ -415,7 +470,15 @@ OVERLAY_DATA_PORTS = {
     "material_other_subtype": "other_subtype",
     "material_subtype_ambiguity": "subtype_ambiguity",
     "material_subtype_unknown": "subtype_unknown",
-    "foreground_binary_mask": "seed_mask",
+    "seed_coat_white_probability": "coat_white",
+    "seed_coat_banded_light_probability": "coat_banded_light",
+    "seed_coat_banded_dark_probability": "coat_banded_dark",
+    "seed_coat_other_probability": "coat_other",
+    "seed_condition_immature_probability": "condition_immature",
+    "seed_condition_split_probability": "condition_split",
+    "seed_condition_wrinkled_probability": "condition_wrinkled",
+    "seed_condition_stained_probability": "condition_stained",
+    "perimeter_background_reference": "perimeter_background",
     "procedural_seed_mask": "material_mask",
     "procedural_boundary_cost": "boundary_cost",
     "procedural_centres": "centre_likelihood",
@@ -423,6 +486,7 @@ OVERLAY_DATA_PORTS = {
     "procedural_confidence": "confidence",
     "procedural_concavity": "concavity",
     "procedural_alternative_candidates": "alternatives",
+    "procedural_reference_error": "reference_error",
 }
 
 
@@ -511,12 +575,19 @@ class _AnalysisTask(QRunnable):
         physical_edge_reference_mask: np.ndarray | None,
         non_edge_reference_mask: np.ndarray | None,
         seed_instance_annotations: np.ndarray | None,
+        seed_instance_traits: tuple[SeedInstanceAnnotation, ...],
+        seed_trait_species: str,
+        seed_trait_coat_patterns: tuple[str, ...],
+        seed_trait_conditions: tuple[str, ...],
         manual_seed_centres: ManualSeedCentres | None,
         background_colour_enabled: bool,
         enabled_nodes: frozenset[str],
         pipeline_revision: int,
         node_cache: PipelineAnalysisCache,
         dirty_nodes: frozenset[str],
+        biological_context: BiologicalContext | None = None,
+        library_shape_bank=None,
+        species_library=None,
     ) -> None:
         super().__init__()
         self.path = path
@@ -567,12 +638,19 @@ class _AnalysisTask(QRunnable):
             if seed_instance_annotations is None
             else np.asarray(seed_instance_annotations, dtype=np.uint16)
         )
+        self.seed_instance_traits = tuple(seed_instance_traits)
+        self.seed_trait_species = str(seed_trait_species)
+        self.seed_trait_coat_patterns = tuple(seed_trait_coat_patterns)
+        self.seed_trait_conditions = tuple(seed_trait_conditions)
         self.manual_seed_centres = manual_seed_centres
         self.background_colour_enabled = background_colour_enabled
         self.enabled_nodes = enabled_nodes
         self.pipeline_revision = pipeline_revision
         self.node_cache = node_cache
         self.dirty_nodes = dirty_nodes
+        self.biological_context = biological_context
+        self.library_shape_bank = library_shape_bank
+        self.species_library = species_library
         self.signals = _AnalysisSignals()
         self._cancel_requested = Event()
 
@@ -609,6 +687,10 @@ class _AnalysisTask(QRunnable):
                 physical_edge_reference_mask=self.physical_edge_reference_mask,
                 non_edge_reference_mask=self.non_edge_reference_mask,
                 seed_instance_annotations=self.seed_instance_annotations,
+                seed_instance_traits=self.seed_instance_traits,
+                seed_trait_species=self.seed_trait_species,
+                seed_trait_coat_patterns=self.seed_trait_coat_patterns,
+                seed_trait_conditions=self.seed_trait_conditions,
                 manual_seed_centres=self.manual_seed_centres,
                 background_colour_enabled=self.background_colour_enabled,
                 enabled_nodes=self.enabled_nodes,
@@ -620,6 +702,9 @@ class _AnalysisTask(QRunnable):
                 cancellation_requested=self._cancel_requested.is_set,
                 learning_root=self.learning_root,
                 species=self.species,
+                biological_context=self.biological_context,
+                library_shape_bank=self.library_shape_bank,
+                species_library=self.species_library,
             )
         except AnalysisCancelled:
             self.signals.cancelled.emit(
@@ -649,6 +734,157 @@ class _LearningTrainingSignals(QObject):
     completed = Signal(object)
     failed = Signal(str)
     cancelled = Signal()
+
+
+class _SpeciesLibraryBuildSignals(QObject):
+    progress = Signal(int, int, str)
+    completed = Signal(object)
+    failed = Signal(str)
+
+
+class _SpeciesLibraryBuildTask(QRunnable):
+    """Prepare reviewed sources and publish one immutable library version."""
+
+    def __init__(
+        self,
+        *,
+        service: SpeciesLibraryService,
+        reference_store: ReferenceRegionStore,
+        paths: tuple[Path, ...],
+        version: str,
+        biological_context: BiologicalContext,
+        capture_group_id: str | None,
+        source_contexts: dict[str, tuple[BiologicalContext, str | None]] | None,
+        calibration_settings: CalibrationSettings,
+        trait_vocabulary_path: Path,
+        species_display_name: str,
+        base_pin: SpeciesLibraryPin | None = None,
+        removed_source_sha256: tuple[str, ...] = (),
+    ) -> None:
+        super().__init__()
+        self.service = service
+        self.reference_store = reference_store
+        self.paths = paths
+        self.version = version
+        self.biological_context = biological_context
+        self.capture_group_id = capture_group_id
+        self.source_contexts = dict(source_contexts or {})
+        self.calibration_settings = calibration_settings
+        self.trait_vocabulary_path = trait_vocabulary_path
+        self.species_display_name = species_display_name
+        self.base_pin = base_pin
+        self.removed_source_sha256 = removed_source_sha256
+        self.signals = _SpeciesLibraryBuildSignals()
+        self._cancel_requested = Event()
+
+    def cancel(self) -> None:
+        self._cancel_requested.set()
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            import cv2
+            from seedvision import __version__
+            from seedvision.calibration import calibrate_image
+
+            sources = []
+            source_failures = []
+            maximum = len(self.paths) + 2
+            for index, path in enumerate(self.paths, start=1):
+                if self._cancel_requested.is_set():
+                    raise AnalysisCancelled("Species-library build was cancelled.")
+                self.signals.progress.emit(index, maximum, f"Calibrating {path.name}")
+                try:
+                    image = cv2.imread(str(path), cv2.IMREAD_COLOR)
+                    if image is None:
+                        raise ValueError("could not decode the source image")
+                    calibration = calibrate_image(image, self.calibration_settings)
+                    references = self.reference_store.load_if_present(
+                        path, calibration.corrected_bgr.shape[:2]
+                    )
+                    if references is None:
+                        raise ValueError("no saved reviewed reference archive")
+                    if references.annotation_species not in {
+                        "", self.biological_context.species_id
+                    }:
+                        raise ValueError(
+                            "saved annotation species differs from the project species"
+                        )
+                    if not any(
+                        (
+                            references.foreground is not None
+                            and np.any(references.foreground),
+                            references.annotated_seeds is not None
+                            and np.any(references.annotated_seeds),
+                        )
+                    ):
+                        raise ValueError(
+                            "no foreground or seed-instance reference evidence"
+                        )
+                    sidecar = self.reference_store.path_for(path)
+                    source_context, source_capture_group = self.source_contexts.get(
+                        _path_identity(path),
+                        (self.biological_context, self.capture_group_id),
+                    )
+                    sources.append(
+                        LibrarySourceInput(
+                            source_path=path,
+                            corrected_bgr=calibration.corrected_bgr,
+                            references=references,
+                            annotation_sha256=file_sha256(sidecar),
+                            species_display_name=self.species_display_name,
+                            biological_context=source_context,
+                            capture_group_id=source_capture_group,
+                            pixels_per_mm=calibration.pixels_per_mm,
+                            calibration_relative_uncertainty=max(
+                                0.0, 1.0 - float(calibration.scale_confidence)
+                            ),
+                        )
+                    )
+                except AnalysisCancelled:
+                    raise
+                except Exception as error:  # noqa: BLE001 - collect full preflight
+                    source_failures.append(f"{path.name}: {error}")
+            if source_failures:
+                raise ValueError(
+                    "Library source preflight found the following problem(s); "
+                    "nothing was published:\n\n" + "\n".join(source_failures)
+                )
+            self.signals.progress.emit(
+                len(self.paths) + 1, maximum, "Aggregating and validating products"
+            )
+            base_artifact = (
+                None
+                if self.base_pin is None
+                else self.service.store.load(self.base_pin)
+            )
+            draft = self.service.build_draft(
+                tuple(sources),
+                version=self.version,
+                trait_vocabulary_path=self.trait_vocabulary_path,
+                seed_fiddle_version=__version__,
+                base_artifact=base_artifact,
+                removed_source_sha256=self.removed_source_sha256,
+                cancellation_requested=self._cancel_requested.is_set,
+            )
+            self.signals.progress.emit(
+                maximum, maximum, "Publishing immutable version"
+            )
+            published = self.service.publish(draft)
+            pin = SpeciesLibraryPin(
+                published.manifest.library_id,
+                published.manifest.version,
+                published.manifest.species_id,
+                published.manifest.content_sha256,
+            )
+        except AnalysisCancelled:
+            self.signals.failed.emit("Species-library build was cancelled.")
+            return
+        except Exception as error:  # noqa: BLE001 - worker error boundary
+            LOGGER.exception("Species-library build failed")
+            self.signals.failed.emit(f"{type(error).__name__}: {error}")
+            return
+        self.signals.completed.emit(pin)
 
 
 class _LearningTrainingTask(QRunnable):
@@ -736,6 +972,10 @@ class _ReferenceEdgeFitTask(QRunnable):
     def cancel(self) -> None:
         self._cancel_requested.set()
 
+    @property
+    def cancellation_requested(self) -> bool:
+        return self._cancel_requested.is_set()
+
     @Slot()
     def run(self) -> None:
         try:
@@ -764,15 +1004,20 @@ class _ReferenceEdgeFitTask(QRunnable):
                     settings,
                 )
 
+            best_loss = float("inf")
+
+            def report_progress(current, maximum, score) -> None:
+                nonlocal best_loss
+                best_loss = min(best_loss, float(score.loss))
+                self.signals.progress.emit(current, maximum, best_loss)
+
             report = fit_reference_edge_parameters(
                 self.settings,
                 evaluate,
-                progress_callback=lambda current, maximum, score: self.signals.progress.emit(
-                    current, maximum, float(score.loss)
-                ),
+                progress_callback=report_progress,
                 cancellation_requested=self._cancel_requested.is_set,
             )
-            if report.cancelled:
+            if report.cancelled or self._cancel_requested.is_set():
                 self.signals.cancelled.emit()
                 return
         except Exception as error:  # noqa: BLE001 - cross-thread error boundary
@@ -819,6 +1064,10 @@ class _ProceduralFitTask(QRunnable):
     def cancel(self) -> None:
         self._cancel_requested.set()
 
+    @property
+    def cancellation_requested(self) -> bool:
+        return self._cancel_requested.is_set()
+
     @Slot()
     def run(self) -> None:
         try:
@@ -853,6 +1102,7 @@ class _ProceduralFitTask(QRunnable):
                 edge_ridges=result.layers.edge_ridges,
                 physical_edge_probability=None,
                 non_edge_probability=None,
+                reference_edge_probability=None,
                 normalized_net_physical_edge_probability=None,
                 thinned_reference_edge_ridges=None,
                 oriented_edge_trace_labels=None,
@@ -897,6 +1147,9 @@ class _ProceduralFitTask(QRunnable):
                         self.overreach_distance_scale_fraction
                     ),
                     annotations_are_complete=self.annotations_are_complete,
+                    minimum_match_iou=self.settings.reference_error_minimum_match_iou,
+                    missed_seed_weight=self.settings.reference_error_missed_seed_weight,
+                    incorrect_concavity_weight=self.settings.reference_error_concavity_weight,
                 ),
                 seed_diameter_px=prepared.seed_diameter_px,
                 progress=lambda trial, maximum: self.signals.progress.emit(
@@ -931,6 +1184,18 @@ class MainWindow(QMainWindow):
     def __init__(self, root: Path, parent=None) -> None:
         super().__init__(parent)
         self._root = root
+        try:
+            self._seed_trait_catalogue = load_seed_trait_catalogue(
+                root / "config" / "traits.json"
+            )
+        except (OSError, ValueError, json.JSONDecodeError):
+            self._seed_trait_catalogue = SeedTraitCatalogue(
+                species=tuple(
+                    SpeciesSeedTraitVocabulary("", name, ())
+                    for name in FALLBACK_SPECIES
+                ),
+                conditions=("immature", "split", "wrinkled", "stained"),
+            )
         self._application_settings = QSettings("Seed Fiddle", "Seed Fiddle", self)
         self._current_project_path: Path | None = None
         # The repository image folder remains a convenient loose workspace on
@@ -944,6 +1209,10 @@ class MainWindow(QMainWindow):
         self._reference_region_store = ReferenceRegionStore(root)
         self._manual_seed_centre_store = ManualSeedCentreStore(root)
         self._project_analysis_store = ProjectAnalysisStore(root)
+        self._species_library_service = SpeciesLibraryService()
+        self._project_species_library_pin: SpeciesLibraryPin | None = None
+        self._project_biological_context: BiologicalContext | None = None
+        self._project_capture_group_id: str | None = None
         self._reference_region_autoload_attempted: set[str] = set()
         self._reference_region_load_status: dict[str, tuple[str, str]] = {}
         self._manual_seed_centre_autoload_attempted: set[str] = set()
@@ -990,6 +1259,14 @@ class MainWindow(QMainWindow):
         self._applied_instance_annotations: dict[str, np.ndarray] = {}
         self._draft_instance_annotation_origins: dict[str, str] = {}
         self._applied_instance_annotation_origins: dict[str, str] = {}
+        self._draft_seed_annotations: dict[
+            str, dict[int, SeedInstanceAnnotation]
+        ] = {}
+        self._applied_seed_annotations: dict[
+            str, dict[int, SeedInstanceAnnotation]
+        ] = {}
+        self._draft_seed_annotation_species: dict[str, str] = {}
+        self._applied_seed_annotation_species: dict[str, str] = {}
         self._instance_annotations_dirty: set[str] = set()
         self._instance_continuity_cache: dict[
             str,
@@ -1009,6 +1286,9 @@ class MainWindow(QMainWindow):
         self._procedural_fit_progress: QProgressDialog | None = None
         self._reference_edge_fit_task: _ReferenceEdgeFitTask | None = None
         self._reference_edge_fit_progress: QProgressDialog | None = None
+        self._species_library_build_task: _SpeciesLibraryBuildTask | None = None
+        self._species_library_build_progress: QProgressDialog | None = None
+        self._species_library_dialog = None
         self._pending_analysis_key: str | None = None
         self._pending_analysis_scope: frozenset[str] | None = None
         self._thread_pool = QThreadPool(self)
@@ -1234,7 +1514,27 @@ class MainWindow(QMainWindow):
             f"Master: {master}",
             f"State: {save_state}",
             f"Images: {available_count:,} available; {unresolved_count:,} unresolved",
+            (
+                "Species library: none pinned"
+                if self._project_species_library_pin is None
+                else "Species library: "
+                f"{self._project_species_library_pin.library_id} "
+                f"v{self._project_species_library_pin.version} "
+                f"[{self._project_species_library_pin.sha256[:12]}]"
+            ),
         ]
+        context = self._project_biological_context
+        if context is not None:
+            lines.append(
+                "Biological context: "
+                f"species={context.species_id}; "
+                f"lineage={context.lineage_group_id or 'unspecified'}; "
+                f"accession={context.accession_id or 'unspecified'}; "
+                f"lot={context.seed_lot_id or 'unspecified'}"
+            )
+        lines.append(
+            f"Capture group: {self._project_capture_group_id or 'unspecified'}"
+        )
         if path is None:
             lines.extend(("Current image: none", f"Species: {species}"))
             return "\n".join(lines)
@@ -1261,6 +1561,19 @@ class MainWindow(QMainWindow):
             self._instance_ids(self._applied_instance_annotations.get(key))
         )
         centres = len(self._manual_seed_centre_state(key).centres_source_xy)
+        semantic_annotations = self._applied_seed_annotations.get(key, {})
+        coat_labels = sum(
+            annotation.coat_pattern is not None
+            for annotation in semantic_annotations.values()
+        )
+        reviewed_conditions = sum(
+            annotation.conditions_reviewed
+            for annotation in semantic_annotations.values()
+        )
+        reviewed_shapes = sum(
+            annotation.shape_reviewed
+            for annotation in semantic_annotations.values()
+        )
         lines.extend(
             (
                 f"Current image: {path.name}{size_text}",
@@ -1268,6 +1581,8 @@ class MainWindow(QMainWindow):
                 f"Applied material annotations: Background {background:,} px; "
                 f"Foreground {foreground:,} px; Other {other:,} px",
                 f"Applied seed annotations: {seeds:,} instance(s); "
+                f"coat labels {coat_labels:,}; condition-reviewed "
+                f"{reviewed_conditions:,}; shape-reviewed {reviewed_shapes:,}; "
                 f"manual centres {centres:,}",
             )
         )
@@ -1366,6 +1681,8 @@ class MainWindow(QMainWindow):
                         if include_centres
                         else None
                     ),
+                    biological_context=self._effective_biological_context(),
+                    capture_group_id=self._project_capture_group_id,
                 )
             )
         return tuple(specs)
@@ -1403,6 +1720,15 @@ class MainWindow(QMainWindow):
             annotation_origin=self._applied_instance_annotation_origins.get(
                 key, "manual"
             ),
+            seed_annotations=tuple(
+                sorted(
+                    self._applied_seed_annotations.get(key, {}).values(),
+                    key=lambda item: item.seed_id,
+                )
+            ),
+            annotation_species=self._applied_seed_annotation_species.get(
+                key, ""
+            ),
         )
 
     def _retry_unsaved_project_sidecars(self) -> bool:
@@ -1424,9 +1750,11 @@ class MainWindow(QMainWindow):
             except (InstanceMaskImportError, ReferenceRegionError, OSError) as error:
                 QMessageBox.critical(
                     self,
-                    "Could not save project sidecars",
-                    f"Applied reference data for {path.name} remains only in memory. "
-                    f"The project master was not saved.\n\n{error}",
+                    "Reference annotations need attention",
+                    f"Project saving is paused because the applied annotations for "
+                    f"{path.name} are not valid yet. No in-memory data was discarded, "
+                    f"and the project master was not changed.\n\n{error}\n\n"
+                    "Correct the identified seed, then use Save Project again.",
                 )
                 self._set_project_dirty()
                 return False
@@ -1523,6 +1851,8 @@ class MainWindow(QMainWindow):
             source=record.source,
             source_shape=record.source_shape,
             sidecars=tuple(merged),
+            biological_context=record.biological_context,
+            capture_group_id=record.capture_group_id,
         )
 
     def _write_project(self, destination: Path) -> bool:
@@ -1541,6 +1871,9 @@ class MainWindow(QMainWindow):
                 species=(self.species_combo.currentText().strip() or None),
                 selected_image=selected_image,
                 ui_state=self._project_ui_state(),
+                species_library=self._project_species_library_pin,
+                biological_context=self._effective_biological_context(),
+                capture_group_id=self._project_capture_group_id,
             )
             live_records = {}
             for spec, record in zip(image_specs, captured.images, strict=True):
@@ -1570,6 +1903,9 @@ class MainWindow(QMainWindow):
                 species=captured.species,
                 selected_image_id=selected_id,
                 ui_state=captured.ui_state,
+                species_library=captured.species_library,
+                biological_context=captured.biological_context,
+                capture_group_id=captured.capture_group_id,
             )
             saved = self._project_analysis_store.save(document, destination)
         except (
@@ -1820,6 +2156,9 @@ class MainWindow(QMainWindow):
             self._selected_pipeline_node = selected_node
             self.pipeline_inspector.set_node(self.pipeline.node(selected_node))
 
+        self._project_species_library_pin = loaded.document.species_library
+        self._project_biological_context = loaded.document.biological_context
+        self._project_capture_group_id = loaded.document.capture_group_id
         species = loaded.document.species
         if species:
             if self.species_combo.findText(species) < 0:
@@ -1829,6 +2168,9 @@ class MainWindow(QMainWindow):
         elif self.species_combo.count():
             with QSignalBlocker(self.species_combo):
                 self.species_combo.setCurrentIndex(0)
+        self._populate_seed_coat_patterns()
+        self._sync_seed_trait_controls()
+        self._offer_missing_species_library_import()
 
         available_images = [
             image
@@ -1963,6 +2305,8 @@ class MainWindow(QMainWindow):
         if self.species_combo.count():
             with QSignalBlocker(self.species_combo):
                 self.species_combo.setCurrentIndex(0)
+        self._populate_seed_coat_patterns()
+        self._sync_seed_trait_controls()
         self._rebuild_overlay_combo("raw_image")
         self._project_tracking_enabled = True
         self._set_project_path(None)
@@ -2009,6 +2353,10 @@ class MainWindow(QMainWindow):
             self._applied_instance_annotations,
             self._draft_instance_annotation_origins,
             self._applied_instance_annotation_origins,
+            self._draft_seed_annotations,
+            self._applied_seed_annotations,
+            self._draft_seed_annotation_species,
+            self._applied_seed_annotation_species,
             self._reference_dirty_classes,
             self._instance_continuity_cache,
             self._reference_undo_histories,
@@ -2039,6 +2387,9 @@ class MainWindow(QMainWindow):
         self._project_original_image_records.clear()
         self._project_unresolved_image_records.clear()
         self._project_unresolved_selected_image_id = None
+        self._project_species_library_pin = None
+        self._project_biological_context = None
+        self._project_capture_group_id = None
         self._image_paths.clear()
         self.image_list.clear()
         self._analysis_activities.clear()
@@ -2219,6 +2570,12 @@ class MainWindow(QMainWindow):
             origin = self._draft_instance_annotation_origins.get(
                 key, self._applied_instance_annotation_origins.get(key, "manual")
             )
+            traits = self._draft_seed_annotations.get(
+                key, self._applied_seed_annotations.get(key, {})
+            )
+            trait_species = self._draft_seed_annotation_species.get(
+                key, self._applied_seed_annotation_species.get(key, "")
+            )
             try:
                 self._reference_region_store.save(
                     path,
@@ -2229,6 +2586,13 @@ class MainWindow(QMainWindow):
                         other=other,
                         annotated_seeds=instances,
                         annotation_origin=origin,
+                        seed_annotations=tuple(
+                            sorted(
+                                traits.values(),
+                                key=lambda item: item.seed_id,
+                            )
+                        ),
+                        annotation_species=trait_species,
                     ),
                 )
             except (ReferenceRegionError, OSError) as error:
@@ -2271,8 +2635,15 @@ class MainWindow(QMainWindow):
             )
             if installed_instances is None:
                 self._applied_instance_annotation_origins.pop(key, None)
+                self._applied_seed_annotations.pop(key, None)
+                self._applied_seed_annotation_species.pop(key, None)
             else:
                 self._applied_instance_annotation_origins[key] = origin
+                self._applied_seed_annotations[key] = dict(traits)
+                if trait_species:
+                    self._applied_seed_annotation_species[key] = trait_species
+                else:
+                    self._applied_seed_annotation_species.pop(key, None)
             for draft in (
                 self._draft_background_reference_masks,
                 self._draft_foreground_reference_masks,
@@ -2284,6 +2655,8 @@ class MainWindow(QMainWindow):
             ):
                 draft.pop(key, None)
             self._draft_instance_annotation_origins.pop(key, None)
+            self._draft_seed_annotations.pop(key, None)
+            self._draft_seed_annotation_species.pop(key, None)
             self._reference_masks_dirty.discard(key)
             self._reference_dirty_classes.pop(key, None)
             self._instance_annotations_dirty.discard(key)
@@ -2328,6 +2701,8 @@ class MainWindow(QMainWindow):
             ):
                 draft.pop(key, None)
             self._draft_instance_annotation_origins.pop(key, None)
+            self._draft_seed_annotations.pop(key, None)
+            self._draft_seed_annotation_species.pop(key, None)
             self._reference_masks_dirty.discard(key)
             self._reference_dirty_classes.pop(key, None)
             self._instance_annotations_dirty.discard(key)
@@ -2550,6 +2925,12 @@ class MainWindow(QMainWindow):
         self.train_learning_model_action.triggered.connect(
             self._start_learning_training
         )
+        self.manage_species_libraries_action = QAction(
+            "Species reference libraries…", self
+        )
+        self.manage_species_libraries_action.triggered.connect(
+            self._open_species_library_manager
+        )
 
         self.diagnostics_action = QAction("Runtime summary", self)
         self.diagnostics_action.triggered.connect(self._show_runtime_summary)
@@ -2587,6 +2968,8 @@ class MainWindow(QMainWindow):
         learning_menu.addSeparator()
         learning_menu.addAction(self.audit_learning_dataset_action)
         learning_menu.addAction(self.train_learning_model_action)
+        learning_menu.addSeparator()
+        learning_menu.addAction(self.manage_species_libraries_action)
 
         view_menu = self.menuBar().addMenu("&View")
         view_menu.addAction(self.image_workspace_action)
@@ -2630,10 +3013,14 @@ class MainWindow(QMainWindow):
             ("Wavelet detail 4", "wavelet_detail_4"),
             ("Wavelet low-pass residual", "wavelet_residual"),
             ("Perimeter background reference", "perimeter_background_reference"),
-            ("Reference seed scale", "seed_scale_estimation"),
+            ("Reviewed seed measurements", "seed_scale_estimation"),
+            ("Size–ovality distribution", "seed_size_ovality_distribution"),
+            ("Pose-conditioned shape distributions", "seed_pose_shape_distributions"),
+            ("Mean shape atlas", "seed_mean_shape_atlas"),
+            ("Shape uncertainty", "seed_shape_uncertainty"),
+            ("Reference boundary curvature distribution", "seed_boundary_curvature_distribution"),
             ("Foreground colour probability", "foreground_mask"),
             ("Accepted foreground colours (HSV)", "foreground_colour_gamut"),
-            ("Foreground binary proposal mask", "foreground_binary_mask"),
             ("Distance transform", "distance_transform"),
             ("Distance-peak candidates", "distance_candidates"),
             ("Circle candidates", "circle_candidates"),
@@ -2641,10 +3028,18 @@ class MainWindow(QMainWindow):
             ("Instance colour masks", "instance_masks"),
             ("Background colour probability", "background_likelihood"),
             ("Other colour probability", "other_colour_probability"),
+            (
+                "Foreground vs Background/Other colour excess",
+                "foreground_colour_excess",
+            ),
             ("Accepted background colours (HSV)", "background_colour_gamut"),
             ("Background noise probability", "refined_background_likelihood"),
             ("Other noise probability", "other_noise_probability"),
             ("Foreground noise probability", "foreground_noise_likelihood"),
+            (
+                "Foreground vs Background/Other noise excess",
+                "foreground_noise_excess",
+            ),
             ("Aggregated Seed support", "material_seed_support"),
             ("Aggregated Background support", "material_background_support"),
             ("Aggregated Other support", "material_other_support"),
@@ -2657,6 +3052,14 @@ class MainWindow(QMainWindow):
             ("Other subtype given Non-seed", "material_other_subtype"),
             ("Background/Other subtype ambiguity", "material_subtype_ambiguity"),
             ("Unknown Non-seed subtype", "material_subtype_unknown"),
+            ("Seed coat: White probability", "seed_coat_white_probability"),
+            ("Seed coat: Banded light probability", "seed_coat_banded_light_probability"),
+            ("Seed coat: Banded dark probability", "seed_coat_banded_dark_probability"),
+            ("Seed coat: Other probability", "seed_coat_other_probability"),
+            ("Seed condition: Immature probability", "seed_condition_immature_probability"),
+            ("Seed condition: Split probability", "seed_condition_split_probability"),
+            ("Seed condition: Wrinkled probability", "seed_condition_wrinkled_probability"),
+            ("Seed condition: Stained probability", "seed_condition_stained_probability"),
             ("Shared edge magnitude", "edge_gradients"),
             ("Surface lightening direction", "surface_lightening_gradient"),
             ("Surface lightening magnitude", "surface_lightening_magnitude"),
@@ -2680,25 +3083,44 @@ class MainWindow(QMainWindow):
             ("Edge tangent (undirected)", "undirected_edges"),
             ("Edge tangent (directed)", "directed_edges"),
             ("Thinned edge ridges", "edge_ridges"),
-            ("Physical-edge prototype probability", "physical_edge_probability"),
-            ("Non-physical prototype probability", "non_edge_probability"),
+            ("Physical-edge prototype compatibility", "physical_edge_probability"),
+            ("Non-physical prototype compatibility", "non_edge_probability"),
             (
-                "Physical blue / non-physical red",
+                "Physical / non-physical prototype compatibility",
                 "reference_edge_comparison",
             ),
             (
-                "Net physical-edge probability",
+                "Physical vs non-physical prototype excess",
+                "reference_edge_excess",
+            ),
+            (
+                "Physical-edge predicted interior direction",
+                "physical_edge_interior_direction",
+            ),
+            (
+                "Net physical-edge prototype compatibility",
                 "net_physical_edge_probability",
             ),
             (
-                "Locally normalized net physical edge",
+                "Reference-edge probability",
+                "reference_edge_probability",
+            ),
+            (
+                "Normalized reference-edge probability",
                 "locally_normalized_net_physical_edge",
             ),
-            ("Thinned reference edge ridge", "reference_edge_ridges"),
-            ("Thinned net-physical edge ridge", "net_reference_edge_ridges"),
+            ("Thinned reference-edge ridge", "reference_edge_ridges"),
             (
-                "Thinned normalized net-physical ridge",
+                "Thinned normalized reference-edge ridge",
                 "normalized_net_reference_edge_ridges",
+            ),
+            (
+                "Conservative net physical-edge evidence",
+                "conservative_net_physical_edge_evidence",
+            ),
+            (
+                "Thinned conservative net physical-edge ridge",
+                "net_reference_edge_ridges",
             ),
             ("Oriented edge traces", "edge_traces"),
             ("Trace continuity", "edge_trace_continuity"),
@@ -2707,14 +3129,14 @@ class MainWindow(QMainWindow):
             ("Circle-fit confidence", "edge_circle_fit"),
             ("Ellipse-fit confidence", "edge_ellipse_fit"),
             ("Circle/ellipse fit residual", "edge_fit_residual"),
-            ("Seed-centre votes", "edge_centre_votes"),
+            ("Raw boundary centre-vote field", "edge_centre_votes"),
             (
-                "Oval-derived seed-centre probability",
+                "Fit-validated oval-centre probability",
                 "oval_centre_probability",
             ),
             ("Semantic boundary side", "edge_semantic_sides"),
             ("Rejected edge reasons", "edge_rejections"),
-            ("Raw centre-vote peaks", "edge_fit_geometry"),
+            ("Raw centre-vote peak markers", "edge_fit_geometry"),
             ("Most likely edge ovals", "edge_oval_hypotheses"),
             ("Final seed-boundary confidence", "seed_edge_curves"),
             ("Seed-material mask", "procedural_seed_mask"),
@@ -2724,6 +3146,10 @@ class MainWindow(QMainWindow):
             ("Procedural instance confidence", "procedural_confidence"),
             ("Procedural internal concavity", "procedural_concavity"),
             ("Procedural alternative candidates", "procedural_alternative_candidates"),
+            (
+                "Reference underreach / overreach cost",
+                "procedural_reference_error",
+            ),
             ("U-Net seed interior", "unet_interior"),
             ("U-Net physical boundary", "unet_physical_boundary"),
             ("U-Net coat-pattern boundary", "unet_pattern_boundary"),
@@ -2736,7 +3162,11 @@ class MainWindow(QMainWindow):
             ("StarDist radial uncertainty", "stardist_radial_uncertainty"),
             ("StarDist seed instances", "stardist_instances"),
             ("StarDist instance confidence", "stardist_confidence"),
-            *ADVANCED_OVERLAY_LABELS,
+            *(
+                (label, mode)
+                for label, mode in ADVANCED_OVERLAY_LABELS
+                if mode not in NON_SELECTABLE_OVERLAY_MODES
+            ),
         ]
         _install_overlay_output_connectors(self.pipeline, self._overlay_entries)
         self.pipeline_canvas.rebuild_graph_items()
@@ -2891,9 +3321,8 @@ class MainWindow(QMainWindow):
     def _build_reference_panel(self) -> None:
         """Build reference-painting and instance-annotation controls."""
 
-        self.reference_panel = QFrame(self.image_view)
+        self.reference_panel = AnnotationPanel(self.image_view)
         self.reference_panel.setObjectName("referencePaintPanel")
-        self.reference_panel.setMaximumWidth(390)
         self.reference_panel.setStyleSheet(
             "QFrame#referencePaintPanel { background: palette(window); "
             "border: 1px solid palette(mid); border-radius: 3px; }"
@@ -2907,7 +3336,7 @@ class MainWindow(QMainWindow):
         reference_panel_header_layout.setContentsMargins(0, 0, 0, 0)
         reference_panel_header_layout.setSpacing(4)
         self.reference_panel_drag_handle = QLabel(
-            "Move painting controls", reference_panel_header
+            "Annotation tools", reference_panel_header
         )
         self.reference_panel_drag_handle.setAlignment(
             Qt.AlignmentFlag.AlignCenter
@@ -2990,11 +3419,13 @@ class MainWindow(QMainWindow):
         reference_panel_layout = QVBoxLayout(self.reference_panel_contents)
         reference_panel_layout.setContentsMargins(0, 0, 0, 0)
         reference_panel_layout.setSpacing(4)
+        reference_panel_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         self.reference_controls = QWidget(self.reference_panel_contents)
         reference_layout = QVBoxLayout(self.reference_controls)
         reference_layout.setContentsMargins(0, 0, 0, 0)
         reference_layout.setSpacing(4)
+        reference_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         reference_layout.addWidget(self._section_label("Material references"))
         self.background_enabled_checkbox = QCheckBox(
@@ -3374,6 +3805,7 @@ class MainWindow(QMainWindow):
         instance_layout = QVBoxLayout(self.instance_annotation_controls)
         instance_layout.setContentsMargins(0, 0, 0, 0)
         instance_layout.setSpacing(5)
+        instance_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         instance_layout.addWidget(self._section_label("Seed instance annotations"))
         self.instance_boundary_supervision_label = self._muted_label(
             "Applied complete seed masks automatically supply physical contours "
@@ -3410,17 +3842,185 @@ class MainWindow(QMainWindow):
         selector_layout.addWidget(self.new_instance_button)
         instance_layout.addWidget(instance_selector)
 
+        self.instance_empty_label = QLabel("empty", self.instance_annotation_controls)
+        self.instance_empty_label.setStyleSheet("color: #cf2020; font-weight: bold;")
+        instance_layout.addWidget(self.instance_empty_label)
         self.show_selected_instance_checkbox = QCheckBox(
-            "Show selected seed only", self.instance_annotation_controls
-        )
-        self.show_selected_instance_checkbox.setToolTip(
-            "Hide the coloured marks for every other seed. Changing the Seed ID "
-            "centres the image on that seed without changing the current zoom."
-        )
-        self.show_selected_instance_checkbox.toggled.connect(
-            self._show_selected_instance_toggled
-        )
+            "Show selected seed only", self.instance_annotation_controls)
+        self.show_selected_instance_checkbox.toggled.connect(self._show_selected_instance_toggled)
         instance_layout.addWidget(self.show_selected_instance_checkbox)
+        self.existing_instance_combo = QComboBox(self.instance_annotation_controls)
+        self.existing_instance_combo.setToolTip("Select a painted annotation and centre the image on it.")
+        self.existing_instance_combo.activated.connect(self._select_existing_instance)
+        instance_layout.addWidget(self.existing_instance_combo)
+
+        instance_layout.addWidget(self._section_label("Selected seed traits"))
+        trait_form = QFormLayout()
+        trait_form.setVerticalSpacing(4)
+        self.seed_coat_pattern_combo = QComboBox(
+            self.instance_annotation_controls
+        )
+        self.seed_coat_pattern_combo.setToolTip(
+            "One optional, mutually exclusive coat-pattern label for the selected "
+            "seed. The available classes follow the selected species."
+        )
+        self.seed_coat_pattern_combo.currentIndexChanged.connect(
+            self._seed_trait_controls_changed
+        )
+        trait_form.addRow("Coat pattern", self.seed_coat_pattern_combo)
+        self.seed_conditions_reviewed_checkbox = QCheckBox(
+            "No defects", self.instance_annotation_controls
+        )
+        self.seed_conditions_reviewed_checkbox.setToolTip(
+            "Explicitly reviewed with none of the listed defects. Mutually exclusive "
+            "with damage labels; no selections means unreviewed."
+        )
+        self.seed_conditions_reviewed_checkbox.toggled.connect(
+            self._seed_trait_controls_changed
+        )
+        condition_widget = QWidget(self.instance_annotation_controls)
+        condition_layout = QGridLayout(condition_widget)
+        condition_layout.setContentsMargins(0, 0, 0, 0)
+        condition_layout.setSpacing(3)
+        condition_layout.addWidget(self.seed_conditions_reviewed_checkbox, 0, 0, 2, 1)
+        self.seed_condition_checkboxes: dict[str, QCheckBox] = {}
+        for index, condition in enumerate(self._seed_trait_catalogue.conditions):
+            checkbox = QCheckBox(
+                trait_display_name(condition), condition_widget
+            )
+            checkbox.setToolTip(
+                "A non-exclusive condition label; more than one may apply to a seed."
+            )
+            checkbox.toggled.connect(self._seed_trait_controls_changed)
+            condition_layout.addWidget(checkbox, index // 2, 1 + index % 2)
+            self.seed_condition_checkboxes[condition] = checkbox
+        trait_form.addRow("Condition", condition_widget)
+        instance_layout.addLayout(trait_form)
+        self.seed_trait_status_label = self._muted_label(
+            "Traits are stored with the selected seed ID."
+        )
+        self.seed_trait_status_label.setWordWrap(True)
+        instance_layout.addWidget(self.seed_trait_status_label)
+        self._populate_seed_coat_patterns()
+
+        instance_layout.addWidget(self._section_label("Reviewed shape metadata"))
+        shape_form = QFormLayout()
+        shape_form.setVerticalSpacing(4)
+        self.seed_shape_reviewed_checkbox = QCheckBox(
+            "Use for shape modelling", self.instance_annotation_controls
+        )
+        self.seed_shape_reviewed_checkbox.setToolTip(
+            "Enable only after selecting an explicit Outline and Pose. The shape "
+            "model still applies its own eligibility rules (for example, a partly "
+            "occluded outline is retained as reviewed metadata but excluded from "
+            "complete-outline fitting)."
+        )
+        self.seed_shape_reviewed_checkbox.toggled.connect(
+            self._seed_trait_controls_changed
+        )
+        self.seed_outline_visibility_combo = QComboBox(
+            self.instance_annotation_controls
+        )
+        for label, value in (
+            ("Unknown", "unknown"),
+            ("Complete", "complete"),
+            ("Partly occluded", "partly_occluded"),
+            ("Cut off by image", "image_cutoff"),
+            ("Uncertain", "uncertain"),
+        ):
+            self.seed_outline_visibility_combo.addItem(label, value)
+        self.seed_outline_visibility_combo.currentIndexChanged.connect(
+            self._seed_trait_controls_changed
+        )
+        shape_form.addRow("Outline", self.seed_outline_visibility_combo)
+        self.seed_full_length_checkbox = QCheckBox("Full length visible", self.instance_annotation_controls)
+        self.seed_full_length_checkbox.setToolTip(
+            "Both maximum-span endpoints are visible despite an incomplete outline. "
+            "Contributes to size only, never complete-outline shape fitting.")
+        self.seed_full_length_checkbox.toggled.connect(self._seed_trait_controls_changed)
+        shape_form.addRow(self.seed_full_length_checkbox)
+        self.seed_pose_combo = QComboBox(self.instance_annotation_controls)
+        for label, value in (
+            ("Unknown", "unknown"),
+            ("Flat", "flat"),
+            ("Oblique", "oblique"),
+            ("On side", "side"),
+            ("Uncertain", "uncertain"),
+        ):
+            self.seed_pose_combo.addItem(label, value)
+        self.seed_pose_combo.currentIndexChanged.connect(
+            self._seed_trait_controls_changed
+        )
+        shape_form.addRow("Pose", self.seed_pose_combo)
+        shape_form.addRow("Use in model", self.seed_shape_reviewed_checkbox)
+        self.seed_shape_exclusion_edit = QLineEdit(
+            self.instance_annotation_controls
+        )
+        self.seed_shape_exclusion_edit.setPlaceholderText(
+            "Optional reason to exclude this outline"
+        )
+        self.seed_shape_exclusion_edit.setMaxLength(160)
+        self.seed_shape_exclusion_edit.editingFinished.connect(
+            self._seed_trait_controls_changed
+        )
+        shape_form.addRow("Exclude because", self.seed_shape_exclusion_edit)
+
+        hilum_widget = QWidget(self.instance_annotation_controls)
+        hilum_layout = QGridLayout(hilum_widget)
+        hilum_layout.setContentsMargins(0, 0, 0, 0)
+        hilum_layout.setSpacing(3)
+        self.seed_hilum_checkbox = QCheckBox("Known", hilum_widget)
+        self.seed_hilum_x_spin = QDoubleSpinBox(hilum_widget)
+        self.seed_hilum_y_spin = QDoubleSpinBox(hilum_widget)
+        for label, spin in (("x", self.seed_hilum_x_spin), ("y", self.seed_hilum_y_spin)):
+            spin.setRange(0.0, 1_000_000.0)
+            spin.setDecimals(1)
+            spin.setPrefix(label + " ")
+            spin.valueChanged.connect(self._seed_trait_controls_changed)
+        self.seed_hilum_checkbox.toggled.connect(
+            self._seed_trait_controls_changed
+        )
+        hilum_layout.addWidget(self.seed_hilum_checkbox, 0, 0)
+        hilum_layout.addWidget(self.seed_hilum_x_spin, 0, 1)
+        hilum_layout.addWidget(self.seed_hilum_y_spin, 0, 2)
+        self.seed_hilum_pick_button = QPushButton("Pick hilum / drag direction", hilum_widget)
+        self.seed_hilum_pick_button.setCheckable(True)
+        self.seed_hilum_pick_button.setToolTip(
+            "Click the hilum with the crosshair, or drag from the hilum in its outward "
+            "direction. Existing arrow endpoints can be dragged. Escape cancels.")
+        self.seed_hilum_pick_button.toggled.connect(self._set_hilum_picking)
+        self.image_view.hilum_landmark_edited.connect(self._hilum_landmark_edited)
+        self.image_view.hilum_editing_cancelled.connect(
+            lambda: self.seed_hilum_pick_button.setChecked(False))
+        hilum_layout.addWidget(self.seed_hilum_pick_button, 1, 0, 1, 3)
+        shape_form.addRow("Hilum landmark", hilum_widget)
+        self.seed_hilum_direction_checkbox = QCheckBox(
+            "Direction known", self.instance_annotation_controls
+        )
+        self.seed_hilum_direction_angle_spin = QDoubleSpinBox(
+            self.instance_annotation_controls
+        )
+        self.seed_hilum_direction_angle_spin.setRange(-180.0, 180.0)
+        self.seed_hilum_direction_angle_spin.setDecimals(1)
+        self.seed_hilum_direction_angle_spin.setSuffix("°")
+        self.seed_hilum_direction_checkbox.toggled.connect(
+            self._seed_trait_controls_changed
+        )
+        self.seed_hilum_direction_angle_spin.valueChanged.connect(
+            self._seed_trait_controls_changed
+        )
+        direction_widget = QWidget(self.instance_annotation_controls)
+        direction_layout = QHBoxLayout(direction_widget)
+        direction_layout.setContentsMargins(0, 0, 0, 0)
+        direction_layout.addWidget(self.seed_hilum_direction_checkbox)
+        direction_layout.addWidget(self.seed_hilum_direction_angle_spin, 1)
+        shape_form.addRow("Hilum direction", direction_widget)
+        instance_layout.addLayout(shape_form)
+        self.seed_shape_status_label = self._muted_label(
+            "Choose an explicit outline and pose before including this seed."
+        )
+        self.seed_shape_status_label.setWordWrap(True)
+        instance_layout.addWidget(self.seed_shape_status_label)
 
         instance_edit_buttons = QWidget(self.instance_annotation_controls)
         instance_edit_layout = QHBoxLayout(instance_edit_buttons)
@@ -3576,7 +4176,7 @@ class MainWindow(QMainWindow):
         instance_brush_form.addRow("Brush radius", instance_brush_widget)
         instance_layout.addLayout(instance_brush_form)
 
-        self.instance_tool_options_stack = QStackedWidget(
+        self.instance_tool_options_stack = CurrentPageStack(
             self.instance_annotation_controls
         )
         self.instance_tool_pages: dict[str, QWidget] = {}
@@ -3664,6 +4264,15 @@ class MainWindow(QMainWindow):
         self.shape_fill_shape_combo = QComboBox(shape_fill_page)
         self.shape_fill_shape_combo.addItem("Ellipse", "ellipse")
         self.shape_fill_shape_combo.addItem("Circle", "circle")
+        self.shape_fill_use_reference_prior_checkbox = QCheckBox(
+            "Use resolved reference dimensions/shape prior", shape_fill_page
+        )
+        self.shape_fill_use_reference_prior_checkbox.setChecked(False)
+        self.shape_fill_use_reference_prior_checkbox.setToolTip(
+            "Opt in to the flat-pose model selected by Reference seed dimensions "
+            "& shape. Its expected maximum span and ovality initialize the fit; "
+            "image edges still determine the final boundary."
+        )
         self.shape_fill_preferred_scale_spin = QDoubleSpinBox(shape_fill_page)
         self.shape_fill_preferred_scale_spin.setRange(0.40, 2.0)
         self.shape_fill_preferred_scale_spin.setSingleStep(0.05)
@@ -3809,6 +4418,7 @@ class MainWindow(QMainWindow):
             "never accepted by Shape fill. It cannot be below the soft half-life."
         )
         shape_fill_form.addRow("Shape prior", self.shape_fill_shape_combo)
+        shape_fill_form.addRow(self.shape_fill_use_reference_prior_checkbox)
         shape_fill_form.addRow(
             "Oval size preference", self.shape_fill_preferred_scale_spin
         )
@@ -4000,6 +4610,9 @@ class MainWindow(QMainWindow):
         self.shape_fill_auto_rotation_checkbox.toggled.connect(
             self._sync_instance_tool_settings
         )
+        self.shape_fill_use_reference_prior_checkbox.toggled.connect(
+            self._sync_instance_tool_settings
+        )
         self._sync_instance_tool_settings()
 
         self.instance_annotation_status_label = self._muted_label(
@@ -4060,16 +4673,20 @@ class MainWindow(QMainWindow):
 
         reference_panel_layout.addWidget(self.reference_controls)
         reference_panel_layout.addWidget(self.instance_annotation_controls)
+        for form in self.reference_panel_contents.findChildren(QFormLayout):
+            form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        for combo in self.reference_panel_contents.findChildren(QComboBox):
+            combo.setMinimumContentsLength(12)
+            combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            combo.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        for page in (self.reference_controls, self.instance_annotation_controls):
+            page.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Maximum)
         # The overlay may be shorter than either editor in the split workspace.
         # Preserve the editors' natural vertical layout and let the surrounding
         # scroll area reveal it instead of compressing rows into one another.
         # Keep width flexible so the contents still fit a narrow image viewer.
-        self.reference_controls.setMinimumHeight(
-            self.reference_controls.sizeHint().height()
-        )
-        self.instance_annotation_controls.setMinimumHeight(
-            self.instance_annotation_controls.sizeHint().height()
-        )
+        reference_layout.setSizeConstraint(QLayout.SizeConstraint.SetDefaultConstraint)
+        instance_layout.setSizeConstraint(QLayout.SizeConstraint.SetDefaultConstraint)
         self.instance_annotation_controls.hide()
         self.reference_panel_scroll.setWidget(self.reference_panel_contents)
         layout.addWidget(self.reference_panel_scroll)
@@ -4447,6 +5064,8 @@ class MainWindow(QMainWindow):
                 pending.other,
                 pending.annotated_seeds,
             )
+            semantic_annotations = pending.seed_annotations
+            semantic_species = pending.annotation_species
         else:
             shape = self._reference_layer_shapes.get(key)
             annotations = self._draft_instance_annotations.get(
@@ -4463,6 +5082,14 @@ class MainWindow(QMainWindow):
                     key, self._applied_background_exclusion_masks.get(key)
                 ),
                 annotations,
+            )
+            semantic_annotations = tuple(
+                self._draft_seed_annotations.get(
+                    key, self._applied_seed_annotations.get(key, {})
+                ).values()
+            )
+            semantic_species = self._draft_seed_annotation_species.get(
+                key, self._applied_seed_annotation_species.get(key, "")
             )
 
         lines = [
@@ -4495,6 +5122,24 @@ class MainWindow(QMainWindow):
                     f"Annotated seeds {counts[3]:,} IDs / {counts[4]:,} px",
                 )
             )
+            if semantic_annotations:
+                coat_count = sum(
+                    annotation.coat_pattern is not None
+                    for annotation in semantic_annotations
+                )
+                reviewed_count = sum(
+                    annotation.conditions_reviewed
+                    for annotation in semantic_annotations
+                )
+                lines.append(
+                    f"Seed semantic labels: {coat_count:,} coat-pattern; "
+                    f"{reviewed_count:,} condition-reviewed"
+                    + (
+                        f"; vocabulary {semantic_species}"
+                        if semantic_species
+                        else ""
+                    )
+                )
         elif status in {"loaded", "pending", "saved"}:
             lines.extend(("", "Known content: empty archive"))
         if key in self._reference_masks_dirty or key in self._instance_annotations_dirty:
@@ -4577,6 +5222,7 @@ class MainWindow(QMainWindow):
             or self._learning_training_task is not None
             or self._procedural_fit_task is not None
             or self._reference_edge_fit_task is not None
+            or self._species_library_build_task is not None
         )
 
     def _exclusive_background_work_is_active(self) -> bool:
@@ -4586,6 +5232,7 @@ class MainWindow(QMainWindow):
             self._learning_training_task is not None
             or self._procedural_fit_task is not None
             or self._reference_edge_fit_task is not None
+            or self._species_library_build_task is not None
         )
 
     def _analysis_settings_dialog_directory(self) -> str:
@@ -4794,6 +5441,20 @@ class MainWindow(QMainWindow):
     def _open_path(self, path: Path, *, mark_project_dirty: bool = True) -> None:
         self._stop_manual_seed_centre_editing()
         previous_path = self.image_view.image_path
+        target_key = _path_identity(path)
+        image_changed = (
+            previous_path is None
+            or _path_identity(previous_path) != target_key
+        )
+        if (
+            previous_path is not None
+            and image_changed
+        ):
+            # Image selection is a hard ownership boundary for image-local
+            # calculations. Signal cancellation before decoding/installing the
+            # replacement image so the serialized worker cannot continue an
+            # obsolete run merely because the user did not request another run.
+            self._cancel_noncurrent_image_work(target_key)
         succeeded, error = self.image_view.load_image(path)
         if not succeeded:
             QMessageBox.warning(self, "Could not open image", f"{path}\n\n{error}")
@@ -4876,6 +5537,8 @@ class MainWindow(QMainWindow):
                 copy=False,
                 render=False,
             )
+        if image_changed:
+            self._select_lowest_empty_instance_for_image(key)
         self._pipeline_image_loaded(path)
         self._update_analysis_availability()
         cached = self._analyses.get(key)
@@ -4905,6 +5568,65 @@ class MainWindow(QMainWindow):
             )
             + (" with saved manual seed centres." if centres_loaded else "")
         )
+
+    def _cancel_noncurrent_image_work(self, target_key: str) -> None:
+        """Synchronously invalidate every image-local job except ``target_key``.
+
+        QRunnable work cannot be killed safely while Python or CUDA owns an
+        operation. Its cancellation event is therefore set here, before the
+        next image is installed; the worker raises at its next cooperative
+        checkpoint and is forbidden from installing any late result. Project-
+        wide learned-model training is intentionally unaffected because it is
+        not owned by the image being left.
+        """
+
+        now = monotonic()
+        cancelled_names: list[str] = []
+        for active_key, task in tuple(self._active_tasks.items()):
+            if active_key == target_key:
+                continue
+            task.cancel()
+            activity = self._analysis_activities.get(active_key)
+            if activity is not None:
+                if activity.cancellation_requested_at is None:
+                    activity.cancellation_requested_at = now
+                cancelled_names.append(activity.path.name)
+            else:
+                cancelled_names.append(Path(task.path).name)
+
+        if (
+            self._pending_analysis_key is not None
+            and self._pending_analysis_key != target_key
+        ):
+            self._pending_analysis_key = None
+            self._pending_analysis_scope = None
+
+        procedural_task = self._procedural_fit_task
+        if (
+            procedural_task is not None
+            and procedural_task.image_key != target_key
+        ):
+            procedural_task.cancel()
+            if self._procedural_fit_progress is not None:
+                self._procedural_fit_progress.setLabelText(
+                    "Cancelling because another image was selected…"
+                )
+
+        edge_fit_task = self._reference_edge_fit_task
+        if edge_fit_task is not None and edge_fit_task.image_key != target_key:
+            edge_fit_task.cancel()
+            if self._reference_edge_fit_progress is not None:
+                self._reference_edge_fit_progress.setLabelText(
+                    "Cancelling because another image was selected…"
+                )
+
+        if cancelled_names:
+            LOGGER.info(
+                "Image switch requested cancellation of obsolete analysis: %s",
+                ", ".join(cancelled_names),
+            )
+        self._refresh_analysis_activity_panel()
+        self._update_analysis_availability()
 
     def _show_pending_result(self) -> None:
         self._stop_manual_seed_centre_editing()
@@ -4947,13 +5669,20 @@ class MainWindow(QMainWindow):
         return BaselineSettings(**{key: value for key, value in values.items() if key in allowed})
 
     def _dish_settings(self) -> DishDetectionSettings:
-        return DishDetectionSettings(**self.pipeline.node("layout_detection").parameters)
+        allowed = set(DishDetectionSettings.__dataclass_fields__)
+        return DishDetectionSettings(
+            **{
+                key: value
+                for key, value in self.pipeline.node("layout_detection").parameters.items()
+                if key in allowed
+            }
+        )
 
     def _layer_settings(self) -> AnalysisLayerSettings:
         values: dict[str, object] = {}
         for node_id in (
+            "layout_detection",
             "wavelet_decomposition",
-            "perimeter_background_reference",
             "background_likelihood",
             "refined_background_likelihood",
             "edge_gradients",
@@ -4963,6 +5692,7 @@ class MainWindow(QMainWindow):
             "frequency_noise_masks",
             "reference_texture_prototypes",
             "material_evidence_decision",
+            "reference_seed_traits",
             "reference_edge_probability",
             "edge_traces",
             "instance_masks",
@@ -5096,6 +5826,43 @@ class MainWindow(QMainWindow):
             key, PipelineAnalysisCache()
         )
         self._analysis_caches.move_to_end(key)
+        resolved_library = self._resolved_species_library_for_current_image(path)
+        library_shape_bank = (
+            None
+            if resolved_library.artifact is None
+            else resolved_library.artifact.dimensions_shape
+        )
+        if resolved_library.error:
+            self.pipeline.set_status(
+                "species_reference_library",
+                NodeStatus.BLOCKED,
+                resolved_library.error,
+            )
+        else:
+            provenance = resolved_library.provenance
+            self.pipeline.set_status(
+                "species_reference_library",
+                NodeStatus.COMPLETE,
+                (
+                    "No pinned library"
+                    if provenance is None
+                    else (
+                        f"{provenance.eligible_source_count:,} eligible source(s); "
+                        + (
+                            "current image contribution excluded"
+                            if provenance.excluded_source_indices
+                            else "current image is not a library source"
+                        )
+                        + (
+                            "; shape fallback " + " / ".join(
+                                provenance.selected_hierarchy_path
+                            )
+                            if provenance.selected_hierarchy_path
+                            else ""
+                        )
+                    )
+                ),
+            )
         task = _AnalysisTask(
             path,
             self._baseline_settings(),
@@ -5117,6 +5884,15 @@ class MainWindow(QMainWindow):
             self._applied_physical_edge_reference_masks.get(key),
             self._applied_non_edge_reference_masks.get(key),
             self._applied_instance_annotations.get(key),
+            tuple(
+                sorted(
+                    self._applied_seed_annotations.get(key, {}).values(),
+                    key=lambda item: item.seed_id,
+                )
+            ),
+            self._applied_seed_annotation_species.get(key, ""),
+            self._current_seed_trait_vocabulary().coat_patterns,
+            self._seed_trait_catalogue.conditions,
             self._manual_seed_centres_for_analysis(key),
             bool(
                 self.pipeline.node("background_likelihood").parameters.get(
@@ -5135,6 +5911,9 @@ class MainWindow(QMainWindow):
             self.pipeline.revision,
             node_cache,
             requested_dirty,
+            self._effective_biological_context(),
+            library_shape_bank,
+            resolved_library.artifact,
         )
         task.signals.completed.connect(self._analysis_completed)
         task.signals.failed.connect(self._analysis_failed)
@@ -5237,6 +6016,7 @@ class MainWindow(QMainWindow):
             "scale_calibration": "ruler_detection",
             "edge_ridges": "edge_gradients",
             "reference_edge_ridges": "reference_edge_probability",
+            "perimeter_background_reference": "layout_detection",
         }.get(node_id, node_id)
         current_path = self.image_view.image_path
         key = _path_identity(path_text)
@@ -5317,6 +6097,28 @@ class MainWindow(QMainWindow):
     def _install_completed_analysis(self, result, pipeline_revision: int) -> None:
         path = result.image_path
         key = _path_identity(path) if path is not None else ""
+        task = self._active_tasks.get(key)
+        current_key = self._current_image_key()
+        if (
+            current_key != key
+            or (
+                task is not None
+                and bool(getattr(task, "cancellation_requested", False))
+            )
+        ):
+            # A completion signal may already be queued on the Qt event loop
+            # when the user selects another image. Never let that stale result
+            # repopulate a partial cache or rewrite the visible pipeline state.
+            self._active_tasks.pop(key, None)
+            self._analysis_activities.pop(key, None)
+            self._discard_analysis_cache(key)
+            self._refresh_analysis_activity_panel()
+            self._update_analysis_availability()
+            self.statusBar().showMessage(
+                f"Discarded cancelled analysis for {Path(path).name}."
+            )
+            self._start_pending_analysis()
+            return
         self._active_tasks.pop(key, None)
         self._analysis_activities.pop(key, None)
         self._refresh_analysis_activity_panel()
@@ -5382,6 +6184,14 @@ class MainWindow(QMainWindow):
         path = Path(path_text)
         key = _path_identity(path)
         activity = self._analysis_activities.get(key)
+        task = self._active_tasks.get(key)
+        cancelled_or_obsolete = (
+            self._current_image_key() != key
+            or (
+                task is not None
+                and bool(getattr(task, "cancellation_requested", False))
+            )
+        )
         LOGGER.error(
             "Analysis failed; image=%s; active_node=%s; error=%s",
             path,
@@ -5392,6 +6202,13 @@ class MainWindow(QMainWindow):
         self._analysis_activities.pop(key, None)
         self._refresh_analysis_activity_panel()
         self._discard_analysis_cache(key)
+        if cancelled_or_obsolete:
+            # Exceptions raised while unwinding a cancelled, no-longer-visible
+            # image are diagnostic log entries, not failures of the replacement
+            # image and must never open a stale modal warning.
+            self._update_analysis_availability()
+            self._start_pending_analysis()
+            return
         if self.image_view.image_path == path:
             self.image_view.clear_analysis()
             self.image_view.set_overlay_calculating(None)
@@ -5734,11 +6551,103 @@ class MainWindow(QMainWindow):
             "instances",
             before,
             after,
-            metadata=before_origin,
+            metadata=self._instance_undo_metadata(key, before_origin),
         )
         if not changed and not len(history):
             self._instance_undo_histories.pop(key, None)
         return changed
+
+    def _instance_undo_metadata(self, key: str, origin: str) -> str:
+        traits = self._draft_seed_annotations.get(
+            key, self._applied_seed_annotations.get(key, {})
+        )
+        return json.dumps(
+            {
+                "origin": str(origin or "manual"),
+                "species": self._draft_seed_annotation_species.get(
+                    key, self._applied_seed_annotation_species.get(key, "")
+                ),
+                "traits": [
+                    {
+                        "seed_id": value.seed_id,
+                        "coat_pattern": value.coat_pattern,
+                        "conditions": list(value.conditions),
+                        "conditions_reviewed": value.conditions_reviewed,
+                        "shape_reviewed": value.shape_reviewed,
+                        "outline_visibility": value.outline_visibility,
+                        "full_length_visible": value.full_length_visible,
+                        "pose": value.pose,
+                        "hilum_point": value.hilum_point,
+                        "hilum_direction": value.hilum_direction,
+                        "physical_seed_id": value.physical_seed_id,
+                        "shape_exclusion_reason": value.shape_exclusion_reason,
+                    }
+                    for value in sorted(
+                        traits.values(), key=lambda item: item.seed_id
+                    )
+                ],
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+
+    @staticmethod
+    def _decode_instance_undo_metadata(
+        metadata: str | None,
+    ) -> tuple[str, str, dict[int, SeedInstanceAnnotation]]:
+        if not metadata:
+            return "manual", "", {}
+        try:
+            payload = json.loads(metadata)
+            if not isinstance(payload, dict) or "traits" not in payload:
+                raise ValueError
+            traits = {
+                int(item["seed_id"]): SeedInstanceAnnotation(
+                    seed_id=int(item["seed_id"]),
+                    coat_pattern=item.get("coat_pattern"),
+                    conditions=tuple(item.get("conditions", ())),
+                    conditions_reviewed=bool(
+                        item.get("conditions_reviewed", False)
+                    ),
+                    shape_reviewed=bool(item.get("shape_reviewed", False)),
+                    full_length_visible=bool(item.get("full_length_visible", False)),
+                    outline_visibility=str(
+                        item.get("outline_visibility", "unknown")
+                    ),
+                    pose=str(item.get("pose", "unknown")),
+                    hilum_point=(
+                        None
+                        if item.get("hilum_point") is None
+                        else tuple(float(value) for value in item["hilum_point"])
+                    ),
+                    hilum_direction=(
+                        None
+                        if item.get("hilum_direction") is None
+                        else tuple(
+                            float(value) for value in item["hilum_direction"]
+                        )
+                    ),
+                    physical_seed_id=(
+                        None
+                        if item.get("physical_seed_id") in (None, "")
+                        else str(item["physical_seed_id"])
+                    ),
+                    shape_exclusion_reason=(
+                        None
+                        if item.get("shape_exclusion_reason") in (None, "")
+                        else str(item["shape_exclusion_reason"])
+                    ),
+                )
+                for item in payload["traits"]
+            }
+            return (
+                str(payload.get("origin") or "manual"),
+                str(payload.get("species") or ""),
+                traits,
+            )
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            # Histories created before semantic seed labels stored only origin.
+            return str(metadata), "", {}
 
     @staticmethod
     def _matches_applied_raster(
@@ -5835,20 +6744,67 @@ class MainWindow(QMainWindow):
     ) -> None:
         self._instance_continuity_cache.pop(key, None)
         labels = np.asarray(values, dtype=np.uint16)
-        applied = self._applied_instance_annotations.get(key)
-        if self._matches_applied_raster(labels, applied):
+        self._draft_instance_annotations[key] = labels
+        self._draft_instance_annotation_origins[key] = origin or "manual"
+        self._draft_seed_annotations.setdefault(
+            key, dict(self._applied_seed_annotations.get(key, {}))
+        )
+        self._draft_seed_annotation_species.setdefault(
+            key,
+            self._applied_seed_annotation_species.get(key)
+            or self._current_seed_trait_species_id(),
+        )
+        self._prune_seed_annotations(key, labels)
+        self._reconcile_instance_draft(key)
+
+    def _prune_seed_annotations(self, key: str, labels: np.ndarray) -> None:
+        extant = set(self._instance_ids(labels))
+        current = self._draft_seed_annotations.get(key)
+        if current is not None:
+            self._draft_seed_annotations[key] = {
+                seed_id: annotation
+                for seed_id, annotation in current.items()
+                if seed_id in extant
+            }
+
+    def _reconcile_instance_draft(self, key: str) -> None:
+        labels = self._draft_instance_annotations.get(
+            key, self._applied_instance_annotations.get(key)
+        )
+        applied_labels = self._applied_instance_annotations.get(key)
+        current_traits = self._draft_seed_annotations.get(
+            key, self._applied_seed_annotations.get(key, {})
+        )
+        applied_traits = self._applied_seed_annotations.get(key, {})
+        current_species = self._draft_seed_annotation_species.get(
+            key, self._applied_seed_annotation_species.get(key, "")
+        )
+        applied_species = self._applied_seed_annotation_species.get(key, "")
+        if (
+            self._matches_applied_raster(labels, applied_labels)
+            and current_traits == applied_traits
+            and current_species == applied_species
+        ):
             self._draft_instance_annotations.pop(key, None)
             self._draft_instance_annotation_origins.pop(key, None)
+            self._draft_seed_annotations.pop(key, None)
+            self._draft_seed_annotation_species.pop(key, None)
             self._instance_annotations_dirty.discard(key)
-        else:
-            self._draft_instance_annotations[key] = labels
-            self._draft_instance_annotation_origins[key] = origin or "manual"
-            self._instance_annotations_dirty.add(key)
+            return
+        if labels is None:
+            labels = self._empty_current_instance_annotations()
+        self._draft_instance_annotations[key] = np.asarray(labels, dtype=np.uint16)
+        self._draft_instance_annotation_origins.setdefault(key, "manual")
+        self._draft_seed_annotations[key] = dict(current_traits)
+        self._draft_seed_annotation_species[key] = current_species
+        self._instance_annotations_dirty.add(key)
 
     def _sync_reference_undo_controls(
         self, key: str | None, *, has_result: bool, running: bool
     ) -> None:
         instance_mode = self.annotate_instances_action.isChecked()
+        if not instance_mode:
+            self.seed_hilum_pick_button.setChecked(False)
         reference_mode = self.paint_background_action.isChecked()
         histories = (
             self._instance_undo_histories
@@ -5909,7 +6865,14 @@ class MainWindow(QMainWindow):
         result = history.undo(self._instance_reference_state(key))
         if result is None:
             return
-        self._set_instance_draft_state(key, result.rasters[0], result.metadata)
+        origin, species, traits = self._decode_instance_undo_metadata(
+            result.metadata
+        )
+        self._set_instance_draft_state(key, result.rasters[0], origin)
+        self._draft_seed_annotations[key] = traits
+        self._draft_seed_annotation_species[key] = species
+        self._prune_seed_annotations(key, result.rasters[0])
+        self._reconcile_instance_draft(key)
         self.image_view.set_instance_annotations(
             self._draft_instance_annotations.get(
                 key, self._applied_instance_annotations.get(key)
@@ -6257,6 +7220,11 @@ class MainWindow(QMainWindow):
             return set()
 
         self._install_reference_region_bundle(key, bundle, sync_view=False)
+        if self._current_image_key() == key:
+            # The image switch initially had no validated corrected-coordinate
+            # labels to inspect. Complete the same selector reset now that its
+            # saved annotations have passed calibration validation.
+            self._select_lowest_empty_instance_for_image(key)
         self._reference_layer_shapes[key] = corrected_shape
         self._withheld_reference_sidecars.discard(key)
         self._project_unresolved_reference_sidecars.discard(key)
@@ -6490,6 +7458,8 @@ class MainWindow(QMainWindow):
             draft.pop(key, None)
         self._draft_instance_annotations.pop(key, None)
         self._draft_instance_annotation_origins.pop(key, None)
+        self._draft_seed_annotations.pop(key, None)
+        self._draft_seed_annotation_species.pop(key, None)
         self._reference_masks_dirty.discard(key)
         self._reference_dirty_classes.pop(key, None)
         self._instance_annotations_dirty.discard(key)
@@ -6535,10 +7505,22 @@ class MainWindow(QMainWindow):
         )
         if annotations is None:
             self._applied_instance_annotation_origins.pop(key, None)
+            self._applied_seed_annotations.pop(key, None)
+            self._applied_seed_annotation_species.pop(key, None)
         else:
             self._applied_instance_annotation_origins[key] = (
                 bundle.annotation_origin or "manual"
             )
+            self._applied_seed_annotations[key] = {
+                annotation.seed_id: annotation
+                for annotation in bundle.seed_annotations
+            }
+            if bundle.annotation_species:
+                self._applied_seed_annotation_species[key] = (
+                    bundle.annotation_species
+                )
+            else:
+                self._applied_seed_annotation_species.pop(key, None)
         if sync_view:
             self._sync_reference_masks_to_view(key, render=False)
             self.image_view.set_instance_annotations(
@@ -6618,6 +7600,15 @@ class MainWindow(QMainWindow):
             annotated_seeds=self._applied_instance_annotations.get(key),
             annotation_origin=self._applied_instance_annotation_origins.get(
                 key, "manual"
+            ),
+            seed_annotations=tuple(
+                sorted(
+                    self._applied_seed_annotations.get(key, {}).values(),
+                    key=lambda item: item.seed_id,
+                )
+            ),
+            annotation_species=self._applied_seed_annotation_species.get(
+                key, ""
             ),
         )
         try:
@@ -6717,6 +7708,13 @@ class MainWindow(QMainWindow):
             )
             self._draft_instance_annotation_origins[key] = (
                 self._applied_instance_annotation_origins.get(key, "manual")
+            )
+            self._draft_seed_annotations[key] = dict(
+                self._applied_seed_annotations.get(key, {})
+            )
+            self._draft_seed_annotation_species[key] = (
+                self._applied_seed_annotation_species.get(key)
+                or self._current_seed_trait_species_id()
             )
         self.image_view.set_instance_annotations(
             self._draft_instance_annotations[key], copy=False, render=False
@@ -7059,6 +8057,7 @@ class MainWindow(QMainWindow):
             button.setEnabled(has_result and not running)
         self.instance_tool_options_stack.setEnabled(has_result and not running)
         active_id = self.instance_id_spin.value()
+        self._sync_seed_trait_controls()
         self.clear_current_instance_button.setEnabled(
             active_id in annotation_ids and not running
         )
@@ -7201,6 +8200,35 @@ class MainWindow(QMainWindow):
         if annotations is None:
             return ()
         return tuple(int(value) for value in np.unique(annotations) if value > 0)
+
+    @classmethod
+    def _lowest_empty_instance_id(cls, annotations: np.ndarray | None) -> int:
+        """Return the smallest positive uint16 label absent from ``annotations``."""
+
+        candidate = 1
+        maximum = int(np.iinfo(np.uint16).max)
+        for identifier in cls._instance_ids(annotations):
+            if identifier < candidate:
+                continue
+            if identifier > candidate:
+                break
+            if candidate == maximum:
+                return maximum
+            candidate += 1
+        return min(candidate, maximum)
+
+    def _select_lowest_empty_instance_for_image(self, key: str) -> int:
+        """Reset annotation editing to the first unused ID owned by one image."""
+
+        annotations = self._draft_instance_annotations.get(
+            key, self._applied_instance_annotations.get(key)
+        )
+        identifier = self._lowest_empty_instance_id(annotations)
+        with QSignalBlocker(self.instance_id_spin):
+            self.instance_id_spin.setValue(identifier)
+        self.image_view.set_active_instance_id(identifier)
+        self._update_instance_colour_swatch()
+        return identifier
 
     def _instance_continuity_summary(
         self, key: str | None, annotations: np.ndarray | None
@@ -7525,38 +8553,46 @@ class MainWindow(QMainWindow):
             ("Thinned edge ridges", "ridges"),
             ("Thinned reference edge ridge", "reference_ridges"),
             (
-                "Thinned normalized net-physical ridge",
+                "Thinned conservative net physical-edge ridge",
+                "conservative_reference_ridges",
+            ),
+            (
+                "Thinned normalized reference-edge ridge",
                 "normalized_reference_ridges",
             ),
             (
-                "Locally normalized net physical edge",
+                "Normalized reference-edge probability",
                 "normalized_net_physical",
             ),
             ("Oriented edge traces", "traces"),
             ("Combined (ridge priority)", "adaptive"),
-            ("Physical-edge probability", "physical"),
             ("Edge magnitude (broad)", "magnitude"),
         ]
         if include_net_physical:
-            sources.insert(
-                -1,
-                ("Net physical-edge probability", "net_physical"),
-            )
+            sources[-1:-1] = [
+                ("Reference-edge probability", "net_physical"),
+                (
+                    "Conservative net physical-edge evidence",
+                    "conservative_net_physical",
+                ),
+            ]
         for label, source in sources:
             combo.addItem(label, source)
         combo.setToolTip(
             "Select the exact edge raster used for snapping or as the fill "
             "barrier. Generic thinned ridges are the precise default; the "
-            "reference-ridge option similarly thins learned physical-edge "
-            "probability. The locally normalized source separates semantic class "
-            "margin from shared absolute support, equalizes it within a bounded "
-            "seed-scale neighborhood, and retains an absolute noise floor. Combined "
+            "reference-ridge option uses true-edge support times Physical probability. "
+            "The normalized source applies bounded one-sided enhancement "
+            "within a seed-scale neighborhood, and retains an absolute noise gate. Combined "
             "uses the per-pixel maximum of generic ridges and binary oriented traces, "
-            "plus locally normalized learned evidence and broad edge magnitude at "
-            "45% strength. Raw net physical-edge probability uses "
-            "the edge-probability node's scaled subtraction of non-physical "
-            "evidence; changing that control recomputes its thinned net ridge and "
-            "downstream consumers. Edge "
+            "plus normalized learned evidence and broad edge magnitude at "
+            "45% strength. Reference-edge probability is thinned true-edge support "
+            "times Physical probability, including unknown confidence. Conservative "
+            "net physical-edge evidence instead uses support times max(Physical - "
+            "weight × Non-physical, 0), retaining only more selectively classified "
+            "boundaries. The subtraction weight affects only that conservative "
+            "branch and its ridge, never the authoritative or normalized probability. "
+            "Raw prototype compatibility is diagnostic only. Edge "
             "magnitude alone is broader and can stop short of the visible ridge."
         )
 
@@ -7611,6 +8647,39 @@ class MainWindow(QMainWindow):
             )
         )
         preferred_scale = self.shape_fill_preferred_scale_spin.value()
+        maximum_axis_ratio = self.shape_fill_axis_ratio_spin.value()
+        if self.shape_fill_use_reference_prior_checkbox.isChecked():
+            result = self.image_view._analysis_result
+            model = getattr(result, "seed_dimensions_shape_model", None)
+            family = None if model is None else model.family("flat")
+            if family is not None:
+                component = family.component
+                ovality_variance = max(
+                    0.0, float(component.covariance[3][3])
+                )
+                maximum_axis_ratio = float(
+                    np.clip(
+                        float(component.mean[3])
+                        + 1.96 * np.sqrt(ovality_variance),
+                        1.0,
+                        self.shape_fill_axis_ratio_spin.maximum(),
+                    )
+                )
+                pixels_per_mm = getattr(result, "pixels_per_mm", None)
+                if (
+                    component.physical_dimensions_available
+                    and pixels_per_mm is not None
+                    and float(pixels_per_mm) > 0
+                ):
+                    preferred_scale = float(
+                        np.clip(
+                            float(component.mean[0])
+                            * float(pixels_per_mm)
+                            / max(diameter, 1e-6),
+                            self.shape_fill_preferred_scale_spin.minimum(),
+                            self.shape_fill_preferred_scale_spin.maximum(),
+                        )
+                    )
         outward_half_life = self.shape_fill_outward_half_life_spin.value()
         outward_cutoff = self.shape_fill_outward_cutoff_spin.value()
         if outward_half_life > outward_cutoff:
@@ -7641,7 +8710,7 @@ class MainWindow(QMainWindow):
                 preferred_scale=preferred_scale,
                 auto_rotation=self.shape_fill_auto_rotation_checkbox.isChecked(),
                 initial_rotation_degrees=self.shape_fill_rotation_spin.value(),
-                maximum_axis_ratio=self.shape_fill_axis_ratio_spin.value(),
+                maximum_axis_ratio=maximum_axis_ratio,
                 boundary_smoothness=self.shape_fill_smoothness_spin.value()
                 / 100.0,
                 minimum_boundary_strength=(
@@ -7690,11 +8759,7 @@ class MainWindow(QMainWindow):
         )
         self.image_view.set_smart_fill_options(
             SmartFillOptions(
-                edge_source=(
-                    "physical"
-                    if smart_fill_edge_source == "net_physical"
-                    else smart_fill_edge_source
-                ),
+                edge_source=smart_fill_edge_source,
                 colour_tolerance_lab=self.smart_fill_colour_tolerance_spin.value(),
                 click_colour_tolerance_lab=(
                     self.smart_fill_click_colour_tolerance_spin.value()
@@ -7812,11 +8877,428 @@ class MainWindow(QMainWindow):
     def _instance_id_changed(self, identifier: int) -> None:
         self.image_view.set_active_instance_id(identifier)
         self._update_instance_colour_swatch()
+        self._sync_seed_trait_controls()
         self._sync_background_controls()
+
+    def _current_seed_trait_vocabulary(self) -> SpeciesSeedTraitVocabulary:
+        species = (
+            self.species_combo.currentText()
+            if hasattr(self, "species_combo")
+            else ""
+        )
+        return self._seed_trait_catalogue.for_species(species)
+
+    def _current_seed_trait_species_id(self) -> str:
+        return self._current_seed_trait_vocabulary().species_id
+
+    def _effective_biological_context(self) -> BiologicalContext:
+        species_id = self._current_seed_trait_species_id() or "unknown"
+        current = self._project_biological_context
+        if current is not None and current.species_id == species_id:
+            return current
+        return BiologicalContext(species_id)
+
+    def _resolved_species_library_for_current_image(self, path: Path):
+        return self._species_library_service.resolve(
+            self._project_species_library_pin,
+            context=self._effective_biological_context(),
+            current_source_sha256=file_sha256(path),
+            trait_vocabulary_sha256=file_sha256(
+                self._root / "config" / "traits.json"
+            ),
+        )
+
+    def _offer_missing_species_library_import(self) -> bool:
+        """Offer exact-bundle recovery without silently following latest."""
+
+        pin = self._project_species_library_pin
+        if pin is None:
+            return True
+        try:
+            self._species_library_service.store.load(pin)
+            return True
+        except Exception as error:  # noqa: BLE001 - recovery UI boundary
+            answer = QMessageBox.question(
+                self,
+                "Pinned species library is unavailable",
+                f"The project requires {pin.library_id} version {pin.version}\n"
+                f"SHA-256: {pin.sha256}\n\n{error}\n\n"
+                "Locate and import the exact portable library bundle now? "
+                "Seed Fiddle will not substitute another installed version.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+        if answer != QMessageBox.StandardButton.Yes:
+            return False
+        source, _selected = QFileDialog.getOpenFileName(
+            self,
+            "Locate pinned species library",
+            "",
+            f"Seed Fiddle species library (*{SPECIES_LIBRARY_EXTENSION})",
+        )
+        if not source:
+            return False
+        try:
+            artifact = self._species_library_service.store.import_bundle(Path(source))
+            imported = artifact.manifest
+            if (
+                imported.library_id != pin.library_id
+                or imported.version != pin.version
+                or imported.species_id != pin.species_id
+                or imported.content_sha256 != pin.sha256
+            ):
+                raise ValueError(
+                    "The selected bundle is valid but does not match the project's "
+                    "exact ID, version, species, and content hash."
+                )
+            self._species_library_service.store.load(pin)
+        except Exception as import_error:  # noqa: BLE001 - user-facing boundary
+            QMessageBox.critical(
+                self,
+                "Pinned library was not imported",
+                str(import_error),
+            )
+            return False
+        self.statusBar().showMessage(
+            f"Imported exact pinned species library {pin.library_id} "
+            f"version {pin.version}."
+        )
+        return True
+
+    def _populate_seed_coat_patterns(self) -> None:
+        if not hasattr(self, "seed_coat_pattern_combo"):
+            return
+        vocabulary = self._current_seed_trait_vocabulary()
+        with QSignalBlocker(self.seed_coat_pattern_combo):
+            self.seed_coat_pattern_combo.clear()
+            self.seed_coat_pattern_combo.addItem("Unannotated", None)
+            for pattern in vocabulary.coat_patterns:
+                self.seed_coat_pattern_combo.addItem(
+                    trait_display_name(pattern), pattern
+                )
+        self.seed_coat_pattern_combo.setEnabled(bool(vocabulary.coat_patterns))
+
+    def _sync_seed_trait_controls(self) -> None:
+        if not hasattr(self, "seed_coat_pattern_combo"):
+            return
+        vocabulary = self._current_seed_trait_vocabulary()
+        current_values = tuple(
+            self.seed_coat_pattern_combo.itemData(index)
+            for index in range(1, self.seed_coat_pattern_combo.count())
+        )
+        if current_values != vocabulary.coat_patterns:
+            self._populate_seed_coat_patterns()
+        key = self._current_image_key()
+        seed_id = self.instance_id_spin.value()
+        labels = None if key is None else self._draft_instance_annotations.get(
+            key, self._applied_instance_annotations.get(key)
+        )
+        extant = seed_id in self._instance_ids(labels)
+        self.instance_empty_label.setVisible(not extant)
+        with QSignalBlocker(self.existing_instance_combo):
+            self.existing_instance_combo.clear()
+            self.existing_instance_combo.addItem("Select an existing annotation…", None)
+            for identifier in sorted(self._instance_ids(labels)):
+                self.existing_instance_combo.addItem(f"Seed {identifier}", identifier)
+            self.existing_instance_combo.setCurrentIndex(
+                max(0, self.existing_instance_combo.findData(seed_id)))
+        traits = {} if key is None else self._draft_seed_annotations.get(
+            key, self._applied_seed_annotations.get(key, {})
+        )
+        annotation = traits.get(seed_id, SeedInstanceAnnotation(seed_id))
+        self._syncing_seed_trait_controls = True
+        try:
+            with QSignalBlocker(self.seed_coat_pattern_combo):
+                index = self.seed_coat_pattern_combo.findData(
+                    annotation.coat_pattern
+                )
+                self.seed_coat_pattern_combo.setCurrentIndex(max(0, index))
+            with QSignalBlocker(self.seed_conditions_reviewed_checkbox):
+                self.seed_conditions_reviewed_checkbox.setChecked(
+                    annotation.conditions_reviewed and not annotation.conditions
+                )
+            for condition, checkbox in self.seed_condition_checkboxes.items():
+                with QSignalBlocker(checkbox):
+                    checkbox.setChecked(condition in annotation.conditions)
+                checkbox.setEnabled(extant)
+            shape_widgets = (
+                self.seed_shape_reviewed_checkbox,
+                self.seed_outline_visibility_combo,
+                self.seed_pose_combo,
+                self.seed_full_length_checkbox,
+                self.seed_hilum_pick_button,
+                self.seed_shape_exclusion_edit,
+                self.seed_hilum_checkbox,
+                self.seed_hilum_x_spin,
+                self.seed_hilum_y_spin,
+                self.seed_hilum_direction_checkbox,
+                self.seed_hilum_direction_angle_spin,
+            )
+            with QSignalBlocker(self.seed_shape_reviewed_checkbox):
+                self.seed_shape_reviewed_checkbox.setChecked(
+                    annotation.shape_reviewed
+                )
+            with QSignalBlocker(self.seed_outline_visibility_combo):
+                index = self.seed_outline_visibility_combo.findData(
+                    annotation.outline_visibility
+                )
+                self.seed_outline_visibility_combo.setCurrentIndex(max(0, index))
+            with QSignalBlocker(self.seed_pose_combo):
+                index = self.seed_pose_combo.findData(annotation.pose)
+                self.seed_pose_combo.setCurrentIndex(max(0, index))
+            with QSignalBlocker(self.seed_full_length_checkbox):
+                self.seed_full_length_checkbox.setChecked(annotation.full_length_visible)
+            self.seed_full_length_checkbox.setVisible(annotation.outline_visibility != "complete")
+            with QSignalBlocker(self.seed_shape_exclusion_edit):
+                self.seed_shape_exclusion_edit.setText(
+                    annotation.shape_exclusion_reason or ""
+                )
+            with QSignalBlocker(self.seed_hilum_checkbox):
+                self.seed_hilum_checkbox.setChecked(
+                    annotation.hilum_point is not None
+                )
+            if annotation.hilum_point is not None:
+                with QSignalBlocker(self.seed_hilum_x_spin):
+                    self.seed_hilum_x_spin.setValue(annotation.hilum_point[0])
+                with QSignalBlocker(self.seed_hilum_y_spin):
+                    self.seed_hilum_y_spin.setValue(annotation.hilum_point[1])
+            with QSignalBlocker(self.seed_hilum_direction_checkbox):
+                self.seed_hilum_direction_checkbox.setChecked(
+                    annotation.hilum_direction is not None
+                )
+            if annotation.hilum_direction is not None:
+                angle = np.degrees(
+                    np.arctan2(
+                        annotation.hilum_direction[1],
+                        annotation.hilum_direction[0],
+                    )
+                )
+                with QSignalBlocker(self.seed_hilum_direction_angle_spin):
+                    self.seed_hilum_direction_angle_spin.setValue(float(angle))
+            for widget in shape_widgets:
+                widget.setEnabled(extant)
+            self.seed_hilum_x_spin.setEnabled(
+                extant and annotation.hilum_point is not None
+            )
+            self.seed_hilum_y_spin.setEnabled(
+                extant and annotation.hilum_point is not None
+            )
+            self.seed_hilum_direction_angle_spin.setEnabled(
+                extant and annotation.hilum_direction is not None
+            )
+        finally:
+            self._syncing_seed_trait_controls = False
+        self.seed_coat_pattern_combo.setEnabled(
+            extant and bool(vocabulary.coat_patterns)
+        )
+        self.seed_conditions_reviewed_checkbox.setEnabled(extant)
+        if not extant:
+            self.seed_hilum_pick_button.setChecked(False)
+        self.image_view.set_hilum_landmark(annotation.hilum_point, annotation.hilum_direction)
+        if not extant:
+            shape_status = "Paint this seed ID before adding shape metadata."
+            shape_problem = False
+        elif annotation.shape_reviewed and (
+            annotation.outline_visibility == "unknown" or annotation.pose == "unknown"
+        ):
+            missing = []
+            if annotation.outline_visibility == "unknown":
+                missing.append("Outline")
+            if annotation.pose == "unknown":
+                missing.append("Pose")
+            shape_status = (
+                "This legacy record cannot be saved: choose "
+                + " and ".join(missing)
+                + ", or clear ‘Use for shape modelling’."
+            )
+            shape_problem = True
+        elif annotation.shape_reviewed:
+            shape_status = (
+                "Included in shape modelling; final eligibility also depends on "
+                "outline visibility and any exclusion reason."
+            )
+            shape_problem = False
+        elif (
+            annotation.outline_visibility != "unknown"
+            and annotation.pose != "unknown"
+        ):
+            shape_status = (
+                "Outline and pose are specified. Enable ‘Use for shape modelling’ "
+                "when your review is complete."
+            )
+            shape_problem = False
+        else:
+            shape_status = (
+                "Choose an explicit Outline and Pose before including this seed in "
+                "shape modelling."
+            )
+            shape_problem = False
+        self.seed_shape_status_label.setText(shape_status)
+        self.seed_shape_status_label.setStyleSheet(
+            "color: #b42318; font-weight: 600;" if shape_problem else ""
+        )
+        if not extant:
+            status = "Paint this seed ID before assigning semantic labels."
+        elif not vocabulary.coat_patterns:
+            status = (
+                "No coat-pattern vocabulary is configured for this species; "
+                "condition labels remain available."
+            )
+        else:
+            status = (
+                "Coat pattern is one-of-many; reviewed conditions may overlap."
+            )
+        self.seed_trait_status_label.setText(status)
+
+    @Slot()
+    def _seed_trait_controls_changed(self, *_unused) -> None:
+        if getattr(self, "_syncing_seed_trait_controls", False):
+            return
+        key = self._current_image_key()
+        if key is None:
+            return
+        seed_id = self.instance_id_spin.value()
+        labels = self._draft_instance_annotations.get(
+            key, self._applied_instance_annotations.get(key)
+        )
+        if seed_id not in self._instance_ids(labels):
+            self._sync_seed_trait_controls()
+            return
+        self._ensure_instance_draft()
+        reviewed = self.seed_conditions_reviewed_checkbox.isChecked()
+        selected_conditions = tuple(
+            condition
+            for condition, checkbox in self.seed_condition_checkboxes.items()
+            if checkbox.isChecked()
+        )
+        if (
+            self.sender() is self.seed_conditions_reviewed_checkbox
+            and reviewed
+        ):
+            selected_conditions = ()
+            for checkbox in self.seed_condition_checkboxes.values():
+                with QSignalBlocker(checkbox):
+                    checkbox.setChecked(False)
+        elif selected_conditions:
+            reviewed = False
+            with QSignalBlocker(self.seed_conditions_reviewed_checkbox):
+                self.seed_conditions_reviewed_checkbox.setChecked(False)
+        reviewed = reviewed or bool(selected_conditions)
+        coat_pattern = self.seed_coat_pattern_combo.currentData()
+        previous = self._draft_seed_annotations.get(
+            key, self._applied_seed_annotations.get(key, {})
+        ).get(seed_id, SeedInstanceAnnotation(seed_id))
+        hilum_point = (
+            (
+                float(self.seed_hilum_x_spin.value()),
+                float(self.seed_hilum_y_spin.value()),
+            )
+            if self.seed_hilum_checkbox.isChecked()
+            else None
+        )
+        direction_angle = np.radians(
+            float(self.seed_hilum_direction_angle_spin.value())
+        )
+        hilum_direction = (
+            (float(np.cos(direction_angle)), float(np.sin(direction_angle)))
+            if self.seed_hilum_direction_checkbox.isChecked()
+            else None
+        )
+        outline_visibility = str(
+            self.seed_outline_visibility_combo.currentData() or "unknown"
+        )
+        pose = str(self.seed_pose_combo.currentData() or "unknown")
+        shape_reviewed = self.seed_shape_reviewed_checkbox.isChecked()
+        if shape_reviewed and (
+            outline_visibility == "unknown" or pose == "unknown"
+        ):
+            missing = []
+            if outline_visibility == "unknown":
+                missing.append("Outline")
+            if pose == "unknown":
+                missing.append("Pose")
+            shape_reviewed = False
+            with QSignalBlocker(self.seed_shape_reviewed_checkbox):
+                self.seed_shape_reviewed_checkbox.setChecked(False)
+            self.seed_shape_status_label.setText(
+                "Not included: choose " + " and ".join(missing) + " first."
+            )
+            self.seed_shape_status_label.setStyleSheet(
+                "color: #b42318; font-weight: 600;"
+            )
+            self.statusBar().showMessage(
+                f"Seed {seed_id} was not marked for shape modelling: choose "
+                + " and ".join(missing)
+                + " first."
+            )
+        annotation = replace(
+            previous,
+            coat_pattern=(None if coat_pattern is None else str(coat_pattern)),
+            conditions=selected_conditions,
+            conditions_reviewed=reviewed,
+            shape_reviewed=shape_reviewed,
+            outline_visibility=outline_visibility,
+            full_length_visible=self.seed_full_length_checkbox.isChecked(),
+            pose=pose,
+            hilum_point=hilum_point,
+            hilum_direction=hilum_direction,
+            shape_exclusion_reason=(
+                self.seed_shape_exclusion_edit.text().strip() or None
+            ),
+        )
+        traits = self._draft_seed_annotations.setdefault(key, {})
+        if (
+            annotation.coat_pattern is None
+            and not annotation.conditions_reviewed
+            and not annotation.shape_reviewed
+            and annotation.outline_visibility == "unknown"
+            and not annotation.full_length_visible
+            and annotation.pose == "unknown"
+            and annotation.hilum_point is None
+            and annotation.hilum_direction is None
+            and annotation.physical_seed_id is None
+            and annotation.shape_exclusion_reason is None
+        ):
+            traits.pop(seed_id, None)
+        else:
+            traits[seed_id] = annotation
+        self._draft_seed_annotation_species[key] = (
+            self._current_seed_trait_species_id()
+        )
+        self._reconcile_instance_draft(key)
+        self._sync_seed_trait_controls()
+        self._sync_background_controls()
+        self._refresh_reference_association_panel()
+        self.statusBar().showMessage(
+            f"Seed {seed_id} semantic labels edited; Apply + save when complete."
+        )
 
     @Slot(bool)
     def _show_selected_instance_toggled(self, enabled: bool) -> None:
         self.image_view.set_show_selected_instance_only(enabled)
+
+    def _select_existing_instance(self, index: int) -> None:
+        seed_id = self.existing_instance_combo.itemData(index)
+        if seed_id is not None:
+            self.instance_id_spin.setValue(int(seed_id))
+            self.image_view.focus_instance(int(seed_id))
+
+    def _set_hilum_picking(self, enabled: bool) -> None:
+        self.image_view.set_hilum_editing(enabled)
+
+    def _hilum_landmark_edited(self, point, direction) -> None:
+        widgets = (self.seed_hilum_checkbox, self.seed_hilum_x_spin,
+                   self.seed_hilum_y_spin, self.seed_hilum_direction_checkbox,
+                   self.seed_hilum_direction_angle_spin)
+        blockers = [QSignalBlocker(widget) for widget in widgets]
+        self.seed_hilum_checkbox.setChecked(True)
+        self.seed_hilum_x_spin.setValue(point[0])
+        self.seed_hilum_y_spin.setValue(point[1])
+        self.seed_hilum_direction_checkbox.setChecked(direction is not None)
+        if direction is not None:
+            self.seed_hilum_direction_angle_spin.setValue(float(np.degrees(np.arctan2(direction[1], direction[0]))))
+        del blockers
+        self._seed_trait_controls_changed()
 
     def _update_instance_colour_swatch(self) -> None:
         if not hasattr(self, "instance_colour_swatch"):
@@ -7998,8 +9480,7 @@ class MainWindow(QMainWindow):
         annotations = self._draft_instance_annotations.get(
             key, self._applied_instance_annotations.get(key)
         )
-        identifiers = self._instance_ids(annotations)
-        identifier = (max(identifiers) + 1) if identifiers else 1
+        identifier = self._lowest_empty_instance_id(annotations)
         self.instance_id_spin.setValue(
             min(identifier, np.iinfo(np.uint16).max)
         )
@@ -8079,6 +9560,8 @@ class MainWindow(QMainWindow):
         applied = self._applied_instance_annotations.get(key)
         self._draft_instance_annotations.pop(key, None)
         self._draft_instance_annotation_origins.pop(key, None)
+        self._draft_seed_annotations.pop(key, None)
+        self._draft_seed_annotation_species.pop(key, None)
         self._instance_annotations_dirty.discard(key)
         self._instance_undo_histories.pop(key, None)
         self.image_view.set_instance_annotations(applied, copy=False)
@@ -8165,17 +9648,71 @@ class MainWindow(QMainWindow):
         width, height = image_size
         return np.zeros((height, width), dtype=np.uint16)
 
+    @staticmethod
+    def _shape_annotation_projection(
+        annotations: dict[int, SeedInstanceAnnotation],
+    ) -> tuple[tuple[object, ...], ...]:
+        return tuple(
+            (
+                seed_id,
+                item.shape_reviewed,
+                item.outline_visibility,
+                item.full_length_visible,
+                item.pose,
+                item.hilum_point,
+                item.hilum_direction,
+                item.physical_seed_id,
+                item.shape_exclusion_reason,
+            )
+            for seed_id, item in sorted(annotations.items())
+            if (
+                item.shape_reviewed
+                or item.outline_visibility != "unknown"
+                or item.full_length_visible
+                or item.pose != "unknown"
+                or item.hilum_point is not None
+                or item.hilum_direction is not None
+                or item.physical_seed_id is not None
+                or item.shape_exclusion_reason is not None
+            )
+        )
+
+    @staticmethod
+    def _semantic_annotation_projection(
+        annotations: dict[int, SeedInstanceAnnotation],
+    ) -> tuple[tuple[object, ...], ...]:
+        return tuple(
+            (
+                seed_id,
+                item.coat_pattern,
+                item.conditions,
+                item.conditions_reviewed,
+            )
+            for seed_id, item in sorted(annotations.items())
+            if item.coat_pattern is not None or item.conditions_reviewed
+        )
+
     @Slot()
     def _apply_instance_annotations(self) -> None:
         key = self._current_image_key()
         if key is None or key not in self._instance_annotations_dirty:
             return
+        previous_annotations = self._applied_instance_annotations.get(key)
+        previous_traits = dict(self._applied_seed_annotations.get(key, {}))
+        previous_trait_species = self._applied_seed_annotation_species.get(
+            key, ""
+        )
         self._instance_continuity_cache.pop(key, None)
         self._stop_instance_annotation_editing()
         annotations = self._draft_instance_annotations.get(key)
         if annotations is None or not np.any(annotations):
+            applied = None
+            applied_traits: dict[int, SeedInstanceAnnotation] = {}
+            trait_species = ""
             self._applied_instance_annotations.pop(key, None)
             self._applied_instance_annotation_origins.pop(key, None)
+            self._applied_seed_annotations.pop(key, None)
+            self._applied_seed_annotation_species.pop(key, None)
         else:
             applied = np.asarray(annotations, dtype=np.uint16)
             applied.flags.writeable = False
@@ -8183,8 +9720,40 @@ class MainWindow(QMainWindow):
             self._applied_instance_annotation_origins[key] = (
                 self._draft_instance_annotation_origins.get(key, "manual")
             )
+            extant_ids = set(self._instance_ids(applied))
+            applied_traits = {
+                seed_id: annotation
+                for seed_id, annotation in self._draft_seed_annotations.get(
+                    key, {}
+                ).items()
+                if seed_id in extant_ids
+            }
+            if applied_traits:
+                self._applied_seed_annotations[key] = applied_traits
+            else:
+                self._applied_seed_annotations.pop(key, None)
+            trait_species = (
+                self._draft_seed_annotation_species.get(key, "")
+                if applied_traits
+                else ""
+            )
+            if applied_traits and trait_species:
+                self._applied_seed_annotation_species[key] = trait_species
+            else:
+                self._applied_seed_annotation_species.pop(key, None)
+        mask_changed = not self._instance_annotation_rasters_equal(
+            previous_annotations, applied
+        )
+        shape_traits_changed = self._shape_annotation_projection(
+            previous_traits
+        ) != self._shape_annotation_projection(applied_traits)
+        semantic_traits_changed = self._semantic_annotation_projection(
+            previous_traits
+        ) != self._semantic_annotation_projection(applied_traits)
         self._draft_instance_annotations.pop(key, None)
         self._draft_instance_annotation_origins.pop(key, None)
+        self._draft_seed_annotations.pop(key, None)
+        self._draft_seed_annotation_species.pop(key, None)
         self._instance_undo_histories.pop(key, None)
         self.image_view.set_instance_annotations(
             self._applied_instance_annotations.get(key),
@@ -8196,13 +9765,30 @@ class MainWindow(QMainWindow):
             automatic=True
         )
         self._set_project_dirty()
-        affected = {
-            "project",
-            "instance_masks",
-            *self.pipeline.downstream_from_port(
-                "project", "annotations", recursive=True
-            ),
-        }
+        if mask_changed:
+            affected = {
+                "project",
+                "instance_masks",
+                *self.pipeline.downstream_from_port(
+                    "project", "annotations", recursive=True
+                ),
+            }
+        else:
+            affected = set()
+            if semantic_traits_changed or previous_trait_species != trait_species:
+                affected.update(
+                    {"reference_seed_traits"}
+                    | set(self.pipeline.downstream(
+                        "reference_seed_traits", recursive=True
+                    ))
+                )
+            if shape_traits_changed:
+                affected.update(
+                    {"seed_scale_estimation"}
+                    | set(self.pipeline.downstream(
+                        "seed_scale_estimation", recursive=True
+                    ))
+                )
         self.pipeline.invalidate(affected)
         count = len(self._instance_ids(self._applied_instance_annotations.get(key)))
         self.pipeline.set_status(
@@ -8210,34 +9796,41 @@ class MainWindow(QMainWindow):
             NodeStatus.COMPLETE,
             f"{count:,} applied seed ID(s)" if count else "No applied references",
         )
-        if self.pipeline.node("instance_masks").enabled:
+        if mask_changed and self.pipeline.node("instance_masks").enabled:
             self.pipeline.set_status(
                 "instance_masks",
                 NodeStatus.WARNING,
                 f"{count:,} annotated seed interiors; updating",
             )
-        if self.pipeline.is_active("procedural_instances"):
+        if mask_changed and self.pipeline.is_active("procedural_instances"):
             self.pipeline.set_status(
                 "procedural_instances",
                 NodeStatus.WARNING,
                 f"{count:,} authoritative painted marker(s); updating",
             )
-        if self.pipeline.node("unet_instances").enabled:
+        if mask_changed and self.pipeline.node("unet_instances").enabled:
             self.pipeline.set_status(
                 "unet_instances",
                 NodeStatus.WARNING,
                 f"{count:,} authoritative painted marker(s); updating decoder",
             )
-        self.pipeline.set_status(
-            "measurements", NodeStatus.BLOCKED, "Requires reviewed masks"
-        )
+        if semantic_traits_changed and self.pipeline.is_active("reference_seed_traits"):
+            self.pipeline.set_status(
+                "reference_seed_traits",
+                NodeStatus.WARNING,
+                "Semantic reference labels changed; updating",
+            )
+        if mask_changed:
+            self.pipeline.set_status(
+                "measurements", NodeStatus.BLOCKED, "Requires reviewed masks"
+            )
         self.pipeline_canvas.refresh(affected)
         self.pipeline_inspector.refresh_status()
         computational = affected - {"project"}
         self._cache_dirty_nodes.setdefault(key, set()).update(computational)
         if computational:
             self._analyses.pop(key, None)
-            self._analyze_current_image(dirty_nodes=affected)
+            self._analyze_current_image(dirty_nodes=computational)
         self._sync_background_controls()
         self._refresh_reference_association_panel()
         self.statusBar().showMessage(
@@ -8248,13 +9841,28 @@ class MainWindow(QMainWindow):
                 else " Automatic disk save failed; the applied state remains in memory."
             )
             + (
-                " Procedural instances are updating."
+                " Seed-trait probabilities are updating."
+                if semantic_traits_changed and not mask_changed
+                else " Procedural instances are updating."
                 if self.pipeline.is_active("procedural_instances")
                 else " Instance masks are updating."
                 if self.pipeline.node("instance_masks").enabled
                 else " Instance-derived boundary evidence is updating."
             )
         )
+
+    @staticmethod
+    def _instance_annotation_rasters_equal(
+        first: np.ndarray | None,
+        second: np.ndarray | None,
+    ) -> bool:
+        """Treat an absent raster and an all-zero raster as the same state."""
+
+        first_empty = first is None or not np.any(first)
+        second_empty = second is None or not np.any(second)
+        if first_empty or second_empty:
+            return first_empty and second_empty
+        return bool(np.array_equal(first, second))
 
     @Slot()
     def _export_learning_sample(self) -> None:
@@ -8508,6 +10116,171 @@ class MainWindow(QMainWindow):
             return
         method = QMessageBox.information if audit["valid"] else QMessageBox.warning
         method(self, "Learning dataset audit", format_learning_audit(audit))
+
+    @Slot()
+    def _open_species_library_manager(self) -> None:
+        from seedvision.ui.species_library_dialog import (
+            SpeciesLibraryManagerDialog,
+        )
+
+        if self._species_library_dialog is not None:
+            self._species_library_dialog.raise_()
+            self._species_library_dialog.activateWindow()
+            return
+        dialog = SpeciesLibraryManagerDialog(
+            service=self._species_library_service,
+            context=self._effective_biological_context(),
+            image_paths=tuple(self._image_paths.values()),
+            current_pin=self._project_species_library_pin,
+            capture_group_id=self._project_capture_group_id,
+            parent=self,
+        )
+        dialog.pin_selected.connect(self._pin_species_library)
+        dialog.build_requested.connect(self._start_species_library_build)
+        dialog.finished.connect(self._species_library_manager_closed)
+        self._species_library_dialog = dialog
+        dialog.show()
+
+    @Slot(int)
+    def _species_library_manager_closed(self, _result: int) -> None:
+        self._species_library_dialog = None
+
+    @Slot(object)
+    def _pin_species_library(self, pin) -> None:
+        if not isinstance(pin, SpeciesLibraryPin):
+            return
+        if pin.species_id != self._effective_biological_context().species_id:
+            QMessageBox.warning(
+                self,
+                "Species mismatch",
+                "The selected library does not match the project's species.",
+            )
+            return
+        if self._project_species_library_pin == pin:
+            return
+        self._project_species_library_pin = pin
+        affected = {
+            "species_reference_library",
+            *self.pipeline.downstream("species_reference_library", recursive=True),
+        }
+        self.pipeline.invalidate(affected)
+        for image_key in set(self._analysis_caches) | set(self._analyses):
+            self._cache_dirty_nodes.setdefault(image_key, set()).update(affected)
+            self._analyses.pop(image_key, None)
+        self._set_project_dirty()
+        self._refresh_project_node()
+        self.pipeline_canvas.refresh(affected)
+        self.statusBar().showMessage(
+            f"Pinned species library {pin.library_id} version {pin.version}."
+        )
+
+    @Slot(object, str, object, object, object, object)
+    def _start_species_library_build(
+        self,
+        paths,
+        version: str,
+        base_pin,
+        removed_source_sha256,
+        biological_context,
+        capture_group_id,
+    ) -> None:
+        if self._background_work_is_active():
+            if self._species_library_dialog is not None:
+                self._species_library_dialog.build_failed(
+                    "Wait for the current analysis, training, or fit to finish."
+                )
+            return
+        if not isinstance(biological_context, BiologicalContext):
+            if self._species_library_dialog is not None:
+                self._species_library_dialog.build_failed(
+                    "The biological context is invalid."
+                )
+            return
+        self._project_biological_context = biological_context
+        self._project_capture_group_id = capture_group_id
+        self._set_project_dirty()
+        self._refresh_project_node()
+        source_contexts = {
+            _path_identity(spec.path): (
+                spec.biological_context or biological_context,
+                (
+                    spec.capture_group_id
+                    if spec.capture_group_id is not None
+                    else capture_group_id
+                ),
+            )
+            for spec in self._project_image_specs()
+        }
+        task = _SpeciesLibraryBuildTask(
+            service=self._species_library_service,
+            reference_store=self._reference_region_store,
+            paths=tuple(Path(value) for value in paths),
+            version=str(version),
+            biological_context=biological_context,
+            capture_group_id=capture_group_id,
+            source_contexts=source_contexts,
+            calibration_settings=self._calibration_settings(),
+            trait_vocabulary_path=self._root / "config" / "traits.json",
+            species_display_name=self.species_combo.currentText().strip(),
+            base_pin=base_pin,
+            removed_source_sha256=tuple(removed_source_sha256),
+        )
+        progress = QProgressDialog(
+            "Preparing species reference library…",
+            "Cancel",
+            0,
+            len(task.paths) + 2,
+            self,
+        )
+        progress.setWindowTitle("Building species reference library")
+        progress.setWindowModality(Qt.WindowModality.NonModal)
+        progress.setAutoClose(False)
+        progress.canceled.connect(task.cancel)
+        task.signals.progress.connect(self._species_library_build_progressed)
+        task.signals.completed.connect(self._species_library_build_completed)
+        task.signals.failed.connect(self._species_library_build_failed)
+        self._species_library_build_task = task
+        self._species_library_build_progress = progress
+        progress.show()
+        self._update_analysis_availability()
+        self._thread_pool.start(task)
+
+    @Slot(int, int, str)
+    def _species_library_build_progressed(
+        self, current: int, maximum: int, message: str
+    ) -> None:
+        progress = self._species_library_build_progress
+        if progress is None:
+            return
+        progress.setMaximum(maximum)
+        progress.setValue(current)
+        progress.setLabelText(message)
+
+    @Slot(object)
+    def _species_library_build_completed(self, pin) -> None:
+        progress = self._species_library_build_progress
+        if progress is not None:
+            progress.close()
+        self._species_library_build_progress = None
+        self._species_library_build_task = None
+        if self._species_library_dialog is not None:
+            self._species_library_dialog.published(pin)
+        else:
+            self._pin_species_library(pin)
+        self._update_analysis_availability()
+
+    @Slot(str)
+    def _species_library_build_failed(self, message: str) -> None:
+        progress = self._species_library_build_progress
+        if progress is not None:
+            progress.close()
+        self._species_library_build_progress = None
+        self._species_library_build_task = None
+        if self._species_library_dialog is not None:
+            self._species_library_dialog.build_failed(message)
+        else:
+            QMessageBox.critical(self, "Species-library build failed", message)
+        self._update_analysis_availability()
 
     @Slot()
     def _start_learning_training(self) -> None:
@@ -8773,6 +10546,7 @@ class MainWindow(QMainWindow):
             or self._learning_training_task is not None
             or self._procedural_fit_task is not None
             or self._reference_edge_fit_task is not None
+            or self._species_library_build_task is not None
         )
         can_edit = bool(
             key is not None
@@ -8815,7 +10589,7 @@ class MainWindow(QMainWindow):
         )
 
     def _start_reference_edge_fit(self) -> None:
-        """Fit exposed edge-classifier controls without mutating the graph."""
+        """Fit exposed edge controls and apply the best confirmed improvement."""
 
         key = self._current_image_key()
         result = None if key is None else self._analyses.get(key)
@@ -8856,12 +10630,13 @@ class MainWindow(QMainWindow):
             return
         answer = QMessageBox.question(
             self,
-            "Fit instance-derived edge probabilities?",
+            "Fit and apply instance-derived edge parameters?",
             "This is an in-sample fit to physical contours and internal edge candidates "
             "derived from the currently applied seed instances. It is useful for project "
-            "adaptation but is not independent validation.\n\nThe search does not alter "
-            "settings until you approve its proposal. Accepted values apply to every "
-            "image in this project; Save Project records them in the master file.",
+            "adaptation but is not independent validation.\n\nIf the search finds a "
+            "genuine improvement, its best values will be applied immediately to the "
+            "Reference edges node and recomputed for this project. Save Project records "
+            "them in the master file.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -8927,7 +10702,7 @@ class MainWindow(QMainWindow):
         progress.setValue(current)
         progress.setLabelText(
             f"Evaluating edge-probability setting {current}/{maximum} — "
-            f"balanced loss {loss:.4f}"
+            f"best balanced loss {loss:.4f}"
         )
 
     @Slot(object)
@@ -8937,6 +10712,16 @@ class MainWindow(QMainWindow):
         if task is None:
             return
         current_annotations = self._applied_instance_annotations.get(task.image_key)
+        image_obsolete = (
+            task.cancellation_requested
+            or self._current_image_key() != task.image_key
+        )
+        if image_obsolete:
+            self.statusBar().showMessage(
+                "Discarded edge-fitting results for the previous image."
+            )
+            self._start_pending_analysis()
+            return
         if (
             task.pipeline_revision != self.pipeline.revision
             or current_annotations is not task.annotation_source
@@ -8971,46 +10756,109 @@ class MainWindow(QMainWindow):
             key: getattr(report.proposed_settings, key)
             for key in node.parameters
             if hasattr(report.proposed_settings, key)
-            and getattr(report.proposed_settings, key) != node.parameters[key]
+            and hasattr(report.initial_settings, key)
+            and getattr(report.proposed_settings, key)
+            != getattr(report.initial_settings, key)
         }
-        labels = {spec.key: spec.label for spec in node.parameter_specs}
-        changed_lines = "\n".join(
-            f"• {labels.get(key, key)}: {node.parameters[key]:.4g} → {value:.4g}"
-            for key, value in changes.items()
-        )
-        answer = QMessageBox.question(
-            self,
-            "Apply fitted edge parameters?",
-            summary
-            + "\n\nProposed project-local changes:\n"
-            + (changed_lines or "No parameter values changed.")
-            + "\n\nApply and recompute edge probabilities?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if answer != QMessageBox.StandardButton.Yes or not changes:
+        if not changes:
+            LOGGER.error(
+                "Reference-edge fit improved loss but proposed no live node changes; "
+                "initial_loss=%.8f proposed_loss=%.8f",
+                initial.loss,
+                proposed.loss,
+            )
+            QMessageBox.warning(
+                self,
+                "Improved edge fit could not be applied",
+                summary
+                + "\n\nThe optimizer reported an improvement but did not return any "
+                "different exposed Reference edges settings. Nothing was changed."
+                + diagnostic_log_note(),
+            )
             self._start_pending_analysis()
             return
+        labels = {spec.key: spec.label for spec in node.parameter_specs}
+        previous_values = {key: node.parameters[key] for key in changes}
+        changed_lines = "\n".join(
+            f"• {labels.get(key, key)}: {previous_values[key]:.4g} → {value:.4g}"
+            for key, value in changes.items()
+        )
         affected = set(
             self.pipeline.set_parameters("reference_edge_probability", changes)
         )
+        # Edge-strip geometry and classifier controls are exposed on Reference
+        # edges, but the combined material/edge prototype cache currently owns
+        # the raw class-map calculation. Mark that true producer and all of its
+        # consumers dirty as well; otherwise a fit can update the controls while
+        # leaving the displayed prototype maps resident until an unrelated edit.
+        prototype_affected = {
+            "reference_texture_prototypes",
+            *self.pipeline.downstream(
+                "reference_texture_prototypes", recursive=True
+            ),
+        }
+        self.pipeline.invalidate(prototype_affected)
+        affected.update(prototype_affected)
+        unapplied = {
+            key: (value, node.parameters.get(key))
+            for key, value in changes.items()
+            if node.parameters.get(key) != value
+        }
+        if unapplied:
+            raise RuntimeError(
+                "Reference-edge fit did not persist validated node settings: "
+                + ", ".join(
+                    f"{key}={actual!r} (expected {expected!r})"
+                    for key, (expected, actual) in unapplied.items()
+                )
+            )
         self._set_project_dirty()
         for image_key in set(self._analysis_caches) | set(self._analyses):
             self._cache_dirty_nodes.setdefault(image_key, set()).update(affected)
             self._analyses.pop(image_key, None)
         self.pipeline_canvas.refresh(affected or {"reference_edge_probability"})
+        self.pipeline_canvas.select_node("reference_edge_probability")
         self.pipeline_inspector.set_node(node)
         current_key = self._current_image_key()
         if current_key is not None and current_key in self._analysis_caches:
             self._analyze_current_image(dirty_nodes=affected)
+        else:
+            self._start_pending_analysis()
+        LOGGER.info(
+            "Applied annotation-guided Reference edges fit; image_key=%s; "
+            "loss=%.8f->%.8f; changes=%s",
+            task.image_key,
+            initial.loss,
+            proposed.loss,
+            changes,
+        )
         self.statusBar().showMessage(
-            "Applied project-local annotation-fitted edge parameters; recomputing."
+            "Applied project-local annotation-fitted edge parameters: "
+            + "; ".join(
+                f"{labels.get(key, key)} {previous_values[key]:.4g}→{value:.4g}"
+                for key, value in changes.items()
+            )
+            + ". Recomputing."
         )
 
     @Slot(str)
     def _reference_edge_fit_failed(self, error: str) -> None:
+        task = self._reference_edge_fit_task
+        obsolete = bool(
+            task is not None
+            and (
+                task.cancellation_requested
+                or self._current_image_key() != task.image_key
+            )
+        )
         self._finish_reference_edge_fit_ui()
         self._start_pending_analysis()
+        if obsolete:
+            LOGGER.info(
+                "Ignored edge-fit failure while cancelling previous image: %s",
+                error,
+            )
+            return
         QMessageBox.critical(
             self,
             "Edge-probability fit failed",
@@ -9149,6 +10997,11 @@ class MainWindow(QMainWindow):
             f"{overreach_distance_scale_fraction:.2f} seed diameters costs "
             f"{false_positive_weight:.2f}× a missing pixel, immediately adjacent "
             "pixels cost very little, and farther pixels cost exponentially more.",
+            "Matching is global, with a minimum overlap threshold. Entirely missed "
+            f"seeds cost {self._procedural_settings().reference_error_missed_seed_weight:.2g} "
+            "per pixel; incorrect concavity-pocket pixels incur an additional "
+            f"{self._procedural_settings().reference_error_concavity_weight:.2g}. "
+            "Pixel loss is divided by reviewed area, not by the prediction's size.",
             "Accepting the proposal changes the procedural node for every image in "
             "this project only. Save Project to record the fitted values in the master "
             "analysis file.",
@@ -9296,6 +11149,10 @@ class MainWindow(QMainWindow):
             f"{proposed.distance_weighted_false_positive_pixels:,.1f} "
             f"(scale {proposed.overreach_distance_scale_px:.1f}px), "
             f"FN {proposed.false_negative_pixels:,}; "
+            f"missed seeds {proposed.false_negative_instances:,} "
+            f"({proposed.missed_reference_pixels:,} pixels); "
+            f"incorrect concavity {proposed.incorrect_concavity_pixels:,} pixels "
+            f"(+{proposed.incorrect_concavity_cost:,.1f} cost); "
             f"{report.evaluations} evaluations."
         )
         if not report.improved:
@@ -9368,8 +11225,22 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _procedural_fit_failed(self, error: str) -> None:
+        task = self._procedural_fit_task
+        obsolete = bool(
+            task is not None
+            and (
+                task.cancellation_requested
+                or self._current_image_key() != task.image_key
+            )
+        )
         self._finish_procedural_fit_ui()
         self._start_pending_analysis()
+        if obsolete:
+            LOGGER.info(
+                "Ignored procedural-fit failure while cancelling previous image: %s",
+                error,
+            )
+            return
         QMessageBox.critical(
             self,
             "Procedural parameter fit failed",
@@ -9766,11 +11637,30 @@ class MainWindow(QMainWindow):
                 "selected median starting colour and remains undimmed by overlay opacity."
             ),
             "seed_scale_estimation": (
-                "Cyan: isolated-reference search region. Yellow circles/text: local "
-                "shadow-resistant isolated-seed fits. Annotated maximum-Feret widths "
-                "are green when selected from the configured largest fraction, gray "
-                "when smaller, and dashed red when cutoff/disconnected. The histogram "
-                "and green line show the reviewed-width distribution and final master diameter."
+                "Yellow centreline: initial isolated-reference fit (not an uncertainty border). "
+                "Cyan endpoint-to-endpoint chord: measured maximum span of a reference annotation. "
+                "Green ellipse: robust body used for ovality (body length / width). "
+                "± labels are 1σ-equivalent boundary/scale sensitivity, not guaranteed confidence intervals. "
+                "All complete or explicitly full-length-visible seeds enter the mean and SD; "
+                "partial outlines never enter ovality, concavity or curvature fitting."
+            ),
+            "seed_shape_uncertainty": (
+                "Measurement sensitivity of reviewed annotations, not predicted seeds. Green is the "
+                "fitted body; inner/outer yellow dashes show ±2× sensitivity in length and width. "
+                "Cyan marks the true maximum-span endpoints. Error includes opening/closing, "
+                "inward/outward outline perturbation and shared ruler uncertainty."
+            ),
+            "seed_boundary_curvature_distribution": (
+                "Each complete reviewed seed contributes the same number of smoothed, equal "
+                "arc-length perimeter samples. Positive turning is convex; negative turning is "
+                "concave. Curvature × maximum span is rotation/scale invariant and supplies a "
+                "soft prior to Oriented edge traces and Seed-boundary confirmation. Partial "
+                "outlines are excluded. Mean internal concavity is reported for future penalties."
+            ),
+            "seed_size_ovality_distribution": (
+                "Labelled maximum-span versus ovality plot for complete reviewed outlines, coloured "
+                "by pose. Bars show ±1σ-equivalent measurement sensitivity; partial full-length "
+                "seeds contribute to the separate size histogram but not ovality."
             ),
             "foreground_mask": (
                 "Raw Foreground colour evidence: black = low and white = high. It is "
@@ -9786,7 +11676,6 @@ class MainWindow(QMainWindow):
                 "lines show 25/50/75/90% membership and the neutral swatch reports "
                 "achromatic membership without repeating undefined hue."
             ),
-            "foreground_binary_mask": "Authoritative binary Seed-material proposal from resolved Seed mass after ambiguity/unknown handling and seed-scaled morphology.",
             "distance_transform": "Brightness is distance from the nearest foreground boundary; local maxima can become seed centres.",
             "distance_candidates": "Yellow circles are the centres/radii proposed by distance-transform peaks before fusion.",
             "circle_candidates": "Yellow circles are CUDA multiradius proposals supported by edge, sensor/noise, flattened-grayscale, shadow, and highlight boundaries.",
@@ -9814,25 +11703,36 @@ class MainWindow(QMainWindow):
                 "training evidence, not forced output values. This colour-only diagnostic "
                 "is distinct from the multifeature Reference Other-material probability."
             ),
+            "foreground_colour_excess": (
+                "Display-only signed raw colour-evidence margin. Blue is "
+                "max(Foreground - max(Background, Other), 0); red is "
+                "max(max(Background, Other) - Foreground, 0). A tie is black, "
+                "and a pixel can never be both red and blue. Background and Other "
+                "are combined by their stronger response rather than added because "
+                "these independent evidence maps may legitimately overlap. This view "
+                "does not alter any probability, cache, or downstream decision."
+            ),
             "refined_background_likelihood": (
-                "Noise-frequency likelihood: dark = background-like local "
-                "texture; light = non-background-like texture. Fine, medium, "
-                "and coarse profiles learn Background directly from the retained "
-                "outside-dish annulus (or painted Background) and non-Background "
-                "from reviewed Foreground evidence when available. Texture authority "
-                "rises only with measured class separation; a weak texture fit cannot "
-                "overrule the clearer colour model. The annulus uses the same blended "
-                "score and colour scale as the dish crop."
+                "Background texture compatibility: black = weak/no matching "
+                "Background texture evidence; white = strong evidence. Fine, medium, "
+                "and coarse residual RMS plus principal/cross-axis structure-tensor "
+                "variation learn Background directly from the retained outside-dish "
+                "annulus or painted Background. No Foreground or Other distribution "
+                "enters this target-only score; all semantic contrast is deferred to "
+                "Material evidence decision. This raw diagnostic is texture-only. The "
+                "annulus uses the same texture score and colour scale as the dish crop."
             ),
             "other_noise_probability": (
-                "Other-texture probability learned from painted Other versus non-Other "
-                "references: black = non-Other-like local frequency; white = Other-like "
-                "evidence. Its texture contribution rises up to 72% only when measured "
-                "three-band class separation supports that authority; otherwise the "
-                "Other-colour model dominates. Directional continuation then uses "
-                "the noise node's configured ray integration. This class-specific "
-                "diagnostic is distinct from the "
-                "multifeature Reference Other-material probability."
+                "Other-texture evidence learned from painted Other: black = weak/no "
+                "Other texture evidence; white = strong evidence. Fine, medium, and "
+                "coarse residual RMS plus orientation-aware principal/cross-axis "
+                "variation form the descriptor. The score is calibrated only from Other "
+                "examples: neither Foreground nor Background can alter or suppress it. "
+                "All semantic contrast is deferred to Material evidence decision. "
+                "Directional continuation "
+                "uses the configured ray integration. This texture-only diagnostic is "
+                "distinct from both Other colour and the multifeature Reference "
+                "Other-material probability."
             ),
             "background_colour_gamut": (
                 "Full-size exact HSV hue/saturation slice of the fitted background "
@@ -9843,10 +11743,20 @@ class MainWindow(QMainWindow):
             "foreground_noise_likelihood": (
                 "Foreground texture probability: black = non-foreground-like local "
                 "frequency; white = foreground-like texture. Fine, medium, and coarse "
-                "profiles are learned from reviewed Foreground and optional safely "
-                "inset annotated-seed interiors when available. Weakly separated texture is "
-                "automatically suppressed relative to the colour evidence; painted "
-                "reference pixels are never forced to one."
+                "orientation-aware profiles are learned from reviewed Foreground and "
+                "optional safely inset annotated-seed interiors. No Background or Other "
+                "distribution enters this target-only score; semantic contrast occurs "
+                "only in Material evidence decision. This raw diagnostic is texture-only; "
+                "painted reference pixels are never forced to one."
+            ),
+            "foreground_noise_excess": (
+                "Display-only signed raw texture-evidence margin. Blue is "
+                "max(Foreground - max(Background, Other), 0); red is "
+                "max(max(Background, Other) - Foreground, 0). A tie is black, "
+                "and a pixel can never be both red and blue. Background and Other "
+                "are combined by their stronger response rather than added because "
+                "the three target-only texture compatibilities are independent. "
+                "This view does not alter any probability, cache, or downstream decision."
             ),
             "material_seed_support": "Calibrated Seed support from colour, directional texture, valid multiclass prototypes, and reviewed Foreground membership. Automatic authority and reviewed target/non-target discrimination scale contribution; raw source rasters stay unchanged.",
             "material_background_support": "Calibrated Background support. Reviewed Foreground matches discount generic Background support; source reliability rejects broad cross-matches, and Other never subtracts from it.",
@@ -9959,49 +11869,87 @@ class MainWindow(QMainWindow):
                 "hysteresis. Brightness is retained continuous edge strength."
             ),
             "physical_edge_probability": (
-                "Yellow brightness is the probability that a transition is a true "
-                "physical seed boundary, learned from annotated seed instances."
+                "Yellow brightness is raw compatibility with the Physical edge-strip "
+                "prototype bank learned from annotated seed instances. The descriptor "
+                "has spatial context and can form wide halos, so this diagnostic is not "
+                "a boundary probability and is not consumed directly downstream."
             ),
             "non_edge_probability": (
-                "Blue brightness is the probability that a transition is an apparent "
-                "coat-pattern or lighting boundary rather than a physical edge."
+                "Blue brightness is raw compatibility with the Non-physical edge-strip "
+                "prototype bank. It diagnoses coat-pattern or lighting-edge matches but "
+                "does not itself establish a true image edge or downstream barrier."
             ),
             "reference_edge_comparison": (
-                "Physical-edge evidence is blue and non-physical edge evidence is "
-                "red. Both channels are inferred from annotated seed instances; "
-                "Magenta marks overlap where both interpretations receive support."
+                "Raw Physical prototype compatibility is blue and raw Non-physical "
+                "prototype compatibility is red. Magenta marks descriptor overlap. "
+                "Neither channel contains authoritative true-edge support."
+            ),
+            "reference_edge_excess": (
+                "Display-only raw prototype margin. Blue is max(Physical compatibility - "
+                "Non-physical compatibility, 0), while red is the reverse. "
+                "Ties are black, so pixels are never purple. This comparison is "
+                "unscaled by the Non-physical subtraction weight and does not alter "
+                "the supported, normalized, thinned, fill-tool, or downstream evidence."
+            ),
+            "physical_edge_interior_direction": (
+                "Hue is the suggestive inward-pointing normal inferred from which "
+                "orientation of the physical-edge strip descriptor matches better: "
+                "red points right, yellow-green down, cyan left, and violet up. "
+                "Brightness is Physical prototype compatibility multiplied by the normalized "
+                "forward-versus-reverse score separation. Black therefore means no "
+                "physical-edge support or ambiguous interior/exterior polarity, as at "
+                "many symmetric shadow gaps and crowded contacts. This orthogonal output "
+                "does not alter prototype compatibility or supported edge evidence."
             ),
             "net_physical_edge_probability": (
-                "Authoritative cached positive physical-edge evidence margin: max(physical - "
+                "Raw positive prototype-compatibility margin: max(Physical compatibility - "
                 f"{float(self.pipeline.node('reference_edge_probability').parameters['net_physical_edge_internal_scale']):g} "
-                "× non-physical edge, 0). Ties and negative results are clamped to a "
-                "black floor. This exact cached raster is also used by assisted fill tools "
-                "and as the source of the thinned net ridge; it is not a calibrated posterior "
-                "and does not modify either source raster. Adjust Non-physical subtraction "
-                "weight at the top of the Reference edges settings."
+                "× Non-physical compatibility, 0). Ties and negative results are clamped "
+                "to a black floor. This spatially broad diagnostic is not a calibrated "
+                "posterior and is never used directly as a fill or procedural barrier."
+            ),
+            "reference_edge_probability": (
+                "Authoritative reference-edge probability: thinned true-image-edge "
+                "support × Physical prototype probability, including its known-versus-unknown "
+                "confidence. There is no second Non-physical subtraction or conditional "
+                "ratio normalization. It is independent of the conservative weight and exactly zero away "
+                "from the true-edge ridge, making wide descriptor and resize halos harmless. "
+                "Assisted fill and downstream boundary operations use this supported field "
+                "or its normalized/thinned derivatives."
             ),
             "locally_normalized_net_physical_edge": (
-                "The physical-minus-scaled-internal semantic margin after separating "
-                "shared absolute support, equalizing that support against a robust "
-                "seed-scale local envelope, limiting gain, and applying an absolute "
-                "smooth floor. Green-blue brightness is the normalized continuous "
-                "barrier evidence; the raw class and net overlays remain unchanged."
+                "The authoritative Reference-edge probability after one-sided, seed-scale "
+                "normalization of its thinned true-edge support, multiplied by Physical "
+                "prototype probability. It does not use the conservative subtraction weight. "
+                "An exact full-resolution ridge mask plus "
+                "absolute gate prevents quiet pixels or interpolation halos from appearing. "
+                "Blue brightness matches the unnormalized Reference-edge overlay."
             ),
             "reference_edge_ridges": (
-                "Reference-trained physical-edge probability after normal-direction "
-                "non-maximum suppression and CUDA high/low hysteresis. Yellow "
-                "brightness preserves the retained continuous probability."
+                "The authoritative Reference-edge probability after its final high/low "
+                "hysteresis. It remains restricted to the original thinned true-edge "
+                "footprint and is shown in the same blue scale."
+            ),
+            "conservative_net_physical_edge_evidence": (
+                "Optional conservative evidence, not a calibrated probability: thinned "
+                "true-image-edge support × max(Physical prototype probability - "
+                f"{float(self.pipeline.node('reference_edge_probability').parameters['net_physical_edge_internal_scale']):g} "
+                "× Non-physical prototype probability, 0). Blue is stronger; black is zero. "
+                "This is more selective physical-edge evidence and may remove uncertain "
+                "boundary sections. Available explicitly in Smart fill and Shape fill. "
+                "The authoritative Reference-edge probability does not use this subtraction."
             ),
             "net_reference_edge_ridges": (
-                "Net physical-edge evidence after scaled internal-edge subtraction, "
-                "normal-direction non-maximum suppression, and high/low hysteresis. "
-                "This is the thinned form of the blue net-probability overlay."
+                "The optional Conservative net physical-edge evidence after high/low "
+                "hysteresis, restricted to the exact true-edge footprint. Blue is stronger; "
+                "black is zero. This is the conservative net_reference_ridges trace source, "
+                "not the authoritative reference_ridges source."
             ),
             "normalized_net_reference_edge_ridges": (
-                "The locally normalized net-physical field after normal-direction "
-                "non-maximum suppression and high/low hysteresis. Connected weak "
-                "arcs can continue a strong boundary, while the upstream absolute "
-                "floor prevents locally quiet noise from being promoted."
+                "The normalized Reference-edge probability after high/low hysteresis. "
+                "Connected weak arcs can continue a strong boundary, while the exact "
+                "true-edge footprint and absolute floor prevent quiet noise or descriptor "
+                "halos from being promoted."
             ),
             "edge_traces": (
                 "Unique colours identify tangent-compatible connected traces. Ridge source: "
@@ -10044,11 +11992,12 @@ class MainWindow(QMainWindow):
             ),
             "procedural_seed_mask": "Thresholded seed material after dish-margin removal and seed-sized enclosed coat-hole filling.",
             "procedural_boundary_cost": "Normalized physical boundary cost fused from edges, sensor/noise, ridges and local shadow.",
-            "procedural_centres": "Marker likelihood from smoothed material, physical-boundary depth and annular boundary support; dots are retained markers.",
+            "procedural_centres": "Marker likelihood from smoothed material, physical-boundary depth, blurred flattened grayscale, and positive support from proposal-independent fit-validated oval centres; dots are retained markers. Raw centre votes are a separate pre-validation diagnostic in Seed-boundary confirmation.",
             "procedural_instances": "Marker-controlled watershed instance identities. Dot colour runs red to green with per-instance confidence. Click a coloured seed to outline it and show its area, maximum width, concavity, protrusion, solidity, axis ratio and score in the Procedural node panel.",
             "procedural_confidence": "Per-instance marker, boundary and calibrated-area confidence mapped back onto every assigned pixel.",
             "procedural_concavity": "Convex-hull deficit for each retained instance, scaled to the configured hard concavity cutoff; brighter regions are more internally concave.",
             "procedural_alternative_candidates": "Unselected candidate masks from the multi-hypothesis search. Red is low score, green is high score, and brighter outlines have higher relative support.",
+            "procedural_reference_error": "Global one-to-one reference comparison, using the same pixel costs as fitting. Blue: matched underreach; red: distance-weighted overreach; amber: wholly missed reference; magenta: incorrect pixels in exterior-connected candidate concavity pockets (underreach plus surcharge). Alpha is total pixel cost / 4, saturating at cost 4, before the toolbar opacity. Multiple costs at one pixel add; colour identifies the strongest term, with magenta marking concavity. Exact agreement is transparent. Partial review ignores disjoint or only incidentally touching unreviewed predictions. Reference masks never enter centre discovery, watershed, candidate selection, or confidence.",
             "unet_interior": "Learned probability that each pixel belongs to visible seed material.",
             "unet_physical_boundary": "Learned probability of a true physical seed/background or seed/seed boundary.",
             "unet_pattern_boundary": "Learned probability of an apparent but non-physical internal coat-pattern boundary.",
@@ -10061,8 +12010,8 @@ class MainWindow(QMainWindow):
             "stardist_radial_uncertainty": "Learned uncertainty of the StarDist radial boundary regression.",
             "stardist_instances": "Star-convex seed polygons retained after score ordering and overlap-aware non-maximum suppression.",
             "stardist_confidence": "Per-polygon StarDist score mapped onto decoded pixels; it is not a validation guarantee.",
-            "boundary_confidence": "Hue is the continuous directed boundary normal (0° = 360°); brightness is boundary confidence.",
-            "boundary_magnitude": "Boundary confidence without direction encoding.",
+            "boundary_confidence": "Dormant legacy diagnostic, disabled and shelved by default: bypassed output is black. If explicitly restored and enabled, hue is the directed boundary normal (0° = 360°) and brightness is confidence.",
+            "boundary_magnitude": "Dormant legacy diagnostic, disabled and shelved by default: bypassed output is black. If explicitly restored and enabled, brightness is the material-morphology/lightness boundary confidence.",
             "touching_split_likelihood": "High values mark shallow foreground necks and concave distance-transform saddles that may separate touching seeds.",
             "ellipse_likelihood": "Hue is axial ellipse orientation (0° = 180°); brightness is seed-radius boundary and structure-tensor support.",
             "proposal_disagreement": "Variation among CUDA ring, distance-peak, interior, and ellipse evidence; bright regions merit review.",
@@ -10071,6 +12020,8 @@ class MainWindow(QMainWindow):
             "contact_graph": "Shared-boundary likelihood plus vector links between proposals close enough to touch or overlap.",
             "illumination_field": "Estimated broad illumination component; shown as grayscale intensity.",
             "flattened_grayscale": "Grayscale after a local illumination log-ratio flattens broad lighting variation; middle gray means locally expected brightness.",
+            "despeckled_flattened_grayscale": "Flattened grayscale after compact dark residuals surrounded by lighter peripheral samples have been replaced by a spatially varying blend of those peripheral values.",
+            "removed_dark_speckles": "White marks pixels accepted as compact dark speckles and replaced in the despeckled flattened-grayscale output; black pixels were preserved.",
             "shadow_likelihood": "Nonlinear likelihood that a pixel is unusually dark relative to local lighting and local absolute deviation.",
             "highlight_likelihood": "Nonlinear likelihood that a pixel is unusually bright relative to local lighting and local absolute deviation.",
             "reflectance_image": "Approximate illumination-normalized luminance used by coat analyses.",
@@ -10091,7 +12042,26 @@ class MainWindow(QMainWindow):
             "calibration_residual_risk": "Reference confidence plus spatial extrapolation risk away from the detected card and ruler.",
             "none": "No analysis layer is shown.",
         }
-        if mode.startswith("colour_probability:"):
+        if mode.startswith("seed_coat_"):
+            name = mode[len("seed_coat_") : -len("_probability")]
+            text = (
+                f"Conditional {trait_display_name(name)} coat-pattern probability "
+                "from safely inset, semantically labelled reference-seed material. "
+                "Available coat classes are mutually exclusive and sum to 1 on the "
+                "resolved seed-material mask when at least two classes have training "
+                "support; black outside that mask or when calibration is unavailable. "
+                "Painted labels are training evidence and are never hard-written."
+            )
+        elif mode.startswith("seed_condition_"):
+            name = mode[len("seed_condition_") : -len("_probability")]
+            text = (
+                f"Independent {trait_display_name(name)} condition probability from "
+                "reviewed-present versus reviewed-absent reference seeds. Condition "
+                "maps need not sum to one and may overlap. Both comparison banks are "
+                "required; unreviewed seeds are not treated as negatives, and authored "
+                "pixels are never overwritten."
+            )
+        elif mode.startswith("colour_probability:"):
             index = int(mode.partition(":")[2])
             name = self.image_view._analysis_result.advanced.colour_class_names[index]
             text = f"Per-pixel broad {name} probability after colour balance; this is a transparent prototype model, not a trained classifier."
@@ -10101,6 +12071,23 @@ class MainWindow(QMainWindow):
             text = f"Per-pixel broad {name} pattern probability from seed-relative spatial-frequency evidence."
         else:
             text = legends.get(mode, "")
+        if mode == "procedural_reference_error":
+            procedural = getattr(
+                self.image_view._analysis_result,
+                "procedural_instances",
+                None,
+            )
+            if procedural is not None:
+                text += (
+                    f" Current result: {procedural.reference_error_matched_instances:,} "
+                    f"matched candidate(s), "
+                    f"{procedural.reference_error_underreach_pixels:,} underreach "
+                    f"pixel(s), and {procedural.reference_error_overreach_pixels:,} "
+                    "overreach pixel(s); "
+                    f"{procedural.reference_error_missed_instances:,} missed reference(s) "
+                    f"({procedural.reference_error_missed_pixels:,} pixels); "
+                    f"{procedural.reference_error_concavity_pixels:,} incorrect concavity pixels."
+                )
         inverse_probability_modes = {
             "background_likelihood",
             "refined_background_likelihood",
@@ -10124,6 +12111,8 @@ class MainWindow(QMainWindow):
             "physical_edge_probability",
             "non_edge_probability",
             "net_physical_edge_probability",
+            "reference_edge_probability",
+            "conservative_net_physical_edge_evidence",
             "locally_normalized_net_physical_edge",
             "procedural_centres",
             "procedural_confidence",
@@ -10276,15 +12265,19 @@ class MainWindow(QMainWindow):
             f"{int(self.pipeline.node('wavelet_decomposition').parameters['wavelet_level_count'])} exact-reconstruction detail band(s) plus residual",
         )
         sampling_band = result.perimeter_background_band
+        layout_node = self.pipeline.node("layout_detection")
         self.pipeline.set_status(
-            "perimeter_background_reference",
-            NodeStatus.COMPLETE if sampling_band.outside_vessel else NodeStatus.WARNING,
+            "layout_detection",
             (
-                f"{sampling_band.buffer_cm:.2f} cm buffer; "
-                f"{sampling_band.thickness_cm:.2f} cm band; "
-                f"{sampling_band.sample_count:,} pixels"
-                + ("" if sampling_band.outside_vessel else "; inside-rim fallback")
+                NodeStatus.COMPLETE
+                if result.dish.rim_pair_detected and sampling_band.outside_vessel
+                else NodeStatus.WARNING
             ),
+            layout_node.status_detail
+            + f"; background annulus {sampling_band.buffer_cm:.2f} cm buffer / "
+            + f"{sampling_band.thickness_cm:.2f} cm band / "
+            + f"{sampling_band.sample_count:,} pixels"
+            + ("" if sampling_band.outside_vessel else "; inside-rim fallback"),
         )
         foreground_fraction = result.foreground_pixel_count / max(
             1, result.analysis_region_pixel_count
@@ -10295,7 +12288,10 @@ class MainWindow(QMainWindow):
         foreground_colour_detail = (
             f"Foreground threshold {result.foreground_threshold:.1f}; "
             f"{result.foreground_pixel_count:,} pixels ({foreground_fraction:.1%}); "
-            f"{getattr(result, 'foreground_reference_count', 0):,} painted reference pixels"
+            f"{getattr(result, 'foreground_reference_count', 0):,} current reference pixels; "
+            f"source mode {foreground_colour_profile.reference_source_mode}; "
+            f"{foreground_colour_profile.library_source_count} library source(s) / "
+            f"{foreground_colour_profile.library_profile_count} profile(s)"
             if foreground_colour_profile is not None
             else "Foreground has no painted or enabled annotated-seed reference; "
             "probability is intentionally zero"
@@ -10423,8 +12419,8 @@ class MainWindow(QMainWindow):
             noise_details.append(
                 "Background: "
                 f"{len(result.layers.directional_background_angles_degrees)} directions integrated; "
-                f"three-band separation {profile.separation:.2f}; "
-                f"texture blend {72.0 * max(0.0, min(1.0, (profile.separation - 0.5) / 2.0)):.0f}%; "
+                f"{profile.target_sample_count:,} target samples; "
+                f"target-only half-distance {profile.compatibility_half_distance:.2f}; "
                 "direct exterior-annulus positives shown"
             )
         foreground_noise_profile = result.layers.foreground_noise_frequency_profile
@@ -10441,8 +12437,20 @@ class MainWindow(QMainWindow):
             )
         elif foreground_noise_profile is not None:
             noise_details.append(
-                "Foreground/non-foreground three-band separation "
-                f"{foreground_noise_profile.separation:.2f}"
+                "Foreground: "
+                f"{foreground_noise_profile.target_sample_count:,} target samples; "
+                "target-only half-distance "
+                f"{foreground_noise_profile.compatibility_half_distance:.2f}; "
+                f"source mode {foreground_noise_profile.reference_source_mode}; "
+                f"{foreground_noise_profile.library_source_count} library source(s) / "
+                f"{foreground_noise_profile.library_profile_count} profile(s)"
+            )
+        other_noise_profile = result.layers.other_noise_frequency_profile
+        if other_noise_profile is not None:
+            noise_details.append(
+                f"Other: {other_noise_profile.target_sample_count:,} target samples; "
+                "target-only half-distance "
+                f"{other_noise_profile.compatibility_half_distance:.2f}"
             )
         self.pipeline.set_status(
             "refined_background_likelihood",
@@ -10460,6 +12468,15 @@ class MainWindow(QMainWindow):
             NodeStatus.COMPLETE,
             str(self.pipeline.node("edge_gradients").parameters["edge_gradient_method"]).replace("_", " ").title()
             + " gradients; "
+            + (
+                "despeckled flattened-grayscale primary; "
+                if bool(
+                    self.pipeline.node("edge_gradients").parameters[
+                        "edge_gradient_use_despeckled_flattened"
+                    ]
+                )
+                else "corrected-colour primary; "
+            )
             + str(self.pipeline.node("edge_gradients").parameters["edge_gradient_source_fusion"]).replace("_", " ")
             + " source fusion; magnitude plus directed/undirected tangents cached",
         )
@@ -10547,12 +12564,28 @@ class MainWindow(QMainWindow):
             int(texture_counts.get(name, 0)) > 0
             for name in ("physical_edge", "non_edge")
         )
+        if (
+            texture_profile is not None
+            and texture_profile.edge_reference_source_mode != "Current image only"
+            and texture_profile.library_edge_prototype_count > 0
+        ):
+            edge_class_count = max(edge_class_count, 2)
         prototype_parts = []
         if material_reference_count:
             prototype_parts.append(f"{material_reference_count:,} material samples")
         if edge_reference_count:
             prototype_parts.append(
                 f"{edge_reference_count:,} instance-derived edge samples"
+            )
+        if texture_profile is not None and texture_profile.library_material_prototype_count:
+            prototype_parts.append(
+                f"{texture_profile.library_material_prototype_count:,} material library prototypes "
+                f"from {texture_profile.library_material_source_count} source(s)"
+            )
+        if texture_profile is not None and texture_profile.library_edge_prototype_count:
+            prototype_parts.append(
+                f"{texture_profile.library_edge_prototype_count:,} edge library prototypes "
+                f"from {texture_profile.library_edge_source_count} source(s)"
             )
         self.pipeline.set_status(
             "reference_texture_prototypes",
@@ -10601,6 +12634,53 @@ class MainWindow(QMainWindow):
                 + ", ".join(
                     f"{name.replace('_', ' ')} {value:.2f}"
                     for name, value in result.layers.material_source_reliabilities
+                ),
+            )
+        if self.pipeline.is_active("reference_seed_traits"):
+            trait_profile = getattr(
+                result.layers, "reference_seed_trait_profile", None
+            )
+            coat_available = bool(
+                trait_profile is not None
+                and trait_profile.coat_model_available
+            )
+            condition_available = (
+                0
+                if trait_profile is None
+                else sum(
+                    available
+                    for _name, available in (
+                        trait_profile.condition_models_available
+                    )
+                )
+            )
+            reviewed_seed_count = (
+                0
+                if trait_profile is None
+                else max(
+                    (
+                        count
+                        for name, count in trait_profile.class_seed_counts
+                        if name.startswith("coat:")
+                    ),
+                    default=0,
+                )
+            )
+            self.pipeline.set_status(
+                "reference_seed_traits",
+                (
+                    NodeStatus.COMPLETE
+                    if coat_available or condition_available
+                    else NodeStatus.WARNING
+                ),
+                (
+                    f"Species {getattr(trait_profile, 'species_id', '') or 'unassigned'}; "
+                    f"coat model {'available' if coat_available else 'needs two labelled classes'}; "
+                    f"{condition_available}/{len(self._seed_trait_catalogue.conditions)} condition model(s) available; "
+                    f"up to {reviewed_seed_count} reviewed current seed(s) per coat class; "
+                    f"source mode {trait_profile.reference_source_mode}; "
+                    f"{trait_profile.library_source_count} library source(s) / "
+                    f"{trait_profile.library_prototype_count} prototype(s)"
                 ),
             )
         reference_ridge_raster = result.layers.reference_edge_ridges
@@ -10737,6 +12817,7 @@ class MainWindow(QMainWindow):
             "frequency_noise_masks",
             "reference_texture_prototypes",
             "material_evidence_decision",
+            "reference_seed_traits",
             "reference_edge_probability",
             "edge_traces",
             "procedural_instances",
@@ -10802,11 +12883,10 @@ class MainWindow(QMainWindow):
         details = {
             "ruler_detection": "Locating 0 and terminal scale dashes",
             "deskew_colour": "Deskewing and balancing colour",
-            "layout_detection": "Detecting both corrected Petri-dish glass edges",
+            "layout_detection": "Detecting Petri-dish glass edges and sampling the exterior background annulus",
             "hue_only": "Encoding corrected-image hue at fixed value",
             "wavelet_decomposition": "Computing exact-reconstruction stationary wavelet bands",
             "seed_scale_estimation": "Measuring isolated reference components",
-            "perimeter_background_reference": "Sampling the buffered outside-dish colour band",
             "background_likelihood": "Fitting foreground, background, and Other colour evidence",
             "distance_candidates": "Finding distance-transform peaks",
             "circle_candidates": "Fusing edge and local-lighting ring evidence",
@@ -10819,6 +12899,7 @@ class MainWindow(QMainWindow):
             "frequency_noise_masks": "Calculating multiscale darkness and colour RMS energy",
             "reference_texture_prototypes": "Fitting many material and edge prototypes from reviewed examples",
             "material_evidence_decision": "Calibrating Seed versus Non-seed, ambiguity, and unknown evidence",
+            "reference_seed_traits": "Fitting isolated coat-pattern and reviewed condition material prototypes",
             "reference_edge_probability": "Classifying physical and apparent edges from reviewed examples",
             "edge_traces": "Linking orientation-compatible ridge fragments",
             "seed_edge_curves": "Voting backward from curved edges and fitting proposal-independent ovals",
@@ -11120,8 +13201,8 @@ class MainWindow(QMainWindow):
         if self.pipeline.is_active("circle_candidates"):
             baseline_nodes.add("circle_candidates")
         layer_nodes = {
+            "layout_detection",
             "wavelet_decomposition",
-            "perimeter_background_reference",
             "background_likelihood",
             "refined_background_likelihood",
             "edge_gradients",
@@ -11131,6 +13212,7 @@ class MainWindow(QMainWindow):
             "frequency_noise_masks",
             "reference_texture_prototypes",
             "material_evidence_decision",
+            "reference_seed_traits",
             "reference_edge_probability",
             "edge_traces",
             "instance_masks",
@@ -11149,7 +13231,24 @@ class MainWindow(QMainWindow):
         elif node_id == "layout_detection":
             values = dict(self.pipeline.node(node_id).parameters)
             values[key] = value
-            DishDetectionSettings(**values)
+            dish_fields = set(DishDetectionSettings.__dataclass_fields__)
+            layer_fields = set(AnalysisLayerSettings.__dataclass_fields__)
+            if key in dish_fields:
+                DishDetectionSettings(
+                    **{
+                        field: current
+                        for field, current in values.items()
+                        if field in dish_fields
+                    }
+                )
+            if key in layer_fields:
+                AnalysisLayerSettings(
+                    **{
+                        field: current
+                        for field, current in values.items()
+                        if field in layer_fields
+                    }
+                )
         elif node_id in baseline_nodes or node_id in layer_nodes:
             baseline_fields = set(BaselineSettings.__dataclass_fields__)
             layer_fields = set(AnalysisLayerSettings.__dataclass_fields__)
@@ -11296,14 +13395,33 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _species_changed(self, species: str) -> None:
+        species_id = self._current_seed_trait_vocabulary().species_id or "unknown"
+        if (
+            self._project_biological_context is None
+            or self._project_biological_context.species_id != species_id
+        ):
+            self._project_biological_context = BiologicalContext(species_id)
+        if (
+            self._project_species_library_pin is not None
+            and self._project_species_library_pin.species_id != species_id
+        ):
+            self._project_species_library_pin = None
         self._set_project_dirty()
         self._refresh_project_node()
+        self._populate_seed_coat_patterns()
+        self._sync_seed_trait_controls()
         if self.image_view.image_path is None:
             return
         self.pipeline.set_status("metadata", NodeStatus.COMPLETE, species)
         affected = {
             node_id
-            for node_id in ("unet_instances", "stardist_instances")
+            for node_id in (
+                "species_reference_library",
+                "seed_scale_estimation",
+                "reference_seed_traits",
+                "unet_instances",
+                "stardist_instances",
+            )
             if self.pipeline.node(node_id).enabled
         }
         if affected:
@@ -11323,6 +13441,7 @@ class MainWindow(QMainWindow):
             or self._learning_training_task is not None
             or self._procedural_fit_task is not None
             or self._reference_edge_fit_task is not None
+            or self._species_library_build_task is not None
         )
         available = (
             path is not None
@@ -11332,6 +13451,8 @@ class MainWindow(QMainWindow):
         self.analyze_action.setEnabled(available)
         if hasattr(self, "train_learning_model_action"):
             self.train_learning_model_action.setEnabled(not running)
+        if hasattr(self, "manage_species_libraries_action"):
+            self.manage_species_libraries_action.setEnabled(not running)
         if hasattr(self, "load_analysis_settings_action"):
             self.load_analysis_settings_action.setEnabled(not running)
             self.save_analysis_settings_action.setEnabled(not running)

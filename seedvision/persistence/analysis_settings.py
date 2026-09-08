@@ -21,8 +21,10 @@ from seedvision.pipeline import NodeStatus, ParameterSpec, PipelineConnection, P
 
 
 ANALYSIS_SETTINGS_FORMAT = "seedfiddle-analysis-settings"
-ANALYSIS_SETTINGS_VERSION = 9
-_LEGACY_ANALYSIS_SETTINGS_VERSIONS = frozenset({1, 2, 3, 4, 5, 6, 7, 8})
+ANALYSIS_SETTINGS_VERSION = 19
+_LEGACY_ANALYSIS_SETTINGS_VERSIONS = frozenset(
+    {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18}
+)
 _PRE_COLOUR_MERGE_VERSIONS = frozenset({1, 2, 3, 4})
 _PRE_NOISE_MERGE_VERSIONS = frozenset({1, 2, 3, 4, 5})
 ANALYSIS_SETTINGS_FILE_SUFFIX = ".seedfiddle-settings.json"
@@ -615,6 +617,7 @@ def _prepare_analysis_settings(
         "seed_interior",
         "raw_images",
         "reference_layers",
+        "perimeter_background_reference",
     }
     canonical_by_id = {node.identifier: node for node in canonical.nodes}
     profile_by_id = {
@@ -640,6 +643,46 @@ def _prepare_analysis_settings(
             connection_suspended=False,
             parameters=(),
         )
+    if (
+        canonical.version in _LEGACY_ANALYSIS_SETTINGS_VERSIONS
+        and "species_reference_library" in expected_ids
+        and "species_reference_library" not in profile_by_id
+    ):
+        # Version sixteen adds a compact resolver between Project/Metadata and
+        # every reusable-reference consumer.  Exact pins live in the project
+        # document rather than an analysis profile, so legacy profiles adopt
+        # the authored node and connections without inventing a library.
+        library_node = catalogue["species_reference_library"]
+        profile_by_id["species_reference_library"] = AnalysisNodeSettings(
+            identifier="species_reference_library",
+            active=True,
+            enabled=True,
+            connection_suspended=False,
+            parameters=tuple(
+                (spec.key, library_node.parameters[spec.key])
+                for spec in library_node.parameter_specs
+            ),
+        )
+    if (
+        canonical.version in _LEGACY_ANALYSIS_SETTINGS_VERSIONS
+        and "reference_seed_traits" in expected_ids
+        and "reference_seed_traits" not in profile_by_id
+    ):
+        # Version fourteen introduced a terminal diagnostic classifier whose
+        # outputs do not feed any pre-existing calculation. Older profiles can
+        # therefore adopt its authored defaults without changing their saved
+        # analytical results or topology elsewhere in the graph.
+        trait_node = catalogue["reference_seed_traits"]
+        profile_by_id["reference_seed_traits"] = AnalysisNodeSettings(
+            identifier="reference_seed_traits",
+            active=True,
+            enabled=True,
+            connection_suspended=False,
+            parameters=tuple(
+                (spec.key, trait_node.parameters[spec.key])
+                for spec in trait_node.parameter_specs
+            ),
+        )
     profile_ids = set(profile_by_id)
     missing_ids = expected_ids - profile_ids
     unknown_ids = profile_ids - expected_ids
@@ -660,6 +703,10 @@ def _prepare_analysis_settings(
     supplied_parameters_by_id = {
         node_id: dict(saved.parameters) for node_id, saved in profile_by_id.items()
     }
+    if canonical.version < 18:
+        supplied_parameters_by_id.get("seed_scale_estimation", {}).pop(
+            "annotated_seed_top_fraction", None
+        )
     if canonical.version in _LEGACY_ANALYSIS_SETTINGS_VERSIONS:
         # Version seven removes graph-only wrappers while preserving every
         # calculating control on the surviving owner.
@@ -668,6 +715,7 @@ def _prepare_analysis_settings(
             ("scale_calibration", "ruler_detection"),
             ("edge_ridges", "edge_gradients"),
             ("reference_edge_ridges", "reference_edge_probability"),
+            ("perimeter_background_reference", "layout_detection"),
         ):
             retired = canonical_by_id.get(retired_id)
             if retired is not None:
@@ -874,6 +922,9 @@ def _prepare_analysis_settings(
             elif source == "reference_layers":
                 source = "project"
                 source_port = "annotations"
+            elif source == "perimeter_background_reference":
+                source = "layout_detection"
+                source_port = "perimeter_background"
             source = {
                 "colour_reference": "deskew_colour",
                 "scale_calibration": "ruler_detection",

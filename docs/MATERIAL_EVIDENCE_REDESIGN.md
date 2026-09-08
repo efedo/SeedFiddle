@@ -63,6 +63,13 @@ missing source contributes nothing. This
 avoids both the old permissive `max` and the opposite failure in which one
 missing/weak optional modality vetoes all other evidence.
 
+Colour and directional-texture sources are target-only compatibility models.
+Each is fitted and calibrated solely from its own class examples; changing a
+non-overlapping sibling reference class cannot change the raw raster. Texture
+uses the 95th-percentile robust target distance as its half-support distance.
+Semantic counterclasses participate only in the reliability and decision steps
+below, never in source-model pixel scores.
+
 Each available source also earns a scalar reliability from the reviewed masks:
 the median response on its target class must exceed the 90th-percentile
 response on reviewed top-level non-target pixels. A 0.20 margin receives full
@@ -118,6 +125,34 @@ prototype collage, but it publishes no probability raster and cannot influence
 the material decision or procedural separation.  This prevents a one-class
 annotated-seed bank from assigning high seed probability across most of an
 image.
+
+The multivariate prototype matcher first produces Gaussian-kernel similarities,
+not posterior probabilities. A typical valid in-class descriptor one robust
+scale from a medoid has similarity near `exp(-0.5)`, so directly dividing those
+scores by their sum plus unknown mass artificially made even good examples look
+middling. Calibration now keeps two questions separate:
+
+```
+known confidence = strongest raw similarity / (strongest raw similarity + unknown mass)
+conditional class = raw similarity ** class contrast / sum(raw similarity ** class contrast)
+published class probability = known confidence * conditional class
+```
+
+The exposed class-contrast setting only sharpens relative Background,
+Foreground, and Other competition. It cannot turn uniformly weak matches into
+known material because known confidence uses the unsharpened strongest score.
+Equal Background/Other matches remain equal. This transform receives only the
+three score rasters and the valid-image mask: annotation masks and reference
+coordinates are not available, and reviewed pixels are never overwritten.
+
+Physical-edge and Non-physical-edge prototype scores use the same two-stage
+calibration, with their own exposed edge-class contrast and a 0.10 unknown-edge
+reserve. This replaces the former `physical / (physical + nonphysical + 0.10)`
+calculation, which imposed the same artificial ceiling on ordinary Gaussian-
+kernel matches. The edge transform likewise receives only score rasters and
+the descriptor-valid mask, never annotation targets or coordinates. The
+leakage-safe held-out-instance edge fitter optimizes edge contrast along with
+descriptor tolerance and geometry.
 
 ## Consumers and caching
 

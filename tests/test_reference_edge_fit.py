@@ -7,6 +7,7 @@ from unittest.mock import patch
 import numpy as np
 
 from seedvision.segmentation.reference_edge_fit import (
+    DEFAULT_REFERENCE_EDGE_FIT_PARAMETERS,
     ReferenceEdgeFitParameter,
     ReferenceEdgeFitScore,
     fit_reference_edge_parameters,
@@ -17,6 +18,68 @@ from seedvision.visualization import AnalysisLayerSettings
 
 
 class ReferenceEdgeFitTests(unittest.TestCase):
+    def test_internal_prototype_sources_are_prominent_normal_maxima(self) -> None:
+        import torch
+
+        from seedvision.cuda.layers import _candidate_internal_edge_mask
+
+        shape = (1, 1, 11, 13)
+        edge = torch.zeros(shape, dtype=torch.float32)
+        edge[:, :, :, 4] = 0.15
+        edge[:, :, :, 5] = 0.55
+        edge[:, :, :, 6] = 1.00
+        edge[:, :, :, 7] = 0.55
+        edge[:, :, :, 8] = 0.15
+        ridge = torch.zeros_like(edge)
+        # Simulate the wide low-valued halo produced by bilinear restoration of
+        # a one-pixel ridge. Only its actual normal-direction maximum may train
+        # an edge prototype.
+        ridge[:, :, :, 4:9] = 0.20
+        ridge[:, :, :, 6] = 1.00
+        # A disconnected low ridge used to bypass the adaptive prominence
+        # threshold merely because its value exceeded 0.05.
+        ridge[:, :, :, 10] = 0.06
+        tangent_x = torch.zeros_like(edge)
+        tangent_y = torch.ones_like(edge)
+        safe = torch.ones_like(edge, dtype=torch.bool)
+
+        selected = _candidate_internal_edge_mask(
+            edge,
+            ridge,
+            tangent_x,
+            tangent_y,
+            safe,
+            ridge_weight=0.35,
+        )[0, 0]
+
+        self.assertTrue(bool(torch.all(selected[:, 6]).item()))
+        self.assertEqual(int(selected.sum().item()), selected.shape[0])
+        self.assertFalse(bool(selected[:, 10].any().item()))
+
+    def test_default_fit_optimizes_edge_class_contrast(self) -> None:
+        names = tuple(
+            parameter.name for parameter in DEFAULT_REFERENCE_EDGE_FIT_PARAMETERS
+        )
+        self.assertIn("reference_edge_class_contrast", names)
+
+        def evaluate(settings: AnalysisLayerSettings) -> ReferenceEdgeFitScore:
+            loss = (settings.reference_edge_class_contrast - 5.0) ** 2
+            return ReferenceEdgeFitScore(
+                loss=loss,
+                physical_recall=1.0 - min(loss, 1.0),
+                nonphysical_recall=1.0 - min(loss, 1.0),
+                physical_cross_match=min(loss, 1.0),
+                nonphysical_cross_match=min(loss, 1.0),
+                physical_samples=20,
+                nonphysical_samples=20,
+            )
+
+        report = fit_reference_edge_parameters(
+            AnalysisLayerSettings(), evaluate, maximum_evaluations=5, passes=1
+        )
+        self.assertTrue(report.improved)
+        self.assertEqual(report.proposed_settings.reference_edge_class_contrast, 5.0)
+
     def test_evaluation_trains_and_scores_disjoint_instance_ids(self) -> None:
         import torch
 

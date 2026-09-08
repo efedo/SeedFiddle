@@ -14,6 +14,7 @@ import json
 import math
 import os
 from pathlib import Path, PurePosixPath, PureWindowsPath
+import re
 import tempfile
 from types import MappingProxyType
 from typing import Iterable, Mapping
@@ -37,10 +38,14 @@ from seedvision.persistence.reference_regions import (
     ReferenceRegionStore,
     file_sha256,
 )
+from seedvision.reference_library.contracts import (
+    BiologicalContext,
+    SpeciesLibraryPin,
+)
 
 
 PROJECT_ANALYSIS_FORMAT = "seedfiddle-project"
-PROJECT_ANALYSIS_VERSION = 1
+PROJECT_ANALYSIS_VERSION = 2
 PROJECT_ANALYSIS_EXTENSION = ".seedfiddle-project.json"
 PROJECT_ANALYSIS_DEFAULT_NAME = "analysis.seedfiddle-project.json"
 PROJECT_ANALYSIS_MAX_BYTES = 16 * 1024 * 1024
@@ -91,6 +96,8 @@ class ProjectImageSpec:
     include_manual_seed_centres: bool = True
     reference_regions_path: Path | str | None = None
     manual_seed_centres_path: Path | str | None = None
+    biological_context: BiologicalContext | None = None
+    capture_group_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,6 +126,8 @@ class ProjectImageRecord:
     source: ProjectFileReference
     source_shape: tuple[int, int]
     sidecars: tuple[ProjectSidecarReference, ...] = ()
+    biological_context: BiologicalContext | None = None
+    capture_group_id: str | None = None
 
     def sidecar(self, kind: str) -> ProjectSidecarReference | None:
         return next((item for item in self.sidecars if item.kind == kind), None)
@@ -144,13 +153,16 @@ class ProjectUiState:
 
 @dataclass(frozen=True, slots=True)
 class ProjectAnalysisDocument:
-    """Immutable compact content of one version-one project master."""
+    """Immutable compact content of one version-two project master."""
 
     analysis_settings: AnalysisSettingsProfile
     images: tuple[ProjectImageRecord, ...]
     species: str | None = None
     selected_image_id: str | None = None
     ui_state: ProjectUiState | None = None
+    species_library: SpeciesLibraryPin | None = None
+    biological_context: BiologicalContext | None = None
+    capture_group_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,6 +229,9 @@ class ProjectAnalysisStore:
         species: str | None = None,
         selected_image: Path | str | None = None,
         ui_state: ProjectUiState | None = None,
+        species_library: SpeciesLibraryPin | None = None,
+        biological_context: BiologicalContext | None = None,
+        capture_group_id: str | None = None,
     ) -> ProjectAnalysisDocument:
         """Fingerprint current images and discover their existing compact sidecars."""
 
@@ -344,6 +359,12 @@ class ProjectAnalysisStore:
                     source=source_reference,
                     source_shape=source_shape,
                     sidecars=tuple(sidecars),
+                    biological_context=_validated_biological_context(
+                        spec.biological_context, f"image entry {index}"
+                    ),
+                    capture_group_id=_validated_context_identifier(
+                        spec.capture_group_id, f"image entry {index} capture group"
+                    ),
                 )
             )
         selected_id = None
@@ -360,6 +381,13 @@ class ProjectAnalysisStore:
             species=_validated_optional_text(species, "project species"),
             selected_image_id=selected_id,
             ui_state=ui_state,
+            species_library=_validated_library_pin(species_library),
+            biological_context=_validated_biological_context(
+                biological_context, "project"
+            ),
+            capture_group_id=_validated_context_identifier(
+                capture_group_id, "project capture group"
+            ),
         )
         # The serializer is also the single strict document-level validator.
         _document_payload(document)
@@ -391,6 +419,9 @@ class ProjectAnalysisStore:
         species: str | None = None,
         selected_image: Path | str | None = None,
         ui_state: ProjectUiState | None = None,
+        species_library: SpeciesLibraryPin | None = None,
+        biological_context: BiologicalContext | None = None,
+        capture_group_id: str | None = None,
         destination: Path | str | None = None,
     ) -> Path:
         document = self.capture(
@@ -399,6 +430,9 @@ class ProjectAnalysisStore:
             species=species,
             selected_image=selected_image,
             ui_state=ui_state,
+            species_library=species_library,
+            biological_context=biological_context,
+            capture_group_id=capture_group_id,
         )
         return self.save(document, destination)
 
@@ -747,6 +781,14 @@ def _document_payload(document: ProjectAnalysisDocument) -> dict[str, object]:
                 "image_sha256": source.sha256,
                 "source_shape": [height, width],
                 "sidecars": sidecars,
+                "biological_context": _biological_context_payload(
+                    _validated_biological_context(
+                        record.biological_context, f"image {index}"
+                    )
+                ),
+                "capture_group_id": _validated_context_identifier(
+                    record.capture_group_id, f"image {index} capture group"
+                ),
             }
         )
     selected = document.selected_image_id
@@ -758,7 +800,21 @@ def _document_payload(document: ProjectAnalysisDocument) -> dict[str, object]:
         "format": PROJECT_ANALYSIS_FORMAT,
         "version": PROJECT_ANALYSIS_VERSION,
         "analysis_settings": settings_payload,
-        "project": {"species": species, "selected_image": selected},
+        "project": {
+            "species": species,
+            "selected_image": selected,
+            "species_library": _library_pin_payload(
+                _validated_library_pin(document.species_library)
+            ),
+            "biological_context": _biological_context_payload(
+                _validated_biological_context(
+                    document.biological_context, "project"
+                )
+            ),
+            "capture_group_id": _validated_context_identifier(
+                document.capture_group_id, "project capture group"
+            ),
+        },
         "images": images,
     }
     if document.ui_state is not None:
@@ -778,7 +834,7 @@ def _document_from_payload(payload: object) -> ProjectAnalysisDocument:
         raise InvalidProjectAnalysis(
             f"Unsupported project format {root['format']!r}."
         )
-    if not _exact_int(root["version"]) or root["version"] != PROJECT_ANALYSIS_VERSION:
+    if not _exact_int(root["version"]) or root["version"] not in {1, PROJECT_ANALYSIS_VERSION}:
         raise InvalidProjectAnalysis(
             f"Unsupported project version {root['version']!r}."
         )
@@ -790,9 +846,17 @@ def _document_from_payload(payload: object) -> ProjectAnalysisDocument:
         ) from error
     known_nodes = {node.identifier for node in settings.nodes}
     project = _object(root["project"], "project metadata")
+    project_version = int(root["version"])
     _keys(
         project,
-        required={"species", "selected_image"},
+        required=(
+            {"species", "selected_image"}
+            if project_version == 1
+            else {
+                "species", "selected_image", "species_library",
+                "biological_context", "capture_group_id",
+            }
+        ),
         optional=set(),
         name="project metadata",
     )
@@ -800,6 +864,25 @@ def _document_from_payload(payload: object) -> ProjectAnalysisDocument:
     selected = project["selected_image"]
     if selected is not None:
         selected = _digest_text(selected, "selected image identifier")
+    species_library = (
+        None
+        if project_version == 1
+        else _library_pin_from_payload(project["species_library"])
+    )
+    biological_context = (
+        None
+        if project_version == 1
+        else _biological_context_from_payload(
+            project["biological_context"], "project"
+        )
+    )
+    capture_group_id = (
+        None
+        if project_version == 1
+        else _validated_context_identifier(
+            project["capture_group_id"], "project capture group"
+        )
+    )
     raw_images = root["images"]
     if not isinstance(raw_images, list):
         raise InvalidProjectAnalysis("Project images must be a JSON array.")
@@ -814,7 +897,14 @@ def _document_from_payload(payload: object) -> ProjectAnalysisDocument:
         image = _object(raw_image, f"image {index}")
         _keys(
             image,
-            required={"id", "source", "image_sha256", "source_shape", "sidecars"},
+            required=(
+                {"id", "source", "image_sha256", "source_shape", "sidecars"}
+                if project_version == 1
+                else {
+                    "id", "source", "image_sha256", "source_shape", "sidecars",
+                    "biological_context", "capture_group_id",
+                }
+            ),
             optional=set(),
             name=f"image {index}",
         )
@@ -872,6 +962,20 @@ def _document_from_payload(payload: object) -> ProjectAnalysisDocument:
                 source=ProjectFileReference(location, stored_path, digest),
                 source_shape=shape,
                 sidecars=tuple(sidecars),
+                biological_context=(
+                    None
+                    if project_version == 1
+                    else _biological_context_from_payload(
+                        image["biological_context"], f"image {index}"
+                    )
+                ),
+                capture_group_id=(
+                    None
+                    if project_version == 1
+                    else _validated_context_identifier(
+                        image["capture_group_id"], f"image {index} capture group"
+                    )
+                ),
             )
         )
     if selected is not None and selected not in ids:
@@ -887,6 +991,9 @@ def _document_from_payload(payload: object) -> ProjectAnalysisDocument:
         species=species,
         selected_image_id=selected,
         ui_state=ui_state,
+        species_library=species_library,
+        biological_context=biological_context,
+        capture_group_id=capture_group_id,
     )
 
 
@@ -1092,6 +1199,135 @@ def _validated_shape(value: object, name: str) -> tuple[int, int]:
     if any(not _exact_int(item) or item <= 0 for item in value):
         raise InvalidProjectAnalysis(f"{name.capitalize()} values must be positive integers.")
     return int(value[0]), int(value[1])
+
+
+def _validated_context_identifier(value: object, name: str) -> str | None:
+    if value is None:
+        return None
+    if (
+        not isinstance(value, str)
+        or not re.fullmatch(r"[a-z][a-z0-9_.-]{0,127}", value)
+    ):
+        raise InvalidProjectAnalysis(
+            f"{name.capitalize()} must be null or a stable lowercase identifier."
+        )
+    return value
+
+
+def _validated_biological_context(
+    value: object, name: str
+) -> BiologicalContext | None:
+    if value is None:
+        return None
+    if not isinstance(value, BiologicalContext):
+        raise InvalidProjectAnalysis(
+            f"{name.capitalize()} biological context is invalid."
+        )
+    try:
+        return BiologicalContext(
+            value.species_id,
+            value.lineage_group_id,
+            value.accession_id,
+            value.seed_lot_id,
+        )
+    except ValueError as error:
+        raise InvalidProjectAnalysis(
+            f"{name.capitalize()} biological context is invalid: {error}"
+        ) from error
+
+
+def _biological_context_payload(
+    value: BiologicalContext | None,
+) -> dict[str, object] | None:
+    if value is None:
+        return None
+    return {
+        "species_id": value.species_id,
+        "lineage_group_id": value.lineage_group_id,
+        "accession_id": value.accession_id,
+        "seed_lot_id": value.seed_lot_id,
+    }
+
+
+def _biological_context_from_payload(
+    value: object, name: str
+) -> BiologicalContext | None:
+    if value is None:
+        return None
+    payload = _object(value, f"{name} biological context")
+    _keys(
+        payload,
+        required={
+            "species_id", "lineage_group_id", "accession_id", "seed_lot_id"
+        },
+        optional=set(),
+        name=f"{name} biological context",
+    )
+    try:
+        return BiologicalContext(
+            species_id=payload["species_id"],
+            lineage_group_id=payload["lineage_group_id"],
+            accession_id=payload["accession_id"],
+            seed_lot_id=payload["seed_lot_id"],
+        )
+    except ValueError as error:
+        raise InvalidProjectAnalysis(
+            f"Invalid {name} biological context: {error}"
+        ) from error
+
+
+def _validated_library_pin(value: object) -> SpeciesLibraryPin | None:
+    if value is None:
+        return None
+    if not isinstance(value, SpeciesLibraryPin):
+        raise InvalidProjectAnalysis("Project species-library pin is invalid.")
+    try:
+        return SpeciesLibraryPin(
+            value.library_id,
+            value.version,
+            value.species_id,
+            value.sha256,
+            value.resolution,
+        )
+    except ValueError as error:
+        raise InvalidProjectAnalysis(
+            f"Project species-library pin is invalid: {error}"
+        ) from error
+
+
+def _library_pin_payload(
+    value: SpeciesLibraryPin | None,
+) -> dict[str, object] | None:
+    if value is None:
+        return None
+    return {
+        "library_id": value.library_id,
+        "version": value.version,
+        "species_id": value.species_id,
+        "sha256": value.sha256,
+        "resolution": value.resolution,
+    }
+
+
+def _library_pin_from_payload(value: object) -> SpeciesLibraryPin | None:
+    if value is None:
+        return None
+    payload = _object(value, "species-library pin")
+    _keys(
+        payload,
+        required={"library_id", "version", "species_id", "sha256", "resolution"},
+        optional=set(),
+        name="species-library pin",
+    )
+    try:
+        return SpeciesLibraryPin(
+            payload["library_id"], payload["version"], payload["species_id"],
+            payload["sha256"], payload["resolution"],
+        )
+    except ValueError as error:
+        raise InvalidProjectAnalysis(
+            f"Invalid species-library pin: {error}"
+        ) from error
 
 
 def _validated_optional_text(value: object, name: str) -> str | None:

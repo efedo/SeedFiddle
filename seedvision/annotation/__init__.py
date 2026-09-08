@@ -32,6 +32,12 @@ from seedvision.annotation.tools import (
     snap_edge_point,
     trace_edge_path,
 )
+from seedvision.annotation.seed_traits import (
+    SeedTraitCatalogue,
+    SpeciesSeedTraitVocabulary,
+    load_seed_trait_catalogue,
+    trait_display_name,
+)
 
 __all__ = (
     "ANNOTATION_EDGE_SOURCES",
@@ -46,10 +52,13 @@ __all__ = (
     "ShapeGuidedFillRegion",
     "SmartFillOptions",
     "SmartFillRegion",
+    "SeedTraitCatalogue",
+    "SpeciesSeedTraitVocabulary",
     "fit_rotated_edge_ellipse",
     "instance_boundary_references",
     "instance_boundary_references_from_edge_evidence",
     "internal_edge_candidate_mask",
+    "load_seed_trait_catalogue",
     "shape_guided_fill_instance",
     "shape_guided_fill_region",
     "shape_outward_extension_pressure",
@@ -58,4 +67,5 @@ __all__ = (
     "snap_edge_point",
     "summarize_instance_continuity",
     "trace_edge_path",
+    "trait_display_name",
 )

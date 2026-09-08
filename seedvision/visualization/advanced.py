@@ -8,6 +8,7 @@ image-derived confidence map intended for troubleshooting and annotation.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from time import perf_counter
 from typing import TYPE_CHECKING
 
@@ -47,6 +48,8 @@ ADVANCED_OVERLAY_LABELS = (
     ("Occlusion/contact graph", "contact_graph"),
     ("Estimated illumination field", "illumination_field"),
     ("Flattened grayscale", "flattened_grayscale"),
+    ("Despeckled flattened grayscale", "despeckled_flattened_grayscale"),
+    ("Removed dark speckles", "removed_dark_speckles"),
     ("Local shadow likelihood", "shadow_likelihood"),
     ("Local highlight likelihood", "highlight_likelihood"),
     ("Reflectance image", "reflectance_image"),
@@ -94,6 +97,10 @@ class AdvancedAnalysisSettings:
     shadow_z_threshold: float = 0.75
     highlight_z_threshold: float = 0.75
     lighting_extreme_softness: float = 0.30
+    despeckle_maximum_diameter_fraction: float = 0.060
+    despeckle_minimum_darkness_levels: float = 18.0
+    despeckle_periphery_width_fraction: float = 0.025
+    despeckle_minimum_lighter_surround_fraction: float = 0.90
     quality_noise_scale_fraction: float = 0.025
     radial_bin_count: int = 24
     wrinkle_scale_fraction: float = 0.035
@@ -132,6 +139,9 @@ class AdvancedAnalysisSettings:
             self.shadow_z_threshold,
             self.highlight_z_threshold,
             self.lighting_extreme_softness,
+            self.despeckle_maximum_diameter_fraction,
+            self.despeckle_minimum_darkness_levels,
+            self.despeckle_periphery_width_fraction,
             self.quality_noise_scale_fraction,
             self.wrinkle_scale_fraction,
             self.damage_anomaly_scale_fraction,
@@ -141,6 +151,12 @@ class AdvancedAnalysisSettings:
         )
         if any(value <= 0 for value in positive):
             raise ValueError("Advanced analysis scale and gain settings must be positive.")
+        if self.despeckle_minimum_darkness_levels > 255.0:
+            raise ValueError("Despeckle darkness contrast cannot exceed 255 levels.")
+        if not 0.50 <= self.despeckle_minimum_lighter_surround_fraction <= 1.0:
+            raise ValueError(
+                "Despeckle lighter-surround fraction must be between 0.5 and 1."
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -211,6 +227,8 @@ class AdvancedAnalysisLayers:
         if mode in {
             "illumination_field",
             "flattened_grayscale",
+            "despeckled_flattened_grayscale",
+            "removed_dark_speckles",
             "reflectance_image",
             "radial_coordinate",
         }:
@@ -295,7 +313,126 @@ def _local_lighting_evidence(
     reflectance = _normalize(
         torch, luminance / (illumination + 0.08), valid
     ) * valid
-    return illumination, flattened, shadow, highlight, reflectance
+    despeckled, speckle_mask = _despeckle_flattened_grayscale(
+        torch,
+        functional,
+        flattened,
+        valid,
+        seed_diameter,
+        settings,
+    )
+    return (
+        illumination,
+        flattened,
+        shadow,
+        highlight,
+        reflectance,
+        despeckled,
+        speckle_mask,
+    )
+
+
+def _despeckle_flattened_grayscale(
+    torch,
+    functional,
+    flattened,
+    valid,
+    seed_diameter: float,
+    settings: AdvancedAnalysisSettings,
+):
+    """Replace compact, locally surrounded dark residuals on the GPU.
+
+    A grayscale closing supplies a hard maximum feature diameter and a local
+    background estimate.  A ring of samples then rejects boundaries, lines,
+    and other dark structures that are not actually surrounded by lighter
+    material.  The accepted pixels receive a smoothly varying interpolation
+    of their own peripheral samples; painted/reference values are not involved.
+    """
+
+    maximum_diameter = max(
+        1,
+        int(round(seed_diameter * settings.despeckle_maximum_diameter_fraction)),
+    )
+    # Odd support keeps the operation centred and makes the exposed diameter
+    # an honest upper scale rather than an area proxy.
+    kernel_size = max(3, maximum_diameter | 1)
+    radius = kernel_size // 2
+    periphery_width = max(
+        1,
+        int(round(seed_diameter * settings.despeckle_periphery_width_fraction)),
+    )
+    sample_radius = radius + periphery_width
+    threshold = float(settings.despeckle_minimum_darkness_levels) / 255.0
+
+    def maximum_filter(values):
+        horizontally_padded = functional.pad(
+            values, (radius, radius, 0, 0), mode="replicate"
+        )
+        horizontal = functional.max_pool2d(
+            horizontally_padded, kernel_size=(1, kernel_size), stride=1
+        )
+        vertically_padded = functional.pad(
+            horizontal, (0, 0, radius, radius), mode="replicate"
+        )
+        return functional.max_pool2d(
+            vertically_padded, kernel_size=(kernel_size, 1), stride=1
+        )
+
+    closed = -maximum_filter(-maximum_filter(flattened))
+    darkness = (closed - flattened).clamp_min(0.0)
+
+    height, width = flattened.shape[-2:]
+    padded_gray = functional.pad(
+        flattened,
+        (sample_radius, sample_radius, sample_radius, sample_radius),
+        mode="replicate",
+    )
+    padded_valid = functional.pad(
+        valid,
+        (sample_radius, sample_radius, sample_radius, sample_radius),
+        mode="constant",
+        value=0.0,
+    )
+    peripheral_sum = torch.zeros_like(flattened)
+    peripheral_count = torch.zeros_like(flattened)
+    lighter_count = torch.zeros_like(flattened)
+    offsets = {
+        (
+            int(round(math.sin(angle) * sample_radius)),
+            int(round(math.cos(angle) * sample_radius)),
+        )
+        for angle in (2.0 * math.pi * index / 16.0 for index in range(16))
+    }
+    for offset_y, offset_x in sorted(offsets):
+        start_y = sample_radius + offset_y
+        start_x = sample_radius + offset_x
+        sample = padded_gray[
+            :, :, start_y : start_y + height, start_x : start_x + width
+        ]
+        sample_valid = padded_valid[
+            :, :, start_y : start_y + height, start_x : start_x + width
+        ]
+        peripheral_sum = peripheral_sum + sample * sample_valid
+        peripheral_count = peripheral_count + sample_valid
+        lighter_count = lighter_count + (
+            (sample >= flattened + threshold).to(flattened.dtype) * sample_valid
+        )
+    lighter_fraction = lighter_count / peripheral_count.clamp_min(1.0)
+    speckle_mask = (
+        (darkness >= threshold)
+        & (
+            lighter_fraction
+            >= float(settings.despeckle_minimum_lighter_surround_fraction)
+        )
+        & valid.bool()
+    )
+    peripheral_interpolation = (
+        peripheral_sum / peripheral_count.clamp_min(1.0)
+    ).clamp(0.0, 1.0)
+    despeckled = torch.where(
+        speckle_mask, peripheral_interpolation, flattened
+    ) * valid
+    return despeckled, speckle_mask.to(flattened.dtype) * valid
 
 
 def local_lighting_evidence_tensors(
@@ -303,8 +440,14 @@ def local_lighting_evidence_tensors(
     valid_tensor,
     seed_diameter: float,
     settings: AdvancedAnalysisSettings,
+    *,
+    include_despeckle: bool = False,
 ):
-    """Return full-resolution GPU tensors owned by the illumination node."""
+    """Return full-resolution GPU tensors owned by the illumination node.
+
+    The original five-product tuple remains the public default.  Runtime graph
+    integration requests the two additional despeckling tensors explicitly.
+    """
 
     import torch
     import torch.nn.functional as functional
@@ -318,7 +461,13 @@ def local_lighting_evidence_tensors(
     )
     height = max(8, round(source_height * scale))
     width = max(8, round(source_width * scale))
-    rgb = source[:, (2, 1, 0)] / 255.0
+    rgb_full = source[:, (2, 1, 0)] / 255.0
+    luminance_full = (
+        0.2126 * rgb_full[:, 0:1]
+        + 0.7152 * rgb_full[:, 1:2]
+        + 0.0722 * rgb_full[:, 2:3]
+    )
+    rgb = rgb_full
     if (height, width) != (source_height, source_width):
         rgb = functional.interpolate(
             rgb, (height, width), mode="bilinear", align_corners=False
@@ -342,17 +491,48 @@ def local_lighting_evidence_tensors(
         settings,
     )
     if (height, width) == (source_height, source_width):
-        return tuple(product * valid_full.float() for product in products)
-    return tuple(
-        functional.interpolate(
-            product,
-            (source_height, source_width),
-            mode="bilinear",
-            align_corners=False,
+        restored = tuple(product * valid_full.float() for product in products)
+    else:
+        restored = tuple(
+            functional.interpolate(
+                product,
+                (source_height, source_width),
+                mode="bilinear",
+                align_corners=False,
+            )
+            * valid_full.float()
+            for product in products
         )
-        * valid_full.float()
-        for product in products
-    )
+        # Illumination is deliberately estimated at a bounded working size,
+        # but edge preprocessing must retain every source pixel. Reconstruct
+        # the exact full-resolution log ratio from the restored broad field,
+        # then run the compact-feature test and interpolation at full size.
+        full_valid = valid_full.float()
+        full_illumination = restored[0]
+        full_log_ratio = torch.log(
+            (luminance_full + 0.02) / (full_illumination + 0.02)
+        ) * full_valid
+        full_flattened = (
+            0.5 + full_log_ratio * settings.flattening_contrast_gain
+        ).clamp(0.0, 1.0) * full_valid
+        full_despeckled, full_speckle_mask = _despeckle_flattened_grayscale(
+            torch,
+            functional,
+            full_flattened,
+            full_valid,
+            seed_diameter,
+            settings,
+        )
+        restored = (
+            restored[0],
+            full_flattened,
+            restored[2],
+            restored[3],
+            restored[4],
+            full_despeckled,
+            full_speckle_mask,
+        )
+    return restored if include_despeckle else restored[:5]
 
 
 def sensor_noise_likelihood_tensor(
@@ -751,6 +931,8 @@ def build_advanced_analysis_layers(
                 shadow,
                 highlight,
                 reflectance,
+                despeckled,
+                speckle_mask,
             ) = _local_lighting_evidence(
                 torch,
                 functional,
@@ -782,7 +964,18 @@ def build_advanced_analysis_layers(
                 shadow,
                 highlight,
                 reflectance,
-            ) = resized_lighting
+            ) = resized_lighting[:5]
+            if len(resized_lighting) >= 7:
+                despeckled, speckle_mask = resized_lighting[5:7]
+            else:
+                despeckled, speckle_mask = _despeckle_flattened_grayscale(
+                    torch,
+                    functional,
+                    flattened,
+                    valid,
+                    diameter,
+                    settings,
+                )
         glare = (
             torch.sigmoid((maximum_rgb - 0.90) * 35.0)
             * torch.sigmoid((0.20 - saturation) * 18.0) * valid
@@ -791,6 +984,8 @@ def build_advanced_analysis_layers(
     else:
         illumination = cached_scalar("illumination_field")
         flattened = cached_scalar("flattened_grayscale")
+        despeckled = cached_scalar("despeckled_flattened_grayscale")
+        speckle_mask = cached_scalar("removed_dark_speckles")
         shadow = cached_scalar("shadow_likelihood")
         highlight = cached_scalar("highlight_likelihood")
         reflectance = cached_scalar("reflectance_image")
@@ -1086,6 +1281,8 @@ def build_advanced_analysis_layers(
         "contact_graph": contact_raster,
         "illumination_field": illumination,
         "flattened_grayscale": flattened,
+        "despeckled_flattened_grayscale": despeckled,
+        "removed_dark_speckles": speckle_mask,
         "shadow_likelihood": shadow,
         "highlight_likelihood": highlight,
         "reflectance_image": reflectance,
@@ -1113,6 +1310,8 @@ def build_advanced_analysis_layers(
         "contact_graph": "contact_graph",
         "illumination_field": "illumination_decomposition",
         "flattened_grayscale": "illumination_decomposition",
+        "despeckled_flattened_grayscale": "illumination_decomposition",
+        "removed_dark_speckles": "illumination_decomposition",
         "shadow_likelihood": "illumination_decomposition",
         "highlight_likelihood": "illumination_decomposition",
         "reflectance_image": "illumination_decomposition",

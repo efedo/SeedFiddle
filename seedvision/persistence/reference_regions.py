@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha256
+import json
 import os
 from pathlib import Path
 import re
@@ -15,7 +16,7 @@ from zipfile import BadZipFile
 import numpy as np
 
 
-REFERENCE_REGION_VERSION = 2
+REFERENCE_REGION_VERSION = 5
 _MATERIAL_CLASSES = frozenset((0, 1, 2, 3))
 _BOUNDARY_CLASSES = frozenset((0, 1, 2))
 
@@ -49,6 +50,29 @@ class InvalidReferenceArchive(ReferenceRegionError):
 
 
 @dataclass(frozen=True, slots=True)
+class SeedInstanceAnnotation:
+    """Reviewed semantic labels attached to one annotated seed identity.
+
+    Coat pattern is mutually exclusive. Conditions are non-exclusive, but an
+    explicit ``conditions_reviewed`` bit distinguishes a reviewed sound seed
+    from an instance whose condition labels have not yet been considered.
+    """
+
+    seed_id: int
+    coat_pattern: str | None = None
+    conditions: tuple[str, ...] = ()
+    conditions_reviewed: bool = False
+    shape_reviewed: bool = False
+    outline_visibility: str = "unknown"
+    pose: str = "unknown"
+    hilum_point: tuple[float, float] | None = None
+    hilum_direction: tuple[float, float] | None = None
+    physical_seed_id: str | None = None
+    shape_exclusion_reason: str | None = None
+    full_length_visible: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class ReferenceRegionBundle:
     """The active reference layers in full image coordinates.
 
@@ -66,6 +90,8 @@ class ReferenceRegionBundle:
     non_edge: np.ndarray | None = None
     annotated_seeds: np.ndarray | None = None
     annotation_origin: str = "manual"
+    seed_annotations: tuple[SeedInstanceAnnotation, ...] = ()
+    annotation_species: str = ""
 
 
 def file_sha256(path: Path | str) -> str:
@@ -125,6 +151,13 @@ class ReferenceRegionStore:
                 "Background, foreground, and other reference regions must be exclusive."
             )
         instances = _instance_labels(bundle.annotated_seeds, (height, width))
+        seed_annotations = _validated_seed_annotations(
+            bundle.seed_annotations,
+            frozenset(int(value) for value in np.unique(instances) if value),
+        )
+        annotation_species = _validated_identifier_or_empty(
+            bundle.annotation_species, "annotation species"
+        )
 
         material = np.zeros((height, width), dtype=np.uint8)
         material[background] = 1
@@ -151,6 +184,42 @@ class ReferenceRegionStore:
                     material=material,
                     annotated_seeds=instances,
                     annotation_origin=np.asarray(str(bundle.annotation_origin)),
+                    seed_annotations_json=np.asarray(
+                        json.dumps(
+                            [
+                                {
+                                    "seed_id": annotation.seed_id,
+                                    "coat_pattern": annotation.coat_pattern,
+                                    "conditions": list(annotation.conditions),
+                                    "conditions_reviewed": (
+                                        annotation.conditions_reviewed
+                                    ),
+                                    "shape_reviewed": annotation.shape_reviewed,
+                                    "outline_visibility": annotation.outline_visibility,
+                                    "pose": annotation.pose,
+                                    "hilum_point": (
+                                        None
+                                        if annotation.hilum_point is None
+                                        else list(annotation.hilum_point)
+                                    ),
+                                    "hilum_direction": (
+                                        None
+                                        if annotation.hilum_direction is None
+                                        else list(annotation.hilum_direction)
+                                    ),
+                                    "physical_seed_id": annotation.physical_seed_id,
+                                    "full_length_visible": annotation.full_length_visible,
+                                    "shape_exclusion_reason": (
+                                        annotation.shape_exclusion_reason
+                                    ),
+                                }
+                                for annotation in seed_annotations
+                            ],
+                            separators=(",", ":"),
+                            sort_keys=True,
+                        )
+                    ),
+                    annotation_species=np.asarray(annotation_species),
                 )
             temporary.replace(destination)
         finally:
@@ -272,7 +341,7 @@ class ReferenceRegionStore:
                         f"Saved reference archive is missing 'version': {source}"
                     )
                 version = _scalar_int(archive["version"], "version")
-                if version not in {1, REFERENCE_REGION_VERSION}:
+                if version not in {1, 2, 3, 4, REFERENCE_REGION_VERSION}:
                     raise InvalidReferenceArchive(
                         f"Unsupported reference-region version {version} in {source}."
                     )
@@ -342,6 +411,23 @@ class ReferenceRegionStore:
                 annotation_origin = _scalar_text(
                     archive["annotation_origin"], "annotation origin"
                 )
+                if version >= 3:
+                    for name in ("seed_annotations_json", "annotation_species"):
+                        if name not in archive.files:
+                            raise InvalidReferenceArchive(
+                                f"Saved reference archive is missing {name!r}: {source}"
+                            )
+                    seed_annotations_text = _scalar_text(
+                        archive["seed_annotations_json"],
+                        "seed annotations",
+                    )
+                    annotation_species = _scalar_text(
+                        archive["annotation_species"],
+                        "annotation species",
+                    )
+                else:
+                    seed_annotations_text = "[]"
+                    annotation_species = ""
         except ImageFingerprintMismatch:
             raise
         except InvalidReferenceArchive:
@@ -367,6 +453,25 @@ class ReferenceRegionStore:
             raise InvalidReferenceArchive(
                 f"Invalid annotated-seed raster in {source}: {error}"
             ) from error
+        try:
+            decoded_annotations = json.loads(seed_annotations_text)
+        except (TypeError, ValueError) as error:
+            raise InvalidReferenceArchive(
+                f"Invalid seed-annotation metadata in {source}: {error}"
+            ) from error
+        try:
+            seed_annotations = _seed_annotations_from_payload(
+                decoded_annotations,
+                frozenset(int(value) for value in np.unique(instances) if value),
+                version=version,
+            )
+            annotation_species = _validated_identifier_or_empty(
+                annotation_species, "annotation species"
+            )
+        except ReferenceRegionError as error:
+            raise InvalidReferenceArchive(
+                f"Invalid seed-annotation metadata in {source}: {error}"
+            ) from error
         return ReferenceRegionBundle(
             shape=shape,
             background=_nonempty(material == 1),
@@ -376,7 +481,236 @@ class ReferenceRegionStore:
             non_edge=None,
             annotated_seeds=_nonempty(instances),
             annotation_origin=annotation_origin or "manual",
+            seed_annotations=seed_annotations,
+            annotation_species=annotation_species,
         )
+
+
+_TRAIT_IDENTIFIER = re.compile(r"[a-z][a-z0-9_]{0,63}")
+_PHYSICAL_SEED_IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
+_OUTLINE_VISIBILITIES = frozenset(
+    ("unknown", "complete", "partly_occluded", "image_cutoff", "uncertain")
+)
+_SEED_POSES = frozenset(("unknown", "flat", "oblique", "side", "uncertain"))
+
+
+def _validated_identifier_or_empty(value: object, name: str) -> str:
+    text = str(value or "")
+    if text and _TRAIT_IDENTIFIER.fullmatch(text) is None:
+        raise ReferenceRegionError(
+            f"{name.capitalize()} must be an empty string or a stable lowercase identifier."
+        )
+    return text
+
+
+def _validated_seed_annotations(
+    values: object,
+    extant_seed_ids: frozenset[int],
+) -> tuple[SeedInstanceAnnotation, ...]:
+    try:
+        annotations = tuple(values or ())
+    except TypeError as error:
+        raise ReferenceRegionError("Seed annotations must be an iterable.") from error
+    normalized: list[SeedInstanceAnnotation] = []
+    seen: set[int] = set()
+    for value in annotations:
+        if not isinstance(value, SeedInstanceAnnotation):
+            raise ReferenceRegionError(
+                "Seed annotations must contain SeedInstanceAnnotation values."
+            )
+        if isinstance(value.seed_id, bool) or not isinstance(
+            value.seed_id, (int, np.integer)
+        ):
+            raise ReferenceRegionError("Seed annotation IDs must be integers.")
+        seed_id = int(value.seed_id)
+        if seed_id <= 0 or seed_id > np.iinfo(np.uint16).max:
+            raise ReferenceRegionError("Seed annotation IDs must fit in unsigned 16 bits.")
+        if seed_id in seen:
+            raise ReferenceRegionError(f"Duplicate semantic annotation for seed {seed_id}.")
+        if seed_id not in extant_seed_ids:
+            raise ReferenceRegionError(
+                f"Semantic annotation refers to absent seed ID {seed_id}."
+            )
+        seen.add(seed_id)
+        if value.coat_pattern is not None and not isinstance(
+            value.coat_pattern, str
+        ):
+            raise ReferenceRegionError(
+                "Seed coat pattern must be a string or null."
+            )
+        coat_pattern = (
+            None
+            if value.coat_pattern in {None, ""}
+            else _validated_identifier_or_empty(value.coat_pattern, "coat pattern")
+        )
+        if not isinstance(value.conditions, (tuple, list)) or not all(
+            isinstance(condition, str) for condition in value.conditions
+        ):
+            raise ReferenceRegionError(
+                "Seed annotation conditions must be a sequence of strings."
+            )
+        validated_conditions = tuple(
+            _validated_identifier_or_empty(condition, "condition")
+            for condition in value.conditions
+        )
+        if len(set(validated_conditions)) != len(validated_conditions):
+            raise ReferenceRegionError(
+                f"Seed {seed_id} contains duplicate condition identifiers."
+            )
+        conditions = tuple(sorted(validated_conditions))
+        if "" in conditions:
+            raise ReferenceRegionError("Condition identifiers cannot be empty.")
+        if not isinstance(value.conditions_reviewed, bool):
+            raise ReferenceRegionError("conditions_reviewed must be Boolean.")
+        if conditions and not value.conditions_reviewed:
+            raise ReferenceRegionError(
+                "Selected seed conditions require conditions_reviewed=true."
+            )
+        if not isinstance(value.shape_reviewed, bool):
+            raise ReferenceRegionError("shape_reviewed must be Boolean.")
+        if not isinstance(value.full_length_visible, bool):
+            raise ReferenceRegionError("full_length_visible must be Boolean.")
+        outline_visibility = str(value.outline_visibility)
+        if outline_visibility not in _OUTLINE_VISIBILITIES:
+            raise ReferenceRegionError("Seed outline visibility is unsupported.")
+        pose = str(value.pose)
+        if pose not in _SEED_POSES:
+            raise ReferenceRegionError("Seed pose is unsupported.")
+        hilum_point = _optional_finite_pair(value.hilum_point, "hilum point")
+        hilum_direction = _optional_finite_pair(
+            value.hilum_direction, "hilum direction"
+        )
+        if hilum_direction is not None and np.hypot(*hilum_direction) <= 1e-9:
+            raise ReferenceRegionError("Hilum direction cannot be a zero vector.")
+        physical_seed_id = None
+        if value.physical_seed_id not in {None, ""}:
+            physical_seed_id = str(value.physical_seed_id)
+            if _PHYSICAL_SEED_IDENTIFIER.fullmatch(physical_seed_id) is None:
+                raise ReferenceRegionError(
+                    "Physical seed ID must be a stable 1--128 character identifier."
+                )
+        exclusion = None
+        if value.shape_exclusion_reason not in {None, ""}:
+            exclusion = str(value.shape_exclusion_reason).strip()
+            if not exclusion or len(exclusion) > 160 or "\x00" in exclusion:
+                raise ReferenceRegionError(
+                    "Shape exclusion reason must contain at most 160 characters."
+                )
+        if value.shape_reviewed and (
+            outline_visibility == "unknown" or pose == "unknown"
+        ):
+            missing = []
+            if outline_visibility == "unknown":
+                missing.append("Outline")
+            if pose == "unknown":
+                missing.append("Pose")
+            raise ReferenceRegionError(
+                f"Seed {seed_id} is marked for shape modelling, but "
+                + " and ".join(missing)
+                + (" is Unknown. " if len(missing) == 1 else " are Unknown. ")
+                + "In Annotate seed instances, select this seed and "
+                "choose explicit values, or clear ‘Use for shape modelling’."
+            )
+        normalized.append(
+            SeedInstanceAnnotation(
+                seed_id=seed_id,
+                coat_pattern=coat_pattern,
+                conditions=conditions,
+                conditions_reviewed=value.conditions_reviewed,
+                shape_reviewed=value.shape_reviewed,
+                outline_visibility=outline_visibility,
+                pose=pose,
+                hilum_point=hilum_point,
+                hilum_direction=hilum_direction,
+                physical_seed_id=physical_seed_id,
+                shape_exclusion_reason=exclusion,
+                full_length_visible=value.full_length_visible,
+            )
+        )
+    return tuple(sorted(normalized, key=lambda item: item.seed_id))
+
+
+def _seed_annotations_from_payload(
+    payload: object,
+    extant_seed_ids: frozenset[int],
+    *,
+    version: int = REFERENCE_REGION_VERSION,
+) -> tuple[SeedInstanceAnnotation, ...]:
+    if not isinstance(payload, list):
+        raise ReferenceRegionError("Seed annotations must be a JSON list.")
+    values: list[SeedInstanceAnnotation] = []
+    for item in payload:
+        legacy_keys = {
+            "seed_id",
+            "coat_pattern",
+            "conditions",
+            "conditions_reviewed",
+        }
+        current_keys = legacy_keys | {
+            "shape_reviewed",
+            "outline_visibility",
+            "pose",
+            "hilum_point",
+            "hilum_direction",
+            "physical_seed_id",
+            "shape_exclusion_reason",
+        }
+        expected_keys = current_keys if version >= 4 else legacy_keys
+        if version >= 5:
+            expected_keys = expected_keys | {"full_length_visible"}
+        if not isinstance(item, dict) or set(item) != expected_keys:
+            raise ReferenceRegionError("A seed annotation has an invalid schema.")
+        if not isinstance(item["conditions"], list) or not all(
+            isinstance(condition, str) for condition in item["conditions"]
+        ):
+            raise ReferenceRegionError("Seed annotation conditions must be strings.")
+        if not isinstance(item["conditions_reviewed"], bool):
+            raise ReferenceRegionError("conditions_reviewed must be Boolean.")
+        coat = item["coat_pattern"]
+        if coat is not None and not isinstance(coat, str):
+            raise ReferenceRegionError("Seed coat pattern must be a string or null.")
+        values.append(
+            SeedInstanceAnnotation(
+                seed_id=item["seed_id"],
+                coat_pattern=coat,
+                conditions=tuple(item["conditions"]),
+                conditions_reviewed=item["conditions_reviewed"],
+                shape_reviewed=(False if version < 4 else item["shape_reviewed"]),
+                full_length_visible=(False if version < 5 else item["full_length_visible"]),
+                outline_visibility=(
+                    "unknown" if version < 4 else item["outline_visibility"]
+                ),
+                pose="unknown" if version < 4 else item["pose"],
+                hilum_point=(
+                    None
+                    if version < 4 or item["hilum_point"] is None
+                    else tuple(item["hilum_point"])
+                ),
+                hilum_direction=(
+                    None
+                    if version < 4 or item["hilum_direction"] is None
+                    else tuple(item["hilum_direction"])
+                ),
+                physical_seed_id=(
+                    None if version < 4 else item["physical_seed_id"]
+                ),
+                shape_exclusion_reason=(
+                    None if version < 4 else item["shape_exclusion_reason"]
+                ),
+            )
+        )
+    return _validated_seed_annotations(values, extant_seed_ids)
+
+
+def _optional_finite_pair(value: object, name: str) -> tuple[float, float] | None:
+    if value is None:
+        return None
+    if not isinstance(value, (tuple, list)) or len(value) != 2:
+        raise ReferenceRegionError(f"{name.capitalize()} must contain X and Y.")
+    pair = (float(value[0]), float(value[1]))
+    if not np.all(np.isfinite(pair)):
+        raise ReferenceRegionError(f"{name.capitalize()} must be finite.")
+    return pair
 
 
 def _validated_shape(shape: tuple[int, int]) -> tuple[int, int]:

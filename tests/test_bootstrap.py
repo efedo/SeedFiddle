@@ -216,6 +216,18 @@ class ManifestTests(unittest.TestCase):
                 "discoloration",
             },
         )
+        mutabilis = next(
+            item for item in traits["species"]
+            if item["id"] == "lupinus_mutabilis"
+        )
+        self.assertEqual(
+            mutabilis["reference_seed_coat_patterns"],
+            ["white", "banded_light", "banded_dark", "other"],
+        )
+        self.assertEqual(
+            traits["reference_seed_conditions"],
+            ["immature", "split", "wrinkled", "stained"],
+        )
         self.assertTrue(traits["visible_face_only"])
 
 

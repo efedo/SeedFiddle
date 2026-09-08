@@ -13,11 +13,38 @@ from seedvision.persistence import (
     ImageFingerprintMismatch,
     InvalidReferenceArchive,
     ReferenceRegionBundle,
+    ReferenceRegionError,
     ReferenceRegionStore,
+    SeedInstanceAnnotation,
 )
 
 
 class ReferenceRegionStoreTests(unittest.TestCase):
+    def test_invalid_shape_review_names_seed_and_required_repair(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image_path = root / "images" / "sample.jpg"
+            image_path.parent.mkdir()
+            image_path.write_bytes(b"unchanged source image bytes")
+            labels = np.zeros((12, 12), np.uint16)
+            labels[2:10, 2:10] = 7
+            bundle = ReferenceRegionBundle(
+                shape=labels.shape,
+                annotated_seeds=labels,
+                seed_annotations=(
+                    SeedInstanceAnnotation(7, shape_reviewed=True),
+                ),
+            )
+
+            with self.assertRaises(ReferenceRegionError) as raised:
+                ReferenceRegionStore(root).save(image_path, bundle)
+
+            message = str(raised.exception)
+            self.assertIn("Seed 7", message)
+            self.assertIn("Outline", message)
+            self.assertIn("Pose", message)
+        self.assertIn("Use for shape modelling", message)
+
     def test_round_trip_preserves_material_and_instance_outputs_only(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -45,6 +72,21 @@ class ReferenceRegionStoreTests(unittest.TestCase):
                     other=other,
                     annotated_seeds=instances,
                     annotation_origin="pipeline:procedural_instances",
+                    seed_annotations=(
+                        SeedInstanceAnnotation(
+                            seed_id=17,
+                            coat_pattern="banded_light",
+                            conditions=("immature", "stained"),
+                            conditions_reviewed=True,
+                        ),
+                        SeedInstanceAnnotation(
+                            seed_id=42,
+                            coat_pattern="white",
+                            conditions=(),
+                            conditions_reviewed=True,
+                        ),
+                    ),
+                    annotation_species="lupinus_mutabilis",
                 ),
             )
             loaded = store.load_if_present(image_path, shape)
@@ -61,12 +103,114 @@ class ReferenceRegionStoreTests(unittest.TestCase):
             self.assertEqual(
                 loaded.annotation_origin, "pipeline:procedural_instances"
             )
+            self.assertEqual(loaded.annotation_species, "lupinus_mutabilis")
+            self.assertEqual(
+                loaded.seed_annotations,
+                (
+                    SeedInstanceAnnotation(
+                        seed_id=17,
+                        coat_pattern="banded_light",
+                        conditions=("immature", "stained"),
+                        conditions_reviewed=True,
+                    ),
+                    SeedInstanceAnnotation(
+                        seed_id=42,
+                        coat_pattern="white",
+                        conditions=(),
+                        conditions_reviewed=True,
+                    ),
+                ),
+            )
             with np.load(destination, allow_pickle=False) as archive:
-                self.assertEqual(int(archive["version"]), 2)
+                self.assertEqual(int(archive["version"]), 5)
                 self.assertEqual(archive["material"].dtype, np.uint8)
                 self.assertNotIn("boundary", archive.files)
                 self.assertEqual(archive["annotated_seeds"].dtype, np.uint16)
+                self.assertIn("seed_annotations_json", archive.files)
+                self.assertIn("annotation_species", archive.files)
             self.assertEqual(tuple(destination.parent.glob("*.tmp")), ())
+
+    def test_version_two_archive_loads_with_no_semantic_seed_labels(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image_path = root / "capture.png"
+            image_path.write_bytes(b"legacy source")
+            shape = (7, 9)
+            instances = np.zeros(shape, dtype=np.uint16)
+            instances[2:5, 3:6] = 4
+            store = ReferenceRegionStore(root)
+            destination = store.save(
+                image_path,
+                ReferenceRegionBundle(
+                    shape=shape,
+                    annotated_seeds=instances,
+                    seed_annotations=(
+                        SeedInstanceAnnotation(4, "white"),
+                    ),
+                    annotation_species="lupinus_mutabilis",
+                ),
+            )
+            with np.load(destination, allow_pickle=False) as archive:
+                payload = {
+                    name: np.array(archive[name])
+                    for name in archive.files
+                    if name not in {"seed_annotations_json", "annotation_species"}
+                }
+            payload["version"] = np.asarray(2, dtype=np.uint16)
+            with destination.open("wb") as stream:
+                np.savez_compressed(stream, **payload)
+
+            loaded = store.load_if_present(image_path, shape)
+
+            self.assertIsNotNone(loaded)
+            assert loaded is not None
+            self.assertEqual(loaded.seed_annotations, ())
+            self.assertEqual(loaded.annotation_species, "")
+
+    def test_semantic_labels_must_reference_extant_seed_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image_path = root / "capture.png"
+            image_path.write_bytes(b"source")
+            store = ReferenceRegionStore(root)
+
+            with self.assertRaisesRegex(
+                ValueError, "absent seed ID 9"
+            ):
+                store.save(
+                    image_path,
+                    ReferenceRegionBundle(
+                        shape=(4, 5),
+                        seed_annotations=(SeedInstanceAnnotation(9, "white"),),
+                        annotation_species="lupinus_mutabilis",
+                    ),
+                )
+
+    def test_selected_condition_requires_explicit_review(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image_path = root / "capture.png"
+            image_path.write_bytes(b"source")
+            instances = np.ones((4, 5), dtype=np.uint16)
+            store = ReferenceRegionStore(root)
+
+            with self.assertRaisesRegex(ValueError, "conditions_reviewed"):
+                store.save(
+                    image_path,
+                    ReferenceRegionBundle(
+                        shape=(4, 5),
+                        annotated_seeds=instances,
+                        seed_annotations=(
+                            SeedInstanceAnnotation(
+                                1,
+                                "white",
+                                ("split",),
+                                conditions_reviewed=False,
+                            ),
+                        ),
+                        annotation_species="lupinus_mutabilis",
+                    ),
+                )
 
     def test_version_one_boundary_layer_is_validated_but_retired(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -236,6 +380,14 @@ class ReferenceRegionMainWindowTests(unittest.TestCase):
         window._applied_foreground_exclusion_masks[key] = other
         window._applied_instance_annotations[key] = instances
         window._applied_instance_annotation_origins[key] = "manual:test"
+        window._applied_seed_annotations[key] = {
+            7: SeedInstanceAnnotation(
+                seed_id=7,
+                conditions=("stained",),
+                conditions_reviewed=True,
+            )
+        }
+        window._applied_seed_annotation_species[key] = "soybean"
         window._save_reference_regions()
         self.assertTrue(window._reference_region_store.path_for(image_path).is_file())
         window.close()
@@ -265,6 +417,17 @@ class ReferenceRegionMainWindowTests(unittest.TestCase):
             self.assertEqual(restored._applied_instance_annotations[key][12, 15], 7)
             self.assertEqual(
                 restored._applied_instance_annotation_origins[key], "manual:test"
+            )
+            self.assertEqual(
+                restored._applied_seed_annotations[key][7],
+                SeedInstanceAnnotation(
+                    seed_id=7,
+                    conditions=("stained",),
+                    conditions_reviewed=True,
+                ),
+            )
+            self.assertEqual(
+                restored._applied_seed_annotation_species[key], "soybean"
             )
             self.assertFalse(
                 restored._applied_foreground_reference_masks[key].flags.writeable
@@ -514,6 +677,8 @@ class ReferenceRegionMainWindowTests(unittest.TestCase):
             ):
                 store.pop(key, None)
             window._applied_instance_annotation_origins.pop(key, None)
+            window._applied_seed_annotations.pop(key, None)
+            window._applied_seed_annotation_species.pop(key, None)
 
             window._save_reference_regions()
             loaded = window._reference_region_store.load_if_present(

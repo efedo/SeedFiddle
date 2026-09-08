@@ -163,6 +163,150 @@ class AnalysisSettingsPersistenceTests(unittest.TestCase):
         self.assertEqual(graph.node("procedural_instances").status, NodeStatus.IDLE)
         self.assertEqual(graph.node("reference_edge_probability").x, 321.0)
 
+    def test_version_thirteen_profile_adopts_terminal_seed_trait_node(self) -> None:
+        source = build_default_pipeline()
+        payload = analysis_settings_profile_to_payload(
+            analysis_settings_profile_from_graph(source)
+        )
+        payload["version"] = 13
+        payload["nodes"] = [
+            item
+            for item in payload["nodes"]
+            if item["id"] != "reference_seed_traits"
+        ]
+        payload["connections"] = [
+            item
+            for item in payload["connections"]
+            if item["source"] != "reference_seed_traits"
+            and item["target"] != "reference_seed_traits"
+        ]
+        profile = analysis_settings_profile_from_payload(payload)
+        target = build_default_pipeline()
+
+        result = apply_analysis_settings_profile(target, profile)
+
+        self.assertFalse(result.changed)
+        self.assertIn("reference_seed_traits", target.nodes)
+        self.assertTrue(target.node("reference_seed_traits").enabled)
+        self.assertEqual(
+            len(
+                tuple(
+                    connection
+                    for connection in target.connections
+                    if connection.target == "reference_seed_traits"
+                )
+            ),
+            14,
+        )
+
+    def test_version_fourteen_profile_adds_authoritative_procedural_edge_input(
+        self,
+    ) -> None:
+        payload = analysis_settings_profile_to_payload(
+            analysis_settings_profile_from_graph(build_default_pipeline())
+        )
+        payload["version"] = 14
+        payload["connections"] = [
+            item
+            for item in payload["connections"]
+            if not (
+                (
+                    item["source"] == "reference_edge_probability"
+                    and item["source_port"] == "edge_probability"
+                    and item["target"] == "procedural_instances"
+                    and item["target_port"] == "reference_probability"
+                )
+                or (
+                    item["source"] == "edge_gradients"
+                    and item["source_port"] == "ridges"
+                    and item["target"] == "reference_edge_probability"
+                    and item["target_port"] == "ridges"
+                )
+            )
+        ]
+        target = build_default_pipeline()
+
+        result = apply_analysis_settings_profile(
+            target,
+            analysis_settings_profile_from_payload(payload),
+        )
+
+        self.assertFalse(result.changed)
+        connection = target.connection_for_input(
+            "procedural_instances", "reference_probability"
+        )
+        self.assertEqual(connection.source, "reference_edge_probability")
+        self.assertEqual(connection.source_port, "edge_probability")
+        ridge_connection = target.connection_for_input(
+            "reference_edge_probability", "ridges"
+        )
+        self.assertEqual(ridge_connection.source, "edge_gradients")
+        self.assertEqual(ridge_connection.source_port, "ridges")
+
+    def test_version_eighteen_adds_reference_matching_and_cost_defaults(self) -> None:
+        source = build_default_pipeline()
+        payload = analysis_settings_profile_to_payload(analysis_settings_profile_from_graph(source))
+        payload["version"] = 18
+        parameters = _node_payload(payload, "procedural_instances")["parameters"]
+        new_keys = ("reference_error_minimum_match_iou", "reference_error_missed_seed_weight",
+                    "reference_error_concavity_weight", "reference_error_annotations_complete")
+        for key in new_keys:
+            parameters.pop(key)
+        parameters["reference_error_overreach_weight"] = 3.25
+        target = build_default_pipeline()
+        apply_analysis_settings_profile(target, analysis_settings_profile_from_payload(payload))
+        for key in new_keys:
+            self.assertEqual(target.node("procedural_instances").parameters[key],
+                             source.node("procedural_instances").parameters[key])
+        self.assertEqual(target.node("procedural_instances").parameters["reference_error_overreach_weight"], 3.25)
+
+    def test_version_sixteen_adds_oval_centres_and_diagnostic_defaults(self) -> None:
+        source = build_default_pipeline()
+        payload = analysis_settings_profile_to_payload(
+            analysis_settings_profile_from_graph(source)
+        )
+        payload["version"] = 16
+        procedural = _node_payload(payload, "procedural_instances")
+        parameters = procedural["parameters"]
+        assert isinstance(parameters, dict)
+        new_parameters = {
+            "centre_validated_oval_weight",
+            "reference_error_overreach_weight",
+            "reference_error_distance_scale_fraction",
+        }
+        for key in new_parameters:
+            parameters.pop(key)
+        payload["connections"] = [
+            item
+            for item in payload["connections"]
+            if not (
+                item["target"] == "procedural_instances"
+                and item["target_port"]
+                in {"validated_oval_centres", "reference_controls"}
+            )
+        ]
+
+        target = build_default_pipeline()
+        apply_analysis_settings_profile(
+            target, analysis_settings_profile_from_payload(payload)
+        )
+
+        for key in new_parameters:
+            self.assertEqual(
+                target.node("procedural_instances").parameters[key],
+                source.node("procedural_instances").parameters[key],
+            )
+        oval_connection = target.connection_for_input(
+            "procedural_instances", "validated_oval_centres"
+        )
+        self.assertEqual(oval_connection.source, "seed_edge_curves")
+        self.assertEqual(oval_connection.source_port, "oval_centre_probability")
+        controls_connection = target.connection_for_input(
+            "procedural_instances", "reference_controls"
+        )
+        self.assertEqual(controls_connection.source, "project")
+        self.assertEqual(controls_connection.source_port, "annotations")
+
     def test_graph_compatibility_is_fully_validated_before_mutation(self) -> None:
         graph = build_default_pipeline()
         graph.node("ruler_detection").status = NodeStatus.COMPLETE
@@ -341,7 +485,9 @@ class AnalysisSettingsPersistenceTests(unittest.TestCase):
         )
         payload["version"] = 8
         payload["nodes"] = [
-            node for node in payload["nodes"] if node["id"] != "project"
+            node
+            for node in payload["nodes"]
+            if node["id"] not in {"project", "species_reference_library"}
         ]
         for node_id in ("raw_images", "reference_layers"):
             payload["nodes"].append(
@@ -359,9 +505,17 @@ class AnalysisSettingsPersistenceTests(unittest.TestCase):
             "other_reference": "other",
             "annotations": "annotated_seeds",
             "manual_centres": "centres",
+            "reference_controls": "annotated_seeds",
         }
         legacy_connections = []
         for connection in payload["connections"]:
+            if (
+                connection["source"] == "species_reference_library"
+                or connection["target"] == "species_reference_library"
+                or connection["source_port"] == "species_library"
+                or connection["target_port"] == "pin"
+            ):
+                continue
             if connection["source"] != "project":
                 legacy_connections.append(connection)
                 continue
@@ -405,6 +559,141 @@ class AnalysisSettingsPersistenceTests(unittest.TestCase):
             ),
             ("project", "annotations"),
         )
+
+    def test_version_ten_profile_adds_material_class_contrast_default(self) -> None:
+        payload = analysis_settings_profile_to_payload(
+            analysis_settings_profile_from_graph(build_default_pipeline())
+        )
+        payload["version"] = 10
+        node = _node_payload(payload, "reference_texture_prototypes")
+        parameters = dict(node["parameters"])
+        parameters.pop("reference_texture_class_contrast")
+        node["parameters"] = parameters
+
+        target = build_default_pipeline()
+        apply_analysis_settings_profile(
+            target, analysis_settings_profile_from_payload(payload)
+        )
+
+        self.assertEqual(
+            target.node("reference_texture_prototypes").parameters[
+                "reference_texture_class_contrast"
+            ],
+            4.0,
+        )
+
+    def test_version_eleven_profile_adds_edge_class_contrast_default(self) -> None:
+        payload = analysis_settings_profile_to_payload(
+            analysis_settings_profile_from_graph(build_default_pipeline())
+        )
+        payload["version"] = 11
+        node = _node_payload(payload, "reference_edge_probability")
+        parameters = dict(node["parameters"])
+        parameters.pop("reference_edge_class_contrast")
+        node["parameters"] = parameters
+
+        target = build_default_pipeline()
+        apply_analysis_settings_profile(
+            target, analysis_settings_profile_from_payload(payload)
+        )
+
+        self.assertEqual(
+            target.node("reference_edge_probability").parameters[
+                "reference_edge_class_contrast"
+            ],
+            4.0,
+        )
+
+    def test_version_nine_profile_merges_perimeter_reference_into_layout(self) -> None:
+        source = build_default_pipeline()
+        source.set_parameter(
+            "layout_detection", "perimeter_background_buffer_cm", 0.45
+        )
+        source.set_parameter(
+            "layout_detection",
+            "perimeter_background_band_thickness_cm",
+            0.70,
+        )
+        payload = analysis_settings_profile_to_payload(
+            analysis_settings_profile_from_graph(source)
+        )
+        payload["version"] = 9
+        layout = _node_payload(payload, "layout_detection")
+        layout_parameters = dict(layout["parameters"])
+        perimeter_parameters = {
+            key: layout_parameters.pop(key)
+            for key in (
+                "perimeter_background_buffer_cm",
+                "perimeter_background_band_thickness_cm",
+            )
+        }
+        layout["parameters"] = layout_parameters
+        payload["nodes"].append(
+            {
+                "id": "perimeter_background_reference",
+                "active": True,
+                "enabled": True,
+                "connection_suspended": False,
+                "parameters": perimeter_parameters,
+            }
+        )
+        for connection in payload["connections"]:
+            if (
+                connection["source"] == "layout_detection"
+                and connection["source_port"] == "perimeter_background"
+            ):
+                connection["source"] = "perimeter_background_reference"
+                connection["source_port"] = "perimeter_colour_samples"
+        payload["connections"].extend(
+            (
+                {
+                    "source": "deskew_colour",
+                    "source_port": "corrected_image",
+                    "target": "perimeter_background_reference",
+                    "target_port": "image",
+                    "connected": True,
+                },
+                {
+                    "source": "layout_detection",
+                    "source_port": "vessel_geometry",
+                    "target": "perimeter_background_reference",
+                    "target_port": "region",
+                    "connected": True,
+                },
+                {
+                    "source": "ruler_detection",
+                    "source_port": "pixels_per_millimetre",
+                    "target": "perimeter_background_reference",
+                    "target_port": "scale",
+                    "connected": True,
+                },
+            )
+        )
+
+        target = build_default_pipeline()
+        apply_analysis_settings_profile(
+            target, analysis_settings_profile_from_payload(payload)
+        )
+
+        layout_node = target.node("layout_detection")
+        self.assertEqual(
+            layout_node.parameters["perimeter_background_buffer_cm"], 0.45
+        )
+        self.assertEqual(
+            layout_node.parameters[
+                "perimeter_background_band_thickness_cm"
+            ],
+            0.70,
+        )
+        for consumer, target_port in (
+            ("background_likelihood", "perimeter_colour_samples"),
+            ("refined_background_likelihood", "perimeter_band"),
+        ):
+            connection = target.connection_for_input(consumer, target_port)
+            self.assertEqual(
+                (connection.source, connection.source_port),
+                ("layout_detection", "perimeter_background"),
+            )
 
     def test_version_five_profile_migrates_combined_noise_node(self) -> None:
         source = build_default_pipeline()

@@ -189,7 +189,11 @@ class ProceduralFitMainWindowTests(unittest.TestCase):
         task = _ProceduralFitTask(
             analysis,
             annotations,
-            ProceduralInstanceSettings(),
+            ProceduralInstanceSettings(
+                reference_error_minimum_match_iou=0.35,
+                reference_error_missed_seed_weight=0.25,
+                reference_error_concavity_weight=3.5,
+            ),
             false_positive_weight=2.5,
             overreach_distance_scale_fraction=0.25,
             annotations_are_complete=True,
@@ -215,6 +219,9 @@ class ProceduralFitMainWindowTests(unittest.TestCase):
         self.assertTrue(options.annotations_are_complete)
         self.assertEqual(options.false_positive_weight, 2.5)
         self.assertEqual(options.overreach_distance_scale_fraction, 0.25)
+        self.assertEqual(options.minimum_match_iou, 0.35)
+        self.assertEqual(options.missed_seed_weight, 0.25)
+        self.assertEqual(options.incorrect_concavity_weight, 3.5)
         self.assertEqual(fit.call_args.kwargs["seed_diameter_px"], 19.5)
         prepare_kwargs = prepare.call_args.kwargs
         self.assertIsNone(prepare_kwargs["material_probability"])

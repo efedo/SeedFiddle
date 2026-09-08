@@ -20,6 +20,7 @@ class PipelineInspectorActionTests(unittest.TestCase):
 
         graph = build_default_pipeline()
         inspector = PipelineInspector()
+        inspector.parameter_changed.connect(graph.set_parameter)
         inspector.set_node(graph.node("edge_gradients"))
         self.assertTrue(inspector.procedural_fit_container.isHidden())
 
@@ -37,9 +38,8 @@ class PipelineInspectorActionTests(unittest.TestCase):
             "exponential",
             inspector.procedural_fit_overreach_distance_scale_spin.toolTip(),
         )
-        self.assertEqual(
-            inspector.procedural_fit_missing_penalty_label.text(), "Missing: 1.0×"
-        )
+        self.assertIn("missed seed: 0.5×", inspector.procedural_fit_missing_penalty_label.text())
+        self.assertIn("concavity: +2", inspector.procedural_fit_missing_penalty_label.text())
         self.assertFalse(
             inspector.procedural_fit_complete_annotations_checkbox.isChecked()
         )
@@ -66,6 +66,29 @@ class PipelineInspectorActionTests(unittest.TestCase):
         self.assertEqual(payload["overreach_distance_scale_fraction"], 0.35)
         self.assertEqual(payload["false_negative_weight"], 1.0)
         self.assertTrue(payload["annotations_are_complete"])
+        inspector.close()
+
+    def test_procedural_fit_cost_aliases_follow_live_node_without_duplicate_state(self) -> None:
+        from seedvision.pipeline import build_default_pipeline
+        from seedvision.ui.pipeline_inspector import PipelineInspector
+
+        graph = build_default_pipeline()
+        inspector = PipelineInspector()
+        inspector.parameter_changed.connect(graph.set_parameter)
+        node = graph.node("procedural_instances")
+        graph.set_parameter(node.identifier, "reference_error_overreach_weight", 3.75)
+        graph.set_parameter(node.identifier, "reference_error_missed_seed_weight", 0.25)
+        inspector.set_node(node)
+        self.assertEqual(inspector.procedural_fit_overreach_penalty_spin.value(), 3.75)
+        self.assertIn("missed seed: 0.25", inspector.procedural_fit_missing_penalty_label.text())
+        inspector.procedural_fit_overreach_penalty_spin.setValue(2.5)
+        inspector.procedural_fit_complete_annotations_checkbox.setChecked(True)
+        self.assertEqual(node.parameters["reference_error_overreach_weight"], 2.5)
+        self.assertTrue(node.parameters["reference_error_annotations_complete"])
+        inspector.set_node(graph.node("project"))
+        inspector.set_node(node)
+        self.assertEqual(inspector.procedural_fit_overreach_penalty_spin.value(), 2.5)
+        self.assertTrue(inspector.procedural_fit_complete_annotations_checkbox.isChecked())
         inspector.close()
 
     def test_reference_edge_fit_action_is_owned_by_probability_node(self) -> None:

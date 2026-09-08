@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import itertools
 import unittest
 from unittest.mock import patch
 
@@ -12,6 +13,7 @@ from seedvision.segmentation.procedural_fit import (
     ProceduralFitOptions,
     ProceduralFitParameter,
     fit_procedural_settings,
+    procedural_reference_error_map,
     score_procedural_instances,
 )
 import seedvision.segmentation.procedural_fit as procedural_fit_module
@@ -85,6 +87,34 @@ class ProceduralFitScoreTests(unittest.TestCase):
         self.assertEqual(complete.evaluated_predictions, 2)
         self.assertEqual(complete.false_positive_instances, 1)
         self.assertGreater(complete.loss, partial.loss)
+
+    def test_reference_error_overlay_shows_only_matched_under_and_overreach(self) -> None:
+        truth = np.zeros((48, 64), np.uint16)
+        truth[15:35, 15:35] = 3
+        prediction = np.zeros_like(truth)
+        prediction[15:35, 20:42] = 91
+        prediction[2:6, 2:6] = 92  # Unmatched candidates are transparent here.
+
+        comparison = procedural_reference_error_map(
+            truth,
+            prediction,
+            overreach_weight=2.0,
+            overreach_distance_scale_fraction=0.10,
+            seed_diameter_px=20.0,
+        )
+
+        self.assertEqual(comparison.matched_instances, 1)
+        self.assertEqual(comparison.underreach_pixels, 100)
+        self.assertEqual(comparison.overreach_pixels, 140)
+        self.assertGreater(comparison.rgba[20, 16, 2], 0)  # blue underreach
+        self.assertEqual(comparison.rgba[20, 16, 0], 40)
+        self.assertGreater(comparison.rgba[20, 40, 0], 0)  # red overreach
+        self.assertEqual(comparison.rgba[20, 40, 2], 35)
+        self.assertEqual(comparison.rgba[20, 25, 3], 0)  # exact overlap
+        self.assertEqual(comparison.rgba[3, 3, 3], 0)  # unmatched prediction
+        self.assertGreater(
+            comparison.rgba[20, 41, 3], comparison.rgba[20, 35, 3]
+        )
 
 
 class ProceduralFitDistanceWeightedOverreachTests(unittest.TestCase):
@@ -413,12 +443,136 @@ class ProceduralSettingsFitTests(unittest.TestCase):
         self.assertEqual(first.proposed_score, second.proposed_score)
         self.assertEqual(first.trials, second.trials)
 
-    def test_invalid_weighting_cannot_make_false_positives_cheaper(self) -> None:
-        with self.assertRaisesRegex(ValueError, "must exceed"):
-            ProceduralFitOptions(
-                false_positive_weight=1.0,
-                false_negative_weight=1.0,
-            )
+    def test_pixel_weights_are_finite_positive_and_match_overlay_range(self) -> None:
+        # Distance weighting already permits nearby FP pixels to cost less than
+        # FN pixels. The exposed positive amplitude range is valid for both paths.
+        for field in ("false_positive_weight", "false_negative_weight"):
+            for invalid in (0.0, -1.0, float("nan"), float("inf")):
+                with self.subTest(field=field, value=invalid), self.assertRaises(ValueError):
+                    ProceduralFitOptions(**{field: invalid})
+        truth = ProceduralFitScoreTests._single_seed()
+        prediction = truth.copy()
+        prediction[13, 20] = 1
+        comparison = procedural_reference_error_map(truth, prediction, overreach_weight=0.05)
+        score = score_procedural_instances(truth, prediction, false_positive_weight=0.05)
+        self.assertAlmostEqual(float(comparison.pixel_costs.sum()), score.total_pixel_cost)
+
+
+class ProceduralReferenceAssignmentTests(unittest.TestCase):
+    def test_global_assignment_recovers_pair_stolen_by_greedy_overlap(self) -> None:
+        truth = np.zeros((20, 20), np.uint16)
+        truth[:10, :10] = 3
+        truth[10:, :10] = 7
+        prediction = np.zeros_like(truth)
+        prediction[:6, :10] = 91     # 60 pixels of reference 3
+        prediction[10:14, :10] = 91  # 40 pixels of reference 7
+        prediction[6:10, :10] = 44   # only available counterpart for reference 3
+        comparison = procedural_reference_error_map(truth, prediction)
+        self.assertEqual(set(comparison.matched_pairs), {(3, 44), (7, 91)})
+        self.assertEqual(comparison.missed_reference_instances, 0)
+
+    def test_hungarian_matches_exhaustive_optimum_with_skip_choices(self) -> None:
+        rng = np.random.default_rng(2819)
+        for rows, columns in ((1, 3), (3, 1), (3, 4), (4, 3)):
+            for _ in range(12):
+                weights = rng.random((rows, columns))
+                weights[weights < 0.4] = 0.0
+                result = procedural_fit_module._maximum_weight_assignment(weights)
+                actual = sum(weights[row, column] for row, column in result)
+                augmented = np.concatenate((weights, np.zeros((rows, rows))), axis=1)
+                expected = max(sum(augmented[row, col] for row, col in enumerate(choice))
+                               for choice in itertools.permutations(range(columns + rows), rows))
+                self.assertAlmostEqual(actual, expected)
+                self.assertEqual(len({row for row, _ in result}), len(result))
+                self.assertEqual(len({col for _, col in result}), len(result))
+
+    def test_neighbour_with_incidental_contact_is_not_a_correspondence(self) -> None:
+        truth = np.zeros((60, 80), np.uint16)
+        truth[20:40, 20:40] = 51
+        prediction = np.zeros_like(truth)
+        prediction[20:40, 39:59] = 29
+        original = prediction.copy()
+        comparison = procedural_reference_error_map(truth, prediction)
+        score = score_procedural_instances(truth, prediction)
+        self.assertEqual(comparison.matched_pairs, ())
+        self.assertEqual(score.false_positive_pixels, 0)
+        self.assertEqual(score.false_negative_instances, 1)
+        self.assertEqual(score.missed_reference_pixels, 400)
+        np.testing.assert_array_equal(comparison.rgba[25, 25, :3], (255, 180, 25))
+        self.assertGreater(comparison.rgba[25, 25, 3], 0)
+        self.assertEqual(comparison.rgba[25, 50, 3], 0)
+        np.testing.assert_array_equal(prediction, original)
+        complete = score_procedural_instances(truth, prediction, annotations_are_complete=True)
+        self.assertGreater(complete.false_positive_pixels, 0)
+
+    def test_missed_seed_cost_is_visible_adjustable_and_less_than_bad_outline(self) -> None:
+        truth = ProceduralFitScoreTests._single_seed()
+        empty = np.zeros_like(truth)
+        low = score_procedural_instances(truth, empty, missed_seed_weight=0.25)
+        high = score_procedural_instances(truth, empty, missed_seed_weight=0.75)
+        self.assertAlmostEqual(low.loss, 0.275)
+        self.assertAlmostEqual(high.loss, 0.825)
+        missing = procedural_reference_error_map(truth, empty)
+        self.assertEqual(missing.missed_reference_instances, 1)
+        self.assertEqual(missing.missed_reference_pixels, 400)
+        self.assertEqual(float(missing.pixel_costs.sum()), 200.0)
+        bad = np.zeros_like(truth)
+        bad[10:38, 10:38] = 3
+        bad_score = score_procedural_instances(truth, bad, overreach_distance_scale_fraction=0.05)
+        self.assertGreater(bad_score.loss, score_procedural_instances(truth, empty).loss)
+
+    def test_concavity_surcharge_requires_incorrect_exterior_connected_pixels(self) -> None:
+        truth = ProceduralFitScoreTests._single_seed()
+        notch = truth.copy()
+        notch[14:24, 22:26] = 0
+        plain = score_procedural_instances(truth, notch, incorrect_concavity_weight=0)
+        penalized = score_procedural_instances(truth, notch, incorrect_concavity_weight=2)
+        self.assertEqual(penalized.incorrect_concavity_pixels, 40)
+        self.assertEqual(penalized.incorrect_concavity_cost, 80)
+        self.assertAlmostEqual(penalized.loss - plain.loss, 80 / 400)
+        comparison = procedural_reference_error_map(truth, notch)
+        np.testing.assert_array_equal(comparison.rgba[20, 24, :3], (235, 45, 235))
+        self.assertEqual(comparison.pixel_costs[20, 24], 3)
+        # A correctly reproduced natural indentation must remain zero-cost.
+        self.assertTrue(score_procedural_instances(notch, notch).perfect_fit)
+        self.assertEqual(np.count_nonzero(procedural_reference_error_map(notch, notch).rgba[..., 3]), 0)
+        hole = truth.copy()
+        hole[22:26, 22:26] = 0
+        self.assertEqual(score_procedural_instances(truth, hole).incorrect_concavity_pixels, 0)
+
+    def test_display_cost_sum_equals_fitting_pixel_cost_including_cross_pair_errors(self) -> None:
+        truth = np.zeros((64, 80), np.uint16)
+        truth[10:30, 10:30] = 9
+        truth[10:30, 34:54] = 2
+        truth[40:55, 20:35] = 77  # missed
+        prediction = truth.copy()
+        prediction[truth == 77] = 0
+        prediction[10:19, 18:21] = 0  # notch
+        prediction[20:25, 34:39] = 9  # error against both matched pairs
+        prediction[5:10, 12:18] = 9
+        prediction[2:5, 65:68] = 4  # unreviewed
+        for complete in (False, True):
+            options = dict(minimum_match_iou=0.15, missed_seed_weight=0.35,
+                           incorrect_concavity_weight=1.25, annotations_are_complete=complete)
+            score = score_procedural_instances(truth, prediction, **options)
+            comparison = procedural_reference_error_map(truth, prediction, **options)
+            self.assertAlmostEqual(float(comparison.pixel_costs.sum(dtype=np.float64)),
+                                   score.total_pixel_cost, places=4)
+            self.assertEqual(comparison.incorrect_concavity_pixels, score.incorrect_concavity_pixels)
+            self.assertEqual(comparison.missed_reference_pixels, score.missed_reference_pixels)
+            self.assertEqual(comparison.overreach_pixels, score.false_positive_pixels)
+
+    def test_new_fit_cost_options_reach_every_trial_and_do_not_rewrite_prediction(self) -> None:
+        truth = ProceduralFitScoreTests._single_seed()
+        prediction = truth.copy()
+        prediction[14:24, 22:26] = 0
+        original = prediction.copy()
+        options = ProceduralFitOptions(maximum_evaluations=3, minimum_match_iou=0.4,
+                                       missed_seed_weight=0.25, incorrect_concavity_weight=3)
+        result = fit_procedural_settings(truth, lambda _settings: prediction, options=options)
+        for trial in result.trials:
+            self.assertEqual(trial.score.incorrect_concavity_cost, 120)
+        np.testing.assert_array_equal(prediction, original)
 
 
 if __name__ == "__main__":

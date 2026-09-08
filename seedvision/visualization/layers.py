@@ -9,16 +9,25 @@ import numpy as np
 
 @dataclass(frozen=True, slots=True)
 class NoiseFrequencyProfile:
-    """Per-image robust texture statistics learned from colour pseudo-labels."""
+    """Per-image robust, target-only texture statistics.
+
+    The same compact profile describes Background, Foreground, or Other. It
+    deliberately contains no counterclass distribution: semantic comparison
+    belongs exclusively to Material evidence decision.
+    """
 
     band_scales_px: tuple[float, float, float]
-    background_log_rms: tuple[float, float, float]
-    nonbackground_log_rms: tuple[float, float, float]
-    background_sample_count: int
-    nonbackground_sample_count: int
-    separation: float
-    background_log_scale: tuple[float, float, float] = (1.0, 1.0, 1.0)
-    nonbackground_log_scale: tuple[float, float, float] = (1.0, 1.0, 1.0)
+    descriptor_centre: tuple[float, ...]
+    target_sample_count: int
+    descriptor_scale: tuple[float, ...] = (1.0, 1.0, 1.0)
+    positive_class_name: str = "Background"
+    target_distance_median: float = 0.0
+    compatibility_half_distance: float = 1.0
+    descriptor_names: tuple[str, ...] = ()
+    reference_source_mode: str = "Current image only"
+    current_target_sample_count: int = 0
+    library_source_count: int = 0
+    library_profile_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +72,10 @@ class ForegroundColourProfile:
     exclusion_strength: float = 0.95
     source: str = "unknown"
     source_sample_count: int = 0
+    reference_source_mode: str = "Current image only"
+    current_source_count: int = 0
+    library_source_count: int = 0
+    library_profile_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +106,14 @@ class ReferenceTextureProfile:
     edge_strip_normal_offset_px: float = 0.0
     edge_strip_tangent_half_length_px: float = 0.0
     patch_size_px: int = 0
+    material_reference_source_mode: str = "Current image only"
+    edge_reference_source_mode: str = "Current image only"
+    current_material_sample_count: int = 0
+    library_material_source_count: int = 0
+    library_material_prototype_count: int = 0
+    current_edge_sample_count: int = 0
+    library_edge_source_count: int = 0
+    library_edge_prototype_count: int = 0
 
     def count_for(self, class_name: str) -> int:
         return sum(
@@ -104,6 +125,24 @@ class ReferenceTextureProfile:
         return dict(self.class_sample_count_units).get(
             class_name, "reference pixels"
         )
+
+
+@dataclass(frozen=True, slots=True)
+class ReferenceSeedTraitProfile:
+    """Compact audit metadata for seed-trait prototype classifiers."""
+
+    species_id: str = ""
+    coat_patterns: tuple[str, ...] = ()
+    conditions: tuple[str, ...] = ()
+    class_seed_counts: tuple[tuple[str, int], ...] = ()
+    class_sample_counts: tuple[tuple[str, int], ...] = ()
+    prototype_counts: tuple[tuple[str, int], ...] = ()
+    coat_model_available: bool = False
+    condition_models_available: tuple[tuple[str, bool], ...] = ()
+    reference_source_mode: str = "Current image only"
+    current_seed_count: int = 0
+    library_source_count: int = 0
+    library_prototype_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,9 +188,12 @@ class AnalysisLayerSettings:
     foreground_noise_vector_decay: float = 0.86
     foreground_noise_direction_integration: str = "1st tertile"
     foreground_noise_working_maximum_dimension: int = 1280
+    foreground_noise_reference_source: str = "Species library + current image"
+    foreground_noise_current_reference_weight: float = 1.0
     edge_gradient_method: str = "scharr"
     edge_gradient_source_fusion: str = "maximum"
     edge_gradient_include_original: bool = True
+    edge_gradient_use_despeckled_flattened: bool = False
     edge_gradient_include_wavelet_detail_1: bool = False
     edge_gradient_include_wavelet_detail_2: bool = False
     edge_gradient_include_wavelet_detail_3: bool = False
@@ -213,16 +255,32 @@ class AnalysisLayerSettings:
     reference_texture_minimum_samples_per_prototype: int = 16
     reference_texture_fit_iterations: int = 4
     reference_texture_similarity_scale: float = 1.0
+    reference_texture_class_contrast: float = 4.0
     reference_edge_minimum_samples_per_prototype: int = 16
     reference_edge_fit_iterations: int = 4
     reference_edge_similarity_scale: float = 1.0
+    reference_edge_class_contrast: float = 4.0
     reference_texture_context_fraction: float = 0.04
     reference_texture_patch_fraction: float = 0.28
     reference_texture_working_maximum_dimension: int = 960
+    material_prototype_reference_source: str = "Species library + current image"
+    material_prototype_current_reference_weight: float = 1.0
+    reference_seed_trait_prototypes_per_class: int = 64
+    reference_seed_trait_minimum_samples_per_prototype: int = 16
+    reference_seed_trait_fit_iterations: int = 4
+    reference_seed_trait_similarity_scale: float = 1.0
+    reference_seed_trait_class_contrast: float = 4.0
+    reference_seed_trait_context_fraction: float = 0.04
+    reference_seed_trait_interior_buffer_fraction: float = 0.08
+    reference_seed_trait_working_maximum_dimension: int = 1280
+    seed_trait_reference_source: str = "Species library + current image"
+    seed_trait_current_reference_weight: float = 1.0
     reference_texture_edge_working_maximum_dimension: int = 2048
     reference_edge_minimum_working_seed_diameter_px: float = 28.0
     reference_edge_strip_normal_offset_fraction: float = 0.05
     reference_edge_strip_tangent_half_length_fraction: float = 0.08
+    edge_prototype_reference_source: str = "Species library + current image"
+    edge_prototype_current_reference_weight: float = 1.0
     # Annotated instances always provide boundary supervision when present;
     # this controls how far inside each contour internal-edge examples begin.
     reference_texture_instance_interior_buffer_fraction: float = 0.08
@@ -269,6 +327,27 @@ class AnalysisLayerSettings:
     material_morphology_fraction: float = 0.06
 
     def __post_init__(self) -> None:
+        source_modes = {
+            "Current image only",
+            "Species library only",
+            "Species library + current image",
+        }
+        for name in (
+            "foreground_noise_reference_source",
+            "material_prototype_reference_source",
+            "seed_trait_reference_source",
+            "edge_prototype_reference_source",
+        ):
+            if getattr(self, name) not in source_modes:
+                raise ValueError(f"Unknown reference source mode for {name}.")
+        for name in (
+            "foreground_noise_current_reference_weight",
+            "material_prototype_current_reference_weight",
+            "seed_trait_current_reference_weight",
+            "edge_prototype_current_reference_weight",
+        ):
+            if not 0.0 <= float(getattr(self, name)) <= 8.0:
+                raise ValueError(f"{name} must be between 0 and 8.")
         if not 0.0 <= self.perimeter_background_buffer_cm <= 2.0:
             raise ValueError("Perimeter background buffer must be between 0 and 2 cm.")
         if not 0.05 <= self.perimeter_background_band_thickness_cm <= 2.0:
@@ -356,18 +435,42 @@ class AnalysisLayerSettings:
             raise ValueError("Reference texture fit iterations must be between 1 and 12.")
         if not 0.25 <= self.reference_texture_similarity_scale <= 4.0:
             raise ValueError("Reference texture tolerance must be between 0.25 and 4.")
+        if not 1.0 <= self.reference_texture_class_contrast <= 12.0:
+            raise ValueError(
+                "Reference texture class contrast must be between 1 and 12."
+            )
         if not 4 <= self.reference_edge_minimum_samples_per_prototype <= 512:
             raise ValueError("Reference edge prototype support must be between 4 and 512 pixels.")
         if not 1 <= self.reference_edge_fit_iterations <= 12:
             raise ValueError("Reference edge fit iterations must be between 1 and 12.")
         if not 0.25 <= self.reference_edge_similarity_scale <= 4.0:
             raise ValueError("Reference edge tolerance must be between 0.25 and 4.")
+        if not 1.0 <= self.reference_edge_class_contrast <= 12.0:
+            raise ValueError(
+                "Reference edge class contrast must be between 1 and 12."
+            )
         if not 0.005 <= self.reference_texture_context_fraction <= 0.30:
             raise ValueError("Reference texture context must be between 0.005 and 0.30 seed diameters.")
         if not 0.10 <= self.reference_texture_patch_fraction <= 0.80:
             raise ValueError("Reference texture patch size must be between 0.10 and 0.80 seed diameters.")
         if not 256 <= self.reference_texture_working_maximum_dimension <= 2048:
             raise ValueError("Reference texture working dimension must be between 256 and 2048.")
+        if not 8 <= self.reference_seed_trait_prototypes_per_class <= 256:
+            raise ValueError("Seed-trait prototypes per class must be between 8 and 256.")
+        if not 4 <= self.reference_seed_trait_minimum_samples_per_prototype <= 512:
+            raise ValueError("Seed-trait prototype support must be between 4 and 512 pixels.")
+        if not 1 <= self.reference_seed_trait_fit_iterations <= 12:
+            raise ValueError("Seed-trait fit iterations must be between 1 and 12.")
+        if not 0.25 <= self.reference_seed_trait_similarity_scale <= 4.0:
+            raise ValueError("Seed-trait prototype tolerance must be between 0.25 and 4.")
+        if not 1.0 <= self.reference_seed_trait_class_contrast <= 12.0:
+            raise ValueError("Seed-trait class contrast must be between 1 and 12.")
+        if not 0.005 <= self.reference_seed_trait_context_fraction <= 0.30:
+            raise ValueError("Seed-trait context must be between 0.005 and 0.30 diameters.")
+        if not 0.0 <= self.reference_seed_trait_interior_buffer_fraction <= 0.50:
+            raise ValueError("Seed-trait interior buffer must be between 0 and 0.5 diameter.")
+        if not 256 <= self.reference_seed_trait_working_maximum_dimension <= 2048:
+            raise ValueError("Seed-trait working dimension must be between 256 and 2048.")
         if not 512 <= self.reference_texture_edge_working_maximum_dimension <= 4096:
             raise ValueError(
                 "Reference edge-strip working dimension must be between 512 and 4096."
@@ -394,7 +497,7 @@ class AnalysisLayerSettings:
             )
         if not 0.0 <= self.net_physical_edge_internal_scale <= 2.0:
             raise ValueError(
-                "Net physical-edge internal subtraction must be between 0 and 2."
+                "Non-physical prototype subtraction weight must be between 0 and 2."
             )
         if self.trace_edge_source not in {
             "generic_ridges",
@@ -648,9 +751,24 @@ class AnalysisLayers:
     reference_background_texture_probability: object | None = None
     reference_other_texture_probability: object | None = None
     reference_texture_profile: ReferenceTextureProfile | None = None
+    reference_seed_coat_probabilities: tuple[tuple[str, object], ...] = ()
+    reference_seed_condition_probabilities: tuple[tuple[str, object], ...] = ()
+    reference_seed_trait_profile: ReferenceSeedTraitProfile | None = None
+    # Raw, spatially broad descriptor outputs retained for diagnostics only.
     physical_edge_probability: object | None = None
     non_edge_probability: object | None = None
     net_physical_edge_probability: object | None = None
+    # True-edge-supported products used by analysis consumers. The canonical
+    # probability is thinned edge support multiplied by Pphysical. The optional
+    # conservative margin is evidence, not probability; per-class maps let
+    # consumers distinguish known Physical from known Non-physical support.
+    reference_edge_probability: object | None = None
+    conservative_net_physical_edge_evidence: object | None = None
+    edge_supported_physical_compatibility: object | None = None
+    edge_supported_nonphysical_compatibility: object | None = None
+    physical_edge_interior_direction_x: object | None = None
+    physical_edge_interior_direction_y: object | None = None
+    physical_edge_interior_direction_confidence: object | None = None
     net_physical_edge_internal_scale: float = 0.50
     reference_edge_ridges: object | None = None
     net_reference_edge_ridges: object | None = None
@@ -763,7 +881,7 @@ class AnalysisLayers:
         return np.dstack((gray, gray, gray, alpha))
 
     def other_noise_rgba(self) -> np.ndarray:
-        """Show the directional Other-vs-non-Other noise/colour score."""
+        """Show raw target-only texture compatibility with painted Other."""
 
         gray = (
             np.zeros_like(np.asarray(self.valid_mask), dtype=np.uint8)
@@ -772,6 +890,62 @@ class AnalysisLayers:
         )
         alpha = np.uint8(np.asarray(self.valid_mask) > 0) * 255
         return np.dstack((gray, gray, gray, alpha))
+
+    def _signed_probability_excess_rgba(
+        self,
+        positive_probability: object | None,
+        competing_probabilities: tuple[object | None, ...],
+    ) -> np.ndarray:
+        """Render one target's excess over the strongest competing target.
+
+        These are deliberately viewer-only arithmetic diagnostics.  The raw
+        evidence maps are independent probabilities rather than complementary
+        classes, so sibling competitors are combined with a pixelwise maximum
+        instead of being added or renormalized.  Positive excess is blue,
+        competing excess is red, and a tie is black.
+        """
+
+        valid = np.asarray(self.valid_mask)
+        shape = valid.shape
+        positive = (
+            np.zeros(shape, dtype=np.uint8)
+            if positive_probability is None
+            else np.asarray(positive_probability, dtype=np.uint8)
+        )
+        strongest_competitor = np.zeros(shape, dtype=np.uint8)
+        for probability in competing_probabilities:
+            if probability is not None:
+                strongest_competitor = np.maximum(
+                    strongest_competitor,
+                    np.asarray(probability, dtype=np.uint8),
+                )
+        difference = (
+            positive.astype(np.int16)
+            - strongest_competitor.astype(np.int16)
+        )
+        red = np.uint8(np.clip(-difference, 0, 255))
+        green = np.zeros(shape, dtype=np.uint8)
+        blue = np.uint8(np.clip(difference, 0, 255))
+        alpha = np.uint8(valid > 0) * 255
+        return np.dstack((red, green, blue, alpha))
+
+    def foreground_colour_excess_rgba(
+        self, foreground_probability: object | None
+    ) -> np.ndarray:
+        """Compare raw Foreground colour with strongest Background/Other colour."""
+
+        return self._signed_probability_excess_rgba(
+            foreground_probability,
+            (self.background_likelihood, self.other_colour_probability),
+        )
+
+    def foreground_noise_excess_rgba(self) -> np.ndarray:
+        """Compare raw Foreground texture with strongest Background/Other texture."""
+
+        return self._signed_probability_excess_rgba(
+            self.foreground_noise_likelihood,
+            (self.refined_background_likelihood, self.other_noise_probability),
+        )
 
     def reference_seed_surface_rgba(self) -> np.ndarray:
         return self.reference_material_probability_rgba("foreground")
@@ -795,7 +969,34 @@ class AnalysisLayers:
         alpha = np.uint8(np.asarray(self.valid_mask) > 0) * 255
         return np.dstack((values, values, values, alpha))
 
-    def reference_edge_probability_rgba(self, physical: bool = True) -> np.ndarray:
+    def reference_seed_trait_probability_rgba(
+        self, trait_kind: str, class_name: str
+    ) -> np.ndarray:
+        """Render an isolated seed coat/condition material probability."""
+
+        rasters = dict(
+            self.reference_seed_coat_probabilities
+            if trait_kind == "coat"
+            else self.reference_seed_condition_probabilities
+            if trait_kind == "condition"
+            else ()
+        )
+        if trait_kind not in {"coat", "condition"}:
+            raise ValueError(f"Unknown seed trait kind {trait_kind!r}.")
+        raster = rasters.get(class_name)
+        values = (
+            np.zeros_like(np.asarray(self.valid_mask), dtype=np.uint8)
+            if raster is None
+            else np.asarray(raster, dtype=np.uint8)
+        )
+        alpha = np.uint8(np.asarray(self.valid_mask) > 0) * 255
+        return np.dstack((values, values, values, alpha))
+
+    def reference_edge_prototype_compatibility_rgba(
+        self, physical: bool = True
+    ) -> np.ndarray:
+        """Render one raw, spatially broad prototype-compatibility diagnostic."""
+
         raster = (
             self.physical_edge_probability if physical else self.non_edge_probability
         )
@@ -817,9 +1018,9 @@ class AnalysisLayers:
         return np.dstack((red, green, blue, alpha))
 
     def reference_edge_comparison_rgba(self) -> np.ndarray:
-        """Compare both learned edge classes without materializing a new raster.
+        """Compare both raw prototype compatibilities without a new raster.
 
-        Physical-edge probability is blue and non-physical-edge probability is red, so
+        Physical compatibility is blue and non-physical compatibility is red, so
         pixels supported by both classes appear magenta.  The two lazy source
         rasters are downloaded only when this diagnostic is selected.
         """
@@ -839,6 +1040,57 @@ class AnalysisLayers:
         green = np.zeros(shape, dtype=np.uint8)
         alpha = np.uint8(valid > 0) * 255
         return np.dstack((non_edge, green, physical, alpha))
+
+    def reference_edge_excess_rgba(self) -> np.ndarray:
+        """Show the unscaled Physical-versus-Non-physical compatibility excess."""
+
+        return self._signed_probability_excess_rgba(
+            self.physical_edge_probability,
+            (self.non_edge_probability,),
+        )
+
+    def physical_edge_interior_direction_rgba(self) -> np.ndarray:
+        """Render predicted inward normals as hue and decisiveness as value."""
+
+        valid = np.asarray(self.valid_mask)
+        shape = valid.shape
+        direction_x = (
+            np.zeros(shape, np.float32)
+            if self.physical_edge_interior_direction_x is None
+            else np.asarray(
+                self.physical_edge_interior_direction_x, dtype=np.float32
+            )
+        )
+        direction_y = (
+            np.zeros(shape, np.float32)
+            if self.physical_edge_interior_direction_y is None
+            else np.asarray(
+                self.physical_edge_interior_direction_y, dtype=np.float32
+            )
+        )
+        confidence = (
+            np.zeros(shape, np.float32)
+            if self.physical_edge_interior_direction_confidence is None
+            else np.asarray(
+                self.physical_edge_interior_direction_confidence,
+                dtype=np.float32,
+            )
+        )
+        if any(
+            values.shape != shape
+            for values in (direction_x, direction_y, confidence)
+        ):
+            raise ValueError(
+                "Physical-edge direction rasters must match the valid mask."
+            )
+        angle = np.mod(np.arctan2(direction_y, direction_x), 2.0 * np.pi)
+        hue = np.uint8(
+            np.mod(np.rint(angle * (180.0 / (2.0 * np.pi))), 180.0)
+        )
+        value = np.uint8(
+            np.clip(np.rint(confidence * 255.0), 0.0, 255.0)
+        )
+        return self._edge_rgba(hue, value)
 
     def reference_prototype_footprints_rgba(self) -> np.ndarray:
         """Draw the actual retained medoid centres and descriptor footprints.
@@ -952,7 +1204,7 @@ class AnalysisLayers:
         return rgba
 
     def net_physical_edge_probability_rgba(self) -> np.ndarray:
-        """Render the authoritative cached physical-minus-non-physical field."""
+        """Render the raw physical-minus-non-physical prototype margin."""
 
         valid = np.asarray(self.valid_mask)
         shape = valid.shape
@@ -962,8 +1214,8 @@ class AnalysisLayers:
             )
         else:
             # Retain compatibility for compact callers/tests that construct an
-            # AnalysisLayers object directly. Production analysis always
-            # supplies the cached node output above.
+            # AnalysisLayers object directly. Production analysis supplies the
+            # cached diagnostic margin above.
             physical = (
                 np.zeros(shape, dtype=np.uint8)
                 if self.physical_edge_probability is None
@@ -986,8 +1238,20 @@ class AnalysisLayers:
         alpha = np.uint8(valid > 0) * 255
         return np.dstack((black, black, net_physical, alpha))
 
+    def reference_edge_supported_probability_rgba(self) -> np.ndarray:
+        """Render the authoritative true-edge-supported reference probability."""
+
+        values = (
+            np.zeros_like(np.asarray(self.valid_mask), dtype=np.uint8)
+            if self.reference_edge_probability is None
+            else np.asarray(self.reference_edge_probability, dtype=np.uint8)
+        )
+        black = np.zeros_like(values)
+        alpha = np.uint8(np.asarray(self.valid_mask) > 0) * 255
+        return np.dstack((black, black, values, alpha))
+
     def locally_normalized_net_physical_edge_rgba(self) -> np.ndarray:
-        """Render the locally normalized semantic edge margin in green-blue."""
+        """Render normalized true-edge-supported probability in matching blue."""
 
         values = (
             np.zeros_like(np.asarray(self.valid_mask), dtype=np.uint8)
@@ -997,9 +1261,22 @@ class AnalysisLayers:
             )
         )
         black = np.zeros_like(values)
-        green = np.uint8(values.astype(np.float32) * 0.82)
         alpha = np.uint8(np.asarray(self.valid_mask) > 0) * 255
-        return np.dstack((black, green, values, alpha))
+        return np.dstack((black, black, values, alpha))
+
+    def conservative_net_physical_edge_evidence_rgba(self) -> np.ndarray:
+        """Render optional conservative evidence on the same blue scale."""
+
+        values = (
+            np.zeros_like(np.asarray(self.valid_mask), dtype=np.uint8)
+            if self.conservative_net_physical_edge_evidence is None
+            else np.asarray(
+                self.conservative_net_physical_edge_evidence, dtype=np.uint8
+            )
+        )
+        black = np.zeros_like(values)
+        alpha = np.uint8(np.asarray(self.valid_mask) > 0) * 255
+        return np.dstack((black, black, values, alpha))
 
     def reference_edge_ridges_rgba(self) -> np.ndarray:
         values = (
@@ -1007,15 +1284,12 @@ class AnalysisLayers:
             if self.reference_edge_ridges is None
             else np.asarray(self.reference_edge_ridges, dtype=np.uint8)
         )
-        normalized = values.astype(np.float32) / 255.0
-        red = np.uint8(normalized * 255.0)
-        green = np.uint8(normalized * 210.0)
-        blue = np.uint8(normalized * 45.0)
+        black = np.zeros_like(values)
         alpha = np.uint8(np.asarray(self.valid_mask) > 0) * 255
-        return np.dstack((red, green, blue, alpha))
+        return np.dstack((black, black, values, alpha))
 
     def net_reference_edge_ridges_rgba(self) -> np.ndarray:
-        """Render the thinned net-physical ridge in a distinct cyan-blue."""
+        """Render the optional thinned conservative net physical-edge ridge."""
 
         values = (
             np.zeros_like(np.asarray(self.valid_mask), dtype=np.uint8)
@@ -1023,12 +1297,11 @@ class AnalysisLayers:
             else np.asarray(self.net_reference_edge_ridges, dtype=np.uint8)
         )
         black = np.zeros_like(values)
-        green = np.uint8(values.astype(np.float32) * 0.65)
         alpha = np.uint8(np.asarray(self.valid_mask) > 0) * 255
-        return np.dstack((black, green, values, alpha))
+        return np.dstack((black, black, values, alpha))
 
     def normalized_net_reference_edge_ridges_rgba(self) -> np.ndarray:
-        """Render thinned locally normalized net evidence in bright green."""
+        """Render thinned normalized reference evidence in matching blue."""
 
         values = (
             np.zeros_like(np.asarray(self.valid_mask), dtype=np.uint8)
@@ -1038,9 +1311,8 @@ class AnalysisLayers:
             )
         )
         black = np.zeros_like(values)
-        blue = np.uint8(values.astype(np.float32) * 0.35)
         alpha = np.uint8(np.asarray(self.valid_mask) > 0) * 255
-        return np.dstack((black, values, blue, alpha))
+        return np.dstack((black, black, values, alpha))
 
     def surrounding_noise_rgba(self) -> np.ndarray | None:
         if (
@@ -1188,6 +1460,10 @@ def build_analysis_layers(
     background_exclusion_mask: np.ndarray | None = None,
     foreground_exclusion_mask: np.ndarray | None = None,
     seed_instance_annotations: np.ndarray | None = None,
+    seed_instance_traits: tuple[object, ...] = (),
+    seed_trait_species: str = "",
+    seed_trait_coat_patterns: tuple[str, ...] = (),
+    seed_trait_conditions: tuple[str, ...] = (),
     background_reference_samples: np.ndarray | None = None,
     background_reference_sample_count: int = 0,
     background_prior_lab: tuple[float, float, float] | None = None,
@@ -1199,6 +1475,7 @@ def build_analysis_layers(
     reference_edge_probability_enabled: bool = True,
     reference_edge_ridges_enabled: bool = True,
     reference_texture_prototypes_enabled: bool = True,
+    reference_seed_traits_enabled: bool = True,
     surface_darkness_gradients_enabled: bool = True,
     lightening_gradient_ceiling_enabled: bool = True,
     darkening_gradient_ceiling_enabled: bool = True,
@@ -1216,10 +1493,14 @@ def build_analysis_layers(
     instance_nonseed_probability=None,
     material_evidence_enabled: bool = True,
     foreground_colour_profile: ForegroundColourProfile | None = None,
+    species_library=None,
+    seed_shape_model=None,
+    seed_measurement_summary=None,
     surrounding_noise_source_tensor=None,
     surrounding_noise_valid_tensor=None,
     surrounding_noise_offset_x: int = 0,
     surrounding_noise_offset_y: int = 0,
+    despeckled_flattened_tensor=None,
     settings: AnalysisLayerSettings | None = None,
     cache_values: dict[str, object] | None = None,
     dirty_nodes: set[str] | frozenset[str] = frozenset(),
@@ -1244,6 +1525,10 @@ def build_analysis_layers(
         background_exclusion_mask=background_exclusion_mask,
         foreground_exclusion_mask=foreground_exclusion_mask,
         seed_instance_annotations=seed_instance_annotations,
+        seed_instance_traits=seed_instance_traits,
+        seed_trait_species=seed_trait_species,
+        seed_trait_coat_patterns=seed_trait_coat_patterns,
+        seed_trait_conditions=seed_trait_conditions,
         background_reference_samples=background_reference_samples,
         background_reference_sample_count=background_reference_sample_count,
         background_prior_lab=background_prior_lab,
@@ -1255,6 +1540,7 @@ def build_analysis_layers(
         reference_edge_probability_enabled=reference_edge_probability_enabled,
         reference_edge_ridges_enabled=reference_edge_ridges_enabled,
         reference_texture_prototypes_enabled=reference_texture_prototypes_enabled,
+        reference_seed_traits_enabled=reference_seed_traits_enabled,
         surface_darkness_gradients_enabled=surface_darkness_gradients_enabled,
         lightening_gradient_ceiling_enabled=lightening_gradient_ceiling_enabled,
         darkening_gradient_ceiling_enabled=darkening_gradient_ceiling_enabled,
@@ -1274,10 +1560,14 @@ def build_analysis_layers(
         instance_nonseed_probability=instance_nonseed_probability,
         material_evidence_enabled=material_evidence_enabled,
         foreground_colour_profile=foreground_colour_profile,
+        species_library=species_library,
+        seed_shape_model=seed_shape_model,
+        seed_measurement_summary=seed_measurement_summary,
         surrounding_noise_source_tensor=surrounding_noise_source_tensor,
         surrounding_noise_valid_tensor=surrounding_noise_valid_tensor,
         surrounding_noise_offset_x=surrounding_noise_offset_x,
         surrounding_noise_offset_y=surrounding_noise_offset_y,
+        despeckled_flattened_tensor=despeckled_flattened_tensor,
         settings=settings,
         cache_values=cache_values,
         dirty_nodes=dirty_nodes,

@@ -5,8 +5,8 @@ Date: 2026-08-26
 ## Scope and method
 
 This audit covers every control rendered in the right-hand node inspector for
-all active and toolbox nodes. The graph currently contains 47 nodes, of which
-39 are configurable, with 269 visible controls arranged into 99 operation-
+all active and toolbox nodes. The graph currently contains 46 nodes, of which
+38 are configurable, with 271 visible controls arranged into 99 operation-
 ordered sections.
 
 The audit used four independent checks:
@@ -54,19 +54,18 @@ below. Nodes with no settings intentionally have no section heading.
 | Species and metadata | 0 | — |
 | Ruler detection and scale | 2 | Scale interpretation |
 | Deskew and colour balance | 4 | Colour correction; Geometric correction |
-| Layout detection | 14 | Rim search; Image-relative bounds and priors; Physical-size prior; Dual-rim pairing |
+| Layout detection | 16 | Rim search; Image-relative bounds and priors; Physical-size prior; Dual-rim pairing; Exterior background reference annulus |
 | Hue only | 0 | — |
 | Wavelet decomposition | 1 | Decomposition |
 | Seed scale estimate | 10 | Isolated-reference search region; Isolated-reference candidates; Annotated-instance override; Fallback |
-| Perimeter background reference | 2 | Exterior reference annulus |
 | Material colour probabilities | 22 | Analysis region; Reference sources; Automatic background selection; Background colour model; Automatic-source authority; Foreground colour model |
 | Material noise probabilities | 18 | Class availability; Background frequency bands; Background directional continuation; Background performance; Foreground frequency bands; Foreground directional continuation; Foreground performance |
 | Edge gradients | 17 | Gradient sources; Gradient response; Thinned ridges |
 | Directional surface darkness gradients | 7 | Surface preparation; Directional sampling; Surface response; Performance |
 | Multiscale darkness and colour noise | 7 | Frequency bands; Local energy response; Performance |
-| Reference texture prototypes | 7 | Material prototype fitting; Material descriptor and matching; Prototype collage |
+| Reference texture prototypes | 8 | Material prototype fitting; Material descriptor and matching; Prototype collage |
 | Material evidence decision | 7 | Evidence contributions; Decision calibration; Binary material proposal |
-| Reference edges | 20 | Net physical-edge probability; Training-example selection; Strip descriptor geometry and resolution; Edge prototype fitting and matching; Raw and net ridge extraction; Local net-edge normalization |
+| Reference edges | 21 | Optional conservative net evidence; Training-example selection; Strip descriptor geometry and resolution; Edge prototype fitting and matching; Supported ridge extraction; Reference-edge support normalization |
 | Oriented edge traces | 10 | Ridge input and seed scale; Pixel linking; Continuity filtering |
 | Seed-boundary confirmation | 21 | Scale and radius hypotheses; Arc evidence; Oval geometry fit; Centre voting; Semantic and polarity evidence; Acceptance and performance |
 | Boundary confidence and normals | 1 | Boundary band |

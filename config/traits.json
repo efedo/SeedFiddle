@@ -7,6 +7,7 @@
       "display_name": "Soybean",
       "coat_colours": ["yellow", "greenish", "green_blue", "red", "brown", "white", "black", "other"],
       "pattern_types": ["solid", "bicoloured", "spotted", "mottled", "other", "unknown"],
+      "reference_seed_coat_patterns": [],
       "pilot_vocabulary_pending": false
     },
     {
@@ -14,6 +15,7 @@
       "display_name": "Lupinus mutabilis",
       "coat_colours": ["other", "unknown"],
       "pattern_types": ["other", "unknown"],
+      "reference_seed_coat_patterns": ["white", "banded_light", "banded_dark", "other"],
       "pilot_vocabulary_pending": true
     },
     {
@@ -21,6 +23,7 @@
       "display_name": "Lupinus polyphyllus",
       "coat_colours": ["other", "unknown"],
       "pattern_types": ["other", "unknown"],
+      "reference_seed_coat_patterns": [],
       "pilot_vocabulary_pending": true
     },
     {
@@ -28,9 +31,11 @@
       "display_name": "Lupinus mexicanus",
       "coat_colours": ["other", "unknown"],
       "pattern_types": ["other", "unknown"],
+      "reference_seed_coat_patterns": [],
       "pilot_vocabulary_pending": true
     }
   ],
+  "reference_seed_conditions": ["immature", "split", "wrinkled", "stained"],
   "wrinkling_scale": {
     "0": "none",
     "1": "slight",

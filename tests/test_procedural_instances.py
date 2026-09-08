@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 from unittest.mock import patch
 
 import cv2
@@ -22,6 +23,28 @@ from seedvision.segmentation.procedural import (
 
 
 class ProceduralInstanceTests(unittest.TestCase):
+    def test_reference_cost_settings_never_change_automatic_predictions(self) -> None:
+        valid, _ids, material, background, boundary = self._touching_seed_scene()
+        prepared = prepare_procedural_instance_inputs(
+            valid, 58.0, foreground_probability=material,
+            foreground_noise_probability=material,
+            background_probability=background,
+            refined_background_probability=background,
+            edge_magnitude=boundary, edge_ridges=boundary,
+        )
+        initial = ProceduralInstanceSettings()
+        changed = replace(initial, reference_error_overreach_weight=7.0,
+                          reference_error_distance_scale_fraction=0.2,
+                          reference_error_minimum_match_iou=0.5,
+                          reference_error_missed_seed_weight=0.15,
+                          reference_error_concavity_weight=9.0,
+                          reference_error_annotations_complete=True)
+        first = procedural_seed_instances_from_prepared(prepared, settings=initial)
+        second = procedural_seed_instances_from_prepared(prepared, settings=changed)
+        self.assertGreater(first.count, 0)
+        for field in ("labels", "centre_likelihood", "instance_confidences", "boundary_cost"):
+            np.testing.assert_array_equal(getattr(first, field), getattr(second, field))
+
     def test_alternative_candidate_colour_is_uint8_safe_at_low_scores(self) -> None:
         self.assertEqual(
             _alternative_candidate_colour(0.0).tolist(), [255, 30, 55]
@@ -101,6 +124,55 @@ class ProceduralInstanceTests(unittest.TestCase):
             float(result.centre_likelihood[64, 50]),
             float(result.centre_likelihood[64, 64]) + 0.2,
         )
+
+    def test_fit_validated_oval_centres_boost_without_suppressing_fallback(self) -> None:
+        shape = (128, 128)
+        valid = np.full(shape, 255, np.uint8)
+        material = np.zeros(shape, np.uint8)
+        cv2.circle(material, (64, 64), 42, 240, -1)
+        zeros = np.zeros(shape, np.uint8)
+        oval = np.zeros(shape, np.uint8)
+        cv2.circle(oval, (80, 64), 3, 255, -1)
+        common = dict(
+            foreground_probability=material,
+            foreground_noise_probability=material,
+            background_probability=255 - material,
+            refined_background_probability=255 - material,
+            edge_magnitude=zeros,
+            edge_ridges=zeros,
+        )
+        fallback = procedural_seed_instances(
+            valid,
+            48.0,
+            **common,
+            settings=ProceduralInstanceSettings(
+                centre_material_weight=1.0,
+                centre_distance_weight=0.0,
+                centre_flattened_grayscale_weight=0.0,
+                centre_validated_oval_weight=1.0,
+            ),
+        )
+        with_oval = procedural_seed_instances(
+            valid,
+            48.0,
+            **common,
+            validated_oval_centre_probability=oval,
+            settings=ProceduralInstanceSettings(
+                centre_material_weight=1.0,
+                centre_distance_weight=0.0,
+                centre_flattened_grayscale_weight=0.0,
+                centre_validated_oval_weight=1.0,
+            ),
+        )
+
+        self.assertGreater(with_oval.centre_likelihood[64, 80], 250)
+        self.assertGreaterEqual(
+            int(with_oval.centre_likelihood[64, 64]),
+            int(fallback.centre_likelihood[64, 64]) - 1,
+        )
+        self.assertFalse(np.array_equal(
+            fallback.centre_likelihood, with_oval.centre_likelihood
+        ))
 
     def test_generated_frankenstein_region_is_hard_rejected_by_axis_ratio(self) -> None:
         shape = (128, 180)
@@ -885,6 +957,7 @@ class ProceduralInstanceTests(unittest.TestCase):
             "edge_ridges": boundary,
             "physical_edge_probability": boundary,
             "non_edge_probability": np.zeros_like(boundary),
+            "reference_edge_probability": boundary,
             "thinned_reference_edge_ridges": boundary,
             "oriented_edge_trace_labels": np.zeros_like(boundary, np.int32),
             "oriented_edge_trace_continuity": boundary,
@@ -928,7 +1001,7 @@ class ProceduralInstanceTests(unittest.TestCase):
             self.assertEqual(working_u8.call_count, preparation_calls)
             self.assertEqual(working_labels.call_count, label_preparation_calls)
 
-        self.assertEqual(preparation_calls, 12)
+        self.assertEqual(preparation_calls, 13)
         self.assertEqual(label_preparation_calls, 1)
         for field in (
             "labels",
@@ -987,6 +1060,7 @@ class ProceduralInstanceTests(unittest.TestCase):
             edge_ridges=candidate_edges,
             physical_edge_probability=outer_edge,
             non_edge_probability=stripe,
+            reference_edge_probability=outer_edge,
             thinned_reference_edge_ridges=outer_edge,
             settings=ProceduralInstanceSettings(minimum_marker_score=0.08),
         )
@@ -1036,11 +1110,21 @@ class ProceduralInstanceTests(unittest.TestCase):
             **common,
             normalized_net_physical_edge_probability=strong_normalized,
         )
+        authoritative_fallback = procedural_seed_instances(
+            valid,
+            64.0,
+            **common,
+            reference_edge_probability=strong_normalized,
+        )
 
         edge_pixels = candidate > 0
         self.assertGreater(
             float(np.mean(strong.boundary_cost[edge_pixels])),
             1.15 * float(np.mean(weak.boundary_cost[edge_pixels])),
+        )
+        np.testing.assert_array_equal(
+            authoritative_fallback.boundary_cost,
+            strong.boundary_cost,
         )
 
     def test_true_touching_boundary_remains_a_watershed_cut(self) -> None:
@@ -1069,6 +1153,7 @@ class ProceduralInstanceTests(unittest.TestCase):
             edge_ridges=physical,
             physical_edge_probability=physical,
             non_edge_probability=np.zeros(shape, np.uint8),
+            reference_edge_probability=physical,
             thinned_reference_edge_ridges=physical,
             settings=ProceduralInstanceSettings(
                 centre_minimum_separation_fraction=0.52,
@@ -1114,6 +1199,7 @@ class ProceduralInstanceTests(unittest.TestCase):
             **common,
             physical_edge_probability=known_physical,
             non_edge_probability=np.zeros(shape, np.uint8),
+            reference_edge_probability=known_physical,
         )
         neutral_unknown = float(np.mean(neutral.boundary_cost[unknown > 0]))
         classified_unknown = float(

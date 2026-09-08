@@ -21,6 +21,7 @@ class ReferenceEdgeFitParameter:
 
 DEFAULT_REFERENCE_EDGE_FIT_PARAMETERS = (
     ReferenceEdgeFitParameter("reference_edge_similarity_scale", 0.35, 2.5, 0.30),
+    ReferenceEdgeFitParameter("reference_edge_class_contrast", 1.0, 10.0, 1.0),
     ReferenceEdgeFitParameter("reference_edge_strip_normal_offset_fraction", 0.02, 0.14, 0.02),
     ReferenceEdgeFitParameter("reference_edge_strip_tangent_half_length_fraction", 0.025, 0.18, 0.025),
     ReferenceEdgeFitParameter("reference_edge_ridge_weight", 0.0, 0.85, 0.15),

@@ -302,6 +302,50 @@ class AdvancedAnalysisTests(unittest.TestCase):
             )
             self.assertLessEqual(int(difference.max()), 1, name)
 
+    def test_despeckling_removes_only_compact_surrounded_dark_residuals(self) -> None:
+        import torch
+
+        from seedvision.visualization.advanced import (
+            local_lighting_evidence_tensors,
+        )
+
+        height = width = 128
+        image = np.full((height, width, 3), 205, np.uint8)
+        image[61:66, 61:66] = 45
+        # A long dark trace is thin but not enclosed at the configured ring;
+        # it must survive the same maximum-diameter setting.
+        image[20:108, 30:32] = 45
+        source = torch.from_numpy(image).permute(2, 0, 1)[None].float()
+        valid = torch.ones((1, 1, height, width), dtype=torch.bool)
+        products = local_lighting_evidence_tensors(
+            source,
+            valid,
+            40.0,
+            AdvancedAnalysisSettings(
+                compute_device="cpu",
+                allow_cpu_fallback=False,
+                maximum_dimension=256,
+                illumination_scale_fraction=1.2,
+                despeckle_maximum_diameter_fraction=0.20,
+                despeckle_minimum_darkness_levels=12.0,
+                despeckle_periphery_width_fraction=0.05,
+                despeckle_minimum_lighter_surround_fraction=0.90,
+            ),
+            include_despeckle=True,
+        )
+        _, flattened, _, _, _, despeckled, removed = products
+        self.assertGreater(float(removed[0, 0, 63, 63]), 0.99)
+        self.assertGreater(
+            float(despeckled[0, 0, 63, 63]),
+            float(flattened[0, 0, 63, 63]) + 0.20,
+        )
+        self.assertEqual(float(removed[0, 0, 64, 30]), 0.0)
+        self.assertAlmostEqual(
+            float(despeckled[0, 0, 64, 30]),
+            float(flattened[0, 0, 64, 30]),
+            places=6,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
