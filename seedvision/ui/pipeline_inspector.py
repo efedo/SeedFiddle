@@ -27,6 +27,47 @@ from seedvision.pipeline import PipelineNode
 class BackgroundColourGamut(QWidget):
     """Render fitted colour probabilities in HSV coordinates."""
 
+    @staticmethod
+    def profile_for_class(layers, class_name):
+        """Read the production fit, including Other's legacy-named mode bank."""
+        from dataclasses import replace
+
+        profile = getattr(layers, f"{class_name}_colour_profile", None)
+        if class_name != "other":
+            return profile
+        profile = getattr(layers, "background_colour_profile", None)
+        if profile is None or not profile.excluded_component_centres_lab:
+            return None
+        # Display adapter, not a second fit. The excluded_* fields hold Other's
+        # independent affirmative modes despite their historical names.
+        return replace(
+            profile,
+            centre_lab=profile.excluded_component_centres_lab[0],
+            scale_lab=profile.excluded_component_scales_lab[0],
+            component_centres_lab=profile.excluded_component_centres_lab,
+            component_scales_lab=profile.excluded_component_scales_lab,
+            component_weights=profile.excluded_component_weights,
+            excluded_component_centres_lab=(),
+            excluded_component_scales_lab=(),
+            excluded_component_weights=(),
+            sample_count=0, sample_fraction=0.0, reviewed_sample_count=0,
+        )
+
+    @staticmethod
+    def parameters_for_class(parameters, class_name):
+        values = dict(parameters)
+        if class_name == "other":
+            # Exact production Other frequency-distribution arguments, not
+            # Background's independently configurable chroma/frequency weights.
+            values.update(
+                other_distribution_scale_multiplier=values.get(
+                    "background_distribution_scale_multiplier", 1.0
+                ),
+                other_frequency_weight_power=0.0,
+                other_chroma_weight=1.25,
+            )
+        return values
+
     NEUTRAL_COLUMNS = 24
     CONTOURS = (
         (0.25, QColor("#11181d")),
@@ -306,6 +347,17 @@ class BackgroundColourGamut(QWidget):
         value = float(np.clip(value, 0.0, 1.0))
         width = max(640, int(width))
         height = max(440, int(height))
+        if profile is None:
+            canvas = QImage(width, height, QImage.Format.Format_RGB32)
+            canvas.fill(QColor("#18232c"))
+            painter = QPainter(canvas)
+            painter.setPen(QColor("#f2f6fa"))
+            painter.drawText(canvas.rect(), Qt.AlignmentFlag.AlignCenter,
+                             f"No fitted {class_name} colour references available.\n"
+                             "Paint and apply material references, then run the colour node.")
+            painter.end()
+            return (canvas, np.zeros((height - 194, width - 134), np.float32),
+                    np.empty((0, 2), np.float32))
         plot_left, plot_top = 100, 82
         plot_width = width - plot_left - 34
         plot_height = height - plot_top - 112

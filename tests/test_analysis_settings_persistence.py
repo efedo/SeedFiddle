@@ -238,10 +238,35 @@ class AnalysisSettingsPersistenceTests(unittest.TestCase):
         self.assertEqual(connection.source, "reference_edge_probability")
         self.assertEqual(connection.source_port, "edge_probability")
         ridge_connection = target.connection_for_input(
-            "reference_edge_probability", "ridges"
+            "reference_edge_probability", "magnitude"
         )
         self.assertEqual(ridge_connection.source, "edge_gradients")
-        self.assertEqual(ridge_connection.source_port, "ridges")
+        self.assertEqual(ridge_connection.source_port, "magnitude")
+
+    def test_version_nineteen_replaces_prethinned_reference_input(self) -> None:
+        for connected in (False, True):
+            with self.subTest(connected=connected):
+                graph = build_default_pipeline()
+                if not connected:
+                    graph.disconnect(graph.connection_for_input(
+                        "reference_edge_probability", "magnitude"
+                    ))
+                payload = analysis_settings_profile_to_payload(
+                    analysis_settings_profile_from_graph(graph)
+                )
+                payload["version"] = 19
+                wire = next(item for item in payload["connections"]
+                            if item["target"] == "reference_edge_probability"
+                            and item["target_port"] == "magnitude")
+                wire.update(source_port="ridges", target_port="ridges", connected=connected)
+                apply_analysis_settings_profile(
+                    graph, analysis_settings_profile_from_payload(payload)
+                )
+                migrated = graph.connection_for_input("reference_edge_probability", "magnitude")
+                if connected:
+                    self.assertEqual(migrated.source_port, "magnitude")
+                else:
+                    self.assertIsNone(migrated)
 
     def test_version_eighteen_adds_reference_matching_and_cost_defaults(self) -> None:
         source = build_default_pipeline()

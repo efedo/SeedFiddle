@@ -251,12 +251,13 @@ class InstanceAnnotationTilingTests(unittest.TestCase):
         assert replacement is not None
         self.assertIsNone(replacement.scene())
 
-    def test_new_tile_item_honours_current_overlay_opacity(self) -> None:
+    def test_new_tile_item_honours_current_annotation_opacity(self) -> None:
         from seedvision.ui.image_view import ImageView
 
         view = ImageView()
         self.addCleanup(view.close)
-        view.set_overlay_opacity(0.37)
+        view.set_overlay_opacity(0.81)
+        view.set_annotation_opacity(0.37)
         labels = np.zeros((32, 32), dtype=np.uint16)
         labels[4, 5] = 1
         view.set_instance_annotations(labels, render=False)

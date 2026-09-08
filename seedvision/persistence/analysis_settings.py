@@ -21,9 +21,9 @@ from seedvision.pipeline import NodeStatus, ParameterSpec, PipelineConnection, P
 
 
 ANALYSIS_SETTINGS_FORMAT = "seedfiddle-analysis-settings"
-ANALYSIS_SETTINGS_VERSION = 19
+ANALYSIS_SETTINGS_VERSION = 20
 _LEGACY_ANALYSIS_SETTINGS_VERSIONS = frozenset(
-    {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18}
+    {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19}
 )
 _PRE_COLOUR_MERGE_VERSIONS = frozenset({1, 2, 3, 4})
 _PRE_NOISE_MERGE_VERSIONS = frozenset({1, 2, 3, 4, 5})
@@ -891,6 +891,7 @@ def _prepare_analysis_settings(
         source = connection.source
         source_port = connection.source_port
         target = connection.target
+        target_port = connection.target_port
         if canonical.version in _LEGACY_ANALYSIS_SETTINGS_VERSIONS:
             if target == "foreground_noise_likelihood":
                 target = "refined_background_likelihood"
@@ -941,6 +942,10 @@ def _prepare_analysis_settings(
                 continue
             if source == target:
                 continue
+            if (source, source_port, target, target_port) == (
+                "edge_gradients", "ridges", "reference_edge_probability", "ridges"
+            ):
+                source_port = target_port = "magnitude"
             if (
                 target in {"procedural_instances", "unet_instances", "instance_masks"}
                 and connection.target_port == "annotations"
@@ -950,7 +955,7 @@ def _prepare_analysis_settings(
             source,
             source_port,
             target,
-            connection.target_port,
+            target_port,
         )
         if key in template_by_key:
             connected_by_key[key] = bool(connection.connected)

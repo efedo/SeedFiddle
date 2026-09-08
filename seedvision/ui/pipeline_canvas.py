@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFrame,
     QHBoxLayout,
+    QLayout,
     QLabel,
     QMenu,
     QSpinBox,
@@ -656,8 +657,8 @@ class PipelineNodeItem(QGraphicsObject):
         body = QRectF(0, 0, self.width, self.height)
         selected = self.isSelected()
         if selected:
-            border = QColor("#087fc1")
-            border_width = 3.2
+            border = QColor("#45ddff")
+            border_width = 5.0
         elif self._adjacent:
             border = QColor("#bf7cff")
             border_width = 2.4
@@ -668,7 +669,7 @@ class PipelineNodeItem(QGraphicsObject):
         border_pen.setCosmetic(True)
         painter.setPen(border_pen)
         painter.setBrush(
-            QColor("#243a49")
+            QColor("#123e60")
             if selected and self.node.enabled
             else QColor("#272e36")
             if self.node.enabled
@@ -681,9 +682,13 @@ class PipelineNodeItem(QGraphicsObject):
         if not self.node.enabled:
             status_colour = STATUS_COLOURS[NodeStatus.BYPASSED]
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(status_colour)
+        painter.setBrush(QColor("#006bbb") if selected else status_colour)
         painter.drawRoundedRect(header, 8, 8)
         painter.drawRect(QRectF(1, 24, self.width - 2, 11))
+        if selected:
+            # Keep execution status readable independently of selection.
+            painter.setBrush(status_colour)
+            painter.drawRect(QRectF(1, 32, self.width - 2, 3))
 
         painter.setPen(QColor("#f6f8fa"))
         title_font = QFont(painter.font())
@@ -794,6 +799,8 @@ class PipelineNodeItem(QGraphicsObject):
             self.node.x = float(self.pos().x())
             self.node.y = float(self.pos().y())
             self._moved_callback(self.node.identifier)
+        elif change == self.GraphicsItemChange.ItemSelectedHasChanged:
+            self.setZValue(4.0 if value else 2.0)
         return result
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802 - Qt override
@@ -1007,6 +1014,7 @@ class PipelineCanvas(QGraphicsView):
         controls = QHBoxLayout(self.control_bar)
         controls.setContentsMargins(8, 4, 8, 4)
         controls.setSpacing(5)
+        controls.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
         self.auto_arrange_button = QToolButton(self.control_bar)
         self.auto_arrange_button.setText("Auto arrange")
         self.auto_arrange_button.setToolTip(
@@ -1074,6 +1082,23 @@ class PipelineCanvas(QGraphicsView):
         self.fit_button.setText("Fit")
         self.fit_button.setToolTip("Fit the complete pipeline")
         self.fit_button.clicked.connect(self.fit_graph)
+        self.actual_size_button = QToolButton(self.control_bar)
+        self.actual_size_button.setText("100%")
+        self.actual_size_button.setToolTip("Show pipeline at actual size")
+        self.actual_size_button.clicked.connect(self.actual_size)
+        self._editing_buttons = (
+            self.auto_arrange_button, self.move_to_unused_button,
+            self.unused_nodes_button, self.bundle_cables_button,
+            self.route_around_nodes_button,
+        )
+        self.tools_button = QToolButton(self.control_bar)
+        self.tools_button.setText("Tools")
+        self.tools_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.tools_menu = QMenu(self.tools_button)
+        self.tools_button.setMenu(self.tools_menu)
+        self.tools_menu.aboutToShow.connect(self._populate_tools_menu)
+        controls.addWidget(self.tools_button)
+        self.tools_button.hide()
         controls.addWidget(self.auto_arrange_button)
         controls.addWidget(self.move_to_unused_button)
         controls.addWidget(self.unused_nodes_button)
@@ -1084,7 +1109,36 @@ class PipelineCanvas(QGraphicsView):
         controls.addWidget(self.zoom_label)
         controls.addWidget(self.zoom_in_button)
         controls.addWidget(self.fit_button)
+        controls.addWidget(self.actual_size_button)
         style_canvas_control_bar(self.control_bar, "pipelineControlBar")
+        self.control_bar.raise_()
+
+    def _populate_tools_menu(self) -> None:
+        """Keep all editing commands accessible when the pane is narrow."""
+        self.tools_menu.clear()
+        for button in self._editing_buttons:
+            if button is self.unused_nodes_button:
+                self.unused_nodes_menu.setTitle(button.text())
+                self.tools_menu.addMenu(self.unused_nodes_menu)
+                continue
+            action = self.tools_menu.addAction(button.text())
+            action.setEnabled(button.isEnabled())
+            action.setCheckable(button.isCheckable())
+            action.setChecked(button.isChecked())
+            action.triggered.connect(lambda checked=False, button=button: button.click())
+
+    def _layout_control_bar(self) -> None:
+        width = max(120, self.viewport().width())
+        zoom_controls = (self.zoom_out_button, self.zoom_label,
+                         self.zoom_in_button, self.fit_button, self.actual_size_button)
+        required = sum(button.sizeHint().width() for button in (
+            *self._editing_buttons, *zoom_controls
+        )) + 80
+        compact = width < required
+        for button in self._editing_buttons:
+            button.setVisible(not compact)
+        self.tools_button.setVisible(compact)
+        self.control_bar.setGeometry(self.viewport().x(), 0, width, 38)
         self.control_bar.raise_()
 
     def _populate(self, *, resolve_overlaps: bool = True) -> None:
@@ -1937,6 +1991,13 @@ class PipelineCanvas(QGraphicsView):
     def zoom_out(self) -> None:
         self._zoom_by(1.0 / 1.18)
 
+    def actual_size(self) -> None:
+        centre = self.mapToScene(self.viewport().rect().center())
+        self.resetTransform()
+        self.centerOn(centre)
+        self._zoom_steps = 0
+        self._update_zoom_indicator()
+
     def _zoom_by(self, factor: float) -> None:
         current = float(self.transform().m11())
         target = current * float(factor)
@@ -1964,8 +2025,7 @@ class PipelineCanvas(QGraphicsView):
 
     def resizeEvent(self, event) -> None:  # noqa: N802 - Qt override
         super().resizeEvent(event)
-        self.control_bar.setGeometry(0, 0, max(120, self.width()), 38)
-        self.control_bar.raise_()
+        self._layout_control_bar()
 
     def drawBackground(self, painter: QPainter, rect: QRectF) -> None:  # noqa: N802
         painter.fillRect(rect, QColor("#1c2229"))

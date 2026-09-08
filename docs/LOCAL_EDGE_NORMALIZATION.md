@@ -24,11 +24,16 @@ support by itself.
 
 1. Does the local tangent-strip descriptor look more like a reviewed physical
    boundary than a reviewed internal edge?
-2. Is the pixel actually on a thinned, image-derived edge ridge?
+2. Does the pixel have image-derived gradient support?
 
 The authoritative field separates those questions by multiplying Physical
-probability by the existing full-resolution thinned true-edge support. A descriptor
-halo therefore becomes exactly zero away from a real ridge.
+probability by the full-resolution continuous image-gradient magnitude. A descriptor
+halo therefore becomes exactly zero wherever there is no gradient support.
+Classification and normalization happen before reference-specific non-maximum
+suppression (NMS) and hysteresis. The generic thinned ridges are not used as this
+node's support input: doing so would discard evidence before classification and
+then thin it a second time. Generic ridges may still help select upstream
+prototype training examples; that is separate from evaluating this node's field.
 
 The Physical class output already incorporates competition with Non-physical
 and the classifier's known-versus-unknown confidence. Subtracting Non-physical
@@ -65,7 +70,7 @@ nearly flat image can have its noise promoted to a full-strength edge.
 ## Chosen calculation
 
 Let `P` and `I` be raw Physical and Non-physical prototype compatibility in
-`[0, 1]`, and let `R` be the full-resolution thinned true-edge ridge support in
+`[0, 1]`, and let `R` be the full-resolution continuous image-gradient magnitude in
 `[0, 1]`. Define:
 
 ```text
@@ -76,7 +81,7 @@ C = R * M
 
 `M` remains the broad **Net physical-edge prototype compatibility** diagnostic.
 `E` is the authoritative **Reference-edge probability**. It is exactly zero
-where `R` is zero, including every descriptor/restoration halo pixel.
+where `R` is zero. Broad prototype compatibility alone cannot invent an edge.
 `C` retains the previous supported subtraction as **Conservative net
 physical-edge evidence**, an optional stricter selection of Physical boundaries,
 not a calibrated probability. For non-negative `k`, `0 <= C <= E`; at `k = 0`
@@ -134,8 +139,8 @@ normalized_reference_edge = P * U * A
 ```
 
 The exact full-resolution `(R > 0)` mask is reapplied after working-resolution
-restoration. Zero ridge support therefore remains exactly zero even when
-bilinear interpolation is used internally. Sub-floor ridge evidence is
+restoration. Zero gradient support therefore remains exactly zero even when
+bilinear interpolation is used internally. Sub-floor gradient evidence is
 smoothly reduced, and support reaches a full gate at the configured floor.
 
 ## Default parameters
@@ -246,7 +251,7 @@ Focused tests must establish that:
 - the authoritative full-resolution output equals `R × P` within uint8
   quantization and is zero everywhere `R == 0`;
 - conservative evidence equals `R × max(P - k × I, 0)` and has the same
-  zero-off-ridge guarantee;
+  zero-off-gradient guarantee;
 - changing `k` changes only conservative/net products, leaves canonical and
   normalized Physical probability/ridges bit-identical, and reuses the raw
   prototype and gradient caches;

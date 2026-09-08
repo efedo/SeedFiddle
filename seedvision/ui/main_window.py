@@ -288,6 +288,7 @@ OVERLAY_NODE_OWNERS = {
     "other_colour_probability": "background_likelihood",
     "foreground_colour_excess": "background_likelihood",
     "background_colour_gamut": "background_likelihood",
+    "other_colour_gamut": "background_likelihood",
     "refined_background_likelihood": "refined_background_likelihood",
     "other_noise_probability": "refined_background_likelihood",
     "foreground_noise_likelihood": "refined_background_likelihood",
@@ -2829,20 +2830,24 @@ class MainWindow(QMainWindow):
             self._undo_active_reference_edit
         )
 
-        self.analyze_action = QAction("Run active pipeline", self)
+        self.analyze_action = QAction("Run pipeline", self)
         self.analyze_action.setShortcut("Ctrl+R")
         self.analyze_action.setEnabled(False)
         self.analyze_action.triggered.connect(self._analyze_current_image)
 
-        self.image_workspace_action = QAction("Image review", self)
+        self.image_workspace_action = QAction("Image", self)
         self.image_workspace_action.setShortcut("Ctrl+1")
-        self.image_workspace_action.triggered.connect(self._show_image_workspace)
+        self.image_workspace_action.setCheckable(True)
+        self.image_workspace_action.setChecked(True)
+        self.image_workspace_action.toggled.connect(self.image_view.setVisible)
 
         self.pipeline_workspace_action = QAction("Pipeline", self)
         self.pipeline_workspace_action.setShortcut("Ctrl+2")
-        self.pipeline_workspace_action.triggered.connect(self._show_pipeline_workspace)
+        self.pipeline_workspace_action.setCheckable(True)
+        self.pipeline_workspace_action.setChecked(True)
+        self.pipeline_workspace_action.toggled.connect(self.pipeline_canvas.setVisible)
 
-        self.split_workspace_action = QAction("Image + pipeline", self)
+        self.split_workspace_action = QAction("Show both views", self)
         self.split_workspace_action.setShortcut("Ctrl+3")
         self.split_workspace_action.triggered.connect(self._show_split_workspace)
 
@@ -3021,18 +3026,19 @@ class MainWindow(QMainWindow):
             ("Reference boundary curvature distribution", "seed_boundary_curvature_distribution"),
             ("Foreground colour probability", "foreground_mask"),
             ("Accepted foreground colours (HSV)", "foreground_colour_gamut"),
+            ("Background colour probability", "background_likelihood"),
+            ("Accepted background colours (HSV)", "background_colour_gamut"),
+            ("Other colour probability", "other_colour_probability"),
+            ("Accepted other colours (HSV)", "other_colour_gamut"),
+            (
+                "Foreground vs Background/Other colour excess",
+                "foreground_colour_excess",
+            ),
             ("Distance transform", "distance_transform"),
             ("Distance-peak candidates", "distance_candidates"),
             ("Circle candidates", "circle_candidates"),
             ("Seed proposals", "proposals"),
             ("Instance colour masks", "instance_masks"),
-            ("Background colour probability", "background_likelihood"),
-            ("Other colour probability", "other_colour_probability"),
-            (
-                "Foreground vs Background/Other colour excess",
-                "foreground_colour_excess",
-            ),
-            ("Accepted background colours (HSV)", "background_colour_gamut"),
             ("Background noise probability", "refined_background_likelihood"),
             ("Other noise probability", "other_noise_probability"),
             ("Foreground noise probability", "foreground_noise_likelihood"),
@@ -3204,6 +3210,7 @@ class MainWindow(QMainWindow):
         self._hsv_gamut_values: dict[str, int | None] = {
             "background": None,
             "foreground": None,
+            "other": None,
         }
 
         # The owning node remains available to tests and accessibility tools,
@@ -3364,6 +3371,9 @@ class MainWindow(QMainWindow):
         layout.addWidget(reference_panel_header)
 
         self.reference_visibility_controls = QWidget(self.reference_panel)
+        self.reference_visibility_controls.setSizePolicy(
+            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred
+        )
         reference_visibility_layout = QHBoxLayout(
             self.reference_visibility_controls
         )
@@ -3400,8 +3410,6 @@ class MainWindow(QMainWindow):
         reference_visibility_layout.addWidget(
             self.show_instance_annotations_checkbox
         )
-        reference_visibility_layout.addStretch(1)
-        layout.addWidget(self.reference_visibility_controls)
 
         self.reference_panel_scroll = QScrollArea(self.reference_panel)
         self.reference_panel_scroll.setWidgetResizable(True)
@@ -3806,16 +3814,6 @@ class MainWindow(QMainWindow):
         instance_layout.setContentsMargins(0, 0, 0, 0)
         instance_layout.setSpacing(5)
         instance_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        instance_layout.addWidget(self._section_label("Seed instance annotations"))
-        self.instance_boundary_supervision_label = self._muted_label(
-            "Applied complete seed masks automatically supply physical contours "
-            "and safely inset internal candidate edges as non-physical supervision."
-        )
-        self.instance_boundary_supervision_label.setWordWrap(True)
-        self.instance_boundary_supervision_label.setToolTip(
-            "Draft edits do not influence boundary learning until Apply + save."
-        )
-        instance_layout.addWidget(self.instance_boundary_supervision_label)
         self.instance_annotation_help_label = self._muted_label(
             "Give each seed a separate colour ID. Assisted tools preview their snapped "
             "result under the cursor and apply it on click; smart fill can start an "
@@ -3832,27 +3830,25 @@ class MainWindow(QMainWindow):
         self.instance_colour_swatch = QLabel(instance_selector)
         self.instance_colour_swatch.setFixedSize(22, 22)
         self.instance_id_spin = QSpinBox(instance_selector)
-        self.instance_id_spin.setRange(1, np.iinfo(np.uint16).max)
-        self.instance_id_spin.setPrefix("Seed ")
+        self.instance_id_spin.setRange(1, 9999)
+        self.instance_id_spin.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.instance_id_spin.valueChanged.connect(self._instance_id_changed)
-        self.new_instance_button = QPushButton("Next empty seed", instance_selector)
+        self.new_instance_button = QPushButton("Next empty", instance_selector)
         self.new_instance_button.clicked.connect(self._new_instance_annotation)
+        selector_layout.addWidget(QLabel("Seed:", instance_selector))
         selector_layout.addWidget(self.instance_colour_swatch)
-        selector_layout.addWidget(self.instance_id_spin, 1)
+        selector_layout.addWidget(self.instance_id_spin)
         selector_layout.addWidget(self.new_instance_button)
+        selector_layout.addStretch(1)
         instance_layout.addWidget(instance_selector)
 
         self.instance_empty_label = QLabel("empty", self.instance_annotation_controls)
         self.instance_empty_label.setStyleSheet("color: #cf2020; font-weight: bold;")
         instance_layout.addWidget(self.instance_empty_label)
         self.show_selected_instance_checkbox = QCheckBox(
-            "Show selected seed only", self.instance_annotation_controls)
+            "Show selected only", self.instance_annotation_controls)
         self.show_selected_instance_checkbox.toggled.connect(self._show_selected_instance_toggled)
         instance_layout.addWidget(self.show_selected_instance_checkbox)
-        self.existing_instance_combo = QComboBox(self.instance_annotation_controls)
-        self.existing_instance_combo.setToolTip("Select a painted annotation and centre the image on it.")
-        self.existing_instance_combo.activated.connect(self._select_existing_instance)
-        instance_layout.addWidget(self.existing_instance_combo)
 
         instance_layout.addWidget(self._section_label("Selected seed traits"))
         trait_form = QFormLayout()
@@ -3896,11 +3892,6 @@ class MainWindow(QMainWindow):
             self.seed_condition_checkboxes[condition] = checkbox
         trait_form.addRow("Condition", condition_widget)
         instance_layout.addLayout(trait_form)
-        self.seed_trait_status_label = self._muted_label(
-            "Traits are stored with the selected seed ID."
-        )
-        self.seed_trait_status_label.setWordWrap(True)
-        instance_layout.addWidget(self.seed_trait_status_label)
         self._populate_seed_coat_patterns()
 
         instance_layout.addWidget(self._section_label("Reviewed shape metadata"))
@@ -3983,38 +3974,22 @@ class MainWindow(QMainWindow):
         hilum_layout.addWidget(self.seed_hilum_checkbox, 0, 0)
         hilum_layout.addWidget(self.seed_hilum_x_spin, 0, 1)
         hilum_layout.addWidget(self.seed_hilum_y_spin, 0, 2)
-        self.seed_hilum_pick_button = QPushButton("Pick hilum / drag direction", hilum_widget)
+        self.seed_hilum_pick_button = QPushButton("Pick hilum", hilum_widget)
         self.seed_hilum_pick_button.setCheckable(True)
         self.seed_hilum_pick_button.setToolTip(
-            "Click the hilum with the crosshair, or drag from the hilum in its outward "
-            "direction. Existing arrow endpoints can be dragged. Escape cancels.")
+            "Click or drag to position the hilum. Direction is calculated from the "
+            "painted seed's area centre to the hilum. Escape finishes picking.")
         self.seed_hilum_pick_button.toggled.connect(self._set_hilum_picking)
         self.image_view.hilum_landmark_edited.connect(self._hilum_landmark_edited)
         self.image_view.hilum_editing_cancelled.connect(
             lambda: self.seed_hilum_pick_button.setChecked(False))
         hilum_layout.addWidget(self.seed_hilum_pick_button, 1, 0, 1, 3)
         shape_form.addRow("Hilum landmark", hilum_widget)
-        self.seed_hilum_direction_checkbox = QCheckBox(
-            "Direction known", self.instance_annotation_controls
-        )
-        self.seed_hilum_direction_angle_spin = QDoubleSpinBox(
-            self.instance_annotation_controls
-        )
-        self.seed_hilum_direction_angle_spin.setRange(-180.0, 180.0)
-        self.seed_hilum_direction_angle_spin.setDecimals(1)
-        self.seed_hilum_direction_angle_spin.setSuffix("°")
-        self.seed_hilum_direction_checkbox.toggled.connect(
-            self._seed_trait_controls_changed
-        )
-        self.seed_hilum_direction_angle_spin.valueChanged.connect(
-            self._seed_trait_controls_changed
-        )
-        direction_widget = QWidget(self.instance_annotation_controls)
-        direction_layout = QHBoxLayout(direction_widget)
-        direction_layout.setContentsMargins(0, 0, 0, 0)
-        direction_layout.addWidget(self.seed_hilum_direction_checkbox)
-        direction_layout.addWidget(self.seed_hilum_direction_angle_spin, 1)
-        shape_form.addRow("Hilum direction", direction_widget)
+        self.seed_hilum_direction_label = QLabel("—", self.instance_annotation_controls)
+        self.seed_hilum_direction_label.setToolTip(
+            "Automatic outward direction: centre → hilum. Image angles are clockwise "
+            "from right. Undefined without a landmark, or when it lies at the centre.")
+        shape_form.addRow("Hilum direction", self.seed_hilum_direction_label)
         instance_layout.addLayout(shape_form)
         self.seed_shape_status_label = self._muted_label(
             "Choose an explicit outline and pose before including this seed."
@@ -4705,12 +4680,13 @@ class MainWindow(QMainWindow):
         self.workflow_toolbar.addAction(self.open_action)
         self.workflow_toolbar.addAction(self.analyze_action)
         self.workflow_toolbar.addSeparator()
+        self.workflow_toolbar.addWidget(QLabel("View:", self.workflow_toolbar))
         self.workflow_toolbar.addAction(self.image_workspace_action)
         self.workflow_toolbar.addAction(self.pipeline_workspace_action)
-        self.workflow_toolbar.addAction(self.split_workspace_action)
-        self.workflow_toolbar.addSeparator()
-        self.workflow_toolbar.addAction(self.fit_action)
-        self.workflow_toolbar.addAction(self.actual_size_action)
+        self.workflow_toolbar.setStyleSheet(
+            "QToolButton:checked { background: #145b89; color: white; "
+            "border: 2px inset #083750; border-radius: 3px; padding: 3px 5px; }"
+        )
         self.workflow_toolbar.addSeparator()
 
         overlay_label = QLabel("Overlay:", self.workflow_toolbar)
@@ -4721,8 +4697,8 @@ class MainWindow(QMainWindow):
 
         self.opacity_toolbar_label = QLabel("Opacity:", self.workflow_toolbar)
         self.opacity_toolbar_label.setObjectName("opacityToolbarLabel")
-        self.overlay_opacity_slider.setMinimumWidth(90)
-        self.overlay_opacity_slider.setMaximumWidth(170)
+        self.overlay_opacity_slider.setMinimumWidth(54)
+        self.overlay_opacity_slider.setMaximumWidth(102)
         self.opacity_toolbar_label_action = self.workflow_toolbar.addWidget(
             self.opacity_toolbar_label
         )
@@ -4759,6 +4735,25 @@ class MainWindow(QMainWindow):
         self.workflow_toolbar.addSeparator()
         self.workflow_toolbar.addAction(self.paint_background_action)
         self.workflow_toolbar.addAction(self.annotate_instances_action)
+        self.workflow_toolbar.addWidget(self.reference_visibility_controls)
+        self.workflow_toolbar.addWidget(QLabel("Opacity:", self.workflow_toolbar))
+        self.annotation_opacity_slider = QSlider(Qt.Orientation.Horizontal, self)
+        self.annotation_opacity_slider.setRange(0, 100)
+        self.annotation_opacity_slider.setValue(68)
+        self.annotation_opacity_slider.setMinimumWidth(54)
+        self.annotation_opacity_slider.setMaximumWidth(102)
+        self.annotation_opacity_slider.setToolTip(
+            "Opacity of painted materials and seed annotations only; does not change analysis."
+        )
+        self.annotation_opacity_label = QLabel("68%", self.workflow_toolbar)
+        self.annotation_opacity_slider.valueChanged.connect(
+            lambda value: self.image_view.set_annotation_opacity(value / 100.0)
+        )
+        self.annotation_opacity_slider.valueChanged.connect(
+            lambda value: self.annotation_opacity_label.setText(f"{value}%")
+        )
+        self.workflow_toolbar.addWidget(self.annotation_opacity_slider)
+        self.workflow_toolbar.addWidget(self.annotation_opacity_label)
         self.addToolBar(self.workflow_toolbar)
 
     def _build_layout(self) -> None:
@@ -4882,7 +4877,7 @@ class MainWindow(QMainWindow):
         baseline_layout.setContentsMargins(0, 0, 0, 0)
         baseline_layout.addWidget(self._separator())
         baseline_layout.addWidget(self._section_label("Baseline analysis"))
-        self.analyze_button = QPushButton("Run active pipeline", content)
+        self.analyze_button = QPushButton("Run pipeline", content)
         self.analyze_button.setEnabled(False)
         self.analyze_button.clicked.connect(self._analyze_current_image)
         self.analyze_button.setVisible(False)
@@ -5410,7 +5405,7 @@ class MainWindow(QMainWindow):
 
     def _add_and_open_image(self, filename: str) -> None:
         self._add_image(Path(filename), open_now=True)
-        self.image_view.show()
+        self.image_workspace_action.setChecked(True)
 
     def _add_image(
         self, path: Path, *, open_now: bool, mark_project_dirty: bool = True
@@ -5436,7 +5431,7 @@ class MainWindow(QMainWindow):
 
     def _open_list_item(self, item: QListWidgetItem) -> None:
         self._open_path(Path(item.data(Qt.ItemDataRole.UserRole)))
-        self.image_view.show()
+        self.image_workspace_action.setChecked(True)
 
     def _open_path(self, path: Path, *, mark_project_dirty: bool = True) -> None:
         self._stop_manual_seed_centre_editing()
@@ -6761,11 +6756,30 @@ class MainWindow(QMainWindow):
         extant = set(self._instance_ids(labels))
         current = self._draft_seed_annotations.get(key)
         if current is not None:
-            self._draft_seed_annotations[key] = {
+            self._draft_seed_annotations[key] = self._derive_seed_hilum_directions(labels, {
                 seed_id: annotation
                 for seed_id, annotation in current.items()
                 if seed_id in extant
-            }
+            })
+
+    @staticmethod
+    def _derive_seed_hilum_directions(labels, annotations):
+        from seedvision.annotation.geometry import annotation_centres, outward_hilum_direction
+        centres = annotation_centres(labels) if any(
+            item.hilum_point is not None for item in annotations.values()
+        ) else {}
+        return {seed_id: replace(item, hilum_direction=outward_hilum_direction(
+            centres.get(seed_id), item.hilum_point
+        )) for seed_id, item in annotations.items()}
+
+    def _seed_hilum_direction(self, labels, seed_id, point):
+        from seedvision.annotation.geometry import annotation_centres, outward_hilum_direction
+        if point is None:
+            return None
+        centres = (self.image_view.instance_centres()
+                   if labels is self.image_view._instance_annotations
+                   else annotation_centres(labels))
+        return outward_hilum_direction(centres.get(seed_id), point)
 
     def _reconcile_instance_draft(self, key: str) -> None:
         labels = self._draft_instance_annotations.get(
@@ -8319,7 +8333,7 @@ class MainWindow(QMainWindow):
             overlay_index = self.overlay_combo.findData("background_likelihood")
             if overlay_index >= 0:
                 self.overlay_combo.setCurrentIndex(overlay_index)
-            self.image_view.show()
+            self.image_workspace_action.setChecked(True)
             self._sync_reference_panel_visibility()
             self.statusBar().showMessage(
                 f"Background brush: left-drag to {self._reference_brush_action()}; "
@@ -8359,7 +8373,7 @@ class MainWindow(QMainWindow):
             overlay_index = self.overlay_combo.findData("foreground_mask")
             if overlay_index >= 0:
                 self.overlay_combo.setCurrentIndex(overlay_index)
-            self.image_view.show()
+            self.image_workspace_action.setChecked(True)
             self._sync_reference_panel_visibility()
             self.statusBar().showMessage(
                 f"Foreground brush: left-drag to {self._reference_brush_action()}; "
@@ -8527,7 +8541,7 @@ class MainWindow(QMainWindow):
             overlay_index = self.overlay_combo.findData("instance_masks")
             if overlay_index >= 0:
                 self.overlay_combo.setCurrentIndex(overlay_index)
-            self.image_view.show()
+            self.image_workspace_action.setChecked(True)
             self._show_instance_tool_instructions(self._current_instance_tool())
         else:
             self.statusBar().showMessage("Seed instance annotation finished.")
@@ -8586,7 +8600,7 @@ class MainWindow(QMainWindow):
             "within a seed-scale neighborhood, and retains an absolute noise gate. Combined "
             "uses the per-pixel maximum of generic ridges and binary oriented traces, "
             "plus normalized learned evidence and broad edge magnitude at "
-            "45% strength. Reference-edge probability is thinned true-edge support "
+            "45% strength. Reference-edge probability is continuous gradient support "
             "times Physical probability, including unknown confidence. Conservative "
             "net physical-edge evidence instead uses support times max(Physical - "
             "weight × Non-physical, 0), retaining only more selectively classified "
@@ -8995,17 +9009,11 @@ class MainWindow(QMainWindow):
         )
         extant = seed_id in self._instance_ids(labels)
         self.instance_empty_label.setVisible(not extant)
-        with QSignalBlocker(self.existing_instance_combo):
-            self.existing_instance_combo.clear()
-            self.existing_instance_combo.addItem("Select an existing annotation…", None)
-            for identifier in sorted(self._instance_ids(labels)):
-                self.existing_instance_combo.addItem(f"Seed {identifier}", identifier)
-            self.existing_instance_combo.setCurrentIndex(
-                max(0, self.existing_instance_combo.findData(seed_id)))
         traits = {} if key is None else self._draft_seed_annotations.get(
             key, self._applied_seed_annotations.get(key, {})
         )
         annotation = traits.get(seed_id, SeedInstanceAnnotation(seed_id))
+        direction = self._seed_hilum_direction(labels, seed_id, annotation.hilum_point)
         self._syncing_seed_trait_controls = True
         try:
             with QSignalBlocker(self.seed_coat_pattern_combo):
@@ -9031,8 +9039,6 @@ class MainWindow(QMainWindow):
                 self.seed_hilum_checkbox,
                 self.seed_hilum_x_spin,
                 self.seed_hilum_y_spin,
-                self.seed_hilum_direction_checkbox,
-                self.seed_hilum_direction_angle_spin,
             )
             with QSignalBlocker(self.seed_shape_reviewed_checkbox):
                 self.seed_shape_reviewed_checkbox.setChecked(
@@ -9062,19 +9068,10 @@ class MainWindow(QMainWindow):
                     self.seed_hilum_x_spin.setValue(annotation.hilum_point[0])
                 with QSignalBlocker(self.seed_hilum_y_spin):
                     self.seed_hilum_y_spin.setValue(annotation.hilum_point[1])
-            with QSignalBlocker(self.seed_hilum_direction_checkbox):
-                self.seed_hilum_direction_checkbox.setChecked(
-                    annotation.hilum_direction is not None
-                )
-            if annotation.hilum_direction is not None:
-                angle = np.degrees(
-                    np.arctan2(
-                        annotation.hilum_direction[1],
-                        annotation.hilum_direction[0],
-                    )
-                )
-                with QSignalBlocker(self.seed_hilum_direction_angle_spin):
-                    self.seed_hilum_direction_angle_spin.setValue(float(angle))
+            self.seed_hilum_direction_label.setText(
+                "—" if direction is None else
+                f"{np.degrees(np.arctan2(direction[1], direction[0])):.1f}° (auto)"
+            )
             for widget in shape_widgets:
                 widget.setEnabled(extant)
             self.seed_hilum_x_spin.setEnabled(
@@ -9082,9 +9079,6 @@ class MainWindow(QMainWindow):
             )
             self.seed_hilum_y_spin.setEnabled(
                 extant and annotation.hilum_point is not None
-            )
-            self.seed_hilum_direction_angle_spin.setEnabled(
-                extant and annotation.hilum_direction is not None
             )
         finally:
             self._syncing_seed_trait_controls = False
@@ -9094,7 +9088,7 @@ class MainWindow(QMainWindow):
         self.seed_conditions_reviewed_checkbox.setEnabled(extant)
         if not extant:
             self.seed_hilum_pick_button.setChecked(False)
-        self.image_view.set_hilum_landmark(annotation.hilum_point, annotation.hilum_direction)
+        self.image_view.set_hilum_landmark(annotation.hilum_point, direction)
         if not extant:
             shape_status = "Paint this seed ID before adding shape metadata."
             shape_problem = False
@@ -9134,6 +9128,8 @@ class MainWindow(QMainWindow):
             )
             shape_problem = False
         self.seed_shape_status_label.setText(shape_status)
+        self.seed_shape_status_label.setVisible(shape_problem)
+        self.seed_shape_reviewed_checkbox.setToolTip(shape_status)
         self.seed_shape_status_label.setStyleSheet(
             "color: #b42318; font-weight: 600;" if shape_problem else ""
         )
@@ -9148,7 +9144,7 @@ class MainWindow(QMainWindow):
             status = (
                 "Coat pattern is one-of-many; reviewed conditions may overlap."
             )
-        self.seed_trait_status_label.setText(status)
+        self.seed_coat_pattern_combo.setToolTip(status)
 
     @Slot()
     def _seed_trait_controls_changed(self, *_unused) -> None:
@@ -9196,14 +9192,7 @@ class MainWindow(QMainWindow):
             if self.seed_hilum_checkbox.isChecked()
             else None
         )
-        direction_angle = np.radians(
-            float(self.seed_hilum_direction_angle_spin.value())
-        )
-        hilum_direction = (
-            (float(np.cos(direction_angle)), float(np.sin(direction_angle)))
-            if self.seed_hilum_direction_checkbox.isChecked()
-            else None
-        )
+        hilum_direction = self._seed_hilum_direction(labels, seed_id, hilum_point)
         outline_visibility = str(
             self.seed_outline_visibility_combo.currentData() or "unknown"
         )
@@ -9277,26 +9266,17 @@ class MainWindow(QMainWindow):
     def _show_selected_instance_toggled(self, enabled: bool) -> None:
         self.image_view.set_show_selected_instance_only(enabled)
 
-    def _select_existing_instance(self, index: int) -> None:
-        seed_id = self.existing_instance_combo.itemData(index)
-        if seed_id is not None:
-            self.instance_id_spin.setValue(int(seed_id))
-            self.image_view.focus_instance(int(seed_id))
-
     def _set_hilum_picking(self, enabled: bool) -> None:
         self.image_view.set_hilum_editing(enabled)
 
     def _hilum_landmark_edited(self, point, direction) -> None:
+        # Direction is derived from annotation geometry, never from a drag vector.
         widgets = (self.seed_hilum_checkbox, self.seed_hilum_x_spin,
-                   self.seed_hilum_y_spin, self.seed_hilum_direction_checkbox,
-                   self.seed_hilum_direction_angle_spin)
+                   self.seed_hilum_y_spin)
         blockers = [QSignalBlocker(widget) for widget in widgets]
         self.seed_hilum_checkbox.setChecked(True)
         self.seed_hilum_x_spin.setValue(point[0])
         self.seed_hilum_y_spin.setValue(point[1])
-        self.seed_hilum_direction_checkbox.setChecked(direction is not None)
-        if direction is not None:
-            self.seed_hilum_direction_angle_spin.setValue(float(np.degrees(np.arctan2(direction[1], direction[0]))))
         del blockers
         self._seed_trait_controls_changed()
 
@@ -9481,9 +9461,10 @@ class MainWindow(QMainWindow):
             key, self._applied_instance_annotations.get(key)
         )
         identifier = self._lowest_empty_instance_id(annotations)
-        self.instance_id_spin.setValue(
-            min(identifier, np.iinfo(np.uint16).max)
-        )
+        if identifier > self.instance_id_spin.maximum():
+            self.statusBar().showMessage("All 9,999 seed IDs are occupied.")
+            return
+        self.instance_id_spin.setValue(identifier)
         tool = self._current_instance_tool()
         tool_label = {
             "brush": "Brush",
@@ -9721,13 +9702,13 @@ class MainWindow(QMainWindow):
                 self._draft_instance_annotation_origins.get(key, "manual")
             )
             extant_ids = set(self._instance_ids(applied))
-            applied_traits = {
+            applied_traits = self._derive_seed_hilum_directions(applied, {
                 seed_id: annotation
                 for seed_id, annotation in self._draft_seed_annotations.get(
                     key, {}
                 ).items()
                 if seed_id in extant_ids
-            }
+            })
             if applied_traits:
                 self._applied_seed_annotations[key] = applied_traits
             else:
@@ -11492,6 +11473,8 @@ class MainWindow(QMainWindow):
             self._hsv_gamut_values["background"] = value
         elif mode == "foreground_colour_gamut":
             self._hsv_gamut_values["foreground"] = value
+        elif mode == "other_colour_gamut":
+            self._hsv_gamut_values["other"] = value
         self.image_view.set_hsv_gamut_value(value / 100.0)
 
     @Slot()
@@ -11500,6 +11483,7 @@ class MainWindow(QMainWindow):
         class_name = {
             "background_colour_gamut": "background",
             "foreground_colour_gamut": "foreground",
+            "other_colour_gamut": "other",
         }.get(mode)
         if class_name is None:
             return
@@ -11510,6 +11494,7 @@ class MainWindow(QMainWindow):
 
     def _sync_overlay_display_controls(self, mode: str) -> None:
         gamut_modes = {
+            "other_colour_gamut": ("other", "background_likelihood"),
             "background_colour_gamut": (
                 "background",
                 "background_likelihood",
@@ -11740,6 +11725,13 @@ class MainWindow(QMainWindow):
                 "lines show 25/50/75/90% membership and the neutral swatch reports "
                 "achromatic membership without repeating undefined hue."
             ),
+            "other_colour_gamut": (
+                "Exact HSV hue/saturation slice of the fitted Other colour model. "
+                "Uses the same retained colour modes, tolerance, equal mode weights "
+                "and Lab metric as Other colour probability; no refitting or semantic "
+                "contrast. Adjust HSV value to scan brightness. Contours show "
+                "25/50/75/90% membership; the neutral swatch handles achromatic colours."
+            ),
             "foreground_noise_likelihood": (
                 "Foreground texture probability: black = non-foreground-like local "
                 "frequency; white = foreground-like texture. Fine, medium, and coarse "
@@ -11909,30 +11901,30 @@ class MainWindow(QMainWindow):
                 "posterior and is never used directly as a fill or procedural barrier."
             ),
             "reference_edge_probability": (
-                "Authoritative reference-edge probability: thinned true-image-edge "
+                "Authoritative reference-edge probability: continuous image-gradient "
                 "support × Physical prototype probability, including its known-versus-unknown "
                 "confidence. There is no second Non-physical subtraction or conditional "
                 "ratio normalization. It is independent of the conservative weight and exactly zero away "
-                "from the true-edge ridge, making wide descriptor and resize halos harmless. "
+                "from image-gradient support. Classification precedes reference-specific thinning; "
                 "Assisted fill and downstream boundary operations use this supported field "
                 "or its normalized/thinned derivatives."
             ),
             "locally_normalized_net_physical_edge": (
                 "The authoritative Reference-edge probability after one-sided, seed-scale "
-                "normalization of its thinned true-edge support, multiplied by Physical "
+                "normalization of continuous gradient support, multiplied by Physical "
                 "prototype probability. It does not use the conservative subtraction weight. "
-                "An exact full-resolution ridge mask plus "
+                "An exact full-resolution gradient-support mask plus "
                 "absolute gate prevents quiet pixels or interpolation halos from appearing. "
                 "Blue brightness matches the unnormalized Reference-edge overlay."
             ),
             "reference_edge_ridges": (
-                "The authoritative Reference-edge probability after its final high/low "
-                "hysteresis. It remains restricted to the original thinned true-edge "
+                "The authoritative Reference-edge probability after non-maximum suppression "
+                "and high/low hysteresis. It remains restricted to the original gradient "
                 "footprint and is shown in the same blue scale."
             ),
             "conservative_net_physical_edge_evidence": (
-                "Optional conservative evidence, not a calibrated probability: thinned "
-                "true-image-edge support × max(Physical prototype probability - "
+                "Optional conservative evidence, not a calibrated probability: continuous "
+                "image-gradient support × max(Physical prototype probability - "
                 f"{float(self.pipeline.node('reference_edge_probability').parameters['net_physical_edge_internal_scale']):g} "
                 "× Non-physical prototype probability, 0). Blue is stronger; black is zero. "
                 "This is more selective physical-edge evidence and may remove uncertain "
@@ -13465,18 +13457,18 @@ class MainWindow(QMainWindow):
         self._sync_procedural_centres_controls()
 
     def _show_pipeline_workspace(self) -> None:
-        self.pipeline_canvas.show()
-        self.image_view.hide()
+        self.pipeline_workspace_action.setChecked(True)
+        self.image_workspace_action.setChecked(False)
         self.pipeline_canvas.select_node(self._selected_pipeline_node)
 
     def _show_image_workspace(self) -> None:
-        self.image_view.show()
-        self.pipeline_canvas.hide()
+        self.image_workspace_action.setChecked(True)
+        self.pipeline_workspace_action.setChecked(False)
         self.actual_size_action.setEnabled(True)
 
     def _show_split_workspace(self) -> None:
-        self.image_view.show()
-        self.pipeline_canvas.show()
+        self.image_workspace_action.setChecked(True)
+        self.pipeline_workspace_action.setChecked(True)
         self.workspace_splitter.setSizes((560, 360))
         self.actual_size_action.setEnabled(True)
         self.pipeline_canvas.refresh()

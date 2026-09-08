@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
 )
 
 from seedvision.ui.canvas_controls import style_canvas_control_bar
+from seedvision.annotation.geometry import annotation_centres, outward_hilum_direction
 from seedvision.visualization import ADVANCED_OVERLAY_LABELS
 from seedvision.resources import release_host_caches
 from seedvision.annotation import (
@@ -88,6 +89,7 @@ OVERLAY_MODES = {
     "other_colour_probability",
     "foreground_colour_excess",
     "background_colour_gamut",
+    "other_colour_gamut",
     "refined_background_likelihood",
     "other_noise_probability",
     "foreground_noise_likelihood",
@@ -521,6 +523,39 @@ class _InstanceAnnotationTileItem(QGraphicsItem):
         painter.restore()
 
 
+class _InstanceCentreItem(QGraphicsItem):
+    """One lightweight display item for constant-screen-size annotation centres."""
+
+    def __init__(self, centres, shape):
+        super().__init__()
+        self.centres = dict(centres)
+        self._bounds = QRectF(0, 0, shape[1], shape[0]).adjusted(-160, -160, 160, 160)
+        self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemUsesExtendedStyleOption)
+        self.setToolTip("Painted seed-area centroids; partial masks use the visible area. Not detection markers.")
+
+    def boundingRect(self):
+        return self._bounds
+
+    def paint(self, painter, option, widget=None):
+        scale = max(0.05, np.hypot(painter.worldTransform().m11(), painter.worldTransform().m12()))
+        radius = 5.0 / scale
+        exposed = option.exposedRect.adjusted(-radius, -radius, radius, radius)
+        path = QPainterPath()
+        for x, y in self.centres.values():
+            if not exposed.contains(QPointF(x, y)):
+                continue
+            path.moveTo(x - radius, y)
+            path.lineTo(x + radius, y)
+            path.moveTo(x, y - radius)
+            path.lineTo(x, y + radius)
+        for colour, width in (("#121820", 4.0), ("#ffffff", 1.5)):
+            pen = QPen(QColor(colour), width)
+            pen.setCosmetic(True)
+            painter.setPen(pen)
+            painter.drawPath(path)
+
+
 class ImageView(QGraphicsView):
     """Display a laboratory image with smooth pan, zoom, fit, and file dropping."""
 
@@ -553,12 +588,14 @@ class ImageView(QGraphicsView):
         self._colour_gamut_parameters: dict[str, dict[str, object]] = {
             "background": {},
             "foreground": {},
+            "other": {},
         }
         self._displayed_base = "source"
         self._overlay_items = []
         self._analysis_result = None
         self._overlay_mode = "proposals"
         self._overlay_opacity = 0.68
+        self._annotation_opacity = 0.68
         self._zoom_steps = 0
         self._fit_pending = False
         self._background_reference_mask: np.ndarray | None = None
@@ -610,6 +647,7 @@ class ImageView(QGraphicsView):
         self._pending_instance_preview_point: QPointF | None = None
         self._instance_preview_items = []
         self._instance_annotation_overlay_item = None
+        self._instance_centres_cache = None
         self._instance_live_stroke_path: QPainterPath | None = None
         self._instance_live_stroke_item = None
         self._reference_live_stroke_path: QPainterPath | None = None
@@ -847,7 +885,10 @@ class ImageView(QGraphicsView):
         self._draw_hilum_landmark()
 
     def set_hilum_landmark(self, point, direction) -> None:
-        self._hilum_point, self._hilum_direction = point, direction
+        self._hilum_point = point
+        self._hilum_direction = outward_hilum_direction(
+            self.instance_centre(self._active_instance_id), point
+        )
         self._draw_hilum_landmark()
 
     def _draw_hilum_landmark(self):
@@ -1060,6 +1101,7 @@ class ImageView(QGraphicsView):
         self._manual_seed_centre_drag = None
         self._selected_procedural_label = 0
         self._instance_bounds_cache.clear()
+        self._instance_centres_cache = None
         self._instance_tool_points.clear()
         self._annotation_evidence_cache.clear()
         self._reference_brush_outline_item = None
@@ -1112,6 +1154,7 @@ class ImageView(QGraphicsView):
         self._manual_seed_centre_selected = None
         self._manual_seed_centre_drag = None
         self._instance_bounds_cache.clear()
+        self._instance_centres_cache = None
         self._instance_tool_points.clear()
         self._annotation_evidence_cache.clear()
         self._instance_trace_anchor = None
@@ -1437,7 +1480,7 @@ class ImageView(QGraphicsView):
         self._instance_annotations_visible = visible
         # Unlike the two binary groups, instance painting is one tracked
         # pixmap, so this avoids rebuilding the selected analysis overlay.
-        self._refresh_instance_annotation_overlay()
+        self._refresh_instance_annotation_overlay(geometry_changed=False)
 
     def _sync_combined_reference_visibility(self) -> None:
         self._reference_annotations_visible = bool(
@@ -1514,6 +1557,7 @@ class ImageView(QGraphicsView):
                     )
             self._instance_annotations = values.astype(np.uint16, copy=copy)
         self._instance_bounds_cache.clear()
+        self._instance_centres_cache = None
         self._instance_trace_anchor = None
         self._instance_trace_geometry = None
         self._clear_instance_preview()
@@ -1594,7 +1638,7 @@ class ImageView(QGraphicsView):
         self._clear_instance_live_stroke()
         if changed:
             if self._show_selected_instance_only:
-                self._refresh_instance_annotation_overlay()
+                self._refresh_instance_annotation_overlay(geometry_changed=False)
             self.focus_instance(identifier)
         if self._last_reference_hover_point is not None:
             self._update_reference_brush_outline(self._last_reference_hover_point)
@@ -1606,7 +1650,7 @@ class ImageView(QGraphicsView):
         if enabled == self._show_selected_instance_only:
             return
         self._show_selected_instance_only = enabled
-        self._refresh_instance_annotation_overlay()
+        self._refresh_instance_annotation_overlay(geometry_changed=False)
         if enabled:
             self.focus_instance(self._active_instance_id)
 
@@ -1658,6 +1702,14 @@ class ImageView(QGraphicsView):
         )
         self._instance_bounds_cache[identifier] = bounds
         return bounds
+
+    def instance_centres(self) -> dict[int, tuple[float, float]]:
+        if self._instance_centres_cache is None:
+            self._instance_centres_cache = annotation_centres(self._instance_annotations)
+        return self._instance_centres_cache
+
+    def instance_centre(self, identifier: int):
+        return self.instance_centres().get(int(identifier))
 
     def set_reference_brush_radius(self, radius: float) -> None:
         """Set the corrected-image radius of the visibly painted sample area."""
@@ -1788,6 +1840,7 @@ class ImageView(QGraphicsView):
         full_pane_modes = {
             "background_colour_gamut",
             "foreground_colour_gamut",
+            "other_colour_gamut",
             "reference_texture_prototypes",
         }
         was_full_pane = self._overlay_mode in full_pane_modes
@@ -1818,6 +1871,7 @@ class ImageView(QGraphicsView):
         if self._overlay_mode in {
             "background_colour_gamut",
             "foreground_colour_gamut",
+            "other_colour_gamut",
         }:
             # Slider drags can emit dozens of values. Coalesce them so a dense
             # multimodal foreground fit renders only the final requested slice.
@@ -1830,20 +1884,27 @@ class ImageView(QGraphicsView):
             raise ValueError(f"Unknown colour-gamut class {class_name!r}.")
         if self._analysis_result is None:
             return None
-        profile = getattr(
-            self._analysis_result.layers,
-            f"{class_name}_colour_profile",
-            None,
-        )
         from seedvision.ui.pipeline_inspector import BackgroundColourGamut
+
+        profile = BackgroundColourGamut.profile_for_class(
+            self._analysis_result.layers, class_name
+        )
 
         return BackgroundColourGamut.dominant_hsv_value(profile)
 
     def set_overlay_opacity(self, opacity: float) -> None:
         self._overlay_opacity = max(0.0, min(1.0, float(opacity)))
         for item in self._overlay_items:
-            if item.data(0) != "fixed-opacity-overlay-annotation":
+            if (item.data(0) != "fixed-opacity-overlay-annotation"
+                    and item.data(1) != "reference-annotation"):
                 item.setOpacity(self._overlay_opacity)
+
+    def set_annotation_opacity(self, opacity: float) -> None:
+        """Change only authored annotation display, never analysis or masks."""
+        self._annotation_opacity = max(0.0, min(1.0, float(opacity)))
+        for item in self._overlay_items:
+            if item.data(1) == "reference-annotation":
+                item.setOpacity(self._annotation_opacity)
 
     def _render_analysis(self) -> None:
         self._clear_overlay_items()
@@ -1864,6 +1925,7 @@ class ImageView(QGraphicsView):
         if self._overlay_mode in {
             "background_colour_gamut",
             "foreground_colour_gamut",
+            "other_colour_gamut",
         }:
             self._render_colour_gamut(result)
             return
@@ -3611,6 +3673,7 @@ class ImageView(QGraphicsView):
         return QColor.fromHsvF(hue, 0.78, 1.0)
 
     def _render_instance_annotations(self) -> None:
+        self._render_annotation_centres()
         existing = self._instance_annotation_overlay_item
 
         def remove_existing() -> None:
@@ -3663,11 +3726,32 @@ class ImageView(QGraphicsView):
             selected_identifier=selected_identifier,
             render_bounds=render_bounds,
         )
-        item.setOpacity(self._overlay_opacity)
+        item.setData(1, "reference-annotation")
+        item.setOpacity(self._annotation_opacity)
         item.setZValue(32)
         self._scene.addItem(item)
         self._overlay_items.append(item)
         self._instance_annotation_overlay_item = item
+
+    def _render_annotation_centres(self) -> None:
+        for item in tuple(self._overlay_items):
+            if item.data(0) == "annotation-centres":
+                self._scene.removeItem(item)
+                self._overlay_items.remove(item)
+        if not self._instance_annotations_visible or self._instance_annotations is None:
+            return
+        centres = self.instance_centres()
+        if self._show_selected_instance_only:
+            centres = {i: centre for i, centre in centres.items() if i == self._active_instance_id}
+        if not centres:
+            return
+        item = _InstanceCentreItem(centres, self._instance_annotations.shape)
+        item.setData(0, "annotation-centres")
+        item.setData(1, "reference-annotation")
+        item.setOpacity(self._annotation_opacity)
+        item.setZValue(33)
+        self._scene.addItem(item)
+        self._overlay_items.append(item)
 
     def _render_background_starting_colour(self, result) -> None:
         """Show the exact median colour selected from the perimeter band."""
@@ -3739,9 +3823,12 @@ class ImageView(QGraphicsView):
             item.setToolTip(tooltip)
             self._overlay_items.append(item)
 
-    def _refresh_instance_annotation_overlay(self) -> None:
-        self._instance_bounds_cache.clear()
+    def _refresh_instance_annotation_overlay(self, *, geometry_changed: bool = True) -> None:
+        if geometry_changed:
+            self._instance_bounds_cache.clear()
+            self._instance_centres_cache = None
         self._render_instance_annotations()
+        self.set_hilum_landmark(self._hilum_point, None)
         self._raise_instance_preview_items()
 
     def _start_instance_live_stroke(
@@ -3876,6 +3963,8 @@ class ImageView(QGraphicsView):
             QTransform.fromScale(source_width / width, source_height / height)
         )
         item.setZValue(z_value)
+        item.setData(1, "reference-annotation")
+        item.setOpacity(self._annotation_opacity)
         self._overlay_items.append(item)
 
     def _set_bgr_base_image(self, bgr) -> None:
@@ -3907,19 +3996,14 @@ class ImageView(QGraphicsView):
 
         if self._image_item is None:
             return
-        class_name = (
-            "foreground"
-            if self._overlay_mode == "foreground_colour_gamut"
-            else "background"
+        class_name = self._overlay_mode.removesuffix("_colour_gamut")
+        profile = BackgroundColourGamut.profile_for_class(result.layers, class_name)
+        parameters = BackgroundColourGamut.parameters_for_class(
+            self._colour_gamut_parameters[class_name], class_name
         )
-        profile = getattr(
-            result.layers, f"{class_name}_colour_profile", None
-        )
-        if profile is None:
-            return
-        parameters = self._colour_gamut_parameters[class_name]
         key = (
-            id(profile),
+            id(getattr(result.layers, "background_colour_profile"
+                       if class_name == "other" else f"{class_name}_colour_profile", None)),
             class_name,
             round(self._hsv_gamut_value, 3),
             tuple(sorted((str(key), repr(value)) for key, value in parameters.items())),
@@ -5275,6 +5359,7 @@ class ImageView(QGraphicsView):
         if self._instance_annotations is None or self._instance_annotations.shape != (height, width):
             self._instance_annotations = np.zeros((height, width), dtype=np.uint16)
             self._instance_bounds_cache.clear()
+            self._instance_centres_cache = None
         return self._instance_annotations
 
     def _detach_active_reference_buffers(self) -> None:
@@ -5667,14 +5752,8 @@ class ImageView(QGraphicsView):
         if self._hilum_editing and self._image_item is not None:
             point = self.mapToScene(event.position().toPoint())
             if event.button() == Qt.MouseButton.LeftButton and self._image_item.boundingRect().contains(point):
-                anchor = point
-                if self._hilum_point is not None and self._hilum_direction is not None:
-                    start = QPointF(*self._hilum_point)
-                    tip = start + QPointF(*self._hilum_direction) * self._hilum_arrow_length()
-                    if QLineF(tip, point).length() * self.transform().m11() < 14:
-                        anchor = start
-                self._hilum_drag = anchor
-                self.set_hilum_landmark((anchor.x(), anchor.y()), None)
+                self._hilum_drag = point
+                self.set_hilum_landmark((point.x(), point.y()), None)
             event.accept()
             return
         if self._manual_seed_centre_editing and self._image_item is not None:
@@ -5764,10 +5843,8 @@ class ImageView(QGraphicsView):
         if self._hilum_editing:
             if self._hilum_drag is not None:
                 point = self.mapToScene(event.position().toPoint())
-                delta = point - self._hilum_drag
-                length = np.hypot(delta.x(), delta.y())
-                direction = (delta.x()/length, delta.y()/length) if length > 2 else None
-                self.set_hilum_landmark((self._hilum_drag.x(), self._hilum_drag.y()), direction)
+                if self._image_item.boundingRect().contains(point):
+                    self.set_hilum_landmark((point.x(), point.y()), None)
             event.accept()
             return
         if self._manual_seed_centre_editing and self._manual_seed_centre_drag is not None:
@@ -5852,11 +5929,13 @@ class ImageView(QGraphicsView):
                     self._last_reference_hover_point
                 )
             if self._reference_point_mode == "instance":
+                # Observers immediately read centroids for the hilum inspector.
+                # Publish fresh geometry before notifying them of this stroke.
+                self._refresh_instance_annotation_overlay()
                 if changed or not assisted:
                     # Emit the mutable draft itself; applied annotations are
                     # copied only when the user commits them.
                     self.instance_annotations_edited.emit(self._instance_annotations)
-                self._refresh_instance_annotation_overlay()
                 self._clear_instance_live_stroke()
             else:
                 # Signal payloads are immutable snapshots for external listeners.

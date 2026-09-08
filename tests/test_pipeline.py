@@ -130,12 +130,12 @@ class PipelineModelTests(unittest.TestCase):
             ("seed_edge_curves", "oval_centre_probability"),
         )
         true_edge_support = graph.connection_for_input(
-            "reference_edge_probability", "ridges"
+            "reference_edge_probability", "magnitude"
         )
         self.assertIsNotNone(true_edge_support)
         self.assertEqual(
             (true_edge_support.source, true_edge_support.source_port),
-            ("edge_gradients", "ridges"),
+            ("edge_gradients", "magnitude"),
         )
         authoritative_reference_edge = graph.connection_for_input(
             "procedural_instances", "reference_probability"

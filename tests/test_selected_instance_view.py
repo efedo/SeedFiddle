@@ -192,7 +192,7 @@ class SelectedInstanceMainWindowTests(unittest.TestCase):
             self.addCleanup(window.close)
 
             checkbox = window.show_selected_instance_checkbox
-            self.assertEqual(checkbox.text(), "Show selected seed only")
+            self.assertEqual(checkbox.text(), "Show selected only")
             self.assertFalse(checkbox.isChecked())
             self.assertFalse(checkbox.isEnabled())
             self.assertFalse(window.image_view._show_selected_instance_only)

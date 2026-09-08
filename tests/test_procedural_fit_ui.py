@@ -250,10 +250,7 @@ class ProceduralFitMainWindowTests(unittest.TestCase):
         self.assertFalse(
             hasattr(window, "use_annotated_instance_boundaries_checkbox")
         )
-        self.assertIn(
-            "automatically supply physical contours",
-            window.instance_boundary_supervision_label.text(),
-        )
+        self.assertFalse(hasattr(window, "instance_boundary_supervision_label"))
 
     def test_fit_eligibility_requires_applied_connected_annotations(self) -> None:
         window, key = self._window_and_key()

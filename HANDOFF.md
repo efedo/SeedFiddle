@@ -22,6 +22,91 @@ Hard constraints:
 - Full-raster analysis is GPU-first PyTorch CUDA. Keep tensors and cached
   intermediates on the GPU until display or compact metadata requires transfer.
 
+## Latest update — 2026-09-08: compact seed annotation controls and centroids
+
+- Seed selector is now `Seed:` / colour swatch / four-digit numeric spinner
+  (1–9999) / `Next empty`. `Show selected only` appears once, on the next row;
+  the second existing-seed dropdown is removed. The red `empty` notice remains.
+  Next empty reports capacity rather than selecting an occupied ID when all
+  9999 IDs are used. Existing uint16 annotation archives are not renumbered.
+- Removed routine visible boundary-supervision and coat-vocabulary messages;
+  contextual instructions are tooltips. Invalid legacy shape metadata still
+  shows a visible warning. Condition, shape, painting, and Apply/save mechanics
+  are retained.
+- `seedvision/annotation/geometry.py` calculates area centroids of each painted
+  ID in bounded row chunks. All pixels count, including disconnected fragments.
+  A partial outline uses the **visible painted area's centroid**, not an
+  inferred complete-seed centre. The editable CPU annotation raster is already
+  available; no CUDA analysis raster is downloaded for this operation.
+- Image overlays show constant-screen-size, white crosshairs with dark halos
+  at these centroids. They obey annotation visibility, selected-only filtering,
+  and independent annotation opacity. Cached geometry survives display-only
+  changes, is invalidated by mask edits/replacement, and is cleared on image
+  switches. Crosshairs never become manual detection markers or model inputs.
+  Brush commits refresh centroid geometry **before** emitting the edit signal,
+  so synchronous hilum-inspector listeners cannot read the previous stroke's
+  cached centre. A real Qt brush-event regression verifies this ordering.
+- Hilum direction is now the unit vector **from the painted seed centroid to
+  the hilum point**, not a user-dragged vector. Pick/drag places or moves the
+  landmark; the inspector shows its derived angle (clockwise from image-right).
+  Direction is unknown at the centroid or without a landmark. It updates with
+  mask edits/undo and is derived again when applying annotations, using the
+  existing archive metadata fields. Merely displaying old archives does not
+  rewrite their saved metadata. Manual direction controls are removed.
+- Regression coverage: `tests/test_annotation_centres.py` exercises geometry,
+  filtering/opacity/cache independence, compact controls, edit/undo/save
+  round-trips, brush-event ordering, missing direction, and ID exhaustion.
+  A dense synthetic 6240×4160 raster with 6040 IDs took 0.547 s for its initial
+  centroid calculation; display-only changes reuse those compact coordinates.
+  Qt visual checks are in
+  ignored `artifacts/annotation-controls-compact.png` and
+  `artifacts/annotation-centre-crosshairs.png`. All **58 focused tests passed**
+  (16.725 s), logged in `artifacts/annotation-controls-focused-2026-09-08.log`.
+  Final full discovery: **611 run, 608 passed, 2 skipped, 1 pre-existing
+  missing-fixture failure** (276.125 s). The unchanged reference manifest still
+  points to absent `images/IMG_9689c.JPG`; the fixture check remains intact.
+  Log: `artifacts/full-suite-2026-09-08-annotation-controls-verified.log`.
+  No commit/push requested in this turn; earlier local changes
+  and user-owned draft/project files remain untouched.
+
+## Previous update — 2026-09-08: reference-gradient input and viewer controls
+
+- Checkpointed preceding work as `95e8032` before this request. No push requested.
+  Local `analysis7.seedfiddle-project.json`, `seedfiddle_prompts.md`, and the
+  pre-existing deletion of `prompts.txt` were deliberately not included.
+- Reference edges consumes `edge_gradients.magnitude`, not generic thinned
+  ridges. Continuous CUDA gradient support multiplies Physical compatibility;
+  normalization also starts from float gradient support. The node applies its
+  own NMS/hysteresis afterwards. Raw prototype calculations and conservative
+  subtraction policy are unchanged. Settings format is now **20**; versions
+  1–19 migrate the old ridge input and preserve disconnected/suspended branches.
+- Toolbar: Run pipeline; independent checked/depressed Image/Pipeline view
+  toggles; removed duplicate top-level fit/actual-size buttons (menu shortcuts
+  remain); analytical opacity slider maximum 102 px instead of 170 px. Moved
+  material/seed visibility controls out of the painting panel, after Annotate
+  seed instances, with their own annotation-only opacity slider. These controls
+  neither edit masks nor invalidate calculation caches.
+- Pipeline header uses viewport width, includes Fit and 100%, and collapses
+  editing commands into a Tools menu on narrow panes. Selected nodes have a
+  saturated blue header/body and a 5 px cosmetic cyan outline; their status
+  colour remains visible as a separate strip.
+- Material colour overlays are ordered Foreground probability/HSV, Background
+  probability/HSV, Other probability/HSV, then foreground-vs-nonseed excess.
+  Other HSV reads the actual Other fit stored under the historical
+  `excluded_component_*` metadata names. It does not refit or use Background's
+  configurable chroma/frequency weights. Missing fits show an explicit message.
+- See `tests/test_reference_edge_toolbar_revision.py` for display independence,
+  narrow-header controls, overlay/socket ownership, and numeric production-vs-HSV
+  agreement. `docs/LOCAL_EDGE_NORMALIZATION.md` now describes continuous support.
+- Verification: 75 focused graph/migration/gradient/toolbar checks passed;
+  final UI/project/toolbar checks **95 passed** (75.670 s). Full `unittest`
+  discovery: **602 run, 599 passed, 2 skipped, 1 pre-existing failure**
+  (283.942 s). The sole failure remains the committed reference manifest's
+  missing `images/IMG_9689c.JPG`; no fixture or manifest was removed or hidden.
+  Logs are in ignored `artifacts/full-suite-2026-09-08.log` and
+  `artifacts/final-ui-checks-2026-09-08.log`. Qt visual checks used actual Windows
+  fonts at 1360 and 1920 px; pipeline controls were also tested at 420 px.
+
 ## New Windows computer setup
 
 1. Install Git and a 64-bit Python version allowed by

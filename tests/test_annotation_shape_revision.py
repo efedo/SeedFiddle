@@ -214,7 +214,7 @@ class AnnotationWidgetTests(unittest.TestCase):
                 window.instance_id_spin.setValue(1)
                 window._sync_seed_trait_controls()
                 self.assertTrue(window.instance_empty_label.isHidden())
-                self.assertEqual(window.existing_instance_combo.count(), 2)
+                self.assertFalse(hasattr(window, "existing_instance_combo"))
                 window.seed_conditions_reviewed_checkbox.setChecked(True)
                 self.assertTrue(window._draft_seed_annotations[key][1].conditions_reviewed)
                 damage = next(iter(window.seed_condition_checkboxes))
@@ -232,12 +232,12 @@ class AnnotationWidgetTests(unittest.TestCase):
                 self.assertTrue(window._draft_seed_annotations[key][1].full_length_visible)
                 window.instance_id_spin.setValue(2)
                 self.assertFalse(window.instance_empty_label.isHidden())
-                window._select_existing_instance(1)
+                window.instance_id_spin.setValue(1)
                 self.assertEqual(window.instance_id_spin.value(), 1)
             finally:
                 window.close()
 
-    def test_hilum_drag_is_not_a_paint_stroke_and_survives_direction_edit(self):
+    def test_hilum_drag_moves_landmark_and_derives_radial_direction_without_painting(self):
         from PySide6.QtCore import Qt, QPoint
         from PySide6.QtGui import QImage
         from PySide6.QtTest import QTest
@@ -251,6 +251,9 @@ class AnnotationWidgetTests(unittest.TestCase):
             view.resize(500, 440)
             view.show()
             view.load_image(path)
+            labels = np.zeros((160, 200), np.uint16)
+            labels[40:81, 80:121] = 1  # Centroid (100, 60), not the drag origin.
+            view.set_instance_annotations(labels)
             self.app.processEvents()
             view.set_hilum_editing(True)
             edits, strokes = [], []
@@ -262,8 +265,11 @@ class AnnotationWidgetTests(unittest.TestCase):
             QTest.mouseMove(view.viewport(), end)
             QTest.mouseRelease(view.viewport(), Qt.MouseButton.LeftButton, pos=end)
             self.assertEqual(len(edits), 1)
-            np.testing.assert_allclose(edits[0][1], (1., 0.), atol=.05)
+            np.testing.assert_allclose(edits[0][0], (120., 90.), atol=1.)
+            expected = np.asarray(edits[0][0]) - (100., 60.)
+            np.testing.assert_allclose(edits[0][1], expected / np.linalg.norm(expected))
             self.assertEqual(strokes, [])
+            np.testing.assert_array_equal(view._instance_annotations, labels)
             self.assertEqual(len(view._hilum_items), 2)
             QTest.keyClick(view, Qt.Key.Key_Escape)
             self.assertFalse(view._hilum_editing)

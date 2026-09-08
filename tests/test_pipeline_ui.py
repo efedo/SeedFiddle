@@ -1714,7 +1714,7 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertEqual(
             window.image_view._overlay_mode, "reference_edge_probability"
         )
-        self.assertIn("thinned true-image-edge support", window.overlay_legend_label.text())
+        self.assertIn("continuous image-gradient support", window.overlay_legend_label.text())
         self.assertIn("exactly zero away", window.overlay_legend_label.text())
         self.assertIn("independent of the conservative weight", window.overlay_legend_label.text())
         conservative_index = node_selector.findData("conservative_net_physical_edge_evidence")
@@ -2004,7 +2004,8 @@ class PipelineCanvasTests(unittest.TestCase):
         window.background_exclusion_button.setChecked(True)
         self.application.processEvents()
         self.assertEqual(window.image_view._reference_point_mode, "other")
-        self.assertFalse(window.reference_visibility_controls.isHidden())
+        self.assertTrue(window.workflow_toolbar.isAncestorOf(window.reference_visibility_controls))
+        self.assertFalse(window.reference_panel.isAncestorOf(window.reference_visibility_controls))
         window.show_material_references_checkbox.setChecked(False)
         self.assertFalse(
             window.image_view._material_reference_annotations_visible
@@ -2026,11 +2027,8 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertEqual(window.image_view._reference_point_mode, "instance")
         self.assertTrue(window.reference_controls.isHidden())
         self.assertFalse(window.instance_annotation_controls.isHidden())
-        self.assertFalse(window.reference_visibility_controls.isHidden())
-        self.assertIn(
-            "automatically supply physical contours",
-            window.instance_boundary_supervision_label.text(),
-        )
+        self.assertTrue(window.workflow_toolbar.isAncestorOf(window.reference_visibility_controls))
+        self.assertFalse(hasattr(window, "instance_boundary_supervision_label"))
         window.show_instance_annotations_checkbox.setChecked(False)
         self.assertFalse(window.image_view._instance_annotations_visible)
         self.assertEqual(
@@ -2658,13 +2656,15 @@ class PipelineCanvasTests(unittest.TestCase):
         view.set_instance_annotations(instances, render=False)
         view.refresh_analysis()
         # Legacy edge/non-edge arrays can be loaded but are never presented.
-        self.assertEqual(len(view._overlay_items), 4)
+        self.assertEqual(len(view._overlay_items), 5)  # Three materials, labels, centroids.
         self.assertIsNotNone(view._instance_annotation_overlay_item)
+        centres = [i for i in view._overlay_items if i.data(0) == "annotation-centres"]
+        self.assertEqual(centres[0].centres, {4: (8.5, 8.5)})
 
         view.set_material_reference_annotations_visible(False)
-        self.assertEqual(len(view._overlay_items), 1)
+        self.assertEqual(len(view._overlay_items), 2)
         view.set_boundary_reference_annotations_visible(False)
-        self.assertEqual(len(view._overlay_items), 1)
+        self.assertEqual(len(view._overlay_items), 2)
         view.set_instance_annotations_visible(False)
         self.assertEqual(len(view._overlay_items), 0)
         # A draft refresh must not resurrect a hidden instance overlay.
@@ -2673,9 +2673,9 @@ class PipelineCanvasTests(unittest.TestCase):
         view.set_material_reference_annotations_visible(True)
         self.assertEqual(len(view._overlay_items), 3)
         view.set_instance_annotations_visible(True)
-        self.assertEqual(len(view._overlay_items), 4)
+        self.assertEqual(len(view._overlay_items), 5)
         view.set_boundary_reference_annotations_visible(True)
-        self.assertEqual(len(view._overlay_items), 4)
+        self.assertEqual(len(view._overlay_items), 5)
         self.assertFalse(view._boundary_reference_annotations_visible)
         self.assertTrue(np.array_equal(view.reference_mask("other"), other))
         self.assertTrue(
@@ -2687,9 +2687,9 @@ class PipelineCanvasTests(unittest.TestCase):
         # Compatibility API changes material display only and leaves labelled
         # seed instances alone; legacy boundaries remain hidden.
         view.set_reference_annotations_visible(False)
-        self.assertEqual(len(view._overlay_items), 1)
+        self.assertEqual(len(view._overlay_items), 2)
         view.set_reference_annotations_visible(True)
-        self.assertEqual(len(view._overlay_items), 4)
+        self.assertEqual(len(view._overlay_items), 5)
         view.close()
 
     def test_selected_procedural_instance_reports_geometry_in_node_panel(self) -> None:

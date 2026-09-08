@@ -28,14 +28,25 @@
   means unknown, not a negative training example. Persistence retains its
   explicit reviewed bit, preserving the distinction.
 - **Annotation tool window:** labelled draggable top bar, bottom-right resize
-  handle and retained user size. Existing-ID selector, red empty indicator and
-  selected-only control are beside the ID spinner. Hidden tool pages no longer
+  handle and retained user size. Updated 8 September: one four-digit numeric
+  selector (`Seed:` / colour / number / `Next empty`), with red empty indicator
+  and `Show selected only` beneath it. The redundant existing-ID dropdown and
+  routine explanatory labels are removed. Hidden tool pages no longer
   determine the brush page's height. The physical-seed-ID editor is removed;
   existing IDs remain intact in archives for backward compatibility.
-- **Hilum:** the crosshair sets a landmark; dragging from it sets a direction.
-  The displayed arrow tip can be dragged to revise direction. These gestures
-  edit metadata rather than masks. Escape leaves landmark editing. Numeric
-  controls remain available for precision.
+- **Hilum (updated 8 September):** Pick hilum places the landmark; dragging
+  moves it. Direction is automatically derived from the painted seed-area
+  centroid to the landmark, and is undefined if the two coincide. The read-only
+  angle uses image coordinates (clockwise from right). Moving the point or
+  changing/undoing the mask updates direction; Apply persists the derived unit
+  vector in the existing metadata field. These gestures edit metadata rather
+  than masks. Escape leaves landmark editing. Numeric position controls remain
+  available for precision; independent direction controls are removed.
+- **Annotation centres (8 September):** small white crosshairs with dark halos
+  mark the area centroids of annotated IDs. Partial/disconnected painted areas
+  are measured as painted, without inferring a complete seed. Crosshairs follow
+  annotation visibility, selected-only mode and annotation opacity; they are
+  display-only and are never used as detection markers or prediction targets.
 
 ## Actual defects found in shape calculations
 

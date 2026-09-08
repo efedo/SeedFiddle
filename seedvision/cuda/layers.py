@@ -1433,17 +1433,17 @@ def build_cuda_analysis_layers(
         # The prototype descriptor is intentionally wider than a true image
         # edge. It classifies local edge context but cannot itself establish a
         # barrier. The authoritative reference-edge probability is therefore
-        # supported only on the already thinned, image-derived edge ridge:
+        # supported by the continuous, image-derived gradient magnitude:
         #
-        #   R * Pphysical
+        #   G * Pphysical
         #
         # Pphysical already includes class competition and unknown confidence.
         # A second subtraction is a conservative evidence policy, not another
         # probability calibration. Keep it separate and explicitly opt-in.
         # Both products make broad descriptor/restoration halos harmless.
-        true_edge_support = (
-            trace_products.ridges.gpu_tensor(dtype=torch.float32) / 255.0
-        ).clamp(0.0, 1.0)
+        # Classification and normalization precede this node's own NMS. Using
+        # generic ridges here would discard weak/adjacent evidence prematurely.
+        true_edge_support = gradient_result.strength.clamp(0.0, 1.0)
         edge_supported_physical = (
             true_edge_support * physical_compatibility
         ).clamp(0.0, 1.0)
@@ -1583,7 +1583,11 @@ def build_cuda_analysis_layers(
                 reference_edges.physical_prototype_compatibility.gpu_tensor(
                     dtype=torch.float32
                 ) / 255.0,
-                trace_products.ridges,
+                GpuRaster(
+                    gradient_result.strength * 255.0,
+                    numpy_dtype=np.float32,
+                    name="continuous gradient support before reference normalization",
+                ),
                 gradient_result,
                 seed_diameter,
                 settings,
@@ -6507,7 +6511,7 @@ def reference_texture_probabilities(
 
 def locally_normalized_reference_edge_probability(
     physical_prototype_compatibility_field,
-    thinned_true_edge_support,
+    true_edge_support,
     gradients: EdgeGradientProducts,
     seed_diameter: float,
     settings,
@@ -6518,10 +6522,10 @@ def locally_normalized_reference_edge_probability(
 
     The semantic input is Pphysical, including its known-versus-unknown
     confidence, not a ratio or conservative subtraction. It cannot create
-    spatial support. A bounded, winsorized local RMS envelope raises weak *thinned true
-    image-edge support* toward a local target without attenuating strong
+    spatial support. A bounded, winsorized local RMS envelope raises weak continuous
+    image-gradient support toward a local target without attenuating strong
     support. The final full-resolution mask is restricted to the original
-    thinned support, so resize interpolation cannot recreate descriptor halos.
+    gradient support, so resize interpolation cannot recreate descriptor halos.
     """
 
     import torch
@@ -6605,7 +6609,7 @@ def locally_normalized_reference_edge_probability(
     )
     edge_support = resized(
         _raster_tensor(
-            thinned_true_edge_support,
+            true_edge_support,
             context,
             normalized=True,
         )
@@ -6670,10 +6674,10 @@ def locally_normalized_reference_edge_probability(
             mode="bilinear",
             align_corners=False,
         )
-    # Bilinear restoration must not broaden the one-pixel true-edge support.
+    # Bilinear restoration must not broaden the original gradient support.
     # Reapply the exact full-resolution support footprint after every resize.
     full_support = _raster_tensor(
-        thinned_true_edge_support,
+        true_edge_support,
         context,
         normalized=True,
     ).clamp(0.0, 1.0)

@@ -1439,9 +1439,9 @@ def build_default_pipeline() -> PipelineGraph:
         ParameterSpec("reference_ridge_hysteresis_iterations", "Hysteresis reach", "int", 1, 32, 1, "Maximum GPU morphology steps through which connected weak reference ridges can be retained."),
         ParameterSpec("reference_ridge_working_maximum_dimension", "GPU working dimension", "int", 256, 4096, 64, "Maximum tensor dimension used for reference-probability thinning before the result is restored to source resolution."),
         ParameterSpec("reference_edge_normalization_radius_fraction", "Local normalization radius / diameter", "float", 0.05, 1.0, 0.01, "Seed-relative radius of the valid-weighted local support envelope. Larger values correct slower spatial variation but compare across more neighbouring edges."),
-        ParameterSpec("reference_edge_normalization_target_support", "Target local support", "float", 0.05, 0.95, 0.01, "Target amplitude used to equalize the robust local thinned true-edge envelope before applying Physical prototype probability. Independent of the conservative subtraction weight."),
-        ParameterSpec("reference_edge_normalization_maximum_gain", "Maximum local gain", "float", 1.0, 8.0, 0.10, "One-sided bound on thinned true-edge support enhancement. A value of 1 disables gain; normalization never attenuates the unnormalized edge-supported probability."),
-        ParameterSpec("reference_edge_normalization_absolute_floor", "Absolute support floor", "float", 0.0, 0.50, 0.005, "Thinned true-edge support rises smoothly from zero to a full gate at this value. Exactly zero stays zero, so neither prototype nor resize halos can be promoted."),
+        ParameterSpec("reference_edge_normalization_target_support", "Target local support", "float", 0.05, 0.95, 0.01, "Target amplitude used to equalize the robust local continuous-gradient envelope before applying Physical prototype probability. Independent of the conservative subtraction weight."),
+        ParameterSpec("reference_edge_normalization_maximum_gain", "Maximum local gain", "float", 1.0, 8.0, 0.10, "One-sided bound on continuous-gradient enhancement. A value of 1 disables gain; normalization never attenuates the unnormalized edge-supported probability."),
+        ParameterSpec("reference_edge_normalization_absolute_floor", "Absolute support floor", "float", 0.0, 0.50, 0.005, "Continuous-gradient support rises smoothly from zero to a full gate at this value. Exactly zero stays zero, so neither prototype nor resize halos can be promoted."),
     )
     trace_parameters = (
         ParameterSpec(
@@ -2600,7 +2600,7 @@ def build_default_pipeline() -> PipelineGraph:
                 "competition. The calibration receives no annotation masks or coordinates "
                 "and cannot hard-write its training pixels. Those broad maps and their net "
                 "margin are diagnostics only. The authoritative Reference-edge probability is "
-                "the already thinned true-image-edge support multiplied by Physical prototype "
+                "the continuous image-gradient magnitude multiplied by Physical prototype "
                 "probability, including its known-versus-unknown confidence. No second class "
                 "subtraction or conditional-ratio normalization is applied to that probability. "
                 "Descriptor and resize halos therefore contribute exactly zero away from a true "
@@ -2621,7 +2621,7 @@ def build_default_pipeline() -> PipelineGraph:
                 ("physical_probability", "Physical-edge prototype compatibility"),
                 ("non_edge_probability", "Non-physical prototype compatibility"),
                 ("normals", "Continuous edge normals"),
-                ("ridges", "Thinned true-edge support"),
+                ("magnitude", "Continuous edge magnitude"),
                 ("scale", "Seed diameter"),
             ),
             output_ports=(
@@ -4441,7 +4441,7 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineConnection("reference_texture_prototypes", "reference_edge_probability", "PhysicalPrototypeProbability", source_port="physical_probability", target_port="physical_probability"),
         PipelineConnection("reference_texture_prototypes", "reference_edge_probability", "NonEdgePrototypeProbability", source_port="non_edge_probability", target_port="non_edge_probability"),
         PipelineConnection("edge_gradients", "reference_edge_probability", "DirectedTangents", source_port="directed", target_port="normals"),
-        PipelineConnection("edge_gradients", "reference_edge_probability", "ThinnedRidges", source_port="ridges", target_port="ridges"),
+        PipelineConnection("edge_gradients", "reference_edge_probability", "EdgeMagnitude", source_port="magnitude", target_port="magnitude"),
         PipelineConnection("seed_scale_estimation", "reference_edge_probability", "SeedDiameter", source_port="seed_diameter", target_port="scale"),
         PipelineConnection("edge_gradients", "edge_traces", "ThinnedRidges", source_port="ridges"),
         PipelineConnection("reference_edge_probability", "edge_traces", "ReferenceRidges", source_port="reference_ridges", target_port="reference_ridges"),

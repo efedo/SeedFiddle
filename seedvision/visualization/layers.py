@@ -759,7 +759,7 @@ class AnalysisLayers:
     non_edge_probability: object | None = None
     net_physical_edge_probability: object | None = None
     # True-edge-supported products used by analysis consumers. The canonical
-    # probability is thinned edge support multiplied by Pphysical. The optional
+    # probability is continuous gradient support multiplied by Pphysical. The optional
     # conservative margin is evidence, not probability; per-class maps let
     # consumers distinguish known Physical from known Non-physical support.
     reference_edge_probability: object | None = None

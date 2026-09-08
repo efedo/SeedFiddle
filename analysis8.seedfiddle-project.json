@@ -1,0 +1,3192 @@
+{
+  "analysis_settings": {
+    "connections": [
+      {
+        "connected": true,
+        "source": "project",
+        "source_port": "raw_image",
+        "target": "metadata",
+        "target_port": "image"
+      },
+      {
+        "connected": true,
+        "source": "project",
+        "source_port": "species_library",
+        "target": "species_reference_library",
+        "target_port": "pin"
+      },
+      {
+        "connected": true,
+        "source": "metadata",
+        "source_port": "species",
+        "target": "species_reference_library",
+        "target_port": "species"
+      },
+      {
+        "connected": true,
+        "source": "project",
+        "source_port": "raw_image",
+        "target": "deskew_colour",
+        "target_port": "image"
+      },
+      {
+        "connected": true,
+        "source": "deskew_colour",
+        "source_port": "corrected_image",
+        "target": "ruler_detection",
+        "target_port": "corrected_image"
+      },
+      {
+        "connected": true,
+        "source": "deskew_colour",
+        "source_port": "corrected_image",
+        "target": "layout_detection",
+        "target_port": "corrected_image"
+      },
+      {
+        "connected": true,
+        "source": "deskew_colour",
+        "source_port": "corrected_image",
+        "target": "hue_only",
+        "target_port": "corrected_image"
+      },
+      {
+        "connected": true,
+        "source": "layout_detection",
+        "source_port": "dish_region",
+        "target": "hue_only",
+        "target_port": "dish_region"
+      },
+      {
+        "connected": true,
+        "source": "deskew_colour",
+        "source_port": "corrected_image",
+        "target": "wavelet_decomposition",
+        "target_port": "corrected_image"
+      },
+      {
+        "connected": true,
+        "source": "layout_detection",
+        "source_port": "dish_region",
+        "target": "wavelet_decomposition",
+        "target_port": "dish_region"
+      },
+      {
+        "connected": true,
+        "source": "wavelet_decomposition",
+        "source_port": "pyramid",
+        "target": "edge_gradients",
+        "target_port": "wavelets"
+      },
+      {
+        "connected": true,
+        "source": "ruler_detection",
+        "source_port": "pixels_per_millimetre",
+        "target": "layout_detection",
+        "target_port": "pixels_per_millimetre"
+      },
+      {
+        "connected": true,
+        "source": "deskew_colour",
+        "source_port": "corrected_image",
+        "target": "seed_scale_estimation",
+        "target_port": "corrected_image"
+      },
+      {
+        "connected": true,
+        "source": "layout_detection",
+        "source_port": "vessel_geometry",
+        "target": "seed_scale_estimation",
+        "target_port": "vessel_geometry"
+      },
+      {
+        "connected": true,
+        "source": "project",
+        "source_port": "annotations",
+        "target": "seed_scale_estimation",
+        "target_port": "annotations"
+      },
+      {
+        "connected": true,
+        "source": "species_reference_library",
+        "source_port": "dimensions_shape",
+        "target": "seed_scale_estimation",
+        "target_port": "library_shape"
+      },
+      {
+        "connected": true,
+        "source": "material_evidence_decision",
+        "source_port": "seed_mask",
+        "target": "distance_candidates",
+        "target_port": "foreground_mask"
+      },
+      {
+        "connected": true,
+        "source": "seed_scale_estimation",
+        "source_port": "seed_diameter",
+        "target": "distance_candidates",
+        "target_port": "seed_diameter"
+      },
+      {
+        "connected": true,
+        "source": "deskew_colour",
+        "source_port": "corrected_image",
+        "target": "circle_candidates",
+        "target_port": "image"
+      },
+      {
+        "connected": true,
+        "source": "layout_detection",
+        "source_port": "vessel_geometry",
+        "target": "circle_candidates",
+        "target_port": "region"
+      },
+      {
+        "connected": true,
+        "source": "distance_candidates",
+        "source_port": "distance_peaks",
+        "target": "circle_candidates",
+        "target_port": "distance_candidates"
+      },
+      {
+        "connected": true,
+        "source": "seed_scale_estimation",
+        "source_port": "seed_diameter",
+        "target": "circle_candidates",
+        "target_port": "scale"
+      },
+      {
+        "connected": true,
+        "source": "edge_gradients",
+        "source_port": "magnitude",
+        "target": "circle_candidates",
+        "target_port": "edge"
+      },
+      {
+        "connected": true,
+        "source": "image_quality",
+        "source_port": "sensor_noise",
+        "target": "circle_candidates",
+        "target_port": "noise"
+      },
+      {
+        "connected": true,
+        "source": "illumination_decomposition",
+        "source_port": "flattened",
+        "target": "circle_candidates",
+        "target_port": "flattened"
+      },
+      {
+        "connected": true,
+        "source": "illumination_decomposition",
+        "source_port": "shadow",
+        "target": "circle_candidates",
+        "target_port": "shadow"
+      },
+      {
+        "connected": true,
+        "source": "illumination_decomposition",
+        "source_port": "highlight",
+        "target": "circle_candidates",
+        "target_port": "highlight"
+      },
+      {
+        "connected": true,
+        "source": "distance_candidates",
+        "source_port": "distance_peaks",
+        "target": "identification",
+        "target_port": "distance_peaks"
+      },
+      {
+        "connected": true,
+        "source": "circle_candidates",
+        "source_port": "cuda_rings",
+        "target": "identification",
+        "target_port": "cuda_rings"
+      },
+      {
+        "connected": true,
+        "source": "seed_scale_estimation",
+        "source_port": "seed_diameter",
+        "target": "identification",
+        "target_port": "scale"
+      },
+      {
+        "connected": true,
+        "source": "deskew_colour",
+        "source_port": "corrected_image",
+        "target": "background_likelihood",
+        "target_port": "corrected_image"
+      },
+      {
+        "connected": true,
+        "source": "species_reference_library",
+        "source_port": "foreground_colour",
+        "target": "background_likelihood",
+        "target_port": "library_foreground_colour"
+      },
+      {
+        "connected": true,
+        "source": "layout_detection",
+        "source_port": "dish_region",
+        "target": "background_likelihood",
+        "target_port": "region"
+      },
+      {
+        "connected": true,
+        "source": "seed_scale_estimation",
+        "source_port": "seed_diameter",
+        "target": "background_likelihood",
+        "target_port": "seed_diameter"
+      },
+      {
+        "connected": true,
+        "source": "ruler_detection",
+        "source_port": "pixels_per_millimetre",
+        "target": "background_likelihood",
+        "target_port": "absolute_scale"
+      },
+      {
+        "connected": true,
+        "source": "layout_detection",
+        "source_port": "perimeter_background",
+        "target": "background_likelihood",
+        "target_port": "perimeter_colour_samples"
+      },
+      {
+        "connected": true,
+        "source": "project",
+        "source_port": "annotations",
+        "target": "background_likelihood",
+        "target_port": "background_reference"
+      },
+      {
+        "connected": true,
+        "source": "project",
+        "source_port": "annotations",
+        "target": "background_likelihood",
+        "target_port": "foreground_reference"
+      },
+      {
+        "connected": true,
+        "source": "project",
+        "source_port": "annotations",
+        "target": "background_likelihood",
+        "target_port": "other_reference"
+      },
+      {
+        "connected": true,
+        "source": "project",
+        "source_port": "annotations",
+        "target": "background_likelihood",
+        "target_port": "annotations"
+      },
+      {
+        "connected": true,
+        "source": "identification",
+        "source_port": "seed_proposals",
+        "target": "instance_masks",
+        "target_port": "seed_proposals"
+      },
+      {
+        "connected": true,
+        "source": "layout_detection",
+        "source_port": "dish_region",
+        "target": "instance_masks",
+        "target_port": "region"
+      },
+      {
+        "connected": true,
+        "source": "material_evidence_decision",
+        "source_port": "nonseed_probability",
+        "target": "instance_masks",
+        "target_port": "background_probability"
+      },
+      {
+        "connected": true,
+        "source": "deskew_colour",
+        "source_port": "corrected_image",
+        "target": "refined_background_likelihood",
+        "target_port": "image"
+      },
+      {
+        "connected": true,
+        "source": "layout_detection",
+        "source_port": "dish_region",
+        "target": "refined_background_likelihood",
+        "target_port": "region"
+      },
+      {
+        "connected": true,
+        "source": "species_reference_library",
+        "source_port": "foreground_noise",
+        "target": "refined_background_likelihood",
+        "target_port": "library_foreground_noise"
+      },
+      {
+        "connected": true,
+        "source": "seed_scale_estimation",
+        "source_port": "seed_diameter",
+        "target": "refined_background_likelihood",
+        "target_port": "seed_diameter"
+      },
+      {
+        "connected": true,
+        "source": "layout_detection",
+        "source_port": "perimeter_background",
+        "target": "refined_background_likelihood",
+        "target_port": "perimeter_band"
+      },
+      {
+        "connected": true,
+        "source": "project",
+        "source_port": "annotations",
+        "target": "refined_background_likelihood",
+        "target_port": "background_reference"
+      },
+      {
+        "connected": true,
+        "source": "project",
+        "source_port": "annotations",
+        "target": "refined_background_likelihood",
+        "target_port": "foreground_reference"
+      },
+      {
+        "connected": true,
+        "source": "project",
+        "source_port": "annotations",
+        "target": "refined_background_likelihood",
+        "target_port": "other_reference"
+      },
+      {
+        "connected": true,
+        "source": "background_likelihood",
+        "source_port": "annotated_foreground_reference_source",
+        "target": "refined_background_likelihood",
+        "target_port": "automatic_foreground_reference"
+      },
+      {
+        "connected": true,
+        "source": "deskew_colour",
+        "source_port": "corrected_image",
+        "target": "edge_gradients",
+        "target_port": "image"
+      },
+      {
+        "connected": true,
+        "source": "illumination_decomposition",
+        "source_port": "despeckled",
+        "target": "edge_gradients",
+        "target_port": "despeckled"
+      },
+      {
+        "connected": true,
+        "source": "layout_detection",
+        "source_port": "dish_region",
+        "target": "edge_gradients",
+        "target_port": "region"
+      },
+      {
+        "connected": true,
+        "source": "deskew_colour",
+        "source_port": "corrected_image",
+        "target": "surface_darkness_gradients",
+        "target_port": "image"
+      },
+      {
+        "connected": true,
+        "source": "layout_detection",
+        "source_port": "dish_region",
+        "target": "surface_darkness_gradients",
+        "target_port": "region"
+      },
+      {
+        "connected": true,
+        "source": "seed_scale_estimation",
+        "source_port": "seed_diameter",
+        "target": "surface_darkness_gradients",
+        "target_port": "scale"
+      },
+      {
+        "connected": true,
+        "source": "surface_darkness_gradients",
+        "source_port": "lightening_magnitude",
+        "target": "lightening_gradient_ceiling",
+        "target_port": "magnitude"
+      },
+      {
+        "connected": true,
+        "source": "surface_darkness_gradients",
+        "source_port": "lightening_direction",
+        "target": "lightening_gradient_ceiling",
+        "target_port": "direction"
+      },
+      {
+        "connected": true,
+        "source": "surface_darkness_gradients",
+        "source_port": "darkening_magnitude",
+        "target": "darkening_gradient_ceiling",
+        "target_port": "magnitude"
+      },
+      {
+        "connected": true,
+        "source": "surface_darkness_gradients",
+        "source_port": "darkening_direction",
+        "target": "darkening_gradient_ceiling",
+        "target_port": "direction"
+      },
+      {
+        "connected": true,
+        "source": "deskew_colour",
+        "source_port": "corrected_image",
+        "target": "frequency_noise_masks",
+        "target_port": "image"
+      },
+      {
+        "connected": true,
+        "source": "layout_detection",
+        "source_port": "dish_region",
+        "target": "frequency_noise_masks",
+        "target_port": "region"
+      },
+      {
+        "connected": true,
+        "source": "seed_scale_estimation",
+        "source_port": "seed_diameter",
+        "target": "frequency_noise_masks",
+        "target_port": "scale"
+      },
+      {
+        "connected": true,
+        "source": "deskew_colour",
+        "source_port": "corrected_image",
+        "target": "reference_texture_prototypes",
+        "target_port": "image"
+      },
+      {
+        "connected": true,
+        "source": "species_reference_library",
+        "source_port": "material_prototypes",
+        "target": "reference_texture_prototypes",
+        "target_port": "library_material_prototypes"
+      },
+      {
+        "connected": true,
+        "source": "species_reference_library",
+        "source_port": "edge_prototypes",
+        "target": "reference_texture_prototypes",
+        "target_port": "library_edge_prototypes"
+      },
+      {
+        "connected": true,
+        "source": "layout_detection",
+        "source_port": "dish_region",
+        "target": "reference_texture_prototypes",
+        "target_port": "region"
+      },
+      {
+        "connected": true,
+        "source": "seed_scale_estimation",
+        "source_port": "seed_diameter",
+        "target": "reference_texture_prototypes",
+        "target_port": "scale"
+      },
+      {
+        "connected": true,
+        "source": "project",
+        "source_port": "annotations",
+        "target": "reference_texture_prototypes",
+        "target_port": "background_reference"
+      },
+      {
+        "connected": true,
+        "source": "project",
+        "source_port": "annotations",
+        "target": "reference_texture_prototypes",
+        "target_port": "foreground_reference"
+      },
+      {
+        "connected": true,
+        "source": "project",
+        "source_port": "annotations",
+        "target": "reference_texture_prototypes",
+        "target_port": "other_reference"
+      },
+      {
+        "connected": true,
+        "source": "background_likelihood",
+        "source_port": "background_reference_source",
+        "target": "reference_texture_prototypes",
+        "target_port": "automatic_background_reference"
+      },
+      {
+        "connected": true,
+        "source": "background_likelihood",
+        "source_port": "annotated_foreground_reference_source",
+        "target": "reference_texture_prototypes",
+        "target_port": "automatic_foreground_reference"
+      },
+      {
+        "connected": true,
+        "source": "project",
+        "source_port": "annotations",
+        "target": "reference_texture_prototypes",
+        "target_port": "annotations"
+      },
+      {
+        "connected": true,
+        "source": "edge_gradients",
+        "source_port": "magnitude",
+        "target": "reference_texture_prototypes",
+        "target_port": "edge"
+      },
+      {
+        "connected": true,
+        "source": "edge_gradients",
+        "source_port": "undirected",
+        "target": "reference_texture_prototypes",
+        "target_port": "undirected"
+      },
+      {
+        "connected": true,
+        "source": "edge_gradients",
+        "source_port": "directed",
+        "target": "reference_texture_prototypes",
+        "target_port": "directed"
+      },
+      {
+        "connected": true,
+        "source": "edge_gradients",
+        "source_port": "ridges",
+        "target": "reference_texture_prototypes",
+        "target_port": "ridges"
+      },
+      {
+        "connected": true,
+        "source": "frequency_noise_masks",
+        "source_port": "darkness_fine",
+        "target": "reference_texture_prototypes",
+        "target_port": "darkness_fine"
+      },
+      {
+        "connected": true,
+        "source": "frequency_noise_masks",
+        "source_port": "darkness_medium",
+        "target": "reference_texture_prototypes",
+        "target_port": "darkness_medium"
+      },
+      {
+        "connected": true,
+        "source": "frequency_noise_masks",
+        "source_port": "darkness_coarse",
+        "target": "reference_texture_prototypes",
+        "target_port": "darkness_coarse"
+      },
+      {
+        "connected": true,
+        "source": "frequency_noise_masks",
+        "source_port": "colour_fine",
+        "target": "reference_texture_prototypes",
+        "target_port": "colour_fine"
+      },
+      {
+        "connected": true,
+        "source": "frequency_noise_masks",
+        "source_port": "colour_medium",
+        "target": "reference_texture_prototypes",
+        "target_port": "colour_medium"
+      },
+      {
+        "connected": true,
+        "source": "frequency_noise_masks",
+        "source_port": "colour_coarse",
+        "target": "reference_texture_prototypes",
+        "target_port": "colour_coarse"
+      },
+      {
+        "connected": true,
+        "source": "background_likelihood",
+        "source_port": "foreground_probability",
+        "target": "material_evidence_decision",
+        "target_port": "foreground_colour"
+      },
+      {
+        "connected": true,
+        "source": "refined_background_likelihood",
+        "source_port": "foreground_noise_probability",
+        "target": "material_evidence_decision",
+        "target_port": "foreground_noise"
+      },
+      {
+        "connected": true,
+        "source": "background_likelihood",
+        "source_port": "background_probability",
+        "target": "material_evidence_decision",
+        "target_port": "background_colour"
+      },
+      {
+        "connected": true,
+        "source": "refined_background_likelihood",
+        "source_port": "background_noise_probability",
+        "target": "material_evidence_decision",
+        "target_port": "background_noise"
+      },
+      {
+        "connected": true,
+        "source": "background_likelihood",
+        "source_port": "other_colour_probability",
+        "target": "material_evidence_decision",
+        "target_port": "other_colour"
+      },
+      {
+        "connected": true,
+        "source": "refined_background_likelihood",
+        "source_port": "other_noise_probability",
+        "target": "material_evidence_decision",
+        "target_port": "other_noise"
+      },
+      {
+        "connected": true,
+        "source": "reference_texture_prototypes",
+        "source_port": "seed_surface",
+        "target": "material_evidence_decision",
+        "target_port": "reference_foreground"
+      },
+      {
+        "connected": true,
+        "source": "reference_texture_prototypes",
+        "source_port": "background_texture",
+        "target": "material_evidence_decision",
+        "target_port": "reference_background"
+      },
+      {
+        "connected": true,
+        "source": "reference_texture_prototypes",
+        "source_port": "other_texture",
+        "target": "material_evidence_decision",
+        "target_port": "reference_other"
+      },
+      {
+        "connected": true,
+        "source": "background_likelihood",
+        "source_port": "proposal_region",
+        "target": "material_evidence_decision",
+        "target_port": "valid"
+      },
+      {
+        "connected": true,
+        "source": "seed_scale_estimation",
+        "source_port": "seed_diameter",
+        "target": "material_evidence_decision",
+        "target_port": "scale"
+      },
+      {
+        "connected": true,
+        "source": "deskew_colour",
+        "source_port": "corrected_image",
+        "target": "reference_seed_traits",
+        "target_port": "image"
+      },
+      {
+        "connected": true,
+        "source": "species_reference_library",
+        "source_port": "seed_traits",
+        "target": "reference_seed_traits",
+        "target_port": "library_seed_traits"
+      },
+      {
+        "connected": true,
+        "source": "project",
+        "source_port": "annotations",
+        "target": "reference_seed_traits",
+        "target_port": "annotations"
+      },
+      {
+        "connected": true,
+        "source": "metadata",
+        "source_port": "species",
+        "target": "reference_seed_traits",
+        "target_port": "species"
+      },
+      {
+        "connected": true,
+        "source": "seed_scale_estimation",
+        "source_port": "seed_diameter",
+        "target": "reference_seed_traits",
+        "target_port": "scale"
+      },
+      {
+        "connected": true,
+        "source": "edge_gradients",
+        "source_port": "magnitude",
+        "target": "reference_seed_traits",
+        "target_port": "edge"
+      },
+      {
+        "connected": true,
+        "source": "edge_gradients",
+        "source_port": "ridges",
+        "target": "reference_seed_traits",
+        "target_port": "ridges"
+      },
+      {
+        "connected": true,
+        "source": "frequency_noise_masks",
+        "source_port": "darkness_fine",
+        "target": "reference_seed_traits",
+        "target_port": "darkness_fine"
+      },
+      {
+        "connected": true,
+        "source": "frequency_noise_masks",
+        "source_port": "darkness_medium",
+        "target": "reference_seed_traits",
+        "target_port": "darkness_medium"
+      },
+      {
+        "connected": true,
+        "source": "frequency_noise_masks",
+        "source_port": "darkness_coarse",
+        "target": "reference_seed_traits",
+        "target_port": "darkness_coarse"
+      },
+      {
+        "connected": true,
+        "source": "frequency_noise_masks",
+        "source_port": "colour_fine",
+        "target": "reference_seed_traits",
+        "target_port": "colour_fine"
+      },
+      {
+        "connected": true,
+        "source": "frequency_noise_masks",
+        "source_port": "colour_medium",
+        "target": "reference_seed_traits",
+        "target_port": "colour_medium"
+      },
+      {
+        "connected": true,
+        "source": "frequency_noise_masks",
+        "source_port": "colour_coarse",
+        "target": "reference_seed_traits",
+        "target_port": "colour_coarse"
+      },
+      {
+        "connected": true,
+        "source": "material_evidence_decision",
+        "source_port": "seed_mask_2",
+        "target": "reference_seed_traits",
+        "target_port": "seed_mask"
+      },
+      {
+        "connected": true,
+        "source": "reference_texture_prototypes",
+        "source_port": "physical_probability",
+        "target": "reference_edge_probability",
+        "target_port": "physical_probability"
+      },
+      {
+        "connected": true,
+        "source": "reference_texture_prototypes",
+        "source_port": "non_edge_probability",
+        "target": "reference_edge_probability",
+        "target_port": "non_edge_probability"
+      },
+      {
+        "connected": true,
+        "source": "edge_gradients",
+        "source_port": "directed",
+        "target": "reference_edge_probability",
+        "target_port": "normals"
+      },
+      {
+        "connected": true,
+        "source": "edge_gradients",
+        "source_port": "ridges",
+        "target": "reference_edge_probability",
+        "target_port": "ridges"
+      },
+      {
+        "connected": true,
+        "source": "seed_scale_estimation",
+        "source_port": "seed_diameter",
+        "target": "reference_edge_probability",
+        "target_port": "scale"
+      },
+      {
+        "connected": true,
+        "source": "edge_gradients",
+        "source_port": "ridges",
+        "target": "edge_traces",
+        "target_port": "thinned_ridges"
+      },
+      {
+        "connected": true,
+        "source": "reference_edge_probability",
+        "source_port": "reference_ridges",
+        "target": "edge_traces",
+        "target_port": "reference_ridges"
+      },
+      {
+        "connected": true,
+        "source": "reference_edge_probability",
+        "source_port": "net_reference_ridges",
+        "target": "edge_traces",
+        "target_port": "net_reference_ridges"
+      },
+      {
+        "connected": true,
+        "source": "reference_edge_probability",
+        "source_port": "normalized_net_ridges",
+        "target": "edge_traces",
+        "target_port": "normalized_net_reference_ridges"
+      },
+      {
+        "connected": true,
+        "source": "edge_gradients",
+        "source_port": "directed",
+        "target": "edge_traces",
+        "target_port": "directed_tangents"
+      },
+      {
+        "connected": true,
+        "source": "seed_scale_estimation",
+        "source_port": "seed_diameter",
+        "target": "edge_traces",
+        "target_port": "scale"
+      },
+      {
+        "connected": true,
+        "source": "edge_traces",
+        "source_port": "trace_labels",
+        "target": "seed_edge_curves",
+        "target_port": "traces"
+      },
+      {
+        "connected": true,
+        "source": "seed_scale_estimation",
+        "source_port": "measurement_summary",
+        "target": "edge_traces",
+        "target_port": "reference_curvature"
+      },
+      {
+        "connected": true,
+        "source": "seed_scale_estimation",
+        "source_port": "measurement_summary",
+        "target": "seed_edge_curves",
+        "target_port": "reference_curvature"
+      },
+      {
+        "connected": true,
+        "source": "edge_gradients",
+        "source_port": "float_gradient_field",
+        "target": "seed_edge_curves",
+        "target_port": "float_gradient_field"
+      },
+      {
+        "connected": true,
+        "source": "seed_scale_estimation",
+        "source_port": "seed_diameter",
+        "target": "seed_edge_curves",
+        "target_port": "scale"
+      },
+      {
+        "connected": true,
+        "source": "material_evidence_decision",
+        "source_port": "nonseed_probability",
+        "target": "seed_edge_curves",
+        "target_port": "background_probability"
+      },
+      {
+        "connected": true,
+        "source": "material_evidence_decision",
+        "source_port": "seed_probability",
+        "target": "seed_edge_curves",
+        "target_port": "foreground_probability"
+      },
+      {
+        "connected": true,
+        "source": "reference_edge_probability",
+        "source_port": "physical_probability",
+        "target": "seed_edge_curves",
+        "target_port": "physical_reference"
+      },
+      {
+        "connected": true,
+        "source": "reference_edge_probability",
+        "source_port": "non_edge_probability",
+        "target": "seed_edge_curves",
+        "target_port": "non_edge_reference"
+      },
+      {
+        "connected": true,
+        "source": "seed_scale_estimation",
+        "source_port": "seed_diameter",
+        "target": "instance_masks",
+        "target_port": "scale"
+      },
+      {
+        "connected": true,
+        "source": "material_evidence_decision",
+        "source_port": "seed_probability",
+        "target": "boundary_normals",
+        "target_port": "foreground_probability"
+      },
+      {
+        "connected": true,
+        "source": "deskew_colour",
+        "source_port": "corrected_image",
+        "target": "boundary_normals",
+        "target_port": "image"
+      },
+      {
+        "connected": true,
+        "source": "layout_detection",
+        "source_port": "dish_region",
+        "target": "boundary_normals",
+        "target_port": "region"
+      },
+      {
+        "connected": true,
+        "source": "seed_scale_estimation",
+        "source_port": "seed_diameter",
+        "target": "boundary_normals",
+        "target_port": "scale"
+      },
+      {
+        "connected": true,
+        "source": "boundary_normals",
+        "source_port": "boundary_confidence",
+        "target": "touching_split",
+        "target_port": "boundary_confidence"
+      },
+      {
+        "connected": true,
+        "source": "distance_candidates",
+        "source_port": "distance_transform",
+        "target": "touching_split",
+        "target_port": "distance_transform"
+      },
+      {
+        "connected": true,
+        "source": "material_evidence_decision",
+        "source_port": "seed_mask",
+        "target": "touching_split",
+        "target_port": "foreground_mask"
+      },
+      {
+        "connected": true,
+        "source": "layout_detection",
+        "source_port": "dish_region",
+        "target": "touching_split",
+        "target_port": "region"
+      },
+      {
+        "connected": true,
+        "source": "seed_scale_estimation",
+        "source_port": "seed_diameter",
+        "target": "touching_split",
+        "target_port": "scale"
+      },
+      {
+        "connected": true,
+        "source": "boundary_normals",
+        "source_port": "boundary_confidence",
+        "target": "ellipse_likelihood",
+        "target_port": "boundary_confidence"
+      },
+      {
+        "connected": true,
+        "source": "seed_scale_estimation",
+        "source_port": "seed_diameter",
+        "target": "ellipse_likelihood",
+        "target_port": "seed_diameter"
+      },
+      {
+        "connected": true,
+        "source": "deskew_colour",
+        "source_port": "corrected_image",
+        "target": "ellipse_likelihood",
+        "target_port": "image"
+      },
+      {
+        "connected": true,
+        "source": "layout_detection",
+        "source_port": "dish_region",
+        "target": "ellipse_likelihood",
+        "target_port": "region"
+      },
+      {
+        "connected": true,
+        "source": "identification",
+        "source_port": "seed_proposals",
+        "target": "ellipse_likelihood",
+        "target_port": "proposals"
+      },
+      {
+        "connected": true,
+        "source": "instance_masks",
+        "source_port": "provisional_instances",
+        "target": "ellipse_likelihood",
+        "target_port": "instances"
+      },
+      {
+        "connected": true,
+        "source": "circle_candidates",
+        "source_port": "circle_evidence",
+        "target": "proposal_disagreement",
+        "target_port": "circle_evidence"
+      },
+      {
+        "connected": true,
+        "source": "distance_candidates",
+        "source_port": "distance_evidence",
+        "target": "proposal_disagreement",
+        "target_port": "distance_evidence"
+      },
+      {
+        "connected": true,
+        "source": "ellipse_likelihood",
+        "source_port": "ellipse_evidence",
+        "target": "proposal_disagreement",
+        "target_port": "ellipse_evidence"
+      },
+      {
+        "connected": true,
+        "source": "material_evidence_decision",
+        "source_port": "seed_probability",
+        "target": "proposal_disagreement",
+        "target_port": "interior"
+      },
+      {
+        "connected": true,
+        "source": "seed_scale_estimation",
+        "source_port": "seed_diameter",
+        "target": "proposal_disagreement",
+        "target_port": "scale"
+      },
+      {
+        "connected": true,
+        "source": "layout_detection",
+        "source_port": "dish_region",
+        "target": "proposal_disagreement",
+        "target_port": "region"
+      },
+      {
+        "connected": true,
+        "source": "instance_masks",
+        "source_port": "provisional_instances",
+        "target": "assignment_confidence",
+        "target_port": "provisional_instances"
+      },
+      {
+        "connected": true,
+        "source": "boundary_normals",
+        "source_port": "boundary_confidence",
+        "target": "assignment_confidence",
+        "target_port": "boundary_confidence"
+      },
+      {
+        "connected": true,
+        "source": "material_evidence_decision",
+        "source_port": "seed_probability",
+        "target": "assignment_confidence",
+        "target_port": "interior"
+      },
+      {
+        "connected": true,
+        "source": "material_evidence_decision",
+        "source_port": "seed_mask",
+        "target": "assignment_confidence",
+        "target_port": "foreground_mask"
+      },
+      {
+        "connected": true,
+        "source": "layout_detection",
+        "source_port": "dish_region",
+        "target": "assignment_confidence",
+        "target_port": "region"
+      },
+      {
+        "connected": true,
+        "source": "identification",
+        "source_port": "seed_proposals",
+        "target": "assignment_confidence",
+        "target_port": "proposals"
+      },
+      {
+        "connected": true,
+        "source": "assignment_confidence",
+        "source_port": "contested_pixels",
+        "target": "contact_graph",
+        "target_port": "contested_pixels"
+      },
+      {
+        "connected": true,
+        "source": "identification",
+        "source_port": "seed_proposals",
+        "target": "contact_graph",
+        "target_port": "seed_proposals"
+      },
+      {
+        "connected": true,
+        "source": "boundary_normals",
+        "source_port": "boundary_confidence",
+        "target": "contact_graph",
+        "target_port": "boundary_confidence"
+      },
+      {
+        "connected": true,
+        "source": "deskew_colour",
+        "source_port": "corrected_image",
+        "target": "illumination_decomposition",
+        "target_port": "image"
+      },
+      {
+        "connected": true,
+        "source": "seed_scale_estimation",
+        "source_port": "seed_diameter",
+        "target": "illumination_decomposition",
+        "target_port": "scale"
+      },
+      {
+        "connected": true,
+        "source": "layout_detection",
+        "source_port": "dish_region",
+        "target": "illumination_decomposition",
+        "target_port": "region"
+      },
+      {
+        "connected": true,
+        "source": "deskew_colour",
+        "source_port": "corrected_image",
+        "target": "image_quality",
+        "target_port": "image"
+      },
+      {
+        "connected": true,
+        "source": "layout_detection",
+        "source_port": "dish_region",
+        "target": "image_quality",
+        "target_port": "region"
+      },
+      {
+        "connected": true,
+        "source": "seed_scale_estimation",
+        "source_port": "seed_diameter",
+        "target": "image_quality",
+        "target_port": "scale"
+      },
+      {
+        "connected": true,
+        "source": "layout_detection",
+        "source_port": "dish_region",
+        "target": "procedural_instances",
+        "target_port": "dish_region"
+      },
+      {
+        "connected": true,
+        "source": "seed_scale_estimation",
+        "source_port": "seed_diameter",
+        "target": "procedural_instances",
+        "target_port": "seed_diameter"
+      },
+      {
+        "connected": true,
+        "source": "material_evidence_decision",
+        "source_port": "seed_probability",
+        "target": "procedural_instances",
+        "target_port": "material_probability"
+      },
+      {
+        "connected": true,
+        "source": "edge_gradients",
+        "source_port": "magnitude",
+        "target": "procedural_instances",
+        "target_port": "edge_magnitude"
+      },
+      {
+        "connected": true,
+        "source": "edge_gradients",
+        "source_port": "ridges",
+        "target": "procedural_instances",
+        "target_port": "thinned_ridges"
+      },
+      {
+        "connected": true,
+        "source": "reference_edge_probability",
+        "source_port": "physical_probability",
+        "target": "procedural_instances",
+        "target_port": "physical_reference"
+      },
+      {
+        "connected": true,
+        "source": "reference_edge_probability",
+        "source_port": "non_edge_probability",
+        "target": "procedural_instances",
+        "target_port": "non_edge_reference"
+      },
+      {
+        "connected": true,
+        "source": "reference_edge_probability",
+        "source_port": "edge_probability",
+        "target": "procedural_instances",
+        "target_port": "reference_probability"
+      },
+      {
+        "connected": true,
+        "source": "reference_edge_probability",
+        "source_port": "normalized_net_probability",
+        "target": "procedural_instances",
+        "target_port": "normalized_net_probability"
+      },
+      {
+        "connected": true,
+        "source": "reference_edge_probability",
+        "source_port": "normalized_net_ridges",
+        "target": "procedural_instances",
+        "target_port": "reference_ridges"
+      },
+      {
+        "connected": true,
+        "source": "edge_traces",
+        "source_port": "trace_labels",
+        "target": "procedural_instances",
+        "target_port": "trace_labels"
+      },
+      {
+        "connected": true,
+        "source": "edge_traces",
+        "source_port": "continuity",
+        "target": "procedural_instances",
+        "target_port": "trace_continuity"
+      },
+      {
+        "connected": true,
+        "source": "surface_darkness_gradients",
+        "source_port": "darkening_magnitude",
+        "target": "procedural_instances",
+        "target_port": "surface_darkening"
+      },
+      {
+        "connected": true,
+        "source": "illumination_decomposition",
+        "source_port": "flattened",
+        "target": "procedural_instances",
+        "target_port": "flattened_grayscale"
+      },
+      {
+        "connected": true,
+        "source": "seed_edge_curves",
+        "source_port": "oval_centre_probability",
+        "target": "procedural_instances",
+        "target_port": "validated_oval_centres"
+      },
+      {
+        "connected": true,
+        "source": "project",
+        "source_port": "annotations",
+        "target": "procedural_instances",
+        "target_port": "manual_centres"
+      },
+      {
+        "connected": true,
+        "source": "project",
+        "source_port": "annotations",
+        "target": "procedural_instances",
+        "target_port": "reference_controls"
+      },
+      {
+        "connected": true,
+        "source": "metadata",
+        "source_port": "species_condition",
+        "target": "unet_instances",
+        "target_port": "species_condition"
+      },
+      {
+        "connected": true,
+        "source": "deskew_colour",
+        "source_port": "corrected_image",
+        "target": "unet_instances",
+        "target_port": "corrected_image"
+      },
+      {
+        "connected": true,
+        "source": "layout_detection",
+        "source_port": "dish_region",
+        "target": "unet_instances",
+        "target_port": "dish_region"
+      },
+      {
+        "connected": true,
+        "source": "seed_scale_estimation",
+        "source_port": "seed_diameter",
+        "target": "unet_instances",
+        "target_port": "scale"
+      },
+      {
+        "connected": true,
+        "source": "background_likelihood",
+        "source_port": "foreground_probability",
+        "target": "unet_instances",
+        "target_port": "foreground_probability"
+      },
+      {
+        "connected": true,
+        "source": "refined_background_likelihood",
+        "source_port": "foreground_noise_probability",
+        "target": "unet_instances",
+        "target_port": "foreground_noise"
+      },
+      {
+        "connected": true,
+        "source": "background_likelihood",
+        "source_port": "background_probability",
+        "target": "unet_instances",
+        "target_port": "background_probability"
+      },
+      {
+        "connected": true,
+        "source": "refined_background_likelihood",
+        "source_port": "background_noise_probability",
+        "target": "unet_instances",
+        "target_port": "background_noise"
+      },
+      {
+        "connected": true,
+        "source": "edge_gradients",
+        "source_port": "magnitude",
+        "target": "unet_instances",
+        "target_port": "edge_magnitude"
+      },
+      {
+        "connected": true,
+        "source": "reference_edge_probability",
+        "source_port": "physical_probability",
+        "target": "unet_instances",
+        "target_port": "physical_reference"
+      },
+      {
+        "connected": true,
+        "source": "reference_edge_probability",
+        "source_port": "non_edge_probability",
+        "target": "unet_instances",
+        "target_port": "non_edge_reference"
+      },
+      {
+        "connected": true,
+        "source": "illumination_decomposition",
+        "source_port": "flattened",
+        "target": "unet_instances",
+        "target_port": "flattened"
+      },
+      {
+        "connected": true,
+        "source": "illumination_decomposition",
+        "source_port": "shadow",
+        "target": "unet_instances",
+        "target_port": "shadow"
+      },
+      {
+        "connected": true,
+        "source": "illumination_decomposition",
+        "source_port": "highlight",
+        "target": "unet_instances",
+        "target_port": "highlight"
+      },
+      {
+        "connected": true,
+        "source": "image_quality",
+        "source_port": "sensor_noise",
+        "target": "unet_instances",
+        "target_port": "sensor_noise"
+      },
+      {
+        "connected": true,
+        "source": "metadata",
+        "source_port": "species_condition",
+        "target": "stardist_instances",
+        "target_port": "species_condition"
+      },
+      {
+        "connected": true,
+        "source": "deskew_colour",
+        "source_port": "corrected_image",
+        "target": "stardist_instances",
+        "target_port": "corrected_image"
+      },
+      {
+        "connected": true,
+        "source": "layout_detection",
+        "source_port": "dish_region",
+        "target": "stardist_instances",
+        "target_port": "dish_region"
+      },
+      {
+        "connected": true,
+        "source": "seed_scale_estimation",
+        "source_port": "seed_diameter",
+        "target": "stardist_instances",
+        "target_port": "scale"
+      },
+      {
+        "connected": true,
+        "source": "background_likelihood",
+        "source_port": "foreground_probability",
+        "target": "stardist_instances",
+        "target_port": "foreground_probability"
+      },
+      {
+        "connected": true,
+        "source": "refined_background_likelihood",
+        "source_port": "foreground_noise_probability",
+        "target": "stardist_instances",
+        "target_port": "foreground_noise"
+      },
+      {
+        "connected": true,
+        "source": "background_likelihood",
+        "source_port": "background_probability",
+        "target": "stardist_instances",
+        "target_port": "background_probability"
+      },
+      {
+        "connected": true,
+        "source": "refined_background_likelihood",
+        "source_port": "background_noise_probability",
+        "target": "stardist_instances",
+        "target_port": "background_noise"
+      },
+      {
+        "connected": true,
+        "source": "edge_gradients",
+        "source_port": "magnitude",
+        "target": "stardist_instances",
+        "target_port": "edge_magnitude"
+      },
+      {
+        "connected": true,
+        "source": "reference_edge_probability",
+        "source_port": "physical_probability",
+        "target": "stardist_instances",
+        "target_port": "physical_reference"
+      },
+      {
+        "connected": true,
+        "source": "reference_edge_probability",
+        "source_port": "non_edge_probability",
+        "target": "stardist_instances",
+        "target_port": "non_edge_reference"
+      },
+      {
+        "connected": true,
+        "source": "illumination_decomposition",
+        "source_port": "flattened",
+        "target": "stardist_instances",
+        "target_port": "flattened"
+      },
+      {
+        "connected": true,
+        "source": "illumination_decomposition",
+        "source_port": "shadow",
+        "target": "stardist_instances",
+        "target_port": "shadow"
+      },
+      {
+        "connected": true,
+        "source": "illumination_decomposition",
+        "source_port": "highlight",
+        "target": "stardist_instances",
+        "target_port": "highlight"
+      },
+      {
+        "connected": true,
+        "source": "image_quality",
+        "source_port": "sensor_noise",
+        "target": "stardist_instances",
+        "target_port": "sensor_noise"
+      },
+      {
+        "connected": true,
+        "source": "instance_masks",
+        "source_port": "provisional_instances",
+        "target": "radial_profile",
+        "target_port": "provisional_instances"
+      },
+      {
+        "connected": true,
+        "source": "identification",
+        "source_port": "seed_proposals",
+        "target": "radial_profile",
+        "target_port": "proposals"
+      },
+      {
+        "connected": true,
+        "source": "deskew_colour",
+        "source_port": "corrected_image",
+        "target": "radial_profile",
+        "target_port": "image"
+      },
+      {
+        "connected": true,
+        "source": "layout_detection",
+        "source_port": "dish_region",
+        "target": "radial_profile",
+        "target_port": "region"
+      },
+      {
+        "connected": true,
+        "source": "material_evidence_decision",
+        "source_port": "seed_probability",
+        "target": "wrinkling",
+        "target_port": "foreground_probability"
+      },
+      {
+        "connected": true,
+        "source": "boundary_normals",
+        "source_port": "boundary_confidence",
+        "target": "wrinkling",
+        "target_port": "boundary_confidence"
+      },
+      {
+        "connected": true,
+        "source": "deskew_colour",
+        "source_port": "corrected_image",
+        "target": "wrinkling",
+        "target_port": "image"
+      },
+      {
+        "connected": true,
+        "source": "layout_detection",
+        "source_port": "dish_region",
+        "target": "wrinkling",
+        "target_port": "region"
+      },
+      {
+        "connected": true,
+        "source": "seed_scale_estimation",
+        "source_port": "seed_diameter",
+        "target": "wrinkling",
+        "target_port": "scale"
+      },
+      {
+        "connected": true,
+        "source": "radial_profile",
+        "source_port": "residual",
+        "target": "coat_damage",
+        "target_port": "radial_residual"
+      },
+      {
+        "connected": true,
+        "source": "boundary_normals",
+        "source_port": "boundary_confidence",
+        "target": "coat_damage",
+        "target_port": "boundary_confidence"
+      },
+      {
+        "connected": true,
+        "source": "material_evidence_decision",
+        "source_port": "seed_probability",
+        "target": "coat_damage",
+        "target_port": "foreground_probability"
+      },
+      {
+        "connected": true,
+        "source": "deskew_colour",
+        "source_port": "corrected_image",
+        "target": "coat_damage",
+        "target_port": "image"
+      },
+      {
+        "connected": true,
+        "source": "layout_detection",
+        "source_port": "dish_region",
+        "target": "coat_damage",
+        "target_port": "region"
+      },
+      {
+        "connected": true,
+        "source": "seed_scale_estimation",
+        "source_port": "seed_diameter",
+        "target": "coat_damage",
+        "target_port": "scale"
+      },
+      {
+        "connected": true,
+        "source": "material_evidence_decision",
+        "source_port": "seed_probability",
+        "target": "pattern_decomposition",
+        "target_port": "foreground_probability"
+      },
+      {
+        "connected": true,
+        "source": "deskew_colour",
+        "source_port": "corrected_image",
+        "target": "pattern_decomposition",
+        "target_port": "image"
+      },
+      {
+        "connected": true,
+        "source": "layout_detection",
+        "source_port": "dish_region",
+        "target": "pattern_decomposition",
+        "target_port": "region"
+      },
+      {
+        "connected": true,
+        "source": "seed_scale_estimation",
+        "source_port": "seed_diameter",
+        "target": "pattern_decomposition",
+        "target_port": "scale"
+      },
+      {
+        "connected": true,
+        "source": "material_evidence_decision",
+        "source_port": "seed_probability",
+        "target": "colour_probabilities",
+        "target_port": "foreground_probability"
+      },
+      {
+        "connected": true,
+        "source": "deskew_colour",
+        "source_port": "corrected_image",
+        "target": "colour_probabilities",
+        "target_port": "image"
+      },
+      {
+        "connected": true,
+        "source": "layout_detection",
+        "source_port": "dish_region",
+        "target": "colour_probabilities",
+        "target_port": "region"
+      },
+      {
+        "connected": true,
+        "source": "deskew_colour",
+        "source_port": "reference_confidence",
+        "target": "calibration_residuals",
+        "target_port": "reference_confidence"
+      },
+      {
+        "connected": true,
+        "source": "ruler_detection",
+        "source_port": "reference_confidence",
+        "target": "calibration_residuals",
+        "target_port": "reference_confidence_ruler_detection"
+      },
+      {
+        "connected": true,
+        "source": "deskew_colour",
+        "source_port": "calibration_transform",
+        "target": "calibration_residuals",
+        "target_port": "calibration_transform"
+      },
+      {
+        "connected": true,
+        "source": "layout_detection",
+        "source_port": "dish_region",
+        "target": "calibration_residuals",
+        "target_port": "region"
+      },
+      {
+        "connected": true,
+        "source": "touching_split",
+        "source_port": "split_suggestions",
+        "target": "review",
+        "target_port": "split_suggestions"
+      },
+      {
+        "connected": true,
+        "source": "proposal_disagreement",
+        "source_port": "uncertain_regions",
+        "target": "review",
+        "target_port": "uncertain_regions"
+      },
+      {
+        "connected": true,
+        "source": "assignment_confidence",
+        "source_port": "confidence",
+        "target": "review",
+        "target_port": "assignment_confidence"
+      },
+      {
+        "connected": true,
+        "source": "contact_graph",
+        "source_port": "contact_graph",
+        "target": "review",
+        "target_port": "contact_graph"
+      },
+      {
+        "connected": true,
+        "source": "instance_masks",
+        "source_port": "instance_proposals",
+        "target": "review",
+        "target_port": "instance_proposals"
+      },
+      {
+        "connected": true,
+        "source": "review",
+        "source_port": "reviewed_masks",
+        "target": "measurements",
+        "target_port": "reviewed_masks"
+      },
+      {
+        "connected": true,
+        "source": "ruler_detection",
+        "source_port": "pixels_per_millimetre",
+        "target": "measurements",
+        "target_port": "pixels_per_millimetre"
+      },
+      {
+        "connected": true,
+        "source": "review",
+        "source_port": "reviewed_masks",
+        "target": "classification",
+        "target_port": "reviewed_masks"
+      },
+      {
+        "connected": true,
+        "source": "wrinkling",
+        "source_port": "wrinkle_evidence",
+        "target": "classification",
+        "target_port": "wrinkle_evidence"
+      },
+      {
+        "connected": true,
+        "source": "coat_damage",
+        "source_port": "damage_evidence",
+        "target": "classification",
+        "target_port": "damage_evidence"
+      },
+      {
+        "connected": true,
+        "source": "pattern_decomposition",
+        "source_port": "probabilities",
+        "target": "classification",
+        "target_port": "pattern_probabilities"
+      },
+      {
+        "connected": true,
+        "source": "colour_probabilities",
+        "source_port": "probabilities",
+        "target": "classification",
+        "target_port": "colour_probabilities"
+      },
+      {
+        "connected": true,
+        "source": "calibration_residuals",
+        "source_port": "calibration_risk",
+        "target": "classification",
+        "target_port": "calibration_risk"
+      },
+      {
+        "connected": true,
+        "source": "measurements",
+        "source_port": "measurement_table",
+        "target": "aggregation",
+        "target_port": "measurement_table"
+      },
+      {
+        "connected": true,
+        "source": "classification",
+        "source_port": "trait_table",
+        "target": "aggregation",
+        "target_port": "trait_table"
+      },
+      {
+        "connected": true,
+        "source": "aggregation",
+        "source_port": "lot_summary",
+        "target": "output",
+        "target_port": "lot_summary"
+      }
+    ],
+    "format": "seedfiddle-analysis-settings",
+    "nodes": [
+      {
+        "active": false,
+        "connection_suspended": false,
+        "enabled": false,
+        "id": "aggregation",
+        "parameters": {}
+      },
+      {
+        "active": false,
+        "connection_suspended": false,
+        "enabled": false,
+        "id": "assignment_confidence",
+        "parameters": {
+          "assignment_boundary_penalty": 0.7
+        }
+      },
+      {
+        "active": true,
+        "connection_suspended": false,
+        "enabled": true,
+        "id": "background_likelihood",
+        "parameters": {
+          "background_automatic_evidence_floor": 0.1,
+          "background_chroma_percentile": 50.0,
+          "background_chroma_scale_floor": 3.0,
+          "background_colour_components": 32,
+          "background_colour_enabled": true,
+          "background_distribution_fit_iterations": 6,
+          "background_distribution_scale_multiplier": 1.25,
+          "background_frequency_weight_power": 0.35,
+          "background_keep_perimeter_reference": true,
+          "background_lightness_percentile": 55.0,
+          "background_lightness_scale_floor": 8.0,
+          "background_minimum_sample_fraction": 0.002,
+          "background_prior_tolerance": 24.0,
+          "background_reviewed_authority_half_life_seed_areas": 0.5,
+          "background_sample_radius_fraction": 0.1,
+          "foreground_chroma_weight": 1.8,
+          "foreground_current_reference_weight": 1.0,
+          "foreground_distribution_scale_multiplier": 1.5,
+          "foreground_frequency_weight_power": 0.0,
+          "foreground_include_annotated_seed_instances": true,
+          "foreground_reference_components": 64,
+          "foreground_reference_source": "Species library + current image",
+          "foreground_reference_weight": 0.75,
+          "inner_radius_fraction": 0.9
+        }
+      },
+      {
+        "active": true,
+        "connection_suspended": false,
+        "enabled": false,
+        "id": "boundary_normals",
+        "parameters": {
+          "boundary_width_fraction": 0.025
+        }
+      },
+      {
+        "active": false,
+        "connection_suspended": false,
+        "enabled": false,
+        "id": "calibration_residuals",
+        "parameters": {
+          "calibration_residual_gain": 1.0
+        }
+      },
+      {
+        "active": false,
+        "connection_suspended": false,
+        "enabled": false,
+        "id": "circle_candidates",
+        "parameters": {
+          "circle_accumulator_threshold": 22,
+          "circle_confidence": 0.62,
+          "circle_edge_magnitude_weight": 0.5,
+          "circle_edge_threshold": 80,
+          "circle_flattened_grayscale_weight": 0.1,
+          "circle_highlight_weight": 0.1,
+          "circle_max_radius_fraction": 0.62,
+          "circle_min_distance_fraction": 0.58,
+          "circle_min_radius_fraction": 0.22,
+          "circle_sensor_noise_weight": 0.2,
+          "circle_shadow_weight": 0.1,
+          "circle_working_maximum_dimension": 1280,
+          "dense_circle_relaxation": 4,
+          "dense_distance_candidate_threshold": 30,
+          "merge_distance_fraction": 0.48
+        }
+      },
+      {
+        "active": false,
+        "connection_suspended": false,
+        "enabled": false,
+        "id": "classification",
+        "parameters": {}
+      },
+      {
+        "active": false,
+        "connection_suspended": false,
+        "enabled": false,
+        "id": "coat_damage",
+        "parameters": {
+          "damage_anomaly_scale_fraction": 0.12
+        }
+      },
+      {
+        "active": true,
+        "connection_suspended": false,
+        "enabled": true,
+        "id": "colour_probabilities",
+        "parameters": {
+          "colour_temperature": 18.0
+        }
+      },
+      {
+        "active": false,
+        "connection_suspended": false,
+        "enabled": false,
+        "id": "contact_graph",
+        "parameters": {
+          "contact_distance_multiplier": 1.28
+        }
+      },
+      {
+        "active": false,
+        "connection_suspended": false,
+        "enabled": false,
+        "id": "darkening_gradient_ceiling",
+        "parameters": {
+          "darkening_gradient_maximum_slope": 1.0
+        }
+      },
+      {
+        "active": true,
+        "connection_suspended": false,
+        "enabled": true,
+        "id": "deskew_colour",
+        "parameters": {
+          "apply_colour_balance": true,
+          "apply_perspective_correction": true,
+          "max_deskew_degrees": 10.0,
+          "max_perspective_fraction": 0.25
+        }
+      },
+      {
+        "active": false,
+        "connection_suspended": false,
+        "enabled": false,
+        "id": "distance_candidates",
+        "parameters": {
+          "distance_blur_fraction": 0.025,
+          "distance_min_depth_fraction": 0.14,
+          "distance_neighborhood_fraction": 0.58,
+          "distance_proposal_radius_fraction": 0.43
+        }
+      },
+      {
+        "active": true,
+        "connection_suspended": false,
+        "enabled": true,
+        "id": "edge_gradients",
+        "parameters": {
+          "edge_blur_sigma": 1.2,
+          "edge_chroma_weight": 1.5,
+          "edge_gradient_include_original": true,
+          "edge_gradient_include_wavelet_detail_1": false,
+          "edge_gradient_include_wavelet_detail_2": false,
+          "edge_gradient_include_wavelet_detail_3": false,
+          "edge_gradient_include_wavelet_detail_4": false,
+          "edge_gradient_include_wavelet_residual": false,
+          "edge_gradient_method": "scharr",
+          "edge_gradient_source_fusion": "maximum",
+          "edge_gradient_use_despeckled_flattened": false,
+          "edge_normalization_percentile": 99.0,
+          "edge_strength_gamma": 0.65,
+          "edge_wavelet_detail_gain": 1.0,
+          "ridge_high_threshold": 0.24,
+          "ridge_hysteresis_iterations": 8,
+          "ridge_low_threshold": 0.1,
+          "ridge_nms_step_px": 1.0
+        }
+      },
+      {
+        "active": true,
+        "connection_suspended": false,
+        "enabled": true,
+        "id": "edge_traces",
+        "parameters": {
+          "trace_curvature_policy": "prefer",
+          "trace_curvature_tolerance_degrees": 6.0,
+          "trace_diameter_multiplier": 1.0,
+          "trace_edge_source": "generic_ridges",
+          "trace_junction_max_neighbors": 4,
+          "trace_maximum_gap_px": 2,
+          "trace_minimum_length_fraction": 0.18,
+          "trace_sample_count": 7,
+          "trace_tangent_tolerance_degrees": 24.0,
+          "trace_window_fraction": 0.2
+        }
+      },
+      {
+        "active": false,
+        "connection_suspended": false,
+        "enabled": false,
+        "id": "ellipse_likelihood",
+        "parameters": {
+          "ellipse_radial_tolerance": 0.22
+        }
+      },
+      {
+        "active": true,
+        "connection_suspended": false,
+        "enabled": true,
+        "id": "frequency_noise_masks",
+        "parameters": {
+          "frequency_noise_coarse_scale_fraction": 0.1,
+          "frequency_noise_context_fraction": 0.025,
+          "frequency_noise_fine_scale_fraction": 0.008,
+          "frequency_noise_medium_scale_fraction": 0.03,
+          "frequency_noise_normalization_percentile": 99.0,
+          "frequency_noise_strength_gamma": 0.65,
+          "frequency_noise_working_maximum_dimension": 1280
+        }
+      },
+      {
+        "active": true,
+        "connection_suspended": false,
+        "enabled": true,
+        "id": "hue_only",
+        "parameters": {}
+      },
+      {
+        "active": false,
+        "connection_suspended": false,
+        "enabled": false,
+        "id": "identification",
+        "parameters": {
+          "distance_confidence": 0.48
+        }
+      },
+      {
+        "active": true,
+        "connection_suspended": false,
+        "enabled": true,
+        "id": "illumination_decomposition",
+        "parameters": {
+          "despeckle_maximum_diameter_fraction": 0.06,
+          "despeckle_minimum_darkness_levels": 18.0,
+          "despeckle_minimum_lighter_surround_fraction": 0.9,
+          "despeckle_periphery_width_fraction": 0.025,
+          "flattening_contrast_gain": 1.8,
+          "highlight_z_threshold": 0.75,
+          "illumination_scale_fraction": 0.55,
+          "lighting_deviation_scale_fraction": 0.1,
+          "lighting_extreme_softness": 0.3,
+          "shadow_z_threshold": 0.75
+        }
+      },
+      {
+        "active": true,
+        "connection_suspended": false,
+        "enabled": true,
+        "id": "image_quality",
+        "parameters": {
+          "quality_noise_scale_fraction": 0.025
+        }
+      },
+      {
+        "active": false,
+        "connection_suspended": false,
+        "enabled": false,
+        "id": "instance_masks",
+        "parameters": {
+          "instance_max_extent_fraction": 0.95,
+          "instance_min_extent_fraction": 0.72,
+          "instance_radius_extent_multiplier": 1.55
+        }
+      },
+      {
+        "active": true,
+        "connection_suspended": false,
+        "enabled": true,
+        "id": "layout_detection",
+        "parameters": {
+          "calibrated_outer_radius_tolerance_fraction": 0.025,
+          "downsample_max_dimension": 1600,
+          "expected_center_x_fraction": 0.58,
+          "expected_center_y_fraction": 0.4,
+          "expected_outer_diameter_mm": 96.0,
+          "expected_radius_fraction": 0.225,
+          "hough_accumulator_threshold": 32,
+          "max_radius_fraction": 0.29,
+          "min_radius_fraction": 0.16,
+          "perimeter_background_band_thickness_cm": 0.5,
+          "perimeter_background_buffer_cm": 0.35,
+          "rim_pair_expected_separation_fraction": 0.045,
+          "rim_pair_max_separation_fraction": 0.12,
+          "rim_pair_min_separation_fraction": 0.025,
+          "rim_pair_search_fraction": 0.14,
+          "rim_pair_secondary_support_fraction": 0.3
+        }
+      },
+      {
+        "active": false,
+        "connection_suspended": false,
+        "enabled": false,
+        "id": "lightening_gradient_ceiling",
+        "parameters": {
+          "lightening_gradient_maximum_slope": 1.0
+        }
+      },
+      {
+        "active": true,
+        "connection_suspended": false,
+        "enabled": true,
+        "id": "material_evidence_decision",
+        "parameters": {
+          "material_colour_weight": 1.0,
+          "material_decision_temperature": 1.0,
+          "material_morphology_fraction": 0.06,
+          "material_noise_weight": 0.55,
+          "material_prototype_weight": 0.7,
+          "material_seed_threshold": 0.68,
+          "material_unknown_weight": 0.35
+        }
+      },
+      {
+        "active": false,
+        "connection_suspended": false,
+        "enabled": false,
+        "id": "measurements",
+        "parameters": {}
+      },
+      {
+        "active": true,
+        "connection_suspended": false,
+        "enabled": true,
+        "id": "metadata",
+        "parameters": {}
+      },
+      {
+        "active": false,
+        "connection_suspended": false,
+        "enabled": false,
+        "id": "output",
+        "parameters": {}
+      },
+      {
+        "active": true,
+        "connection_suspended": false,
+        "enabled": true,
+        "id": "pattern_decomposition",
+        "parameters": {
+          "pattern_scale_fraction": 0.18
+        }
+      },
+      {
+        "active": true,
+        "connection_suspended": false,
+        "enabled": true,
+        "id": "procedural_instances",
+        "parameters": {
+          "boundary_edge_weight": 0.35,
+          "boundary_nonphysical_discount": 0.95,
+          "boundary_physical_ridge_weight": 0.55,
+          "boundary_ridge_weight": 0.65,
+          "boundary_semantic_floor": 0.08,
+          "boundary_surface_darkening_weight": 0.3,
+          "boundary_trace_weight": 0.45,
+          "candidate_hypotheses_per_marker": 5,
+          "candidate_overlap_fraction": 0.02,
+          "centre_distance_weight": 0.2,
+          "centre_flattened_grayscale_weight": 0.6,
+          "centre_geometry_smoothing_fraction": 0.14,
+          "centre_material_weight": 0.2,
+          "centre_minimum_separation_fraction": 0.42,
+          "centre_validated_oval_weight": 0.85,
+          "dish_margin_fraction": 0.12,
+          "foreground_threshold_scale": 0.82,
+          "hard_maximum_instance_width_fraction": 1.35,
+          "marker_count_multiplier": 1.02,
+          "maximum_instance_area_fraction": 1.45,
+          "maximum_instance_axis_ratio": 2.8,
+          "maximum_internal_concavity_fraction": 0.15,
+          "maximum_protrusion_area_fraction": 0.1,
+          "minimum_instance_area_fraction": 0.26,
+          "minimum_instance_solidity": 0.62,
+          "minimum_marker_score": 0.12,
+          "occupancy_closing_fraction": 0.12,
+          "occupancy_hole_area_fraction": 1.25,
+          "packed_seed_cell_fraction": 0.72,
+          "reference_error_annotations_complete": false,
+          "reference_error_concavity_weight": 2.0,
+          "reference_error_distance_scale_fraction": 0.5,
+          "reference_error_minimum_match_iou": 0.2,
+          "reference_error_missed_seed_weight": 0.5,
+          "reference_error_overreach_weight": 2.0,
+          "reference_texture_weight": 0.35,
+          "soft_maximum_instance_width_fraction": 1.15,
+          "soft_minimum_instance_area_fraction": 0.39,
+          "sparse_centre_minimum_separation_fraction": 0.58,
+          "sparse_seed_area_fraction": 0.47,
+          "trace_convexity_weight": 0.6,
+          "trace_minimum_length_fraction": 0.22,
+          "working_maximum_dimension": 1600
+        }
+      },
+      {
+        "active": true,
+        "connection_suspended": false,
+        "enabled": true,
+        "id": "project",
+        "parameters": {}
+      },
+      {
+        "active": false,
+        "connection_suspended": false,
+        "enabled": false,
+        "id": "proposal_disagreement",
+        "parameters": {
+          "disagreement_scale_fraction": 0.16
+        }
+      },
+      {
+        "active": false,
+        "connection_suspended": false,
+        "enabled": false,
+        "id": "radial_profile",
+        "parameters": {
+          "radial_bin_count": 24
+        }
+      },
+      {
+        "active": true,
+        "connection_suspended": false,
+        "enabled": true,
+        "id": "reference_edge_probability",
+        "parameters": {
+          "edge_prototype_current_reference_weight": 1.0,
+          "edge_prototype_reference_source": "Species library + current image",
+          "net_physical_edge_internal_scale": 0.5,
+          "reference_edge_class_contrast": 4.0,
+          "reference_edge_fit_iterations": 4,
+          "reference_edge_minimum_samples_per_prototype": 16,
+          "reference_edge_minimum_working_seed_diameter_px": 28.0,
+          "reference_edge_normalization_absolute_floor": 0.04,
+          "reference_edge_normalization_maximum_gain": 2.5,
+          "reference_edge_normalization_radius_fraction": 0.3,
+          "reference_edge_normalization_target_support": 0.35,
+          "reference_edge_ridge_weight": 0.35,
+          "reference_edge_similarity_scale": 1.0,
+          "reference_edge_strip_normal_offset_fraction": 0.05,
+          "reference_edge_strip_tangent_half_length_fraction": 0.08,
+          "reference_ridge_high_threshold": 0.24,
+          "reference_ridge_hysteresis_iterations": 8,
+          "reference_ridge_low_threshold": 0.1,
+          "reference_ridge_nms_step_px": 1.0,
+          "reference_ridge_working_maximum_dimension": 1280,
+          "reference_texture_edge_prototypes_per_class": 256,
+          "reference_texture_edge_working_maximum_dimension": 2048,
+          "reference_texture_instance_interior_buffer_fraction": 0.08
+        }
+      },
+      {
+        "active": true,
+        "connection_suspended": false,
+        "enabled": true,
+        "id": "reference_seed_traits",
+        "parameters": {
+          "reference_seed_trait_class_contrast": 4.0,
+          "reference_seed_trait_context_fraction": 0.04,
+          "reference_seed_trait_fit_iterations": 4,
+          "reference_seed_trait_interior_buffer_fraction": 0.08,
+          "reference_seed_trait_minimum_samples_per_prototype": 16,
+          "reference_seed_trait_prototypes_per_class": 64,
+          "reference_seed_trait_similarity_scale": 1.0,
+          "reference_seed_trait_working_maximum_dimension": 1280,
+          "seed_trait_current_reference_weight": 1.0,
+          "seed_trait_reference_source": "Species library + current image"
+        }
+      },
+      {
+        "active": true,
+        "connection_suspended": false,
+        "enabled": true,
+        "id": "reference_texture_prototypes",
+        "parameters": {
+          "material_prototype_current_reference_weight": 1.0,
+          "material_prototype_reference_source": "Species library + current image",
+          "reference_texture_class_contrast": 4.0,
+          "reference_texture_context_fraction": 0.04,
+          "reference_texture_fit_iterations": 4,
+          "reference_texture_material_prototypes_per_class": 64,
+          "reference_texture_minimum_samples_per_prototype": 16,
+          "reference_texture_patch_fraction": 0.28,
+          "reference_texture_similarity_scale": 1.0,
+          "reference_texture_working_maximum_dimension": 960
+        }
+      },
+      {
+        "active": true,
+        "connection_suspended": false,
+        "enabled": true,
+        "id": "refined_background_likelihood",
+        "parameters": {
+          "background_noise_enabled": true,
+          "foreground_noise_coarse_scale_fraction": 0.08,
+          "foreground_noise_current_reference_weight": 1.0,
+          "foreground_noise_direction_integration": "1st tertile",
+          "foreground_noise_direction_step_degrees": 15,
+          "foreground_noise_enabled": true,
+          "foreground_noise_medium_scale_fraction": 0.03,
+          "foreground_noise_reference_source": "Species library + current image",
+          "foreground_noise_vector_decay": 0.86,
+          "foreground_noise_vector_length_fraction": 0.55,
+          "foreground_noise_vector_sample_count": 9,
+          "foreground_noise_working_maximum_dimension": 1280,
+          "noise_coarse_scale_fraction": 0.08,
+          "noise_direction_integration": "maximum",
+          "noise_direction_step_degrees": 15,
+          "noise_medium_scale_fraction": 0.03,
+          "noise_vector_decay": 0.86,
+          "noise_vector_length_fraction": 0.55,
+          "noise_vector_sample_count": 9,
+          "noise_working_maximum_dimension": 1280
+        }
+      },
+      {
+        "active": false,
+        "connection_suspended": false,
+        "enabled": false,
+        "id": "review",
+        "parameters": {}
+      },
+      {
+        "active": true,
+        "connection_suspended": false,
+        "enabled": true,
+        "id": "ruler_detection",
+        "parameters": {
+          "minor_tick_mm": 1.0,
+          "ruler_length_mm": 150.0
+        }
+      },
+      {
+        "active": true,
+        "connection_suspended": false,
+        "enabled": true,
+        "id": "seed_edge_curves",
+        "parameters": {
+          "boundary_arc_sample_count": 15,
+          "boundary_arc_span_degrees": 70.0,
+          "boundary_center_vote_blur_fraction": 0.08,
+          "boundary_center_vote_weight": 0.35,
+          "boundary_circle_residual_tolerance": 0.16,
+          "boundary_ellipse_residual_tolerance": 0.18,
+          "boundary_geometry_max_candidates": 256,
+          "boundary_instance_edge_influence": 0.35,
+          "boundary_max_axis_ratio": 2.2,
+          "boundary_minimum_confidence": 0.12,
+          "boundary_missing_support_floor": 0.15,
+          "boundary_nonphysical_edge_discount": 0.8,
+          "boundary_orientation_tolerance_degrees": 20.0,
+          "boundary_polarity_boost": 0.2,
+          "boundary_radius_log_tolerance": 0.45,
+          "boundary_radius_max_fraction": 0.8,
+          "boundary_radius_min_fraction": 0.25,
+          "boundary_radius_sample_count": 9,
+          "boundary_semantic_weight": 0.25,
+          "boundary_working_maximum_dimension": 1280,
+          "curve_diameter_multiplier": 1.0
+        }
+      },
+      {
+        "active": true,
+        "connection_suspended": false,
+        "enabled": true,
+        "id": "seed_scale_estimation",
+        "parameters": {
+          "fallback_diameter_fraction": 0.16,
+          "reference_colour_distance_threshold": 10.0,
+          "reference_max_aspect_ratio": 3.0,
+          "reference_max_components": 3,
+          "reference_roi_x_max": 0.6,
+          "reference_roi_x_min": 0.43,
+          "reference_roi_y_max": 0.84,
+          "reference_roi_y_min": 0.66,
+          "reference_scale_factor": 0.72,
+          "shape_boundary_perturbation_radius_px": 2,
+          "shape_calibration_uncertainty_fraction": 0.01,
+          "shape_contour_samples": 128,
+          "shape_maximum_contour_modes": 4,
+          "shape_minimum_component_seeds": 2,
+          "shape_reference_source": "Current image only",
+          "shape_shrinkage_seed_count": 5.0,
+          "shape_use_prior_for_oval_candidates": false,
+          "shape_use_prior_for_procedural": false
+        }
+      },
+      {
+        "active": true,
+        "connection_suspended": false,
+        "enabled": true,
+        "id": "species_reference_library",
+        "parameters": {}
+      },
+      {
+        "active": true,
+        "connection_suspended": false,
+        "enabled": false,
+        "id": "stardist_instances",
+        "parameters": {
+          "checkpoint_path": "models/stardist_seed_instances.pt",
+          "local_maximum_radius_fraction": 0.08,
+          "maximum_candidates": 4096,
+          "minimum_instance_area_fraction": 0.15,
+          "nms_iou_threshold": 0.35,
+          "object_threshold": 0.45,
+          "tile_overlap": 96,
+          "tile_size": 512
+        }
+      },
+      {
+        "active": true,
+        "connection_suspended": false,
+        "enabled": true,
+        "id": "surface_darkness_gradients",
+        "parameters": {
+          "surface_gradient_blur_sigma": 1.6,
+          "surface_gradient_direction_step_degrees": 15,
+          "surface_gradient_normalization_percentile": 99.0,
+          "surface_gradient_radius_fraction": 0.45,
+          "surface_gradient_sample_count": 8,
+          "surface_gradient_strength_gamma": 0.6,
+          "surface_gradient_working_maximum_dimension": 1280
+        }
+      },
+      {
+        "active": false,
+        "connection_suspended": false,
+        "enabled": false,
+        "id": "touching_split",
+        "parameters": {
+          "split_neck_fraction": 0.36
+        }
+      },
+      {
+        "active": true,
+        "connection_suspended": false,
+        "enabled": false,
+        "id": "unet_instances",
+        "parameters": {
+          "centre_minimum_separation_fraction": 0.32,
+          "centre_threshold": 0.3,
+          "checkpoint_path": "models/unet_seed_instances.pt",
+          "distance_topography_weight": 0.28,
+          "foreground_erosion_fraction": 0.0,
+          "interior_threshold": 0.5,
+          "minimum_instance_area_fraction": 0.15,
+          "pattern_boundary_discount": 0.8,
+          "physical_boundary_weight": 0.72,
+          "tile_overlap": 96,
+          "tile_size": 512,
+          "uncertainty_penalty": 0.2
+        }
+      },
+      {
+        "active": true,
+        "connection_suspended": false,
+        "enabled": true,
+        "id": "wavelet_decomposition",
+        "parameters": {
+          "wavelet_level_count": 4
+        }
+      },
+      {
+        "active": true,
+        "connection_suspended": false,
+        "enabled": false,
+        "id": "wrinkling",
+        "parameters": {
+          "wrinkle_scale_fraction": 0.035
+        }
+      }
+    ],
+    "version": 19
+  },
+  "format": "seedfiddle-project",
+  "images": [
+    {
+      "biological_context": {
+        "accession_id": null,
+        "lineage_group_id": null,
+        "seed_lot_id": null,
+        "species_id": "lupinus_mexicanus"
+      },
+      "capture_group_id": null,
+      "id": "dc3150a7d1fbec3132e163defef2cb3f19324b927af4ddcbd6f89796026d7a1e",
+      "image_sha256": "6b347b1c023e44b27ffc9f77c41b7bf0dae8b440292b316644ee460991410390",
+      "sidecars": {
+        "manual_seed_centres": {
+          "path": "projects/manual-seed-centres/IMG_0002c-2433bba9c3cda2d8c13e.centres.npz",
+          "sha256": "f123c2aec1a22d6c78c3b581e746da1a27263062c2e08dd1df04eee5b72ad999"
+        },
+        "reference_regions": {
+          "path": "projects/reference-regions/IMG_0002c-2433bba9c3cda2d8c13e.references.npz",
+          "sha256": "7f9b5f8333902f9e0abd5b441d69c186e69c1b66f5825352079d1da21e03309c"
+        }
+      },
+      "source": {
+        "location": "project_relative",
+        "path": "images/IMG_0002c.JPG"
+      },
+      "source_shape": [
+        4160,
+        6240
+      ]
+    },
+    {
+      "biological_context": {
+        "accession_id": null,
+        "lineage_group_id": null,
+        "seed_lot_id": null,
+        "species_id": "lupinus_mexicanus"
+      },
+      "capture_group_id": null,
+      "id": "166cbb5c39a342dce59a75c7a43093bf0426f624c17aa9d54ac7fe050f00ece9",
+      "image_sha256": "f8092d6bf225fd06b12c83e1e4d802c561a12bf5571681085340732f2c05f34b",
+      "sidecars": {
+        "reference_regions": {
+          "path": "projects/reference-regions/IMG_0006-c2edb849229745636ccb.references.npz",
+          "sha256": "d3bfcdcafa771f1038086befe9d18b0ce68b6331ea1983a629d1176f0fc50ba5"
+        }
+      },
+      "source": {
+        "location": "project_relative",
+        "path": "images/IMG_0006.JPG"
+      },
+      "source_shape": [
+        4160,
+        6240
+      ]
+    },
+    {
+      "biological_context": {
+        "accession_id": null,
+        "lineage_group_id": null,
+        "seed_lot_id": null,
+        "species_id": "lupinus_mexicanus"
+      },
+      "capture_group_id": null,
+      "id": "5bb937d1dc6bc8bda88e59c09f9e1df1f8342aaa747dd38da06ea247cc2d042d",
+      "image_sha256": "f681e3f53d277942ff52ac39ce661a8a301236046a49e86707009fb08134d1c1",
+      "sidecars": {},
+      "source": {
+        "location": "project_relative",
+        "path": "images/IMG_9403.JPG"
+      },
+      "source_shape": [
+        4160,
+        6240
+      ]
+    },
+    {
+      "biological_context": {
+        "accession_id": null,
+        "lineage_group_id": null,
+        "seed_lot_id": null,
+        "species_id": "lupinus_mexicanus"
+      },
+      "capture_group_id": null,
+      "id": "60b1ce5c6825b9cb9efde1afd5b2b011bd9fb0a22cf42546e45b37061925fffa",
+      "image_sha256": "da78a2c28f510de9e9a001ae8ef9b08aef12ace1f4fc1b64b0cc1c3730898df5",
+      "sidecars": {
+        "reference_regions": {
+          "path": "projects/reference-regions/IMG_9405-37806c8ced421dbb9710.references.npz",
+          "sha256": "dbe0d4c63b1182c227d8279f2d81341690c7c122c662eebd4e617d8d13d679a5"
+        }
+      },
+      "source": {
+        "location": "project_relative",
+        "path": "images/IMG_9405.JPG"
+      },
+      "source_shape": [
+        4160,
+        6240
+      ]
+    },
+    {
+      "biological_context": {
+        "accession_id": null,
+        "lineage_group_id": null,
+        "seed_lot_id": null,
+        "species_id": "lupinus_mexicanus"
+      },
+      "capture_group_id": null,
+      "id": "5fc03712ed4e15dbab0f768920adbbd98e99c19a08a864fa3d7e46d8ff5e45cb",
+      "image_sha256": "fdc465da9e4bbd629883f1154e5c238828d1be7264787a044612140c6a5f8ac2",
+      "sidecars": {
+        "reference_regions": {
+          "path": "projects/reference-regions/IMG_9496-1a3578c16db368c57455.references.npz",
+          "sha256": "e95aaa10b1244eae16e4c6bd0b70279fec03465285a991c1ae863b1f9b7f9642"
+        }
+      },
+      "source": {
+        "location": "project_relative",
+        "path": "images/IMG_9496.JPG"
+      },
+      "source_shape": [
+        4160,
+        6240
+      ]
+    },
+    {
+      "biological_context": {
+        "accession_id": null,
+        "lineage_group_id": null,
+        "seed_lot_id": null,
+        "species_id": "lupinus_mexicanus"
+      },
+      "capture_group_id": null,
+      "id": "b417f3bea40f044f2c8215b35f08c3a79be26e74ba7c3b66c7743c7f155885af",
+      "image_sha256": "83586a83d8db1b98de75cc651fa32a3e56546dd87ba6ca4ab351e83479350d72",
+      "sidecars": {
+        "reference_regions": {
+          "path": "projects/reference-regions/IMG_9533-ac7b09b39ba6fbab49c0.references.npz",
+          "sha256": "792f338bda2d790446b25edc52e5d6905965f952665d46b4cb480c72159c46b5"
+        }
+      },
+      "source": {
+        "location": "project_relative",
+        "path": "images/IMG_9533.JPG"
+      },
+      "source_shape": [
+        4160,
+        6240
+      ]
+    },
+    {
+      "biological_context": {
+        "accession_id": null,
+        "lineage_group_id": null,
+        "seed_lot_id": null,
+        "species_id": "lupinus_mexicanus"
+      },
+      "capture_group_id": null,
+      "id": "a38441e2ed9fb81cb7512d240cd5a2aa38c459e3e4bdca01263824a79c9b5e9e",
+      "image_sha256": "ce521d379eccf9bb3eda61d1e53a58d508acb41536a5855376e630fc926178b9",
+      "sidecars": {
+        "reference_regions": {
+          "path": "projects/reference-regions/IMG_9546-a24f79737cc69991dfc8.references.npz",
+          "sha256": "f0dcda1b3fb27d3da0339ed2a6dcd32d20660f3ef6542c4036d0b8efbf22ef37"
+        }
+      },
+      "source": {
+        "location": "project_relative",
+        "path": "images/IMG_9546.JPG"
+      },
+      "source_shape": [
+        4160,
+        6240
+      ]
+    },
+    {
+      "biological_context": {
+        "accession_id": null,
+        "lineage_group_id": null,
+        "seed_lot_id": null,
+        "species_id": "lupinus_mexicanus"
+      },
+      "capture_group_id": null,
+      "id": "f4537bb7513b66002d42486426ec0f1d1661f6a9fb49183f87d26c0a726a4201",
+      "image_sha256": "d9cbb6a4c8152d856782af7cebcad77acfcde887afe144c00afbdc6d2d2b0018",
+      "sidecars": {
+        "reference_regions": {
+          "path": "projects/reference-regions/IMG_9551-90fb70b499126af26753.references.npz",
+          "sha256": "e28181fe65e94a05e423351552c250b7f4657e55bf520ddf6d09954dc59a9950"
+        }
+      },
+      "source": {
+        "location": "project_relative",
+        "path": "images/IMG_9551.JPG"
+      },
+      "source_shape": [
+        4160,
+        6240
+      ]
+    },
+    {
+      "biological_context": {
+        "accession_id": null,
+        "lineage_group_id": null,
+        "seed_lot_id": null,
+        "species_id": "lupinus_mexicanus"
+      },
+      "capture_group_id": null,
+      "id": "248639b4a3ae128ff5b62c26aec1270bf400aa218ff579ad9aa5d3c253d35eae",
+      "image_sha256": "5417c8f3e2d608f55aad0d3cb539c2247e2f0ba030c7b6543b4a09c4a715b64a",
+      "sidecars": {
+        "reference_regions": {
+          "path": "projects/reference-regions/IMG_9569-6719b0d8e590e3823461.references.npz",
+          "sha256": "3e1fff4dc5df56b809800114554b84be24fe07d6dac7b7ee98453ae7bc886fde"
+        }
+      },
+      "source": {
+        "location": "project_relative",
+        "path": "images/IMG_9569.JPG"
+      },
+      "source_shape": [
+        4160,
+        6240
+      ]
+    },
+    {
+      "biological_context": {
+        "accession_id": null,
+        "lineage_group_id": null,
+        "seed_lot_id": null,
+        "species_id": "lupinus_mexicanus"
+      },
+      "capture_group_id": null,
+      "id": "05e0fc9c23169393d2b2442b076485ca34d964a81961b648c575a5e0db12cc34",
+      "image_sha256": "39d19132b5026b703a1f89c02f7a7477ddf762326bf4c548dd5a7740af43ba59",
+      "sidecars": {
+        "manual_seed_centres": {
+          "path": "projects/manual-seed-centres/IMG_9591-54459f5088faafe287a6.centres.npz",
+          "sha256": "a53c1ad97aa90a5077b257fb701bcc4df678f65432bb040cedcf1aa599c15c7a"
+        },
+        "reference_regions": {
+          "path": "projects/reference-regions/IMG_9591-54459f5088faafe287a6.references.npz",
+          "sha256": "8f03e62f0907adfa872fd595ed59dc4a87a7da8624a9c08a17b423f26ad4e6b2"
+        }
+      },
+      "source": {
+        "location": "project_relative",
+        "path": "images/IMG_9591.JPG"
+      },
+      "source_shape": [
+        4160,
+        6240
+      ]
+    },
+    {
+      "biological_context": {
+        "accession_id": null,
+        "lineage_group_id": null,
+        "seed_lot_id": null,
+        "species_id": "lupinus_mexicanus"
+      },
+      "capture_group_id": null,
+      "id": "395e02d5e1e22085df2a7c8f83c74aa540471843d2c3e9f61705f1d5c8c77e01",
+      "image_sha256": "3e0bc559c7d3eb26ed756242e1d979e12106ee50d7c7c9f65511a1e34306138c",
+      "sidecars": {
+        "reference_regions": {
+          "path": "projects/reference-regions/IMG_9632c-e02a169491e866ce56b8.references.npz",
+          "sha256": "b14b861b15001a02666e523af03716b37381b3c7fa7286e12cee050859c66d56"
+        }
+      },
+      "source": {
+        "location": "project_relative",
+        "path": "images/IMG_9632c.JPG"
+      },
+      "source_shape": [
+        2080,
+        3120
+      ]
+    },
+    {
+      "biological_context": {
+        "accession_id": null,
+        "lineage_group_id": null,
+        "seed_lot_id": null,
+        "species_id": "lupinus_mexicanus"
+      },
+      "capture_group_id": null,
+      "id": "6a0a85300fa4414122693b2d13e42009c44301b233fe828c8924dfe21d28b23e",
+      "image_sha256": "cc59b41cc842b7ad1b4febb0fa6cd345c723035dc8dae0f172821788e4da551e",
+      "sidecars": {},
+      "source": {
+        "location": "project_relative",
+        "path": "images/IMG_9636c.JPG"
+      },
+      "source_shape": [
+        2080,
+        3120
+      ]
+    },
+    {
+      "biological_context": {
+        "accession_id": null,
+        "lineage_group_id": null,
+        "seed_lot_id": null,
+        "species_id": "lupinus_mexicanus"
+      },
+      "capture_group_id": null,
+      "id": "0613da7cf61eb79cac18930b48632255e1fa977114bee56d45f02f28d2e6d877",
+      "image_sha256": "283ca52c9fb885d04f0ce10ba39593f897c28e0f7d6de456710e18bbd1cdc78f",
+      "sidecars": {},
+      "source": {
+        "location": "project_relative",
+        "path": "images/IMG_9641c.JPG"
+      },
+      "source_shape": [
+        2080,
+        3120
+      ]
+    },
+    {
+      "biological_context": {
+        "accession_id": null,
+        "lineage_group_id": null,
+        "seed_lot_id": null,
+        "species_id": "lupinus_mexicanus"
+      },
+      "capture_group_id": null,
+      "id": "244ac871e2278e7845d9ddaafc32af70a45a03e75b7d7cc5fe3c886ce175e459",
+      "image_sha256": "83c8ce7f9c693c65962a62f71bafe059633fb4fafbf4eab99d667fd9e72f1d67",
+      "sidecars": {},
+      "source": {
+        "location": "project_relative",
+        "path": "images/IMG_9666c.JPG"
+      },
+      "source_shape": [
+        2080,
+        3120
+      ]
+    },
+    {
+      "biological_context": {
+        "accession_id": null,
+        "lineage_group_id": null,
+        "seed_lot_id": null,
+        "species_id": "lupinus_mexicanus"
+      },
+      "capture_group_id": null,
+      "id": "09d4f2e7fcc4d72ddba8c60d5bc6e085c225365ef04523fd1ef10af8bd419c32",
+      "image_sha256": "d1597ead5f0ef1384ed518de7664c4299afef1e8a964d6d27996af3b2b0c4cd6",
+      "sidecars": {},
+      "source": {
+        "location": "project_relative",
+        "path": "images/IMG_9667c.JPG"
+      },
+      "source_shape": [
+        2080,
+        3120
+      ]
+    },
+    {
+      "biological_context": {
+        "accession_id": null,
+        "lineage_group_id": null,
+        "seed_lot_id": null,
+        "species_id": "lupinus_mexicanus"
+      },
+      "capture_group_id": null,
+      "id": "97cee7a9f39326a06d45c5d43d692acb20ab83fd54b50d4150585f79cccb703e",
+      "image_sha256": "a9f197ac6f9eddcdc5f8190305f75b5aa1faf36ddd371afcdd3f789987c78f34",
+      "sidecars": {},
+      "source": {
+        "location": "project_relative",
+        "path": "images/IMG_9668c.JPG"
+      },
+      "source_shape": [
+        2080,
+        3120
+      ]
+    },
+    {
+      "biological_context": {
+        "accession_id": null,
+        "lineage_group_id": null,
+        "seed_lot_id": null,
+        "species_id": "lupinus_mexicanus"
+      },
+      "capture_group_id": null,
+      "id": "3d646ff5b2d5d7b933911f61faf8c75c848a9cbb98187e7a7ebab2b182d391e1",
+      "image_sha256": "2b6ef921908285552e3c1a6540562bfbd66009c0f3df7c16df1952f0ed0311fc",
+      "sidecars": {},
+      "source": {
+        "location": "project_relative",
+        "path": "images/IMG_9670c.JPG"
+      },
+      "source_shape": [
+        2080,
+        3120
+      ]
+    },
+    {
+      "biological_context": {
+        "accession_id": null,
+        "lineage_group_id": null,
+        "seed_lot_id": null,
+        "species_id": "lupinus_mexicanus"
+      },
+      "capture_group_id": null,
+      "id": "9494487f1e193edadab90bce30b5fa5aa022ddc9b2c30d2062e7e3868a3b6840",
+      "image_sha256": "6b9abdf7a5b9949cc839d5cf2c9183953eadf17fd079974a9f5eb28f4138286e",
+      "sidecars": {},
+      "source": {
+        "location": "project_relative",
+        "path": "images/IMG_9685c.JPG"
+      },
+      "source_shape": [
+        2080,
+        3120
+      ]
+    },
+    {
+      "biological_context": {
+        "accession_id": null,
+        "lineage_group_id": null,
+        "seed_lot_id": null,
+        "species_id": "lupinus_mexicanus"
+      },
+      "capture_group_id": null,
+      "id": "53b9c7581a4abfa2b7825fcb33bf02d7a274096ac2d9d9a1f9d5e0b5e0723609",
+      "image_sha256": "22ebc5c1e9f74654a538000b43bfe26b4cc48cfb7aa10e6da90f4491daede269",
+      "sidecars": {
+        "reference_regions": {
+          "path": "projects/reference-regions/IMG_9689-c40635fa2c35f696d443.references.npz",
+          "sha256": "d16901dfe0b57a88673a3826d108615e6dbf72d730f2acdd6df49c6f7621759c"
+        }
+      },
+      "source": {
+        "location": "project_relative",
+        "path": "images/IMG_9689.JPG"
+      },
+      "source_shape": [
+        4160,
+        6240
+      ]
+    },
+    {
+      "biological_context": {
+        "accession_id": null,
+        "lineage_group_id": null,
+        "seed_lot_id": null,
+        "species_id": "lupinus_mexicanus"
+      },
+      "capture_group_id": null,
+      "id": "d88579cdec641135d60329ead46d4c47d2f71d1564817a328007eb881e60fea1",
+      "image_sha256": "a5cdc88130b17ebcd230fbd70b7ad8f344bb99f21b85a37c7a9d9c4217399b54",
+      "sidecars": {},
+      "source": {
+        "location": "project_relative",
+        "path": "images/IMG_9719.JPG"
+      },
+      "source_shape": [
+        4160,
+        6240
+      ]
+    },
+    {
+      "biological_context": {
+        "accession_id": null,
+        "lineage_group_id": null,
+        "seed_lot_id": null,
+        "species_id": "lupinus_mexicanus"
+      },
+      "capture_group_id": null,
+      "id": "0202e35f58b060f69b899d3880679b5cfcce45bab2bbc6fd7f0f44de5d7974f4",
+      "image_sha256": "0de247910727173500b2d81c430522397a3dbf45d824dc5d5e0bc3e3a473ff65",
+      "sidecars": {},
+      "source": {
+        "location": "project_relative",
+        "path": "images/IMG_9974c.JPG"
+      },
+      "source_shape": [
+        4160,
+        6240
+      ]
+    }
+  ],
+  "project": {
+    "biological_context": {
+      "accession_id": null,
+      "lineage_group_id": null,
+      "seed_lot_id": null,
+      "species_id": "lupinus_mexicanus"
+    },
+    "capture_group_id": null,
+    "selected_image": "166cbb5c39a342dce59a75c7a43093bf0426f624c17aa9d54ac7fe050f00ece9",
+    "species": "Lupinus mexicanus",
+    "species_library": null
+  },
+  "ui": {
+    "bundle_cables": false,
+    "node_positions": {
+      "aggregation": [
+        3600.0,
+        -200.0
+      ],
+      "assignment_confidence": [
+        2400.0,
+        270.0
+      ],
+      "background_likelihood": [
+        1350.0,
+        -260.5
+      ],
+      "boundary_normals": [
+        2430.0,
+        -1134.5
+      ],
+      "calibration_residuals": [
+        1200.0,
+        940.0
+      ],
+      "circle_candidates": [
+        1800.0,
+        -100.0
+      ],
+      "classification": [
+        3360.0,
+        -90.0
+      ],
+      "coat_damage": [
+        2880.0,
+        450.0
+      ],
+      "colour_probabilities": [
+        2430.0,
+        -1505.5
+      ],
+      "contact_graph": [
+        2640.0,
+        170.0
+      ],
+      "darkening_gradient_ceiling": [
+        1740.0,
+        1240.0
+      ],
+      "deskew_colour": [
+        270.0,
+        -238.5
+      ],
+      "distance_candidates": [
+        1680.0,
+        -300.0
+      ],
+      "edge_gradients": [
+        1620.0,
+        -386.0
+      ],
+      "edge_traces": [
+        2430.0,
+        -883.5
+      ],
+      "ellipse_likelihood": [
+        2280.0,
+        270.0
+      ],
+      "frequency_noise_masks": [
+        1350.0,
+        -631.5
+      ],
+      "hue_only": [
+        1080.0,
+        -448.0
+      ],
+      "identification": [
+        1920.0,
+        -200.0
+      ],
+      "illumination_decomposition": [
+        1350.0,
+        254.5
+      ],
+      "image_quality": [
+        1350.0,
+        745.5
+      ],
+      "instance_masks": [
+        2160.0,
+        -200.0
+      ],
+      "layout_detection": [
+        810.0,
+        -152.5
+      ],
+      "lightening_gradient_ceiling": [
+        1740.0,
+        1060.0
+      ],
+      "material_evidence_decision": [
+        2160.0,
+        -518.0
+      ],
+      "measurements": [
+        3360.0,
+        -310.0
+      ],
+      "metadata": [
+        270.0,
+        84.5
+      ],
+      "output": [
+        3840.0,
+        -200.0
+      ],
+      "pattern_decomposition": [
+        2430.0,
+        -488.5
+      ],
+      "procedural_instances": [
+        2970.0,
+        -296.5
+      ],
+      "project": [
+        0.0,
+        -89.0
+      ],
+      "proposal_disagreement": [
+        2400.0,
+        70.0
+      ],
+      "radial_profile": [
+        2400.0,
+        540.0
+      ],
+      "reference_edge_probability": [
+        2160.0,
+        21.0
+      ],
+      "reference_seed_traits": [
+        2430.0,
+        -117.5
+      ],
+      "reference_texture_prototypes": [
+        1890.0,
+        -332.5
+      ],
+      "refined_background_likelihood": [
+        1620.0,
+        -39.0
+      ],
+      "review": [
+        3120.0,
+        -200.0
+      ],
+      "ruler_detection": [
+        540.0,
+        -274.5
+      ],
+      "seed_edge_curves": [
+        2700.0,
+        -99.0
+      ],
+      "seed_scale_estimation": [
+        1080.0,
+        23.0
+      ],
+      "species_reference_library": [
+        540.0,
+        24.5
+      ],
+      "stardist_instances": [
+        2430.0,
+        984.5
+      ],
+      "surface_darkness_gradients": [
+        1350.0,
+        -1050.5
+      ],
+      "touching_split": [
+        2160.0,
+        70.0
+      ],
+      "unet_instances": [
+        2430.0,
+        397.5
+      ],
+      "wavelet_decomposition": [
+        1080.0,
+        -276.0
+      ],
+      "wrinkling": [
+        2700.0,
+        -374.0
+      ]
+    },
+    "route_around_nodes": false,
+    "selected_node": "seed_scale_estimation",
+    "selected_overlay": "seed_boundary_curvature_distribution"
+  },
+  "version": 2
+}
