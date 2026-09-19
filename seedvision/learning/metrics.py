@@ -32,7 +32,12 @@ class InstanceMetrics:
     boundary_f1: float
 
     def to_dict(self) -> dict[str, int | float]:
-        return asdict(self)
+        values = asdict(self)
+        if not self.true_positives:
+            values['mean_matched_iou'] = None
+        if not self.true_instances:
+            values['relative_count_error'] = None
+        return values
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,7 +52,7 @@ class BinaryProbabilityMetrics:
     brier_score: float
 
     def to_dict(self) -> dict[str, int | float]:
-        return asdict(self)
+        return {key: value if np.isfinite(value) else None for key,value in asdict(self).items()}
 
 
 def evaluate_binary_probability(
@@ -114,17 +119,51 @@ def _overlap_iou_pairs(truth: np.ndarray, prediction: np.ndarray):
     truth_count = int(truth.max(initial=0))
     prediction_count = int(prediction.max(initial=0))
     combined = truth.astype(np.int64) * (prediction_count + 1) + prediction
-    contingency = np.bincount(
-        combined.reshape(-1), minlength=(truth_count + 1) * (prediction_count + 1)
-    ).reshape(truth_count + 1, prediction_count + 1)
-    truth_area = contingency.sum(axis=1)
-    prediction_area = contingency.sum(axis=0)
+    codes, counts = np.unique(combined, return_counts=True)
+    truth_area = np.bincount(truth.reshape(-1), minlength=truth_count+1)
+    prediction_area = np.bincount(prediction.reshape(-1), minlength=prediction_count+1)
     pairs = []
-    for true_id, predicted_id in np.argwhere(contingency[1:, 1:] > 0) + 1:
-        intersection = int(contingency[true_id, predicted_id])
-        union = int(truth_area[true_id] + prediction_area[predicted_id] - intersection)
-        pairs.append((intersection / max(1, union), int(true_id), int(predicted_id), intersection))
-    return pairs, contingency
+    for code, intersection in zip(codes,counts,strict=True):
+        true_id, predicted_id = divmod(int(code),prediction_count+1)
+        if not true_id or not predicted_id:
+            continue
+        union = int(truth_area[true_id]+prediction_area[predicted_id]-intersection)
+        pairs.append((int(intersection)/max(1,union),true_id,predicted_id,int(intersection)))
+    return pairs, truth_area, prediction_area
+
+
+def _global_matches(pairs, threshold):
+    from seedvision.segmentation.procedural_fit import _maximum_weight_assignment
+    adjacency = {}
+    scores = {}
+    for iou,t,p,_ in pairs:
+        if iou < threshold:
+            continue
+        # Negative IDs distinguish the prediction partition.
+        adjacency.setdefault(t,set()).add(-p)
+        adjacency.setdefault(-p,set()).add(t)
+        scores[t,p] = iou
+    unseen = set(adjacency)
+    accepted = []
+    while unseen:
+        pending = [unseen.pop()]
+        component = set(pending)
+        while pending:
+            node = pending.pop()
+            for neighbour in adjacency[node]:
+                if neighbour not in component:
+                    component.add(neighbour)
+                    unseen.discard(neighbour)
+                    pending.append(neighbour)
+        true_ids = sorted(node for node in component if node>0)
+        predicted_ids = sorted(-node for node in component if node<0)
+        if len(true_ids)*len(predicted_ids)>4_000_000:
+            raise MemoryError('An ambiguous matching component exceeds the bounded assignment budget. Partition the evaluation into predeclared disjoint regions.')
+        bonus = min(len(true_ids),len(predicted_ids))+1
+        weights = np.asarray([[bonus+scores[t,p] if (t,p) in scores else 0.
+            for p in predicted_ids] for t in true_ids],np.float64)
+        accepted.extend(weights[row,col]-bonus for row,col in _maximum_weight_assignment(weights))
+    return accepted
 
 
 def _boundary_scores(truth: np.ndarray, prediction: np.ndarray, tolerance_px: float):
@@ -162,20 +201,14 @@ def evaluate_instances(
     prediction = relabel_consecutive(prediction)
     if truth.shape != prediction.shape:
         raise ValueError("Truth and prediction label rasters must have the same shape.")
-    pairs, contingency = _overlap_iou_pairs(truth, prediction)
-    accepted = []
-    used_truth: set[int] = set()
-    used_prediction: set[int] = set()
-    for iou, true_id, predicted_id, _intersection in sorted(pairs, reverse=True):
-        if iou < iou_threshold:
-            break
-        if true_id in used_truth or predicted_id in used_prediction:
-            continue
-        accepted.append(iou)
-        used_truth.add(true_id)
-        used_prediction.add(predicted_id)
+    pairs, true_areas, predicted_areas = _overlap_iou_pairs(truth, prediction)
+    if not 0 < iou_threshold <= 1:
+        raise ValueError('IoU threshold must be in (0, 1].')
     true_count = int(truth.max(initial=0))
     predicted_count = int(prediction.max(initial=0))
+    # Lexicographic maximum cardinality, then summed IoU. Dummy columns allow
+    # unmatched objects, and the cardinality bonus dominates all IoU sums.
+    accepted = _global_matches(pairs,iou_threshold)
     true_positives = len(accepted)
     false_positives = predicted_count - true_positives
     false_negatives = true_count - true_positives
@@ -186,17 +219,16 @@ def evaluate_instances(
     panoptic_quality = sum_iou / max(
         1e-12, true_positives + 0.5 * false_positives + 0.5 * false_negatives
     )
+    if true_count == predicted_count == 0:
+        precision = recall = f1 = panoptic_quality = 1.0
 
-    true_areas = contingency.sum(axis=1)
-    predicted_areas = contingency.sum(axis=0)
-    splits = 0
-    for true_id in range(1, true_count + 1):
-        overlaps = contingency[true_id, 1:] / max(1, true_areas[true_id])
-        splits += int(np.count_nonzero(overlaps >= contact_overlap_fraction) > 1)
-    merges = 0
-    for predicted_id in range(1, predicted_count + 1):
-        overlaps = contingency[1:, predicted_id] / max(1, predicted_areas[predicted_id])
-        merges += int(np.count_nonzero(overlaps >= contact_overlap_fraction) > 1)
+    split_counts = np.zeros(true_count+1,np.int32)
+    merge_counts = np.zeros(predicted_count+1,np.int32)
+    for _iou,true_id,predicted_id,intersection in pairs:
+        split_counts[true_id] += intersection/max(1,true_areas[true_id]) >= contact_overlap_fraction
+        merge_counts[predicted_id] += intersection/max(1,predicted_areas[predicted_id]) >= contact_overlap_fraction
+    splits = int(np.count_nonzero(split_counts>1))
+    merges = int(np.count_nonzero(merge_counts>1))
     boundary_precision, boundary_recall, boundary_f1 = _boundary_scores(
         truth, prediction, boundary_tolerance_px
     )

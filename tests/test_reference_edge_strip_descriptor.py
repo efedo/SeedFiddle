@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.review_fixtures import reviewed_outlines
+
 import unittest
 
 
@@ -209,6 +211,7 @@ class ReferenceEdgeStripDescriptorTests(unittest.TestCase):
                 offset_y=0,
                 settings=settings,
                 seed_instance_annotations=labels,
+                seed_instance_traits=reviewed_outlines(labels),
                 instance_masks_enabled=False,
                 seed_edge_curves_enabled=False,
             )
@@ -487,6 +490,7 @@ class ReferenceEdgeStripDescriptorTests(unittest.TestCase):
             offset_y=0,
             settings=settings,
             seed_instance_annotations=labels,
+            seed_instance_traits=reviewed_outlines(labels),
             instance_masks_enabled=False,
             seed_edge_curves_enabled=False,
         )
@@ -572,6 +576,7 @@ class ReferenceEdgeStripDescriptorTests(unittest.TestCase):
                 reference_texture_edge_working_maximum_dimension=512,
             ),
             seed_instance_annotations=labels,
+            seed_instance_traits=reviewed_outlines(labels),
             instance_masks_enabled=False,
             seed_edge_curves_enabled=False,
         )
@@ -704,6 +709,7 @@ class ReferenceEdgeStripDescriptorTests(unittest.TestCase):
                     reference_edge_minimum_working_seed_diameter_px=28.0,
                 ),
                 seed_instance_annotations=labels,
+                seed_instance_traits=reviewed_outlines(labels),
                 instance_masks_enabled=False,
                 seed_edge_curves_enabled=False,
             )

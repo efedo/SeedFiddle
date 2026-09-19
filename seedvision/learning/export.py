@@ -3,85 +3,26 @@
 from __future__ import annotations
 
 from pathlib import Path
+from dataclasses import asdict
 
 import cv2
 import numpy as np
 
 from seedvision.learning.contracts import FeatureStackSpec
-from seedvision.learning.data import export_learning_sample
-from seedvision.learning.features import assemble_feature_stack
+from seedvision.learning.data import export_learning_sample, file_sha256
+from seedvision.learning.features import assemble_feature_stack, pipeline_evidence
 from seedvision.learning.targets import relabel_consecutive
 
 
 def analysis_evidence(result) -> dict[str, object]:
     """Return the same evidence mapping used by live learned DAG nodes."""
 
-    return {
-        "foreground_colour": result.foreground_probability,
-        "foreground_noise": result.layers.foreground_noise_likelihood,
-        "background_colour": result.layers.background_likelihood,
-        "background_noise": result.layers.refined_background_likelihood,
-        "edge_magnitude": result.layers.edge_likelihood,
-        "sensor_noise": result.advanced.rasters["sensor_noise"],
-        "flattened_grayscale": result.advanced.rasters["flattened_grayscale"],
-        "shadow": result.advanced.rasters["shadow_likelihood"],
-        "highlight": result.advanced.rasters["highlight_likelihood"],
-    }
+    return pipeline_evidence(result.foreground_colour_probability, result.layers, result.advanced)
 
 
 def _canonical_size(shape: tuple[int, int], scale: float) -> tuple[int, int]:
     height, width = shape
     return max(16, round(height * scale)), max(16, round(width * scale))
-
-
-def annotation_proposal_to_corrected(result, proposal) -> np.ndarray:
-    """Expand one pipeline instance result into editable corrected coordinates.
-
-    Procedural topology deliberately remains at a bounded working resolution,
-    while learned decoders normally return the analysis-crop resolution.  The
-    annotation editor uses the complete corrected photograph.  This function
-    is the single, explicit conversion between those coordinate systems and
-    never presents the prediction as reviewed ground truth.
-    """
-
-    if proposal is None or not hasattr(proposal, "labels"):
-        raise ValueError("An instance proposal with a label raster is required.")
-    labels = np.asarray(proposal.labels)
-    if labels.ndim != 2 or not np.issubdtype(labels.dtype, np.integer):
-        raise ValueError("Instance proposal labels must be a two-dimensional integer raster.")
-    if np.any(labels < 0):
-        raise ValueError("Instance proposal labels cannot be negative.")
-    maximum = int(labels.max(initial=0))
-    if maximum > np.iinfo(np.uint16).max:
-        raise ValueError("Instance proposal contains more than 65,535 identifiers.")
-
-    corrected_shape = tuple(int(value) for value in result.calibration.corrected_bgr.shape[:2])
-    crop_shape = tuple(int(value) for value in result.layers.valid_mask.shape)
-    if len(crop_shape) != 2:
-        raise ValueError("Analysis valid mask must be two-dimensional.")
-    if labels.shape != crop_shape:
-        labels = cv2.resize(
-            labels.astype(np.uint16, copy=False),
-            (crop_shape[1], crop_shape[0]),
-            interpolation=cv2.INTER_NEAREST,
-        )
-    labels = relabel_consecutive(labels).astype(np.uint16, copy=False)
-
-    offset_x, offset_y = (int(value) for value in result.crop_offset)
-    crop_height, crop_width = crop_shape
-    if (
-        offset_x < 0
-        or offset_y < 0
-        or offset_x + crop_width > corrected_shape[1]
-        or offset_y + crop_height > corrected_shape[0]
-    ):
-        raise ValueError("Analysis crop falls outside the corrected image.")
-    corrected = np.zeros(corrected_shape, dtype=np.uint16)
-    corrected[
-        offset_y : offset_y + crop_height,
-        offset_x : offset_x + crop_width,
-    ] = labels
-    return corrected
 
 
 def export_analysis_sample(
@@ -100,6 +41,8 @@ def export_analysis_sample(
     notes: str | None = None,
     feature_spec: FeatureStackSpec = FeatureStackSpec(),
     replace_existing: bool = False,
+    seed_annotations: tuple = (),
+    species_reviewed: bool = False,
 ):
     """Export one dish crop normalized to the checkpoint's nominal seed scale.
 
@@ -113,6 +56,12 @@ def export_analysis_sample(
     import torch.nn.functional as functional
 
     corrected_labels = np.asarray(corrected_instance_labels)
+    from seedvision.annotation.eligibility import eligible_instances
+    eligible = eligible_instances(corrected_labels, seed_annotations)
+    if not np.array_equal(eligible, corrected_labels):
+        raise ValueError('Learning export requires complete, connected, shape-reviewed contours for every supplied seed. Partial/unreviewed shapes cannot define physical-boundary truth.')
+    if feature_spec.include_species_planes and (not species_reviewed or feature_spec.species_index(species) == 0):
+        raise ValueError('Species-conditioned features require reviewed, assigned species metadata. Choose a verified species or export an explicitly unconditioned feature specification.')
     corrected_shape = result.calibration.corrected_bgr.shape[:2]
     if corrected_labels.shape != corrected_shape:
         raise ValueError("Instance labels must use corrected-image coordinates.")
@@ -206,4 +155,13 @@ def export_analysis_sample(
         annotation_revision=annotation_revision,
         notes=notes,
         replace_existing=replace_existing,
+        provenance={
+            'feature_recipe': 'raw-foreground-colour-v2',
+            'analysis_mode': 'image_local_adaptation',
+            'species_reviewed': bool(species_reviewed),
+            'source_sha256': None if getattr(result, 'image_path', None) is None else file_sha256(result.image_path),
+            'source_to_corrected': getattr(result.calibration, 'affine_matrix', np.eye(3)).tolist(),
+            'canonical_scale': scale,
+            'annotation_metadata': [asdict(item) for item in seed_annotations],
+        },
     )

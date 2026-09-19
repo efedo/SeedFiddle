@@ -9,6 +9,23 @@ from seedvision.cuda import GpuRaster, bgr_to_lab, image_to_tensor
 from seedvision.learning.contracts import FeatureStackSpec
 
 
+def pipeline_evidence(foreground_colour, layers, advanced) -> dict[str, object]:
+    """Single semantic mapping shared by live inference and dataset export."""
+    return {
+        'foreground_colour': foreground_colour,
+        'foreground_noise': layers.foreground_noise_likelihood,
+        'background_colour': layers.background_likelihood,
+        'background_noise': layers.refined_background_likelihood,
+        'edge_magnitude': layers.edge_likelihood,
+        'physical_edge_probability': getattr(layers, 'edge_supported_physical_compatibility', None),
+        'non_edge_probability': getattr(layers, 'edge_supported_nonphysical_compatibility', None),
+        'sensor_noise': advanced.rasters['sensor_noise'],
+        'flattened_grayscale': advanced.rasters['flattened_grayscale'],
+        'shadow': advanced.rasters['shadow_likelihood'],
+        'highlight': advanced.rasters['highlight_likelihood'],
+    }
+
+
 def colour_only_feature_spec(
     *,
     include_species_planes: bool = True,

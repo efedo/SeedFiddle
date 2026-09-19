@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.review_fixtures import dispose_window
+
 import os
 import tempfile
 import unittest
@@ -42,7 +44,7 @@ class ReferenceUndoUiTests(unittest.TestCase):
         self._write_image(self.first_path)
         self._write_image(self.second_path, "#7f8692")
         self.window = MainWindow(self.root)
-        self.addCleanup(self.window.close)
+        self.addCleanup(dispose_window, self.window)
         self.window.resize(960, 700)
         self.window.show()
         self._make_current_image_editable()
@@ -206,7 +208,8 @@ class ReferenceUndoUiTests(unittest.TestCase):
         )
 
         self.window.undo_reference_edit_action.trigger()
-        self.assertNotIn(key, self.window._reference_undo_histories)
+        self.assertEqual(len(self.window._reference_undo_histories[key]),0)
+        self.assertTrue(self.window._reference_undo_histories[key].can_redo)
         self.assertNotIn(key, self.window._reference_masks_dirty)
         self.assertNotIn(key, self.window._reference_dirty_classes)
         self.assertFalse(self.window.reference_undo_button.isEnabled())
@@ -275,7 +278,8 @@ class ReferenceUndoUiTests(unittest.TestCase):
         )
         self.assertNotIn(key, self.window._draft_instance_annotations)
         self.assertNotIn(key, self.window._instance_annotations_dirty)
-        self.assertNotIn(key, self.window._instance_undo_histories)
+        self.assertEqual(len(self.window._instance_undo_histories[key]),0)
+        self.assertTrue(self.window._instance_undo_histories[key].can_redo)
 
     def test_apply_and_revert_are_history_barriers(self) -> None:
         self._activate_reference_mode()
@@ -326,14 +330,15 @@ class ReferenceUndoUiTests(unittest.TestCase):
         self.assertEqual(len(self.window._reference_undo_histories[second_key]), 1)
 
         self.window._undo_active_reference_edit()
-        self.assertNotIn(second_key, self.window._reference_undo_histories)
+        self.assertEqual(len(self.window._reference_undo_histories[second_key]),0)
+        self.assertTrue(self.window._reference_undo_histories[second_key].can_redo)
         self.assertEqual(len(self.window._reference_undo_histories[first_key]), 1)
 
         self.window._open_path(self.first_path)
         self._make_current_image_editable()
         self._activate_reference_mode()
         self.window._undo_active_reference_edit()
-        self.assertNotIn(first_key, self.window._reference_undo_histories)
+        self.assertEqual(len(self.window._reference_undo_histories[first_key]),0)
 
         self._commit_reference("foreground", first_region)
         loaded = np.zeros(self._shape(), dtype=bool)
@@ -378,7 +383,8 @@ class ReferenceUndoUiTests(unittest.TestCase):
         self.assertTrue(remaining[2, 3])
         self.assertTrue(remaining[2, 4])
         self.assertEqual(int(np.count_nonzero(remaining)), 3)
-        self.assertNotIn(key, self.window._reference_undo_histories)
+        self.assertEqual(len(self.window._reference_undo_histories[key]),0)
+        self.assertTrue(self.window._reference_undo_histories[key].can_redo)
         self.assertIn(key, self.window._reference_masks_dirty)
         self.assertFalse(self.window.reference_undo_button.isEnabled())
 

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
+from collections import OrderedDict
 from hashlib import sha256
 import json
 from pathlib import Path
 import re
+from uuid import uuid4
 from typing import Any
 
 import cv2
@@ -45,6 +47,8 @@ class LearningSample:
     annotation_author: str | None = None
     annotation_revision: str | None = None
     notes: str | None = None
+    component_sha256: dict[str, str] = field(default_factory=dict)
+    provenance: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,7 +68,7 @@ class LearningManifest:
             raise ValueError(f"Unsupported learning-manifest version in {source}.")
         return cls(
             dataset_id=str(payload["dataset_id"]),
-            feature_spec=FeatureStackSpec(**payload["feature_spec"]),
+            feature_spec=FeatureStackSpec(**({'version': 1} | payload["feature_spec"])),
             samples=tuple(LearningSample(**item) for item in payload["samples"]),
             provenance=str(payload.get("provenance", "observational")),
             scientific_validation_eligible=bool(
@@ -152,6 +156,7 @@ def export_learning_sample(
     annotation_revision: str | None = None,
     notes: str | None = None,
     replace_existing: bool = False,
+    provenance: dict[str, Any] | None = None,
 ) -> LearningSample:
     """Atomically persist one corrected-coordinate supervised sample.
 
@@ -221,18 +226,31 @@ def export_learning_sample(
             scientific_validation_eligible=False,
         )
 
-    feature_name = f"{identifier}.features.npz"
-    instance_name = f"{identifier}.instances.png"
-    image_name = f"{identifier}.png" if display is not None else None
-    pattern_name = f"{identifier}.pattern.png" if pattern is not None else None
+    if not str(group).strip():
+        raise ValueError('A biological/capture group is required before export.')
+    if any(item.identifier != identifier and item.group == group and item.split != split for item in manifest.samples):
+        raise ValueError('A biological/capture group cannot cross dataset splits.')
+    if not np.issubdtype(label_values.dtype, np.integer) or np.any(label_values < 0):
+        raise ValueError('Instance labels must be non-negative integers.')
+    # Each write targets a new immutable revision. Only the final atomic
+    # manifest replacement makes it visible; a failure leaves the old revision
+    # intact. Unreferenced failed revision directories are safe to inspect.
+    revision = Path('.learning-revisions') / identifier / uuid4().hex
+    revision_root = root / revision
+    revision_root.mkdir(parents=True)
+    prefix = revision.as_posix() + '/' + identifier
+    feature_name = f"{prefix}.features.npz"
+    instance_name = f"{prefix}.instances.png"
+    image_name = f"{prefix}.png" if display is not None else None
+    pattern_name = f"{prefix}.pattern.png" if pattern is not None else None
     pattern_valid_name = (
-        f"{identifier}.pattern_valid.png" if pattern_known is not None else None
+        f"{prefix}.pattern_valid.png" if pattern_known is not None else None
     )
-    physical_name = f"{identifier}.physical.png" if physical is not None else None
+    physical_name = f"{prefix}.physical.png" if physical is not None else None
     physical_valid_name = (
-        f"{identifier}.physical_valid.png" if physical_known is not None else None
+        f"{prefix}.physical_valid.png" if physical_known is not None else None
     )
-    temporary_feature = root / f"{identifier}.features.tmp.npz"
+    temporary_feature = revision_root / f"{identifier}.features.tmp.npz"
     np.savez_compressed(temporary_feature, features=values.astype(np.float16))
     temporary_feature.replace(root / feature_name)
     write_label_image(root / instance_name, label_values)
@@ -260,6 +278,11 @@ def export_learning_sample(
         annotation_author=annotation_author,
         annotation_revision=annotation_revision,
         notes=notes,
+        provenance=dict(provenance or {}),
+        component_sha256={name: file_sha256(root / value) for name, value in (
+            ('features', feature_name), ('instances', instance_name), ('image', image_name),
+            ('pattern_boundary', pattern_name), ('pattern_valid', pattern_valid_name),
+            ('physical_boundary', physical_name), ('physical_valid', physical_valid_name)) if value},
     )
     samples = [item for item in manifest.samples if item.identifier != identifier]
     samples.append(sample)
@@ -271,7 +294,16 @@ def export_learning_sample(
         scientific_validation_eligible=manifest.scientific_validation_eligible,
         version=manifest.version,
     )
-    updated.save(manifest_path)
+    staged_manifest = root / ('.audit-' + uuid4().hex + '.json')
+    try:
+        updated.save(staged_manifest)
+        audit = audit_manifest(staged_manifest)
+        if not audit['valid']:
+            raise ValueError('Proposed learning manifest is invalid: ' + '; '.join(audit['errors']))
+        staged_manifest.replace(manifest_path)
+    finally:
+        if staged_manifest.exists():
+            staged_manifest.unlink()
     return sample
 
 
@@ -292,6 +324,8 @@ def audit_manifest(path: Path | str) -> dict[str, Any]:
     instance_count = 0
     reviewed_count = 0
     identifiers: set[str] = set()
+    content_splits = {}
+    source_species = {}
     for sample in manifest.samples:
         if sample.identifier in identifiers:
             errors.append(f"Duplicate sample identifier: {sample.identifier}")
@@ -301,6 +335,19 @@ def audit_manifest(path: Path | str) -> dict[str, Any]:
         if not sample.group.strip():
             errors.append(f"Missing lot/capture group for {sample.identifier}.")
         split_groups.setdefault(sample.group, set()).add(sample.split)
+        for name, expected in sample.component_sha256.items():
+            value = getattr(sample, name, None)
+            component = None if not isinstance(value, str) else resolve_sample_path(manifest_path, value)
+            if component is None or not component.is_file() or file_sha256(component) != expected:
+                errors.append(f'Changed or missing fingerprinted component {name} for {sample.identifier}.')
+        if not sample.component_sha256:
+            warnings.append(f'Legacy sample {sample.identifier} has no immutable component fingerprints.')
+        source_hash = sample.provenance.get('source_sha256')
+        if source_hash:
+            content_splits.setdefault('source:' + source_hash, set()).add(sample.split)
+            previous_species = source_species.setdefault(source_hash, sample.species)
+            if previous_species != sample.species:
+                errors.append(f'Conflicting species metadata for the same source: {sample.identifier}.')
         feature_path = resolve_sample_path(manifest_path, sample.features)
         label_path = resolve_sample_path(manifest_path, sample.instances)
         if not feature_path.is_file():
@@ -314,6 +361,9 @@ def audit_manifest(path: Path | str) -> dict[str, Any]:
                 errors.append(f"Feature archive has no 'features': {feature_path}")
                 continue
             feature_shape = archive["features"].shape
+            feature_values = np.ascontiguousarray(archive['features'])
+            feature_digest = sha256(str((feature_values.shape, str(feature_values.dtype))).encode() + feature_values.tobytes()).hexdigest()
+            content_splits.setdefault('features:' + feature_digest, set()).add(sample.split)
             if not np.isfinite(archive["features"]).all():
                 errors.append(f"Non-finite feature values for {sample.identifier}.")
         labels = read_label_image(label_path)
@@ -380,6 +430,9 @@ def audit_manifest(path: Path | str) -> dict[str, Any]:
     for group, splits in split_groups.items():
         if len(splits) > 1:
             errors.append(f"Group {group!r} crosses dataset splits: {sorted(splits)}")
+    for fingerprint, splits in content_splits.items():
+        if len(splits) > 1:
+            errors.append(f'Duplicate source/feature content crosses dataset splits ({fingerprint}): {sorted(splits)}')
     if not manifest.samples:
         errors.append("The manifest contains no samples.")
     if reviewed_count < len(manifest.samples):
@@ -418,6 +471,7 @@ class SeedTileDataset:
         augment: bool = False,
         random_seed: int = 0,
         derived_cache_directory: Path | str | None = None,
+        sample_cache_bytes: int = 512 * 1024**2,
     ) -> None:
         self.manifest_path = Path(manifest_path).resolve()
         self.manifest = LearningManifest.load(self.manifest_path)
@@ -433,7 +487,9 @@ class SeedTileDataset:
             if derived_cache_directory is not None
             else self.manifest_path.parent / ".seedfiddle-cache"
         )
-        self._cache: dict[str, tuple[np.ndarray, np.ndarray, dict[str, np.ndarray]]] = {}
+        self.sample_cache_bytes = max(0, int(sample_cache_bytes))
+        self._cache = OrderedDict()
+        self._cache_bytes = 0
         if self.tile_size < 32 or self.tiles_per_sample < 1:
             raise ValueError("tile_size must be >= 32 and tiles_per_sample must be positive.")
         if not self.samples:
@@ -445,6 +501,7 @@ class SeedTileDataset:
     def _load(self, sample: LearningSample):
         cached = self._cache.get(sample.identifier)
         if cached is not None:
+            self._cache.move_to_end(sample.identifier)
             return cached
         feature_path = resolve_sample_path(self.manifest_path, sample.features)
         label_path = resolve_sample_path(self.manifest_path, sample.instances)
@@ -524,7 +581,13 @@ class SeedTileDataset:
             np.savez_compressed(temporary, **targets)
             temporary.replace(target_cache)
         cached = (features, labels, targets)
-        self._cache[sample.identifier] = cached
+        byte_count = features.nbytes + labels.nbytes + sum(value.nbytes for value in targets.values())
+        while self._cache and self._cache_bytes + byte_count > self.sample_cache_bytes:
+            _, (old_features, old_labels, old_targets) = self._cache.popitem(last=False)
+            self._cache_bytes -= old_features.nbytes + old_labels.nbytes + sum(value.nbytes for value in old_targets.values())
+        if byte_count <= self.sample_cache_bytes:
+            self._cache[sample.identifier] = cached
+            self._cache_bytes += byte_count
         return cached
 
     def __getitem__(self, index: int):

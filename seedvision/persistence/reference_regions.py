@@ -16,7 +16,7 @@ from zipfile import BadZipFile
 import numpy as np
 
 
-REFERENCE_REGION_VERSION = 5
+REFERENCE_REGION_VERSION = 6
 _MATERIAL_CLASSES = frozenset((0, 1, 2, 3))
 _BOUNDARY_CLASSES = frozenset((0, 1, 2))
 
@@ -92,6 +92,7 @@ class ReferenceRegionBundle:
     annotation_origin: str = "manual"
     seed_annotations: tuple[SeedInstanceAnnotation, ...] = ()
     annotation_species: str = ""
+    source_to_corrected: np.ndarray | None = None
 
 
 def file_sha256(path: Path | str) -> str:
@@ -158,6 +159,8 @@ class ReferenceRegionStore:
         annotation_species = _validated_identifier_or_empty(
             bundle.annotation_species, "annotation species"
         )
+        from seedvision.annotation.coordinates import validated_transform
+        transform = np.empty((0,0),np.float64) if bundle.source_to_corrected is None else validated_transform(bundle.source_to_corrected)
 
         material = np.zeros((height, width), dtype=np.uint8)
         material[background] = 1
@@ -220,6 +223,8 @@ class ReferenceRegionStore:
                         )
                     ),
                     annotation_species=np.asarray(annotation_species),
+                    source_to_corrected=transform,
+                    coordinate_space=np.asarray('unbound' if bundle.source_to_corrected is None else 'corrected_image'),
                 )
             temporary.replace(destination)
         finally:
@@ -341,7 +346,7 @@ class ReferenceRegionStore:
                         f"Saved reference archive is missing 'version': {source}"
                     )
                 version = _scalar_int(archive["version"], "version")
-                if version not in {1, 2, 3, 4, REFERENCE_REGION_VERSION}:
+                if version not in {1, 2, 3, 4, 5, REFERENCE_REGION_VERSION}:
                     raise InvalidReferenceArchive(
                         f"Unsupported reference-region version {version} in {source}."
                     )
@@ -357,6 +362,8 @@ class ReferenceRegionStore:
                 ]
                 if version == 1:
                     required.append("boundary")
+                if version >= 6:
+                    required.extend(("source_to_corrected", "coordinate_space"))
                 for name in required:
                     if name not in archive.files:
                         raise InvalidReferenceArchive(
@@ -395,6 +402,14 @@ class ReferenceRegionStore:
                         _scalar_int(archive["width"], "width"),
                     )
                 )
+                transform = None
+                if version >= 6:
+                    from seedvision.annotation.coordinates import validated_transform
+                    space = _scalar_text(archive['coordinate_space'],'coordinate space')
+                    if space == 'corrected_image':
+                        transform = validated_transform(archive['source_to_corrected'])
+                    elif space != 'unbound' or archive['source_to_corrected'].size:
+                        raise InvalidReferenceArchive('Invalid reference coordinate-frame metadata.')
                 if expected is not None and saved_shape != expected:
                     raise InvalidReferenceArchive(
                         "Saved reference dimensions "
@@ -483,6 +498,7 @@ class ReferenceRegionStore:
             annotation_origin=annotation_origin or "manual",
             seed_annotations=seed_annotations,
             annotation_species=annotation_species,
+            source_to_corrected=transform,
         )
 
 
@@ -609,7 +625,7 @@ def _validated_seed_annotations(
                 + " and ".join(missing)
                 + (" is Unknown. " if len(missing) == 1 else " are Unknown. ")
                 + "In Annotate seed instances, select this seed and "
-                "choose explicit values, or clear ‘Use for shape modelling’."
+                "choose explicit Outline and Pose values."
             )
         normalized.append(
             SeedInstanceAnnotation(

@@ -22,6 +22,7 @@ def tiled_predict(
     tile_size: int = 512,
     overlap: int = 96,
     use_mixed_precision: bool = True,
+    cancellation_requested=None,
 ):
     """Blend dense tile predictions while retaining outputs on the model device."""
 
@@ -38,7 +39,7 @@ def tiled_predict(
     pad_height = max(0, tile_size - original_height)
     pad_width = max(0, tile_size - original_width)
     if pad_height or pad_width:
-        mode = "reflect" if min(original_height, original_width) > 1 else "replicate"
+        mode = "reflect" if pad_height < original_height and pad_width < original_width else "replicate"
         features = functional.pad(features, (0, pad_width, 0, pad_height), mode=mode)
     height, width = features.shape[-2:]
     stride = tile_size - 2 * overlap
@@ -57,6 +58,9 @@ def tiled_predict(
     with torch.inference_mode(), autocast:
         for y0 in y_starts:
             for x0 in x_starts:
+                if cancellation_requested is not None and cancellation_requested():
+                    from seedvision.timing import AnalysisCancelled
+                    raise AnalysisCancelled('Learned inference cancelled between tiles.')
                 tile = features[..., y0 : y0 + tile_size, x0 : x0 + tile_size]
                 outputs = model(tile)
                 for name, output in outputs.items():

@@ -227,21 +227,13 @@ class ProceduralFitMainWindowTests(unittest.TestCase):
         self.assertIsNone(prepare_kwargs["material_probability"])
         self.assertIsNone(prepare_kwargs["physical_edge_probability"])
         self.assertIsNone(prepare_kwargs["non_edge_probability"])
-        self.assertIsNone(
-            prepare_kwargs["normalized_net_physical_edge_probability"]
-        )
-        self.assertIsNone(prepare_kwargs["thinned_reference_edge_ridges"])
-        self.assertIsNone(prepare_kwargs["oriented_edge_trace_labels"])
-        self.assertIsNone(prepare_kwargs["oriented_edge_trace_continuity"])
+        self.assertIs(prepare_kwargs["normalized_net_physical_edge_probability"], layers.locally_normalized_net_physical_edge)
+        self.assertIs(prepare_kwargs["thinned_reference_edge_ridges"], layers.normalized_net_reference_edge_ridges)
+        self.assertIs(prepare_kwargs["oriented_edge_trace_labels"], layers.edge_trace_labels)
+        self.assertIs(prepare_kwargs["oriented_edge_trace_continuity"], layers.edge_trace_continuity)
         self.assertIsNone(prepare_kwargs["reference_surface_probability"])
-        np.testing.assert_array_equal(
-            prepare_kwargs["foreground_probability"],
-            np.full((8, 8), 175, np.uint8),
-        )
-        np.testing.assert_array_equal(
-            prepare_kwargs["foreground_noise_probability"],
-            np.zeros((8, 8), np.uint8),
-        )
+        self.assertIs(prepare_kwargs["foreground_probability"], analysis.foreground_probability)
+        self.assertIs(prepare_kwargs["foreground_noise_probability"], layers.foreground_noise_likelihood)
         self.assertNotIn("sensor_noise", prepare_kwargs)
         self.assertNotIn("shadow_likelihood", prepare_kwargs)
 

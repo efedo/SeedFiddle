@@ -7,6 +7,7 @@ import os
 import weakref
 from collections import OrderedDict
 from dataclasses import dataclass, replace
+from functools import partial
 from pathlib import Path
 from threading import Event
 from time import monotonic
@@ -35,6 +36,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QFrame,
     QGridLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -59,6 +61,11 @@ from PySide6.QtWidgets import (
 )
 
 from seedvision.pipeline import NodeStatus, build_default_pipeline
+from seedvision.ui.optimization import OptimizationController
+from seedvision.ui.reference_frames import ReferenceFrameController
+from seedvision.ui.work_control import WorkController
+from seedvision.ui.results import ResultsController
+from seedvision.ui.persistence_jobs import ResponsiveReferenceRegionStore, run_persistence
 from seedvision.ui.annotation_panel import AnnotationPanel, CurrentPageStack
 from seedvision.diagnostics import (
     LOGGER,
@@ -589,9 +596,11 @@ class _AnalysisTask(QRunnable):
         biological_context: BiologicalContext | None = None,
         library_shape_bank=None,
         species_library=None,
+        reference_transform=None,
     ) -> None:
         super().__init__()
         self.path = path
+        self.reference_transform = None if reference_transform is None else np.asarray(reference_transform).copy()
         self.settings = settings
         self.calibration_settings = calibration_settings
         self.dish_settings = dish_settings
@@ -668,6 +677,7 @@ class _AnalysisTask(QRunnable):
     def run(self) -> None:
         try:
             from seedvision.segmentation.baseline import analyze_path
+            from seedvision.annotation.eligibility import eligible_instances
 
             result = analyze_path(
                 self.path,
@@ -706,6 +716,7 @@ class _AnalysisTask(QRunnable):
                 biological_context=self.biological_context,
                 library_shape_bank=self.library_shape_bank,
                 species_library=self.species_library,
+                reference_transform=self.reference_transform,
             )
         except AnalysisCancelled:
             self.signals.cancelled.emit(
@@ -1073,42 +1084,28 @@ class _ProceduralFitTask(QRunnable):
     def run(self) -> None:
         try:
             result = self.result
-            # Build fit inputs only from annotation-independent evidence. The
-            # displayed result may contain Foreground/prototype/semantic-edge
-            # rasters trained from the very masks being scored; reusing those
-            # rasters is target leakage even when labels are withheld from the
-            # watershed call itself. Background references, generic gradients,
-            # and illumination are independent of seed-instance identities.
-            background = np.asarray(result.layers.background_likelihood)
-            refined_background = np.asarray(
-                result.layers.refined_background_likelihood
-            )
-            inverse_background = np.uint8(
-                255
-                - np.minimum(
-                    background.astype(np.uint8, copy=False),
-                    refined_background.astype(np.uint8, copy=False),
-                )
-            )
-            zero_evidence = np.zeros_like(inverse_background, dtype=np.uint8)
+            # Compatibility single-image adaptation uses the actual production
+            # evidence. It is explicitly in-sample, never a validation score.
+            # The shared project optimizer below evaluates analyze_path itself.
             prepared = prepare_procedural_instance_inputs(
                 result.layers.valid_mask,
                 result.estimated_seed_diameter_px,
-                material_probability=None,
-                foreground_probability=inverse_background,
-                foreground_noise_probability=zero_evidence,
-                background_probability=background,
-                refined_background_probability=refined_background,
+                material_probability=getattr(result.layers, 'seed_material_probability', None),
+                foreground_probability=result.foreground_probability,
+                foreground_noise_probability=result.layers.foreground_noise_likelihood,
+                background_probability=result.layers.background_likelihood,
+                refined_background_probability=result.layers.refined_background_likelihood,
                 edge_magnitude=result.layers.edge_likelihood,
                 edge_ridges=result.layers.edge_ridges,
-                physical_edge_probability=None,
-                non_edge_probability=None,
-                reference_edge_probability=None,
-                normalized_net_physical_edge_probability=None,
-                thinned_reference_edge_ridges=None,
-                oriented_edge_trace_labels=None,
-                oriented_edge_trace_continuity=None,
-                reference_surface_probability=None,
+                physical_edge_probability=getattr(result.layers, 'edge_supported_physical_compatibility', None),
+                non_edge_probability=getattr(result.layers, 'edge_supported_nonphysical_compatibility', None),
+                reference_edge_probability=getattr(result.layers, 'reference_edge_probability', None),
+                normalized_net_physical_edge_probability=result.layers.locally_normalized_net_physical_edge,
+                thinned_reference_edge_ridges=result.layers.normalized_net_reference_edge_ridges,
+                oriented_edge_trace_labels=result.layers.edge_trace_labels,
+                oriented_edge_trace_continuity=result.layers.edge_trace_continuity,
+                reference_surface_probability=result.layers.reference_seed_surface_probability,
+                validated_oval_centre_probability=getattr(result.layers, 'oval_centre_probability', None),
                 flattened_grayscale=(
                     result.advanced.rasters.get("flattened_grayscale")
                 ),
@@ -1135,6 +1132,7 @@ class _ProceduralFitTask(QRunnable):
                     prepared,
                     seed_instance_annotations=None,
                     settings=settings,
+                    shape_model=getattr(result, 'seed_dimensions_shape_model', None),
                 )
 
             report = fit_procedural_settings(
@@ -1173,7 +1171,7 @@ class _ProceduralFitTask(QRunnable):
         self.signals.completed.emit(report)
 
 
-class MainWindow(QMainWindow):
+class MainWindow(ResultsController, WorkController, ReferenceFrameController, OptimizationController, QMainWindow):
     """Main desktop window for visual pipeline control and seed review."""
 
     ANALYSIS_CACHE_CUDA_BUDGET_BYTES = 2 * 1024**3
@@ -1207,7 +1205,7 @@ class MainWindow(QMainWindow):
         self._installing_project = False
         self._project_dirty = False
         self._recent_project_paths = self._read_recent_project_paths()
-        self._reference_region_store = ReferenceRegionStore(root)
+        self._reference_region_store = ResponsiveReferenceRegionStore(root, self)
         self._manual_seed_centre_store = ManualSeedCentreStore(root)
         self._project_analysis_store = ProjectAnalysisStore(root)
         self._species_library_service = SpeciesLibraryService()
@@ -1218,6 +1216,7 @@ class MainWindow(QMainWindow):
         self._reference_region_load_status: dict[str, tuple[str, str]] = {}
         self._manual_seed_centre_autoload_attempted: set[str] = set()
         self._reference_layer_shapes: dict[str, tuple[int, int]] = {}
+        self._reference_transforms: dict[str, np.ndarray] = {}
         self._project_unbound_reference_loads: set[str] = set()
         self._project_manual_centre_loads: set[str] = set()
         self._project_reference_sidecar_paths: dict[str, Path] = {}
@@ -1297,13 +1296,14 @@ class MainWindow(QMainWindow):
         # competing in parallel, while their peak allocations readily add up to
         # an out-of-memory failure on an 8 GiB device.
         self._thread_pool.setMaxThreadCount(1)
-        self._selected_pipeline_node = "seed_scale_estimation"
+        self._selected_pipeline_node = "project"
         self._selecting_node_from_overlay = False
         self._selecting_overlay_from_node = False
         self.pipeline = build_default_pipeline()
 
-        self.setMinimumSize(1100, 700)
-        self.resize(1540, 920)
+        self.setMinimumSize(900, 520)
+        available_screen = self.screen().availableGeometry()
+        self.resize(min(1540,available_screen.width()),min(920,available_screen.height()))
         self.project_status_label = QLabel(self)
         self.project_status_label.setObjectName("projectStatusLabel")
         self.statusBar().addPermanentWidget(self.project_status_label)
@@ -1371,6 +1371,7 @@ class MainWindow(QMainWindow):
         self.image_list.setAlternatingRowColors(True)
         self.image_list.itemActivated.connect(self._open_list_item)
         self.species_combo = QComboBox(self)
+        self.species_combo.addItem('Unknown / unassigned')
         self.species_combo.addItems(self._load_species_names())
         self.species_combo.currentTextChanged.connect(self._species_changed)
 
@@ -1380,6 +1381,12 @@ class MainWindow(QMainWindow):
         self._build_menu()
         self._build_toolbar()
         self._build_layout()
+        self._init_optimization()
+        self._init_reference_frames()
+        self._init_work_control()
+        self._init_results()
+        self._show_image_workspace()
+        self.pipeline_inspector.enable_unified_optimization()
         self._analysis_activity_timer = QTimer(self)
         self._analysis_activity_timer.setInterval(1000)
         self._analysis_activity_timer.timeout.connect(
@@ -1561,6 +1568,9 @@ class MainWindow(QMainWindow):
         seeds = len(
             self._instance_ids(self._applied_instance_annotations.get(key))
         )
+        seed_pixels = self._mask_pixel_count(
+            self._applied_instance_annotations.get(key)
+        )
         centres = len(self._manual_seed_centre_state(key).centres_source_xy)
         semantic_annotations = self._applied_seed_annotations.get(key, {})
         coat_labels = sum(
@@ -1581,12 +1591,20 @@ class MainWindow(QMainWindow):
                 f"Species: {species}",
                 f"Applied material annotations: Background {background:,} px; "
                 f"Foreground {foreground:,} px; Other {other:,} px",
-                f"Applied seed annotations: {seeds:,} instance(s); "
+                f"Applied seed annotations: {seeds:,} seed ID(s); "
+                f"{seed_pixels:,} interior pixels; "
                 f"coat labels {coat_labels:,}; condition-reviewed "
                 f"{reviewed_conditions:,}; shape-reviewed {reviewed_shapes:,}; "
                 f"manual centres {centres:,}",
             )
         )
+        if key in self._instance_annotations_dirty:
+            draft_labels = self._draft_instance_annotations.get(key)
+            lines.append(
+                "Unapplied seed annotation draft: "
+                f"{len(self._instance_ids(draft_labels)):,} seed ID(s); "
+                f"{self._mask_pixel_count(draft_labels):,} interior pixels"
+            )
         return "\n".join(lines)
 
     def _refresh_project_node(self) -> None:
@@ -1714,6 +1732,7 @@ class MainWindow(QMainWindow):
             )
         return ReferenceRegionBundle(
             shape=shape,
+            source_to_corrected=self._reference_transforms.get(key),
             background=self._applied_background_reference_masks.get(key),
             foreground=self._applied_foreground_reference_masks.get(key),
             other=self._applied_background_exclusion_masks.get(key),
@@ -1866,7 +1885,7 @@ class MainWindow(QMainWindow):
         selected_image = self.image_view.image_path
         try:
             image_specs = self._project_image_specs()
-            captured = self._project_analysis_store.capture(
+            captured = run_persistence(self, partial(self._project_analysis_store.capture,
                 analysis_settings=analysis_settings_profile_from_graph(self.pipeline),
                 images=image_specs,
                 species=(self.species_combo.currentText().strip() or None),
@@ -1875,7 +1894,7 @@ class MainWindow(QMainWindow):
                 species_library=self._project_species_library_pin,
                 biological_context=self._effective_biological_context(),
                 capture_group_id=self._project_capture_group_id,
-            )
+            ), 'Preparing verified project data…')
             live_records = {}
             for spec, record in zip(image_specs, captured.images, strict=True):
                 key = _path_identity(spec.path)
@@ -1908,7 +1927,8 @@ class MainWindow(QMainWindow):
                 biological_context=captured.biological_context,
                 capture_group_id=captured.capture_group_id,
             )
-            saved = self._project_analysis_store.save(document, destination)
+            self._copy_optimization_companions(destination)
+            saved = run_persistence(self, lambda: self._project_analysis_store.save(document, destination), 'Saving project master…')
         except (
             AnalysisSettingsError,
             InstanceMaskImportError,
@@ -1966,6 +1986,8 @@ class MainWindow(QMainWindow):
             )
             return False
         if not self._resolve_unapplied_project_drafts():
+            return False
+        if not self._retry_unsaved_project_sidecars():
             return False
         if self._current_project_path is None:
             return self._save_project_as(drafts_resolved=True)
@@ -2076,7 +2098,7 @@ class MainWindow(QMainWindow):
             return False
         source = Path(source).expanduser().resolve()
         try:
-            loaded = self._project_analysis_store.load(source, verify_files=True)
+            loaded = run_persistence(self, lambda: self._project_analysis_store.load(source, verify_files=True), 'Verifying project sources and annotations…')
             compatibility_graph = build_default_pipeline()
             apply_analysis_settings_profile(
                 compatibility_graph, loaded.document.analysis_settings
@@ -2320,6 +2342,8 @@ class MainWindow(QMainWindow):
 
     def _clear_project_session_state(self) -> None:
         """Purge every image-local value before installing another project."""
+        if hasattr(self, '_optimization_targets'):
+            self._optimization_targets.clear()
 
         self._pending_analysis_key = None
         self._pending_analysis_scope = None
@@ -2365,6 +2389,7 @@ class MainWindow(QMainWindow):
             self._manual_seed_centre_states,
             self._manual_seed_centre_histories,
             self._reference_layer_shapes,
+            self._reference_transforms,
             self._pending_unbound_reference_bundles,
         ):
             values.clear()
@@ -2582,6 +2607,7 @@ class MainWindow(QMainWindow):
                     path,
                     ReferenceRegionBundle(
                         shape=shape,
+                        source_to_corrected=self._reference_transforms.get(key),
                         background=background,
                         foreground=foreground,
                         other=other,
@@ -2844,7 +2870,7 @@ class MainWindow(QMainWindow):
         self.pipeline_workspace_action = QAction("Pipeline", self)
         self.pipeline_workspace_action.setShortcut("Ctrl+2")
         self.pipeline_workspace_action.setCheckable(True)
-        self.pipeline_workspace_action.setChecked(True)
+        self.pipeline_workspace_action.setChecked(False)
         self.pipeline_workspace_action.toggled.connect(self.pipeline_canvas.setVisible)
 
         self.split_workspace_action = QAction("Show both views", self)
@@ -3328,7 +3354,7 @@ class MainWindow(QMainWindow):
     def _build_reference_panel(self) -> None:
         """Build reference-painting and instance-annotation controls."""
 
-        self.reference_panel = AnnotationPanel(self.image_view)
+        self.reference_panel = AnnotationPanel(self)
         self.reference_panel.setObjectName("referencePaintPanel")
         self.reference_panel.setStyleSheet(
             "QFrame#referencePaintPanel { background: palette(window); "
@@ -3349,7 +3375,7 @@ class MainWindow(QMainWindow):
             Qt.AlignmentFlag.AlignCenter
         )
         self.reference_panel_drag_handle.setToolTip(
-            "Drag this bar to reposition the painting controls over the image."
+            "Drag to move the annotation tools anywhere in the application workspace."
         )
         self.reference_panel_drag_handle.setStyleSheet(
             "padding: 3px; font-weight: 600; background: palette(midlight); "
@@ -3845,12 +3871,39 @@ class MainWindow(QMainWindow):
         self.instance_empty_label = QLabel("empty", self.instance_annotation_controls)
         self.instance_empty_label.setStyleSheet("color: #cf2020; font-weight: bold;")
         instance_layout.addWidget(self.instance_empty_label)
-        self.show_selected_instance_checkbox = QCheckBox(
-            "Show selected only", self.instance_annotation_controls)
-        self.show_selected_instance_checkbox.toggled.connect(self._show_selected_instance_toggled)
-        instance_layout.addWidget(self.show_selected_instance_checkbox)
+        instance_visibility_row = QWidget(self.instance_annotation_controls)
+        instance_visibility_layout = QHBoxLayout(instance_visibility_row)
+        instance_visibility_layout.setContentsMargins(0, 0, 0, 0)
+        instance_visibility_layout.setSpacing(3)
+        instance_visibility_layout.addWidget(QLabel("Show:", instance_visibility_row))
+        self.instance_visibility_combo = QComboBox(instance_visibility_row)
+        self.instance_visibility_combo.addItem("all", "all")
+        self.instance_visibility_combo.addItem("selected", "selected")
+        self.instance_visibility_combo.setToolTip(
+            "Show all painted seed IDs or only the selected seed."
+        )
+        self.instance_visibility_combo.currentIndexChanged.connect(
+            lambda _index: self._show_selected_instance_toggled(
+                self.instance_visibility_combo.currentData() == "selected"
+            )
+        )
+        instance_visibility_layout.addWidget(self.instance_visibility_combo, 1)
+        self.clear_current_instance_button = QPushButton("Clear seed", instance_visibility_row)
+        self.clear_current_instance_button.clicked.connect(
+            self._clear_current_instance_annotation
+        )
+        self.clear_all_instances_button = QPushButton("Clear all", instance_visibility_row)
+        self.clear_all_instances_button.clicked.connect(
+            self._clear_all_instance_annotations
+        )
+        instance_visibility_layout.addWidget(self.clear_current_instance_button)
+        instance_visibility_layout.addWidget(self.clear_all_instances_button)
+        instance_layout.addWidget(instance_visibility_row)
 
-        instance_layout.addWidget(self._section_label("Selected seed traits"))
+        self.annotation_metadata = QWidget(self.instance_annotation_controls)
+        metadata_layout = QVBoxLayout(self.annotation_metadata)
+        metadata_layout.setContentsMargins(0,0,0,0)
+        metadata_layout.addWidget(self._section_label("Seed traits"))
         trait_form = QFormLayout()
         trait_form.setVerticalSpacing(4)
         self.seed_coat_pattern_combo = QComboBox(
@@ -3874,15 +3927,15 @@ class MainWindow(QMainWindow):
         self.seed_conditions_reviewed_checkbox.toggled.connect(
             self._seed_trait_controls_changed
         )
-        condition_widget = QWidget(self.instance_annotation_controls)
-        condition_layout = QGridLayout(condition_widget)
-        condition_layout.setContentsMargins(0, 0, 0, 0)
+        condition_group = QGroupBox("Condition", self.instance_annotation_controls)
+        condition_layout = QGridLayout(condition_group)
+        condition_layout.setContentsMargins(5, 2, 5, 3)
         condition_layout.setSpacing(3)
         condition_layout.addWidget(self.seed_conditions_reviewed_checkbox, 0, 0, 2, 1)
         self.seed_condition_checkboxes: dict[str, QCheckBox] = {}
         for index, condition in enumerate(self._seed_trait_catalogue.conditions):
             checkbox = QCheckBox(
-                trait_display_name(condition), condition_widget
+                trait_display_name(condition), condition_group
             )
             checkbox.setToolTip(
                 "A non-exclusive condition label; more than one may apply to a seed."
@@ -3890,25 +3943,21 @@ class MainWindow(QMainWindow):
             checkbox.toggled.connect(self._seed_trait_controls_changed)
             condition_layout.addWidget(checkbox, index // 2, 1 + index % 2)
             self.seed_condition_checkboxes[condition] = checkbox
-        trait_form.addRow("Condition", condition_widget)
-        instance_layout.addLayout(trait_form)
+        trait_form.addRow(condition_group)
+        metadata_layout.addLayout(trait_form)
         self._populate_seed_coat_patterns()
 
-        instance_layout.addWidget(self._section_label("Reviewed shape metadata"))
+        metadata_layout.addWidget(self._section_label("Seed shape"))
         shape_form = QFormLayout()
         shape_form.setVerticalSpacing(4)
-        self.seed_shape_reviewed_checkbox = QCheckBox(
-            "Use for shape modelling", self.instance_annotation_controls
+        self.seed_shape_excluded_checkbox = QCheckBox(
+            "Exclude from modelling", self.instance_annotation_controls
         )
-        self.seed_shape_reviewed_checkbox.setToolTip(
-            "Enable only after selecting an explicit Outline and Pose. The shape "
-            "model still applies its own eligibility rules (for example, a partly "
-            "occluded outline is retained as reviewed metadata but excluded from "
-            "complete-outline fitting)."
+        self.seed_shape_excluded_checkbox.setToolTip(
+            "Exclude this seed from shape modelling. A reviewed outline and pose "
+            "are otherwise used when they meet the model's eligibility rules."
         )
-        self.seed_shape_reviewed_checkbox.toggled.connect(
-            self._seed_trait_controls_changed
-        )
+        self.seed_shape_excluded_checkbox.toggled.connect(self._seed_trait_controls_changed)
         self.seed_outline_visibility_combo = QComboBox(
             self.instance_annotation_controls
         )
@@ -3943,103 +3992,34 @@ class MainWindow(QMainWindow):
             self._seed_trait_controls_changed
         )
         shape_form.addRow("Pose", self.seed_pose_combo)
-        shape_form.addRow("Use in model", self.seed_shape_reviewed_checkbox)
-        self.seed_shape_exclusion_edit = QLineEdit(
-            self.instance_annotation_controls
-        )
-        self.seed_shape_exclusion_edit.setPlaceholderText(
-            "Optional reason to exclude this outline"
-        )
-        self.seed_shape_exclusion_edit.setMaxLength(160)
-        self.seed_shape_exclusion_edit.editingFinished.connect(
-            self._seed_trait_controls_changed
-        )
-        shape_form.addRow("Exclude because", self.seed_shape_exclusion_edit)
+        shape_form.addRow(self.seed_shape_excluded_checkbox)
 
         hilum_widget = QWidget(self.instance_annotation_controls)
-        hilum_layout = QGridLayout(hilum_widget)
+        hilum_layout = QHBoxLayout(hilum_widget)
         hilum_layout.setContentsMargins(0, 0, 0, 0)
         hilum_layout.setSpacing(3)
-        self.seed_hilum_checkbox = QCheckBox("Known", hilum_widget)
-        self.seed_hilum_x_spin = QDoubleSpinBox(hilum_widget)
-        self.seed_hilum_y_spin = QDoubleSpinBox(hilum_widget)
-        for label, spin in (("x", self.seed_hilum_x_spin), ("y", self.seed_hilum_y_spin)):
-            spin.setRange(0.0, 1_000_000.0)
-            spin.setDecimals(1)
-            spin.setPrefix(label + " ")
-            spin.valueChanged.connect(self._seed_trait_controls_changed)
-        self.seed_hilum_checkbox.toggled.connect(
-            self._seed_trait_controls_changed
-        )
-        hilum_layout.addWidget(self.seed_hilum_checkbox, 0, 0)
-        hilum_layout.addWidget(self.seed_hilum_x_spin, 0, 1)
-        hilum_layout.addWidget(self.seed_hilum_y_spin, 0, 2)
-        self.seed_hilum_pick_button = QPushButton("Pick hilum", hilum_widget)
+        self._picked_hilum_point = None
+        self.seed_hilum_pick_button = QPushButton("Pick location", hilum_widget)
         self.seed_hilum_pick_button.setCheckable(True)
         self.seed_hilum_pick_button.setToolTip(
-            "Click or drag to position the hilum. Direction is calculated from the "
-            "painted seed's area centre to the hilum. Escape finishes picking.")
+            "Click or drag on the image to place the hilum location. "
+            "Escape finishes picking."
+        )
         self.seed_hilum_pick_button.toggled.connect(self._set_hilum_picking)
         self.image_view.hilum_landmark_edited.connect(self._hilum_landmark_edited)
         self.image_view.hilum_editing_cancelled.connect(
             lambda: self.seed_hilum_pick_button.setChecked(False))
-        hilum_layout.addWidget(self.seed_hilum_pick_button, 1, 0, 1, 3)
-        shape_form.addRow("Hilum landmark", hilum_widget)
-        self.seed_hilum_direction_label = QLabel("—", self.instance_annotation_controls)
-        self.seed_hilum_direction_label.setToolTip(
-            "Automatic outward direction: centre → hilum. Image angles are clockwise "
-            "from right. Undefined without a landmark, or when it lies at the centre.")
-        shape_form.addRow("Hilum direction", self.seed_hilum_direction_label)
-        instance_layout.addLayout(shape_form)
+        hilum_layout.addWidget(self.seed_hilum_pick_button, 1)
+        self.seed_hilum_clear_button = QPushButton("Clear location", hilum_widget)
+        self.seed_hilum_clear_button.clicked.connect(self._clear_hilum_location)
+        hilum_layout.addWidget(self.seed_hilum_clear_button)
+        shape_form.addRow("Hilum location", hilum_widget)
+        metadata_layout.addLayout(shape_form)
         self.seed_shape_status_label = self._muted_label(
             "Choose an explicit outline and pose before including this seed."
         )
         self.seed_shape_status_label.setWordWrap(True)
-        instance_layout.addWidget(self.seed_shape_status_label)
-
-        instance_edit_buttons = QWidget(self.instance_annotation_controls)
-        instance_edit_layout = QHBoxLayout(instance_edit_buttons)
-        instance_edit_layout.setContentsMargins(0, 0, 0, 0)
-        self.clear_current_instance_button = QPushButton(
-            "Clear seed", instance_edit_buttons
-        )
-        self.clear_current_instance_button.clicked.connect(
-            self._clear_current_instance_annotation
-        )
-        self.clear_all_instances_button = QPushButton(
-            "Clear all", instance_edit_buttons
-        )
-        self.clear_all_instances_button.clicked.connect(
-            self._clear_all_instance_annotations
-        )
-        instance_edit_layout.addWidget(self.clear_current_instance_button, 1)
-        instance_edit_layout.addWidget(self.clear_all_instances_button)
-        instance_layout.addWidget(instance_edit_buttons)
-
-        proposal_widget = QWidget(self.instance_annotation_controls)
-        proposal_layout = QHBoxLayout(proposal_widget)
-        proposal_layout.setContentsMargins(0, 0, 0, 0)
-        self.instance_proposal_combo = QComboBox(proposal_widget)
-        self.instance_proposal_combo.setToolTip(
-            "Choose an available automatic result as an editable starting point. "
-            "Predictions remain unreviewed until a person corrects every instance."
-        )
-        self.use_instance_proposal_button = QPushButton(
-            "Use draft", proposal_widget
-        )
-        self.use_instance_proposal_button.setToolTip(
-            "Replace the current annotation draft with the selected pipeline labels, "
-            "expanded into full corrected-image coordinates."
-        )
-        self.use_instance_proposal_button.clicked.connect(
-            self._use_instance_proposal_as_draft
-        )
-        proposal_layout.addWidget(self.instance_proposal_combo, 1)
-        proposal_layout.addWidget(self.use_instance_proposal_button)
-        proposal_form = QFormLayout()
-        proposal_form.setVerticalSpacing(4)
-        proposal_form.addRow("Start from result", proposal_widget)
-        instance_layout.addLayout(proposal_form)
+        metadata_layout.addWidget(self.seed_shape_status_label)
 
         self.load_instance_reference_button = QPushButton(
             "Load matching reference", self.instance_annotation_controls
@@ -4098,11 +4078,15 @@ class MainWindow(QMainWindow):
         self.instance_paint_mode_button = QPushButton("Brush", instance_mode_widget)
         self.instance_paint_mode_button.setCheckable(True)
         self.instance_paint_mode_button.setChecked(True)
+        self.instance_paint_mode_button.setToolTip(
+            "Freehand interior painting. Right-drag temporarily erases with any tool."
+        )
         self.instance_edge_trace_button = QPushButton("Trace edge", instance_mode_widget)
         self.instance_edge_trace_button.setCheckable(True)
         self.instance_edge_trace_button.setToolTip(
             "Click an edge anchor, move to preview the magnetic path, then click to "
-            "apply an exact one-pixel segment. Return to the first anchor to fill."
+            "apply an exact one-pixel segment. Return to the cyan first-anchor "
+            "marker to close and fill the contour."
         )
         self.instance_shape_guided_fill_button = QPushButton(
             "Shape fill", instance_mode_widget
@@ -4113,17 +4097,19 @@ class MainWindow(QMainWindow):
             "it against a refined closed edge contour, then run Smart fill with "
             "no shape-derived inward limit, soft outward pressure, and a small hard "
             "outward cutoff. Use the wheel to resize the visible oval preference; "
-            "neither preview outline is stamped."
+            "neither preview outline is stamped. The oval is an approximate "
+            "maximum; weak fits are refused."
         )
         self.instance_smart_fill_button = QPushButton("Smart fill", instance_mode_widget)
         self.instance_smart_fill_button.setCheckable(True)
         self.instance_smart_fill_button.setToolTip(
-            "Preview and click a locally adaptive edge-stopped fill; no prior mark is required."
+            "Move for a locally adaptive edge-stopped preview, then click to fill. "
+            "An unmarked seed starts at the cursor; a partial mark adds context."
         )
         self.instance_eraser_button = QPushButton("Eraser", instance_mode_widget)
         self.instance_eraser_button.setCheckable(True)
         self.instance_eraser_button.setToolTip(
-            "Erase annotation marks without changing foreground references. "
+            "Erase seed instance labels without changing colour references. "
             "Right-drag is a temporary eraser shortcut."
         )
         self.instance_brush_mode_group = QButtonGroup(instance_mode_widget)
@@ -4159,11 +4145,6 @@ class MainWindow(QMainWindow):
         brush_page = QWidget(self.instance_tool_options_stack)
         brush_page_layout = QVBoxLayout(brush_page)
         brush_page_layout.setContentsMargins(0, 0, 0, 0)
-        brush_page_layout.addWidget(
-            self._muted_label(
-                "Freehand interior painting. Right-drag temporarily erases with any tool."
-            )
-        )
         self.instance_tool_pages["brush"] = brush_page
         self.instance_tool_options_stack.addWidget(brush_page)
 
@@ -4171,13 +4152,6 @@ class MainWindow(QMainWindow):
         edge_form = QFormLayout(edge_page)
         edge_form.setContentsMargins(0, 0, 0, 0)
         edge_form.setVerticalSpacing(4)
-        edge_form.addRow(
-            self._muted_label(
-                "First click sets an edge anchor. Move for a live snapped preview; "
-                "each later click applies a one-pixel segment. Returning to the "
-                "cyan first-anchor marker closes the contour."
-            )
-        )
         self.edge_trace_search_spin = QSpinBox(edge_page)
         self.edge_trace_search_spin.setRange(2, 200)
         self.edge_trace_search_spin.setValue(18)
@@ -4227,14 +4201,10 @@ class MainWindow(QMainWindow):
         shape_fill_form = QFormLayout(shape_fill_page)
         shape_fill_form.setContentsMargins(0, 0, 0, 0)
         shape_fill_form.setVerticalSpacing(4)
-        shape_fill_form.addRow(
-            self._muted_label(
-                "The dotted rotated oval is an approximate maximum, not a hard fill "
-                "mask. A refined closed edge contour validates the fit. The shape "
-                "prior imposes no inward limit, is softly penalized just outside, "
-                "and stops at the outward cutoff; Smart fill still follows its "
-                "selected colour and edge evidence. Weak fits are refused."
-            )
+        self.instance_shape_guided_fill_button.setToolTip(
+            self.instance_shape_guided_fill_button.toolTip() + " The shape prior "
+            "has no inward limit, applies soft outward pressure, and stops at the "
+            "outward cutoff. Smart fill follows its selected colour and edge evidence."
         )
         self.shape_fill_shape_combo = QComboBox(shape_fill_page)
         self.shape_fill_shape_combo.addItem("Ellipse", "ellipse")
@@ -4426,12 +4396,6 @@ class MainWindow(QMainWindow):
         fill_form = QFormLayout(fill_page)
         fill_form.setContentsMargins(0, 0, 0, 0)
         fill_form.setVerticalSpacing(4)
-        fill_form.addRow(
-            self._muted_label(
-                "Move for a live fill preview and click to apply. An unmarked seed "
-                "starts at the cursor; a partial mark supplies additional context."
-            )
-        )
         self.smart_fill_colour_tolerance_spin = QDoubleSpinBox(fill_page)
         self.smart_fill_colour_tolerance_spin.setRange(1.0, 100.0)
         self.smart_fill_colour_tolerance_spin.setDecimals(1)
@@ -4533,9 +4497,6 @@ class MainWindow(QMainWindow):
         eraser_page = QWidget(self.instance_tool_options_stack)
         eraser_page_layout = QVBoxLayout(eraser_page)
         eraser_page_layout.setContentsMargins(0, 0, 0, 0)
-        eraser_page_layout.addWidget(
-            self._muted_label("Erase instance labels without changing colour references.")
-        )
         self.instance_tool_pages["eraser"] = eraser_page
         self.instance_tool_options_stack.addWidget(eraser_page)
         instance_layout.addWidget(self.instance_tool_options_stack)
@@ -4590,10 +4551,6 @@ class MainWindow(QMainWindow):
         )
         self._sync_instance_tool_settings()
 
-        self.instance_annotation_status_label = self._muted_label(
-            "No seed instances annotated."
-        )
-        instance_layout.addWidget(self.instance_annotation_status_label)
         self.instance_continuity_warning_label = self._muted_label("")
         background = self.palette().color(QPalette.ColorRole.Window)
         warning_colour = "#ffc857" if background.lightnessF() < 0.50 else "#925000"
@@ -4636,7 +4593,8 @@ class MainWindow(QMainWindow):
         instance_confirmation_layout.addWidget(
             self.revert_instance_annotations_button
         )
-        instance_layout.addWidget(instance_confirmation)
+        instance_layout.insertWidget(1,instance_confirmation)
+        instance_layout.addWidget(self.annotation_metadata)
         self.instance_annotation_confirmation_label = self._muted_label(
             "Applied annotations are saved automatically and then constrain the "
             "instance branch."
@@ -4671,6 +4629,9 @@ class MainWindow(QMainWindow):
         self.image_view.set_context_panel(self.reference_panel)
         self.image_view.set_context_panel_drag_handle(
             self.reference_panel_drag_handle
+        )
+        self.image_workspace_action.toggled.connect(
+            lambda _checked: self._sync_reference_panel_visibility()
         )
 
     def _build_toolbar(self) -> None:
@@ -4773,6 +4734,13 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(2, 0)
         splitter.setSizes((225, 1020, 295))
         self.setCentralWidget(splitter)
+        self.image_view._layout_context_panel()
+        splitter.splitterMoved.connect(
+            lambda _position, _index: self.image_view._layout_context_panel()
+        )
+        self.workspace_splitter.splitterMoved.connect(
+            lambda _position, _index: self.image_view._layout_context_panel()
+        )
 
     def _build_image_panel(self) -> QWidget:
         panel = QWidget(self)
@@ -4866,7 +4834,7 @@ class MainWindow(QMainWindow):
         calibration_form.addRow("Colour card", self.colour_status_label)
         calibration_form.addRow("Ruler", self.ruler_status_label)
         calibration_form.addRow("Deskew", self.deskew_status_label)
-        calibration_form.addRow("Absolute scale", self.scale_status_label)
+        calibration_form.addRow("Directional ruler scale (unvalidated metric geometry)", self.scale_status_label)
         calibration_form.addRow("Vessel layout", self.dish_status_label)
         calibration_form.addRow("Reference seeds", self.reference_status_label)
         calibration_layout.addLayout(calibration_form)
@@ -4892,8 +4860,9 @@ class MainWindow(QMainWindow):
         self.warning_label = self._muted_label(
             "Results are approximate proposals for correction, not validated counts."
         )
-        self.warning_label.setVisible(False)
-        layout.addWidget(self.baseline_section)
+        self.warning_label.setWordWrap(True)
+        baseline_layout.addWidget(self.warning_label)
+        layout.insertWidget(0,self.baseline_section)
 
         layout.addStretch(1)
 
@@ -5213,7 +5182,10 @@ class MainWindow(QMainWindow):
 
     def _background_work_is_active(self) -> bool:
         return bool(
-            self._active_tasks
+            getattr(self, '_persistence_job', None) is not None
+            or getattr(self, '_result_export_task', None) is not None
+            or getattr(self, '_optimization_task', None) is not None
+            or self._active_tasks
             or self._learning_training_task is not None
             or self._procedural_fit_task is not None
             or self._reference_edge_fit_task is not None
@@ -5224,7 +5196,8 @@ class MainWindow(QMainWindow):
         """Return work that mutates fitted state and cannot be serialized mid-run."""
 
         return bool(
-            self._learning_training_task is not None
+            getattr(self, '_optimization_task', None) is not None
+            or self._learning_training_task is not None
             or self._procedural_fit_task is not None
             or self._reference_edge_fit_task is not None
             or self._species_library_build_task is not None
@@ -5434,6 +5407,12 @@ class MainWindow(QMainWindow):
         self.image_workspace_action.setChecked(True)
 
     def _open_path(self, path: Path, *, mark_project_dirty: bool = True) -> None:
+        try:
+            if not self._check_source_revision(path, opening=True):
+                return
+        except OSError as error:
+            QMessageBox.warning(self,'Could not open image',str(error))
+            return
         self._stop_manual_seed_centre_editing()
         previous_path = self.image_view.image_path
         target_key = _path_identity(path)
@@ -5649,70 +5628,24 @@ class MainWindow(QMainWindow):
         self._sync_background_controls()
 
     def _baseline_settings(self) -> BaselineSettings:
-        values: dict[str, object] = {}
-        for node_id in (
-            "seed_scale_estimation",
-            "background_likelihood",
-            "distance_candidates",
-            "identification",
-        ):
-            if self.pipeline.is_active(node_id):
-                values.update(self.pipeline.node(node_id).parameters)
-        if self.pipeline.is_active("circle_candidates"):
-            values.update(self.pipeline.node("circle_candidates").parameters)
-        allowed = set(BaselineSettings.__dataclass_fields__)
-        return BaselineSettings(**{key: value for key, value in values.items() if key in allowed})
+        from seedvision.pipeline.settings import production_settings
+        return production_settings(self.pipeline)['settings']
 
     def _dish_settings(self) -> DishDetectionSettings:
-        allowed = set(DishDetectionSettings.__dataclass_fields__)
-        return DishDetectionSettings(
-            **{
-                key: value
-                for key, value in self.pipeline.node("layout_detection").parameters.items()
-                if key in allowed
-            }
-        )
+        from seedvision.pipeline.settings import production_settings
+        return production_settings(self.pipeline)['dish_settings']
 
     def _layer_settings(self) -> AnalysisLayerSettings:
-        values: dict[str, object] = {}
-        for node_id in (
-            "layout_detection",
-            "wavelet_decomposition",
-            "background_likelihood",
-            "refined_background_likelihood",
-            "edge_gradients",
-            "surface_darkness_gradients",
-            "lightening_gradient_ceiling",
-            "darkening_gradient_ceiling",
-            "frequency_noise_masks",
-            "reference_texture_prototypes",
-            "material_evidence_decision",
-            "reference_seed_traits",
-            "reference_edge_probability",
-            "edge_traces",
-            "instance_masks",
-            "seed_edge_curves",
-        ):
-            if self.pipeline.is_active(node_id):
-                values.update(self.pipeline.node(node_id).parameters)
-        allowed = set(AnalysisLayerSettings.__dataclass_fields__)
-        return AnalysisLayerSettings(
-            **{key: value for key, value in values.items() if key in allowed}
-        )
+        from seedvision.pipeline.settings import production_settings
+        return production_settings(self.pipeline)['layer_settings']
 
     def _advanced_settings(self) -> AdvancedAnalysisSettings:
-        values: dict[str, object] = {}
-        for node_id in ADVANCED_NODE_MODES:
-            if self.pipeline.is_active(node_id):
-                values.update(self.pipeline.node(node_id).parameters)
-        return AdvancedAnalysisSettings(**values)
+        from seedvision.pipeline.settings import production_settings
+        return production_settings(self.pipeline)['advanced_settings']
 
     def _procedural_settings(self) -> ProceduralInstanceSettings:
-        if not self.pipeline.is_active("procedural_instances"):
-            return ProceduralInstanceSettings()
-        return ProceduralInstanceSettings(
-            **self.pipeline.node("procedural_instances").parameters
-        )
+        from seedvision.pipeline.settings import production_settings
+        return production_settings(self.pipeline)['procedural_settings']
 
     def _manual_seed_centres_for_analysis(
         self, key: str
@@ -5730,42 +5663,16 @@ class MainWindow(QMainWindow):
         )
 
     def _unet_settings(self) -> UNetPipelineSettings:
-        return UNetPipelineSettings(**self.pipeline.node("unet_instances").parameters)
+        from seedvision.pipeline.settings import production_settings
+        return production_settings(self.pipeline)['unet_settings']
 
     def _stardist_settings(self) -> StarDistPipelineSettings:
-        return StarDistPipelineSettings(
-            **self.pipeline.node("stardist_instances").parameters
-        )
+        from seedvision.pipeline.settings import production_settings
+        return production_settings(self.pipeline)['stardist_settings']
 
     def _calibration_settings(self) -> CalibrationSettings:
-        return CalibrationSettings(
-            ruler_length_mm=float(
-                self.pipeline.node("ruler_detection").parameters["ruler_length_mm"]
-            ),
-            minor_tick_mm=float(
-                self.pipeline.node("ruler_detection").parameters["minor_tick_mm"]
-            ),
-            max_deskew_degrees=float(
-                self.pipeline.node("deskew_colour").parameters[
-                    "max_deskew_degrees"
-                ]
-            ),
-            apply_colour_balance=bool(
-                self.pipeline.node("deskew_colour").parameters[
-                    "apply_colour_balance"
-                ]
-            ),
-            apply_perspective_correction=bool(
-                self.pipeline.node("deskew_colour").parameters[
-                    "apply_perspective_correction"
-                ]
-            ),
-            max_perspective_fraction=float(
-                self.pipeline.node("deskew_colour").parameters[
-                    "max_perspective_fraction"
-                ]
-            ),
-        )
+        from seedvision.pipeline.settings import production_settings
+        return production_settings(self.pipeline)['calibration_settings']
 
     def _analyze_current_image(
         self,
@@ -5773,15 +5680,21 @@ class MainWindow(QMainWindow):
         dirty_nodes: set[str] | frozenset[str] | None = None,
         enabled_node_scope: frozenset[str] | None = None,
     ) -> None:
+        if getattr(self, '_closing_after_work', False):
+            return
+        self._stop_requested = False
         path = self.image_view.image_path
         if path is None:
             return
         key = _path_identity(path)
         pending_dirty = self._cache_dirty_nodes.setdefault(key, set())
+        if not self._check_source_revision(path):
+            return
         if dirty_nodes:
             pending_dirty.update(dirty_nodes)
         if (
             self._active_tasks
+            or getattr(self, '_optimization_task', None) is not None
             or self._learning_training_task is not None
             or self._procedural_fit_task is not None
             or self._reference_edge_fit_task is not None
@@ -5909,6 +5822,7 @@ class MainWindow(QMainWindow):
             self._effective_biological_context(),
             library_shape_bank,
             resolved_library.artifact,
+            reference_transform=self._reference_transforms.get(key),
         )
         task.signals.completed.connect(self._analysis_completed)
         task.signals.failed.connect(self._analysis_failed)
@@ -5973,8 +5887,11 @@ class MainWindow(QMainWindow):
     def _start_pending_analysis(self) -> None:
         """Start the latest coalesced request after the single GPU worker exits."""
 
+        if getattr(self, '_stop_requested', False) or getattr(self, '_closing_after_work', False):
+            return
         if (
             self._active_tasks
+            or getattr(self, '_optimization_task', None) is not None
             or self._learning_training_task is not None
             or self._procedural_fit_task is not None
             or self._reference_edge_fit_task is not None
@@ -6117,6 +6034,12 @@ class MainWindow(QMainWindow):
         self._active_tasks.pop(key, None)
         self._analysis_activities.pop(key, None)
         self._refresh_analysis_activity_panel()
+        expected_source = getattr(result, 'source_sha256', '')
+        if expected_source and (path is None or not Path(path).is_file() or file_sha256(path) != expected_source):
+            self._discard_analysis_cache(key)
+            self.statusBar().showMessage('Discarded analysis: source image changed during calculation.')
+            self._update_analysis_availability()
+            return
         if pipeline_revision != self.pipeline.revision:
             self.statusBar().showMessage(
                 "Discarded an analysis completed with superseded pipeline settings."
@@ -6126,10 +6049,20 @@ class MainWindow(QMainWindow):
                 self._pending_analysis_key = key
             self._start_pending_analysis()
             return
+        if self.image_view.image_path == path and not self._prepare_reference_frame(key, result):
+            self._discard_analysis_cache(key)
+            self._update_analysis_availability()
+            return
         if key in self._analysis_caches:
             self._analysis_caches.move_to_end(key)
         self._analyses[key] = result
         self._mark_analysis_complete(result)
+        from seedvision.export.results import select_result
+        result_method, _, unavailable = select_result(result,
+            {identifier for identifier,node in self.pipeline.nodes.items() if node.enabled})
+        if unavailable and result_method == 'procedural_instances':
+            self.pipeline.set_status('procedural_instances',NodeStatus.BLOCKED,unavailable)
+            self.pipeline_canvas.refresh({'procedural_instances'})
         if self.image_view.image_path == path:
             self._show_analysis_result(result)
             self.image_view.set_overlay_calculating(None)
@@ -6144,7 +6077,9 @@ class MainWindow(QMainWindow):
             and result.stardist_instances is not None
             else None
         )
-        if learned_result is not None:
+        if unavailable:
+            self.statusBar().showMessage(unavailable)
+        elif learned_result is not None:
             self.statusBar().showMessage(
                 f"Generated {learned_result.count:,} reviewable learned instances "
                 f"for {path.name}; scientific validation is still required."
@@ -6283,6 +6218,8 @@ class MainWindow(QMainWindow):
     def _show_analysis_result(self, result) -> None:
         path = result.image_path
         key = _path_identity(path) if path is not None else ""
+        if key and not self._prepare_reference_frame(key, result):
+            return
         self._sync_directional_overlay_choices(result)
         self.image_view.show_analysis(result, render=False)
         self.image_view.prepare_analysis_coordinates()
@@ -6404,23 +6341,14 @@ class MainWindow(QMainWindow):
             f"{result.estimated_seed_diameter_px:.0f} px — "
             f"{result.seed_diameter_source}"
         )
-        displayed_count = (
-            result.unet_instances.count
-            if self.pipeline.node("unet_instances").enabled
-            and result.unet_instances is not None
-            else result.stardist_instances.count
-            if self.pipeline.node("stardist_instances").enabled
-            and result.stardist_instances is not None
-            else result.procedural_instances.count
-            if self.pipeline.is_active("procedural_instances")
-            and result.procedural_instances is not None
-            else result.count
-        )
-        self.count_label.setText(f"≈ {displayed_count:,} seeds")
-        self.crowding_label.setText(
-            f"Crowding: {result.crowding}. Method: {result.method}."
-        )
-        self.warning_label.setText("\n".join(result.warnings))
+        from seedvision.export.results import select_result
+        method, selected_result, unavailable = select_result(result,
+            {identifier for identifier,node in self.pipeline.nodes.items() if node.enabled})
+        self.count_label.setText('Unavailable' if unavailable else f'{selected_result.count:,} proposed seeds')
+        self.crowding_label.setText(f'Method: {method or "none"}. Review decisions before reporting a count.')
+        self.warning_label.setText("\n".join(filter(None,(unavailable,*result.warnings))))
+        self.warning_label.setVisible(bool(unavailable or result.warnings))
+        self.reference_readiness_button.setVisible(bool(unavailable and 'Foreground' in unavailable))
         self._sync_background_controls()
         self._sync_procedural_centres_controls()
         if pending_reference_affected:
@@ -6525,7 +6453,8 @@ class MainWindow(QMainWindow):
             key, RasterUndoHistory(self.REFERENCE_UNDO_LIMIT)
         )
         changed = history.record(label, context, before, after)
-        if not changed and not len(history):
+        self._trim_annotation_histories(key)
+        if not changed and not len(history) and not history.can_redo:
             self._reference_undo_histories.pop(key, None)
         return changed
 
@@ -6548,9 +6477,22 @@ class MainWindow(QMainWindow):
             after,
             metadata=self._instance_undo_metadata(key, before_origin),
         )
-        if not changed and not len(history):
+        self._trim_annotation_histories(key)
+        if not changed and not len(history) and not history.can_redo:
             self._instance_undo_histories.pop(key, None)
         return changed
+
+    def _trim_annotation_histories(self, current_key):
+        stores = (self._reference_undo_histories,self._instance_undo_histories)
+        entries = [(store,key,history) for store in stores for key,history in store.items()]
+        total = sum(history.stored_bytes for _,_,history in entries)
+        for store,key,history in entries:
+            if total <= 128*1024**2:
+                break
+            if key != current_key:
+                total -= history.stored_bytes
+                del store[key]
+                self.statusBar().showMessage('Older undo history was evicted to keep memory bounded; annotations and drafts are retained.')
 
     def _instance_undo_metadata(self, key: str, origin: str) -> str:
         traits = self._draft_seed_annotations.get(
@@ -6852,31 +6794,32 @@ class MainWindow(QMainWindow):
         elif self.paint_background_action.isChecked():
             self._undo_reference_mask_edit()
 
-    def _undo_reference_mask_edit(self) -> None:
+    def _undo_reference_mask_edit(self, *, redo=False) -> None:
         key = self._current_image_key()
         history = None if key is None else self._reference_undo_histories.get(key)
-        if key is None or history is None or not len(history):
+        if key is None or history is None or (not history.can_redo if redo else not len(history)):
             return
-        context = history.next_context
+        context = history.redo_context if redo else history.next_context
         if context is None:
             return
-        result = history.undo(self._reference_group_state(key, context))
+        result = (history.redo if redo else history.undo)(self._reference_group_state(key, context))
         if result is None:
             return
         self._set_reference_draft_state(key, result.context, result.rasters)
         self._reconcile_reference_draft(key)
         self._sync_reference_masks_to_view(key)
-        if not len(history):
+        if not len(history) and not history.can_redo:
             self._reference_undo_histories.pop(key, None)
         self._sync_background_controls()
-        self.statusBar().showMessage(f"Undid {result.label}.")
+        self.statusBar().showMessage(f"{'Redid' if redo else 'Undid'} {result.label}.")
 
-    def _undo_instance_reference_edit(self) -> None:
+    def _undo_instance_reference_edit(self, *, redo=False) -> None:
         key = self._current_image_key()
         history = None if key is None else self._instance_undo_histories.get(key)
-        if key is None or history is None or not len(history):
+        if key is None or history is None or (not history.can_redo if redo else not len(history)):
             return
-        result = history.undo(self._instance_reference_state(key))
+        result = (history.redo if redo else history.undo)(self._instance_reference_state(key),
+            metadata=self._instance_undo_metadata(key,self._draft_instance_annotation_origins.get(key,"manual")))
         if result is None:
             return
         origin, species, traits = self._decode_instance_undo_metadata(
@@ -6893,10 +6836,10 @@ class MainWindow(QMainWindow):
             ),
             copy=False,
         )
-        if not len(history):
+        if not len(history) and not history.can_redo:
             self._instance_undo_histories.pop(key, None)
         self._sync_background_controls()
-        self.statusBar().showMessage(f"Undid {result.label}.")
+        self.statusBar().showMessage(f"{'Redid' if redo else 'Undid'} {result.label}.")
 
     def _default_manual_seed_centre_state(self) -> _ManualSeedCentreState:
         return _ManualSeedCentreState(np.empty((0, 2), np.float64), "augment")
@@ -7198,40 +7141,21 @@ class MainWindow(QMainWindow):
         corrected_shape = tuple(
             int(value) for value in result.calibration.corrected_bgr.shape[:2]
         )
-        if tuple(bundle.shape) != corrected_shape:
-            self._withheld_reference_sidecars.add(key)
-            path = self._image_paths.get(key, result.image_path)
-            if self._project_manifest_sidecar_policy_active:
-                self._project_unresolved_reference_sidecars.add(key)
-                self._set_project_dirty()
-                QMessageBox.warning(
-                    self,
-                    "Saved reference regions withheld",
-                    "The project sidecar is bound to the unchanged source image, but "
-                    "its corrected-coordinate dimensions do not match the current "
-                    "calibration. No saved regions were applied. Save newly applied "
-                    "references to replace it for the current calibration.\n\n"
-                    f"Saved: {bundle.shape[1]:,} × {bundle.shape[0]:,} px\n"
-                    f"Current: {corrected_shape[1]:,} × {corrected_shape[0]:,} px\n\n"
-                    f"Image: {path}",
-                )
-            else:
-                repaired = self._offer_reference_region_archive_repair(
-                    path,
-                    saved_shape=tuple(int(value) for value in bundle.shape),
-                    corrected_shape=corrected_shape,
-                )
-                if repaired:
-                    return set()
-            self._set_reference_region_load_status(
-                key,
-                "rejected",
-                "The source fingerprint matched, but the saved corrected-coordinate "
-                f"size {bundle.shape[1]:,} × {bundle.shape[0]:,} does not match "
-                f"the current calibration {corrected_shape[1]:,} × "
-                f"{corrected_shape[0]:,}.",
-            )
-            return set()
+        from dataclasses import replace
+        from seedvision.annotation.coordinates import reproject_bundle
+        if bundle.source_to_corrected is None:
+            populated = any(value is not None and np.any(value) for value in
+                (bundle.background, bundle.foreground, bundle.other, bundle.annotated_seeds,
+                 bundle.physical_edge, bundle.non_edge))
+            if populated:
+                self._pending_unbound_reference_bundles[key] = bundle
+                self._withheld_reference_sidecars.add(key)
+                self._set_reference_region_load_status(key, "withheld",
+                    "Legacy coordinates are unknown. Use Analysis > Review legacy reference alignment before applying these regions.")
+                return set()
+            bundle = replace(bundle, shape=corrected_shape,
+                source_to_corrected=result.calibration.affine_matrix)
+        bundle = reproject_bundle(bundle, result.calibration.affine_matrix, corrected_shape)
 
         self._install_reference_region_bundle(key, bundle, sync_view=False)
         if self._current_image_key() == key:
@@ -7416,38 +7340,12 @@ class MainWindow(QMainWindow):
             int(value) for value in bundle.shape
         )
         self._unsaved_reference_sidecars.discard(key)
-        if image_shape is None or tuple(bundle.shape) != tuple(image_shape):
-            self._pending_unbound_reference_bundles[key] = bundle
-            self._set_reference_region_load_status(
-                key,
-                "pending",
-                "The source fingerprint and archive schema are valid. The masks "
-                "use corrected-image coordinates, so they will be installed "
-                "automatically as soon as calibration confirms the saved size.",
-            )
-            return True
-
-        self._install_reference_region_bundle(key, bundle)
-        self._withheld_reference_sidecars.discard(key)
-        self._project_unresolved_reference_sidecars.discard(key)
-        self._unsaved_reference_sidecars.discard(key)
-        self._discard_analysis_cache(key)
-        affected = {
-            "project",
-            *self.pipeline.downstream_from_port(
-                "project", "annotations", recursive=True
-            ),
-        }
-        self.pipeline.invalidate(affected)
-        self._cache_dirty_nodes.setdefault(key, set()).update(
-            affected - {"project"}
-        )
-        self._set_reference_region_load_status(
-            key,
-            "loaded",
-            "The fingerprinted archive matches this image and is installed in "
-            "memory for analysis.",
-        )
+        self._pending_unbound_reference_bundles[key] = bundle
+        self._set_reference_region_load_status(key, "pending",
+            "Source identity verified. Saved references await calibration-frame validation.")
+        result = self._analyses.get(key)
+        if result is not None:
+            self._resolve_pending_project_reference_bundle(key, result)
         return True
 
     def _install_reference_region_bundle(
@@ -7459,6 +7357,10 @@ class MainWindow(QMainWindow):
     ) -> None:
         """Commit one fully validated persistent snapshot to controller state."""
 
+        if bundle.source_to_corrected is not None:
+            self._reference_transforms[key] = bundle.source_to_corrected.copy()
+        else:
+            self._reference_transforms.pop(key, None)
         self._instance_continuity_cache.pop(key, None)
 
         for draft in (
@@ -7604,6 +7506,7 @@ class MainWindow(QMainWindow):
         self._reference_layer_shapes[key] = (height, width)
         bundle = ReferenceRegionBundle(
             shape=(height, width),
+            source_to_corrected=self._reference_transforms.get(key),
             background=self._applied_background_reference_masks.get(key),
             foreground=self._applied_foreground_reference_masks.get(key),
             other=self._applied_background_exclusion_masks.get(key),
@@ -7875,7 +7778,9 @@ class MainWindow(QMainWindow):
         instance_mode = self.annotate_instances_action.isChecked()
         self.reference_controls.setVisible(active and not instance_mode)
         self.instance_annotation_controls.setVisible(instance_mode)
-        self.image_view.set_context_panel_visible(active)
+        self.image_view.set_context_panel_visible(
+            active and self.image_workspace_action.isChecked()
+        )
         if hasattr(self, "reference_undo_button"):
             key = self._current_image_key()
             self._sync_reference_undo_controls(
@@ -7888,38 +7793,6 @@ class MainWindow(QMainWindow):
                     or self._reference_edge_fit_task is not None
                 ),
             )
-
-    def _sync_annotation_proposal_choices(self, result, *, enabled: bool) -> None:
-        """Expose only calculated instance outputs as annotation starting points."""
-
-        if not hasattr(self, "instance_proposal_combo"):
-            return
-        previous = self.instance_proposal_combo.currentData()
-        options = []
-        if result is not None:
-            for label, attribute in (
-                ("Procedural separation", "procedural_instances"),
-                ("U-Net + watershed", "unet_instances"),
-                ("StarDist", "stardist_instances"),
-            ):
-                proposal = getattr(result, attribute, None)
-                if proposal is not None and int(getattr(proposal, "count", 0)) > 0:
-                    options.append((label, attribute))
-        with QSignalBlocker(self.instance_proposal_combo):
-            self.instance_proposal_combo.clear()
-            for label, attribute in options:
-                self.instance_proposal_combo.addItem(label, attribute)
-            if not options:
-                self.instance_proposal_combo.addItem(
-                    "No instance result available", None
-                )
-            elif previous is not None:
-                selected = self.instance_proposal_combo.findData(previous)
-                if selected >= 0:
-                    self.instance_proposal_combo.setCurrentIndex(selected)
-        available = bool(options) and bool(enabled)
-        self.instance_proposal_combo.setEnabled(available)
-        self.use_instance_proposal_button.setEnabled(available)
 
     def _sync_background_controls(self) -> None:
         if not hasattr(self, "background_point_button"):
@@ -8036,9 +7909,6 @@ class MainWindow(QMainWindow):
                 )
             )
         )
-        self._sync_annotation_proposal_choices(
-            self._analyses.get(key or ""), enabled=has_result and not running
-        )
         self.clear_background_points_button.setEnabled(
             bool(background_count) and not running
         )
@@ -8058,7 +7928,7 @@ class MainWindow(QMainWindow):
         self.reference_eraser_button.setEnabled(has_result and not running)
         self.clear_reference_layer_button.setEnabled(has_result and not running)
         self.instance_id_spin.setEnabled(has_result and not running)
-        self.show_selected_instance_checkbox.setEnabled(has_result and not running)
+        self.instance_visibility_combo.setEnabled(has_result and not running)
         self.new_instance_button.setEnabled(has_result and not running)
         self.instance_brush_slider.setEnabled(has_result and not running)
         for button in (
@@ -8143,16 +8013,6 @@ class MainWindow(QMainWindow):
             "Draft changes do not affect analysis or disk storage until Apply + save. "
             "Material classes are mutually exclusive."
         )
-        if annotation_ids:
-            suffix = " (unapplied draft)" if annotations_dirty else " (applied)"
-            self.instance_annotation_status_label.setText(
-                f"{len(annotation_ids):,} seed IDs; {annotation_count:,} interior "
-                f"annotation pixels{suffix}."
-            )
-        else:
-            self.instance_annotation_status_label.setText(
-                "No seed instances annotated."
-            )
         disconnected = continuity.disconnected
         selected_components = continuity.component_count(active_id)
         if selected_components > 1:
@@ -9030,19 +8890,16 @@ class MainWindow(QMainWindow):
                     checkbox.setChecked(condition in annotation.conditions)
                 checkbox.setEnabled(extant)
             shape_widgets = (
-                self.seed_shape_reviewed_checkbox,
+                self.seed_shape_excluded_checkbox,
                 self.seed_outline_visibility_combo,
                 self.seed_pose_combo,
                 self.seed_full_length_checkbox,
                 self.seed_hilum_pick_button,
-                self.seed_shape_exclusion_edit,
-                self.seed_hilum_checkbox,
-                self.seed_hilum_x_spin,
-                self.seed_hilum_y_spin,
+                self.seed_hilum_clear_button,
             )
-            with QSignalBlocker(self.seed_shape_reviewed_checkbox):
-                self.seed_shape_reviewed_checkbox.setChecked(
-                    annotation.shape_reviewed
+            with QSignalBlocker(self.seed_shape_excluded_checkbox):
+                self.seed_shape_excluded_checkbox.setChecked(
+                    annotation.shape_exclusion_reason is not None
                 )
             with QSignalBlocker(self.seed_outline_visibility_combo):
                 index = self.seed_outline_visibility_combo.findData(
@@ -9055,29 +8912,10 @@ class MainWindow(QMainWindow):
             with QSignalBlocker(self.seed_full_length_checkbox):
                 self.seed_full_length_checkbox.setChecked(annotation.full_length_visible)
             self.seed_full_length_checkbox.setVisible(annotation.outline_visibility != "complete")
-            with QSignalBlocker(self.seed_shape_exclusion_edit):
-                self.seed_shape_exclusion_edit.setText(
-                    annotation.shape_exclusion_reason or ""
-                )
-            with QSignalBlocker(self.seed_hilum_checkbox):
-                self.seed_hilum_checkbox.setChecked(
-                    annotation.hilum_point is not None
-                )
-            if annotation.hilum_point is not None:
-                with QSignalBlocker(self.seed_hilum_x_spin):
-                    self.seed_hilum_x_spin.setValue(annotation.hilum_point[0])
-                with QSignalBlocker(self.seed_hilum_y_spin):
-                    self.seed_hilum_y_spin.setValue(annotation.hilum_point[1])
-            self.seed_hilum_direction_label.setText(
-                "—" if direction is None else
-                f"{np.degrees(np.arctan2(direction[1], direction[0])):.1f}° (auto)"
-            )
+            self._picked_hilum_point = annotation.hilum_point
             for widget in shape_widgets:
                 widget.setEnabled(extant)
-            self.seed_hilum_x_spin.setEnabled(
-                extant and annotation.hilum_point is not None
-            )
-            self.seed_hilum_y_spin.setEnabled(
+            self.seed_hilum_clear_button.setEnabled(
                 extant and annotation.hilum_point is not None
             )
         finally:
@@ -9103,13 +8941,12 @@ class MainWindow(QMainWindow):
             shape_status = (
                 "This legacy record cannot be saved: choose "
                 + " and ".join(missing)
-                + ", or clear ‘Use for shape modelling’."
+                + "."
             )
             shape_problem = True
         elif annotation.shape_reviewed:
             shape_status = (
-                "Included in shape modelling; final eligibility also depends on "
-                "outline visibility and any exclusion reason."
+                "Reviewed shape metadata is available to modelling when eligible."
             )
             shape_problem = False
         elif (
@@ -9117,19 +8954,19 @@ class MainWindow(QMainWindow):
             and annotation.pose != "unknown"
         ):
             shape_status = (
-                "Outline and pose are specified. Enable ‘Use for shape modelling’ "
-                "when your review is complete."
+                "Outline and pose are specified. Editing them marks the shape reviewed."
             )
             shape_problem = False
         else:
             shape_status = (
-                "Choose an explicit Outline and Pose before including this seed in "
-                "shape modelling."
+                "Choose an explicit Outline and Pose for shape modelling."
             )
             shape_problem = False
         self.seed_shape_status_label.setText(shape_status)
         self.seed_shape_status_label.setVisible(shape_problem)
-        self.seed_shape_reviewed_checkbox.setToolTip(shape_status)
+        self.seed_shape_excluded_checkbox.setToolTip(
+            shape_status + " Check to exclude this seed from modelling."
+        )
         self.seed_shape_status_label.setStyleSheet(
             "color: #b42318; font-weight: 600;" if shape_problem else ""
         )
@@ -9184,42 +9021,16 @@ class MainWindow(QMainWindow):
         previous = self._draft_seed_annotations.get(
             key, self._applied_seed_annotations.get(key, {})
         ).get(seed_id, SeedInstanceAnnotation(seed_id))
-        hilum_point = (
-            (
-                float(self.seed_hilum_x_spin.value()),
-                float(self.seed_hilum_y_spin.value()),
-            )
-            if self.seed_hilum_checkbox.isChecked()
-            else None
-        )
+        hilum_point = self._picked_hilum_point
         hilum_direction = self._seed_hilum_direction(labels, seed_id, hilum_point)
         outline_visibility = str(
             self.seed_outline_visibility_combo.currentData() or "unknown"
         )
         pose = str(self.seed_pose_combo.currentData() or "unknown")
-        shape_reviewed = self.seed_shape_reviewed_checkbox.isChecked()
-        if shape_reviewed and (
-            outline_visibility == "unknown" or pose == "unknown"
-        ):
-            missing = []
-            if outline_visibility == "unknown":
-                missing.append("Outline")
-            if pose == "unknown":
-                missing.append("Pose")
-            shape_reviewed = False
-            with QSignalBlocker(self.seed_shape_reviewed_checkbox):
-                self.seed_shape_reviewed_checkbox.setChecked(False)
-            self.seed_shape_status_label.setText(
-                "Not included: choose " + " and ".join(missing) + " first."
-            )
-            self.seed_shape_status_label.setStyleSheet(
-                "color: #b42318; font-weight: 600;"
-            )
-            self.statusBar().showMessage(
-                f"Seed {seed_id} was not marked for shape modelling: choose "
-                + " and ".join(missing)
-                + " first."
-            )
+        shape_reviewed = (
+            outline_visibility != "unknown" and pose != "unknown"
+        )
+        excluded = self.seed_shape_excluded_checkbox.isChecked()
         annotation = replace(
             previous,
             coat_pattern=(None if coat_pattern is None else str(coat_pattern)),
@@ -9232,7 +9043,8 @@ class MainWindow(QMainWindow):
             hilum_point=hilum_point,
             hilum_direction=hilum_direction,
             shape_exclusion_reason=(
-                self.seed_shape_exclusion_edit.text().strip() or None
+                previous.shape_exclusion_reason or "Excluded by reviewer"
+                if excluded else None
             ),
         )
         traits = self._draft_seed_annotations.setdefault(key, {})
@@ -9271,13 +9083,12 @@ class MainWindow(QMainWindow):
 
     def _hilum_landmark_edited(self, point, direction) -> None:
         # Direction is derived from annotation geometry, never from a drag vector.
-        widgets = (self.seed_hilum_checkbox, self.seed_hilum_x_spin,
-                   self.seed_hilum_y_spin)
-        blockers = [QSignalBlocker(widget) for widget in widgets]
-        self.seed_hilum_checkbox.setChecked(True)
-        self.seed_hilum_x_spin.setValue(point[0])
-        self.seed_hilum_y_spin.setValue(point[1])
-        del blockers
+        self._picked_hilum_point = (float(point[0]), float(point[1]))
+        self._seed_trait_controls_changed()
+
+    def _clear_hilum_location(self) -> None:
+        self.seed_hilum_pick_button.setChecked(False)
+        self._picked_hilum_point = None
         self._seed_trait_controls_changed()
 
     def _update_instance_colour_swatch(self) -> None:
@@ -9384,72 +9195,6 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             "Seed instance marks edited; foreground references are unchanged. "
             "Apply the annotations when the interior marks are complete."
-        )
-
-    @Slot()
-    def _use_instance_proposal_as_draft(self) -> None:
-        """Replace the editable label draft with one calculated instance result."""
-
-        key = self._current_image_key()
-        attribute = self.instance_proposal_combo.currentData()
-        result = self._analyses.get(key or "")
-        proposal = None if result is None or not attribute else getattr(
-            result, str(attribute), None
-        )
-        if key is None or proposal is None:
-            return
-        before = self._instance_reference_state(key)
-        before_origin = self._instance_reference_origin(key)
-        current = self._draft_instance_annotations.get(
-            key, self._applied_instance_annotations.get(key)
-        )
-        if current is not None and np.any(current):
-            answer = QMessageBox.question(
-                self,
-                "Replace annotation draft",
-                "This replaces the current seed-instance annotations with an automatic "
-                "prediction. Predictions are only a starting point: inspect and correct "
-                "every seed before exporting labels. Continue?",
-            )
-            if answer != QMessageBox.StandardButton.Yes:
-                return
-        try:
-            from seedvision.learning.export import annotation_proposal_to_corrected
-
-            labels = annotation_proposal_to_corrected(result, proposal)
-        except Exception as error:  # noqa: BLE001 - user-facing conversion boundary
-            QMessageBox.critical(
-                self, "Could not use instance result", str(error)
-            )
-            return
-        if not self._record_instance_undo(
-            key,
-            "automatic instance draft",
-            before,
-            (labels,),
-            before_origin=before_origin,
-        ):
-            self._sync_background_controls()
-            return
-        origin = f"pipeline:{attribute}"
-        self._set_instance_draft_state(key, labels, origin)
-        self.image_view.set_instance_annotations(
-            self._draft_instance_annotations.get(
-                key, self._applied_instance_annotations.get(key)
-            ),
-            copy=False,
-        )
-        next_identifier = min(
-            np.iinfo(np.uint16).max, int(labels.max(initial=0)) + 1
-        )
-        with QSignalBlocker(self.instance_id_spin):
-            self.instance_id_spin.setValue(max(1, next_identifier))
-        self.image_view.set_active_instance_id(self.instance_id_spin.value())
-        self._update_instance_colour_swatch()
-        self._sync_background_controls()
-        self.statusBar().showMessage(
-            f"Loaded {int(labels.max(initial=0)):,} predicted instances as an editable "
-            "draft; review every split, merge, omission, and contour before applying."
         )
 
     @Slot()
@@ -9872,7 +9617,7 @@ class MainWindow(QMainWindow):
         dialog = LearningExportDialog(
             default_directory=destination,
             default_identifier=identifier,
-            default_group=identifier_base,
+            default_group=self._project_capture_group_id or '',
             default_revision=str(revision),
             parent=self,
         )
@@ -9882,7 +9627,7 @@ class MainWindow(QMainWindow):
         try:
             from seedvision.learning.export import export_analysis_sample
 
-            sample = export_analysis_sample(
+            sample = run_persistence(self, partial(export_analysis_sample,
                 result,
                 labels,
                 options.manifest_path,
@@ -9890,8 +9635,10 @@ class MainWindow(QMainWindow):
                 identifier=options.identifier,
                 species=self.species_combo.currentText(),
                 group=options.group,
+                species_reviewed=options.species_reviewed,
                 split=options.split,
                 reviewed=options.reviewed,
+                seed_annotations=tuple(self._applied_seed_annotations.get(key, {}).values()),
                 annotation_author=options.annotation_author,
                 annotation_revision=options.annotation_revision,
                 notes=(
@@ -9899,7 +9646,7 @@ class MainWindow(QMainWindow):
                     f"draft origin={self._applied_instance_annotation_origins.get(key, 'manual')}; "
                     + (options.notes or "no additional notes")
                 ),
-            )
+            ), 'Preparing verified project data…')
         except Exception as error:  # noqa: BLE001 - user-facing export boundary
             QMessageBox.critical(self, "Learning export failed", str(error))
             return
@@ -10419,6 +10166,9 @@ class MainWindow(QMainWindow):
     def _pipeline_node_action_requested(
         self, node_id: str, action_id: str, payload: object
     ) -> None:
+        if action_id == PipelineInspector.OPTIMIZE_NODE_ACTION:
+            self._start_node_optimization(node_id)
+            return
         if (
             node_id == "reference_edge_probability"
             and action_id == PipelineInspector.REFERENCE_EDGE_FIT_ACTION
@@ -11040,7 +10790,7 @@ class MainWindow(QMainWindow):
             annotation_source=annotations,
         )
         progress = QProgressDialog(
-            "Evaluating procedural setting 0/35…",
+            "Preparing procedural parameter search…",
             "Cancel",
             0,
             35,
@@ -12966,7 +12716,7 @@ class MainWindow(QMainWindow):
         self.calibration_section.setVisible(
             node_id in {"deskew_colour", "output"}
         )
-        self.baseline_section.setVisible(node_id in {"identification", "output"})
+        self.baseline_section.setVisible(True)
         mode = VIEWER_NODE_MODES.get(node_id)
         if mode is not None and not self._selecting_node_from_overlay:
             index = self.overlay_combo.findData(mode)
@@ -13427,9 +13177,28 @@ class MainWindow(QMainWindow):
         self.pipeline_canvas.refresh(("metadata", *affected))
 
     def _update_analysis_availability(self) -> None:
+        from PySide6.QtWidgets import QStyle
+        draft_keys = self._unapplied_project_draft_keys()
+        for index in range(self.image_list.count()):
+            item = self.image_list.item(index)
+            source = item.data(Qt.ItemDataRole.UserRole)
+            key = _path_identity(Path(source))
+            unsaved = key in self._unsaved_reference_sidecars or key in self._unsaved_manual_centre_sidecars
+            if unsaved or key in draft_keys:
+                status, icon = ('Save required' if unsaved else 'Unapplied edits'), QStyle.StandardPixmap.SP_MessageBoxWarning
+            elif key in self._active_tasks:
+                status, icon = 'Computing', QStyle.StandardPixmap.SP_BrowserReload
+            elif key in self._analyses:
+                status, icon = getattr(self,'_image_review_states',{}).get(key,'Computed; review available'), QStyle.StandardPixmap.SP_DialogApplyButton
+            else:
+                status, icon = 'Analysis required', QStyle.StandardPixmap.SP_FileIcon
+            item.setIcon(self.style().standardIcon(icon))
+            item.setToolTip(str(source)+'\n'+status)
+            item.setData(Qt.ItemDataRole.AccessibleDescriptionRole,status)
         path = self.image_view.image_path
         running = (
-            bool(self._active_tasks)
+            getattr(self, '_optimization_task', None) is not None
+            or bool(self._active_tasks)
             or self._learning_training_task is not None
             or self._procedural_fit_task is not None
             or self._reference_edge_fit_task is not None
@@ -13441,6 +13210,17 @@ class MainWindow(QMainWindow):
         )
         self.analyze_button.setEnabled(available)
         self.analyze_action.setEnabled(available)
+        if hasattr(self, 'optimize_project_action'):
+            self.optimize_project_action.setEnabled(not running and self._project_tracking_enabled)
+            self.import_optimization_targets_action.setEnabled(not running and path is not None)
+            self.optimization_history_action.setEnabled(not running and self._current_project_path is not None)
+            self.pipeline_inspector.set_optimization_context(
+                ready=bool(self._project_tracking_enabled and self._current_project_path
+                    and (self._applied_instance_annotations or self._applied_foreground_reference_masks
+                         or self._applied_background_reference_masks or self._optimization_targets
+                         or self._current_project_path.with_suffix('.optimization-targets.json').exists())),
+                busy=running,
+            )
         if hasattr(self, "train_learning_model_action"):
             self.train_learning_model_action.setEnabled(not running)
         if hasattr(self, "manage_species_libraries_action"):
@@ -13464,6 +13244,8 @@ class MainWindow(QMainWindow):
     def _show_image_workspace(self) -> None:
         self.image_workspace_action.setChecked(True)
         self.pipeline_workspace_action.setChecked(False)
+        self.image_view.setVisible(True)
+        self.pipeline_canvas.setVisible(False)
         self.actual_size_action.setEnabled(True)
 
     def _show_split_workspace(self) -> None:
@@ -13498,6 +13280,19 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt override
         """Finish the sole GPU job and deterministically release owned caches."""
 
+        if self._thread_pool.activeThreadCount() > 0:
+            self._closing_after_work = True
+            self._stop_current_work()
+            self._shutdown_timer.start()
+            event.ignore()
+            return
+        if not self._project_tracking_enabled:
+            if not self._resolve_unapplied_project_drafts(recompute=False):
+                event.ignore()
+                return
+        if not self._retry_unsaved_project_sidecars():
+            event.ignore()
+            return
         if self._project_tracking_enabled:
             has_unsaved_state = bool(
                 self._project_dirty or self._unapplied_project_draft_keys()
@@ -13558,9 +13353,9 @@ class MainWindow(QMainWindow):
             self._procedural_fit_task.cancel()
         if self._reference_edge_fit_task is not None:
             self._reference_edge_fit_task.cancel()
+        if getattr(self, '_optimization_task', None) is not None:
+            self._optimization_task.cancel()
         self._thread_pool.clear()
-        if not self._thread_pool.waitForDone(10_000):
-            self._thread_pool.waitForDone()
         self._active_tasks.clear()
         self._analysis_activities.clear()
         if self._learning_training_progress is not None:
@@ -13581,6 +13376,7 @@ class MainWindow(QMainWindow):
         for key in tuple(self._analysis_caches):
             self._discard_analysis_cache(key)
         self._release_unused_cuda_blocks()
+        self._save_review_ui_state()
         super().closeEvent(event)
 
 

@@ -576,7 +576,8 @@ def _extract_production_banks(
         ),
     )
     edge_diameter = max(6.0, diameter * edge_scale)
-    edge_labels = _resize_labels(labels, edge_height, edge_width)
+    from seedvision.annotation.eligibility import eligible_instances
+    edge_labels = _resize_labels(eligible_instances(labels, annotations), edge_height, edge_width)
     edge_valid = resized(valid.float(), edge_height, edge_width, mode="nearest") > 0.5
     edge_strength = resized(
         gradients.strength, edge_height, edge_width
@@ -686,7 +687,7 @@ def _compact_balanced_instance_samples(features, mask, labels, maximum):
     if not identifiers:
         return _compact_tensor_samples(features, mask, maximum)
     per_seed = max(1, int(np.ceil(int(maximum) / len(identifiers))))
-    label_tensor = torch.as_tensor(
+    label_tensor = torch.tensor(
         labels, device=features.device, dtype=torch.int64
     )[None, None]
     parts = [

@@ -119,6 +119,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hybrid-gate-threshold", type=float, default=0.50)
     parser.add_argument("--hybrid-distance-threshold", type=float, default=0.35)
     parser.add_argument("--optimize-hybrid-decoder", action="store_true")
+    parser.add_argument("--evaluation-protocol", choices=("development", "frozen", "reference_assisted"), default="development")
     parser.add_argument("--evaluation-tile-size", type=int, default=512)
     parser.add_argument("--evaluation-overlap", type=int, default=96)
     parser.add_argument(
@@ -266,6 +267,7 @@ def _learning_arguments(args) -> list[str]:
         values.extend(
             (
                 "--learning-split", args.learning_split,
+                "--evaluation-protocol", args.evaluation_protocol,
                 "--evaluation-tile-size", str(args.evaluation_tile_size),
                 "--evaluation-overlap", str(args.evaluation_overlap),
             )
@@ -285,6 +287,7 @@ def _learning_arguments(args) -> list[str]:
             ("--learning-manifest", args.learning_manifest),
             ("--evaluation-output", args.evaluation_output),
             ("--unet-decoder-settings", args.unet_decoder_settings),
+            ("--decoder-settings", args.decoder_settings),
             ("--stardist-decoder-settings", args.stardist_decoder_settings),
         ):
             if value:
@@ -292,6 +295,7 @@ def _learning_arguments(args) -> list[str]:
         values.extend(
             (
                 "--learning-split", args.learning_split,
+                "--evaluation-protocol", args.evaluation_protocol,
                 "--evaluation-tile-size", str(args.evaluation_tile_size),
                 "--evaluation-overlap", str(args.evaluation_overlap),
                 "--hybrid-gate-threshold", str(args.hybrid_gate_threshold),
@@ -368,23 +372,15 @@ def _run_learning_action(args) -> int | None:
             load_decoder_settings,
         )
 
-        decoder_settings = None
-        if args.decoder_settings:
-            _model, _spec, checkpoint_payload = load_checkpoint(
-                args.evaluate_learned_model, device="cpu"
-            )
-            decoder_settings = load_decoder_settings(
-                args.decoder_settings, ModelFamily(checkpoint_payload["family"])
-            )
-
         report = evaluate_checkpoint(
             args.evaluate_learned_model,
             args.learning_manifest,
             args.evaluation_output,
             split=args.learning_split,
+            protocol=args.evaluation_protocol,
             tile_size=args.evaluation_tile_size,
             overlap=args.evaluation_overlap,
-            decoder_settings=decoder_settings,
+            decoder_source_path=args.decoder_settings,
             optimize_decoder=args.optimize_decoder,
         )
         print(json.dumps({key: value for key, value in report.items() if key != "samples"}, indent=2))
@@ -440,11 +436,13 @@ def _run_learning_action(args) -> int | None:
             args.learning_manifest,
             args.evaluation_output,
             split=args.learning_split,
+            decoder_source_path=args.decoder_settings,
             unet_settings=unet_decoder,
             stardist_settings=star_decoder,
             gate_threshold=args.hybrid_gate_threshold,
             distance_threshold=args.hybrid_distance_threshold,
             optimize_decoder=args.optimize_hybrid_decoder,
+            protocol=args.evaluation_protocol,
             tile_size=args.evaluation_tile_size,
             overlap=args.evaluation_overlap,
         )

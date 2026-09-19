@@ -1,0 +1,32 @@
+name: Native application regressions
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      run_cuda:
+        description: Run on a configured Windows CUDA runner
+        type: boolean
+        default: false
+jobs:
+  cpu-qt:
+    runs-on: windows-latest
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements-runtime.txt
+      - run: python -m unittest discover -s tests -v
+      - run: python scripts/generate_node_catalogue.py --check
+  cuda:
+    if: github.event_name == 'workflow_dispatch' && inputs.run_cuda
+    runs-on: [self-hosted, Windows, CUDA]
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - run: .venv\Scripts\python.exe -c "import torch; assert torch.cuda.is_available()"
+      - run: .venv\Scripts\python.exe -m unittest discover -s tests -v

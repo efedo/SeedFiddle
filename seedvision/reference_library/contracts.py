@@ -162,7 +162,7 @@ class ProductValidation:
     sample_count: int = 0
     prototype_count: int = 0
     effective_weight: float = 0.0
-    metrics: Mapping[str, float] = field(default_factory=dict)
+    metrics: Mapping[str, float | None] = field(default_factory=dict)
     warnings: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
@@ -174,9 +174,9 @@ class ProductValidation:
             raise ValueError("effective_weight must be finite and non-negative.")
         normalized = {}
         for name, value in dict(self.metrics).items():
-            if not str(name).strip() or not np.isfinite(float(value)):
+            if not str(name).strip() or (value is not None and not np.isfinite(float(value))):
                 raise ValueError("Validation metrics need non-empty names and finite values.")
-            normalized[str(name)] = float(value)
+            normalized[str(name)] = None if value is None else float(value)
         object.__setattr__(self, "metrics", MappingProxyType(normalized))
         object.__setattr__(self, "warnings", tuple(str(value) for value in self.warnings))
 

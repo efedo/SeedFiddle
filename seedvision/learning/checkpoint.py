@@ -53,11 +53,21 @@ def load_checkpoint(path: Path | str, *, device="cpu"):
     import torch
 
     source = Path(path)
-    payload = torch.load(source, map_location=device, weights_only=False)
+    payload = torch.load(source, map_location=device, weights_only=True)
+    if not isinstance(payload, dict):
+        raise ValueError('A checkpoint must contain a state-dictionary payload.')
+    required = {'checkpoint_version', 'family', 'feature_spec', 'model_configuration', 'model_state', 'training_metadata'}
+    if not required.issubset(payload):
+        raise ValueError('Checkpoint is missing required schema fields.')
+    for key in ('feature_spec', 'model_configuration', 'model_state', 'training_metadata'):
+        if not isinstance(payload[key], dict):
+            raise ValueError(f'Checkpoint {key} must be a dictionary.')
+    if any(not isinstance(name, str) or not torch.is_tensor(value) for name, value in payload['model_state'].items()):
+        raise ValueError('Checkpoint model_state must map names to tensors.')
     if int(payload.get("checkpoint_version", -1)) != CHECKPOINT_VERSION:
         raise ValueError(f"Unsupported learned-model checkpoint: {source}")
     family = ModelFamily(payload["family"])
-    feature_spec = FeatureStackSpec(**payload["feature_spec"])
+    feature_spec = FeatureStackSpec(**({'version': 1} | payload["feature_spec"]))
     configuration = dict(payload["model_configuration"])
     if int(configuration["input_channels"]) != feature_spec.input_channels:
         raise ValueError("Checkpoint feature and model input-channel counts disagree.")

@@ -431,9 +431,11 @@ class BaselineAnalysis:
     seed_dimensions_shape_model: SeedDimensionsShapeModel | None = None
     method: str = "classical fused review proposals"
     approximate: bool = True
+    source_sha256: str | None = None
 
     @property
     def count(self) -> int:
+        """Legacy proposal count. Use export.results for authoritative instance results."""
         return len(self.proposals)
 
     @property
@@ -496,6 +498,7 @@ def analyze_path(
     biological_context: BiologicalContext | None = None,
     library_shape_bank: SpeciesDimensionsShapeBank | None = None,
     species_library: SpeciesLibraryArtifact | None = None,
+    reference_transform: np.ndarray | None = None,
 ) -> BaselineAnalysis:
     """Read and analyze an image from disk."""
 
@@ -503,6 +506,14 @@ def analyze_path(
         raise AnalysisCancelled("Analysis superseded before image decoding.")
     cache_values = None if node_cache is None else node_cache.values
     resolved_path = str(path.resolve()).casefold()
+    from seedvision.persistence.reference_regions import file_sha256
+    source_digest = file_sha256(path)
+    if cache_values is not None and cache_values.get('raw.sha256') not in (None, source_digest):
+        if any(value is not None for value in (
+            background_reference_mask, foreground_reference_mask, background_exclusion_mask,
+            foreground_exclusion_mask, seed_instance_annotations, manual_seed_centres)):
+            raise ValueError('Source image contents changed. Reload the image/project to revalidate its reference bindings before analysis.')
+        cache_values.clear()
     # Per-image caches are keyed by source path, so annotation changes on the
     # Project root must not force the same raw raster to be decoded again.
     raw_is_dirty = "project_image" in dirty_nodes or "raw_images" in dirty_nodes
@@ -511,6 +522,7 @@ def analyze_path(
         cache_values is not None
         and not raw_is_dirty
         and cache_values.get("raw.path") == resolved_path
+        and cache_values.get('raw.sha256') == source_digest
         and "raw.image" in cache_values
     ):
         image = cache_values["raw.image"]
@@ -530,9 +542,14 @@ def analyze_path(
                 pass
         if cache_values is not None and image is not None:
             cache_values["raw.path"] = resolved_path
+            cache_values['raw.sha256'] = source_digest
             cache_values["raw.image"] = image
     if image is None:
         raise RuntimeError(f"The image decoder could not read {path}")
+    if file_sha256(path) != source_digest:
+        if cache_values is not None:
+            cache_values.clear()
+        raise ValueError('Source changed while decoding. Retry with a stable source file.')
     if cancellation_requested is not None and cancellation_requested():
         raise AnalysisCancelled("Analysis superseded after image decoding.")
     # The retired boundary-painting UI may still supply empty legacy arguments
@@ -542,6 +559,7 @@ def analyze_path(
     return analyze_image(
         image,
         image_path=path,
+        _source_sha256=source_digest,
         settings=settings,
         calibration_settings=calibration_settings,
         dish_settings=dish_settings,
@@ -573,6 +591,7 @@ def analyze_path(
         biological_context=biological_context,
         library_shape_bank=library_shape_bank,
         species_library=species_library,
+        reference_transform=reference_transform,
         _initial_timings=(
             {"project": raw_elapsed}
             if raw_elapsed is not None
@@ -616,7 +635,9 @@ def analyze_image(
     biological_context: BiologicalContext | None = None,
     library_shape_bank: SpeciesDimensionsShapeBank | None = None,
     species_library: SpeciesLibraryArtifact | None = None,
+    reference_transform: np.ndarray | None = None,
     _initial_timings: dict[str, float] | None = None,
+    _source_sha256: str | None = None,
 ) -> BaselineAnalysis:
     """Generate approximate seed proposals for a controlled-layout image."""
 
@@ -672,6 +693,23 @@ def analyze_image(
         calibration = values["calibration"]
         reused.append("deskew_colour")
     analysis_image = calibration.corrected_bgr
+    if reference_transform is not None:
+        from seedvision.annotation.coordinates import reproject_raster, reproject_annotations, reproject_bundle
+        def transport(value):
+            return reproject_raster(value, reference_transform, calibration.affine_matrix, analysis_image.shape[:2])
+        background_reference_mask = transport(background_reference_mask)
+        foreground_reference_mask = transport(foreground_reference_mask)
+        background_exclusion_mask = transport(background_exclusion_mask)
+        foreground_exclusion_mask = transport(foreground_exclusion_mask)
+        if seed_instance_annotations is not None:
+            from seedvision.persistence.reference_regions import ReferenceRegionBundle
+            transported = reproject_bundle(ReferenceRegionBundle(
+                shape=seed_instance_annotations.shape,annotated_seeds=seed_instance_annotations,
+                seed_annotations=tuple(seed_instance_traits),source_to_corrected=reference_transform),
+                calibration.affine_matrix,analysis_image.shape[:2])
+            seed_instance_annotations, seed_instance_traits = transported.annotated_seeds, transported.seed_annotations
+        else:
+            seed_instance_traits = reproject_annotations(seed_instance_traits, reference_transform, calibration.affine_matrix)
     manual_seed_centres = _manual_centres_in_corrected_coordinates(
         manual_seed_centres, calibration
     )
@@ -2168,26 +2206,8 @@ def analyze_image(
         values.pop("segmentation.procedural_instances", None)
         values.pop("segmentation.procedural_manual_centres", None)
 
-    learned_evidence = {
-        "foreground_colour": foreground_colour_probability,
-        "foreground_noise": layers.foreground_noise_likelihood,
-        "background_colour": layers.background_likelihood,
-        "background_noise": layers.refined_background_likelihood,
-        "edge_magnitude": layers.edge_likelihood,
-        # Learned branches may retain separate semantic channels, but they
-        # receive only true-edge-supported compatibilities. Raw descriptor
-        # halos are diagnostics and must not become spatial model evidence.
-        "physical_edge_probability": (
-            layers.edge_supported_physical_compatibility
-        ),
-        "non_edge_probability": (
-            layers.edge_supported_nonphysical_compatibility
-        ),
-        "sensor_noise": advanced.rasters["sensor_noise"],
-        "flattened_grayscale": advanced.rasters["flattened_grayscale"],
-        "shadow": advanced.rasters["shadow_likelihood"],
-        "highlight": advanced.rasters["highlight_likelihood"],
-    }
+    from seedvision.learning.features import pipeline_evidence
+    learned_evidence = pipeline_evidence(foreground_colour_probability, layers, advanced)
     learned_upstream_dirty = (
         calibration_dirty
         or layout_dirty
@@ -2222,8 +2242,9 @@ def analyze_image(
             if configured_checkpoint.is_absolute()
             else (learning_root / configured_checkpoint).resolve()
         )
+        from seedvision.learning.data import file_sha256
         checkpoint_fingerprint = (
-            resolved_checkpoint.stat().st_mtime_ns
+            file_sha256(resolved_checkpoint)
             if resolved_checkpoint.is_file()
             else None
         )
@@ -2261,6 +2282,7 @@ def analyze_image(
                         evidence=learned_evidence,
                         species=species,
                         seed_diameter_px=seed_diameter,
+                        cancellation_requested=cancellation_requested,
                     )
                     values[f"{prefix}.outputs"] = outputs
                     values[f"{prefix}.checkpoint"] = checkpoint_id
@@ -2385,6 +2407,7 @@ def analyze_image(
 
     result = BaselineAnalysis(
         image_path=image_path,
+        source_sha256=_source_sha256,
         dish=dish,
         proposals=proposals,
         estimated_seed_diameter_px=float(seed_diameter),
@@ -2654,11 +2677,7 @@ def _aligned_reference_mask(
     if values.ndim != 2:
         raise ValueError("Reference masks must be two-dimensional binary arrays.")
     if values.shape != shape:
-        values = cv2.resize(
-            values,
-            (shape[1], shape[0]),
-            interpolation=cv2.INTER_NEAREST,
-        )
+        raise ValueError('Reference mask frame differs from the corrected image; supply its original reference_transform. Resizing is not alignment.')
     return values > 0
 
 
@@ -2705,11 +2724,7 @@ def _aligned_instance_annotations(
         raise ValueError("Seed instance annotation IDs must be between 0 and 65,535.")
     values = values.astype(np.uint16, copy=False)
     if values.shape != shape:
-        values = cv2.resize(
-            values,
-            (shape[1], shape[0]),
-            interpolation=cv2.INTER_NEAREST,
-        )
+        raise ValueError('Instance annotation frame differs from the corrected image; supply its original reference_transform. Resizing is not alignment.')
     return values
 
 

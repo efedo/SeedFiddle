@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -146,6 +147,35 @@ class ReferenceEdgeFitTests(unittest.TestCase):
                 & (captured["holdout"] > 0)
             )
         )
+    def test_training_buffer_cannot_change_fixed_evaluation_targets(self) -> None:
+        import cv2
+        import torch
+        from seedvision.cuda import CudaContext
+        annotations = np.zeros((80, 140), np.uint16)
+        cv2.circle(annotations, (35,40), 25, 1, -1)
+        cv2.circle(annotations, (100,40), 25, 2, -1)
+        distance = cv2.distanceTransform(np.uint8(annotations > 0), cv2.DIST_L2, 5)
+        class Field:
+            def __init__(self, values):
+                self.values = torch.from_numpy(values)[None,None]
+            def gpu_tensor(self, *, device=None, dtype=None):
+                return self.values.to(device=device, dtype=dtype)
+        products = SimpleNamespace(
+            physical_edge_field=Field(np.where(distance <= 1, .8, .1).astype(np.float32)),
+            non_edge_field=Field(np.clip(.1+distance/25*.85, .1, .95).astype(np.float32)))
+        scores = []
+        with patch('seedvision.cuda.layers.reference_texture_probabilities', return_value=products):
+            for buffer in (.03, .24):
+                scores.append(evaluate_reference_edge_settings(
+                    np.zeros((80,140,3), np.uint8),
+                    SimpleNamespace(strength=torch.ones((1,1,80,140))),
+                    np.full((80,140),255,np.uint8), None, 50, annotations,
+                    replace(AnalysisLayerSettings(), reference_texture_instance_interior_buffer_fraction=buffer),
+                    cuda_context=CudaContext.resolve(requested='cpu')))
+        self.assertEqual(scores[0].physical_samples, scores[1].physical_samples)
+        self.assertEqual(scores[0].nonphysical_samples, scores[1].nonphysical_samples)
+        self.assertAlmostEqual(scores[0].loss, scores[1].loss, places=8)
+
     def test_balanced_score_rewards_correct_support_and_rejects_cross_matches(self) -> None:
         physical_target = np.asarray(((1, 1), (0, 0)), dtype=bool)
         nonphysical_target = ~physical_target

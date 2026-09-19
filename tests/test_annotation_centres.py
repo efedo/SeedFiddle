@@ -77,7 +77,8 @@ class AnnotationCentresUiTests(unittest.TestCase):
         self.assertEqual(row.layout().itemAt(0).widget().text(), "Seed:")
         self.assertIs(row.layout().itemAt(1).widget(), window.instance_colour_swatch)
         self.assertEqual(row.findChildren(QCheckBox), [])
-        self.assertEqual(window.show_selected_instance_checkbox.text(), "Show selected only")
+        self.assertEqual(window.instance_visibility_combo.itemText(0), "all")
+        self.assertEqual(window.instance_visibility_combo.itemText(1), "selected")
         for name in ("existing_instance_combo", "instance_boundary_supervision_label",
                      "seed_trait_status_label", "seed_hilum_direction_checkbox",
                      "seed_hilum_direction_angle_spin"):
@@ -123,6 +124,32 @@ class AnnotationCentresUiTests(unittest.TestCase):
         self.assertEqual(markers(), [])
         self.assertEqual(view.instance_centres(), {})
 
+    def test_annotation_palette_can_extend_beyond_image_view(self):
+        from PySide6.QtCore import QPoint
+
+        window, _ = self.make_window()
+        window.resize(1200, 700)
+        window.show()
+        window.annotate_instances_action.setEnabled(True)
+        window.annotate_instances_action.setChecked(True)
+        self.app.processEvents()
+        panel = window.reference_panel
+        self.assertIs(panel.parentWidget(), window)
+        bounds = window.centralWidget().geometry()
+        window.image_view._move_context_panel_to(
+            QPoint(bounds.right() - panel.width() + 1, bounds.top()),
+            remember=True,
+        )
+        image_right = window.image_view.mapTo(
+            window, QPoint(window.image_view.width(), 0)
+        ).x()
+        self.assertGreater(panel.geometry().right(), image_right)
+        self.assertFalse(panel.isHidden())
+        window._show_pipeline_workspace()
+        self.assertTrue(panel.isHidden())
+        window._show_image_workspace()
+        self.assertFalse(panel.isHidden())
+
     def test_hilum_tracks_outline_edits_undo_and_persistence(self):
         from seedvision.persistence.reference_regions import ReferenceRegionStore
         window, image_path = self.make_window()
@@ -132,11 +159,14 @@ class AnnotationCentresUiTests(unittest.TestCase):
         window.image_view.set_instance_annotations(labels)
         window._instance_annotations_edited(labels)
         window.instance_id_spin.setValue(1)
+        self.assertIn("861 interior pixels", window._project_summary_text())
+        self.assertFalse(hasattr(window, "instance_annotation_status_label"))
         window._hilum_landmark_edited((70., 45.), (-1., 0.))  # Ignore arbitrary supplied direction.
         expected = outward_hilum_direction((50, 30), (70, 45))
         np.testing.assert_allclose(window._draft_seed_annotations[key][1].hilum_direction, expected)
         np.testing.assert_allclose(window.image_view._hilum_direction, expected)
-        self.assertIn("(auto)", window.seed_hilum_direction_label.text())
+        self.assertFalse(hasattr(window, "seed_hilum_direction_label"))
+        self.assertTrue(window.seed_hilum_clear_button.isEnabled())
         changed = labels.copy()
         changed[20:41, 71:92] = 1
         window.image_view.set_instance_annotations(changed)
@@ -154,8 +184,16 @@ class AnnotationCentresUiTests(unittest.TestCase):
         np.testing.assert_allclose(restored.seed_annotations[0].hilum_direction, expected)
         np.testing.assert_array_equal(restored.annotated_seeds, labels)
         window.instance_id_spin.setValue(2)
-        self.assertEqual(window.seed_hilum_direction_label.text(), "—")
+        self.assertFalse(window.seed_hilum_clear_button.isEnabled())
         self.assertIsNone(window.image_view._hilum_direction)
+        window.instance_id_spin.setValue(1)
+        window.seed_hilum_clear_button.click()
+        try:
+            cleared = window._draft_seed_annotations.get(key, {}).get(1)
+            self.assertTrue(cleared is None or cleared.hilum_point is None)
+            self.assertTrue(cleared is None or cleared.hilum_direction is None)
+        finally:
+            window._revert_instance_annotations()
 
     def test_direction_is_unknown_at_centroid_and_removed_without_landmark(self):
         from seedvision.persistence.reference_regions import SeedInstanceAnnotation

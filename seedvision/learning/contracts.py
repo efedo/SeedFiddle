@@ -46,7 +46,7 @@ class FeatureStackSpec:
     species: tuple[str, ...] = DEFAULT_SPECIES
     include_species_planes: bool = True
     nominal_seed_diameter_px: float = 48.0
-    version: int = 1
+    version: int = 2
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "channels", tuple(str(item) for item in self.channels))
@@ -57,8 +57,10 @@ class FeatureStackSpec:
             raise ValueError("The species vocabulary must begin with 'unknown'.")
         if len(set(self.species)) != len(self.species):
             raise ValueError("Species vocabulary entries must be unique.")
-        if self.version != 1:
+        if self.version not in {1, 2}:
             raise ValueError("Unsupported feature-stack specification version.")
+        if self.version == 1 and 'foreground_colour' in self.channels:
+            raise ValueError('Legacy foreground feature semantics are ambiguous. Re-export the dataset with feature specification v2 and retrain; do not relabel old tensors or checkpoints.')
         if not 8.0 <= float(self.nominal_seed_diameter_px) <= 256.0:
             raise ValueError("Nominal seed diameter must be between 8 and 256 pixels.")
 

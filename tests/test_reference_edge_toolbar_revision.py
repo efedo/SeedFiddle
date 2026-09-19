@@ -37,6 +37,12 @@ class ReferenceEdgeToolbarRevisionTests(unittest.TestCase):
         window.resize(1360, 920)
         window.show()
         self.app.processEvents()
+        # First reveal initializes the expert graph; later visibility changes
+        # preserve that viewport without touching analytical settings.
+        window.pipeline_workspace_action.setChecked(True)
+        self.app.processEvents()
+        window.pipeline_workspace_action.setChecked(False)
+        self.app.processEvents()
         profile = analysis_settings_profile_from_graph(window.pipeline)
         image_transform = window.image_view.transform()
         graph_transform = window.pipeline_canvas.transform()
@@ -48,7 +54,7 @@ class ReferenceEdgeToolbarRevisionTests(unittest.TestCase):
             window.image_workspace_action.setChecked(image)
             window.pipeline_workspace_action.setChecked(pipeline)
             self.app.processEvents()
-            self.assertEqual(not window.image_view.isHidden(), image)
+            self.assertEqual(not window.image_view.isHidden(), image or not pipeline)
             self.assertEqual(not window.pipeline_canvas.isHidden(), pipeline)
         self.assertEqual(window.image_view.transform(), image_transform)
         self.assertEqual(window.pipeline_canvas.transform(), graph_transform)

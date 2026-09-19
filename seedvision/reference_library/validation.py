@@ -43,11 +43,9 @@ def validate_aggregated_library(aggregated: Mapping[str, object]) -> LibraryVali
     def tier(count):
         if count == 0:
             return ValidationTier.UNAVAILABLE
-        if count < 3:
-            return ValidationTier.PROVISIONAL
-        if len(capture_groups) >= 2:
-            return ValidationTier.MULTI_CONTEXT_VALIDATED
-        return ValidationTier.VALIDATED
+        # Coverage is not a held-out performance result. Publication remains
+        # possible, but no number of source images certifies a product.
+        return ValidationTier.PROVISIONAL
 
     for product, key in (
         (LibraryProduct.FOREGROUND_COLOUR, "foreground_colour"),
@@ -80,6 +78,16 @@ def validate_aggregated_library(aggregated: Mapping[str, object]) -> LibraryVali
             )
             if metrics["source_balance_error"] > 1e-5:
                 product_warnings.append("Source-balance invariant failed.")
+            class_ids = getattr(bank, 'class_ids', np.zeros(len(bank.weights), np.int16))
+            for class_id in np.unique(class_ids):
+                indices = np.unique(bank.source_indices[class_ids == class_id])
+                groups = {sources[int(index)].capture_group_id for index in indices if sources[int(index)].capture_group_id}
+                metrics[f'class_{int(class_id)}_source_count'] = float(len(indices))
+                metrics[f'class_{int(class_id)}_capture_group_count'] = float(len(groups))
+                metrics[f'class_{int(class_id)}_source_fold_count'] = float(len(indices) if len(indices)>1 else 0)
+                metrics[f'class_{int(class_id)}_capture_fold_count'] = float(len(groups) if len(groups)>1 else 0)
+            metrics['leave_one_source_out_fold_count'] = sum(value for name,value in metrics.items() if name.startswith('class_') and name.endswith('_source_fold_count'))
+            metrics['leave_one_capture_group_out_fold_count'] = sum(value for name,value in metrics.items() if name.startswith('class_') and name.endswith('_capture_fold_count'))
         if contributing and contributing < 3:
             product_warnings.append("Fewer than three independent source images.")
         validations.append(
@@ -149,7 +157,9 @@ def validate_aggregated_library(aggregated: Mapping[str, object]) -> LibraryVali
     if len({item.source_sha256 for item in sources}) != len(sources):
         warnings.append("Duplicate source-image fingerprint detected.")
     return LibraryValidationReport(
-        tuple(validations), bool(available) and not warnings, tuple(warnings)
+        tuple(validations), bool(available) and not warnings and not any(
+            'Source-balance invariant failed.' in item.warnings for item in validations),
+        tuple(warnings + [f'{item.product.value}: {warning}' for item in validations for warning in item.warnings])
     )
 
 
@@ -203,24 +213,27 @@ def _source_balance_error(bank) -> float:
 def _leave_one_source_out_distance(bank) -> float:
     sources = np.unique(bank.source_indices)
     if len(sources) < 2 or not len(bank.centres):
-        return 0.0
+        return None
     distances = []
+    classes = getattr(bank,'class_ids',np.zeros(len(bank.centres),np.int16))
     for source in sources:
-        held = bank.centres[bank.source_indices == source]
-        training = bank.centres[bank.source_indices != source]
-        training_scales = bank.scales[bank.source_indices != source]
-        if not len(held) or not len(training):
-            continue
-        chunk = ((held[:, None] - training[None]) / training_scales[None]) ** 2
-        distances.extend(np.min(np.mean(chunk, axis=2), axis=1))
-    return float(np.median(distances)) if distances else 0.0
+        for class_id in np.unique(classes):
+            held = bank.centres[(bank.source_indices == source) & (classes == class_id)]
+            training_mask = (bank.source_indices != source) & (classes == class_id)
+            training = bank.centres[training_mask]
+            training_scales = bank.scales[training_mask]
+            if not len(held) or not len(training):
+                continue
+            chunk = ((held[:, None] - training[None]) / training_scales[None]) ** 2
+            distances.extend(np.min(np.mean(chunk, axis=2), axis=1))
+    return float(np.median(distances)) if distances else None
 
 
 def _leave_one_capture_group_out_distance(bank, sources) -> float:
     """Descriptor-domain shift with each complete capture group held out."""
 
     if bank is None or not len(bank.centres):
-        return 0.0
+        return None
     groups = np.asarray(
         [
             "" if sources[int(index)].capture_group_id is None
@@ -231,13 +244,13 @@ def _leave_one_capture_group_out_distance(bank, sources) -> float:
     )
     named = tuple(value for value in np.unique(groups) if value)
     if len(named) < 2:
-        return 0.0
+        return None
     distances = []
     class_ids = getattr(bank, "class_ids", np.zeros(len(bank.centres), np.int16))
     for group in named:
         for class_id in np.unique(class_ids):
             held_mask = (groups == group) & (class_ids == class_id)
-            train_mask = (groups != group) & (class_ids == class_id)
+            train_mask = (groups != group) & (groups != '') & (class_ids == class_id)
             held = bank.centres[held_mask]
             training = bank.centres[train_mask]
             scales = bank.scales[train_mask]
@@ -245,7 +258,7 @@ def _leave_one_capture_group_out_distance(bank, sources) -> float:
                 continue
             distance = ((held[:, None] - training[None]) / scales[None]) ** 2
             distances.extend(np.min(np.mean(distance, axis=2), axis=1))
-    return float(np.median(distances)) if distances else 0.0
+    return float(np.median(distances)) if distances else None
 
 
 def _shape_grouped_metrics(observations, sources) -> dict[str, float]:
@@ -256,9 +269,9 @@ def _shape_grouped_metrics(observations, sources) -> dict[str, float]:
             "physical_seed_count": 0.0,
             "accession_count": 0.0,
             "pose_family_count": 0.0,
-            "leave_one_physical_seed_predictive_coverage": 0.0,
-            "leave_one_accession_standardized_distance": 0.0,
-            "leave_one_capture_group_standardized_distance": 0.0,
+            "leave_one_physical_seed_predictive_coverage": None,
+            "leave_one_accession_standardized_distance": None,
+            "leave_one_capture_group_standardized_distance": None,
         }
     groups: dict[str, list[object]] = {}
     for item in observations:
@@ -319,7 +332,7 @@ def _shape_grouped_metrics(observations, sources) -> dict[str, float]:
                 vectors.append(vector)
         unique = tuple(sorted(set(labels)))
         if len(unique) < 2:
-            return 0.0
+            return None
         vectors = np.asarray(vectors, np.float64)
         distances = []
         for label in unique:
@@ -330,14 +343,14 @@ def _shape_grouped_metrics(observations, sources) -> dict[str, float]:
             centre = np.median(training, axis=0)
             scale = np.maximum(1e-8, 1.4826 * np.median(np.abs(training - centre), axis=0))
             distances.extend(np.sqrt(np.mean(((held - centre) / scale) ** 2, axis=1)))
-        return float(np.median(distances)) if distances else 0.0
+        return float(np.median(distances)) if distances else None
 
     return {
         "physical_seed_count": float(len(grouped)),
         "accession_count": float(len(accession_ids)),
         "pose_family_count": float(len(poses)),
         "leave_one_physical_seed_predictive_coverage": (
-            float(coverage_hits / coverage_total) if coverage_total else 0.0
+            float(coverage_hits / coverage_total) if coverage_total else None
         ),
         "leave_one_accession_standardized_distance": grouped_distance(
             lambda source_index: (

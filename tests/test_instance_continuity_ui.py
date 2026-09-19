@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.review_fixtures import dispose_window
+
 import os
 import tempfile
 import unittest
@@ -33,7 +35,7 @@ class InstanceContinuityUiTests(unittest.TestCase):
         image.fill(QColor("white"))
         self.assertTrue(image.save(str(image_path)))
         self.window = MainWindow(self.root)
-        self.addCleanup(self.window.close)
+        self.addCleanup(dispose_window, self.window)
         self.window.image_view._analysis_result = SimpleNamespace()
 
     def _install_draft(self, labels: np.ndarray) -> str:

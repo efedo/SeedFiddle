@@ -21,6 +21,7 @@ from seedvision.learning.data import (
 )
 from seedvision.learning.losses import multi_head_unet_loss, stardist_loss
 from seedvision.learning.models import MultiHeadSeedUNet, SeedStarDist2D
+from seedvision.learning.evaluation_protocol import dataset_identity
 
 
 class TrainingCancelled(RuntimeError):
@@ -196,6 +197,7 @@ def _train_from_manifest_impl(
     if not audit["valid"]:
         raise ValueError("Learning dataset audit failed: " + "; ".join(audit["errors"]))
     manifest = LearningManifest.load(manifest_path)
+    development_identity = dataset_identity(manifest_path, splits={'train', 'validation'})
     supervised = [item for item in manifest.samples if item.split in {"train", "validation"}]
     if not configuration.allow_unreviewed and any(not item.reviewed for item in supervised):
         raise ValueError(
@@ -314,6 +316,7 @@ def _train_from_manifest_impl(
                 training_metadata={
                     "dataset_id": manifest.dataset_id,
                     "manifest_sha256": file_sha256(manifest_path),
+                    "development_identity": development_identity,
                     "configuration": asdict(configuration),
                     "best_epoch": epoch,
                     "best_validation_loss": validation_loss,

@@ -8,6 +8,7 @@ from unittest.mock import patch
 from types import SimpleNamespace
 
 import numpy as np
+from seedvision.persistence.reference_regions import SeedInstanceAnnotation
 
 
 class LearningWorkflowTests(unittest.TestCase):
@@ -144,6 +145,7 @@ class LearningWorkflowTests(unittest.TestCase):
             crop_offset=(0, 0),
             layers=layers,
             foreground_probability=np.zeros(shape, np.uint8),
+            foreground_colour_probability=np.full(shape, 64, np.uint8),
             advanced=SimpleNamespace(
                 rasters={
                     "sensor_noise": np.zeros(shape, np.uint8),
@@ -171,6 +173,7 @@ class LearningWorkflowTests(unittest.TestCase):
                 labels,
                 manifest,
                 dataset_id="derived-boundaries",
+                seed_annotations=tuple(SeedInstanceAnnotation(int(identifier),shape_reviewed=True,outline_visibility='complete') for identifier in np.unique(labels) if identifier),
                 identifier="sample",
                 species="soybean",
                 group="capture-a",
@@ -223,7 +226,7 @@ class LearningWorkflowTests(unittest.TestCase):
                     dataset_id="workflow-smoke",
                     feature_spec=spec,
                     identifier=identifier,
-                    features=features,
+                    features=features + (np.float32(.01) if split == 'validation' else 0),
                     labels=labels,
                     image_bgr=np.zeros((40, 40, 3), dtype=np.uint8),
                     species="soybean",

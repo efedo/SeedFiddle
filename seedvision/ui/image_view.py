@@ -871,9 +871,6 @@ class ImageView(QGraphicsView):
             )
         return minimum_y
 
-    def _hilum_arrow_length(self):
-        return max(30., float(getattr(self._analysis_result, "estimated_seed_diameter_px", 80.)) * 0.45)
-
     def set_hilum_editing(self, enabled: bool) -> None:
         self._hilum_editing = bool(enabled)
         self._hilum_drag = None
@@ -905,16 +902,6 @@ class ImageView(QGraphicsView):
         path.lineTo(start + QPointF(radius*1.5, 0))
         path.moveTo(start + QPointF(0, -radius*1.5))
         path.lineTo(start + QPointF(0, radius*1.5))
-        if self._hilum_direction is not None:
-            direction = QPointF(*self._hilum_direction)
-            tip = start + direction*self._hilum_arrow_length()
-            normal = QPointF(-direction.y(), direction.x())
-            path.moveTo(start)
-            path.lineTo(tip)
-            path.moveTo(tip - direction*radius*2 + normal*radius)
-            path.lineTo(tip)
-            path.lineTo(tip - direction*radius*2 - normal*radius)
-            path.addEllipse(tip, radius*.65, radius*.65)
         for colour, width, z in (("#171b24", 6, 100), ("#ff66dc", 2.5, 101)):
             pen = QPen(QColor(colour), width)
             pen.setCosmetic(True)
@@ -923,9 +910,8 @@ class ImageView(QGraphicsView):
             self._hilum_items.append(item)
 
     def set_context_panel(self, panel: QFrame) -> None:
-        """Attach a contextual control panel above the image viewport."""
+        """Track an application-owned contextual panel near the image viewport."""
 
-        panel.setParent(self)
         self._context_panel = panel
         self._layout_context_panel()
         self.instance_continuity_warning_banner.raise_()
@@ -984,15 +970,23 @@ class ImageView(QGraphicsView):
     def _layout_context_panel(self) -> None:
         if self._context_panel is None:
             return
+        container = self._context_panel.parentWidget()
+        if container is None:
+            return
+        central = container.centralWidget() if hasattr(container, "centralWidget") else None
+        bounds = central.geometry() if central is not None else container.rect()
+        default_position = self.mapTo(
+            container, QPoint(12, max(46, self._context_panel_minimum_y()))
+        )
         user_size = getattr(self._context_panel, "user_size", None)
         hint = user_size or self._context_panel.sizeHint()
-        available_width = max(240, self.width() - 24)
-        minimum_y = self._context_panel_minimum_y()
-        available_height = max(140, self.height() - minimum_y - 12)
+        available_width = max(240, bounds.width() - 24)
+        available_height = max(140, bounds.height() - 12)
         width = min(max(300, hint.width()) if user_size else 430, available_width)
-        height = min(hint.height() if user_size else 680, available_height)
+        default_height = min(680, bounds.bottom() - default_position.y() - 12)
+        height = min(hint.height() if user_size else max(180, default_height), available_height)
         self._context_panel.resize(width, height)
-        requested = self._context_panel_user_position or QPoint(12, 46)
+        requested = self._context_panel_user_position or default_position
         self._move_context_panel_to(requested, remember=False)
 
     def _move_context_panel_to(
@@ -1000,12 +994,16 @@ class ImageView(QGraphicsView):
     ) -> None:
         if self._context_panel is None:
             return
-        minimum_y = self._context_panel_minimum_y()
-        maximum_x = max(0, self.width() - self._context_panel.width())
-        maximum_y = max(minimum_y, self.height() - self._context_panel.height())
+        container = self._context_panel.parentWidget()
+        if container is None:
+            return
+        central = container.centralWidget() if hasattr(container, "centralWidget") else None
+        bounds = central.geometry() if central is not None else container.rect()
+        maximum_x = max(bounds.left(), bounds.right() - self._context_panel.width() + 1)
+        maximum_y = max(bounds.top(), bounds.bottom() - self._context_panel.height() + 1)
         clamped = QPoint(
-            max(0, min(int(position.x()), maximum_x)),
-            max(minimum_y, min(int(position.y()), maximum_y)),
+            max(bounds.left(), min(int(position.x()), maximum_x)),
+            max(bounds.top(), min(int(position.y()), maximum_y)),
         )
         self._context_panel.move(clamped)
         if remember:

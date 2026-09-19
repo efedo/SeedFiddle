@@ -909,6 +909,7 @@ class PipelineInspector(QWidget):
     """Edit node enablement and typed parameter values."""
 
     PROCEDURAL_FIT_ACTION = "fit_procedural_to_annotations"
+    OPTIMIZE_NODE_ACTION = "optimize_node_from_project_references"
     REFERENCE_EDGE_FIT_ACTION = "fit_reference_edges_to_annotations"
     PROCEDURAL_CENTRES_EDIT_ACTION = "edit_manual_seed_centres"
     PROCEDURAL_CENTRES_MODE_ACTION = "set_manual_seed_centre_mode"
@@ -924,6 +925,9 @@ class PipelineInspector(QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._node: PipelineNode | None = None
+        self._unified_optimization = False
+        self._optimization_ready = False
+        self._optimization_busy = False
         self._analysis_result = None
         self._parameter_widgets: list[QWidget] = []
         self._parameter_section_labels: list[QLabel] = []
@@ -943,6 +947,7 @@ class PipelineInspector(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         self.title_label = QLabel("Select a pipeline node", self)
         self.title_label.setStyleSheet("font-weight: 650; font-size: 14px;")
+        self.title_label.setWordWrap(True)
         self.overlay_combo = QComboBox(self)
         self.overlay_combo.setObjectName("nodeOverlaySelector")
         self.overlay_combo.setToolTip(
@@ -1321,6 +1326,8 @@ class PipelineInspector(QWidget):
         self.foreground_start_label.setVisible(False)
         self.parameter_container = QWidget(self)
         self.parameter_form = QFormLayout(self.parameter_container)
+        self.parameter_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
+        self.parameter_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         self.parameter_form.setContentsMargins(0, 0, 0, 0)
         self.parameters_header = QWidget(self)
         parameters_header_layout = QHBoxLayout(self.parameters_header)
@@ -1348,6 +1355,17 @@ class PipelineInspector(QWidget):
         layout.addWidget(self.procedural_centres_container)
         layout.addWidget(self.procedural_fit_container)
         layout.addWidget(self.reference_edge_fit_container)
+        self.optimization_container = QWidget(self)
+        optimization_layout = QVBoxLayout(self.optimization_container)
+        optimization_layout.setContentsMargins(0, 4, 0, 4)
+        self.optimization_status = QLabel(self.optimization_container)
+        self.optimization_status.setWordWrap(True)
+        self.optimization_button = QPushButton('Optimize from project references…', self.optimization_container)
+        self.optimization_button.clicked.connect(self._request_optimization)
+        optimization_layout.addWidget(self.optimization_status)
+        optimization_layout.addWidget(self.optimization_button)
+        self.optimization_container.hide()
+        layout.addWidget(self.optimization_container)
         layout.addWidget(self.foreground_start_heading)
         layout.addWidget(self.foreground_start_label)
         layout.addWidget(self.parameters_header)
@@ -1358,6 +1376,7 @@ class PipelineInspector(QWidget):
         self.title_label.setText(f"Node: {node.title}")
         self.description_label.setText(node.description)
         self.details_label.setText(node.details)
+        self.details_label.setText(node.details + '\n\nEvidence scores and model outputs are uncalibrated unless an independent calibration study is recorded. Diagnostic uncertainty maps are not confidence intervals.')
         self.method_heading.blockSignals(True)
         self.method_heading.setChecked(False)
         self.method_heading.blockSignals(False)
@@ -1396,6 +1415,7 @@ class PipelineInspector(QWidget):
         specs_by_key = {spec.key: spec for spec in node.parameter_specs}
         for section_index, section in enumerate(node.parameter_sections):
             section_label = QLabel(section.title, self.parameter_container)
+            section_label.setWordWrap(True)
             section_label.setObjectName("parameterSectionHeading")
             section_label.setStyleSheet(
                 "font-weight: 650; color: #27465e; "
@@ -1405,7 +1425,18 @@ class PipelineInspector(QWidget):
             section_label.setToolTip(
                 f"{node.title} settings: {section.title}"
             )
-            self.parameter_form.addRow(section_label)
+            heading = QWidget(self.parameter_container)
+            heading_layout = QHBoxLayout(heading)
+            heading_layout.setContentsMargins(0,0,0,0)
+            toggle = QToolButton(heading)
+            toggle.setCheckable(True)
+            toggle.setChecked(True)
+            toggle.setArrowType(Qt.ArrowType.DownArrow)
+            toggle.setAccessibleName('Expand or collapse '+section.title)
+            heading_layout.addWidget(toggle)
+            heading_layout.addWidget(section_label,1)
+            self.parameter_form.addRow(heading)
+            first_row = self.parameter_form.rowCount()
             self._parameter_section_labels.append(section_label)
             for key in section.keys:
                 spec = specs_by_key[key]
@@ -1458,19 +1489,64 @@ class PipelineInspector(QWidget):
                     )
                 editor.setEnabled(node.enabled and node.implemented)
                 editor.setToolTip(spec.description)
+                if node.identifier == 'procedural_instances' and spec.key == 'reference_texture_weight':
+                    editor.setEnabled(False)
+                    editor.setToolTip('Legacy fallback only. The connected resolved material input already combines texture; tune Material evidence decision instead.')
                 field_label = QLabel(spec.label, self.parameter_container)
+                field_label.setWordWrap(True)
+                field_label.setBuddy(editor)
+                editor.setAccessibleName(spec.label)
                 field_label.setToolTip(spec.description)
                 self.parameter_form.addRow(field_label, editor)
                 self._parameter_widgets.append(editor)
+            section_rows = tuple(range(first_row,self.parameter_form.rowCount()))
+            def expand_section(checked, rows=section_rows, button=toggle):
+                button.setArrowType(Qt.ArrowType.DownArrow if checked else Qt.ArrowType.RightArrow)
+                for row in rows:
+                    self.parameter_form.setRowVisible(row,checked)
+            toggle.toggled.connect(expand_section)
         self.parameter_container.setVisible(bool(node.parameter_specs))
         self.parameters_header.setVisible(bool(node.parameter_specs))
         self._refresh_procedural_fit_action()
         self.reference_edge_fit_container.setVisible(
-            node.identifier == "reference_edge_probability"
+            node.identifier == "reference_edge_probability" and not self._unified_optimization
         )
         self.reference_edge_fit_button.setEnabled(node.enabled and node.implemented)
         self._refresh_procedural_centres_action()
         self._update_colour_summary()
+        self._refresh_optimization()
+
+    def enable_unified_optimization(self) -> None:
+        self._unified_optimization = True
+        self.procedural_fit_container.hide()
+        self.reference_edge_fit_container.hide()
+        self._refresh_optimization()
+
+    def set_optimization_context(self, *, ready: bool, busy: bool) -> None:
+        self._optimization_ready, self._optimization_busy = bool(ready), bool(busy)
+        self._refresh_optimization()
+
+    def _refresh_optimization(self) -> None:
+        from seedvision.optimization.registry import capability
+        node = self._node
+        self.optimization_container.setVisible(self._unified_optimization and node is not None)
+        if node is None or not self._unified_optimization:
+            return
+        contract = capability(node)
+        self.optimization_button.setVisible(bool(contract.searchable))
+        self.optimization_button.setEnabled(bool(contract.searchable and node.enabled
+            and node.implemented and self._optimization_ready and not self._optimization_busy))
+        text = contract.reason or f'{len(contract.searchable)} searchable controls; objective: {contract.objective}. '
+        if contract.searchable:
+            text += ('Optimization is running.' if self._optimization_busy else
+                     'Save a project and apply references to enable fitting.' if not self._optimization_ready else
+                     'Choose images and budget; inspect the proposal before applying. Missing target types are reported in the plan/results.')
+        self.optimization_status.setText(text)
+        self.optimization_status.setToolTip('\n'.join(f'{key}: {reason}' for key, reason in contract.fixed))
+
+    def _request_optimization(self) -> None:
+        if self._node is not None and self.optimization_button.isEnabled():
+            self.node_action_requested.emit(self._node.identifier, self.OPTIMIZE_NODE_ACTION, None)
 
     def set_procedural_centres_state(
         self,
@@ -1641,7 +1717,7 @@ class PipelineInspector(QWidget):
     def _refresh_procedural_fit_action(self) -> None:
         node = self._node
         visible = node is not None and node.identifier == "procedural_instances"
-        self.procedural_fit_container.setVisible(visible)
+        self.procedural_fit_container.setVisible(visible and not self._unified_optimization)
         if not visible:
             return
         for control, key in (

@@ -42,11 +42,9 @@ class ProceduralFitParameter:
     initial_step: float
 
 
-# Keep the search intentionally small.  These controls have direct effects on
-# foreground support, boundary traversal, marker density, or final region
-# filtering.  Display-only controls and the topology working dimension are not
-# eligible for fitting.
-DEFAULT_PROCEDURAL_FIT_PARAMETERS = (
+# Retain established starting steps for compatibility; the shared contract
+# below supplies the complete searchable catalogue, including integer controls.
+_PREFERRED_PROCEDURAL_FIT_PARAMETERS = (
     ProceduralFitParameter("foreground_threshold_scale", 0.55, 1.25, 0.16),
     ProceduralFitParameter("occupancy_closing_fraction", 0.03, 0.24, 0.04),
     ProceduralFitParameter("boundary_semantic_floor", 0.0, 0.40, 0.08),
@@ -67,46 +65,28 @@ DEFAULT_PROCEDURAL_FIT_PARAMETERS = (
     ProceduralFitParameter("maximum_protrusion_area_fraction", 0.05, 0.22, 0.03),
 )
 
-_FITTABLE_PARAMETER_NAMES = {
-    # Occupancy support.
-    "foreground_threshold_scale",
-    "occupancy_closing_fraction",
-    "occupancy_hole_area_fraction",
-    "dish_margin_fraction",
-    # Watershed boundary cost.
-    "boundary_edge_weight",
-    "boundary_ridge_weight",
-    "boundary_semantic_floor",
-    "boundary_nonphysical_discount",
-    "boundary_physical_ridge_weight",
-    "boundary_trace_weight",
-    "trace_minimum_length_fraction",
-    "trace_convexity_weight",
-    # Marker construction and label filtering.
-    "centre_geometry_smoothing_fraction",
-    "centre_material_weight",
-    "centre_distance_weight",
-    "centre_minimum_separation_fraction",
-    "sparse_centre_minimum_separation_fraction",
-    "marker_count_multiplier",
-    "minimum_marker_score",
-    "minimum_instance_area_fraction",
-    "soft_minimum_instance_area_fraction",
-    "maximum_instance_area_fraction",
-    "soft_maximum_instance_width_fraction",
-    "hard_maximum_instance_width_fraction",
-    "maximum_internal_concavity_fraction",
-    "maximum_protrusion_area_fraction",
-    "minimum_instance_solidity",
-    "maximum_instance_axis_ratio",
-}
+def _complete_parameter_catalogue():
+    """Keep compatibility callers aligned with the shared node contract."""
+    from seedvision.pipeline import build_default_pipeline
+    from seedvision.optimization.registry import capability
+    node = build_default_pipeline().node('procedural_instances')
+    names = set(capability(node).searchable)
+    existing = {parameter.name: parameter for parameter in _PREFERRED_PROCEDURAL_FIT_PARAMETERS}
+    return tuple(existing.get(spec.key) or ProceduralFitParameter(
+        spec.key, spec.minimum, spec.maximum,
+        max(float(spec.step or .01), abs(float(node.parameters[spec.key])) * .2))
+        for spec in node.parameter_specs if spec.key in names)
+
+
+DEFAULT_PROCEDURAL_FIT_PARAMETERS = _complete_parameter_catalogue()
+_FITTABLE_PARAMETER_NAMES = {parameter.name for parameter in DEFAULT_PROCEDURAL_FIT_PARAMETERS}
 
 
 @dataclass(frozen=True, slots=True)
 class ProceduralFitOptions:
     """Bounds and loss weights for a short coordinate-search fit."""
 
-    maximum_evaluations: int = 35
+    maximum_evaluations: int = 1 + 4 * len(DEFAULT_PROCEDURAL_FIT_PARAMETERS)
     passes: int = 2
     step_decay: float = 0.50
     false_positive_weight: float = 2.0
@@ -889,6 +869,8 @@ def fit_procedural_settings(
                         parameter.maximum,
                     )
                 )
+                if type(getattr(current_settings, parameter.name)) is int:
+                    candidate_value = int(round(candidate_value))
                 if abs(candidate_value - current_value) <= 1e-12:
                     continue
                 candidate = replace(

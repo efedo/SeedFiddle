@@ -2,6 +2,60 @@
 
 ## Resume here
 
+### Annotation palette cleanup (2026-09-19)
+
+The annotation palette is now owned by the main window and may be dragged beyond
+the image view, within the central application area. Seed visibility uses a
+Show all/selected dropdown beside Clear seed/Clear all. The automatic-result
+draft importer and optional-metadata collapse were removed. Tool instructions
+are in button tooltips; annotation pixel counts are in the Project node details.
+Condition, seed shape, exclusion, and hilum controls were compacted. Selecting
+explicit Outline and Pose marks shape metadata reviewed; the unchecked Exclude
+from modelling control writes an exclusion reason only when selected. Hilum uses
+Pick location and Clear location, with only the location marker displayed;
+direction is still derived internally for saved metadata. See focused UI tests and the full-suite log under ignored
+`artifacts/annotation-panel-full-suite.log`.
+
+
+### Current review remediation (2026-09-18)
+
+Read [the remediation register](docs/CRITICAL_REVIEW_REMEDIATION.md) and
+[operator guide](docs/OPERATOR_GUIDE.md) before relying on older chronological
+notes below. The current behavior supersedes historical claims about annotation
+markers overriding segmentation, raw/resolved foreground features, legacy count
+exports, eleven-fixture inventories and scientific validation tiers.
+
+The working tree includes the earlier complete node-optimization implementation
+plus the critical-review corrections. Preserve both. Main additions are shared
+production settings, safe learning feature/checkpoint/export contracts, global
+metrics and provenance audits, bounded dataset/evaluation/history storage,
+coordinate-bound references and explicit legacy migration, source-content cache
+invalidation, authoritative results/review/export, portable snapshots, responsive
+persistence/shutdown, annotation redo and workflow/layout fixes. The single native
+`seed_vision.py` entry point and node-local CUDA cache architecture remain intact.
+
+Reference schema is now 6. Unknown legacy coordinate frames are withheld until
+reviewed; transforms transport masks and invalidate clipped complete outlines.
+Feature recipe v2 is raw foreground colour; ambiguous v1 foreground recipes need
+re-export/retraining. Checkpoints use restricted tensor/primitive loading. Missing
+foreground is unavailable rather than zero. Physical result measurements and
+unvalidated per-object traits are withheld. Counts/coverage never certify science.
+
+The exact missing `images/IMG_9689c.JPG` was recovered from Git and matches the
+recorded SHA-256. Synthetic tests remain engineering evidence only. Remaining
+scientific inputs are listed in the register and validation protocol: intended
+use/tolerances, reviewed grouped real data, physical calibration/acquisition facts,
+trait definitions and operator validation. No data were promoted to reviewed truth.
+
+Final full suite: 667 tests in 294.339 seconds, 665 passed and 2 skipped
+(unavailable complete historical pilot batch; POSIX case-sensitive filesystem
+test on Windows). Focused checks, compilation, catalogue drift and whitespace
+checks pass. Tests/logs and screenshots are under ignored `artifacts/critical-*`.
+See the remediation register for detailed evidence. No generated output belongs in `images/`.
+New Windows CPU/Qt and optional CUDA workflow definitions are local changes;
+hosted CI has not run here. No commit or push was requested or performed.
+
+
 Repository: <https://github.com/efedo/SeedFiddle>
 
 Primary branch: `main`
@@ -22,7 +76,107 @@ Hard constraints:
 - Full-raster analysis is GPU-first PyTorch CUDA. Keep tensors and cached
   intermediates on the GPU until display or compact metadata requires transfer.
 
-## Latest update — 2026-09-08: compact seed annotation controls and centroids
+## Latest update — 2026-09-18: reference-driven node optimization
+
+- Implemented the node optimization compliance work. Read
+  `docs/NODE_OPTIMIZATION.md` for usage, objective definitions, conditional
+  targets, persistence and limitations. The historical review now has an
+  implementation-status table for O01–O11.
+- New `seedvision/optimization/` registry/search/production evaluator covers
+  all 48 cards: 38 computational capabilities, 269 searchable controls before
+  input-dependent exclusions, and ten explicit exemptions. Procedural search
+  covers all 35 eligible controls; Reference edges covers 19. Physical facts,
+  scoring rules, reference policies and annotation geometry remain fixed.
+- `seedvision/ui/optimization.py` provides one native planner/worker/review
+  path for every node and the Analysis project command. It fits shared settings
+  across selected images in dependency order using actual `analyze_path`
+  calculations, isolated caches, true-producer invalidation and CUDA reductions.
+  Learned nodes tune decoders; model-weight training remains separate.
+- Fixed the procedural surrogate-input problem and moving edge targets.
+  Inactive semantic/trace/oval inputs are excluded with reasons. Complete,
+  shape-reviewed, connected reference filtering is shared with live analysis.
+  The obsolete procedural texture fallback control is visibly disabled.
+  Gradient-cutoff diagnostics score their own outputs; shadow/highlight
+  controls require corresponding reviewed rasters.
+- Runs are explicitly in-sample adaptation, not independent validation.
+  Diagnostic-target NPZ imports are source/transform-bound; partial labels and
+  per-image exhaustive-coverage declarations have distinct scoring behavior.
+  No real-image accuracy improvement is claimed.
+- Before/after overlays and per-image results precede application. Cancellation,
+  source/annotation changes and stale graphs prevent partial installation.
+  Atomic JSON journals, timestamped history, guarded rollback and Save As
+  companion copying support recovery. Apply/restore marks the project dirty:
+  save normally to persist its node parameters.
+- Validation: focused, Qt and two-image real CUDA integration tests pass.
+  The production integration verifies that applying one shared proposal
+  reproduces final per-image scores. Optional-node smoke tests and native dialog
+  renders are under ignored `artifacts/optimization-*`; these are correctness
+  checks, not accuracy benchmarks. Focused optimizer/UI/CUDA tests: 66 passed
+  in 25.281 seconds. Final full discovery: 638 tests in 536.445 seconds,
+  635 passed, two skipped, and one pre-existing missing-image fixture failure
+  (`images/IMG_9689c.JPG`). Logs are
+  `artifacts/optimization-focused-final.log` and
+  `artifacts/optimization-full-suite-final-2026-09-18.log`. An additional final
+  25-test contract/UI run passed after adding reference-context provenance.
+- Existing missing fixture `images/IMG_9689c.JPG` remains unchanged. No generated
+  artifacts or image fixtures were added to the source changes. No commit/push
+  was requested.
+
+## Previous update — 2026-09-09: node optimization compliance review
+
+- Additional review-only work is recorded in
+  `docs/NODE_OPTIMIZATION_COMPLIANCE_REVIEW_2026_09_09.md`. It assesses the
+  requirement that every annotation-optimizable node expose fitting and that
+  a project command sequentially optimize all eligible nodes. The application
+  is not compliant: only Reference edges and Procedural seed separation have
+  node-local fit actions, both are partial, and no project coordinator exists.
+- The report inventories all 29 active and 19 unused cards, distinguishes
+  direct/downstream/conditional supervision from legitimate exemptions, and
+  provides 11 prioritized findings plus an implementation and acceptance plan.
+- Fresh synthetic probes show four default procedural search parameters are
+  ineffective with the worker's omitted semantic/trace inputs. The edge fitter
+  can improve its loss with identical predictions by changing the interior
+  buffer used to define its evaluation targets. The procedural reference
+  texture weight is also bypassed when resolved material input is supplied.
+  These are findings, not completed fixes.
+- Validation: 43 focused optimizer/UI tests passed in 5.688 seconds. Full
+  unittest discovery ran 611 tests in 315.771 seconds: 608 passed, 2 skipped,
+  and the same missing `images/IMG_9689c.JPG` fixture caused one failure.
+  Actual Qt inspector/menu inventory and counterexample evidence are under
+  ignored `artifacts/node-optimization-review-2026-09-09/`; standalone review
+  harnesses and test logs also remain under ignored `artifacts/`.
+- No application implementation or committed image fixtures were changed;
+  no commit or push was requested. Read this addendum alongside the original
+  critical application review before implementing optimization changes.
+
+## Previous update — 2026-09-08: comprehensive critical review
+
+- Review-only work is recorded in
+  `docs/CRITICAL_APPLICATION_REVIEW_2026_09_08.md`, covering code, actual Qt
+  layouts/workflows, scientific merit, persistence, learning/evaluation,
+  functionality, and a staged improvement plan. There are 30 prioritized
+  items, including 13 P1 items for the affected workflows. No application
+  implementation was changed and no commit/push was requested.
+- Confirmed reproductions include loose-workspace draft loss on close,
+  exported/live foreground feature mismatch, partial-patch boundary
+  supervision, interrupted learning-sample replacement, evaluation accepting
+  an audit-invalid split, inflated library validation tiers, and stale raw
+  source caching. See the report for evidence, scope, and acceptance criteria;
+  these are findings to repair, not completed fixes.
+- Actual Qt rendering used Fusion/Segoe UI at 1100×700, 1366×768, and
+  1920×1080. An isolated real-worker IMG_9670c run yielded zero instances with
+  no Foreground references; a rerun using unreviewed bundled interiors as
+  material examples only yielded 15 procedural instances versus zero legacy
+  proposals. These are diagnostic observations, not independent accuracy
+  measurements. User projects and committed image fixtures were untouched.
+- Full unittest discovery: 611 run, 608 passed, 2 skipped, 1 existing failure
+  for the absent `images/IMG_9689c.JPG` reference-manifest source; 293.406 s.
+  Log: ignored `artifacts/critical-review-full-suite-2026-09-08.log`.
+  Reproduction scripts, JSON observations, isolated persistence, and Qt
+  screenshots are under ignored `artifacts/critical-review-2026-09-08/` and
+  `artifacts/critical_review_*.py`. The report links the exact evidence files.
+
+## Previous update — 2026-09-08: compact seed annotation controls and centroids
 
 - Seed selector is now `Seed:` / colour swatch / four-digit numeric spinner
   (1–9999) / `Next empty`. `Show selected only` appears once, on the next row;

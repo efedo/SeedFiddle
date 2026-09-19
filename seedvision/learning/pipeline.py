@@ -128,7 +128,7 @@ class StarDistPipelineSettings:
         )
 
 
-_MODEL_CACHE: dict[tuple[str, int, str], tuple[object, object, dict]] = {}
+_MODEL_CACHE: dict[tuple[str, str, str], tuple[object, object, dict]] = {}
 _MODEL_CACHE_LOCK = RLock()
 
 
@@ -143,11 +143,16 @@ def cached_checkpoint(root: Path, configured: str, *, device):
         raise FileNotFoundError(
             f"Learned-model checkpoint not found: {path}. Train or copy a compatible checkpoint first."
         )
-    key = (str(path).casefold(), path.stat().st_mtime_ns, str(device))
+    from seedvision.learning.data import file_sha256
+    digest = file_sha256(path)
+    key = (str(path).casefold(), digest, str(device))
     with _MODEL_CACHE_LOCK:
         cached = _MODEL_CACHE.get(key)
         if cached is None:
             cached = load_checkpoint(path, device=device)
+            if file_sha256(path) != digest:
+                raise ValueError('Checkpoint changed while loading; retry with a stable file.')
+            cached[2]['loaded_checkpoint_sha256'] = digest
             for old_key in tuple(_MODEL_CACHE):
                 if old_key[0] == key[0] and old_key != key:
                     del _MODEL_CACHE[old_key]
@@ -165,6 +170,7 @@ def predict_pipeline_model(
     evidence,
     species: str,
     seed_diameter_px: float,
+    cancellation_requested=None,
 ):
     """Run the learned forward pass in the checkpoint's canonical seed scale.
 
@@ -212,6 +218,7 @@ def predict_pipeline_model(
         tile_size=settings.tile_size,
         overlap=settings.tile_overlap,
         use_mixed_precision=True,
+        cancellation_requested=cancellation_requested,
     )
     if (inference_height, inference_width) != (source_height, source_width):
         outputs = {
@@ -225,7 +232,7 @@ def predict_pipeline_model(
         }
         if family is ModelFamily.STARDIST:
             outputs["radial_distances"] = outputs["radial_distances"] / scale
-    return outputs, str(checkpoint_path)
+    return outputs, str(checkpoint_path)+'#sha256='+payload['loaded_checkpoint_sha256']
 
 
 def decode_pipeline_model(

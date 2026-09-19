@@ -1,4 +1,4 @@
-"""Resizable in-view annotation tool window (no separate application window)."""
+"""Resizable annotation tools owned by the application window."""
 
 from PySide6.QtCore import QPoint, QSize, Qt
 from PySide6.QtWidgets import QFrame, QLabel, QStackedWidget

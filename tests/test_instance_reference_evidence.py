@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.review_fixtures import reviewed_outlines
+
 import unittest
 
 import cv2
@@ -152,6 +154,7 @@ class InstanceReferenceEvidenceTests(unittest.TestCase):
             offset_x=0,
             offset_y=0,
             seed_instance_annotations=labels,
+            seed_instance_traits=reviewed_outlines(labels),
             settings=AnalysisLayerSettings(),
             instance_masks_enabled=False,
         )

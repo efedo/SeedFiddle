@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+
+def _coverage_label(value):
+    return "legacy coverage tier (performance unvalidated)" if value == "validated" else value
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -298,7 +302,7 @@ class SpeciesLibraryManagerDialog(QDialog):
                 manifest.version,
                 manifest.status.value,
                 len(manifest.sources),
-                ", ".join(f"{item.product.value}: {item.tier.value}" for item in manifest.products),
+                ", ".join(f"{item.product.value}: {_coverage_label(item.tier.value)}" for item in manifest.products),
                 manifest.created_utc,
                 manifest.content_sha256,
             )
@@ -383,7 +387,7 @@ class SpeciesLibraryManagerDialog(QDialog):
 
     def published(self, pin: SpeciesLibraryPin) -> None:
         self.current_pin = pin
-        self.set_build_busy(False, "The validated immutable version was published and pinned.")
+        self.set_build_busy(False, "The audited immutable version was published and pinned. Performance remains unvalidated.")
         self.refresh()
         self.build_status_label.setText(
             "Published successfully and selected for this project."
@@ -538,19 +542,19 @@ class SpeciesLibraryManagerDialog(QDialog):
         ]
         for row, product in enumerate(manifest.products):
             values = (
-                product.product.value, product.tier.value, product.source_count,
+                product.product.value, _coverage_label(product.tier.value), product.source_count,
                 product.seed_count, product.sample_count, product.prototype_count,
                 f"{product.effective_weight:.2f}", "; ".join(product.warnings),
             )
             for column, value in enumerate(values):
                 self.coverage_table.setItem(row, column, QTableWidgetItem(str(value)))
             lines.append(
-                f"{product.product.value}: {product.tier.value}; "
+                f"{product.product.value}: {_coverage_label(product.tier.value)}; "
                 f"{product.source_count} source(s), {product.seed_count} seed(s), "
                 f"{product.prototype_count} prototype(s)"
             )
             lines.extend(
-                f"  {name.replace('_', ' ')}: {value:.4g}"
+                f"  {name.replace('_', ' ')}: " + ('unavailable' if value is None else f'{value:.4g}')
                 for name, value in product.metrics.items()
             )
             lines.extend(f"  Warning: {warning}" for warning in product.warnings)

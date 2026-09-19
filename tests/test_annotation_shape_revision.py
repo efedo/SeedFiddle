@@ -1,3 +1,5 @@
+
+from tests.review_fixtures import dispose_window
 """Regression contracts for visibility-aware measurements and annotation tools."""
 from dataclasses import replace
 import json
@@ -235,7 +237,7 @@ class AnnotationWidgetTests(unittest.TestCase):
                 window.instance_id_spin.setValue(1)
                 self.assertEqual(window.instance_id_spin.value(), 1)
             finally:
-                window.close()
+                dispose_window(window)
 
     def test_hilum_drag_moves_landmark_and_derives_radial_direction_without_painting(self):
         from PySide6.QtCore import Qt, QPoint
@@ -287,6 +289,9 @@ class AnnotationWidgetTests(unittest.TestCase):
         from seedvision.ui.main_window import MainWindow
         window = MainWindow(Path(__file__).resolve().parents[1])
         try:
+            # Exercise remembered user sizing with enough image space. Small
+            # screens deliberately constrain the palette to their viewport.
+            window.resize(1366,900)
             window.show()
             window.annotate_instances_action.setEnabled(True)
             window.annotate_instances_action.setChecked(True)
@@ -303,4 +308,4 @@ class AnnotationWidgetTests(unittest.TestCase):
             window.image_view._layout_context_panel()
             self.assertEqual(window.reference_panel.size(), size)
         finally:
-            window.close()
+            dispose_window(window)

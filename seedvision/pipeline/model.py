@@ -3360,7 +3360,7 @@ def build_default_pipeline() -> PipelineGraph:
             ("Scale interpretation", ("ruler_length_mm", "minor_tick_mm")),
         ),
         "deskew_colour": (
-            ("Colour correction", ("apply_colour_balance",)),
+            ("Neutral colour balance", ("apply_colour_balance",)),
             (
                 "Geometric correction",
                 (

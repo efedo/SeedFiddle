@@ -249,7 +249,7 @@ class ProjectAnalysisUiTests(unittest.TestCase):
                 instances[18:29, 23:37] = 7
                 ReferenceRegionStore(root).save(
                     second,
-                    ReferenceRegionBundle(
+                    ReferenceRegionBundle(source_to_corrected=np.eye(3),
                         shape=(36, 48),
                         foreground=foreground,
                         annotated_seeds=instances,
@@ -1075,7 +1075,7 @@ class ProjectAnalysisUiTests(unittest.TestCase):
             foreground[7:16, 10:23] = True
             reference_store.save(
                 image,
-                ReferenceRegionBundle(shape=(36, 48), foreground=foreground),
+                ReferenceRegionBundle(source_to_corrected=np.eye(3),shape=(36, 48), foreground=foreground),
             )
             ManualSeedCentreStore(root).save(
                 image,
@@ -1149,7 +1149,7 @@ class ProjectAnalysisUiTests(unittest.TestCase):
             original = np.zeros((36, 48), dtype=bool)
             original[2:6, 3:8] = True
             reference_store.save(
-                image, ReferenceRegionBundle(shape=(36, 48), foreground=original)
+                image, ReferenceRegionBundle(source_to_corrected=np.eye(3),shape=(36, 48), foreground=original)
             )
             centre_store = ManualSeedCentreStore(root)
             centre_store.save(
@@ -1170,7 +1170,7 @@ class ProjectAnalysisUiTests(unittest.TestCase):
             changed = np.zeros((36, 48), dtype=bool)
             changed[18:30, 20:36] = True
             reference_store.save(
-                image, ReferenceRegionBundle(shape=(36, 48), foreground=changed)
+                image, ReferenceRegionBundle(source_to_corrected=np.eye(3),shape=(36, 48), foreground=changed)
             )
             centre_store.save(
                 image,
@@ -1208,7 +1208,7 @@ class ProjectAnalysisUiTests(unittest.TestCase):
                     key,
                     SimpleNamespace(
                         image_path=image,
-                        calibration=SimpleNamespace(
+                        calibration=SimpleNamespace(affine_matrix=np.eye(3),
                             corrected_bgr=np.zeros((36, 48, 3), dtype=np.uint8)
                         ),
                     ),
@@ -1242,7 +1242,7 @@ class ProjectAnalysisUiTests(unittest.TestCase):
             mask = np.zeros((36, 48), dtype=bool)
             mask[5:13, 9:18] = True
             sidecar_path = reference_store.save(
-                image, ReferenceRegionBundle(shape=(36, 48), foreground=mask)
+                image, ReferenceRegionBundle(source_to_corrected=np.eye(3),shape=(36, 48), foreground=mask)
             )
             store = ProjectAnalysisStore(root)
             project_path = store.capture_and_save(
@@ -1409,7 +1409,7 @@ class ProjectAnalysisUiTests(unittest.TestCase):
             foreground[4:13, 6:19] = True
             canonical_reference = reference_store.save(
                 image,
-                ReferenceRegionBundle(shape=(36, 48), foreground=foreground),
+                ReferenceRegionBundle(source_to_corrected=np.eye(3),shape=(36, 48), foreground=foreground),
             )
             centre_store = ManualSeedCentreStore(root)
             canonical_centres = centre_store.save(
@@ -1506,7 +1506,7 @@ class ProjectAnalysisUiTests(unittest.TestCase):
             mask = np.zeros((36, 48), dtype=bool)
             mask[7:15, 9:20] = True
             reference_path = reference_store.save(
-                added, ReferenceRegionBundle(shape=(36, 48), foreground=mask)
+                added, ReferenceRegionBundle(source_to_corrected=np.eye(3),shape=(36, 48), foreground=mask)
             )
             centre_store = ManualSeedCentreStore(root)
             centre_path = centre_store.save(
@@ -1564,7 +1564,7 @@ class ProjectAnalysisUiTests(unittest.TestCase):
             mask = np.zeros((36, 48), dtype=bool)
             mask[8:19, 12:27] = True
             canonical = reference_store.save(
-                image, ReferenceRegionBundle(shape=(36, 48), foreground=mask)
+                image, ReferenceRegionBundle(source_to_corrected=np.eye(3),shape=(36, 48), foreground=mask)
             )
             explicit = root / "projects" / "imported" / "legacy-reference.npz"
             explicit.parent.mkdir(parents=True, exist_ok=True)
@@ -1613,7 +1613,7 @@ class ProjectAnalysisUiTests(unittest.TestCase):
                     key,
                     SimpleNamespace(
                         image_path=image,
-                        calibration=SimpleNamespace(
+                        calibration=SimpleNamespace(affine_matrix=np.eye(3),
                             corrected_bgr=np.zeros((36, 48, 3), dtype=np.uint8)
                         ),
                     ),
@@ -1657,7 +1657,7 @@ class ProjectAnalysisUiTests(unittest.TestCase):
             mask[5:16, 7:24] = True
             ReferenceRegionStore(root).save(
                 image,
-                ReferenceRegionBundle(
+                ReferenceRegionBundle(source_to_corrected=np.eye(3),
                     shape=corrected_shape,
                     foreground=mask,
                 ),
@@ -1691,7 +1691,7 @@ class ProjectAnalysisUiTests(unittest.TestCase):
 
                 matching_result = SimpleNamespace(
                     image_path=image,
-                    calibration=SimpleNamespace(
+                    calibration=SimpleNamespace(affine_matrix=np.eye(3),
                         corrected_bgr=np.zeros(
                             (*corrected_shape, 3), dtype=np.uint8
                         )
@@ -1713,7 +1713,7 @@ class ProjectAnalysisUiTests(unittest.TestCase):
                 self.assertIn(key, window._pending_unbound_reference_bundles)
                 mismatching_result = SimpleNamespace(
                     image_path=image,
-                    calibration=SimpleNamespace(
+                    calibration=SimpleNamespace(affine_matrix=np.eye(3),
                         corrected_bgr=np.zeros((31, 41, 3), dtype=np.uint8)
                     ),
                 )
@@ -1722,11 +1722,11 @@ class ProjectAnalysisUiTests(unittest.TestCase):
                     affected = window._resolve_pending_project_reference_bundle(
                         key, mismatching_result
                     )
-                self.assertEqual(affected, set())
-                warning.assert_called_once()
-                self.assertNotIn(key, window._applied_foreground_reference_masks)
-                self.assertIn(key, window._withheld_reference_sidecars)
-                self.assertTrue(window._project_dirty)
+                self.assertIn('project', affected)
+                warning.assert_not_called()
+                self.assertEqual(window._applied_foreground_reference_masks[key].shape,(31,41))
+                np.testing.assert_array_equal(window._applied_foreground_reference_masks[key][:29],mask)
+                self.assertNotIn(key, window._withheld_reference_sidecars)
             finally:
                 self._dispose(window)
 

@@ -40,6 +40,7 @@ class LearningExportOptions:
     annotation_author: str | None
     annotation_revision: str | None
     notes: str | None
+    species_reviewed: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,7 +98,7 @@ class LearningExportDialog(QDialog):
         self.split_combo = QComboBox(self)
         self.split_combo.addItem("Training", "train")
         self.split_combo.addItem("Validation", "validation")
-        self.split_combo.addItem("Locked test (never used for refinement)", "test")
+        # Image-local feature adaptation cannot create an independent locked test.
         self.revision_edit = QLineEdit(default_revision, self)
         self.author_edit = QLineEdit(self)
         self.author_edit.setPlaceholderText("Annotator or reviewer name")
@@ -105,6 +106,7 @@ class LearningExportDialog(QDialog):
             "Complete mask has been checked seed-by-seed by a human", self
         )
         self.notes_edit = QLineEdit(self)
+        self.species_reviewed_checkbox = QCheckBox('I verified the selected species and biological/capture group',self)
         form.addRow("Dataset folder", self.directory_row)
         form.addRow("Dataset ID", self.dataset_id_edit)
         form.addRow("Sample ID", self.identifier_edit)
@@ -113,6 +115,7 @@ class LearningExportDialog(QDialog):
         form.addRow("Annotation revision", self.revision_edit)
         form.addRow("Annotator / reviewer", self.author_edit)
         form.addRow("Review state", self.reviewed_checkbox)
+        form.addRow('Biological metadata',self.species_reviewed_checkbox)
         form.addRow("Notes", self.notes_edit)
         layout.addLayout(form)
 
@@ -171,10 +174,14 @@ class LearningExportDialog(QDialog):
             annotation_author=author,
             annotation_revision=revision,
             notes=notes,
+            species_reviewed=self.species_reviewed_checkbox.isChecked(),
         )
 
     def accept(self) -> None:
         options = self.options()
+        if not options.species_reviewed:
+            QMessageBox.warning(self,'Biological metadata required','Verify the selected species and biological/capture group before exporting conditioned features.')
+            return
         if not options.dataset_id or not options.identifier or not options.group:
             QMessageBox.warning(
                 self,

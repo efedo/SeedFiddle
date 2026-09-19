@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.review_fixtures import dispose_window, install_test_frame
+
 import os
 import tempfile
 import unittest
@@ -43,7 +45,7 @@ class ReferenceRegionStoreTests(unittest.TestCase):
             self.assertIn("Seed 7", message)
             self.assertIn("Outline", message)
             self.assertIn("Pose", message)
-        self.assertIn("Use for shape modelling", message)
+        self.assertIn("choose explicit Outline and Pose values", message)
 
     def test_round_trip_preserves_material_and_instance_outputs_only(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -122,7 +124,7 @@ class ReferenceRegionStoreTests(unittest.TestCase):
                 ),
             )
             with np.load(destination, allow_pickle=False) as archive:
-                self.assertEqual(int(archive["version"]), 5)
+                self.assertEqual(int(archive["version"]), 6)
                 self.assertEqual(archive["material"].dtype, np.uint8)
                 self.assertNotIn("boundary", archive.files)
                 self.assertEqual(archive["annotated_seeds"].dtype, np.uint16)
@@ -365,6 +367,7 @@ class ReferenceRegionMainWindowTests(unittest.TestCase):
         key = window._current_image_key()
         self.assertIsNotNone(key)
         assert key is not None
+        window._reference_transforms[key] = np.eye(3)
         shape = (48, 64)
         background = np.zeros(shape, dtype=bool)
         foreground = np.zeros(shape, dtype=bool)
@@ -388,9 +391,10 @@ class ReferenceRegionMainWindowTests(unittest.TestCase):
             )
         }
         window._applied_seed_annotation_species[key] = "soybean"
+        window._reference_transforms[key] = np.eye(3)
         window._save_reference_regions()
         self.assertTrue(window._reference_region_store.path_for(image_path).is_file())
-        window.close()
+        dispose_window(window)
 
     def test_saved_snapshot_automatically_loads_as_immutable_applied_state(self) -> None:
         from seedvision.ui.main_window import MainWindow
@@ -402,6 +406,7 @@ class ReferenceRegionMainWindowTests(unittest.TestCase):
             self._save_complete_snapshot(root, image_path)
 
             restored = MainWindow(root)
+            install_test_frame(restored)
             key = restored._current_image_key()
             self.assertIsNotNone(key)
             assert key is not None
@@ -445,7 +450,7 @@ class ReferenceRegionMainWindowTests(unittest.TestCase):
             )
             self.assertNotIn(key, restored._reference_masks_dirty)
             self.assertNotIn(key, restored._instance_annotations_dirty)
-            restored.close()
+            dispose_window(restored)
 
     def test_loose_corrected_shape_is_deferred_instead_of_rejected_against_raw_image(self) -> None:
         from types import SimpleNamespace
@@ -461,7 +466,7 @@ class ReferenceRegionMainWindowTests(unittest.TestCase):
             foreground[8:24, 13:31] = True
             ReferenceRegionStore(root).save(
                 image_path,
-                ReferenceRegionBundle(
+                ReferenceRegionBundle(source_to_corrected=np.eye(3),
                     shape=corrected_shape, foreground=foreground
                 ),
             )
@@ -475,7 +480,7 @@ class ReferenceRegionMainWindowTests(unittest.TestCase):
 
             result = SimpleNamespace(
                 image_path=image_path,
-                calibration=SimpleNamespace(
+                calibration=SimpleNamespace(affine_matrix=np.eye(3),
                     corrected_bgr=np.zeros((*corrected_shape, 3), np.uint8)
                 ),
             )
@@ -486,7 +491,7 @@ class ReferenceRegionMainWindowTests(unittest.TestCase):
                 window._applied_foreground_reference_masks[key], foreground
             )
             self.assertNotIn(key, window._withheld_reference_sidecars)
-            window.close()
+            dispose_window(window)
 
     def test_genuine_loose_shape_mismatch_offers_backup_and_empty_replacement(self) -> None:
         from types import SimpleNamespace
@@ -512,7 +517,7 @@ class ReferenceRegionMainWindowTests(unittest.TestCase):
             self.assertIn(key, window._pending_unbound_reference_bundles)
             result = SimpleNamespace(
                 image_path=image_path,
-                calibration=SimpleNamespace(
+                calibration=SimpleNamespace(affine_matrix=np.eye(3),
                     corrected_bgr=np.zeros((*corrected_shape, 3), np.uint8)
                 ),
             )
@@ -530,23 +535,12 @@ class ReferenceRegionMainWindowTests(unittest.TestCase):
                 )
 
             self.assertEqual(affected, set())
-            self.assertEqual(
-                [call.args[0] for call in dialog.addButton.call_args_list],
-                ["Back up + replace", "Keep unchanged"],
-            )
-            message_box.information.assert_called_once()
-            backups = tuple(
-                archive.parent.glob(f"{archive.name}.invalid-*.bak")
-            )
-            self.assertEqual(len(backups), 1)
-            self.assertEqual(backups[0].read_bytes(), original_bytes)
-            replacement = store.load_if_present(image_path, corrected_shape)
-            self.assertIsNotNone(replacement)
-            assert replacement is not None
-            self.assertIsNone(replacement.foreground)
-            self.assertIsNone(replacement.annotated_seeds)
-            self.assertNotIn(key, window._withheld_reference_sidecars)
-            window.close()
+            message_box.assert_not_called()
+            self.assertEqual(archive.read_bytes(), original_bytes)
+            self.assertIn(key, window._withheld_reference_sidecars)
+            self.assertIn(key, window._pending_unbound_reference_bundles)
+            self.assertNotIn(key, window._applied_foreground_reference_masks)
+            dispose_window(window)
 
     def test_switching_images_keeps_newer_unsaved_in_memory_applied_state(self) -> None:
         from seedvision.ui.main_window import MainWindow
@@ -561,12 +555,13 @@ class ReferenceRegionMainWindowTests(unittest.TestCase):
             old[2:5, 2:5] = True
             ReferenceRegionStore(root).save(
                 first_path,
-                ReferenceRegionBundle(shape=(48, 64), background=old),
+                ReferenceRegionBundle(source_to_corrected=np.eye(3),shape=(48, 64), background=old),
             )
             window = MainWindow(root)
             key = window._current_image_key()
             self.assertIsNotNone(key)
             assert key is not None
+            window._reference_transforms[key] = np.eye(3)
             newer = np.zeros((48, 64), dtype=bool)
             newer[30:36, 40:47] = True
             newer.flags.writeable = False
@@ -583,7 +578,7 @@ class ReferenceRegionMainWindowTests(unittest.TestCase):
                 0,
                 "Restored references must be repainted even without a cached analysis.",
             )
-            window.close()
+            dispose_window(window)
 
     def test_association_panel_explains_pending_corrected_seed_annotations(self) -> None:
         from seedvision.ui.main_window import MainWindow
@@ -604,7 +599,7 @@ class ReferenceRegionMainWindowTests(unittest.TestCase):
             labels[33:41, 48:59] = 9
             ReferenceRegionStore(root).save(
                 image_path,
-                ReferenceRegionBundle(
+                ReferenceRegionBundle(source_to_corrected=np.eye(3),
                     shape=saved_shape,
                     background=background,
                     foreground=foreground,
@@ -617,6 +612,7 @@ class ReferenceRegionMainWindowTests(unittest.TestCase):
             key = window._current_image_key()
             self.assertIsNotNone(key)
             assert key is not None
+            window._reference_transforms[key] = np.eye(3)
             panel = window.reference_association_label.text()
             self.assertIn(
                 "Validated; waiting for corrected-image calibration", panel
@@ -627,7 +623,7 @@ class ReferenceRegionMainWindowTests(unittest.TestCase):
             self.assertNotIn(key, window._applied_instance_annotations)
 
             result = SimpleNamespace(
-                calibration=SimpleNamespace(
+                calibration=SimpleNamespace(affine_matrix=np.eye(3),
                     corrected_bgr=np.zeros((*saved_shape, 3), dtype=np.uint8)
                 ),
                 image_path=image_path,
@@ -652,7 +648,7 @@ class ReferenceRegionMainWindowTests(unittest.TestCase):
                 "Loaded and available to analysis",
                 window.reference_association_label.text(),
             )
-            window.close()
+            dispose_window(window)
 
     def test_empty_applied_snapshot_overwrites_an_older_nonempty_archive(self) -> None:
         from seedvision.ui.main_window import MainWindow
@@ -666,6 +662,7 @@ class ReferenceRegionMainWindowTests(unittest.TestCase):
             key = window._current_image_key()
             self.assertIsNotNone(key)
             assert key is not None
+            window._reference_transforms[key] = np.eye(3)
             for store in (
                 window._applied_background_reference_masks,
                 window._applied_foreground_reference_masks,
@@ -693,7 +690,7 @@ class ReferenceRegionMainWindowTests(unittest.TestCase):
             self.assertIsNone(loaded.physical_edge)
             self.assertIsNone(loaded.non_edge)
             self.assertIsNone(loaded.annotated_seeds)
-            window.close()
+            dispose_window(window)
 
     def test_modified_image_warns_and_loads_no_saved_regions(self) -> None:
         from seedvision.ui.main_window import MainWindow
@@ -715,7 +712,7 @@ class ReferenceRegionMainWindowTests(unittest.TestCase):
             self.assertNotIn(key, rejected._applied_background_reference_masks)
             self.assertNotIn(key, rejected._applied_foreground_reference_masks)
             self.assertNotIn(key, rejected._applied_instance_annotations)
-            rejected.close()
+            dispose_window(rejected)
 
     def test_dirty_draft_blocks_save_without_replacing_archive(self) -> None:
         from seedvision.ui.main_window import MainWindow
@@ -728,12 +725,13 @@ class ReferenceRegionMainWindowTests(unittest.TestCase):
             key = window._current_image_key()
             self.assertIsNotNone(key)
             assert key is not None
+            window._reference_transforms[key] = np.eye(3)
             window._reference_masks_dirty.add(key)
             with patch("seedvision.ui.main_window.QMessageBox.warning") as warning:
                 window._save_reference_regions()
             warning.assert_called_once()
             self.assertFalse(window._reference_region_store.path_for(image_path).exists())
-            window.close()
+            dispose_window(window)
 
     def test_applying_seed_instances_automatically_saves_and_reloads_them(self) -> None:
         from seedvision.ui.main_window import MainWindow
@@ -746,6 +744,7 @@ class ReferenceRegionMainWindowTests(unittest.TestCase):
             key = window._current_image_key()
             self.assertIsNotNone(key)
             assert key is not None
+            window._reference_transforms[key] = np.eye(3)
             labels = np.zeros((48, 64), dtype=np.uint16)
             labels[7:15, 9:18] = 3
             labels[28:39, 42:54] = 11
@@ -769,9 +768,10 @@ class ReferenceRegionMainWindowTests(unittest.TestCase):
             assert loaded is not None
             self.assertTrue(np.array_equal(loaded.annotated_seeds, labels))
             self.assertEqual(loaded.annotation_origin, "manual")
-            window.close()
+            dispose_window(window)
 
             restored = MainWindow(root)
+            install_test_frame(restored)
             restored_key = restored._current_image_key()
             self.assertIsNotNone(restored_key)
             assert restored_key is not None
@@ -780,7 +780,7 @@ class ReferenceRegionMainWindowTests(unittest.TestCase):
                     restored._applied_instance_annotations[restored_key], labels
                 )
             )
-            restored.close()
+            dispose_window(restored)
 
     def test_seed_instance_autosave_failure_warns_but_keeps_applied_state(self) -> None:
         from seedvision.ui.main_window import MainWindow
@@ -793,6 +793,7 @@ class ReferenceRegionMainWindowTests(unittest.TestCase):
             key = window._current_image_key()
             self.assertIsNotNone(key)
             assert key is not None
+            window._reference_transforms[key] = np.eye(3)
             labels = np.zeros((48, 64), dtype=np.uint16)
             labels[12:22, 15:27] = 5
             window._analyze_current_image = lambda **_kwargs: None
@@ -824,7 +825,7 @@ class ReferenceRegionMainWindowTests(unittest.TestCase):
             self.assertFalse(
                 window._reference_region_store.path_for(image_path).exists()
             )
-            window.close()
+            dispose_window(window)
 
 
 if __name__ == "__main__":

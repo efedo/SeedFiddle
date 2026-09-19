@@ -135,6 +135,7 @@ def evaluate_reference_edge_settings(
     settings: AnalysisLayerSettings,
     *,
     cuda_context=None,
+    evaluation_interior_buffer_fraction: float = 0.08,
 ) -> ReferenceEdgeFitScore:
     """Fit on one deterministic instance fold and score a disjoint fold.
 
@@ -219,7 +220,7 @@ def evaluate_reference_edge_settings(
         edge.detach().squeeze().cpu().numpy(),
         ridge.detach().squeeze().cpu().numpy(),
         interior_buffer_fraction=float(
-            settings.reference_texture_instance_interior_buffer_fraction
+            evaluation_interior_buffer_fraction
         ),
     )
     physical_target = image_to_tensor(

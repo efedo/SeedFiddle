@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.review_fixtures import dispose_window
+
 import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -34,7 +36,7 @@ class InstanceMaskImportUiTests(unittest.TestCase):
         image.fill(QColor("#8b927f"))
         self.assertTrue(image.save(str(self.image_path)))
         self.window = MainWindow(self.root)
-        self.addCleanup(self.window.close)
+        self.addCleanup(dispose_window, self.window)
         self.window.image_view.set_overlay_mode("none")
         self.result = SimpleNamespace(
             calibration=SimpleNamespace(
@@ -122,7 +124,8 @@ class InstanceMaskImportUiTests(unittest.TestCase):
             self.key, self.window._applied_instance_annotations.get(self.key)
         )
         self.assertTrue(current is None or not np.any(current))
-        self.assertNotIn(self.key, self.window._instance_undo_histories)
+        self.assertEqual(len(self.window._instance_undo_histories[self.key]),0)
+        self.assertTrue(self.window._instance_undo_histories[self.key].can_redo)
 
     def test_no_bundle_falls_back_to_npz_file_chooser(self) -> None:
         labels = np.zeros((60, 80), dtype=np.uint16)

@@ -176,7 +176,7 @@ class SelectedInstanceMainWindowTests(unittest.TestCase):
             raise unittest.SkipTest(f"PySide6 unavailable: {error}")
         cls.application = QApplication.instance() or QApplication([])
 
-    def test_checkbox_plumbs_to_view_and_tracks_analysis_availability(self) -> None:
+    def test_show_dropdown_plumbs_to_view_and_tracks_analysis_availability(self) -> None:
         from PySide6.QtGui import QColor, QImage
 
         from seedvision.ui.main_window import MainWindow
@@ -191,17 +191,18 @@ class SelectedInstanceMainWindowTests(unittest.TestCase):
             window = MainWindow(root)
             self.addCleanup(window.close)
 
-            checkbox = window.show_selected_instance_checkbox
-            self.assertEqual(checkbox.text(), "Show selected only")
-            self.assertFalse(checkbox.isChecked())
-            self.assertFalse(checkbox.isEnabled())
+            selector = window.instance_visibility_combo
+            self.assertEqual(selector.currentData(), "all")
+            self.assertFalse(selector.isEnabled())
             self.assertFalse(window.image_view._show_selected_instance_only)
 
             window.image_view._analysis_result = SimpleNamespace()
             window._sync_background_controls()
-            self.assertTrue(checkbox.isEnabled())
-            checkbox.setChecked(True)
+            self.assertTrue(selector.isEnabled())
+            selector.setCurrentIndex(selector.findData("selected"))
             self.assertTrue(window.image_view._show_selected_instance_only)
+            selector.setCurrentIndex(selector.findData("all"))
+            self.assertFalse(window.image_view._show_selected_instance_only)
 
             key = window._current_image_key()
             self.assertIsNotNone(key)
@@ -212,13 +213,13 @@ class SelectedInstanceMainWindowTests(unittest.TestCase):
                 # The displayed result remains valid while an ordinary
                 # revision recomputes in the background, so inspection and
                 # annotation controls remain available.
-                self.assertTrue(checkbox.isEnabled())
+                self.assertTrue(selector.isEnabled())
             finally:
                 window._active_tasks.pop(key, None)
 
             window.image_view._analysis_result = None
             window._sync_background_controls()
-            self.assertFalse(checkbox.isEnabled())
+            self.assertFalse(selector.isEnabled())
 
 
 if __name__ == "__main__":

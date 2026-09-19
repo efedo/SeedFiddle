@@ -65,11 +65,27 @@ class RasterUndoHistory:
 
     TILE_SIZE = 128
 
-    def __init__(self, limit: int = 20) -> None:
+    def __init__(self, limit: int = 20, maximum_bytes: int = 64*1024**2) -> None:
         if int(limit) < 5:
             raise ValueError("Reference undo history must retain at least five edits.")
         self._limit = int(limit)
         self._entries: list[_RasterUndoEntry] = []
+        self._redo_entries: list[_RasterUndoEntry] = []
+        self.maximum_bytes = int(maximum_bytes)
+        if self.maximum_bytes < 0:
+            raise ValueError('Undo byte budget cannot be negative.')
+
+    @property
+    def stored_bytes(self):
+        return sum(len(patch.payload) for entry in (*self._entries,*self._redo_entries) for patch in entry.patches)
+
+    @property
+    def can_redo(self):
+        return bool(self._redo_entries)
+
+    @property
+    def redo_context(self):
+        return self._redo_entries[-1].context if self._redo_entries else None
 
     @property
     def limit(self) -> int:
@@ -88,6 +104,7 @@ class RasterUndoHistory:
 
     def clear(self) -> None:
         self._entries.clear()
+        self._redo_entries.clear()
 
     def record(
         self,
@@ -134,6 +151,7 @@ class RasterUndoHistory:
                     )
         if not patches:
             return False
+        self._redo_entries.clear()
         self._entries.append(
             _RasterUndoEntry(
                 label=str(label),
@@ -144,14 +162,42 @@ class RasterUndoHistory:
         )
         if len(self._entries) > self._limit:
             del self._entries[: len(self._entries) - self._limit]
+        while self._entries and self.stored_bytes > self.maximum_bytes:
+            self._entries.pop(0)
         return True
 
-    def undo(self, current: tuple[np.ndarray, ...]) -> RasterUndoResult | None:
+    def undo(self, current: tuple[np.ndarray, ...], *, metadata=None) -> RasterUndoResult | None:
         """Restore and remove the newest entry against the supplied current state."""
 
         if not self._entries:
             return None
         entry = self._entries.pop()
+        self._redo_entries.append(self._inverse_entry(entry,current,metadata))
+        self._trim_bytes()
+        return self._restore(entry,current)
+
+    def redo(self, current, *, metadata=None):
+        if not self._redo_entries:
+            return None
+        entry = self._redo_entries.pop()
+        self._entries.append(self._inverse_entry(entry,current,metadata))
+        self._trim_bytes()
+        return self._restore(entry,current)
+
+    def _trim_bytes(self):
+        while self._entries and self.stored_bytes > self.maximum_bytes:
+            self._entries.pop(0)
+        while self._redo_entries and self.stored_bytes > self.maximum_bytes:
+            self._redo_entries.pop(0)
+
+    @staticmethod
+    def _inverse_entry(entry,current,metadata):
+        patches = tuple(_CompressedRasterPatch.encode(patch.index,patch.x,patch.y,
+            current[patch.index][patch.y:patch.y+patch.shape[0],patch.x:patch.x+patch.shape[1]]) for patch in entry.patches)
+        return _RasterUndoEntry(entry.label,entry.context,patches,metadata)
+
+    @staticmethod
+    def _restore(entry,current):
         restored = [np.asarray(value) for value in current]
         copied_indexes: set[int] = set()
         for patch in entry.patches:

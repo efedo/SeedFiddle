@@ -21,8 +21,12 @@ from seedvision.learning.decode import (
     decode_unet_watershed,
 )
 from seedvision.learning.inference import tiled_predict
+from seedvision.learning.evaluation_protocol import aggregate_records, decoder_identity, audit_decoder_source
+from seedvision.learning.resources import PredictionSpool, LabelSequence, append_thumbnail
 from seedvision.learning.metrics import evaluate_binary_probability, evaluate_instances
 from seedvision.learning.targets import physical_boundary_mask
+from seedvision.learning.evaluation_protocol import audit_evaluation, dataset_identity, checkpoint_membership, decoder_identity
+from seedvision.learning.data import file_sha256
 
 
 def _load_features(manifest_path: Path, relative_path: str, device):
@@ -130,7 +134,7 @@ def _score(metrics: list[dict]) -> float:
         item["panoptic_quality"]
         + 0.35 * item["f1"]
         + 0.15 * item["boundary_f1"]
-        - 0.50 * item["relative_count_error"]
+        - 0.50 * (item["relative_count_error"] if item["relative_count_error"] is not None else item["absolute_count_error"])
         for item in metrics
     )
 
@@ -204,6 +208,9 @@ def evaluate_checkpoint(
     decoder_settings=None,
     optimize_decoder: bool = False,
     device: str = "cuda",
+    maximum_prediction_bytes: int = 8*1024**3,
+    protocol: str = "development",
+    decoder_source_path: Path | str | None = None,
 ) -> dict:
     """Evaluate complete held-out images and render auditable comparisons."""
 
@@ -218,7 +225,12 @@ def evaluate_checkpoint(
     manifest_path = Path(manifest_path).resolve()
     output_directory = Path(output_directory)
     output_directory.mkdir(parents=True, exist_ok=True)
+    audit = audit_evaluation(manifest_path, split, optimize_decoder, protocol)
+    identity = dataset_identity(manifest_path, splits={split})
     model, feature_spec, payload = load_checkpoint(checkpoint_path, device=resolved_device)
+    membership = checkpoint_membership(payload, identity) if split == 'test' else 'Development split; not an independent final evaluation.'
+    if protocol != "development" and split == "test" and membership.startswith("Unknown"):
+        raise ValueError("Independent evaluation requires checkpoint development membership.")
     family = ModelFamily(payload["family"])
     manifest = LearningManifest.load(manifest_path)
     if feature_spec != manifest.feature_spec:
@@ -226,154 +238,173 @@ def evaluate_checkpoint(
     samples = [item for item in manifest.samples if item.split == split]
     if not samples:
         raise ValueError(f"The manifest has no samples in split {split!r}.")
-    predictions = []
-    truths = []
-    timings = []
-    for sample in samples:
-        features = _load_features(manifest_path, sample.features, resolved_device)
-        if resolved_device.type == "cuda":
-            torch.cuda.synchronize()
-        started = perf_counter()
-        outputs = tiled_predict(
-            model,
-            features,
-            tile_size=tile_size,
-            overlap=overlap,
-            use_mixed_precision=True,
-        )
-        if resolved_device.type == "cuda":
-            torch.cuda.synchronize()
-        timings.append(perf_counter() - started)
-        predictions.append({name: value.cpu() for name, value in outputs.items()})
-        truths.append(read_label_image(resolve_sample_path(manifest_path, sample.instances)))
-    optimized_score = None
-    if optimize_decoder:
-        if split != "validation":
-            raise ValueError("Decoder optimization is permitted only on the validation split.")
-        decoder_settings, optimized_score = decoder_search(family, predictions, truths)
-    if decoder_settings is None:
-        decoder_settings = (
-            UNetWatershedSettings()
-            if family is ModelFamily.UNET_WATERSHED
-            else StarDistDecodeSettings()
-        )
-    panels = []
-    records = []
-    for sample, outputs, truth, elapsed in zip(
-        samples, predictions, truths, timings, strict=True
-    ):
-        result = _decode(family, outputs, decoder_settings, checkpoint_path.name)
-        metrics = evaluate_instances(truth, result.labels).to_dict()
-        record = {
-            "sample_id": sample.identifier,
-            "species": sample.species,
-            "group": sample.group,
-            "reviewed": sample.reviewed,
-            "elapsed_seconds": elapsed,
-            **metrics,
-        }
-        if family is ModelFamily.UNET_WATERSHED:
-            physical_probability = outputs["physical_boundary_logits"][0, 0].sigmoid().numpy()
-            physical_truth = physical_boundary_mask(truth, width=2)
-            physical_metrics = evaluate_binary_probability(
-                physical_probability, physical_truth
-            ).to_dict()
-            record.update(
-                {f"physical_head_{name}": value for name, value in physical_metrics.items()}
+    if decoder_source_path is not None:
+        decoder_settings = load_decoder_settings(decoder_source_path,family)
+    decoder_provenance = None
+    if decoder_settings is not None and not optimize_decoder:
+        if protocol != 'development' and decoder_source_path is None:
+            raise ValueError('Independent custom decoder evaluation requires its frozen selection report.')
+        if decoder_source_path is not None:
+            decoder_provenance = audit_decoder_source(decoder_source_path,decoder_settings,identity,
+                independent=protocol!='development' and split=='test')
+    predictions = PredictionSpool(maximum_prediction_bytes)
+    try:
+        truths = LabelSequence([resolve_sample_path(manifest_path,sample.instances) for sample in samples])
+        timings = []
+        for sample in samples:
+            features = _load_features(manifest_path, sample.features, resolved_device)
+            if resolved_device.type == "cuda":
+                torch.cuda.synchronize()
+            started = perf_counter()
+            outputs = tiled_predict(
+                model,
+                features,
+                tile_size=tile_size,
+                overlap=overlap,
+                use_mixed_precision=True,
             )
-            if sample.pattern_boundary and sample.pattern_valid:
-                pattern_truth = read_label_image(
-                    resolve_sample_path(manifest_path, sample.pattern_boundary)
-                )
-                pattern_valid = read_label_image(
-                    resolve_sample_path(manifest_path, sample.pattern_valid)
-                )
-                pattern_probability = outputs["pattern_boundary_logits"][0, 0].sigmoid().numpy()
-                pattern_metrics = evaluate_binary_probability(
-                    pattern_probability,
-                    pattern_truth,
-                    valid_mask=pattern_valid,
+            if resolved_device.type == "cuda":
+                torch.cuda.synchronize()
+            timings.append(perf_counter() - started)
+            predictions.append({name: value.cpu() for name, value in outputs.items()})
+
+        optimized_score = None
+        if optimize_decoder:
+            if split != "validation":
+                raise ValueError("Decoder optimization is permitted only on the validation split.")
+            decoder_settings, optimized_score = decoder_search(family, predictions, truths)
+        if decoder_settings is None:
+            decoder_settings = (
+                UNetWatershedSettings()
+                if family is ModelFamily.UNET_WATERSHED
+                else StarDistDecodeSettings()
+            )
+        panels = []
+        records = []
+        for sample, outputs, truth, elapsed in zip(
+            samples, predictions, truths, timings, strict=True
+        ):
+            result = _decode(family, outputs, decoder_settings, checkpoint_path.name)
+            metrics = evaluate_instances(truth, result.labels).to_dict()
+            record = {
+                "sample_id": sample.identifier,
+                "species": sample.species,
+                "group": sample.group,
+                "reviewed": sample.reviewed,
+                "elapsed_seconds": elapsed,
+                **metrics,
+            }
+            if family is ModelFamily.UNET_WATERSHED:
+                physical_probability = outputs["physical_boundary_logits"][0, 0].sigmoid().numpy()
+                physical_truth = physical_boundary_mask(truth, width=2)
+                physical_metrics = evaluate_binary_probability(
+                    physical_probability, physical_truth
                 ).to_dict()
                 record.update(
-                    {f"pattern_head_{name}": value for name, value in pattern_metrics.items()}
+                    {f"physical_head_{name}": value for name, value in physical_metrics.items()}
                 )
-        records.append(record)
-        image = _load_display_image(manifest_path, sample, truth.shape)
-        title = (
-            f"{sample.identifier} | true {metrics['true_instances']} / predicted "
-            f"{metrics['predicted_instances']} | F1 {metrics['f1']:.3f} | "
-            f"PQ {metrics['panoptic_quality']:.3f}"
-        )
-        panel = _render_comparison(image, truth, result.labels, title)
-        panels.append(panel)
-        cv2.imwrite(str(output_directory / f"{sample.identifier}.comparison.jpg"), panel)
-        write_path = output_directory / f"{sample.identifier}.prediction.png"
-        from seedvision.learning.data import write_label_image
+                if sample.pattern_boundary and sample.pattern_valid:
+                    pattern_truth = read_label_image(
+                        resolve_sample_path(manifest_path, sample.pattern_boundary)
+                    )
+                    pattern_valid = read_label_image(
+                        resolve_sample_path(manifest_path, sample.pattern_valid)
+                    )
+                    pattern_probability = outputs["pattern_boundary_logits"][0, 0].sigmoid().numpy()
+                    pattern_metrics = evaluate_binary_probability(
+                        pattern_probability,
+                        pattern_truth,
+                        valid_mask=pattern_valid,
+                    ).to_dict()
+                    record.update(
+                        {f"pattern_head_{name}": value for name, value in pattern_metrics.items()}
+                    )
+            records.append(record)
+            image = _load_display_image(manifest_path, sample, truth.shape)
+            title = (
+                f"{sample.identifier} | true {metrics['true_instances']} / predicted "
+                f"{metrics['predicted_instances']} | F1 {metrics['f1']:.3f} | "
+                f"PQ {metrics['panoptic_quality']:.3f}"
+            )
+            panel = _render_comparison(image, truth, result.labels, title)
+            append_thumbnail(panels,panel)
+            cv2.imwrite(str(output_directory / f"{sample.identifier}.comparison.jpg"), panel)
+            write_path = output_directory / f"{sample.identifier}.prediction.png"
+            from seedvision.learning.data import write_label_image
 
-        write_label_image(write_path, result.labels)
-        diagnostic_directory = output_directory / f"{sample.identifier}.rasters"
-        diagnostic_directory.mkdir(parents=True, exist_ok=True)
-        for name, raster in result.rasters.items():
-            values = raster.cpu_array() if hasattr(raster, "cpu_array") else np.asarray(raster)
-            values = np.squeeze(values)
-            if values.ndim == 2:
-                cv2.imwrite(
-                    str(diagnostic_directory / f"{name}.png"),
-                    np.asarray(values, dtype=np.uint8),
-                )
-    contact_sheet = _contact_sheet(panels)
-    cv2.imwrite(str(output_directory / "contact_sheet.jpg"), contact_sheet)
-    aggregate = {
-        key: mean(float(item[key]) for item in records)
-        for key in (
-            "precision",
-            "recall",
-            "f1",
-            "mean_matched_iou",
-            "panoptic_quality",
-            "relative_count_error",
-            "boundary_precision",
-            "boundary_recall",
-            "boundary_f1",
+            write_label_image(write_path, result.labels)
+            diagnostic_directory = output_directory / f"{sample.identifier}.rasters"
+            diagnostic_directory.mkdir(parents=True, exist_ok=True)
+            for name, raster in result.rasters.items():
+                values = raster.cpu_array() if hasattr(raster, "cpu_array") else np.asarray(raster)
+                values = np.squeeze(values)
+                if values.ndim == 2:
+                    cv2.imwrite(
+                        str(diagnostic_directory / f"{name}.png"),
+                        np.asarray(values, dtype=np.uint8),
+                    )
+        contact_sheet = _contact_sheet(panels)
+        cv2.imwrite(str(output_directory / "contact_sheet.jpg"), contact_sheet)
+        aggregate = {
+            key: (float(np.mean([item[key] for item in records if item[key] is not None])) if any(item[key] is not None for item in records) else None)
+            for key in (
+                "precision",
+                "recall",
+                "f1",
+                "mean_matched_iou",
+                "panoptic_quality",
+                "relative_count_error",
+                "boundary_precision",
+                "boundary_recall",
+                "boundary_f1",
+            )
+        }
+        dense_aggregate = {}
+        if family is ModelFamily.UNET_WATERSHED:
+            for prefix in ("physical_head_", "pattern_head_"):
+                for name in ("precision", "recall", "f1", "roc_auc", "average_precision", "brier_score"):
+                    key = prefix + name
+                    available = [float(item[key]) for item in records if key in item and item[key] is not None and np.isfinite(item[key])]
+                    if available:
+                        dense_aggregate[key] = mean(available)
+        report = {
+            "family": family.value,
+            "checkpoint": str(checkpoint_path),
+            "dataset_id": manifest.dataset_id,
+            "split": split,
+            "decoder_settings": asdict(decoder_settings),
+            "decoder_search_score": optimized_score,
+            "sample_count": len(records),
+            "reviewed_sample_count": sum(item["reviewed"] for item in records),
+            "aggregate_mean": aggregate,
+            "dense_head_aggregate_mean": dense_aggregate,
+            "mean_inference_seconds": mean(timings),
+            "samples": records,
+            "aggregate_grouped": aggregate_records(records),
+            "scientifically_validated": False,
+            "evaluation_protocol": protocol,
+            "decoder_selection_provenance": decoder_provenance,
+            "contact_sheet_limit": 12,
+            "prediction_spool_bytes": predictions.bytes,
+            'evaluation_state': 'reviewed split evaluated' if all(item['reviewed'] for item in records) else 'unreviewed development evaluation',
+            'dataset_audit': audit,
+            'dataset_identity': identity,
+            'checkpoint_sha256': file_sha256(checkpoint_path),
+            'checkpoint_membership_audit': membership,
+            'decoder_sha256': decoder_identity(decoder_settings),
+            "validation_caveat": (
+                "A reviewed test split is necessary but scientific publication also "
+                "requires representative sampling, annotation reliability, confidence "
+                "intervals, and a predeclared analysis protocol."
+            ),
+            "visual_legend": (
+                "Panels are raw image, boundary comparison, and predicted identities. "
+                "Truth is green, prediction magenta, and agreement yellow."
+            ),
+        }
+        (output_directory / "evaluation.json").write_text(
+            json.dumps(report, indent=2, allow_nan=False) + "\n", encoding="utf-8"
         )
-    }
-    dense_aggregate = {}
-    if family is ModelFamily.UNET_WATERSHED:
-        for prefix in ("physical_head_", "pattern_head_"):
-            for name in ("precision", "recall", "f1", "roc_auc", "average_precision", "brier_score"):
-                key = prefix + name
-                available = [float(item[key]) for item in records if key in item and np.isfinite(item[key])]
-                if available:
-                    dense_aggregate[key] = mean(available)
-    report = {
-        "family": family.value,
-        "checkpoint": str(checkpoint_path),
-        "dataset_id": manifest.dataset_id,
-        "split": split,
-        "decoder_settings": asdict(decoder_settings),
-        "decoder_search_score": optimized_score,
-        "sample_count": len(records),
-        "reviewed_sample_count": sum(item["reviewed"] for item in records),
-        "aggregate_mean": aggregate,
-        "dense_head_aggregate_mean": dense_aggregate,
-        "mean_inference_seconds": mean(timings),
-        "samples": records,
-        "scientifically_validated": bool(
-            manifest.scientific_validation_eligible
-            and split == "test"
-            and all(item["reviewed"] for item in records)
-        ),
-        "validation_caveat": (
-            "A reviewed test split is necessary but scientific publication also "
-            "requires representative sampling, annotation reliability, confidence "
-            "intervals, and a predeclared analysis protocol."
-        ),
-        "visual_legend": (
-            "Panels are raw image, boundary comparison, and predicted identities. "
-            "Truth is green, prediction magenta, and agreement yellow."
-        ),
-    }
-    (output_directory / "evaluation.json").write_text(
-        json.dumps(report, indent=2) + "\n", encoding="utf-8"
-    )
-    return report
+        return report
+    finally:
+        predictions.close()

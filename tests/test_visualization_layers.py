@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.review_fixtures import reviewed_outlines
+
 import unittest
 
 
@@ -1829,6 +1831,7 @@ class AnalysisLayerTests(unittest.TestCase):
             offset_x=0,
             offset_y=0,
             seed_instance_annotations=instances,
+            seed_instance_traits=reviewed_outlines(instances),
             instance_masks_enabled=False,
             seed_edge_curves_enabled=False,
         )
@@ -1981,6 +1984,7 @@ class AnalysisLayerTests(unittest.TestCase):
             offset_x=0,
             offset_y=0,
             seed_instance_annotations=instances,
+            seed_instance_traits=reviewed_outlines(instances),
             reference_edge_ridges_enabled=False,
             instance_masks_enabled=False,
             seed_edge_curves_enabled=False,
@@ -2007,7 +2011,7 @@ class AnalysisLayerTests(unittest.TestCase):
             return build_analysis_layers(
                 image, valid, np.empty((0, 2), np.float32),
                 np.empty((0,), np.float32), 50.0,
-                offset_x=0, offset_y=0, seed_instance_annotations=instances,
+                offset_x=0, offset_y=0, seed_instance_annotations=instances, seed_instance_traits=reviewed_outlines(instances),
                 instance_masks_enabled=False, seed_edge_curves_enabled=False,
                 cache_values=cache, dirty_nodes=dirty,
                 settings=AnalysisLayerSettings(
@@ -2491,6 +2495,7 @@ class AnalysisLayerTests(unittest.TestCase):
             background_exclusion_mask=other,
             foreground_exclusion_mask=other,
             seed_instance_annotations=instances,
+            seed_instance_traits=reviewed_outlines(instances),
             instance_masks_enabled=False,
             seed_edge_curves_enabled=False,
         )
