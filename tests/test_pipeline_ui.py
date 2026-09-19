@@ -877,6 +877,54 @@ class PipelineCanvasTests(unittest.TestCase):
         view.close()
         canvas.close()
 
+    def test_image_zoom_buttons_keep_view_center_and_wheel_keeps_pointer(self) -> None:
+        from PySide6.QtCore import QPoint, QPointF, Qt
+        from PySide6.QtGui import QWheelEvent
+        from PySide6.QtTest import QTest
+
+        from seedvision.ui.image_view import ImageView
+
+        view = ImageView()
+        try:
+            view.resize(600, 450)
+            view.show()
+            succeeded, error = view.load_image(ROOT / "images" / "IMG_9670c.JPG")
+            self.assertTrue(succeeded, error)
+            self.application.processEvents()
+            view.actual_size()
+            view.centerOn(1200, 800)
+            self.application.processEvents()
+            center = view.viewport().rect().center()
+            before = view.mapToScene(center)
+
+            QTest.mouseMove(view.zoom_in_button, QPoint(3, 3))
+            view.zoom_in_button.click()
+            self.application.processEvents()
+            after = view.mapToScene(center)
+            self.assertLess((after - before).manhattanLength(), 2.0)
+
+            view.zoom_out_button.click()
+            self.application.processEvents()
+            restored = view.mapToScene(center)
+            self.assertLess((restored - before).manhattanLength(), 2.0)
+
+            pointer = QPoint(350, 230)
+            QTest.mouseMove(view.viewport(), pointer)
+            self.application.processEvents()
+            before = view.mapToScene(pointer)
+            event = QWheelEvent(
+                QPointF(pointer), QPointF(view.viewport().mapToGlobal(pointer)),
+                QPoint(), QPoint(0, 120), Qt.MouseButton.NoButton,
+                Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.NoScrollPhase,
+                False,
+            )
+            self.application.sendEvent(view.viewport(), event)
+            self.application.processEvents()
+            after = view.mapToScene(pointer)
+            self.assertLess((after - before).manhattanLength(), 2.0)
+        finally:
+            view.close()
+
     def test_worker_progress_turns_only_the_current_revision_node_green(self) -> None:
         from seedvision.pipeline import NodeStatus
         from seedvision.ui.main_window import MainWindow
@@ -1893,10 +1941,9 @@ class PipelineCanvasTests(unittest.TestCase):
         }
         self.assertIn("Overlay:", toolbar_labels)
         self.assertIn("Opacity:", toolbar_labels)
-        self.assertEqual(window.paint_background_action.text(), "Material references")
-        self.assertEqual(
-            window.annotate_instances_action.text(), "Annotate seed instances"
-        )
+        self.assertIn("Annotate:", toolbar_labels)
+        self.assertEqual(window.paint_background_action.text(), "Materials")
+        self.assertEqual(window.annotate_instances_action.text(), "Seeds")
         self.assertFalse(hasattr(window, "paint_foreground_action"))
         self.assertFalse(hasattr(window, "show_boundary_references_checkbox"))
         self.assertFalse(
@@ -1946,7 +1993,7 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertNotIn("Viewer overlay", detail_labels)
         self.assertNotIn("Painted background reference", detail_labels)
         self.assertTrue(window.overlay_owner_label.isHidden())
-        self.assertIs(window.reference_panel.parentWidget(), window)
+        self.assertIs(window.reference_panel.parentWidget(), window.annotation_workspace)
         self.assertTrue(window.reference_panel.isHidden())
 
         window.paint_background_action.setEnabled(True)
@@ -1962,6 +2009,15 @@ class PipelineCanvasTests(unittest.TestCase):
         self.application.processEvents()
         self.assertTrue(window.background_point_button.isChecked())
         self.assertFalse(window.reference_panel.isHidden())
+        hit_point = window.reference_panel_drag_handle.mapTo(
+            window.annotation_workspace,
+            window.reference_panel_drag_handle.rect().center(),
+        )
+        hit_widget = window.annotation_workspace.childAt(hit_point)
+        self.assertTrue(
+            hit_widget is window.reference_panel
+            or window.reference_panel.isAncestorOf(hit_widget)
+        )
         self.assertEqual(window.image_view._reference_point_mode, "background")
         window.resize(1200, 650)
         window._show_split_workspace()
@@ -2843,6 +2899,7 @@ class PipelineCanvasTests(unittest.TestCase):
             view.resize(320, 260)
             succeeded, error = view.load_image(path)
             self.assertTrue(succeeded, error)
+            view._set_bgr_base_image(np.zeros((100, 100, 3), np.uint8))
             view.show()
             self.application.processEvents()
             view.fit_image()
@@ -3217,6 +3274,7 @@ class PipelineCanvasTests(unittest.TestCase):
             view.resize(320, 260)
             succeeded, error = view.load_image(path)
             self.assertTrue(succeeded, error)
+            view._set_bgr_base_image(np.zeros((100, 100, 3), np.uint8))
             view.show()
             self.application.processEvents()
             view.fit_image()
@@ -3266,6 +3324,7 @@ class PipelineCanvasTests(unittest.TestCase):
             view.resize(480, 360)
             succeeded, error = view.load_image(path)
             self.assertTrue(succeeded, error)
+            view._set_bgr_base_image(np.zeros((120, 160, 3), np.uint8))
             view.show()
             self.application.processEvents()
             view.fit_image()
@@ -3308,6 +3367,7 @@ class PipelineCanvasTests(unittest.TestCase):
             view.resize(480, 360)
             succeeded, error = view.load_image(path)
             self.assertTrue(succeeded, error)
+            view._set_bgr_base_image(np.zeros((120, 160, 3), np.uint8))
             view.show()
             self.application.processEvents()
             view.fit_image()

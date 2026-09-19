@@ -573,10 +573,10 @@ class ReferenceRegionMainWindowTests(unittest.TestCase):
             self.assertIs(window._applied_background_reference_masks[key], newer)
             self.assertFalse(window.image_view.reference_mask("background")[3, 3])
             self.assertTrue(window.image_view.reference_mask("background")[32, 42])
-            self.assertGreater(
-                len(window.image_view._overlay_items),
-                0,
-                "Restored references must be repainted even without a cached analysis.",
+            self.assertEqual(
+                window.image_view._overlay_items,
+                [],
+                "Corrected-coordinate references must wait for a deskewed view.",
             )
             dispose_window(window)
 

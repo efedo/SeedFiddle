@@ -74,6 +74,7 @@ class ManualSeedCentreUiTests(unittest.TestCase):
             view.resize(420, 360)
             succeeded, error = view.load_image(image_path)
             self.assertTrue(succeeded, error)
+            view._set_bgr_base_image(np.zeros((100, 100, 3), np.uint8))
             view.show()
             self.application.processEvents()
             view.fit_image()

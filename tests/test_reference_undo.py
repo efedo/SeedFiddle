@@ -71,6 +71,7 @@ class ReferenceUndoUiTests(unittest.TestCase):
         )
         self.window.image_view._analysis_result = result
         self.window.image_view._render_analysis = lambda: None
+        self.window.image_view._set_bgr_base_image(result.calibration.corrected_bgr)
         self.window._sync_background_controls()
         self.application.processEvents()
         self.window.image_view.fit_image()

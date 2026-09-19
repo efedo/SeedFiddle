@@ -199,6 +199,7 @@ class AnnotationWidgetTests(unittest.TestCase):
 
     def test_no_defects_empty_selector_and_shape_fields(self):
         from PySide6.QtGui import QImage
+        from PySide6.QtWidgets import QFrame, QGroupBox
         from seedvision.ui.main_window import MainWindow
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -219,23 +220,79 @@ class AnnotationWidgetTests(unittest.TestCase):
                 self.assertFalse(hasattr(window, "existing_instance_combo"))
                 window.seed_conditions_reviewed_checkbox.setChecked(True)
                 self.assertTrue(window._draft_seed_annotations[key][1].conditions_reviewed)
+                self.assertTrue(all(
+                    not checkbox.isEnabled()
+                    for checkbox in window.seed_condition_checkboxes.values()
+                ))
                 damage = next(iter(window.seed_condition_checkboxes))
+                window.seed_conditions_reviewed_checkbox.setChecked(False)
+                self.assertTrue(window.seed_condition_checkboxes[damage].isEnabled())
                 window.seed_condition_checkboxes[damage].setChecked(True)
                 self.assertFalse(window.seed_conditions_reviewed_checkbox.isChecked())
                 self.assertIn(damage, window._draft_seed_annotations[key][1].conditions)
+                self.assertFalse(window.seed_conditions_reviewed_checkbox.isEnabled())
+                window.seed_condition_checkboxes[damage].setChecked(False)
+                self.assertTrue(window.seed_conditions_reviewed_checkbox.isEnabled())
                 window.seed_conditions_reviewed_checkbox.setChecked(True)
                 self.assertEqual(window._draft_seed_annotations[key][1].conditions, ())
+                self.assertTrue(window.seed_conditions_reviewed_checkbox.isEnabled())
+                group = window.seed_conditions_reviewed_checkbox.parentWidget()
+                self.assertIsInstance(group, QGroupBox)
+                self.assertEqual(group.title(), "Seed condition")
+                self.assertIn("font-weight: bold", group.styleSheet())
+                self.assertEqual(
+                    window.seed_condition_divider.frameShape(), QFrame.Shape.VLine
+                )
                 self.assertFalse(hasattr(window, "seed_physical_id_edit"))
                 window.seed_outline_visibility_combo.setCurrentIndex(window.seed_outline_visibility_combo.findData("complete"))
-                self.assertTrue(window.seed_full_length_checkbox.isHidden())
+                self.assertFalse(window.seed_full_length_checkbox.isHidden())
+                self.assertTrue(window.seed_full_length_checkbox.isChecked())
+                self.assertFalse(window.seed_full_length_checkbox.isEnabled())
+                self.assertTrue(window._draft_seed_annotations[key][1].full_length_visible)
                 window.seed_outline_visibility_combo.setCurrentIndex(window.seed_outline_visibility_combo.findData("partly_occluded"))
                 self.assertFalse(window.seed_full_length_checkbox.isHidden())
+                self.assertTrue(window.seed_full_length_checkbox.isEnabled())
+                self.assertFalse(window.seed_full_length_checkbox.isChecked())
                 window.seed_full_length_checkbox.setChecked(True)
                 self.assertTrue(window._draft_seed_annotations[key][1].full_length_visible)
+                shape_row = window.seed_outline_visibility_combo.parentWidget()
+                row_widgets = [
+                    shape_row.layout().itemAt(index).widget()
+                    for index in range(shape_row.layout().count())
+                ]
+                self.assertEqual(len(row_widgets), 5)
+                self.assertEqual(row_widgets[0].text(), "Outline")
+                self.assertIs(row_widgets[1], window.seed_outline_visibility_combo)
+                self.assertIs(row_widgets[2], window.seed_full_length_checkbox)
+                self.assertEqual(row_widgets[3].text(), "Pose")
+                self.assertIs(row_widgets[4], window.seed_pose_combo)
+                self.assertGreaterEqual(window.seed_pose_combo.width(), 72)
+                confirmation = window.apply_instance_annotations_button.parentWidget()
+                self.assertIs(
+                    confirmation.layout().itemAt(0).widget(),
+                    window.seed_shape_excluded_checkbox,
+                )
+                window.seed_hilum_pick_button.setChecked(True)
+                self.assertTrue(window.image_view._hilum_editing)
                 window.instance_id_spin.setValue(2)
+                self.assertFalse(window.seed_hilum_pick_button.isChecked())
+                self.assertFalse(window.image_view._hilum_editing)
                 self.assertFalse(window.instance_empty_label.isHidden())
                 window.instance_id_spin.setValue(1)
                 self.assertEqual(window.instance_id_spin.value(), 1)
+                window.seed_hilum_pick_button.setChecked(True)
+                window._hilum_landmark_edited((40., 30.), None)
+                self.assertFalse(window.seed_hilum_pick_button.isChecked())
+                self.assertFalse(window.image_view._hilum_editing)
+                self.assertEqual(
+                    window._draft_seed_annotations[key][1].hilum_point,
+                    (40., 30.),
+                )
+                window.seed_hilum_pick_button.setChecked(True)
+                window._select_lowest_empty_instance_for_image(key)
+                self.assertEqual(window.instance_id_spin.value(), 2)
+                self.assertFalse(window.seed_hilum_pick_button.isChecked())
+                self.assertFalse(window.image_view._hilum_editing)
             finally:
                 dispose_window(window)
 
@@ -253,6 +310,7 @@ class AnnotationWidgetTests(unittest.TestCase):
             view.resize(500, 440)
             view.show()
             view.load_image(path)
+            view._set_bgr_base_image(np.zeros((160, 200, 3), np.uint8))
             labels = np.zeros((160, 200), np.uint16)
             labels[40:81, 80:121] = 1  # Centroid (100, 60), not the drag origin.
             view.set_instance_annotations(labels)
@@ -272,7 +330,14 @@ class AnnotationWidgetTests(unittest.TestCase):
             np.testing.assert_allclose(edits[0][1], expected / np.linalg.norm(expected))
             self.assertEqual(strokes, [])
             np.testing.assert_array_equal(view._instance_annotations, labels)
-            self.assertEqual(len(view._hilum_items), 2)
+            self.assertFalse(view._hilum_editing)
+            self.assertEqual(len(view._hilum_items), 0)
+            QTest.mouseClick(view.viewport(), Qt.MouseButton.LeftButton, pos=start)
+            self.assertEqual(len(edits), 1)
+            view.set_hilum_editing(True)
+            QTest.mouseClick(view.viewport(), Qt.MouseButton.LeftButton, pos=start)
+            self.assertEqual(len(edits), 2)
+            self.assertFalse(view._hilum_editing)
             QTest.keyClick(view, Qt.Key.Key_Escape)
             self.assertFalse(view._hilum_editing)
             cancellations = []

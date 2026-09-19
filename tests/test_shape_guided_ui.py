@@ -54,6 +54,7 @@ class ShapeGuidedImageViewTests(unittest.TestCase):
         succeeded, error = self.view.load_image(self.path)
         self.assertTrue(succeeded, error)
         self.view.show_analysis(result, render=False)
+        self.view._set_bgr_base_image(image)
         labels = np.zeros((170, 190), np.uint16)
         labels[77:81, 114:118] = 9
         self.view.set_instance_annotations(labels, render=False)
@@ -95,6 +96,7 @@ class ShapeGuidedImageViewTests(unittest.TestCase):
         result = self.view._analysis_result
         result.layers.edge_ridges = np.zeros((170, 190), np.uint8)
         self.view.show_analysis(SimpleNamespace(**vars(result)), render=False)
+        self.view._set_bgr_base_image(result.calibration.corrected_bgr)
         before = self.view.instance_annotations()
         point = QPointF(95.0, 84.0)
 

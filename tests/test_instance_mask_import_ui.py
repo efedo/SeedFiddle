@@ -127,6 +127,66 @@ class InstanceMaskImportUiTests(unittest.TestCase):
         self.assertEqual(len(self.window._instance_undo_histories[self.key]),0)
         self.assertTrue(self.window._instance_undo_histories[self.key].can_redo)
 
+    def test_saved_manual_mask_takes_priority_over_bundled_pre_annotation(self) -> None:
+        from PySide6.QtWidgets import QMessageBox
+
+        bundled = np.zeros((60, 80), np.uint16)
+        bundled[5:15, 8:20] = 1
+        with patch(
+            "seedvision.ui.main_window.load_bundled_instance_mask",
+            return_value=self._imported(bundled),
+        ) as bundle_loader:
+            self.window._load_instance_reference_mask()
+        bundle_loader.assert_called_once()
+        with patch.object(self.window, "_analyze_current_image"):
+            self.window._apply_instance_annotations()
+
+        manual = bundled.copy()
+        manual[5:15, 8:20] = 0
+        manual[24:38, 31:47] = 1
+        self.window._set_instance_draft_state(self.key, manual, "manual:corrected")
+        self.window.image_view.set_instance_annotations(
+            manual, copy=False, render=False
+        )
+        with patch.object(self.window, "_analyze_current_image"):
+            self.window._apply_instance_annotations()
+        self.window._analyses[self.key] = self.result
+        saved = self.window._reference_region_store.load_if_present(
+            self.image_path, expected_shape=manual.shape
+        )
+        self.assertIsNotNone(saved)
+        np.testing.assert_array_equal(saved.annotated_seeds, manual)
+
+        with patch(
+            "seedvision.ui.main_window.load_bundled_instance_mask",
+            return_value=self._imported(bundled),
+        ) as bundle_loader:
+            self.window._load_instance_reference_mask()
+        bundle_loader.assert_not_called()
+        np.testing.assert_array_equal(
+            self.window._applied_instance_annotations[self.key], manual
+        )
+        self.assertNotIn(self.key, self.window._instance_annotations_dirty)
+
+        changed = manual.copy()
+        changed[42:48, 58:65] = 2
+        self.window._set_instance_draft_state(self.key, changed, "manual:unsaved")
+        with patch(
+            "seedvision.ui.main_window.load_bundled_instance_mask",
+            return_value=self._imported(bundled),
+        ) as bundle_loader, patch.object(
+            QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes
+        ):
+            self.window._load_instance_reference_mask()
+        bundle_loader.assert_not_called()
+        np.testing.assert_array_equal(
+            self.window.image_view.instance_annotations(), manual
+        )
+        self.window._undo_instance_reference_edit()
+        np.testing.assert_array_equal(
+            self.window.image_view.instance_annotations(), changed
+        )
+
     def test_no_bundle_falls_back_to_npz_file_chooser(self) -> None:
         labels = np.zeros((60, 80), dtype=np.uint16)
         labels[5:20, 8:24] = 31_777

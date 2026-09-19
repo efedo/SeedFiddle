@@ -61,10 +61,10 @@ class ResultsController:
         self.pipeline_workspace_action.toggled.connect(self._ensure_workspace_visible)
         state = self._application_settings.value('review-ui/main-splitter')
         if isinstance(state,QByteArray):
-            self.centralWidget().restoreState(state)
+            self.main_splitter.restoreState(state)
         position = self._application_settings.value('review-ui/annotation-window-position')
         if isinstance(position,QPoint):
-            self.image_view._context_panel_user_position = position
+            self.image_view._context_panel_saved_window_position = position
         viewport_action = QAction('Save current image viewport…',self)
         viewport_action.setShortcut('Ctrl+Shift+E')
         viewport_action.triggered.connect(self._save_current_viewport)
@@ -109,9 +109,12 @@ class ResultsController:
             QMessageBox.warning(self,'Snapshot failed',str(error))
 
     def _save_review_ui_state(self):
-        self._application_settings.setValue('review-ui/main-splitter',self.centralWidget().saveState())
+        self._application_settings.setValue('review-ui/main-splitter',self.main_splitter.saveState())
         if self.image_view._context_panel_user_position is not None:
-            self._application_settings.setValue('review-ui/annotation-window-position',self.image_view._context_panel_user_position)
+            position = self.annotation_workspace.mapTo(
+                self, self.image_view._context_panel_user_position
+            )
+            self._application_settings.setValue('review-ui/annotation-window-position',position)
 
     def _step_annotated_seed(self, direction):
         if not self.annotate_instances_action.isChecked() or self._background_work_is_active():

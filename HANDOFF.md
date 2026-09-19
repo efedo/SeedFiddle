@@ -2,6 +2,30 @@
 
 ## Resume here
 
+### Image zoom and hilum picker (2026-09-19)
+
+Image zoom buttons now retain the viewport center even when the pointer is
+over the toolbar; mouse-wheel zoom remains anchored to the image pointer.
+The hilum picker ends after one completed placement and also cancels whenever
+the selected seed ID changes, including the signal-blocked next-empty path.
+Regression tests cover toolbar and wheel zoom, one-shot placement, and both
+seed-selection paths. Full unittest discovery passed 670 tests with 2 skips.
+
+### Seed annotation review flow (2026-09-19)
+
+The palette now has Next unannotated, which cycles painted seed IDs still
+missing a reviewed condition or explicit reviewed shape. Seed condition has a
+bold group title and a divider; No defects and the defect choices disable one
+another. Outline, Full length visible, and Pose share one row. A Complete
+outline automatically checks and disables Full length visible; changing away
+from Complete returns it to an editable, unchecked choice. Exclude from
+modelling sits beside Apply + save at the top of the seed editor.
+
+Load matching reference now prefers the current saved applied seed mask over
+the bundled machine pre-annotation. The bundled mask is used only when no
+applied seed mask exists. Restoring the applied mask remains undoable. Focused
+UI/import tests passed; full unittest discovery passed 669 tests with 2 skips.
+
 ### Annotation palette cleanup (2026-09-19)
 
 The annotation palette is now owned by the main window and may be dragged beyond

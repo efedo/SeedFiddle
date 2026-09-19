@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
@@ -99,6 +100,9 @@ class AnnotationCentresUiTests(unittest.TestCase):
         view.render_reference_annotations_without_analysis()
         def markers():
             return [i for i in view._overlay_items if i.data(0) == "annotation-centres"]
+        self.assertEqual(markers(), [])
+        view._set_bgr_base_image(np.zeros((120, 160, 3), np.uint8))
+        view._refresh_instance_annotation_overlay()
         self.assertEqual(len(markers()), 1)
         self.assertEqual(markers()[0].centres, {1: (40., 20.), 2: (100., 80.)})
         cached = view.instance_centres()
@@ -134,14 +138,24 @@ class AnnotationCentresUiTests(unittest.TestCase):
         window.annotate_instances_action.setChecked(True)
         self.app.processEvents()
         panel = window.reference_panel
-        self.assertIs(panel.parentWidget(), window)
-        bounds = window.centralWidget().geometry()
+        self.assertIs(panel.parentWidget(), window.annotation_workspace)
+        self.assertTrue(panel.isVisible())
+        handle_centre = window.reference_panel_drag_handle.mapTo(
+            window.annotation_workspace,
+            window.reference_panel_drag_handle.rect().center(),
+        )
+        hit_widget = window.annotation_workspace.childAt(handle_centre)
+        self.assertIsNotNone(hit_widget)
+        self.assertTrue(
+            hit_widget is panel or panel.isAncestorOf(hit_widget)
+        )
+        bounds = window.annotation_workspace.rect()
         window.image_view._move_context_panel_to(
             QPoint(bounds.right() - panel.width() + 1, bounds.top()),
             remember=True,
         )
         image_right = window.image_view.mapTo(
-            window, QPoint(window.image_view.width(), 0)
+            window.annotation_workspace, QPoint(window.image_view.width(), 0)
         ).x()
         self.assertGreater(panel.geometry().right(), image_right)
         self.assertFalse(panel.isHidden())
@@ -149,6 +163,101 @@ class AnnotationCentresUiTests(unittest.TestCase):
         self.assertTrue(panel.isHidden())
         window._show_image_workspace()
         self.assertFalse(panel.isHidden())
+
+    def test_annotations_only_appear_on_deskewed_image(self):
+        from PySide6.QtCore import QPointF, Qt
+        from PySide6.QtTest import QTest
+
+        window, _ = self.make_window()
+        view = window.image_view
+        view.set_overlay_mode("none")
+        material = np.zeros((120, 160), bool)
+        material[30:40, 20:30] = True
+        labels = np.zeros((120, 160), np.uint16)
+        labels[65:75, 85:95] = 1
+        view.set_reference_masks(material, None, render=False)
+        view.set_instance_annotations(labels, render=False)
+        result = SimpleNamespace(calibration=SimpleNamespace(
+            corrected_bgr=np.zeros((120, 160, 3), np.uint8),
+            colour_card=None,
+        ))
+        view.show_analysis(result)
+        self.assertEqual(view._displayed_base, "corrected")
+        self.assertEqual(len(view._overlay_items), 3)
+        view.set_hilum_editing(True)
+        view.set_hilum_landmark((90., 70.), None)
+        self.assertEqual(len(view._hilum_items), 2)
+
+        view.set_overlay_mode("raw_image")
+        self.assertEqual(view._displayed_base, "source")
+        self.assertEqual(view._overlay_items, [])
+        self.assertEqual(view._hilum_items, [])
+        view.set_instance_annotations_visible(False)
+        view.set_instance_annotations_visible(True)
+        view.set_material_reference_annotations_visible(False)
+        view.set_material_reference_annotations_visible(True)
+        self.assertEqual(view._overlay_items, [])
+        view.set_hilum_editing(False)
+        view.set_instance_annotation_editing(True)
+        edits = []
+        view.instance_annotations_edited.connect(edits.append)
+        QTest.mouseClick(
+            view.viewport(), Qt.MouseButton.LeftButton,
+            pos=view.mapFromScene(110., 90.),
+        )
+        self.assertEqual(edits, [])
+        np.testing.assert_array_equal(view.instance_annotations(), labels)
+        view.set_instance_annotation_tool("smart_fill")
+        view._update_instance_assisted_preview(QPointF(110., 90.))
+        self.assertEqual(view._instance_preview_items, [])
+
+        view.set_overlay_mode("colour_reference")
+        self.assertEqual(view._overlay_items, [])
+        view.set_overlay_mode("none")
+        self.assertEqual(len(view._overlay_items), 3)
+        view.clear_analysis()
+        view.render_reference_annotations_without_analysis()
+        self.assertEqual(view._overlay_items, [])
+
+    def test_next_unannotated_cycles_painted_seeds_missing_condition_or_shape(self):
+        from seedvision.persistence.reference_regions import SeedInstanceAnnotation
+        from tests.review_fixtures import dispose_window
+
+        window, _ = self.make_window()
+        self.addCleanup(dispose_window, window)
+        labels = np.zeros((120, 160), np.uint16)
+        labels[10, 10] = 1
+        labels[20, 20] = 2
+        labels[30, 30] = 3
+        window._instance_annotations_edited(labels)
+        key = window._current_image_key()
+        self.assertIsNotNone(key)
+        complete = dict(
+            conditions_reviewed=True,
+            shape_reviewed=True,
+            outline_visibility="complete",
+            pose="flat",
+        )
+        window._draft_seed_annotations[key] = {
+            1: SeedInstanceAnnotation(1, **complete),
+            2: SeedInstanceAnnotation(2, **{**complete, "conditions_reviewed": False}),
+            3: SeedInstanceAnnotation(3, **{**complete, "shape_reviewed": False}),
+        }
+        self.assertEqual(window.next_unannotated_button.text(), "Next unannotated")
+        selector = window.new_instance_button.parentWidget().layout()
+        self.assertIs(selector.itemAt(4).widget(), window.next_unannotated_button)
+        window.instance_id_spin.setValue(1)
+        window._next_unannotated_instance()
+        self.assertEqual(window.instance_id_spin.value(), 2)
+        window._next_unannotated_instance()
+        self.assertEqual(window.instance_id_spin.value(), 3)
+        window._next_unannotated_instance()
+        self.assertEqual(window.instance_id_spin.value(), 2)
+        window._draft_seed_annotations[key][2] = SeedInstanceAnnotation(2, **complete)
+        window._draft_seed_annotations[key][3] = SeedInstanceAnnotation(3, **complete)
+        window._next_unannotated_instance()
+        self.assertEqual(window.instance_id_spin.value(), 2)
+        self.assertIn("Every painted seed", window.statusBar().currentMessage())
 
     def test_hilum_tracks_outline_edits_undo_and_persistence(self):
         from seedvision.persistence.reference_regions import ReferenceRegionStore
@@ -214,6 +323,7 @@ class AnnotationCentresUiTests(unittest.TestCase):
         view.resize(500, 400)
         view.show()
         view.load_image(image_path)
+        view._set_bgr_base_image(np.zeros((120, 160, 3), np.uint8))
         labels = np.zeros((120, 160), np.uint16)
         labels[20:41, 30:71] = 1
         view.set_instance_annotations(labels)

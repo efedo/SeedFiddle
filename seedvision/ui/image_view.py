@@ -680,6 +680,7 @@ class ImageView(QGraphicsView):
         self._hilum_items = []
         self._context_panel_drag_handle = None
         self._context_panel_user_position: QPoint | None = None
+        self._context_panel_saved_window_position: QPoint | None = None
         self._context_panel_drag_global: QPointF | None = None
         self._context_panel_drag_origin: QPoint | None = None
 
@@ -892,7 +893,11 @@ class ImageView(QGraphicsView):
         for item in self._hilum_items:
             self._scene.removeItem(item)
         self._hilum_items.clear()
-        if not self._hilum_editing or self._hilum_point is None:
+        if (
+            not self._hilum_editing
+            or self._hilum_point is None
+            or self._displayed_base != "corrected"
+        ):
             return
         start = QPointF(*self._hilum_point)
         radius = 6 / max(self.transform().m11(), .05)
@@ -973,6 +978,11 @@ class ImageView(QGraphicsView):
         container = self._context_panel.parentWidget()
         if container is None:
             return
+        if self._context_panel_saved_window_position is not None:
+            self._context_panel_user_position = container.mapFrom(
+                container.window(), self._context_panel_saved_window_position
+            )
+            self._context_panel_saved_window_position = None
         central = container.centralWidget() if hasattr(container, "centralWidget") else None
         bounds = central.geometry() if central is not None else container.rect()
         default_position = self.mapTo(
@@ -1193,18 +1203,13 @@ class ImageView(QGraphicsView):
         self._restore_source_image()
 
     def render_reference_annotations_without_analysis(self) -> None:
-        """Show restored image-local references even before calibration reruns."""
+        """Keep restored annotations pending until a deskewed image is shown."""
 
         if self._analysis_result is not None:
             self._render_analysis()
             return
         self._clear_overlay_items()
         self._restore_source_image()
-        if self._material_reference_annotations_visible:
-            self._render_background_reference_points()
-            self._render_foreground_reference_points()
-            self._render_exclusion_masks()
-        self._render_instance_annotations()
 
     @property
     def manual_seed_centre_editing(self) -> bool:
@@ -1758,7 +1763,11 @@ class ImageView(QGraphicsView):
             self._render_analysis()
 
     def _update_reference_brush_outline(self, scene_point: QPointF) -> None:
-        if self._reference_point_mode is None or self._image_item is None:
+        if (
+            self._reference_point_mode is None
+            or self._image_item is None
+            or self._displayed_base != "corrected"
+        ):
             self._hide_reference_brush_outline()
             return
         if not self._image_item.boundingRect().contains(scene_point):
@@ -3540,6 +3549,8 @@ class ImageView(QGraphicsView):
     ) -> None:
         if include_scale:
             self._render_scale_bar(result)
+        if self._image_item is not None and self._displayed_base != "corrected":
+            return
         if self._material_reference_annotations_visible:
             if (
                 self._reference_point_mode == "background"
@@ -3671,7 +3682,18 @@ class ImageView(QGraphicsView):
         return QColor.fromHsvF(hue, 0.78, 1.0)
 
     def _render_instance_annotations(self) -> None:
-        self._render_annotation_centres()
+        # Unit consumers can render tiles without an image. An actual image
+        # must be the corrected frame before its annotation pixels are drawn.
+        can_display = (
+            self._image_item is None or self._displayed_base == "corrected"
+        )
+        if can_display:
+            self._render_annotation_centres()
+        else:
+            for item in tuple(self._overlay_items):
+                if item.data(0) == "annotation-centres":
+                    self._scene.removeItem(item)
+                    self._overlay_items.remove(item)
         existing = self._instance_annotation_overlay_item
 
         def remove_existing() -> None:
@@ -3685,7 +3707,7 @@ class ImageView(QGraphicsView):
                 self._scene.removeItem(existing)
             self._instance_annotation_overlay_item = None
 
-        if not self._instance_annotations_visible:
+        if not self._instance_annotations_visible or not can_display:
             remove_existing()
             return
         labels = self._instance_annotations
@@ -3924,7 +3946,11 @@ class ImageView(QGraphicsView):
         colour: tuple[int, int, int],
         z_value: float,
     ) -> None:
-        if mask is None or not np.any(mask):
+        if (
+            (self._image_item is not None and self._displayed_base != "corrected")
+            or mask is None
+            or not np.any(mask)
+        ):
             return
         values = np.asarray(mask, dtype=bool)
         source_height, source_width = values.shape
@@ -3986,6 +4012,7 @@ class ImageView(QGraphicsView):
             self._image_item.setPixmap(self._corrected_pixmap)
             self._scene.setSceneRect(self._image_item.boundingRect())
             self._displayed_base = "corrected"
+            self._draw_hilum_landmark()
 
     def _render_colour_gamut(self, result) -> None:
         """Replace the image temporarily with a full-size HSV value slice."""
@@ -4020,6 +4047,8 @@ class ImageView(QGraphicsView):
         self._image_item.setPixmap(self._gamut_pixmap)
         self._scene.setSceneRect(self._image_item.boundingRect())
         self._displayed_base = "gamut"
+        self._stop_corrected_annotation_interaction()
+        self._draw_hilum_landmark()
 
     def _render_reference_texture_collage(self, result) -> None:
         """Replace the image with every retained material and edge medoid."""
@@ -4185,6 +4214,21 @@ class ImageView(QGraphicsView):
         )
         self._scene.setSceneRect(self._image_item.boundingRect())
         self._displayed_base = "prototype_collage"
+        self._stop_corrected_annotation_interaction()
+        self._draw_hilum_landmark()
+
+    def _stop_corrected_annotation_interaction(self) -> None:
+        """Drop previews and active strokes when the displayed frame changes."""
+
+        self._reference_paint_button = None
+        self._last_reference_paint_point = None
+        self._last_reference_hover_point = None
+        self._hilum_drag = None
+        self._manual_seed_centre_drag = None
+        self._hide_reference_brush_outline()
+        self._clear_instance_preview()
+        self._clear_instance_live_stroke()
+        self._clear_reference_live_stroke()
 
     def _restore_source_image(self) -> None:
         if self._image_item is None or self._source_pixmap is None:
@@ -4194,6 +4238,8 @@ class ImageView(QGraphicsView):
             self._image_item.setPixmap(self._source_pixmap)
             self._scene.setSceneRect(self._image_item.boundingRect())
             self._displayed_base = "source"
+            self._stop_corrected_annotation_interaction()
+            self._draw_hilum_landmark()
 
     def _render_colour_reference(self, result, *, corrected: bool) -> None:
         calibration = getattr(result, "calibration", None)
@@ -4598,19 +4644,30 @@ class ImageView(QGraphicsView):
         self._update_zoom_indicator()
 
     def zoom_in(self) -> None:
-        self._zoom_by(1.2)
+        self._zoom_by(1.2, center_on_view=True)
 
     def zoom_out(self) -> None:
-        self._zoom_by(1.0 / 1.2)
+        self._zoom_by(1.0 / 1.2, center_on_view=True)
 
-    def _zoom_by(self, factor: float) -> None:
+    def _zoom_by(self, factor: float, *, center_on_view: bool = False) -> None:
         if self._image_item is None:
             return
         current = float(self.transform().m11())
         target = current * float(factor)
         if not 0.03 <= target <= 32.0:
             return
-        self.scale(float(factor), float(factor))
+        anchor = self.transformationAnchor()
+        if center_on_view:
+            # The toolbar is outside the viewport. Anchoring its buttons to
+            # the mouse can jump from a zoomed seed to the image corner.
+            self.setTransformationAnchor(
+                QGraphicsView.ViewportAnchor.AnchorViewCenter
+            )
+        try:
+            self.scale(float(factor), float(factor))
+        finally:
+            if center_on_view:
+                self.setTransformationAnchor(anchor)
         self._update_zoom_indicator()
 
     def _update_zoom_indicator(self) -> None:
@@ -4671,6 +4728,7 @@ class ImageView(QGraphicsView):
         return (
             self._reference_point_mode == "instance"
             and not self._reference_erase_enabled
+            and (self._image_item is None or self._displayed_base == "corrected")
             and self._instance_annotation_tool
             in {"edge_trace", "smart_fill", "shape_guided_fill"}
         )
@@ -5747,6 +5805,16 @@ class ImageView(QGraphicsView):
         return True
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if (
+            (
+                self._hilum_editing
+                or self._manual_seed_centre_editing
+                or self._reference_point_mode is not None
+            )
+            and self._displayed_base != "corrected"
+        ):
+            event.accept()
+            return
         if self._hilum_editing and self._image_item is not None:
             point = self.mapToScene(event.position().toPoint())
             if event.button() == Qt.MouseButton.LeftButton and self._image_item.boundingRect().contains(point):
@@ -5894,8 +5962,10 @@ class ImageView(QGraphicsView):
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         if self._hilum_editing:
             if self._hilum_drag is not None and event.button() == Qt.MouseButton.LeftButton:
-                self.hilum_landmark_edited.emit(self._hilum_point, self._hilum_direction)
+                point, direction = self._hilum_point, self._hilum_direction
                 self._hilum_drag = None
+                self.set_hilum_editing(False)
+                self.hilum_landmark_edited.emit(point, direction)
             event.accept()
             return
         if (

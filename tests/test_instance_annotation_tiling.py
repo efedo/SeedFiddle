@@ -284,6 +284,7 @@ class InstanceAnnotationTilingTests(unittest.TestCase):
             view.resize(420, 340)
             succeeded, error = view.load_image(image_path)
             self.assertTrue(succeeded, error)
+            view._set_bgr_base_image(np.zeros((1536, 2048, 3), np.uint8))
             labels = np.zeros((1536, 2048), dtype=np.uint16)
             for tile_y in range(3):
                 for tile_x in range(4):

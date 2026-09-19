@@ -2889,7 +2889,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.actual_size_action.setShortcut("1")
         self.actual_size_action.triggered.connect(self.image_view.actual_size)
 
-        self.paint_background_action = QAction("Material references", self)
+        self.paint_background_action = QAction("Materials", self)
         self.paint_background_action.setToolTip(
             "Paint mutually exclusive Background, Foreground, or Other material classes."
         )
@@ -2899,7 +2899,10 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             self._background_toolbar_editing_changed
         )
 
-        self.annotate_instances_action = QAction("Annotate seed instances", self)
+        self.annotate_instances_action = QAction("Seeds", self)
+        self.annotate_instances_action.setToolTip(
+            "Paint and review individual seed instances."
+        )
         self.annotate_instances_action.setCheckable(True)
         self.annotate_instances_action.setEnabled(False)
         self.annotate_instances_action.toggled.connect(
@@ -2915,13 +2918,13 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         )
 
         self.load_instance_labels_action = QAction(
-            "Load matching bundled reference as draft…", self
+            "Load matching seed reference as draft…", self
         )
         self.load_instance_labels_action.setEnabled(False)
         self.load_instance_labels_action.setToolTip(
-            "Load the source-bound repository reference matching this image. If "
-            "none exists, Seed Fiddle offers a corrected-coordinate mask chooser. "
-            "Imported IDs remain an unapplied, undoable draft for review."
+            "Use saved applied seed labels first, then the source-bound bundled "
+            "pre-annotation. If neither exists, choose a corrected-coordinate "
+            "mask file. Replacements remain undoable drafts."
         )
         self.load_instance_labels_action.triggered.connect(
             self._load_instance_reference_mask
@@ -3861,10 +3864,16 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.instance_id_spin.valueChanged.connect(self._instance_id_changed)
         self.new_instance_button = QPushButton("Next empty", instance_selector)
         self.new_instance_button.clicked.connect(self._new_instance_annotation)
+        self.next_unannotated_button = QPushButton("Next unannotated", instance_selector)
+        self.next_unannotated_button.setToolTip(
+            "Select the next painted seed whose condition or shape has not been reviewed."
+        )
+        self.next_unannotated_button.clicked.connect(self._next_unannotated_instance)
         selector_layout.addWidget(QLabel("Seed:", instance_selector))
         selector_layout.addWidget(self.instance_colour_swatch)
         selector_layout.addWidget(self.instance_id_spin)
         selector_layout.addWidget(self.new_instance_button)
+        selector_layout.addWidget(self.next_unannotated_button)
         selector_layout.addStretch(1)
         instance_layout.addWidget(instance_selector)
 
@@ -3927,11 +3936,20 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.seed_conditions_reviewed_checkbox.toggled.connect(
             self._seed_trait_controls_changed
         )
-        condition_group = QGroupBox("Condition", self.instance_annotation_controls)
+        condition_group = QGroupBox("Seed condition", self.instance_annotation_controls)
+        condition_group.setStyleSheet("QGroupBox::title { font-weight: bold; }")
         condition_layout = QGridLayout(condition_group)
         condition_layout.setContentsMargins(5, 2, 5, 3)
         condition_layout.setSpacing(3)
-        condition_layout.addWidget(self.seed_conditions_reviewed_checkbox, 0, 0, 2, 1)
+        condition_rows = max(2, (len(self._seed_trait_catalogue.conditions) + 1) // 2)
+        condition_layout.addWidget(
+            self.seed_conditions_reviewed_checkbox, 0, 0, condition_rows, 1
+        )
+        condition_divider = QFrame(condition_group)
+        condition_divider.setFrameShape(QFrame.Shape.VLine)
+        condition_divider.setFrameShadow(QFrame.Shadow.Sunken)
+        condition_layout.addWidget(condition_divider, 0, 1, condition_rows, 1)
+        self.seed_condition_divider = condition_divider
         self.seed_condition_checkboxes: dict[str, QCheckBox] = {}
         for index, condition in enumerate(self._seed_trait_catalogue.conditions):
             checkbox = QCheckBox(
@@ -3941,7 +3959,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 "A non-exclusive condition label; more than one may apply to a seed."
             )
             checkbox.toggled.connect(self._seed_trait_controls_changed)
-            condition_layout.addWidget(checkbox, index // 2, 1 + index % 2)
+            condition_layout.addWidget(checkbox, index // 2, 2 + index % 2)
             self.seed_condition_checkboxes[condition] = checkbox
         trait_form.addRow(condition_group)
         metadata_layout.addLayout(trait_form)
@@ -3972,13 +3990,17 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.seed_outline_visibility_combo.currentIndexChanged.connect(
             self._seed_trait_controls_changed
         )
-        shape_form.addRow("Outline", self.seed_outline_visibility_combo)
+        self.seed_outline_visibility_combo.setMinimumWidth(78)
         self.seed_full_length_checkbox = QCheckBox("Full length visible", self.instance_annotation_controls)
+        self.seed_full_length_checkbox.setSizePolicy(
+            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
+        )
+        self.seed_full_length_checkbox.setMaximumWidth(132)
         self.seed_full_length_checkbox.setToolTip(
-            "Both maximum-span endpoints are visible despite an incomplete outline. "
-            "Contributes to size only, never complete-outline shape fitting.")
+            "Automatically true for a complete outline. For an incomplete outline, "
+            "check when both maximum-span endpoints are visible; this contributes "
+            "to size only, never complete-outline shape fitting.")
         self.seed_full_length_checkbox.toggled.connect(self._seed_trait_controls_changed)
-        shape_form.addRow(self.seed_full_length_checkbox)
         self.seed_pose_combo = QComboBox(self.instance_annotation_controls)
         for label, value in (
             ("Unknown", "unknown"),
@@ -3991,8 +4013,17 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.seed_pose_combo.currentIndexChanged.connect(
             self._seed_trait_controls_changed
         )
-        shape_form.addRow("Pose", self.seed_pose_combo)
-        shape_form.addRow(self.seed_shape_excluded_checkbox)
+        self.seed_pose_combo.setMinimumWidth(72)
+        shape_row = QWidget(self.instance_annotation_controls)
+        shape_row_layout = QHBoxLayout(shape_row)
+        shape_row_layout.setContentsMargins(0, 0, 0, 0)
+        shape_row_layout.setSpacing(4)
+        shape_row_layout.addWidget(QLabel("Outline", shape_row))
+        shape_row_layout.addWidget(self.seed_outline_visibility_combo, 1)
+        shape_row_layout.addWidget(self.seed_full_length_checkbox)
+        shape_row_layout.addWidget(QLabel("Pose", shape_row))
+        shape_row_layout.addWidget(self.seed_pose_combo, 1)
+        shape_form.addRow(shape_row)
 
         hilum_widget = QWidget(self.instance_annotation_controls)
         hilum_layout = QHBoxLayout(hilum_widget)
@@ -4003,7 +4034,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.seed_hilum_pick_button.setCheckable(True)
         self.seed_hilum_pick_button.setToolTip(
             "Click or drag on the image to place the hilum location. "
-            "Escape finishes picking."
+            "Picking ends after one location. Escape cancels picking."
         )
         self.seed_hilum_pick_button.toggled.connect(self._set_hilum_picking)
         self.image_view.hilum_landmark_edited.connect(self._hilum_landmark_edited)
@@ -4025,9 +4056,9 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             "Load matching reference", self.instance_annotation_controls
         )
         self.load_instance_reference_button.setToolTip(
-            "Load the repository's source-image-bound seed reference matching the "
-            "current photograph. If none is available, a file chooser opens. IDs "
-            "are preserved exactly and loaded only as an undoable draft."
+            "Use the saved applied seed mask for this image when available. "
+            "Otherwise load its source-bound bundled pre-annotation; if neither "
+            "exists, choose a file. Replacements are undoable drafts."
         )
         self.load_instance_reference_button.clicked.connect(
             self._load_instance_reference_mask
@@ -4587,6 +4618,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.revert_instance_annotations_button.clicked.connect(
             self._revert_instance_annotations
         )
+        instance_confirmation_layout.addWidget(self.seed_shape_excluded_checkbox)
         instance_confirmation_layout.addWidget(
             self.apply_instance_annotations_button, 1
         )
@@ -4609,7 +4641,11 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         for form in self.reference_panel_contents.findChildren(QFormLayout):
             form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         for combo in self.reference_panel_contents.findChildren(QComboBox):
-            combo.setMinimumContentsLength(12)
+            combo.setMinimumContentsLength(
+                8 if combo in (
+                    self.seed_outline_visibility_combo, self.seed_pose_combo
+                ) else 12
+            )
             combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
             combo.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         for page in (self.reference_controls, self.instance_annotation_controls):
@@ -4694,6 +4730,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         ):
             action.setVisible(False)
         self.workflow_toolbar.addSeparator()
+        self.annotate_toolbar_label = QLabel("Annotate:", self.workflow_toolbar)
+        self.workflow_toolbar.addWidget(self.annotate_toolbar_label)
         self.workflow_toolbar.addAction(self.paint_background_action)
         self.workflow_toolbar.addAction(self.annotate_instances_action)
         self.workflow_toolbar.addWidget(self.reference_visibility_controls)
@@ -4726,6 +4764,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.workspace_splitter.setSizes((560, 360))
 
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
+        self.main_splitter = splitter
         splitter.addWidget(self._build_image_panel())
         splitter.addWidget(self.workspace_splitter)
         splitter.addWidget(self._build_metadata_panel())
@@ -4733,7 +4772,15 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         splitter.setStretchFactor(1, 1)
         splitter.setStretchFactor(2, 0)
         splitter.setSizes((225, 1020, 295))
-        self.setCentralWidget(splitter)
+        # Keep the palette above the managed splitter panes, with room to move
+        # across the application workspace on native Windows.
+        self.annotation_workspace = QWidget(self)
+        workspace_layout = QVBoxLayout(self.annotation_workspace)
+        workspace_layout.setContentsMargins(0, 0, 0, 0)
+        workspace_layout.setSpacing(0)
+        workspace_layout.addWidget(splitter)
+        self.setCentralWidget(self.annotation_workspace)
+        self.reference_panel.setParent(self.annotation_workspace)
         self.image_view._layout_context_panel()
         splitter.splitterMoved.connect(
             lambda _position, _index: self.image_view._layout_context_panel()
@@ -7930,6 +7977,9 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.instance_id_spin.setEnabled(has_result and not running)
         self.instance_visibility_combo.setEnabled(has_result and not running)
         self.new_instance_button.setEnabled(has_result and not running)
+        self.next_unannotated_button.setEnabled(
+            has_result and not running and bool(annotation_ids)
+        )
         self.instance_brush_slider.setEnabled(has_result and not running)
         for button in (
             self.instance_paint_mode_button,
@@ -8098,6 +8148,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             key, self._applied_instance_annotations.get(key)
         )
         identifier = self._lowest_empty_instance_id(annotations)
+        self.seed_hilum_pick_button.setChecked(False)
         with QSignalBlocker(self.instance_id_spin):
             self.instance_id_spin.setValue(identifier)
         self.image_view.set_active_instance_id(identifier)
@@ -8749,6 +8800,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
 
     @Slot(int)
     def _instance_id_changed(self, identifier: int) -> None:
+        self.seed_hilum_pick_button.setChecked(False)
         self.image_view.set_active_instance_id(identifier)
         self._update_instance_colour_swatch()
         self._sync_seed_trait_controls()
@@ -8888,7 +8940,9 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             for condition, checkbox in self.seed_condition_checkboxes.items():
                 with QSignalBlocker(checkbox):
                     checkbox.setChecked(condition in annotation.conditions)
-                checkbox.setEnabled(extant)
+                checkbox.setEnabled(
+                    extant and not self.seed_conditions_reviewed_checkbox.isChecked()
+                )
             shape_widgets = (
                 self.seed_shape_excluded_checkbox,
                 self.seed_outline_visibility_combo,
@@ -8910,11 +8964,16 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 index = self.seed_pose_combo.findData(annotation.pose)
                 self.seed_pose_combo.setCurrentIndex(max(0, index))
             with QSignalBlocker(self.seed_full_length_checkbox):
-                self.seed_full_length_checkbox.setChecked(annotation.full_length_visible)
-            self.seed_full_length_checkbox.setVisible(annotation.outline_visibility != "complete")
+                self.seed_full_length_checkbox.setChecked(
+                    annotation.full_length_visible
+                    or annotation.outline_visibility == "complete"
+                )
             self._picked_hilum_point = annotation.hilum_point
             for widget in shape_widgets:
                 widget.setEnabled(extant)
+            self.seed_full_length_checkbox.setEnabled(
+                extant and annotation.outline_visibility != "complete"
+            )
             self.seed_hilum_clear_button.setEnabled(
                 extant and annotation.hilum_point is not None
             )
@@ -8923,7 +8982,9 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.seed_coat_pattern_combo.setEnabled(
             extant and bool(vocabulary.coat_patterns)
         )
-        self.seed_conditions_reviewed_checkbox.setEnabled(extant)
+        self.seed_conditions_reviewed_checkbox.setEnabled(
+            extant and not bool(annotation.conditions)
+        )
         if not extant:
             self.seed_hilum_pick_button.setChecked(False)
         self.image_view.set_hilum_landmark(annotation.hilum_point, direction)
@@ -9026,6 +9087,13 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         outline_visibility = str(
             self.seed_outline_visibility_combo.currentData() or "unknown"
         )
+        if (
+            self.sender() is self.seed_outline_visibility_combo
+            and previous.outline_visibility == "complete"
+            and outline_visibility != "complete"
+        ):
+            with QSignalBlocker(self.seed_full_length_checkbox):
+                self.seed_full_length_checkbox.setChecked(False)
         pose = str(self.seed_pose_combo.currentData() or "unknown")
         shape_reviewed = (
             outline_visibility != "unknown" and pose != "unknown"
@@ -9038,7 +9106,10 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             conditions_reviewed=reviewed,
             shape_reviewed=shape_reviewed,
             outline_visibility=outline_visibility,
-            full_length_visible=self.seed_full_length_checkbox.isChecked(),
+            full_length_visible=(
+                outline_visibility == "complete"
+                or self.seed_full_length_checkbox.isChecked()
+            ),
             pose=pose,
             hilum_point=hilum_point,
             hilum_direction=hilum_direction,
@@ -9082,6 +9153,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.image_view.set_hilum_editing(enabled)
 
     def _hilum_landmark_edited(self, point, direction) -> None:
+        self.seed_hilum_pick_button.setChecked(False)
         # Direction is derived from annotation geometry, never from a drag vector.
         self._picked_hilum_point = (float(point[0]), float(point[1]))
         self._seed_trait_controls_changed()
@@ -9220,6 +9292,45 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         }.get(tool, tool.replace("_", " ").title())
         self.statusBar().showMessage(
             f"Seed {self.instance_id_spin.value()} selected; {tool_label} remains active."
+        )
+
+    @Slot()
+    def _next_unannotated_instance(self) -> None:
+        key = self._current_image_key()
+        if key is None:
+            return
+        labels = self._draft_instance_annotations.get(
+            key, self._applied_instance_annotations.get(key)
+        )
+        identifiers = tuple(
+            identifier for identifier in self._instance_ids(labels)
+            if identifier <= self.instance_id_spin.maximum()
+        )
+        if not identifiers:
+            self.statusBar().showMessage("No painted seeds to review.")
+            return
+        annotations = self._draft_seed_annotations.get(
+            key, self._applied_seed_annotations.get(key, {})
+        )
+        current = self.instance_id_spin.value()
+        for identifier in (
+            *(identifier for identifier in identifiers if identifier > current),
+            *(identifier for identifier in identifiers if identifier <= current),
+        ):
+            annotation = annotations.get(identifier, SeedInstanceAnnotation(identifier))
+            if (
+                not annotation.conditions_reviewed
+                or not annotation.shape_reviewed
+                or annotation.outline_visibility == "unknown"
+                or annotation.pose == "unknown"
+            ):
+                self.instance_id_spin.setValue(identifier)
+                self.statusBar().showMessage(
+                    f"Seed {identifier} selected for condition or shape review."
+                )
+                return
+        self.statusBar().showMessage(
+            "Every painted seed has condition and shape annotations."
         )
 
     @Slot()
@@ -9706,12 +9817,42 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
 
     @Slot()
     def _load_instance_reference_mask(self) -> None:
-        """Prefer a source-bound bundled reference, then offer a file chooser."""
+        """Prefer applied seed labels before the bundled pre-annotation."""
 
         context = self._instance_mask_import_context()
         if context is None:
             return
         image_path, result, corrected_shape = context
+        key = self._current_image_key()
+        applied = self._applied_instance_annotations.get(key or "")
+        if applied is not None:
+            if tuple(applied.shape) != corrected_shape:
+                QMessageBox.warning(
+                    self,
+                    "Saved seed reference does not match",
+                    "The applied seed mask has different dimensions from the "
+                    "current corrected image. No annotation was loaded.",
+                )
+                return
+            imported = ImportedInstanceMask(
+                labels=applied,
+                source_path=self._reference_region_store.path_for(image_path),
+                coordinate_space="corrected",
+                origin=self._applied_instance_annotation_origins.get(key, "manual"),
+            )
+            if self._install_imported_instance_mask(imported):
+                self._draft_seed_annotations[key] = dict(
+                    self._applied_seed_annotations.get(key, {})
+                )
+                self._draft_seed_annotation_species[key] = (
+                    self._applied_seed_annotation_species.get(key, "")
+                )
+                self._reconcile_instance_draft(key)
+                self._sync_background_controls()
+                self.statusBar().showMessage(
+                    "Loaded the saved applied seed annotations as an undoable draft."
+                )
+            return
         try:
             imported = load_bundled_instance_mask(
                 self._root,

@@ -36,6 +36,7 @@ class SelectedInstanceImageViewTests(unittest.TestCase):
         self.view.resize(360, 300)
         succeeded, error = self.view.load_image(self.image_path)
         self.assertTrue(succeeded, error)
+        self.view._set_bgr_base_image(np.zeros((800, 1200, 3), np.uint8))
         self.view.show()
         self.application.processEvents()
         self.view.actual_size()
