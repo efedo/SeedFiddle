@@ -1,8 +1,10 @@
-# Reference seed dimensions and shape: implementation plan
+# Reference seed dimensions and shape: implementation record
 
 Status: implemented on 2026-09-01 for observed, pose-conditioned 2-D morphology.
 The explicitly deferred intrinsic 3-D research extension remains out of scope
 because a single silhouette cannot identify seed thickness.
+Current UI behavior and validation limits are summarized in
+[CURRENT_STATUS.md](CURRENT_STATUS.md).
 
 ## Implemented result
 

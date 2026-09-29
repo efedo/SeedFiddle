@@ -1,5 +1,8 @@
 # Seed Fiddle: annotation-guided node optimization compliance review
 
+> **Historical review with implemented response.** Use
+> [CURRENT_STATUS.md](CURRENT_STATUS.md) for the overall present state.
+
 > **Implementation update — 18 September 2026:** the findings below describe
 > the historical reviewed revision. The shared node registry, project-wide
 > sequential production optimizer, node actions, fixed reference objectives,
@@ -26,9 +29,9 @@
 > Conditional diagnostics require reviewed targets; independent geometry is not
 > inferred from seed masks. Real-image held-out accuracy remains unestablished.
 
-**Review date:** 9 September 2026  
-**Reviewed application revision:** `60a4b8bb3af1c34f54c4945231699fafa496a694`  
-**Requirement:** every node with features that can be optimized from reference annotations must offer that option; a project-wide procedural command must sequentially optimize all eligible nodes.  
+**Review date:** 9 September 2026
+**Reviewed application revision:** `60a4b8bb3af1c34f54c4945231699fafa496a694`
+**Requirement:** every node with features that can be optimized from reference annotations must offer that option; a project-wide procedural command must sequentially optimize all eligible nodes.
 **Disposition:** additional review only. No optimizer, node, or application behavior was changed.
 
 **The application does not meet this requirement.** The actual Qt inspector offers annotation-guided parameter fitting on only **two cards: Reference edges and Procedural seed separation**. Both have substantial coverage or objective defects. Other annotation-trained nodes automatically estimate models from examples, but do not offer optimization of their exposed settings. The Analysis menu contains only **Run pipeline**; there is no project-wide optimization coordinator. Learned-model training and command-line decoder searches provide useful separate capabilities, but do not fill these gaps.

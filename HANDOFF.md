@@ -2,6 +2,22 @@
 
 ## Resume here
 
+### Documentation consolidation (2026-09-29)
+
+The canonical present-tense summary is now
+[`docs/CURRENT_STATUS.md`](docs/CURRENT_STATUS.md), with all documentation
+classified in [`docs/README.md`](docs/README.md). `README.md`, `PLAN.md`, the
+operator and architecture guides, package-specific READMEs, implementation
+records, and dated audits were reconciled with revision `f244df8`. Dated sections
+below remain chronological evidence and may describe controls, failures, fixture
+availability, or uncommitted state that was accurate only at that time.
+
+Current engineering state: the full image/reference/annotation/analysis/review/
+export/snapshot workflow is implemented. Scientific performance remains
+unvalidated pending the laboratory inputs in
+`docs/SCIENTIFIC_VALIDATION_PROTOCOL.md`. Latest full local verification on 29 September ran
+670 tests in 383.737 seconds: 668 passed and 2 skipped.
+
 ### Image zoom and hilum picker (2026-09-19)
 
 Image zoom buttons now retain the viewport center even when the pointer is
@@ -9,7 +25,7 @@ over the toolbar; mouse-wheel zoom remains anchored to the image pointer.
 The hilum picker ends after one completed placement and also cancels whenever
 the selected seed ID changes, including the signal-blocked next-empty path.
 Regression tests cover toolbar and wheel zoom, one-shot placement, and both
-seed-selection paths. Full unittest discovery passed 670 tests with 2 skips.
+seed-selection paths. Full unittest discovery ran 670 tests: 668 passed and 2 skipped.
 
 ### Seed annotation review flow (2026-09-19)
 

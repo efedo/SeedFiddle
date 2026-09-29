@@ -1,5 +1,9 @@
 # Procedural reference matching and costs — 2026-09-05
 
+> **Implemented calculation record.** The matching and cost contracts below remain
+> current. References to the then-missing fixture or then-current test total are
+> historical; see [CURRENT_STATUS.md](CURRENT_STATUS.md) for present verification.
+
 ## Findings
 
 The comparison and fitter previously sorted pairs greedily by **raw intersection

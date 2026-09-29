@@ -1,5 +1,9 @@
 # Evidence and analytical-chain forensic audit
 
+> **Historical audit and implementation record.** Node names, counts, and open
+> findings reflect 23 August 2026. Use [CURRENT_STATUS.md](CURRENT_STATUS.md) and
+> the generated [NODE_CATALOGUE.md](NODE_CATALOGUE.md) for the current graph.
+
 Date: 2026-08-23
 
 ## Scope and method

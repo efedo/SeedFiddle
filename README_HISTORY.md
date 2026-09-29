@@ -4,7 +4,9 @@ Archived during the 2026-09-18 critical-review remediation. This text preserves
 previous implementation descriptions and experiment claims; it is not the current
 operator contract. Some examples, fixture totals and annotation behavior are obsolete.
 Use [README](README.md), [the operator guide](docs/OPERATOR_GUIDE.md), and
-[the remediation register](docs/CRITICAL_REVIEW_REMEDIATION.md) for current behavior.
+[the current status](docs/CURRENT_STATUS.md) for present behavior. The
+[documentation index](docs/README.md) explains which other records are current or
+historical.
 
 # Seed Fiddle
 

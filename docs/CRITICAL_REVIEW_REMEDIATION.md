@@ -1,5 +1,11 @@
 # Critical application review: remediation and remaining validation
 
+**Current-status review (29 September 2026):** this register remains authoritative
+for finding disposition. The compact annotation palette, corrected-view-only
+annotations, saved-reference precedence, stable zoom, and one-shot hilum picker
+were added after the original remediation run. See
+[Current project status](CURRENT_STATUS.md). The latest full suite ran 670 tests: 668 passed and 2 skipped.
+
 Updated 2026-09-18. This register follows all 30 findings in
 [the original critical review](CRITICAL_APPLICATION_REVIEW_2026_09_08.md).
 The original report is historical evidence; this document records current behavior.
@@ -37,7 +43,7 @@ Optional refinements and empirical limits are stated explicitly after the regist
 | R13 | P1 | Implemented. Missing foreground evidence yields an unavailable/blocked result with a reference affordance; a valid empty result remains a distinct zero. No legacy count fallback. |
 | R14 | P2 | Implemented. Parameter forms wrap rows/labels, expose accessible names and keyboard buddies, and offer collapsible sections. Laptop, 150% and 200% scale renders were inspected; the minimum is now 900x520 logical pixels and initial size is bounded to the screen; operator accessibility validation remains separate. |
 | R15 | P2 | Implemented core workflow. Image workspace is the default; results are always reachable; Ctrl+K finds and frames a node and neighbors. Both views cannot leave a persistent blank workspace. Expert graph remains available. Parameter sections collapse independently. |
-| R16 | P2 | Implemented. Tool choice and Apply/save precede visible trait and shape metadata. The application-owned palette can move beyond the image view. Palette position and splitter state persist; undo/redo and drawing shortcuts support repeated corrections. Applying edits remains distinct from approving shape/trait metadata. |
+| R16 | P2 | Implemented. Tool choice and Apply/save precede trait and shape review. The application-owned palette can move beyond the image view. Its compact seed controls include all/selected visibility, next-unannotated review, condition/shape metadata, exclusion and one-shot hilum placement. Annotations are displayed and editable only in the corrected frame. Palette position and splitter state persist; undo/redo and drawing shortcuts support repeated corrections. Applying edits remains distinct from approving shape/trait metadata. |
 | R17 | P2 | Implemented. Unknown/unassigned default, explicit reviewed species for conditioned training, capture-group inheritance without filename invention, and same-source species-conflict auditing. Actual biological labels still need a reviewer. |
 | R18 | P2 | Implemented. Explicit verified, immutable portable snapshot packages preserve image/reference/model/library copies separately from shared mutable working sidecars. Restoring creates a new working master. Result review records retain UTC/account-attributed append-only history; supplementary vocabulary/configuration and optimization/review evidence are archived. |
 | R19 | P2 | Implemented. Source and checkpoint byte digests govern cache reuse and result provenance. Learned results retain the checkpoint hash actually used; replacing it prevents stale export. Replace-in-place and mid-computation changes invalidate results; references are not silently reassigned to new image bytes. Ordinary node changes preserve upstream caching. |
@@ -54,6 +60,11 @@ Optional refinements and empirical limits are stated explicitly after the regist
 | R30 | P3 | Implemented core conveniences. Redo, drawing/stop/result/search/view-export shortcuts, seed-ID and decision filters, next matching reviewed/unreviewed seed, previous/next annotation, per-image computation/save status icons, completed-method comparison and persistent layout. Accessibility labels and wrapping were improved. Screen-reader/operator conformance is not claimed. |
 
 ## Verification
+
+- **Latest full unittest suite: 670 run; 668 passed, 2 skipped**, in 383.737 seconds
+  on 29 September 2026. This run includes the compact annotation controls,
+  corrected-view coordinate guard, saved-reference precedence, zoom anchoring,
+  and one-shot hilum regressions.
 
 - **Final full unittest suite: 667 tests run; 665 passed, 2 skipped**, in
   294.339 seconds. Command: `.venv/Scripts/python.exe -m unittest discover -s tests -v`.

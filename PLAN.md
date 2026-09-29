@@ -1,332 +1,228 @@
-# Seed Fiddle implementation plan
+# Seed Fiddle implementation and validation roadmap
+
+**Status date:** 29 September 2026
+**Documented revision:** `f244df8`
+**Current summary:** [docs/CURRENT_STATUS.md](docs/CURRENT_STATUS.md)
 
 ## Objective
 
-Build an on-premises desktop application that counts, measures, and broadly
-classifies soybean and lupin seeds in calibrated laboratory photographs. Each
-photograph contains one known species. Touching and partially overlapping seeds
-must be handled as separate visible instances whenever a person can distinguish
-them.
+Build a reproducible, on-premises desktop workflow for reviewing, counting,
+measuring, and broadly classifying soybean and lupin seeds in calibrated
+laboratory photographs. A photograph contains one verified species and may contain
+isolated, touching, overlapping, damaged, patterned, or partially visible seeds.
 
-Initial species:
+The software engineering workflow is implemented. Laboratory readiness is still
+blocked by representative reviewed data, prespecified tolerances, independent
+physical and colour measurements, trait definitions, and operator validation.
+Software tests and synthetic experiments do not close those gates.
 
-- Soybean
-- *Lupinus mutabilis*
-- *Lupinus polyphyllus*
-- *Lupinus mexicanus*
+Initial species remain soybean, *Lupinus mutabilis*, *Lupinus polyphyllus*, and
+*Lupinus mexicanus*. Species is operator supplied metadata; the application does
+not identify it automatically.
 
 ## Deployment contract
 
 - `seed_vision.py` is the only launch point.
-- The application is unbundled Python source; it is never packaged as an
-  executable and has no installer.
-- PySide6 provides the desktop interface.
-- No server, listening port, cloud service, telemetry, automatic update, or
-  mandatory network access is used.
-- Supporting Python modules, configuration, model weights, and optional offline
-  wheels live beside the launch file.
-- A project-local `.venv` is optional. On first launch, the standard-library-only
-  bootstrapper can either create/use `.venv` or install missing dependencies into
-  the current interpreter, after explicit confirmation.
-- The bootstrapper prefers a supplied local wheelhouse and never silently falls
-  back to the Python user-site directory.
-- When PyTorch is not already supplied, online bootstrap uses the official CUDA
-  12.6 wheel index; a compatible existing PyTorch build is retained.
-- Python 3.12 x64 is the baseline runtime. Python 3.13 and 3.14 x64 may be used
-  when the complete pinned dependency set has been validated with them.
+- The application remains unbundled Python source with a native PySide6 interface.
+  It has no server, installer, listening port, telemetry, or required cloud service.
+- Python 3.12 x64 is the baseline. Python 3.13 and 3.14 are allowed only with the
+  complete pinned dependency set validated on the target host.
+- The optional bootstrapper may create `.venv` or use an explicit offline
+  wheelhouse. It does not silently fall back to user-site installation.
+- Full-resolution evidence and reusable intermediates stay on the PyTorch CUDA
+  device unless Qt display, compact metadata, or bounded topology requires CPU data.
+- The typed graph owns calculation parameters and dependency invalidation. Changing
+  one node recomputes that node and its dependents; display-only changes do not
+  invalidate analytical caches.
+- Every exposed analytical control must change a calculation. Every computational
+  card has an optimization route; factual, reporting, or noncomputational cards
+  have an explicit exemption.
+- Images under `images/` are committed fixtures. Generated logs, screenshots,
+  exports, and experiments belong under ignored `artifacts/`.
 
 ## Product workflow
 
-1. Create or open a local project.
-2. Import one or more original-resolution photographs.
-3. Assign image metadata: species, lot, capture information, and notes.
-4. Detect the scale and colour reference.
-5. Rectify perspective and normalize colour.
-6. Segment every visible, distinguishable seed into an instance mask.
-7. Review and edit masks: add, delete, split, merge, and redraw.
-8. Calculate measurements for complete masks.
-9. Classify visible-face coat traits, wrinkling, and damage.
-10. Review low-confidence or ungradable seeds.
-11. Export counts, proportions, measurements, labels, and annotated images.
-12. Retain corrections as versioned training data.
+1. Create or open a project and load original images.
+2. Assign verified species, lot/capture group, acquisition facts, and notes.
+3. Detect and inspect the ruler, colour card, vessel, deskew, scale, and neutral
+   balance evidence.
+4. Paint or restore Background, Foreground, and Other material references.
+5. Run the pipeline and inspect material, edge, lighting, quality, procedural, and
+   optional learned outputs.
+6. Paint and review complete seed IDs. Record condition, outline, pose, exclusion,
+   and hilum location where appropriate.
+7. Optionally adapt eligible nodes against project references. Review a shared
+   before/after proposal before applying it. This is in-sample adaptation.
+8. Review the selected instance method, accepted/excluded/unreviewed IDs, missed
+   alternatives, and available pixel-space measurements.
+9. Export a versioned CSV, JSON, annotated image, or viewport record. Save the
+   working project or create an immutable portable snapshot.
+10. Export only eligible reviewed annotations for learning. Audit grouping and
+    provenance before training or evaluation.
 
-## Trait schema v0.1
+## Implemented engineering phases
 
-Common per-seed fields:
+### 1. Runtime and application shell — complete
 
-- Instance identifier and visible mask
-- Known species
-- Primary coat colour
-- Pattern and optional secondary colour
-- Wrinkling: 0 none, 1 slight, 2 clear, 3 severe, or ungradable
-- Damage flags: cracking, missing/peeling coat, chipping/breakage, discoloration
-- Global visible-damage score: 0 sound, 1 minor, 2 moderate, 3 severe, or
-  ungradable
-- Occlusion: none, touching only, partial, or heavy
-- Measurement validity
-- Model confidence and review state
+The launcher, diagnostics, optional environment bootstrap, native image and graph
+workspaces, background workers, cooperative stop, responsive shutdown, log paths,
+layout persistence, and Windows CPU/Qt plus optional CUDA workflow definitions are
+implemented. The image is the default routine workspace; the typed graph remains an
+expert view.
 
-Soybean begins with yellow, greenish, green/"blue", red, brown, white, black,
-and other as primary colours. Pattern fields avoid creating a separate combined
-class for every bicolour combination. Lupin vocabularies are configured per
-species and include other/unknown.
+### 2. Calibration and analytical evidence — engineering complete
 
-## Measurements
+Implemented capabilities include ruler/card detection, corrected-frame transforms,
+neutral balance, dual-edge Petri-dish layout, physical scale evidence, material
+colour/noise models, wavelets, gradients, ridges, traces, lighting decomposition,
+image-quality diagnostics, reference-edge probabilities, and shape/trait diagnostic
+branches. The current default vessel type is Glass Petri-dish.
 
-For complete seed masks:
+The application deliberately withholds validated millimetres and colorimetric claims.
+Traceable card/camera geometry, independent dimensions, acquisition constraints, and
+held-out colour patches remain required. Alternative vessel detectors for weigh
+boats, watch glasses, and unbounded paper surfaces are deferred extension points.
 
-- Maximum and minimum Feret diameters
-- Projected area
-- Perimeter
-- Equivalent diameter
-- Aspect ratio
-- Circularity
-- Roundness
-- Solidity/convexity
+### 3. References and annotation — complete
 
-Touching seeds remain measurable when their complete boundaries are separated.
-Partially occluded seeds are counted but complete-shape measurements are withheld.
-All measurements and classifications describe the visible face only.
+Material and seed references have independent draft/apply/revert state, bounded
+undo/redo, source identities, corrected-coordinate transforms, and explicit legacy
+alignment review. The application-owned palette supports brush, trace edge, shape
+fill, smart fill, eraser, seed visibility, clear actions, Next empty, and Next
+unannotated.
 
-## Reporting rules
+Condition and shape metadata are explicit. No defects excludes defect labels and
+vice versa. Outline, full-length visibility, and pose define size/shape eligibility;
+Exclude from modelling defaults clear. Hilum editing is location-only and one-shot,
+with direction derived from the painted centroid. Annotations appear and accept
+input only on the corrected deskewed image.
 
-- Trait proportions use the number of seeds gradable for that trait as their
-  denominator.
-- Ungradable and uncertain seeds are reported separately.
-- Every percentage includes coverage, for example: "40% white; colour gradable
-  for 97% of visible seeds."
-- Summary statistics distinguish all visible seeds from the subset eligible for
-  physical measurements.
+Load matching reference prefers saved applied labels, then the bundled source-bound
+pre-annotation, then an explicit corrected-coordinate file. Loaded labels stay an
+undoable draft. Bundled masks remain `reviewed: false` until a person verifies every
+instance at full resolution.
 
-## Technical architecture
+### 4. Instance proposal methods — engineering complete
 
-```text
-seed_vision.py                 standard-library launcher/bootstrapper
-seedvision/bootstrap.py       environment checks and dependency provisioning
-seedvision/application.py     delayed GUI entry
-seedvision/pipeline/          typed DAG, parameters, status, and invalidation
-seedvision/ui/                PySide6 image review and native node canvas
-seedvision/calibration/       reference detection and calibration
-seedvision/segmentation/      seed instance segmentation
-seedvision/visualization/     lazy CUDA diagnostic, boundary, and trait maps
-seedvision/classification/    species-conditioned trait models
-seedvision/measurement/       calibrated geometry
-seedvision/persistence/       local project and SQLite storage
-seedvision/export/            CSV, JSON, and annotated imagery
-```
+Procedural seed separation combines material evidence, scale-aware morphology,
+boundary costs, centre evidence, marker-controlled watershed, and explicit
+confidence. It is a transparent fallback and annotation bootstrap, not a validated
+counter.
 
-GPU work runs outside the Qt GUI thread and communicates through Qt signals.
-Calibration, foreground/background colour and noise estimation, shared gradients,
-edge tracing, image-quality products, and the retained experimental analysis
-stages use a CUDA-first PyTorch backend. Node tensors and intermediate
-overlays remain on GPU and are reused by downstream stages; only a selected Qt
-overlay, the corrected display image, or compact metadata/geometry is
-materialized on CPU. OpenCV remains the image decoder and compatibility layer,
-so no custom CUDA-enabled OpenCV build is required.
+Native PyTorch U-Net/watershed and StarDist branches, tiled inference, training,
+checkpoint metadata, dataset export/audit, global matching metrics, and evaluation
+protocols are implemented. Learned nodes are disabled by default and require an
+explicit compatible checkpoint. Existing controlled results are synthetic
+engineering evidence; no real-image accuracy claim is made.
 
-### Vessel-layout extension path
+### 5. Species libraries and reviewed geometry — complete
 
-The current layout result is explicitly tagged as `petri_dish` and preserves
-both concentric physical glass edges. Downstream stages use the upper/outer rim
-for the seed-analysis region, complete vessel extent, and outside-background
-sampling region instead of assuming that every future vessel is one circle.
+Immutable species-library versions can publish source-balanced material, edge,
+trait, shape, and dimensions/shape products. Projects pin exact ID/version/content
+hashes and exclude the current source during resolution. Build, grouped validation,
+publish, fork, import/export, retirement, and pinning are implemented. Coverage
+reports inventory evidence and never certify accuracy.
 
-Future layout work will introduce a common vessel-geometry interface with those
-regions plus vessel-specific overlay primitives. Detector dispatch can then add:
+Reviewed 2-D geometry includes Feret diameters, area, perimeter, equivalent diameter,
+aspect ratio, circularity, roundness, solidity/convexity, pose-conditioned shape,
+uncertainty sensitivity, concavity, turning, and curvature summaries. Intrinsic 3-D
+shape remains unknowable from one silhouette without paired views or thickness data.
 
-- blue weigh boats, using colour-assisted polygon and rounded-corner segmentation;
-- watch glasses, using paired circular, elliptical, or general conic glass-edge fits;
-- seeds resting on paper, using an unbounded surface with an explicit analysis region.
+### 6. Reference-driven optimization — complete
 
-These alternative detectors are planned extension points only. The current
-implementation deliberately selects the dual-edge Petri-dish detector.
+The shared registry covers all 48 cards: 38 computational cards have optimization
+capabilities and 10 have explicit exemptions. Project optimization runs eligible
+nodes in dependency order with fixed reference objectives, production calculations,
+isolated caches, cancellation, stale-input checks, per-image losses, before/after
+overlays, proposal review, history, rollback, and project persistence.
 
-## Delivery phases
+Optimization is always labelled image-local in-sample adaptation. It does not train
+model weights and cannot be presented as independent validation.
 
-### Phase 1 — application foundation (complete)
+### 7. Results, export, recovery, and provenance — complete
 
-- Launcher, diagnostics, optional environment bootstrap
-- Modular PySide6 shell and zoomable image canvas
-- Local project conventions and configuration loading
-- Automated tests for bootstrap decisions without installing packages
+The permanent result workflow distinguishes unavailable from a valid empty result,
+selects an authoritative method, supports per-ID accepted/excluded/unreviewed review,
+and creates immutable result revisions. CSV, structured JSON, annotated image,
+viewport export, and saved-project batch execution share the production recipe.
 
-Exit: `python seed_vision.py` can validate/provision its environment and open the
-desktop shell.
+Source and checkpoint hashes govern reuse. Project masters use shared mutable
+sidecars; immutable portable snapshots copy and verify analytical dependencies and
+restore to a new working master. Unknown legacy coordinate frames are withheld until
+explicit alignment review. Physical units and unvalidated per-object traits abstain.
 
-### Phase 2 — pilot image and annotation workflow (in progress)
+## Current compatibility versions
 
-- Import and preserve original images
-- Species and lot metadata
-- Native Qt visual pipeline from raw images to final output
-- Typed node parameters, status, per-node CUDA/CPU calculation timing, and
-  downstream cache invalidation
-- Independent direct-input contracts for all 53 active/toolbox nodes, with
-  corrected-image, dish-region, physical/seed scale, mask, proposal, and
-  reference dependencies represented explicitly and cache invalidation verified
-  against the graph
-- Explicit dish-layout, seed-scale, symmetric foreground/background colour and
-  noise-probability stages, plus shared edge-gradient/ridge/trace diagnostics
-  with visible method explanations and per-run diagnostics
-- Image-local multi-prototype pattern matching from all material, boundary, and
-  instance-reference sublayers, with separate Background, Foreground, Other,
-  Physical-edge, and Non-edge banks; global probability rasters; and a full-pane
-  grouped collage of every retained prototype
-- Toolbox-preserved, disabled one-sided maximum lightening/darkening
-  surface-slope diagnostics and derivative upper cutoffs, plus active raw
-  fine/medium/coarse surrounding RMS masks for darkness and Lab colour noise
-- Node-selected access to most implemented algorithm settings, with bounded
-  editors, concise Blueprint-style controls on every configurable graph node,
-  tooltip descriptions, composite validation, shared edge-field controls, and
-  downstream cache invalidation
-- Review-oriented procedural automatic masks with explicit confidence; the
-  former distance-based masks remain in the unused-node toolbox
-- Selectable foreground/background colour and noise, image-quality,
-  undirected-edge, directed-edge, ridge, and trace overlays
-- Fifteen authored CUDA-first diagnostic/trait products, with unfinished
-  distance-dependent products retained outside the active DAG: soft interior
-  (fusing foreground colour, learned foreground noise, and background evidence), boundary
-  normals, touching split, ellipse support, proposal disagreement, assignment
-  confidence, contact graph, illumination decomposition, image quality,
-  per-seed radial profile, wrinkling, coat damage, pattern probabilities,
-  colour probabilities, and calibration residual risk
-- Dormant per-seed provisional trait summaries and lot-level broad class proportions
-- Per-image manual background/foreground references, independent exclusions
-  for each probability layer, painted-overlay visibility, automatic fallback,
-  and a bypassable background-colour/noise branch
-- Separate per-image foreground-reference masks and distinct-colour seed-instance
-  annotations, each with independent draft/apply/revert state; freehand,
-  live-preview/click-to-apply magnetic edge tracing, nominal-cursor plus
-  edge-supported circle/ellipse snapping, adaptive neighbour-relative smart fill
-  from marked or unmarked seeds with bounded tunnelling, and erasing are available;
-  freehand drags use a lightweight vector preview and one annotation-raster
-  refresh on release, while assisted previews operate on local cursor regions;
-  applied instance IDs constrain the active procedural watershed as
-  authoritative markers and also constrain the dormant provisional branch
-- Mask editing and autosave
-- Versioned annotation representation
+- Project analysis document: version 2
+- Reference-region archive: version 6
+- Analysis-settings profile: version 20
+- Bundled instance-reference manifest: version 1
+- Foreground feature recipe: version 2 for unambiguous raw Foreground evidence
 
-Exit: representative samples can be annotated entirely inside Seed Fiddle.
+Legacy data migrates only through the implemented readers. Never relabel an unknown
+coordinate frame or ambiguous v1 feature recipe by editing its version number.
 
-Current pilot status: 11 low-resolution images load directly from `images/`;
-the application detects colour swatches and the ruler, deskews and
-neutral-balances the image, assigns pixels per millimetre, and detects both
-physical Petri-dish edges in a background thread. The active DAG now continues
-from validated calibration and diagnostic evidence—symmetric foreground/background
-colour and three-band noise probabilities, illumination/image-quality products,
-simple grayscale flattening, nonlinear local shadow/highlight products, and a
-shared CUDA edge-gradient/ridge/trace path—into a review-oriented procedural
-watershed with explicit instance confidence. Independent active diagnostics also
-provide one-sided maximum lightening/darkening L* surface slopes and six raw
-multiscale darkness/colour noise masks. The editable strong-slope cutoff views
-remain authored but have moved to the unused-node toolbox.
-Distance-peak candidates and
-all of their DAG descendants—identification, provisional instances, final
-boundary confirmation, review, measurement, classification, aggregation, and
-output—are preserved with their wiring in the unused-node toolbox. Circle
-candidates are preserved there independently. When explicitly restored, the
-circle bank consumes cached shared edge magnitude and sensor/noise-boundary
-evidence plus flattened-grayscale, local-shadow, and local-highlight boundaries
-through separate weights. The user can move the restored node back to the
-toolbox and add it again later; this experiment does not make circle candidates
-part of the default separation workflow.
+## Remaining validation phases
 
-Foreground/background reference masks and their independent exclusion masks
-have per-image draft/apply/revert state. Painted foreground colours remain
-individual Lab frequency bins and never force the probability under the brush
-to one. Painted reference/exclusion colours can be hidden while inspecting an
-overlay. Seed-instance IDs remain separate from foreground references. Their
-annotation mode supports freehand marks, magnetic edge tracing, shape snapping,
-and locally adaptive smart fill for partially annotated patterned seeds. The
-active **Procedural seed separation** node now implements the classical proof
-of concept: colour/noise material fusion, scale-aware coat-hole filling, a
-fused edge/sensor/ridge/shadow boundary cost, material/depth/ring centre
-markers, marker-controlled watershed, and per-instance confidence. Painted
-instance IDs are authoritative markers. The node transfers only GPU-resized
-bounded rasters for the CPU topology step and caches the full result.
+### A. Intended use and acceptance criteria — required first
 
-### Procedural validation outcome and learned-model milestone
+The laboratory must define the decisions supported by the tool, representative
+hardware and workloads, acceptable count/boundary/dimension/trait errors, rejection
+rules, coverage expectations, and acceptable correction time before the final test
+set is opened.
 
-All eleven fixtures were rendered as corrected image, material evidence/mask,
-boundary cost, centre likelihood, and coloured instance overlay. Pale round and
-dense round samples are useful annotation starting points. Strongly bicoloured
-elongated lupins still have obvious coat-pattern false splits and contact merges;
-the sparse 16-seed regression image produces 18 automatic instances. Adjusting
-material morphology, marker spacing, centre evidence, orientation voting, and
-area priors did not remove this ambiguity consistently across species. The
-optimized node takes about 0.41–0.87 seconds per 856–1758 px dish crop on the
-RTX 3070.
+### B. Independent reviewed corpus — required
 
-The next milestone is therefore:
+Collect original images across species, lots, sessions, density, contact, overlap,
+pattern, glare, damage, size, and empty/negative cases. Retain source hashes,
+corrected transforms, complete evaluation regions, reviewer identity and revisions,
+biological/capture groups, and rejected candidates. A second expert reviews a
+prespecified subset and disagreements are adjudicated.
 
-1. Review and correct procedural masks in representative isolated, touching,
-   patterned, dense, and partially occluded strata.
-2. Persist those masks as versioned training/validation data with species and
-   review state.
-3. Train a small species-conditioned boundary/instance model—initially U-Net
-   plus seeded watershed or StarDist—using tiled full-resolution images and
-   realistic synthetic contacts. Do not start with a transformer given the
-   present data volume.
-4. Evaluate count error, boundary F1/IoU, split/merge error, confidence
-   calibration, and correction time on held-out lots.
-5. Keep the procedural result as a transparent fallback and annotation
-   bootstrap; replace automatic count reporting only when the learned model
-   meets agreed acceptance criteria.
+### C. Real-data model development and frozen evaluation — required
 
-### Phase 3 — calibration and measurements (started)
+Use development groups for annotation, library construction, model training, decoder
+selection, and parameter adaptation. Freeze preprocessing, features, checkpoint,
+decoder, library, and result policy before independent testing. Report global object
+matching, precision/recall, PQ/IoU, boundary quality, count error, empty-dish false
+positives, calibration, micro totals, and group/stratum results. Bootstrap biological
+or acquisition groups, never pixels or repeated views of the same seed.
 
-- Detect the supplied 4×6 colour reference (implemented)
-- Detect ruler location and long-axis orientation independently (implemented)
-- Combine reference orientations for rotational deskew (implemented)
-- Neutral-swatch colour-balance correction (implemented)
-- Ruler tick/known-span scale assignment in pixels per millimetre (implemented)
-- Full projective and target-value colourimetric correction (pending reference specification)
-- Calibrated measurements and validity rules
-- Calibration diagnostics and failure states
+### D. Physical, colour, and trait validation — required
 
-Exit: unobscured seed measurements reproduce a small manual reference set within
-an agreed tolerance.
+Provide ruler/card dimensions or camera calibration, coplanarity and seed-height
+constraints, and independent horizontal/vertical measurements across the image.
+Provide traceable colour patch values and held-out patch measurements. Experts must
+define operational trait labels, ambiguous cases, abstention, and adjudication, then
+measure agreement and object-level error. Until these gates pass, pixel units and
+trait abstention remain the authoritative output.
 
-Mask geometry calculations are implemented for maximum/minimum Feret diameter,
-area, perimeter, equivalent diameter, aspect ratio, circularity, roundness,
-solidity, and convexity. Automatic calibration now feeds a physical scale into
-the corrected image and exposes it to these measurement functions. All 11 pilot
-images resolve a ruler scale; the half- and full-resolution groups produce the
-expected approximately twofold pixels-per-millimetre separation.
+### E. Operator and release validation — required
 
-### Phase 4 — segmentation proof of concept
+Exercise the full acquisition-to-export workflow with representative operators,
+project sizes, target GPUs, laptop/desktop layouts, scaling, keyboard-only use,
+screen readers, colour-vision needs, interrupted saves, cancellation, snapshots, and
+offline recovery. Freeze and hash the final wheelhouse and model/library artifacts
+only after the workflow and resource envelope pass.
 
-- Compare controlled-image classical segmentation with learned instance
-  segmentation
-- Tile large images
-- Train on corrected real masks plus realistic synthetic overlaps
-- Evaluate isolated, touching, and overlapping strata separately
+## Current verification baseline
 
-Exit: useful counting accuracy with difficult instances visibly referred for
-review.
+The latest full local discovery at revision `f244df8` ran 670 tests: 668 passed and 2
+were skipped in 383.737 seconds on 29 September 2026. The suite includes corrected-frame-only
+annotations, compact palette behavior, saved-reference precedence, stable zoom, and
+one-shot hilum placement. The generated node catalogue and whitespace checks pass.
+See [docs/CRITICAL_REVIEW_REMEDIATION.md](docs/CRITICAL_REVIEW_REMEDIATION.md) for
+the finding register and [docs/SCIENTIFIC_VALIDATION_PROTOCOL.md](docs/SCIENTIFIC_VALIDATION_PROTOCOL.md)
+for the detailed empirical protocol.
 
-### Phase 5 — trait models
+## Next concrete work
 
-- Calibrated soybean colour baseline
-- Species-specific lupin vocabularies derived from real images
-- Wrinkling, damage flags, and global damage models
-- Confidence calibration and ungradable handling
-
-Exit: broad trait proportions meet pilot acceptance criteria.
-
-### Phase 6 — validation and lab release
-
-- Hold out complete lots and capture sessions
-- Validate count error, trait macro-F1, measurement error, and review time
-- Freeze dependency/model versions and assemble an offline wheelhouse
-- Document environment creation and recovery
-
-Exit: reproducible on-premises lab workflow with no installation or server
-requirement.
-
-## Immediate data milestone
-
-The 11 low-resolution pilot images establish the controlled layout and span
-sparse through extremely packed samples. Next, add original-resolution images
-covering soybean colour groups, all three lupin species, defects, and difficult
-overlaps. Image-to-species identities and the colour-card/ruler specifications
-will be used to draft the annotation guide and validate calibration.
+1. Obtain the intended-use decisions, reviewed corpus, acquisition geometry, trait
+   definitions, and operator requirements listed above.
+2. Complete seed masks and review metadata using the current annotation workflow.
+3. Build development-only libraries and learned checkpoints from those reviewed
+   records, preserving group boundaries and provenance.
+4. Freeze a candidate recipe and run the independent validation protocol once its
+   prespecified thresholds and final split are locked.
+5. Address failures with development data, issue a new frozen revision, and repeat
+   without reusing the final test set for tuning.

@@ -1,5 +1,9 @@
 # Ruler evidence detection
 
+**Implemented calculation record.** The detector and regression contract remain
+current engineering behavior. Physical accuracy still requires the independent
+geometry protocol in [SCIENTIFIC_VALIDATION_PROTOCOL.md](SCIENTIFIC_VALIDATION_PROTOCOL.md).
+
 ## Failure analysis
 
 The former detector had two avoidable geometric errors:

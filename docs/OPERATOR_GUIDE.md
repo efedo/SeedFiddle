@@ -1,10 +1,11 @@
 # Current operator guide
 
-This guide describes the September 2026 review remediation. Dated review reports
+This guide describes the workflow current on 29 September 2026. Dated review reports
 and experiment logs document the state at their original date; their original
 findings are retained for audit. See `CRITICAL_REVIEW_REMEDIATION.md` for disposition,
 `NODE_CATALOGUE.md` for generated controls and `SCIENTIFIC_VALIDATION_PROTOCOL.md`
-for the laboratory work still required.
+for the laboratory work still required. The concise capability matrix is in
+`CURRENT_STATUS.md`.
 
 1. Launch `python seed_vision.py`. The routine workspace opens on the image.
    Species starts **Unknown / unassigned**. Assign verified project metadata;
@@ -12,8 +13,9 @@ for the laboratory work still required.
 2. Load images and inspect acquisition/calibration diagnostics. Supply Foreground
    references or an applicable pinned library. **Unavailable** means mandatory
    evidence or an instance result is missing; it is not an empty-dish count.
-3. Draw reference regions or seed instances. Seed selection and **Apply + save**
-   precede optional trait/shape metadata. Saving progress does not approve an
+3. Choose **Annotate: Materials** or **Seeds** and draw only while the corrected,
+   deskewed image is displayed. Seed selection and **Apply + save** precede
+   trait/shape review. Saving progress does not approve an
    incomplete contour as a physical seed edge. Only connected, complete,
    shape-reviewed, non-excluded outlines supervise physical contours.
 4. Run the pipeline. **Stop current work** (`Ctrl+.`) requests cancellation at a
@@ -30,6 +32,44 @@ for the laboratory work still required.
    scores are not probabilities of correctness. The annotated PNG is a full-image
    ID/decision overview; **Save current image viewport** (`Ctrl+Shift+E`) instead
    captures the current zoom and overlays for display documentation.
+
+## Material and seed annotation
+
+The annotation palette belongs to the application window and can be dragged beside
+the image without being clipped by the image view. Material and seed annotations
+use corrected-image coordinates. They are deliberately hidden, and drawing is
+disabled, on source, gamut, prototype-collage, or any other non-deskewed display.
+
+For material references, choose Background, Foreground, or Other and paint the
+reviewed region. Use the independent exclusion controls only when the corresponding
+class model should ignore an area. Apply saves the draft for analysis; Undo/Redo
+remain local to the current annotation history.
+
+For seed instances:
+
+1. Select an ID, **Next empty**, or **Next unannotated**. The latter cycles painted
+   seeds whose condition or shape review is incomplete. Set **Show** to all or
+   selected as needed.
+2. Choose Brush, Trace edge, Shape fill, Smart fill, or Eraser. Tool instructions
+   are in each button's tooltip. Clear seed and Clear all are beside the visibility
+   control.
+3. **Load matching reference** restores this image's saved applied manual labels
+   first. If none exist, it loads the bundled source-bound pre-annotation; if
+   neither exists, it opens a corrected-coordinate file chooser. The loaded labels
+   are an undoable draft and are not automatically accepted as ground truth.
+4. Review **Seed condition**. **No defects** and the defect choices are mutually
+   exclusive. Choose explicit Outline and Pose values. A Complete outline checks
+   and locks **Full length visible**; incomplete outlines can set it explicitly for
+   size-only use.
+5. Leave **Exclude from modelling** clear unless the seed must be omitted from
+   model/library contributions. It sits beside **Apply + save**.
+6. **Pick location** arms the hilum selector for one placement on the current seed.
+   It turns off after the pick, when the selected seed changes, or when Escape is
+   pressed. **Clear location** removes it. Direction is calculated internally from
+   the painted seed centroid and is not a separate operator input.
+
+The pixel and ID summary appears in the relevant Project node details rather than
+occupying permanent palette space.
 
 ## References and recovery
 
@@ -65,6 +105,9 @@ Inspector labels wrap above their editors. Splitter sizes and palette position a
 remembered. The full typed dependency graph, intermediate diagnostics and node-local
 cache invalidation remain available. Use the generated catalogue and
 `NODE_OPTIMIZATION.md` for node and sequential project optimization.
+
+Image zoom buttons retain the current viewport centre even when the pointer is over
+the toolbar. Mouse-wheel zoom retains the scene point under the pointer.
 
 ## Training and evaluation
 

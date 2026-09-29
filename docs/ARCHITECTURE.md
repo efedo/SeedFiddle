@@ -1,5 +1,9 @@
 # Current architecture and analysis contracts
 
+**Reviewed through revision `f244df8` on 29 September 2026.** See
+[Current project status](CURRENT_STATUS.md) for the capability and validation
+summary.
+
 The only launcher is `seed_vision.py`; the interactive application is native PySide6.
 The pipeline graph owns typed dependencies, active/unused membership and analytical
 parameters. `pipeline/settings.py` translates that graph once for desktop, batch and
@@ -43,6 +47,20 @@ Physical units and unvalidated traits abstain. `export/project_runner.py` loads 
 same saved production recipe and source-bound references as the desktop. The legacy
 `BaselineAnalysis.count` property remains a proposal-count compatibility API and
 must not be used for new result reporting.
+
+## Annotation and display coordinates
+
+Reference and seed annotations are stored against the corrected, deskewed image
+frame. The application suppresses annotation rasters, centres, brush outlines,
+assisted previews, and hilum editing whenever the source image, gamut slice,
+prototype collage, or another non-deskewed view is displayed. This avoids a
+visually plausible but geometrically incorrect overlay.
+
+The application window owns the movable annotation palette. The image view owns
+only scene content and zoom/pan behavior. Toolbar zoom preserves the viewport
+centre; wheel zoom preserves the scene point beneath the pointer. Hilum placement
+is a one-shot interaction tied to the current seed ID and derives its saved
+direction from the painted seed centroid.
 
 ## Learning and independent evaluation
 

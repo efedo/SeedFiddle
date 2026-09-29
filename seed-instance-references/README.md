@@ -7,12 +7,12 @@ each dish are included and counted separately in `manifest.json`.
 
 The masks deliberately remain in the original photograph's coordinates. Seed
 Fiddle verifies the image and mask SHA-256 digests, then applies the current
-source-to-corrected calibration transform with nearest-neighbour interpolation
-when **Load reference mask…** is selected in the seed-annotation panel. The
+source-to-corrected calibration transform with nearest-neighbour interpolation.
+**Load matching reference** first restores saved applied labels for the current
+image. Only when none exist does it load this bundled pre-annotation; if neither
+source exists, it offers a corrected-coordinate PNG, TIFF, or NPZ chooser. The
 loaded labels are an unapplied, undoable draft so they can be inspected and
-corrected before **Apply + save**. Use **Choose mask file…** when an explicit
-corrected-coordinate PNG, TIFF, or NPZ should replace the bundled starting
-point.
+corrected before **Apply + save**.
 
 `reviewed: false` means the mask was generated and visually audited by Codex,
 but has not been independently accepted as human ground truth. It must not be

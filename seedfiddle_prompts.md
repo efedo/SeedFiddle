@@ -1,6 +1,11 @@
 Seed Fiddle
 This is a scratch file in which Seed Fiddle prompts are drafted and archived.
 
+These entries preserve requests at the time they were written; many are implemented,
+superseded, or intentionally deferred. They are not a current defect list or roadmap.
+Use [current status](docs/CURRENT_STATUS.md) and [the implementation roadmap](PLAN.md)
+for present progress.
+
 ---
 
 - When an editor node is selected, please also select adjacent nodes (but with a different outline colour; maybe purple?)
@@ -65,7 +70,7 @@ This is a scratch file in which Seed Fiddle prompts are drafted and archived.
 ---
 
 1. Remove the unused "Boundary confidence and normals" node from the Overlay selection list. There was supposed to be a test so that this is always kept up to date and only contains active nodes.
-2. 
+2.
 
 - Remove small spots: identify small groups of dark pixels in flattened grayscale surrounded by light pixels; fill in with light pixels
 - Don't just trace any edge, try to find edges with continuin colour (on one side at least), curve
@@ -90,7 +95,7 @@ After you have finshed, verify that this same error mode does not affect foregro
 - Although despeckled flattened grayscale to be run multiple iterations via a control (but default to a single iteration)
 
 
-- For reference edges, are the calculations currently correctly using true edges and then weighting them by the physical vs. non-physical edge prototype probability? The net physical edge probability overlay has very wide edge strips if this is the case. 
+- For reference edges, are the calculations currently correctly using true edges and then weighting them by the physical vs. non-physical edge prototype probability? The net physical edge probability overlay has very wide edge strips if this is the case.
 
 The new regression test exposed the exact mechanism behind the visual complaint: a strong ridge inside the normalization window raised the local RMS enough that the immediately adjacent weak continuation stayed below the hysteresis threshold. I’m correcting that boundary case explicitly—the gain will still use the robust local envelope, but a strong neighbour can no longer suppress the gain assigned to the current weak edge pixel.
 

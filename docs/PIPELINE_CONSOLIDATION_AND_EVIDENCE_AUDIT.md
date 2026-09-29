@@ -1,5 +1,9 @@
 # Pipeline consolidation and evidence-chain audit
 
+> **Dated consolidation record.** This explains the 24 August 2026 evidence-chain
+> change. Later additions and current node/control counts are documented in
+> [CURRENT_STATUS.md](CURRENT_STATUS.md) and [NODE_CATALOGUE.md](NODE_CATALOGUE.md).
+
 Date: 2026-08-24
 
 ## Purpose

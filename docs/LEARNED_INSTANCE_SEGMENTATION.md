@@ -1,4 +1,11 @@
-# Learned seed-instance segmentation plan
+# Learned seed-instance segmentation implementation and validation plan
+
+**Engineering status (29 September 2026): implemented.** Native U-Net/watershed
+and StarDist training, tiled inference, checkpoint metadata, graph integration,
+dataset export/audit, resource bounds, global metrics, and evaluation protocols
+are present. Both graph branches remain disabled by default and require an explicit
+compatible checkpoint. The remaining work is independently reviewed real-data
+training and frozen evaluation; see [Current project status](CURRENT_STATUS.md).
 
 ## Scientific objective
 
@@ -53,21 +60,22 @@ uncertainty band remain unlabelled for that head. The generated target and
 validity masks are exported with the reviewed instance raster so their exact
 derivation remains reproducible.
 
-To reduce correction time, the desktop annotation editor can initialize a
-full-resolution draft from the current procedural, U-Net/watershed, or StarDist
-instance result. The conversion is explicit: bounded-resolution topology is
-nearest-neighbour expanded into the calibrated analysis crop and then placed in
-the complete corrected photograph. The draft records which pipeline method
-initialized it. It remains unreviewed, and its automated origin must never be
-confused with independent human agreement or locked-test evidence.
+To reduce correction time, the desktop annotation editor can load the current
+saved applied manual mask or a source-bound bundled pre-annotation. The loaded
+mask becomes an unapplied, undoable draft. Bundled masks are automated starting
+points with `reviewed: false`; their origin must never be confused with independent
+human agreement or locked-test evidence. Automatic procedural or learned results
+remain available as comparison overlays rather than a general **Start from result**
+draft command.
 
 ## Desktop annotation and checkpoint workflow
 
 The **Learning** menu makes the ordinary workflow self-contained:
 
-1. Analyse an image and use **Annotate seed instances**. Start from the
-   procedural, U-Net/watershed, or StarDist proposal if useful, but treat it as
-   an unreviewed draft. Correct all false splits, merges, omissions, background
+1. Analyse an image and choose **Annotate: Seeds**. Use **Load matching reference**
+   to restore saved applied labels first or, when none exist, the bundled
+   source-bound pre-annotation. Compare procedural, U-Net/watershed, or StarDist
+   overlays when useful. Correct all false splits, merges, omissions, background
    objects, and edge placement errors, then apply the complete labels. The
    physical contour and safely inset non-physical candidates are regenerated
    automatically from those IDs and the current edge evidence.
@@ -87,7 +95,9 @@ The **Learning** menu makes the ordinary workflow self-contained:
    checkpoint, writes a provenance-bearing JSON report, and can activate the
    result in the corresponding DAG node.
 6. Tune decoder settings on validation data and evaluate exactly once on the
-   frozen test set using the launcher commands documented in the README.
+   frozen test set using the launcher evaluation commands retained in the
+   historical command reference. Follow `SCIENTIFIC_VALIDATION_PROTOCOL.md` for
+   independent-protocol provenance.
 
 Instance masks generate all StarDist targets and the U-Net interior, physical
 boundary, centre, distance, apparent-pattern, validity, and auxiliary-error
@@ -207,10 +217,13 @@ inter-annotator/reference uncertainty must accompany the final report.
 Publication-ready use additionally requires a sufficiently diverse,
 human-reviewed, locked test set representing all intended species, lots,
 capture sessions, crowding levels, pattern types, damage states, and relevant
-occlusions. The current eleven unlabelled fixtures cannot satisfy that
-requirement, regardless of apparent visual quality.
+occlusions. The committed fixtures and unreviewed bundled pre-annotations cannot
+satisfy that requirement, regardless of apparent visual quality.
 
 ## Delivery milestones
+
+Milestones 1–8 below are complete as engineering work. Their synthetic and fixture
+evidence does not satisfy the independent real-image validation gate.
 
 1. Baseline audit, written protocol, and brainstorm log.
 2. Dataset manifest, label persistence/import/export, target generation, and
@@ -221,3 +234,7 @@ requirement, regardless of apparent visual quality.
 6. Synthetic correctness and overfit tests, followed by fixture inference.
 7. Reproducible optimization experiments and side-by-side visual failure audit.
 8. Full regression, performance report, and explicit validation verdict.
+
+The active milestone is to collect an independently reviewed, grouped real corpus;
+train and select models without test access; freeze the full recipe; and execute the
+scientific validation protocol against prespecified acceptance thresholds.

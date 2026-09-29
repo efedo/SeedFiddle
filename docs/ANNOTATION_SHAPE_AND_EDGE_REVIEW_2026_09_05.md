@@ -1,5 +1,10 @@
 # Annotation, ruler and shape review — 5 September 2026
 
+> **Dated implementation record.** The geometry, eligibility, persistence, and
+> measurement corrections below remain relevant. Its palette layout predates the
+> compact 19 September controls. Use [CURRENT_STATUS.md](CURRENT_STATUS.md) and
+> [OPERATOR_GUIDE.md](OPERATOR_GUIDE.md) for current labels and interaction.
+
 ## Changes and interpretation
 
 - **Detected ruler:** the metric line is preserved. An orange imperial line uses

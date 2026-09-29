@@ -1,11 +1,16 @@
 # Seed Fiddle: critical application review
 
-**Review date:** 8 September 2026  
-**Reviewed revision:** `60a4b8bb3af1c34f54c4945231699fafa496a694`  
-**Scope:** application behavior, native desktop interface, scientific methods, validation, persistence, performance, and maintainability.  
+> **Historical review.** This document intentionally preserves the findings at
+> revision `60a4b8b`. Their current disposition is in
+> [CRITICAL_REVIEW_REMEDIATION.md](CRITICAL_REVIEW_REMEDIATION.md); the concise
+> present state is [CURRENT_STATUS.md](CURRENT_STATUS.md).
+
+**Review date:** 8 September 2026
+**Reviewed revision:** `60a4b8bb3af1c34f54c4945231699fafa496a694`
+**Scope:** application behavior, native desktop interface, scientific methods, validation, persistence, performance, and maintainability.
 **Disposition:** review report only; no application fixes made.
 
-**Additional review, 9 September 2026:** the [node optimization compliance review](D:/Programming/SeedFiddle/docs/NODE_OPTIMIZATION_COMPLIANCE_REVIEW_2026_09_09.md) assesses all 48 active/toolbox cards against the requirement for annotation-guided optimization and a project-wide sequential command. It adds 11 prioritized findings, including incomplete fitting coverage, ineffective procedural trials, and a changing edge-evaluation target.
+**Additional review, 9 September 2026:** the [node optimization compliance review](NODE_OPTIMIZATION_COMPLIANCE_REVIEW_2026_09_09.md) assesses all 48 active/toolbox cards against the requirement for annotation-guided optimization and a project-wide sequential command. It adds 11 prioritized findings, including incomplete fitting coverage, ineffective procedural trials, and a changing edge-evaluation target.
 
 Seed Fiddle is a substantial research and annotation environment, with useful image diagnostics and unusually extensive engineering regression coverage. It is not yet a dependable, complete scientific counting and measurement product. The principal problems are broader than segmentation accuracy: ordinary unsaved work can be lost, training and inference disagree about an input channel, partial annotations can become incorrect boundary supervision, and validation reports can overstate the evidence supporting them.
 
@@ -48,9 +53,9 @@ These links are local evidence, not committed assets. Preserve the evidence dire
 
 ## 2. Priority register
 
-**P0:** immediate, broadly applicable catastrophic failure; none established in this review.  
-**P1:** required before relying on the affected workflow or making scientific claims. Some concern normal editing; others apply specifically to learning, imported checkpoints, or quantitative use.  
-**P2:** important correctness, usability, robustness, or maintainability work for the next development cycle.  
+**P0:** immediate, broadly applicable catastrophic failure; none established in this review.
+**P1:** required before relying on the affected workflow or making scientific claims. Some concern normal editing; others apply specifically to learning, imported checkpoints, or quantitative use.
+**P2:** important correctness, usability, robustness, or maintainability work for the next development cycle.
 **P3:** useful refinement after the main workflow is dependable.
 
 “Confirmed” means demonstrated by code and/or a bounded reproduction. “Gap” identifies an absent capability or insufficient evidence, not a claim that every existing result is wrong. Suggested redesigns below are recommendations; acceptance criteria describe how to decide whether the improvement is complete.

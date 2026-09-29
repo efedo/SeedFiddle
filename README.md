@@ -5,6 +5,12 @@ analysis, annotation, instance review and reproducible result export. It uses
 PyTorch CUDA for full-resolution image evidence and retains node-local reusable
 intermediates on the device. There is no application server or bundled executable.
 
+**Project status (29 September 2026):** the complete engineering workflow is
+implemented through reviewed result export and portable snapshots. The latest
+full local suite ran 670 tests: 668 passed and 2 were skipped. See the
+[current project status](docs/CURRENT_STATUS.md) for the capability matrix,
+annotation behavior, schema versions, and remaining validation work.
+
 **Current limits:** outputs are proposals for review. Real-image counting accuracy,
 physical measurement accuracy and biological trait validity remain unestablished.
 Physical result units and unvalidated per-seed traits are withheld. Neutral colour
@@ -50,6 +56,12 @@ uses `Ctrl+K`. See the guide for drawing and review shortcuts.
 
 ## Current documentation
 
+- [Current project status](docs/CURRENT_STATUS.md): implemented capabilities,
+  latest verification, current annotation behavior, and remaining work.
+- [Documentation index](docs/README.md): current guides, implementation records,
+  historical audits, and research ideas.
+- [Implementation and validation roadmap](PLAN.md): completed engineering phases
+  and the remaining laboratory milestones.
 - [Operator guide](docs/OPERATOR_GUIDE.md): workflow, shortcuts, projects, snapshots,
   results, learning and migration.
 - [Architecture and contracts](docs/ARCHITECTURE.md): ownership, caching and provenance.

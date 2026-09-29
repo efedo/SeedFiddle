@@ -1,5 +1,12 @@
 # Learned instance-segmentation engineering report
 
+> **Historical engineering result.** This report records the controlled synthetic
+> experiments completed on 11 August 2026. It is not the current operator guide or
+> evidence of real-image performance. The implementation remains available but
+> disabled by default; current status and remaining validation are in
+> [CURRENT_STATUS.md](CURRENT_STATUS.md) and
+> [SCIENTIFIC_VALIDATION_PROTOCOL.md](SCIENTIFIC_VALIDATION_PROTOCOL.md).
+
 Date: 2026-08-11
 Branch: `codex/learned-instance-segmentation`
 

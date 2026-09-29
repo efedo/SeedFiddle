@@ -1,5 +1,9 @@
 # Hierarchical material-evidence redesign
 
+**Implemented design record.** This document explains the current material
+hierarchy and its migration. Use [CURRENT_STATUS.md](CURRENT_STATUS.md) and
+[OPERATOR_GUIDE.md](OPERATOR_GUIDE.md) for current workflow and validation limits.
+
 ## Problem statement
 
 Seed Fiddle previously exposed several useful but incompatible evidence maps:

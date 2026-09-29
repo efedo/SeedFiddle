@@ -1,5 +1,9 @@
 # Running future-ideas brainstorm
 
+Current implemented capability and remaining validation work are tracked in
+[CURRENT_STATUS.md](CURRENT_STATUS.md) and the root [PLAN.md](../PLAN.md). Entries
+below remain ideas even if later work implemented a related mechanism.
+
 This is a dated, append-only working list. Ideas are not commitments and should
 be promoted into the implementation plan only after evidence or a concrete use
 case justifies them.

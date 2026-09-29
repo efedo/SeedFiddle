@@ -1,5 +1,10 @@
 # Scientific validation and required laboratory inputs
 
+**Status reviewed 29 September 2026.** The engineering workflow is implemented;
+none of the software/UI completion summarized in
+[Current project status](CURRENT_STATUS.md) closes the empirical requirements in
+this protocol.
+
 The current application supports image-local adaptation and pixel-space review.
 It does not establish counting accuracy, physical metric accuracy or trait validity.
 Neutral white/gray balancing is not a colorimetric calibration. Heuristic evidence,

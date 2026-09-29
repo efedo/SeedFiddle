@@ -1,5 +1,9 @@
 # Reference-driven node optimization
 
+**Status reviewed 29 September 2026.** The implementation remains current at
+revision `f244df8`. Runs are adaptation against project references and are never
+independent validation; see [CURRENT_STATUS.md](CURRENT_STATUS.md).
+
 Implemented 2026-09-18. This guide describes the implementation that addresses
 the historical [node compliance review](NODE_OPTIMIZATION_COMPLIANCE_REVIEW_2026_09_09.md).
 

@@ -1,5 +1,10 @@
 # Learned model checkpoints
 
+The U-Net/watershed and StarDist engineering paths are implemented but disabled
+by default. No committed checkpoint is an independently validated laboratory
+model. See [current status](../docs/CURRENT_STATUS.md) and the
+[scientific validation protocol](../docs/SCIENTIFIC_VALIDATION_PROTOCOL.md).
+
 Place self-describing Seed Fiddle checkpoints here by default:
 
 - `unet_seed_instances.pt`

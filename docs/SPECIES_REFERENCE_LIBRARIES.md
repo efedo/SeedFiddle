@@ -1,7 +1,9 @@
-# Species reference libraries: implementation plan
+# Species reference libraries: implementation record
 
 Status: implemented on 2026-09-01. The explicitly deferred research extensions
 listed near the end of this document remain outside the implemented contract.
+Current capability and validation status is summarized in
+[CURRENT_STATUS.md](CURRENT_STATUS.md).
 
 ## Implemented result
 

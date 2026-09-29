@@ -1,5 +1,9 @@
 # Edge-supported reference-edge evidence and normalization
 
+**Implementation record reviewed 29 September 2026.** The calculation remains in
+the current graph. See [CURRENT_STATUS.md](CURRENT_STATUS.md) for overall readiness
+and [NODE_CATALOGUE.md](NODE_CATALOGUE.md) for current controls.
+
 ## Problem
 
 The instance-derived edge classifier publishes two spatially broad descriptor

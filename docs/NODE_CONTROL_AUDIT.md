@@ -1,5 +1,9 @@
 # Node control audit
 
+> **Historical control audit.** The 46-node and 271-control inventory below is the
+> dated audit baseline. The current generated catalogue covers 48 cards; see
+> [NODE_CATALOGUE.md](NODE_CATALOGUE.md) and [CURRENT_STATUS.md](CURRENT_STATUS.md).
+
 Date: 2026-08-26
 
 ## Scope and method
