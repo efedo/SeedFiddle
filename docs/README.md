@@ -2,7 +2,7 @@
 
 Start with [Current project status](CURRENT_STATUS.md). It states the implemented
 capabilities, current annotation behavior, latest verification, and remaining
-laboratory work as of 29 September 2026.
+laboratory work and the accepted peer-functionality direction as of 3 October 2026.
 
 ## Current operational documents
 
@@ -11,8 +11,8 @@ laboratory work as of 29 September 2026.
   training, and evaluation workflow.
 - [Architecture and contracts](ARCHITECTURE.md): ownership, caching, persistence,
   evaluation, and extension rules.
-- [Implementation roadmap](../PLAN.md): completed engineering phases and remaining
-  validation milestones.
+- [Implementation roadmap](../PLAN.md): completed baseline phases, accepted
+  peer-functionality work and remaining validation milestones.
 - [Node catalogue](NODE_CATALOGUE.md): generated card, control, default, and
   optimization inventory.
 - [Node optimization](NODE_OPTIMIZATION.md): current fitting workflow and objectives.
@@ -20,6 +20,20 @@ laboratory work as of 29 September 2026.
   is still required before scientific or laboratory claims.
 - [Critical review remediation](CRITICAL_REVIEW_REMEDIATION.md): disposition of the
   30 findings and the boundary between software repair and empirical validation.
+
+## Accepted project direction
+
+- [PlantCV–SMPTS comparison](PLANTCV_SMPTS_COMPARISON.md): revised research rationale
+  and peer-functionality scope, aligned with the native SeedFiddle baseline.
+- [Peer-functionality implementation and benchmark plan](PLANTCV_SMPTS_IMPLEMENTATION_PLAN.md):
+  canonical F01–F21 capability families, WP0–WP6 delivery gates and comparative design.
+
+These are accepted development direction, not implemented integrations or measured
+performance. The root roadmap owns sequencing; the status summary owns current
+capabilities; the scientific protocol owns empirical release requirements. Proposed
+paths/backend names/YAML are not current commands. Historical audits and implementation
+records retain their dated claims; their future-tense passages do not supersede this
+roadmap. The future-ideas list remains uncommitted except where explicitly promoted.
 
 ## Current implementation records
 
@@ -55,7 +69,8 @@ register for present behavior.
 ## Research backlog
 
 [Future ideas](FUTURE_IDEAS.md) is an append-only brainstorm. Items there are not
-commitments, current controls, or evidence of implementation.
+current controls or evidence of implementation. Explicit promotion notes point to
+accepted work in the root roadmap; unpromoted ideas remain uncommitted.
 
 ## Directory specific notes
 

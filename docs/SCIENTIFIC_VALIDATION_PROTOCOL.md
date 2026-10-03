@@ -1,6 +1,6 @@
 # Scientific validation and required laboratory inputs
 
-**Status reviewed 29 September 2026.** The engineering workflow is implemented;
+**Protocol extended 3 October 2026.** The existing engineering workflow is implemented;
 none of the software/UI completion summarized in
 [Current project status](CURRENT_STATUS.md) closes the empirical requirements in
 this protocol.
@@ -44,6 +44,39 @@ boundary quality, absolute count error, empty-dish false positives, micro totals
 per-group/per-stratum results. Bootstrap biological/capture groups, not pixels or
 repeated views of the same seed. Declare sample-size and acceptable-error thresholds
 before opening the final split. Repeated optimization belongs to validation data.
+
+## PlantCV–SMPTS comparative extension
+
+The accepted [implementation plan](PLANTCV_SMPTS_IMPLEMENTATION_PLAN.md) applies
+this same protocol; it does not create a second route to scientific approval.
+Before final testing, freeze selected reference versions/recipes, the functional
+feature register, allowed inputs, primary endpoints, critical strata, absolute
+fitness thresholds and comparative margins. Pending original SMPTS access blocks
+original-code parity, not an explicitly labelled paper-port experiment.
+
+Report numerical conformance, stage-isolated quality, end-to-end quality and
+resource/operator costs separately. Equalize permitted information and development
+opportunity; retain native preprocessing for complete-reference runs and common
+upstream checkpoints for isolated-stage runs. Never select a per-image winning
+method from evaluation targets. Label oracle-mask/marker diagnostics separately.
+
+Use paired resampling of independent biological/acquisition groups for comparative
+uncertainty. For higher-is-better quality, require the lower one-sided 95% confidence
+bound of candidate-minus-reference to meet the prespecified negative margin; for
+lower-is-better error, require its upper bound to meet the positive margin. Also
+require absolute fitness and coverage gates; no significant difference is not proof
+of non-inferiority. Inadequately sampled critical strata remain inconclusive.
+
+Report detection, misses, exclusions, abstention and eligible measurement coverage
+alongside matched-seed errors. Reference extraction-only outputs require crop/count
+metrics; do not invent dense masks or arbitrary confidence rankings for AP. Preserve
+published metric definitions only when recoverable. Physical/colour/trait outputs
+still require the independent evidence below; conformance never enables them alone.
+
+For operational comparisons, record hardware, warm/cold and cache state, synchronized
+GPU completion, transfers, peak memory, failures and correction time at a fixed
+quality standard. CPU-versus-GPU timings describe execution modes, not algorithm-only
+speed. Keep the final test set inaccessible during routing and parameter selection.
 
 ## Acquisition and physical measurement
 

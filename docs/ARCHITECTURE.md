@@ -78,6 +78,23 @@ certify scientific validity. `learning/metrics.py` uses global object assignment
 explicit empty/unavailable policies and micro/image/group reporting. Empirical
 calibration and biological validation follow the separate laboratory protocol.
 
+## Accepted peer-functionality extension (3 October 2026)
+
+The [PlantCV–SMPTS plan](PLANTCV_SMPTS_IMPLEMENTATION_PLAN.md) extends these contracts.
+Its backend identities, benchmark modules and checkpoint schema are proposed, not
+current APIs. Keep reference adapters and their dependency environments separate from
+the production runtime. Adapters cannot own the graph, project persistence or canonical
+results. Reuse existing metric/geometry definitions with explicit compatibility names
+where reference formulas differ. Normal production must not acquire benchmark-only
+CPU transfers or a mandatory external framework dependency.
+
+Replay checkpoints must retain source/frame/settings identities and bounded storage.
+Comparison outputs preserve available/empty/failed/unsupported states, instance-ID
+mapping, method identity and measurement eligibility. Snapshot and desktop/batch
+contracts remain authoritative. Eroded cores, original foreground and measurement
+masks are distinct products. New controls still require computational effect,
+optimization coverage or an explicit exemption, and generated catalogue updates.
+
 ## Extending the application
 
 Keep controls tied to actual calculations. Add the node's optimization capability or

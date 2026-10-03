@@ -2,6 +2,39 @@
 
 ## Resume here
 
+### Accepted PlantCV–SMPTS peer-functionality direction (2026-10-03)
+
+The user requested revision and incorporation of two external reports from
+`SeedFiddle_Codex_Handoff.zip`. Their canonical revised versions are now
+`docs/PLANTCV_SMPTS_COMPARISON.md` and `docs/PLANTCV_SMPTS_IMPLEMENTATION_PLAN.md`.
+The root roadmap, current status, architecture, operator guide, scientific protocol
+and documentation index are aligned with this accepted extension. Existing baseline
+engineering remains implemented; WP0–WP6 peer-functionality work remains pending.
+Start with a scoped feature audit and reference/replay infrastructure, alongside
+laboratory inputs. Preserve SeedFiddle's architecture and scientific release gates.
+Original SMPTS code has not been recovered or executed; paper ports must be named
+separately. Proposed backend IDs, paths and YAML are not current executable features.
+
+The integration baseline is `094aa7d`; the previous reviewed implementation was
+`f244df8`. This is a documentation-only change. The supplied copies of existing
+project files were substantively identical and were not used to overwrite the
+repository. `analysis.seedfiddle-project.json` is an unrelated untracked user file.
+Post-integration congruence pass: inspected the scope/status hierarchy across all
+36 project Markdown documents (34 tracked baseline files and two new reports),
+checked local links, and reconciled current guides plus learned, shape, library and
+optimization records. Dated audits and implementation history retain their original
+evidence; promoted brainstorm items explicitly defer to the accepted roadmap.
+No broken local Markdown links remain. The generated node catalogue check passes;
+no generated catalogue or runtime/schema changes were needed.
+
+Full unittest discovery on 3 October: 670 run in 325.881 seconds, 668 passed and 2
+skipped (historical pilot batch and Windows/POSIX filesystem case). Log:
+`artifacts/peer-direction-full-suite.log`. Focused documentation link, F01–F21 and
+WP0–WP6 inventory/status checks, catalogue drift and final whitespace checks pass.
+No comparative algorithm or laboratory experiment was run. No commit/push was
+performed.
+
+
 ### Documentation consolidation (2026-09-29)
 
 The canonical present-tense summary is now

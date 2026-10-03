@@ -7,6 +7,13 @@ are present. Both graph branches remain disabled by default and require an expli
 compatible checkpoint. The remaining work is independently reviewed real-data
 training and frozen evaluation; see [Current project status](CURRENT_STATUS.md).
 
+**Direction alignment (3 October 2026):** the accepted
+[peer-functionality plan](PLANTCV_SMPTS_IMPLEMENTATION_PLAN.md) reuses these learned
+branches as optional comparison arms. They are neither new implementation work nor
+restricted to a mandatory final fallback. Freeze checkpoints and allowed reference
+access under the same scientific protocol; no additional AI architecture is required
+by the new direction. The remaining work described below is this subsystem's scope.
+
 ## Scientific objective
 
 Develop and compare two independently decodable, native-PyTorch instance

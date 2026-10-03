@@ -4,9 +4,9 @@ Current implemented capability and remaining validation work are tracked in
 [CURRENT_STATUS.md](CURRENT_STATUS.md) and the root [PLAN.md](../PLAN.md). Entries
 below remain ideas even if later work implemented a related mechanism.
 
-This is a dated, append-only working list. Ideas are not commitments and should
-be promoted into the implementation plan only after evidence or a concrete use
-case justifies them.
+This is a dated, append-only working list. Unpromoted ideas are not commitments.
+Dated promotion notes identify accepted scope in the root implementation plan;
+related historical suggestions do not become commitments automatically.
 
 ## 2026-08-11 — learned instance-segmentation kickoff
 
@@ -122,3 +122,13 @@ case justifies them.
   noise, reference prototypes, U-Net, and StarDist. Such regions are strong
   candidates for targeted material painting or focused instance-boundary
   correction in the authoritative seed-ID layer.
+
+## 2026-10-03 — accepted peer-functionality direction
+
+The [root roadmap](../PLAN.md) now adopts the
+[PlantCV–SMPTS implementation/benchmark plan](PLANTCV_SMPTS_IMPLEMENTATION_PLAN.md).
+Comparison infrastructure and selected seed-focused capabilities are planned work,
+not merely brainstorm items. Related older ideas (method disagreement, contour
+refinement, synthetic development data and correction-time studies) remain historical
+suggestions; only the explicitly scoped F01–F21/WP0–WP6 contracts are commitments.
+No particular routing policy or extra learned architecture is promoted by this entry.

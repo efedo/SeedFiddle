@@ -1,7 +1,7 @@
 # Seed Fiddle implementation and validation roadmap
 
-**Status date:** 29 September 2026
-**Documented revision:** `f244df8`
+**Direction updated:** 3 October 2026
+**Engineering baseline:** `094aa7d`; prior implementation review `f244df8`
 **Current summary:** [docs/CURRENT_STATUS.md](docs/CURRENT_STATUS.md)
 
 ## Objective
@@ -11,7 +11,9 @@ measuring, and broadly classifying soybean and lupin seeds in calibrated
 laboratory photographs. A photograph contains one verified species and may contain
 isolated, touching, overlapping, damaged, patterned, or partially visible seeds.
 
-The software engineering workflow is implemented. Laboratory readiness is still
+The existing software engineering workflow is implemented. The newly accepted
+PlantCV–SMPTS peer-functionality extension is pending; completion of the baseline
+does not imply completion of this expanded scope. Laboratory readiness is still
 blocked by representative reviewed data, prespecified tolerances, independent
 physical and colour measurements, trait definitions, and operator validation.
 Software tests and synthetic experiments do not close those gates.
@@ -162,6 +164,39 @@ explicit alignment review. Physical units and unvalidated per-object traits abst
 Legacy data migrates only through the implemented readers. Never relabel an unknown
 coordinate frame or ambiguous v1 feature recipe by editing its version number.
 
+## Accepted direction: PlantCV–SMPTS peer functionality
+
+The [comparison report](docs/PLANTCV_SMPTS_COMPARISON.md) supplies the rationale;
+[the implementation and benchmark plan](docs/PLANTCV_SMPTS_IMPLEMENTATION_PLAN.md)
+is the canonical extension specification. Achieve functional peer coverage for
+selected seed-relevant preparation, segmentation, extraction, geometry, colour,
+QC and batch capabilities. Exact numerical compatibility, independent scientific
+quality and resource/operator costs have separate acceptance evidence. No claim
+of all-PlantCV coverage or demonstrated peer performance is made.
+
+Keep the application and its current production methods. Reuse existing geometry,
+learning, annotation, results and evaluation code wherever the feature audit
+confirms its contract. Do not introduce a second graph, required PlantCV desktop
+dependency, fixed splitter cascade or replacement results schema. Reference runs
+use isolated environments; production retains CUDA residency and node-local caches.
+
+All work packages below are pending, including the operation-level feature register.
+
+| Work package | Deliverable and gate |
+|---|---|
+| WP0: scope and baseline | Pin the current recipe and external references; expand F01–F21 into exact operations/outputs, existing-code mappings, gaps, exclusions and acceptance tests. Resolve original SMPTS access or label reconstruction explicitly. |
+| WP1: comparison infrastructure | Reference adapters, immutable stage checkpoints/replay, matched-ID audits and conformance/resource reports; detect deliberate coordinate, mask and metric errors. |
+| WP2: PlantCV capabilities | Selected compatible operations and same-input conformance evidence; reuse existing native capabilities where verified. |
+| WP3: SMPTS capabilities | Recover and compare threshold, contact, erosion and extraction stages; distinguish original code from a paper port. |
+| WP4: native enhancements | CUDA implementations, scale-aware alternatives and contour recovery supported by development ablations; preserve compatible modes. |
+| WP5: measurements and workflow | Definition-specific measurements, eligibility, comparison overlays and provenance across desktop/batch/snapshots; retain physical and trait gates. |
+| WP6: comparative validation | Locked independent study, paired grouped uncertainty, absolute/comparative gates, correction costs and documented promotion decision. |
+
+Start WP0/WP1 while obtaining the laboratory inputs below. Methods can be implemented
+and tested for engineering behavior before those inputs exist; scientific release
+and default promotion require the prespecified evidence. Scope changes belong in
+this roadmap and the feature register, not in retroactive benchmark exclusions.
+
 ## Remaining validation phases
 
 ### A. Intended use and acceptance criteria — required first
@@ -207,8 +242,8 @@ only after the workflow and resource envelope pass.
 
 ## Current verification baseline
 
-The latest full local discovery at revision `f244df8` ran 670 tests: 668 passed and 2
-were skipped in 383.737 seconds on 29 September 2026. The suite includes corrected-frame-only
+Full local discovery during the 3 October 2026 documentation integration against
+code baseline `094aa7d` ran 670 tests: 668 passed and 2 were skipped in 325.881 seconds. The suite includes corrected-frame-only
 annotations, compact palette behavior, saved-reference precedence, stable zoom, and
 one-shot hilum placement. The generated node catalogue and whitespace checks pass.
 See [docs/CRITICAL_REVIEW_REMEDIATION.md](docs/CRITICAL_REVIEW_REMEDIATION.md) for
@@ -217,12 +252,16 @@ for the detailed empirical protocol.
 
 ## Next concrete work
 
-1. Obtain the intended-use decisions, reviewed corpus, acquisition geometry, trait
-   definitions, and operator requirements listed above.
-2. Complete seed masks and review metadata using the current annotation workflow.
-3. Build development-only libraries and learned checkpoints from those reviewed
-   records, preserving group boundaries and provenance.
-4. Freeze a candidate recipe and run the independent validation protocol once its
-   prespecified thresholds and final split are locked.
-5. Address failures with development data, issue a new frozen revision, and repeat
-   without reusing the final test set for tuning.
+1. Execute WP0: freeze the baseline and reference recipes, audit F01–F21 against
+   actual code, and create the operation-level feature register with scoped gates.
+2. Execute WP1: build reproducible reference adapters and stage comparisons before
+   tuning or replacing production algorithms.
+3. In parallel, obtain intended-use tolerances, reviewed grouped images, acquisition
+   geometry, trait definitions and operator requirements; complete annotation review.
+4. Deliver WP2–WP5 on development data, reusing existing libraries and learned
+   branches. Keep original, compatible, reconstructed and enhanced methods distinct.
+5. Freeze the complete recipe and final split for WP6 and the scientific protocol.
+   Promote only capabilities that meet their functional, absolute and comparative
+   gates; report blocked or inconclusive capabilities explicitly.
+6. Address failures on development data and issue a new frozen revision without
+   reusing the final test set for tuning.

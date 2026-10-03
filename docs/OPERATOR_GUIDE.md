@@ -33,6 +33,13 @@ for the laboratory work still required. The concise capability matrix is in
    ID/decision overview; **Save current image viewport** (`Ctrl+Shift+E`) instead
    captures the current zoom and overlays for display documentation.
 
+## Planned peer capabilities
+
+The [PlantCV–SMPTS direction](PLANTCV_SMPTS_IMPLEMENTATION_PLAN.md) is accepted
+future work. Its backend names, comparison schema and replay tools are not currently
+available commands or controls. Continue using the existing workflow below; the
+scientific validation and physical/trait availability limits remain unchanged.
+
 ## Material and seed annotation
 
 The annotation palette belongs to the application window and can be dragged beside

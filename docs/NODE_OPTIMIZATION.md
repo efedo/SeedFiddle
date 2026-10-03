@@ -7,6 +7,13 @@ independent validation; see [CURRENT_STATUS.md](CURRENT_STATUS.md).
 Implemented 2026-09-18. This guide describes the implementation that addresses
 the historical [node compliance review](NODE_OPTIMIZATION_COMPLIANCE_REVIEW_2026_09_09.md).
 
+**Direction alignment (3 October 2026):** the
+[peer-functionality plan](PLANTCV_SMPTS_IMPLEMENTATION_PLAN.md) requires new production
+controls to join this capability registry or state an exemption. Exact-reference
+conformance uses fixed parameters; enhanced-mode tuning stays on development data.
+Project optimization remains in-sample adaptation and cannot serve as the locked
+comparative test or select a winning method from its targets.
+
 ## Run an optimization
 
 1. Open and save a project. Apply reference edits first; images with unapplied

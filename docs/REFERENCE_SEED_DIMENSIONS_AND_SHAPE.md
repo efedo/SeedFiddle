@@ -6,6 +6,14 @@ because a single silhouette cannot identify seed thickness.
 Current UI behavior and validation limits are summarized in
 [CURRENT_STATUS.md](CURRENT_STATUS.md).
 
+**Direction alignment (3 October 2026):** the
+[peer-functionality plan](PLANTCV_SMPTS_IMPLEMENTATION_PLAN.md) reuses this geometry
+and eligibility layer. PlantCV-compatible estimators, if different, require separate
+names and same-mask tests; eroded splitting cores are not measurement masks. Existing
+diagnostic scale support does not enable authoritative physical result exports.
+Historical design/milestone wording below records the implemented baseline, not a
+second pending roadmap. The new extension follows the root roadmap.
+
 ## Implemented result
 
 The former scale-only node is now **Reference seed dimensions and shape**. Its

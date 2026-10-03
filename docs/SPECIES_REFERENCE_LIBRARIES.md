@@ -5,6 +5,13 @@ listed near the end of this document remain outside the implemented contract.
 Current capability and validation status is summarized in
 [CURRENT_STATUS.md](CURRENT_STATUS.md).
 
+**Direction alignment (3 October 2026):** the
+[peer-functionality plan](PLANTCV_SMPTS_IMPLEMENTATION_PLAN.md) reuses this immutable
+library framework. All comparison arms must declare permitted library/reference
+membership and exclude test targets from adaptation. Coverage remains distinct from
+accuracy. The original milestone wording below records the implemented baseline;
+new peer capabilities follow the root roadmap and do not create another library store.
+
 ## Implemented result
 
 The application now has one shared species-library system for foreground

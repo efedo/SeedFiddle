@@ -1,10 +1,10 @@
 # Current project status
 
-**Status date:** 29 September 2026
-**Documented revision:** `f244df8` on `codex/learned-instance-segmentation`
+**Status date:** 3 October 2026
+**Engineering baseline:** `094aa7d`; prior implementation review `f244df8`
 **Latest complete local verification:** 670 tests run; 668 passed, 2 skipped
 
-Seed Fiddle is an engineering complete local desktop workflow for image loading,
+Seed Fiddle has an implemented baseline local desktop workflow for image loading,
 calibration diagnostics, material and seed annotation, procedural and optional
 learned instance proposals, reference driven parameter adaptation, result review,
 export, and portable project snapshots. It remains a research and review tool.
@@ -12,10 +12,22 @@ Counting accuracy, physical measurement accuracy, colour accuracy, biological
 trait validity, and operator usability have not been established on an independent
 representative laboratory corpus.
 
+## Accepted extension: peer functionality
+
+The project now targets selected PlantCV–SMPTS seed-analysis capabilities under
+[the implementation and benchmark plan](PLANTCV_SMPTS_IMPLEMENTATION_PLAN.md).
+The [comparison report](PLANTCV_SMPTS_COMPARISON.md) explains the scope and evidence.
+WP0–WP6 remain pending: the operation-level feature register, pinned reference
+adapters, stage replay and comparative study are not implemented by this documentation
+change. Existing native methods remain the engineering baseline. Functional coverage,
+numerical conformance, scientific performance and operational cost require separate
+proof. Laboratory data collection continues alongside WP0/WP1.
+
 ## Capability status
 
 | Area | Current state | Remaining evidence or work |
 |---|---|---|
+| PlantCV–SMPTS peer functionality | Accepted direction; implementation and comparison work pending. | Complete the scoped feature audit, reference/replay infrastructure and WP2–WP6 gates; no parity claim yet. |
 | Runtime and desktop shell | Implemented. One `seed_vision.py` launcher, native PySide6 UI, optional local environment bootstrap, diagnostics, cancellation, and responsive persistence. | Validate the frozen dependency and hardware envelope intended for laboratory deployment. |
 | Analysis graph | Implemented. The generated catalogue covers 48 active/toolbox cards. Node local caching and dependency based invalidation are preserved. | New controls must continue to affect calculations and receive optimization coverage or a stated exemption. |
 | Calibration and image evidence | Engineering implementation complete for ruler/card detection, deskew, neutral balance, layout, material, edge, texture, lighting, and quality evidence. | Supply traceable card/camera geometry and independent measurements before enabling or claiming validated physical or colorimetric output. |
@@ -59,11 +71,12 @@ The latest full local run used:
 .\.venv\Scripts\python.exe -m unittest discover -s tests -q
 ```
 
-It ran 670 tests in 383.737 seconds on 29 September 2026: 668 passed and 2
-skipped. The skips cover an unavailable
+During the documentation integration on 3 October 2026, it ran 670 tests in
+325.881 seconds: 668 passed and 2 skipped. The code baseline remains `094aa7d`;
+no production code changed. The prior 29 September run took 383.737 seconds. The skips cover an unavailable
 complete historical pilot batch and a POSIX case-sensitive filesystem check on
-Windows. The node catalogue drift check and `git diff --check` also passed at the
-documented revision. Software and synthetic tests demonstrate engineering
+Windows. The node catalogue drift check and `git diff --check` also passed for this documentation integration. The test log is
+`artifacts/peer-direction-full-suite.log` (ignored generated output). Software and synthetic tests demonstrate engineering
 contracts; they do not establish scientific performance.
 
 ## Work needed for laboratory readiness

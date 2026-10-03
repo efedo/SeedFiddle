@@ -5,11 +5,18 @@ analysis, annotation, instance review and reproducible result export. It uses
 PyTorch CUDA for full-resolution image evidence and retains node-local reusable
 intermediates on the device. There is no application server or bundled executable.
 
-**Project status (29 September 2026):** the complete engineering workflow is
+**Project status (3 October 2026):** the existing engineering workflow is
 implemented through reviewed result export and portable snapshots. The latest
 full local suite ran 670 tests: 668 passed and 2 were skipped. See the
 [current project status](docs/CURRENT_STATUS.md) for the capability matrix,
 annotation behavior, schema versions, and remaining validation work.
+
+**New project direction:** achieve peer functionality for selected PlantCV and
+SMPTS seed-analysis capabilities within SeedFiddle. The
+[revised comparison](docs/PLANTCV_SMPTS_COMPARISON.md) and
+[implementation/benchmark plan](docs/PLANTCV_SMPTS_IMPLEMENTATION_PLAN.md) define
+the accepted extension. Capability auditing and comparison infrastructure come
+first; peer algorithms, adapters and parity claims are not yet delivered.
 
 **Current limits:** outputs are proposals for review. Real-image counting accuracy,
 physical measurement accuracy and biological trait validity remain unestablished.
@@ -60,8 +67,8 @@ uses `Ctrl+K`. See the guide for drawing and review shortcuts.
   latest verification, current annotation behavior, and remaining work.
 - [Documentation index](docs/README.md): current guides, implementation records,
   historical audits, and research ideas.
-- [Implementation and validation roadmap](PLAN.md): completed engineering phases
-  and the remaining laboratory milestones.
+- [Implementation and validation roadmap](PLAN.md): completed baseline phases,
+  the accepted peer-functionality extension and remaining laboratory milestones.
 - [Operator guide](docs/OPERATOR_GUIDE.md): workflow, shortcuts, projects, snapshots,
   results, learning and migration.
 - [Architecture and contracts](docs/ARCHITECTURE.md): ownership, caching and provenance.
