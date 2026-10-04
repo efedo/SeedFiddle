@@ -460,6 +460,44 @@ class BenchmarkCheckpointTests(unittest.TestCase):
                 **common,
             )
 
+    def test_integer_raster_value_ranges_preserve_bounds_above_float_precision(self) -> None:
+        maximum = 2**53
+        int64 = np.dtype(np.int64)
+        pixels = np.zeros((7, 9), dtype=int64)
+        pixels[0, 0] = maximum
+
+        generic_role = RasterRole("raster", int64.str, value_range=(0, maximum))
+        generic = self.publish(arrays={"pixels": pixels}, raster_roles={"pixels": generic_role})
+        loaded = load_checkpoint(self.root, generic.checkpoint_sha256)
+        self.assertEqual(loaded.raster_roles["pixels"].value_range, (0, maximum))
+
+        over_limit = pixels.copy()
+        over_limit[0, 0] = maximum + 1
+        with self.assertRaisesRegex(CheckpointError, "outside its declared range"):
+            self.publish(arrays={"pixels": over_limit}, raster_roles={"pixels": generic_role})
+
+        image_identity = replace(
+            _identity(),
+            image_semantics={
+                **_identity().image_semantics,
+                "color_order": "GRAY",
+                "dtype": int64.str,
+                "value_range": [0, maximum],
+            },
+        )
+        image_role = RasterRole("image", int64.str, layout="HW")
+        self.publish(
+            identity=image_identity,
+            arrays={"image": pixels},
+            raster_roles={"image": image_role},
+        )
+        with self.assertRaisesRegex(CheckpointError, "outside its declared range"):
+            self.publish(
+                identity=image_identity,
+                arrays={"image": over_limit},
+                raster_roles={"image": image_role},
+            )
+
     def test_loader_rejects_semantically_invalid_raster_role_even_with_rehashed_manifest(self) -> None:
         reference = self.publish()
         manifest_path = reference.path / "manifest.json"

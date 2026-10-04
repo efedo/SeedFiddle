@@ -2,6 +2,17 @@
 
 ## Resume here
 
+### Peer implementation: exact checkpoint integer ranges (2026-10-03)
+
+Checkpoint raster and image ranges now preserve integer bounds and compare exact
+Python scalar extrema. Values above `2**53` cannot pass a rounded float64 bound.
+Luna implemented this repair; Sol independently passed all 24 checkpoint tests
+and 74 publication/load/round-trip probes, including int64/uint64 extremes,
+finite floats and empty arrays. The prior 738-test full run passed (736 passed,
+two existing skips) before this repair batch; a fresh full run is still required
+after the current runner, recipe and conformance repairs are frozen. This repair
+does not establish reference conformance or scientific accuracy.
+
 ### Peer implementation: immutable checkpoint feature (2026-10-03)
 
 The WP0 audit feature and F22 objective are committed and pushed as `8373e3f` and

@@ -335,7 +335,7 @@ class RasterRole:
     kind: str
     dtype: str
     layout: str = "HW"
-    value_range: tuple[float, float] | None = None
+    value_range: tuple[int | float, int | float] | None = None
 
     def __post_init__(self) -> None:
         if self.kind not in {"image", "mask", "instances", "raster"}:
@@ -358,10 +358,16 @@ class RasterRole:
             if (
                 isinstance(lower, bool) or isinstance(upper, bool)
                 or not isinstance(lower, (int, float)) or not isinstance(upper, (int, float))
-                or not math.isfinite(lower) or not math.isfinite(upper) or lower > upper
+                or (isinstance(lower, float) and not math.isfinite(lower))
+                or (isinstance(upper, float) and not math.isfinite(upper))
+                or lower > upper
             ):
                 raise ValueError("Raster value_range must have finite ordered bounds.")
-            object.__setattr__(self, "value_range", (float(lower), float(upper)))
+            object.__setattr__(
+                self,
+                "value_range",
+                (int(lower) if type(lower) is int else float(lower), int(upper) if type(upper) is int else float(upper)),
+            )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -525,7 +531,7 @@ def _array_descriptor(value: Any, *, limits: CheckpointLimits, name: str) -> tup
     return shape, dtype, nbytes
 
 
-def _image_range(identity: CheckpointIdentity) -> tuple[float, float]:
+def _image_range(identity: CheckpointIdentity) -> tuple[int | float, int | float]:
     value = identity.image_semantics.get("value_range")
     if not isinstance(value, tuple) or len(value) != 2:
         raise CheckpointError("Image raster semantics must declare a numeric value_range pair.")
@@ -533,10 +539,15 @@ def _image_range(identity: CheckpointIdentity) -> tuple[float, float]:
     if (
         isinstance(lower, bool) or isinstance(upper, bool)
         or not isinstance(lower, (int, float)) or not isinstance(upper, (int, float))
-        or not math.isfinite(lower) or not math.isfinite(upper) or lower > upper
+        or (isinstance(lower, float) and not math.isfinite(lower))
+        or (isinstance(upper, float) and not math.isfinite(upper))
+        or lower > upper
     ):
         raise CheckpointError("Image raster value_range is invalid.")
-    return float(lower), float(upper)
+    return (
+        int(lower) if type(lower) is int else float(lower),
+        int(upper) if type(upper) is int else float(upper),
+    )
 
 
 def _validate_raster_contract(
@@ -545,7 +556,7 @@ def _validate_raster_contract(
     shape: tuple[int, ...],
     dtype: np.dtype,
     identity: CheckpointIdentity,
-) -> tuple[float, float] | None:
+) -> tuple[int | float, int | float] | None:
     if dtype.str != role.dtype:
         raise CheckpointError(f"Raster {name} dtype {dtype.str} differs from its declared role dtype {role.dtype}.")
     height, width = identity.coordinate_frame.shape
@@ -617,8 +628,14 @@ def _validate_raster_values(name: str, array: np.ndarray, role: RasterRole, iden
         if identity.instance_semantics["background_label"] != 0:
             raise CheckpointError("Instance raster background must be integer zero.")
     if value_range is not None:
-        if array.size and (not np.isfinite(array).all() or float(array.min()) < value_range[0] or float(array.max()) > value_range[1]):
-            raise CheckpointError(f"Raster {name} contains values outside its declared range.")
+        if array.size:
+            if array.dtype.kind == "f" and not np.isfinite(array).all():
+                raise CheckpointError(f"Raster {name} contains non-finite values outside its declared range.")
+            # Convert extrema to Python scalars without passing integer pixels
+            # or integer bounds through float64, which rounds values above 2**53.
+            minimum, maximum = array.min().item(), array.max().item()
+            if minimum < value_range[0] or maximum > value_range[1]:
+                raise CheckpointError(f"Raster {name} contains values outside its declared range.")
 
 
 def _numpy_payload(value: Any, *, allow_cpu_transfer: bool, limits: CheckpointLimits, name: str) -> np.ndarray:
