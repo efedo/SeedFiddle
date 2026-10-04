@@ -2,6 +2,20 @@
 
 ## Resume here
 
+### Peer implementation: bounded shared instance assignment (2026-10-03)
+
+The common evaluator and Hungarian solver now preflight the actual dummy-column
+cost matrix, optional evaluator weights and scratch against 64 MiB before dense
+allocation. In-place negation avoids a second weights-sized temporary. Oversized
+components raise `MemoryError`; supported matching retains its cardinality/IoU/tie
+semantics. Luna implemented and repaired the feature; Sol final review found no
+material defects. Five focused budget tests pass; 25 procedural-fit tests and
+existing matching/metric checks pass. Independent final probes preserve exact HEAD
+behavior for 400 solver and 150 evaluator cases; a 1600-by-1600 near-cap probe
+peaked at 63,380,800 bytes. Conformance still has a tolerance-boundary repair under
+way; runner has a colour-matrix metadata repair. F22 catalogue/read-only UI/graph
+metadata persistence are being developed. Full discovery follows the frozen batch.
+
 ### Peer implementation: versioned recipe graph contracts (2026-10-03)
 
 `seedvision/benchmarking/recipes.py` supplies strict immutable recipe, provenance,

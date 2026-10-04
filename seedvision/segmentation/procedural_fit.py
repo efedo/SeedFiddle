@@ -82,6 +82,38 @@ DEFAULT_PROCEDURAL_FIT_PARAMETERS = _complete_parameter_catalogue()
 _FITTABLE_PARAMETER_NAMES = {parameter.name for parameter in DEFAULT_PROCEDURAL_FIT_PARAMETERS}
 
 
+MAX_ASSIGNMENT_WORKSPACE_BYTES = 64 * 1024 * 1024
+
+
+def _preflight_maximum_weight_assignment(
+    rows: int,
+    columns: int,
+    *,
+    include_weights: bool = False,
+) -> int:
+    """Bound the dense Hungarian matrices before any of them are allocated.
+
+    The solver needs ``rows * (columns + rows)`` float64 cells because it adds
+    one zero-weight dummy column per row. Evaluator callers set
+    ``include_weights`` to account for their separate ``rows * columns`` input
+    matrix as well. A conservative linear allowance covers the solver's
+    potentials, ownership vectors, and per-row scratch arrays.
+    """
+
+    if type(rows) is not int or type(columns) is not int or rows < 0 or columns < 0:
+        raise ValueError("Assignment dimensions must be non-negative integers.")
+    cost_cells = rows * (columns + rows)
+    input_cells = rows * columns if include_weights else 0
+    scratch_bytes = 64 * (rows + columns + 2)
+    required_bytes = 8 * (cost_cells + input_cells) + scratch_bytes
+    if required_bytes > MAX_ASSIGNMENT_WORKSPACE_BYTES:
+        raise MemoryError(
+            f"A {rows}-by-{columns} assignment needs {required_bytes} bytes of dense "
+            f"workspace, exceeding the {MAX_ASSIGNMENT_WORKSPACE_BYTES}-byte assignment budget."
+        )
+    return required_bytes
+
+
 @dataclass(frozen=True, slots=True)
 class ProceduralFitOptions:
     """Bounds and loss weights for a short coordinate-search fit."""
@@ -378,7 +410,9 @@ def _maximum_weight_assignment(weights: np.ndarray) -> list[tuple[int, int]]:
     references, columns are predictions plus one dummy per reference.
     """
     rows, columns = weights.shape
-    costs = np.concatenate((-weights, np.zeros((rows, rows))), axis=1)
+    _preflight_maximum_weight_assignment(int(rows), int(columns))
+    costs = np.zeros((rows, columns + rows), dtype=np.float64)
+    np.negative(weights, out=costs[:, :columns])
     column_count = costs.shape[1]
     u = np.zeros(rows + 1)
     v = np.zeros(column_count + 1)

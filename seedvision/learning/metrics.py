@@ -133,7 +133,10 @@ def _overlap_iou_pairs(truth: np.ndarray, prediction: np.ndarray):
 
 
 def _global_matches(pairs, threshold):
-    from seedvision.segmentation.procedural_fit import _maximum_weight_assignment
+    from seedvision.segmentation.procedural_fit import (
+        _maximum_weight_assignment,
+        _preflight_maximum_weight_assignment,
+    )
     adjacency = {}
     scores = {}
     for iou,t,p,_ in pairs:
@@ -157,11 +160,20 @@ def _global_matches(pairs, threshold):
                     pending.append(neighbour)
         true_ids = sorted(node for node in component if node>0)
         predicted_ids = sorted(-node for node in component if node<0)
-        if len(true_ids)*len(predicted_ids)>4_000_000:
-            raise MemoryError('An ambiguous matching component exceeds the bounded assignment budget. Partition the evaluation into predeclared disjoint regions.')
+        _preflight_maximum_weight_assignment(
+            len(true_ids),
+            len(predicted_ids),
+            include_weights=True,
+        )
         bonus = min(len(true_ids),len(predicted_ids))+1
-        weights = np.asarray([[bonus+scores[t,p] if (t,p) in scores else 0.
-            for p in predicted_ids] for t in true_ids],np.float64)
+        true_positions = {identifier: index for index, identifier in enumerate(true_ids)}
+        predicted_positions = {identifier: index for index, identifier in enumerate(predicted_ids)}
+        weights = np.zeros((len(true_ids), len(predicted_ids)), np.float64)
+        for true_id in true_ids:
+            row = true_positions[true_id]
+            for negative_prediction_id in adjacency[true_id]:
+                predicted_id = -negative_prediction_id
+                weights[row, predicted_positions[predicted_id]] = bonus + scores[(true_id, predicted_id)]
         accepted.extend(weights[row,col]-bonus for row,col in _maximum_weight_assignment(weights))
     return accepted
 
