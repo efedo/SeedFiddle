@@ -187,7 +187,10 @@ Distinguish original, compatible, reconstructed and enhanced graphs and mark unr
 stages. Acceptance includes topology/parameter checks, actual Qt visual review,
 persistence and cache behavior; a generic diagram or opaque backend card is insufficient.
 
-WP0/WP1 are in progress; WP2–WP6 remain pending. The
+WP0/WP1/WP2 are in progress; WP3–WP6 remain pending, with original SMPTS parity
+blocked by source access. Reviewed CUDA binary, adaptive-mean and restricted-domain
+Otsu primitives start WP2; desktop recipe integration and complete operation
+conformance remain open. The
 [operation-level register](docs/plantcv_smpts_features.json) and committed
 source/environment/baseline records are available. Exact reference recipes and
 archived outputs remain to freeze, and original SMPTS source access is unresolved.

@@ -2,25 +2,17 @@
 
 **Status date:** 4 October 2026
 **Engineering baseline:** `094aa7d`; prior implementation review `f244df8`
-**Latest complete local verification:** 839 tests run; 837 passed, 2 skipped,
-against the frozen current feature batch. Final requested Sol reviews for the new
-chunks remain pending. Focused checkpoint and recipe suites pass 24 and 12 tests.
+**Latest complete local verification:** 839 tests run; 837 passed, 2 skipped.
+That frozen run predates the latest stage-bridge repairs; fresh full discovery is
+running against the reviewed batch. Focused checkpoint and recipe suites pass
+24 and 12 tests.
 
-The grouped manifest repair is now independently approved by Sol: 15 focused tests,
-160 new review probes and root's 640 identity-closure probes pass. The working-tree
-reference dialog passes 24 graph-view/read-only tests. Renewed explicit reviewer
-instructions resolved the earlier source-transfer rejection; its final Sol review
-and the threshold/stage reviews are running. Native threshold work explicitly
-rejects ambiguous Otsu partitions; 3,132 accepted pinned histogram probes match
-and 108 reject explicitly. The original runner retains its pinned defaults. The
-uncommitted original-threshold checkpoint bridge passes ten focused tests and 15
-malformed-result rejection probes. These chunks do not close delivery gates. Push
-approval is separately pending. Full discovery passed against the frozen batch;
-all eleven feature-file hashes remained unchanged during the run.
-
-Sol approved the threshold primitives for their restricted domain. Stage review
-identified lossy large-integer offset comparison and an inherited-timeout cap bypass;
-those repairs are under way and require focused re-review and fresh full discovery.
+Sol approved the grouped manifest (15 tests plus 160 review probes), native threshold
+primitives (10 tests), reference dialog (24 view/read-only tests) and repaired
+original-threshold checkpoint bridge (13 tests plus 84 new probes). Root's 640
+manifest identity-closure probes pass. Graph and stage feature commits are being
+finalized. Reviewer authorization is resolved; push destination approval remains
+separately pending. These engineering checks do not close peer delivery or science.
 
 Seed Fiddle has an implemented baseline local desktop workflow for image loading,
 calibration diagnostics, material and seed annotation, procedural and optional
@@ -35,7 +27,7 @@ representative laboratory corpus.
 The project now targets selected PlantCV–SMPTS seed-analysis capabilities under
 [the implementation and benchmark plan](PLANTCV_SMPTS_IMPLEMENTATION_PLAN.md).
 The [comparison report](PLANTCV_SMPTS_COMPARISON.md) explains the scope and evidence.
-WP0/WP1 are in progress. The [operation-level register](plantcv_smpts_features.json)
+WP0/WP1/WP2 are in progress. The [operation-level register](plantcv_smpts_features.json)
 maps F01–F22 to source operations, existing code/tests, gaps and acceptance criteria.
 PlantCV 4.11.3 source and the isolated reference environment are pinned in
 [the source record](../config/peer_reference_sources.json); the default native
@@ -86,18 +78,26 @@ without writes/network and supports explicit bounded callback fetching. Nine foc
 tests pass, including a source-present root with no flyr wheel. It does not install
 the isolated environment or rebuild the retained wheel. Original SMPTS remains unavailable;
 desktop/batch recipe orchestration and archived comparison runs are still pending.
-WP2–WP6 remain pending. Faithful display of pinned reference implementation graphs in the
+WP2 now has reviewed CUDA binary, adaptive-mean and restricted-domain Otsu primitives.
+Inputs and output masks stay on CUDA; only Otsu's 256-bin histogram crosses to CPU.
+Mean supports odd kernels 3–255 and finite offsets [-255, 255]. Default pinned IPP
+Otsu behavior differs on ambiguous partitions, which the helper rejects. Root's
+3,132 accepted histogram probes match the pinned masks and 108 reject explicitly;
+mask-equivalent empty-bin plateaus do not promise scalar-cutoff equality. Complete
+F04 scope, desktop recipe integration and archived native-reference conformance
+remain open. WP3–WP6 remain pending, with original SMPTS parity blocked. Faithful
+display of pinned reference implementation graphs in the
 native node editor is also an explicit pending objective (F22), with topology,
 parameter, provenance and Qt visual acceptance. Existing native methods remain the
 engineering baseline. Functional coverage,
 numerical conformance, scientific performance and operational cost require separate
-proof. Laboratory data collection continues alongside WP0/WP1.
+proof. Laboratory data collection continues alongside WP0/WP1/WP2.
 
 ## Capability status
 
 | Area | Current state | Remaining evidence or work |
 |---|---|---|
-| PlantCV–SMPTS peer functionality | WP0/WP1 in progress; operation-level register, PlantCV source/environment pins and native engineering baseline captured. | Freeze actual reference recipes and outputs, finish reference/replay infrastructure and WP2–WP6 gates; no parity claim yet. |
+| PlantCV–SMPTS peer functionality | WP0/WP1/WP2 in progress; pinned source/environment and native baseline, reviewed infrastructure and restricted native threshold primitives. | Freeze actual reference recipes and outputs, integrate usable paths and complete WP1–WP6 gates; original SMPTS parity is blocked and no peer-performance claim is established. |
 | Runtime and desktop shell | Implemented. One `seed_vision.py` launcher, native PySide6 UI, optional local environment bootstrap, diagnostics, cancellation, and responsive persistence. | Validate the frozen dependency and hardware envelope intended for laboratory deployment. |
 | Analysis graph | Implemented. The generated catalogue covers 48 active/toolbox cards. Node local caching and dependency based invalidation are preserved. | New controls must continue to affect calculations and receive optimization coverage or a stated exemption. |
 | Calibration and image evidence | Engineering implementation complete for ruler/card detection, deskew, neutral balance, layout, material, edge, texture, lighting, and quality evidence. | Supply traceable card/camera geometry and independent measurements before enabling or claiming validated physical or colorimetric output. |
@@ -143,11 +143,11 @@ The latest full local run used:
 
 The latest frozen feature-batch run on 4 October 2026 ran 839 tests in 478.789
 seconds: 837 passed and two existing skips. Log:
-`artifacts/peer-current-batch-full-suite.log`. The graph-view, grouped-manifest,
-native threshold and original-threshold stage-bridge chunks remain uncommitted
-pending their final requested Sol reviews. All eleven feature-file hashes remained
-unchanged throughout discovery. This run demonstrates engineering behavior; it
-does not establish full numerical conformance or scientific performance.
+`artifacts/peer-current-batch-full-suite.log`. All eleven feature-file hashes stayed
+unchanged throughout that discovery. The four features are now independently
+reviewed, but the stage repairs postdate this run. Fresh complete discovery is
+running; its result must replace the latest-verification statement before hand-off.
+Engineering tests do not establish full conformance or scientific performance.
 
 The prior frozen infrastructure run on 3 October 2026 ran 738 tests in 343.357
 seconds: 736 passed and two existing skips. Log:

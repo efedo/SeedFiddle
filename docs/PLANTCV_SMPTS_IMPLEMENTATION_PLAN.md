@@ -415,8 +415,9 @@ and baseline replay do not yet exist. Existing native infrastructure is reused
 where the audit confirms its contracts. WP0/WP1 engineering can proceed while
 laboratory inputs are collected; final scientific promotion cannot.
 
-**Current progress (4 October 2026):** WP0/WP1 are in progress; WP2–WP6 remain
-pending. The [operation-level register](plantcv_smpts_features.json),
+**Current progress (4 October 2026):** WP0/WP1/WP2 are in progress; WP3–WP6 remain
+pending, with original SMPTS parity blocked by source access. The
+[operation-level register](plantcv_smpts_features.json),
 [PlantCV source/environment record](../config/peer_reference_sources.json), and
 [native engineering baseline](../config/peer_baseline.json) are captured. The
 binary-only reference lock requires the exact externally retained `flyr` wheel;
@@ -425,24 +426,28 @@ reference recipes and archived outputs remain to freeze. Original SMPTS access
 returned HTTP 403; original-code parity and verified-original graph claims remain
 unavailable. F22 remains a required implementation and visual acceptance gate.
 
-The grouped manifest repair is independently approved; 15 focused tests, 160 new
-Sol probes and root's 640 identity-closure probes pass. The desktop reference-dialog
-is locally checked but uncommitted and under final Sol review. Renewed explicit
-reviewer instructions resolved the earlier source-transfer rejection. New CUDA
-threshold work does not establish
-full Otsu compatibility: default pinned IPP behavior differs on tied or near-tied
-histograms, and reference defaults must remain unchanged. The narrow original
-threshold stage/checkpoint bridge is frozen awaiting review; ten focused tests and
-15 malformed-result rejection probes pass. The native helper rejects ambiguous
-Otsu partitions; root's 3,132 accepted histogram probes match the pinned masks and
-108 cases reject explicitly. Full discovery against the frozen batch passed 839
-tests in 478.789 seconds (837 passed, two existing skips), with all eleven feature
-file hashes unchanged. Graph, stage and threshold chunks remain uncommitted under
-final requested Sol review; this run does not close WP1, WP2 or F22.
+The grouped manifest, native threshold primitives, desktop reference-dialog and
+narrow original-threshold checkpoint bridge have independent Sol approval. The
+stage bridge's large-integer offset and inherited-timeout defects are repaired;
+13 focused tests and 84 new review probes pass. Graph and stage feature commits
+are being finalized. Renewed explicit reviewer instructions resolved the earlier
+source-transfer rejection; push destination approval is separate and pending.
+Full discovery previously passed 839 tests in 478.789 seconds (837 passed, two
+existing skips), but that run predates the stage repairs. Fresh full discovery is
+running against the frozen reviewed batch. These checks do not close WP1, WP2,
+F22 or the independent scientific gates.
 
-Threshold primitives are approved for their restricted domain. Stage review found
-lossy large-integer offset comparison and an inherited-timeout cap bypass; their
-repair and re-review are required, followed by fresh complete discovery.
+Completed WP2 primitive delivery: `seedvision/cuda/plantcv_thresholds.py` provides
+CUDA-resident uint8 binary masks, adaptive mean with replicated borders and
+float32 rounding, and conservative Otsu selection. Binary accepts integer cutoffs
+0–255; mean accepts odd kernels 3–255 and finite offsets in [-255, 255]. Otsu
+transfers only its 256-bin integer histogram and rejects tied or insufficiently
+separated eligible partitions. Empty-bin plateaus promise mask equivalence, not
+identical cutoff scalars. Ten focused tests and final Sol review pass; root's
+3,132 accepted pinned histogram probes match and 108 reject explicitly. The
+pinned runner retains default IPP settings. Full Otsu/IPP behavior, even/larger
+mean kernels, range thresholds, usable desktop recipes and archived per-operation
+conformance remain required; F04 remains partial and its original scope is intact.
 
 Completed WP1 foundation: `seedvision/benchmarking/checkpoints.py` provides
 content-addressed immutable checkpoints, exact stage-input replay, frame-bound

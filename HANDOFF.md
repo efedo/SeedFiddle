@@ -2,59 +2,40 @@
 
 ## Resume here
 
-### Peer implementation: grouped benchmark manifest (2026-10-04)
+### Peer implementation: CUDA threshold primitives (2026-10-04)
 
-`seedvision/benchmarking/manifest.py` adds strict immutable study/sample/truth/access
-records, consistent bounded atomic serialization and metadata-only leakage audits.
-Access follows mixed source aliases and all five biological/acquisition identities;
-source-duplicate and group-only leakage counts stay distinct. Missing truth/groups/
-access logs block eligibility. Findings and target previews are capped with exact
-omission counts; capped findings do not expand target previews. Scientific status
-always remains `not_certified`: declarations cannot prove actual study conduct.
+`seedvision/cuda/plantcv_thresholds.py` adds CUDA uint8 binary, adaptive-mean and
+restricted-domain Otsu primitives without changing production recipes. Mean uses
+replicated borders and pinned float32 rounding for odd kernels 3–255 and finite
+offsets [-255,255]. Otsu transfers only its 256-bin int64 histogram, applies the
+class-mass guard, and rejects tied/near-tied eligible partitions. The reference
+runner retains default IPP. Empty-bin plateaus promise mask equivalence without
+cutoff-scalar equality; full Otsu, remaining mean domains, range thresholds and
+desktop recipe integration remain open. F04 and the full plan scope are intact.
 
-Luna implemented and repaired the feature; final Sol review approved it with all
-15 focused tests, 160 new chain/count/cap probes and metadata-only guards passing.
-Root's separate 640 randomized closure probes pass. Sol's 2,408-sample/350-access
-case took 1.29 seconds and 10.41 MiB traced Python allocations, not process RSS.
-The frozen 839-test full suite passed. Graph-view, native threshold and original
-threshold-stage reviews continue. Push destination approval remains pending.
+Luna implemented and repaired the feature; final Sol review approves its explicit
+domain. Ten focused tests pass. Root's 3,240 pinned histogram probes produced
+3,132 matching accepted masks and 108 explicit rejections. Sol added border,
+noncontiguous, polarity/offset, float32 half-rounding and class-mass probes. Full
+2080-by-3120 k=255 fixture masks match both polarities. Sol observed about 200 MiB
+extra CUDA memory at that size and 793 MiB at 4160-by-6240; this is not a hardware
+envelope or scientific study. WP0/WP1/WP2 remain in progress; exits are not met.
 
-### Peer implementation: review capacity and threshold gap (2026-10-04)
+The grouped manifest is committed as `dd4899e` and independently approved:
+15 tests, 160 new Sol probes and root's 640 randomized closure probes pass. Its
+metadata-only eligibility audit remains `not_certified`. The desktop reference
+dialog and repaired original-threshold stage/checkpoint bridge are also approved
+and frozen for separate feature commits. Graph-view/read-only tests pass 24;
+the bridge passes 13 tests and 84 new review probes after repairing integer-offset
+rounding and inherited-timeout validation. Checkpoint inspection and full recipes
+remain open; the F22 accurate native graph objective remains required.
 
-The reference-dialog persistence-cap repair and grouped benchmark manifest are
-frozen in the working tree. Root locally passed 24 graph-view/read-only tests,
-15 manifest tests and 640 independent randomized identity-closure probes. The
-dialog preserves stored metadata and marks capacity-limited views transient;
-the manifest follows mixed source/group chains without conflating leakage counts.
-Prior Sol review/render evidence remains valid for unchanged graph code. The
-manifest's final repair is approved; graph review is running. Threshold primitives
-are approved for their restricted domain. Stage review found lossy offset comparison
-and inherited-timeout validation defects; Luna is repairing only its two files.
-
-Automatic approval review initially rejected the Sol CLI source transfer. The
-renewed user-provided goal explicitly requests that reviewer; approval then accepted
-the bounded reviews. Manifest/threshold reviews are complete; graph review is live
-and stage repair is under way. The separate push destination approval remains pending: do not
-retry that transfer without authorization. Completed commits remain local. Keep
-`analysis.seedfiddle-project.json` unopened, untouched and unstaged.
-
-CUDA threshold development found default pinned OpenCV 4.11 IPP Otsu partition
-choices differing from the generic source formula. The runner keeps default IPP;
-the revised native helper rejects tied/insufficiently separated partitions rather
-than claiming full Otsu compatibility. Root's 3,240 pinned histogram probes accept
-3,132 with identical masks and reject 108 explicitly. Adaptive mean matches the
-pinned runner on the full 2080-by-3120 fixture at kernel 255 after float32 rounding
-repair. The narrow original-threshold stage/checkpoint bridge is frozen pending
-review; its ten focused tests and 15 additional malformed-result rejection probes
-pass, with no invalid artifacts published. The threshold chunk's final focused run
-passed ten tests, including default-IPP parity for a 20,000,001-byte rare-class
-input. Full discovery against the frozen batch passed 839 tests in 478.789 seconds
-(837 passed, two existing skips); all eleven feature-file hashes stayed unchanged.
-Log: `artifacts/peer-current-batch-full-suite.log`. New feature delivery still awaits
-the requested Sol reviews; fresh full discovery is required after stage repairs.
-Do not confuse this engineering run with peer acceptance.
-The requested accurate node-editor graph objective is already explicit as F22 in
-the canonical implementation plan, root roadmap and architecture documentation.
+The 839-test full suite passed in 478.789 seconds (837 passed, two existing skips),
+but predates the stage repairs. Fresh full discovery is running against the eleven
+frozen reviewed feature files. Log: `artifacts/peer-reviewed-batch-full-suite.log`.
+Reviewer authorization is resolved; push destination approval is separately
+pending after automatic review rejected the GitHub transfer. Do not retry without
+the trusted reply. Keep `analysis.seedfiddle-project.json` unopened and untouched.
 
 ### Peer implementation: reproducible source metadata preparation (2026-10-04)
 
