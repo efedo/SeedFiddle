@@ -2,9 +2,9 @@
 
 **Status date:** 3 October 2026
 **Engineering baseline:** `094aa7d`; prior implementation review `f244df8`
-**Latest complete local verification:** 684 tests run; 682 passed, 2 skipped;
-six focused WP0 register checks pass after review repairs. In-progress chunks
-require a fresh final suite.
+**Latest complete local verification:** 738 tests run; 736 passed, 2 skipped,
+before the current review-repair batch. In-progress chunks require a fresh final
+suite; focused checkpoint and recipe suites now pass 24 and 12 tests respectively.
 
 Seed Fiddle has an implemented baseline local desktop workflow for image loading,
 calibration diagnostics, material and seed annotation, procedural and optional
@@ -27,9 +27,17 @@ unavailable-policy baseline is captured in [the baseline record](../config/peer_
 Exact task-specific reference recipes and outputs still need freezing. Original
 SMPTS source access remains unavailable; a reconstruction cannot establish original-code
 parity. The benchmark checkpoint API now publishes immutable bounded records and
-replays only exact source/frame/recipe/backend/environment/measurement identities.
+replays exact source/frame/recipe/backend/environment identities and checks the
+expected measurement contract when one is supplied.
 Raster roles enforce shape/dtype/semantics, and all size limits precede explicit
-benchmark host transfers. Its 23 focused tests pass after independent review.
+benchmark host transfers. Its 24 focused tests pass after independent review,
+including exact integer range enforcement above `2**53`.
+Versioned recipe contracts now serialize provenance, stages, typed ports,
+dependencies, parameters, conditions and run identities, and project them into
+the existing `PipelineGraph`. Analytical identity excludes display/layout changes;
+extra, missing, miswired and inactive nodes are rejected. Twelve focused tests and
+independent Sol review cover this infrastructure. Actual audited recipe catalogues,
+desktop reference views and project/snapshot persistence remain pending.
 Reference-run orchestration and comparison reports remain separate work.
 WP2–WP6 remain pending. Faithful display of pinned reference implementation graphs in the
 native node editor is also an explicit pending objective (F22), with topology,
@@ -85,6 +93,13 @@ The latest full local run used:
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests -q
 ```
+
+The latest frozen infrastructure run on 3 October 2026 ran 738 tests in 343.357
+seconds: 736 passed and two existing skips. Log:
+`artifacts/peer-infrastructure-final-full-suite.log`. Later review repairs require
+a fresh complete run. This includes proposed runner/conformance modules in the
+working tree; a passing suite does not replace independent review or close their
+delivery gates.
 
 During the reference-graph objective follow-up on 3 October 2026, it ran 670 tests
 in 347.608 seconds: 668 passed and 2 skipped. The checkout baseline is `dfda336`;

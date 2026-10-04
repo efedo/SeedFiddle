@@ -2,6 +2,27 @@
 
 ## Resume here
 
+### Peer implementation: versioned recipe graph contracts (2026-10-03)
+
+`seedvision/benchmarking/recipes.py` supplies strict immutable recipe, provenance,
+typed stage/port/dependency, parameter, condition and run records. It projects into
+the existing `PipelineGraph`, without a second graph engine. Exact graph validation
+rejects altered topology, parameters/source facts, stage-run key swaps, inactive
+duplicates and stale identities. Layout/display edits preserve analytical hashes;
+explicit upstream expectations are checked when supplied. Unknown/unavailable
+sources cannot be marked executed, empty or bypassed. Pinned original provenance
+requires source and environment pins.
+
+Luna implemented this feature; final Sol review found no material defects after
+six repairs. Twelve focused tests and 142 independent probes pass. Audited recipe
+catalogues, F22 desktop views/checkpoint inspection and project/snapshot persistence
+remain pending. The 738-test full suite passed before the current repair batch;
+root must run fresh discovery when chunks are frozen. Commit `a8b5023` is local;
+automatic approval review blocked pushing to the configured GitHub destination
+because trusted authorization did not name that exact destination. A request for
+destination approval is pending. Keep unrelated `analysis.seedfiddle-project.json`
+untouched and excluded.
+
 ### Peer implementation: exact checkpoint integer ranges (2026-10-03)
 
 Checkpoint raster and image ranges now preserve integer bounds and compare exact

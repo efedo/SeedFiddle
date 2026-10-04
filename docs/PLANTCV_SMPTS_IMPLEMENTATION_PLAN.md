@@ -426,10 +426,18 @@ unavailable. F22 remains a required implementation and visual acceptance gate.
 Completed WP1 foundation: `seedvision/benchmarking/checkpoints.py` provides
 content-addressed immutable checkpoints, exact stage-input replay, frame-bound
 raster/measurement contracts and bounded explicit host serialization. Failed,
-unsupported and available-empty records remain distinct. The 23 focused tests and
+unsupported and available-empty records remain distinct. The 24 focused tests and
 independent Sol review cover pre-transfer budgets, archive validation, immutability,
 concurrent publication and cancellation. This does not close WP1's adapters,
 comparison reports, resource study or F22 acceptance gates.
+
+Completed recipe-contract infrastructure in `seedvision/benchmarking/recipes.py`
+binds versioned provenance, typed stages/dependencies, parameters, branch conditions
+and run/checkpoint identities to the existing `PipelineGraph`. Display/layout
+changes preserve analytical identity, and exact projection rejects missing, extra,
+miswired or inactive nodes. Twelve focused tests and independent Sol review pass.
+This supplies the data contract for F22; actual audited catalogues, native reference
+views, intermediate inspection and project/snapshot round-trips remain required.
 
 ### WP0 — Freeze scope, source and baseline
 
