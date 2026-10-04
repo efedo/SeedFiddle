@@ -2,6 +2,22 @@
 
 ## Resume here
 
+### Reference implementation graph objective (2026-10-03)
+
+Added the user's explicit objective that PlantCV/SMPTS reference implementation
+graphs be accurately displayed in the native node editor (F22). The implementation
+plan section 5.2 defines topology, branches, parameters, intermediate inspection,
+provenance, unresolved-source handling, persistence/cache behavior and actual Qt
+visual acceptance. WP1–WP3 and the definition of completion carry this requirement;
+the roadmap, architecture, comparison, status and index use the F01–F22 scope.
+This is pending implementation, not a new graph capability. Documentation baseline
+`dfda336` was committed and pushed after the prior entry below. Verification for
+this documentation-only follow-up: full discovery ran 670 tests in 347.608 seconds,
+668 passed and 2 skipped; log `artifacts/reference-graph-plan-full-suite.log`.
+Focused checks passed for all 36 Markdown documents' local links, F01–F22 and
+WP0–WP6 inventories, objective/completion linkage, catalogue drift and whitespace.
+No implementation changes, commit or push were made for this follow-up.
+
 ### Accepted PlantCV–SMPTS peer-functionality direction (2026-10-03)
 
 The user requested revision and incorporation of two external reports from

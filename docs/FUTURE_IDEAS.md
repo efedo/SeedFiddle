@@ -130,5 +130,5 @@ The [root roadmap](../PLAN.md) now adopts the
 Comparison infrastructure and selected seed-focused capabilities are planned work,
 not merely brainstorm items. Related older ideas (method disagreement, contour
 refinement, synthetic development data and correction-time studies) remain historical
-suggestions; only the explicitly scoped F01–F21/WP0–WP6 contracts are commitments.
+suggestions; only the explicitly scoped F01–F22/WP0–WP6 contracts are commitments.
 No particular routing policy or extra learned architecture is promoted by this entry.

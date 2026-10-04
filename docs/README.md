@@ -26,7 +26,7 @@ laboratory work and the accepted peer-functionality direction as of 3 October 20
 - [PlantCV–SMPTS comparison](PLANTCV_SMPTS_COMPARISON.md): revised research rationale
   and peer-functionality scope, aligned with the native SeedFiddle baseline.
 - [Peer-functionality implementation and benchmark plan](PLANTCV_SMPTS_IMPLEMENTATION_PLAN.md):
-  canonical F01–F21 capability families, WP0–WP6 delivery gates and comparative design.
+  canonical F01–F22 capability families, WP0–WP6 delivery gates and comparative design.
 
 These are accepted development direction, not implemented integrations or measured
 performance. The root roadmap owns sequencing; the status summary owns current

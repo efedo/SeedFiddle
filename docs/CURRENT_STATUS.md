@@ -19,7 +19,10 @@ The project now targets selected PlantCV–SMPTS seed-analysis capabilities unde
 The [comparison report](PLANTCV_SMPTS_COMPARISON.md) explains the scope and evidence.
 WP0–WP6 remain pending: the operation-level feature register, pinned reference
 adapters, stage replay and comparative study are not implemented by this documentation
-change. Existing native methods remain the engineering baseline. Functional coverage,
+change. Faithful display of pinned PlantCV/SMPTS reference implementation graphs in the
+native node editor is also an explicit pending objective (F22), with topology,
+parameter, provenance and Qt visual acceptance. Existing native methods remain the
+engineering baseline. Functional coverage,
 numerical conformance, scientific performance and operational cost require separate
 proof. Laboratory data collection continues alongside WP0/WP1.
 
@@ -71,12 +74,13 @@ The latest full local run used:
 .\.venv\Scripts\python.exe -m unittest discover -s tests -q
 ```
 
-During the documentation integration on 3 October 2026, it ran 670 tests in
-325.881 seconds: 668 passed and 2 skipped. The code baseline remains `094aa7d`;
-no production code changed. The prior 29 September run took 383.737 seconds. The skips cover an unavailable
+During the reference-graph objective follow-up on 3 October 2026, it ran 670 tests
+in 347.608 seconds: 668 passed and 2 skipped. The checkout baseline is `dfda336`;
+no production code changed. The earlier documentation integration ran in 325.881
+seconds; the prior 29 September run took 383.737 seconds. The skips cover an unavailable
 complete historical pilot batch and a POSIX case-sensitive filesystem check on
 Windows. The node catalogue drift check and `git diff --check` also passed for this documentation integration. The test log is
-`artifacts/peer-direction-full-suite.log` (ignored generated output). Software and synthetic tests demonstrate engineering
+`artifacts/reference-graph-plan-full-suite.log` (ignored generated output). Software and synthetic tests demonstrate engineering
 contracts; they do not establish scientific performance.
 
 ## Work needed for laboratory readiness

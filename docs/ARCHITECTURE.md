@@ -88,6 +88,15 @@ results. Reuse existing metric/geometry definitions with explicit compatibility 
 where reference formulas differ. Normal production must not acquire benchmark-only
 CPU transfers or a mandatory external framework dependency.
 
+The existing node editor must accurately display each pinned reference recipe's
+operations, typed connections, branches, effective parameters and intermediate products.
+A shared versioned recipe description binds displayed topology to reference execution
+and checkpoints; unavailable or reconstructed stages are explicit. Reuse the existing
+graph model and renderer, not a parallel graph engine. Read-only reference inspection
+is supported by the design; editable controls must affect actual computation. Require
+F22 topology/parameter tests, actual Qt visual inspection, persistence round-trips
+and cache independence for display-only actions. This remains planned functionality.
+
 Replay checkpoints must retain source/frame/settings identities and bounded storage.
 Comparison outputs preserve available/empty/failed/unsupported states, instance-ID
 mapping, method identity and measurement eligibility. Snapshot and desktop/batch

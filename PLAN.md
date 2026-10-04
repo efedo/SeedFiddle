@@ -180,14 +180,21 @@ confirms its contract. Do not introduce a second graph, required PlantCV desktop
 dependency, fixed splitter cascade or replacement results schema. Reference runs
 use isolated environments; production retains CUDA residency and node-local caches.
 
+Accurate display of the reference implementation graphs in the existing node editor
+is an explicit objective (F22). Show the audited operations, typed dependencies,
+branches, effective parameters and intermediate outputs with pinned recipe identity.
+Distinguish original, compatible, reconstructed and enhanced graphs and mark unresolved
+stages. Acceptance includes topology/parameter checks, actual Qt visual review,
+persistence and cache behavior; a generic diagram or opaque backend card is insufficient.
+
 All work packages below are pending, including the operation-level feature register.
 
 | Work package | Deliverable and gate |
 |---|---|
-| WP0: scope and baseline | Pin the current recipe and external references; expand F01–F21 into exact operations/outputs, existing-code mappings, gaps, exclusions and acceptance tests. Resolve original SMPTS access or label reconstruction explicitly. |
-| WP1: comparison infrastructure | Reference adapters, immutable stage checkpoints/replay, matched-ID audits and conformance/resource reports; detect deliberate coordinate, mask and metric errors. |
-| WP2: PlantCV capabilities | Selected compatible operations and same-input conformance evidence; reuse existing native capabilities where verified. |
-| WP3: SMPTS capabilities | Recover and compare threshold, contact, erosion and extraction stages; distinguish original code from a paper port. |
+| WP0: scope and baseline | Pin the current recipe and external references; expand F01–F22 into exact operations/outputs, existing-code mappings, gaps, exclusions and acceptance tests. Resolve original SMPTS access or label reconstruction explicitly. |
+| WP1: comparison infrastructure | Versioned reference-to-node graph mappings, reference adapters, immutable stage checkpoints/replay, matched-ID audits and conformance/resource reports; detect deliberate coordinate, mask and metric errors. |
+| WP2: PlantCV capabilities | Faithful PlantCV node-editor graphs, selected compatible operations and same-input conformance evidence; reuse existing native capabilities where verified. |
+| WP3: SMPTS capabilities | Display the SMPTS reference graph and recover/compare threshold, contact, erosion and extraction stages; distinguish original code from a paper port. |
 | WP4: native enhancements | CUDA implementations, scale-aware alternatives and contour recovery supported by development ablations; preserve compatible modes. |
 | WP5: measurements and workflow | Definition-specific measurements, eligibility, comparison overlays and provenance across desktop/batch/snapshots; retain physical and trait gates. |
 | WP6: comparative validation | Locked independent study, paired grouped uncertainty, absolute/comparative gates, correction costs and documented promotion decision. |
@@ -242,8 +249,9 @@ only after the workflow and resource envelope pass.
 
 ## Current verification baseline
 
-Full local discovery during the 3 October 2026 documentation integration against
-code baseline `094aa7d` ran 670 tests: 668 passed and 2 were skipped in 325.881 seconds. The suite includes corrected-frame-only
+Full local discovery during the 3 October 2026 reference-graph objective follow-up
+against baseline `dfda336` ran 670 tests: 668 passed and 2 were skipped in 347.608
+seconds. The suite includes corrected-frame-only
 annotations, compact palette behavior, saved-reference precedence, stable zoom, and
 one-shot hilum placement. The generated node catalogue and whitespace checks pass.
 See [docs/CRITICAL_REVIEW_REMEDIATION.md](docs/CRITICAL_REVIEW_REMEDIATION.md) for
@@ -252,7 +260,7 @@ for the detailed empirical protocol.
 
 ## Next concrete work
 
-1. Execute WP0: freeze the baseline and reference recipes, audit F01–F21 against
+1. Execute WP0: freeze the baseline and reference recipes, audit F01–F22 against
    actual code, and create the operation-level feature register with scoped gates.
 2. Execute WP1: build reproducible reference adapters and stage comparisons before
    tuning or replacing production algorithms.

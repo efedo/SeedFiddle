@@ -21,7 +21,7 @@ The supplied external comparison motivated this direction. Its recommendation to
 
 **Retain SeedFiddle as the application, pipeline coordinator, review interface and source of authoritative results. Treat PlantCV and SMPTS as reference implementations and sources of individually replaceable algorithms—not as replacement application frameworks.**
 
-The objective has four distinct parts:
+The objective has five distinct parts:
 
 1. **Achieve peer functionality:** deliver the selected seed-focused capabilities
    and outputs with usable desktop/batch integration. Functional coverage can reuse
@@ -31,7 +31,12 @@ The objective has four distinct parts:
 3. **Improve scientific performance:** reduce independently measured counting, boundary and trait errors on representative soybean and lupin images.
 4. **Improve operational performance:** reduce compute, memory and correction costs without relaxing the agreed quality requirements.
 
-These four claims require separate status and evidence. A numerically faithful implementation can reproduce a reference algorithm's weaknesses. A better algorithm can intentionally differ from reference outputs. A faster implementation is not necessarily a more accurate one. Record and test each claim separately.
+5. **Display faithful reference graphs:** represent each pinned seed-analysis reference
+   recipe accurately in the existing native node editor, including its operations,
+   dependencies, parameters and intermediate products. Graph fidelity is a required
+   implementation objective with its own acceptance evidence.
+
+These five objectives require separate status and evidence. A numerically faithful implementation can reproduce a reference algorithm's weaknesses. A better algorithm can intentionally differ from reference outputs. A faster implementation is not necessarily a more accurate one. Record and test each claim separately.
 
 ### Repository basis and limits of this review
 
@@ -45,7 +50,7 @@ Scope is the union of the **seed-relevant processing and analysis functions** se
 
 Use two coverage tiers. The first delivery slice must name an exact PlantCV seed
 recipe, its selected preprocessing/watershed/measurement outputs, and the recoverable
-SMPTS extraction stages. F01–F21 define capability families, not a claim to clone all
+SMPTS extraction stages. F01–F22 define capability families, not a claim to clone all
 PlantCV functions. Expand and approve scope through the project roadmap; do not
 silently shrink core coverage to make a completion claim.
 
@@ -118,7 +123,52 @@ Reference adapters can expose comparable checkpoints alongside this path. They m
 
 Do not enforce the earlier report's fixed cascade of watershed, then erosion, then AI. For development, run alternative splitters from the **same unchanged component mask** and retain their outputs independently. Select or route methods using a policy chosen on development data. If a production cascade is later justified by accuracy and cost, each fallback should receive an explicitly defined original input—not silently inherit damage from a previous failed split.
 
-### 5.2 Intermediate contracts
+### 5.2 Reference implementation graphs in the node editor
+
+Accurately display the selected PlantCV and SMPTS reference implementation graphs
+in SeedFiddle's existing native node editor. A generic pipeline diagram, one opaque
+backend card, or a graph of the enhanced native method does not satisfy this objective.
+The displayed reference graph must be traceable to a pinned recipe/source version
+and accurately describe the reference computation at the audited operation level.
+
+- Show the actual operation nodes, typed inputs/outputs, directed dependencies,
+  parallel branches, joins, conditional contact handling and execution order where
+  it affects results. Preserve meaningful stages such as SMPTS threshold branches,
+  filtering, mask combination, contact screening, erosion and extraction; show
+  the selected PlantCV recipe's actual preprocessing, markers and watershed stages.
+  These examples are audit targets, not permission to invent inaccessible internals.
+- Label backend identity, reference version and mode explicitly: original reference,
+  native compatible, paper reconstruction or enhanced. Unknown or unrecovered
+  stages must be visibly unresolved; a paper-derived graph must never appear as a
+  verified original implementation graph. Conditional stages show their condition
+  and, when run evidence exists, whether they executed or were bypassed.
+- Inspect a node's effective parameters, fixed defaults, input/output semantics and
+  available intermediate results. Reference facts may be read-only; every editable
+  analytical control must affect the corresponding calculation. Selecting a node
+  should expose its actual checkpoint or an explicit unavailable/not-run state,
+  never substitute a native approximation without identifying it.
+- Derive the graph and reference-run configuration from the same versioned recipe
+  description. Bind run/checkpoint identities to that description; reject or mark
+  stale mismatches. Preserve graph identity and parameters through project save/load
+  and snapshots when the reference recipe is included. Editing layout or inspecting
+  results must not invalidate analysis; analytical edits retain existing dependency
+  invalidation and optimization/exemption rules.
+- Use the existing graph ownership, rendering and persistence contracts. An isolated
+  reference runner may execute the audited recipe, but it must not create a second
+  application graph engine. A read-only reference view is acceptable when execution
+  is unavailable, provided its provenance and unavailable state are explicit.
+
+**Acceptance:** compare displayed nodes, ports, connections, branch conditions and
+parameter values against the audited pinned reference recipe. Test that deliberately
+omitted, extra or miswired stages and stale recipe/checkpoint identities are detected.
+Verify source-to-node mappings, conditional executed/bypassed states, save/load and
+snapshot round-trips, display-only cache independence, and relevant analytical-edit
+invalidation. Inspect actual Qt renders for readable labels and connections in both
+PlantCV and SMPTS views. Topology tests alone do not establish visual correctness;
+screenshots alone do not establish computational fidelity. Unresolved source stages
+block a verified-original-graph claim while remaining visible as explicit gaps.
+
+### 5.3 Intermediate contracts
 
 Extend existing records where possible rather than introducing duplicate data models. Each checkpoint should identify:
 
@@ -136,7 +186,7 @@ Use explicit representation adapters at the benchmark boundary. Comparing an RGB
 
 Do not require numerically identical label IDs. Two arrays can represent the same partition with permuted IDs. Conversely, identical object counts do not establish equivalent partitions.
 
-### 5.3 Proposed source organization
+### 5.4 Proposed source organization
 
 Keep new backend-specific logic outside the already substantial orchestration module. Proposed locations, subject to the first source audit, are:
 
@@ -176,6 +226,7 @@ External reference environments should be isolated from the desktop environment.
 | F19 | QC, method selection and export | Reuse review and result revisions; add comparison overlays and provenance fields. | Desktop/batch agreement, authoritative method selection and lossless serialization. |
 | F20 | Batch execution and resource control | Reuse existing runner, caching, cancellation and snapshots. | Same-recipe repeatability, bounded resources, safe cancellation and reproducible restored runs. |
 | F21 | Scientific and conformance evaluation | Reuse existing metrics; add reference runs and stage replay. | Metric fixtures, leakage audit, confidence intervals and failure accounting. |
+| F22 | Faithful reference graphs in the node editor | Map pinned PlantCV/SMPTS recipes into the existing graph view with actual stages, typed dependencies, branches, parameters, provenance and checkpoint inspection. | Audited topology/parameter agreement, explicit unresolved and execution states, Qt visual review, persistence and cache tests under section 5.2. |
 
 The PlantCV colour-statistics, colour-correction and classifier documentation provide the reference scope for F03, F05 and F17. [R10, R11, R18]
 
@@ -366,25 +417,25 @@ laboratory inputs are collected; final scientific promotion cannot.
 
 **Deliverables:** target SeedFiddle commit; current saved recipe and fixture outputs; expanded feature register; pinned PlantCV seed recipe; SMPTS source-access/ambiguity register; dependency and licence inventory.
 
-**Exit:** the machine-readable register expands F01–F21 into named operations/outputs, maps existing implementations and tests, records gaps and exclusions, and freezes the first delivery slice. Each core feature has a source, contract and proposed test. Original SMPTS availability is explicitly resolved or remains an acknowledged block on original-code parity.
+**Exit:** the machine-readable register expands F01–F22 into named operations/outputs, maps existing implementations and tests, records gaps and exclusions, and freezes the first delivery slice. Each core feature has a source, contract and proposed test. Original SMPTS availability is explicitly resolved or remains an acknowledged block on original-code parity.
 
 ### WP1 — Build the comparison infrastructure first
 
-**Deliverables:** immutable checkpoint interface; reference-environment runner; matched-ID audit records; stage replay; conformance reports; dataset/group manifest checks; resource-timing support; unittest fixtures for adapters and metrics.
+**Deliverables:** versioned reference recipe-to-node mapping and graph inspection contract; immutable checkpoint interface; reference-environment runner; matched-ID audit records; stage replay; conformance reports; dataset/group manifest checks; resource-timing support; unittest fixtures for adapters and metrics.
 
-**Exit:** the harness detects deliberate mask, coordinate, marker and metric-definition errors; a frozen current-baseline replay is reproducible. Existing application tests, catalogue checks and desktop/batch behaviour remain intact.
+**Exit:** the harness detects deliberate graph topology/parameter mismatches as well as mask, coordinate, marker and metric-definition errors; a frozen current-baseline replay is reproducible. Existing application tests, catalogue checks and desktop/batch behaviour remain intact.
 
 ### WP2 — Establish PlantCV reference and compatible operations
 
-**Deliverables:** original-function reference runs and native equivalents for selected threshold/morphology, watershed and measurement operations; documented unsupported/degenerate cases; same-mask geometry and colour tests.
+**Deliverables:** faithful node-editor graphs of the pinned PlantCV recipes; original-function reference runs and native equivalents for selected threshold/morphology, watershed and measurement operations; documented unsupported/degenerate cases; same-mask geometry and colour tests.
 
-**Exit:** every selected operation has a conformance result. Scientific accuracy is still a separate gate. Native optimization is not allowed to silently change compatible semantics.
+**Exit:** every selected operation has a conformance result and the PlantCV graph passes F22 topology, parameter and Qt visual acceptance. Scientific accuracy is still a separate gate. Native optimization is not allowed to silently change compatible semantics.
 
 ### WP3 — Recover SMPTS and implement its distinct stages
 
-**Deliverables:** original executable adapter when available; otherwise an explicitly provisional paper port; exposed threshold branches, filtering, mask combination, contact screening, erosion and crop outputs.
+**Deliverables:** faithful SMPTS node-editor graph with verified versus unresolved stages identified; original executable adapter when available; otherwise an explicitly provisional paper port; exposed threshold branches, filtering, mask combination, contact screening, erosion and crop outputs.
 
-**Exit:** recoverable intermediate outputs are compared against the original where possible. Unresolved choices and absent dense-mask outputs are clearly reported. No reference name is substituted silently.
+**Exit:** recoverable intermediate outputs are compared against the original where possible. Unresolved choices and absent dense-mask outputs are clearly reported. No reference name is substituted silently. The SMPTS graph passes F22 for its declared original or reconstructed status; unknown original stages remain explicit gaps.
 
 ### WP4 — Optimize and add justified enhancements
 
@@ -454,7 +505,7 @@ A complete study report should distinguish four tables: numerical conformance, i
 
 ## 14. Definition of completion
 
-Functional peer coverage is complete only when every core feature has an implemented, tested usable path, blocked features are resolved, and the selected feature register is fully accounted for. Original versus reconstructed versus enhanced backends remain distinguishable, the benchmark can replay individual stages, measurement definitions are explicit, and production behaviour preserves existing project contracts.
+Functional peer coverage is complete only when every core feature has an implemented, tested usable path, blocked features are resolved, and the selected feature register is fully accounted for. Original versus reconstructed versus enhanced backends remain distinguishable, the benchmark can replay individual stages, measurement definitions are explicit, reference implementation graphs pass F22 in the native node editor, and production behaviour preserves existing project contracts.
 
 A claim that SeedFiddle is at least as accurate as a reference additionally requires the prespecified independent comparison—not merely passing unit tests or agreeing with the reference on synthetic examples. A claim of laboratory-ready physical or biological measurements additionally requires the relevant independent calibration and trait-validation gates.
 

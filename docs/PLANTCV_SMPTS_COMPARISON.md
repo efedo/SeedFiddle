@@ -75,9 +75,15 @@ the single launcher, native PySide6, honest graph-owned controls and node-local
 CUDA caches. CPU reference runs and serialized comparison checkpoints need explicit
 transfer accounting and must not impose repeated host copies on normal analysis.
 
+Accurate reference implementation graphs in the native node editor are a required
+peer-functionality objective. Display the audited stages, branches, connections,
+parameters and intermediates with reference provenance; distinguish reconstructed
+or enhanced graphs and expose unresolved stages. F22 in the implementation plan
+requires computational agreement and actual Qt visual inspection.
+
 ## Evidence and delivery
 
-The [implementation plan](PLANTCV_SMPTS_IMPLEMENTATION_PLAN.md) supplies F01–F21
+The [implementation plan](PLANTCV_SMPTS_IMPLEMENTATION_PLAN.md) supplies F01–F22
 capability families and WP0–WP6 delivery gates. WP0 expands families into exact
 selected operations and outputs with source versions, existing-code mappings,
 tests and unresolved gaps. WP1 establishes reproducible comparisons before tuning.
