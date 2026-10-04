@@ -2,6 +2,27 @@
 
 ## Resume here
 
+### Peer implementation: isolated original PlantCV runner (2026-10-03)
+
+`seedvision/benchmarking/reference_runner.py` and `plantcv_worker.py` execute twelve
+audited original PlantCV operations in the explicitly supplied reference Python.
+The desktop does not import PlantCV/SciPy/scikit-image. Source/dependency identity,
+bounded input inventory/archive/JSON, verified-source compilation instead of cached
+bytecode, timeout/cancellation/reaping/cleanup and effective parameter contracts are
+checked. RGB/BGR boundary conversions and normalized RGB chip/polynomial matrix
+semantics are explicit; automatic observations/calibration state are retained.
+Availability IDs are `plantcv_reference` and unavailable `smpts_reference`.
+
+Luna implemented and repaired the runner; final Sol review found no material defects.
+Twenty focused tests pass in the actual isolated environment, with no skips. The
+last matrix probe agrees with pinned source to 2.69e-15 and all 48 chip means match.
+This is an operation runner foundation. Task-specific recipe execution, archived
+stage outputs/native conformance, graph checkpoint inspection and final studies
+remain pending. Ignored reference source/environment artifacts are prerequisites;
+a fresh checkout without them reports unavailable. Full discovery follows the
+frozen current F22 batch. Push remains pending destination approval after the
+automatic approval-review rejection; completed feature commits remain local.
+
 ### Peer implementation: checkpoint conformance reports (2026-10-03)
 
 `seedvision/benchmarking/conformance.py` compares exact-identity checkpoint pairs

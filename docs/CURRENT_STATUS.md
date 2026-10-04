@@ -44,7 +44,14 @@ provenance, checks raster semantics, uses exact integer errors and reference-rel
 float tolerances, and records bounded common-evaluator matched-ID audits. Thirteen
 focused tests pass. These reports measure computational agreement; this API always
 records independent scientific accuracy as not evaluated. Actual native-reference
-conformance runs and reference-run orchestration remain separate work.
+conformance runs and recipe orchestration remain separate work. The reviewed
+isolated PlantCV runner executes twelve pinned original operations: binary/mean/Otsu
+thresholds, median filtering, erosion/dilation/fill, watershed, size/colour analysis
+and manual/automatic colour correction. Twenty focused tests pass with the exact
+reference environment. It validates source/dependency identity, inputs/outputs,
+RGB boundary semantics, timeout/cancellation and cleanup. Missing ignored source
+or environment artifacts report unavailable. Original SMPTS remains unavailable;
+desktop/batch recipe orchestration and archived comparison runs are still pending.
 WP2–WP6 remain pending. Faithful display of pinned reference implementation graphs in the
 native node editor is also an explicit pending objective (F22), with topology,
 parameter, provenance and Qt visual acceptance. Existing native methods remain the

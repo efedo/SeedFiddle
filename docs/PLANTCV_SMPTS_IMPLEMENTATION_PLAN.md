@@ -449,6 +449,15 @@ reference-relative float tolerances are enforced. Thirteen focused tests and fin
 independent Sol review pass. This establishes the comparison machinery, not actual
 backend compatibility or independently measured scientific accuracy.
 
+Completed original-operation runner infrastructure isolates PlantCV 4.11.3 and its
+67 pinned dependencies from the desktop. Twelve audited threshold, preparation,
+watershed, analysis and correction operations have bounded input/output contracts,
+verified-source execution, explicit RGB boundary semantics, availability probing,
+timeout/cancellation and cleanup. Twenty focused tests in the exact isolated
+environment and final Sol review pass. Reference source/environment artifacts must
+be retained externally; their absence is unavailable. Recipe orchestration,
+archived stage outputs, native compatibility and comparative studies remain open.
+
 ### WP0 — Freeze scope, source and baseline
 
 **Deliverables:** target SeedFiddle commit; current saved recipe and fixture outputs; expanded feature register; pinned PlantCV seed recipe; SMPTS source-access/ambiguity register; dependency and licence inventory.
