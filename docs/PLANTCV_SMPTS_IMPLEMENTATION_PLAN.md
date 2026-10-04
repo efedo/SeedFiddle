@@ -423,6 +423,14 @@ reference recipes and archived outputs remain to freeze. Original SMPTS access
 returned HTTP 403; original-code parity and verified-original graph claims remain
 unavailable. F22 remains a required implementation and visual acceptance gate.
 
+Completed WP1 foundation: `seedvision/benchmarking/checkpoints.py` provides
+content-addressed immutable checkpoints, exact stage-input replay, frame-bound
+raster/measurement contracts and bounded explicit host serialization. Failed,
+unsupported and available-empty records remain distinct. The 23 focused tests and
+independent Sol review cover pre-transfer budgets, archive validation, immutability,
+concurrent publication and cancellation. This does not close WP1's adapters,
+comparison reports, resource study or F22 acceptance gates.
+
 ### WP0 — Freeze scope, source and baseline
 
 **Deliverables:** target SeedFiddle commit; current saved recipe and fixture outputs; expanded feature register; pinned PlantCV seed recipe; SMPTS source-access/ambiguity register; dependency and licence inventory.

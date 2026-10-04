@@ -2,6 +2,32 @@
 
 ## Resume here
 
+### Peer implementation: immutable checkpoint feature (2026-10-03)
+
+The WP0 audit feature and F22 objective are committed and pushed as `8373e3f` and
+`e86a4b0`. The completed WP1 checkpoint foundation is
+`seedvision/benchmarking/checkpoints.py`, exported through its package `__init__`.
+Use explicit `RasterRole` declarations for frame-bound rasters; unmarked arrays
+are compact auxiliary data. Publication requires explicit benchmark host-transfer
+consent and checks the whole inventory plus exact stored-NPZ size before transfer.
+Loads use one bounded immutable archive snapshot and immutable array backing;
+stage replay requires exact identity, execution eligibility and measurement contract.
+Atomic content-address publication handles cancellation and concurrent losers.
+
+Luna implemented this chunk; independent Sol reviews found and repaired aggregate
+preflight, archive reopen, raster semantics, immutability, empty arrays, concurrent
+cleanup, archive-size preflight and reserved NumPy-name defects. Final Sol review
+found no unresolved material defects, all 23 focused tests pass, and 2,381 estimator
+plus 350 exact/tight-cap probes pass. Logs remain under ignored `artifacts/`.
+No production analysis behavior or application launch point changed.
+
+The runner reviewer performed full discovery during other checkpoint edits: 704
+tests, one stale error-message assertion failure and two skips. The current focused
+checkpoint suite fixes that assertion; root must run fresh complete discovery when
+all current chunks are frozen. Runner repairs and recipe/conformance infrastructure
+remain under review/development. F22 actual graphs, reference persistence/UI and
+WP2–WP6 remain pending; the active implementation goal is not complete.
+
 ### Peer implementation: source, scope and engineering baseline (2026-10-03)
 
 Implementation has started under the user's requested Luna xhigh worker / Sol

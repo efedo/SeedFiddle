@@ -26,7 +26,12 @@ PlantCV 4.11.3 source and the isolated reference environment are pinned in
 unavailable-policy baseline is captured in [the baseline record](../config/peer_baseline.json).
 Exact task-specific reference recipes and outputs still need freezing. Original
 SMPTS source access remains unavailable; a reconstruction cannot establish original-code
-parity. WP2–WP6 remain pending. Faithful display of pinned reference implementation graphs in the
+parity. The benchmark checkpoint API now publishes immutable bounded records and
+replays only exact source/frame/recipe/backend/environment/measurement identities.
+Raster roles enforce shape/dtype/semantics, and all size limits precede explicit
+benchmark host transfers. Its 23 focused tests pass after independent review.
+Reference-run orchestration and comparison reports remain separate work.
+WP2–WP6 remain pending. Faithful display of pinned reference implementation graphs in the
 native node editor is also an explicit pending objective (F22), with topology,
 parameter, provenance and Qt visual acceptance. Existing native methods remain the
 engineering baseline. Functional coverage,
