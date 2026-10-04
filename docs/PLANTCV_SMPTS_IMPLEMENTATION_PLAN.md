@@ -430,8 +430,9 @@ The grouped manifest, native threshold primitives, desktop reference-dialog and
 narrow original-threshold checkpoint bridge have independent Sol approval. The
 stage bridge's large-integer offset and inherited-timeout defects are repaired;
 13 focused tests and 84 new review probes pass. Each reviewed feature is committed
-separately. Renewed explicit reviewer instructions resolved the earlier
-source-transfer rejection; push destination approval is separate and pending.
+separately. Earlier completed-batch reviews remain valid. Automatic approval review
+rejected the next external Sol source transfer; explicit payload/destination
+authorization is pending. Push destination approval is separate and pending.
 Fresh full discovery passed 842 tests in 462.632 seconds (840 passed, two existing
 skips), including the stage repairs, with all eleven reviewed feature-file hashes
 unchanged. The prior 839-test run predates those repairs. These checks do not close WP1, WP2,
@@ -439,8 +440,10 @@ F22 or the independent scientific gates.
 
 The next bounded chunks are native threshold stage/checkpoint binding, CUDA
 erosion/dilation primitives and explicit verified node-checkpoint inspection.
-These are in development, not completed gates; their focused tests and independent
-reviews precede feature commits and fresh full discovery.
+These are in development, not completed gates. Morphology passes 11 focused tests
+and 360 root diagnostic comparisons, but its external Sol review awaits explicit
+source-transfer approval. Local work continues. Independent reviews precede
+feature commits and fresh full discovery.
 
 Completed WP2 primitive delivery: `seedvision/cuda/plantcv_thresholds.py` provides
 CUDA-resident uint8 binary masks, adaptive mean with replicated borders and

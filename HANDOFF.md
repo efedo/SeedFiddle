@@ -2,6 +2,22 @@
 
 ## Resume here
 
+### Pending source-review transfer approval (2026-10-04)
+
+The next morphology chunk is frozen: 11 focused tests pass in 38.442 seconds,
+and root's 180-case diagnostic batch passed 360 original public-operation/CUDA
+comparisons without mismatches. Native threshold and checkpoint-inspection workers
+continue local implementation. These chunks are not independently approved or
+committed. Their full scope and source/resource limitations remain open.
+
+Automatic approval review rejected the new Sol CLI review before launch because
+it sends source/project-contract context to the external Codex service without
+explicit payload/destination authorization. Root requested that authorization
+asynchronously; no reply yet. Do not retry or route that transfer indirectly.
+Earlier completed-batch Sol approvals remain valid. Continue authorized local
+work; source changes require fresh full discovery. Push destination approval is
+separate and still pending. Keep the unrelated project file untouched.
+
 ### Active bounded implementation chunks (2026-10-04)
 
 The reviewed manifest, CUDA thresholds, native graph view and original-threshold

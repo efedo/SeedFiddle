@@ -10,13 +10,17 @@ Sol approved the grouped manifest (15 tests plus 160 review probes), native thre
 primitives (10 tests), reference dialog (24 view/read-only tests) and repaired
 original-threshold checkpoint bridge (13 tests plus 84 new probes). Root's 640
 manifest identity-closure probes pass. These features are committed separately.
-Reviewer authorization is resolved; push destination approval remains
-separately pending. These engineering checks do not close peer delivery or science.
+Earlier completed-batch reviews remain valid. Automatic approval review rejected
+the next external Sol source transfer; explicit payload/destination authorization
+is pending. Push destination approval is separately pending. These engineering
+checks do not close peer delivery or science.
 
 The next bounded chunks are in development: native threshold stage/checkpoint
 binding, CUDA erosion/dilation primitives and verified per-node checkpoint
-inspection. They require their own focused tests, independent review and fresh
-complete discovery before being recorded as delivered.
+inspection. Morphology passes 11 focused tests and 360 root diagnostic comparisons;
+its Sol review is blocked pending source-transfer approval. The other two workers
+continue locally. All three require independent review and fresh complete discovery
+before being recorded as delivered.
 
 Seed Fiddle has an implemented baseline local desktop workflow for image loading,
 calibration diagnostics, material and seed annotation, procedural and optional
