@@ -429,12 +429,12 @@ unavailable. F22 remains a required implementation and visual acceptance gate.
 The grouped manifest, native threshold primitives, desktop reference-dialog and
 narrow original-threshold checkpoint bridge have independent Sol approval. The
 stage bridge's large-integer offset and inherited-timeout defects are repaired;
-13 focused tests and 84 new review probes pass. The stage feature commit is being
-finalized. Renewed explicit reviewer instructions resolved the earlier
+13 focused tests and 84 new review probes pass. Each reviewed feature is committed
+separately. Renewed explicit reviewer instructions resolved the earlier
 source-transfer rejection; push destination approval is separate and pending.
-Full discovery previously passed 839 tests in 478.789 seconds (837 passed, two
-existing skips), but that run predates the stage repairs. Fresh full discovery is
-running against the frozen reviewed batch. These checks do not close WP1, WP2,
+Fresh full discovery passed 842 tests in 462.632 seconds (840 passed, two existing
+skips), including the stage repairs, with all eleven reviewed feature-file hashes
+unchanged. The prior 839-test run predates those repairs. These checks do not close WP1, WP2,
 F22 or the independent scientific gates.
 
 Completed WP2 primitive delivery: `seedvision/cuda/plantcv_thresholds.py` provides
@@ -490,8 +490,21 @@ be retained externally; their absence is unavailable. The reviewed
 metadata from committed config/lock, reports missing prerequisites without network
 or writes, and permits source fetching only through an explicit bounded callback.
 Nine focused tests pass, including a fresh source-present root with no flyr wheel.
-It performs no environment installation or wheel rebuild. Recipe orchestration,
-archived stage outputs, native compatibility and comparative studies remain open.
+It performs no environment installation or wheel rebuild. Full recipe orchestration,
+retained comparative corpus outputs, native compatibility and studies remain open.
+
+Completed original-threshold stage bridge: `seedvision/benchmarking/reference_stage.py`
+loads an immutable exact input checkpoint itself, invokes the concrete isolated
+runner for one public binary/mean/Otsu stage and publishes validated output plus a
+`StageRunRecord`. Source/frame, recipe/upstream, raw source/environment identity,
+selected/effective parameters and mask semantics must agree; metadata retains
+observations and runtime. Unavailable, unsupported, failed and valid empty runs
+remain explicit. Scientific eligibility is always false and benchmark CPU transfer
+is explicitly authorized. Thirteen focused tests and final Sol review (84 new
+probes) pass after repairing integer-offset loss and inherited-timeout validation.
+This supplies archived one-stage evidence, not a full graph interpreter, native
+comparison workflow or checkpoint UI binding. Other operation adapters and exact
+task-specific corpus recipe/output freeze remain required.
 
 Completed F22 source-inspection delivery: **View → Reference graphs…** uses the
 existing native canvas and inspector to show all five catalogue graphs and exact

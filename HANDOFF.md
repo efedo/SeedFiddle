@@ -2,6 +2,32 @@
 
 ## Resume here
 
+### Peer implementation: original-threshold stage checkpoints (2026-10-04)
+
+`seedvision/benchmarking/reference_stage.py` binds one public PlantCV binary/mean/
+Otsu call to an immutable input/output checkpoint and exact recipe stage run record.
+It loads the input itself and invokes the concrete isolated runner; prebuilt results
+cannot serve as execution evidence. Source/frame/recipe/upstream, source/environment
+pins, selected/effective parameters and uint8 0/255 output roles must agree. Metadata
+retains observations/runtime; scientific eligibility is false. Unavailable,
+unsupported, failure/cancellation and valid empty states remain explicit.
+
+Luna implemented and repaired the feature; final Sol review approves it. Thirteen
+focused tests and 84 new probes pass after correcting large integer-offset rounding
+and inherited-timeout cap bypass. Earlier malformed-result, actual runner and
+cleanup evidence remains valid. This is a narrow stage bridge, not full recipe
+execution or checkpoint graph inspection. Those and other operation contracts
+remain open; full F01–F22 scope and WP0–WP6 exit gates are unchanged.
+
+Fresh full discovery passed **842 tests in 462.632 seconds: 840 passed, two existing
+skips**, including the repairs. All eleven reviewed feature-file hashes remained
+unchanged. Log: `artifacts/peer-reviewed-batch-full-suite.log`; frozen hashes:
+`artifacts/peer-reviewed-batch-before-full.json`. The threshold and graph-view
+features are committed as `be7a77c` and `171f2a5`; the manifest is `dd4899e`.
+WP0/WP1/WP2 are in progress; no exit, peer-performance or scientific gate is met.
+Push remains pending explicit destination approval after automatic review rejected
+the GitHub transfer. Keep the unrelated untracked project file unopened/untouched.
+
 ### Peer implementation: native reference graph view (2026-10-04)
 
 **View → Reference graphs…** opens the reviewed `ReferenceGraphDialog` without an

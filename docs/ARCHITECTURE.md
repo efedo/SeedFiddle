@@ -114,6 +114,10 @@ does not load arrays from historical checkpoint hashes. Actual checkpoint artifa
 binding, restoration and inspection remain required for full F22 acceptance.
 
 Replay checkpoints must retain source/frame/settings identities and bounded storage.
+The original-threshold `run_reference_stage` bridge loads and validates exact
+input artifacts, invokes the isolated runner itself and publishes a bound run/output
+record. It supports three public threshold calls; full recipe orchestration and
+UI artifact binding remain separate work.
 Comparison outputs preserve available/empty/failed/unsupported states, instance-ID
 mapping, method identity and measurement eligibility. Snapshot and desktop/batch
 contracts remain authoritative. Eroded cores, original foreground and measurement

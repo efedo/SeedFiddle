@@ -2,15 +2,14 @@
 
 **Status date:** 4 October 2026
 **Engineering baseline:** `094aa7d`; prior implementation review `f244df8`
-**Latest complete local verification:** 839 tests run; 837 passed, 2 skipped.
-That frozen run predates the latest stage-bridge repairs; fresh full discovery is
-running against the reviewed batch. Focused checkpoint and recipe suites pass
-24 and 12 tests.
+**Latest complete local verification:** 842 tests run in 462.632 seconds;
+840 passed, 2 skipped. All eleven reviewed feature-file hashes stayed unchanged
+during discovery. Focused checkpoint and recipe suites pass 24 and 12 tests.
 
 Sol approved the grouped manifest (15 tests plus 160 review probes), native threshold
 primitives (10 tests), reference dialog (24 view/read-only tests) and repaired
 original-threshold checkpoint bridge (13 tests plus 84 new probes). Root's 640
-manifest identity-closure probes pass. The stage feature commit is being finalized.
+manifest identity-closure probes pass. These features are committed separately.
 Reviewer authorization is resolved; push destination approval remains
 separately pending. These engineering checks do not close peer delivery or science.
 
@@ -80,7 +79,14 @@ reconstructs exact runner metadata from committed pins, inspects missing prerequ
 without writes/network and supports explicit bounded callback fetching. Nine focused
 tests pass, including a source-present root with no flyr wheel. It does not install
 the isolated environment or rebuild the retained wheel. Original SMPTS remains unavailable;
-desktop/batch recipe orchestration and archived comparison runs are still pending.
+desktop/batch recipe orchestration and retained native-reference corpus comparisons
+are still pending. The reviewed `run_reference_stage` API now loads an exact input
+checkpoint, invokes one pinned public binary/mean/Otsu threshold operation and
+archives the validated output with a stage run record. It binds source/frame,
+recipe/upstream identity, selected/effective parameters, raw source/environment
+pins, raster roles, observations and runtime. Unavailable/unsupported/failed/empty
+states remain distinct; scientific eligibility stays false. All 13 focused tests
+and 84 final Sol probes pass. It is not a full recipe interpreter or graph preview.
 WP2 now has reviewed CUDA binary, adaptive-mean and restricted-domain Otsu primitives.
 Inputs and output masks stay on CUDA; only Otsu's 256-bin histogram crosses to CPU.
 Mean supports odd kernels 3–255 and finite offsets [-255, 255]. Default pinned IPP
@@ -145,12 +151,12 @@ The latest full local run used:
 .\.venv\Scripts\python.exe -m unittest discover -s tests -q
 ```
 
-The latest frozen feature-batch run on 4 October 2026 ran 839 tests in 478.789
-seconds: 837 passed and two existing skips. Log:
-`artifacts/peer-current-batch-full-suite.log`. All eleven feature-file hashes stayed
-unchanged throughout that discovery. The four features are now independently
-reviewed, but the stage repairs postdate this run. Fresh complete discovery is
-running; its result must replace the latest-verification statement before hand-off.
+The latest frozen reviewed-batch run on 4 October 2026 ran 842 tests in 462.632
+seconds: 840 passed and two existing skips. Log:
+`artifacts/peer-reviewed-batch-full-suite.log`. All eleven feature-file hashes
+stayed unchanged, and all four features have final independent Sol approval.
+This run includes the stage offset/timeout repairs. The prior 839-test run in
+478.789 seconds is retained in `artifacts/peer-current-batch-full-suite.log`.
 Engineering tests do not establish full conformance or scientific performance.
 
 The prior frozen infrastructure run on 3 October 2026 ran 738 tests in 343.357
