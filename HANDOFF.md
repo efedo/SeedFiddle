@@ -2,6 +2,24 @@
 
 ## Resume here
 
+### Peer implementation: checkpoint conformance reports (2026-10-03)
+
+`seedvision/benchmarking/conformance.py` compares exact-identity checkpoint pairs
+for primitive arrays, masks and label-invariant instance partitions. Stage scope
+requires the same upstream checkpoint; pipeline scope retains both upstream hashes.
+Raster roles and relevant semantics are checked on every raster comparison route.
+Integer values/bounds/errors remain exact; float tolerances are reference-relative
+and preserve ordinary equality boundaries while handling overflow explicitly.
+Bounded reports include common-evaluator metrics and matched IDs; independent
+scientific accuracy is always `not_evaluated` by this layer.
+
+Luna implemented and repaired the feature; final Sol review found no material
+defects. Thirteen focused tests and 33 final numeric probes pass. Prior independent
+review verified 60 common-evaluator/audit comparisons and the shared allocation
+guard. There are no PlantCV-native conformance results yet: this is the comparison
+API, not completed backend compatibility. Reference-runner repair, F22 catalogue/UI
+and graph persistence remain in progress. Fresh full discovery remains required.
+
 ### Peer implementation: bounded shared instance assignment (2026-10-03)
 
 The common evaluator and Hungarian solver now preflight the actual dummy-column

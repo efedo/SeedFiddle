@@ -38,7 +38,13 @@ the existing `PipelineGraph`. Analytical identity excludes display/layout change
 extra, missing, miswired and inactive nodes are rejected. Twelve focused tests and
 independent Sol review cover this infrastructure. Actual audited recipe catalogues,
 desktop reference views and project/snapshot persistence remain pending.
-Reference-run orchestration and comparison reports remain separate work.
+The reviewed conformance API now compares primitive arrays, masks and instance
+partitions from exact-identity checkpoints. It retains stage/pipeline upstream
+provenance, checks raster semantics, uses exact integer errors and reference-relative
+float tolerances, and records bounded common-evaluator matched-ID audits. Thirteen
+focused tests pass. These reports measure computational agreement; this API always
+records independent scientific accuracy as not evaluated. Actual native-reference
+conformance runs and reference-run orchestration remain separate work.
 WP2–WP6 remain pending. Faithful display of pinned reference implementation graphs in the
 native node editor is also an explicit pending objective (F22), with topology,
 parameter, provenance and Qt visual acceptance. Existing native methods remain the

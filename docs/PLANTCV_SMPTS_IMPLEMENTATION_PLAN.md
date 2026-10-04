@@ -3,7 +3,7 @@
 **Prepared for:** Eric Fedosejevs
 **Original external plan:** 1 October 2026
 **Revised and adopted direction:** 3 October 2026
-**Status:** Accepted project direction; peer implementations and benchmark infrastructure are not yet implemented or validated. This revision integrates documentation only; no comparative performance experiments have been run.
+**Status:** Accepted direction, with implementation in progress. Reviewed checkpoint, recipe-contract and conformance foundations are implemented; backend compatibility, faithful desktop reference views and comparative scientific studies remain pending. Adoption was documentation-only; no comparative scientific performance experiments have been run.
 **Intended application:** Soybean and lupin seed-image analysis within the existing Python-based SeedFiddle application.
 
 ## 1. Decision and relationship to the comparison report
@@ -14,8 +14,10 @@ This is the canonical delivery specification for the new direction in
 baseline; it does not reclassify proposed functionality as implemented. Current
 capabilities belong to [CURRENT_STATUS.md](CURRENT_STATUS.md), architecture contracts
 to [ARCHITECTURE.md](ARCHITECTURE.md), and empirical requirements to
-[SCIENTIFIC_VALIDATION_PROTOCOL.md](SCIENTIFIC_VALIDATION_PROTOCOL.md). The proposed
-backend names, paths and YAML below are design contracts, not runnable features.
+[SCIENTIFIC_VALIDATION_PROTOCOL.md](SCIENTIFIC_VALIDATION_PROTOCOL.md). Illustrative
+backend names, paths and YAML below describe the delivery contracts; the current
+status and progress section identify implemented APIs. The YAML is not a current
+runnable command.
 
 The supplied external comparison motivated this direction. Its recommendation to replace the application backbone and its fixed splitter cascade are superseded by the revised comparison and this plan. The integration targets peer functionality within SeedFiddle, with explicit evidence for every selected capability.
 
@@ -57,13 +59,13 @@ silently shrink core coverage to make a completion claim.
 - **Core peer coverage:** every operation and output used by the selected PlantCV seed-analysis recipe, and every recoverable operation and output in the selected SMPTS implementation.
 - **Extended capability coverage:** additional seed-relevant PlantCV methods—such as alternative foreground classifiers—and SeedFiddle improvements, each with its own requirement and test. Do not describe these as complete merely because a general-purpose extension hook exists.
 
-Build `docs/plantcv_smpts_features.json` during WP0 before algorithm development
-(the register is a planned deliverable, not present functionality). Track functional
+The operation-level `docs/plantcv_smpts_features.json` register was created during
+WP0 before algorithm development. Track functional
 coverage separately from compatibility and empirical validation, with states such
 as unaudited, reuse-confirmed, gap, implemented, verified, blocked and explicitly
 out-of-scope. Every exclusion needs a rationale and scope revision. No aggregate
 peer-functionality claim is valid while a core capability is blocked or unverified.
-Build the register before development. For each feature record: source function or paper section, reference version, exact input/output contract, native implementation location, whether behaviour is reused/ported/enhanced, test IDs, validation status, and any unresolved ambiguity. A claim of functional peer coverage requires all core capability acceptance tests to pass; a separate claim of exact compatibility requires every selected conformance row to pass; an unavailable reference remains explicitly unavailable.
+For each feature retain: source function or paper section, reference version, exact input/output contract, native implementation location, whether behaviour is reused/ported/enhanced, test IDs, validation status, and any unresolved ambiguity. A claim of functional peer coverage requires all core capability acceptance tests to pass; a separate claim of exact compatibility requires every selected conformance row to pass; an unavailable reference remains explicitly unavailable.
 
 ## 3. Existing SeedFiddle capabilities to preserve and reuse
 
@@ -438,6 +440,14 @@ changes preserve analytical identity, and exact projection rejects missing, extr
 miswired or inactive nodes. Twelve focused tests and independent Sol review pass.
 This supplies the data contract for F22; actual audited catalogues, native reference
 views, intermediate inspection and project/snapshot round-trips remain required.
+
+Completed conformance infrastructure in `seedvision/benchmarking/conformance.py`
+compares exact-identity primitive, mask and instance checkpoints with bounded
+reports and common-evaluator matched-ID audits. Stage versus pipeline upstream
+contracts are distinct; relevant raster semantics, exact integer errors and
+reference-relative float tolerances are enforced. Thirteen focused tests and final
+independent Sol review pass. This establishes the comparison machinery, not actual
+backend compatibility or independently measured scientific accuracy.
 
 ### WP0 — Freeze scope, source and baseline
 
