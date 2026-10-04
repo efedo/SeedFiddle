@@ -461,7 +461,12 @@ watershed, analysis and correction operations have bounded input/output contract
 verified-source execution, explicit RGB boundary semantics, availability probing,
 timeout/cancellation and cleanup. Twenty focused tests in the exact isolated
 environment and final Sol review pass. Reference source/environment artifacts must
-be retained externally; their absence is unavailable. Recipe orchestration,
+be retained externally; their absence is unavailable. The reviewed
+`seedvision/benchmarking/reference_setup.py` helper reconstructs exact raw runner
+metadata from committed config/lock, reports missing prerequisites without network
+or writes, and permits source fetching only through an explicit bounded callback.
+Nine focused tests pass, including a fresh source-present root with no flyr wheel.
+It performs no environment installation or wheel rebuild. Recipe orchestration,
 archived stage outputs, native compatibility and comparative studies remain open.
 
 Completed F22 prerequisite: the existing native canvas and inspector have explicit

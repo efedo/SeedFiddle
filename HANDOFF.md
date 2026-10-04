@@ -2,6 +2,25 @@
 
 ## Resume here
 
+### Peer implementation: reproducible source metadata preparation (2026-10-04)
+
+`seedvision/benchmarking/reference_setup.py` rehydrates the exact raw CRLF runner
+source audit and 67-package environment map from committed config/lock evidence.
+Inspection performs no writes/network; materialization reports absent prerequisites
+and fetches only through an explicitly supplied bounded callback. Source paths,
+commit URLs, counts/bytes/hashes, retained flyr identity, atomic no-overwrite and
+cleanup are checked. Bytearray/memoryview sizes precede copying; total/empty chunks
+are bounded. This helper does not create/install an environment or rebuild a wheel.
+
+Luna implemented and repaired the feature; final Sol review approved it. Nine tests
+pass locally and in a temporary source-present/metadata-present root without flyr.
+No-source fresh checkout passes eight tests with one correct external-source skip
+and reports all 15 sources unavailable. Prior 53+50 rejection/cleanup probes passed.
+Filesystem-level symlinks and real process races were not tested on this host;
+mocked rejection/collision branches passed. Native defaults remain unchanged.
+Reference dialog repairs, grouped manifest review and CUDA threshold development
+continue. Fresh full discovery follows a frozen batch; push approval is pending.
+
 ### Peer implementation: audited reference graph catalogue (2026-10-03)
 
 `seedvision/benchmarking/recipe_catalogue.py` supplies five deterministic immutable

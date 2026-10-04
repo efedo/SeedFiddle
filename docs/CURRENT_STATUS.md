@@ -64,7 +64,11 @@ thresholds, median filtering, erosion/dilation/fill, watershed, size/colour anal
 and manual/automatic colour correction. Twenty focused tests pass with the exact
 reference environment. It validates source/dependency identity, inputs/outputs,
 RGB boundary semantics, timeout/cancellation and cleanup. Missing ignored source
-or environment artifacts report unavailable. Original SMPTS remains unavailable;
+or environment artifacts report unavailable. The reviewed source-preparation helper
+reconstructs exact runner metadata from committed pins, inspects missing prerequisites
+without writes/network and supports explicit bounded callback fetching. Nine focused
+tests pass, including a source-present root with no flyr wheel. It does not install
+the isolated environment or rebuild the retained wheel. Original SMPTS remains unavailable;
 desktop/batch recipe orchestration and archived comparison runs are still pending.
 WP2–WP6 remain pending. Faithful display of pinned reference implementation graphs in the
 native node editor is also an explicit pending objective (F22), with topology,
