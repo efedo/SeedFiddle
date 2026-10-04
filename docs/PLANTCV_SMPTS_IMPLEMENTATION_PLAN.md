@@ -415,7 +415,7 @@ and baseline replay do not yet exist. Existing native infrastructure is reused
 where the audit confirms its contracts. WP0/WP1 engineering can proceed while
 laboratory inputs are collected; final scientific promotion cannot.
 
-**Current progress (3 October 2026):** WP0/WP1 are in progress; WP2–WP6 remain
+**Current progress (4 October 2026):** WP0/WP1 are in progress; WP2–WP6 remain
 pending. The [operation-level register](plantcv_smpts_features.json),
 [PlantCV source/environment record](../config/peer_reference_sources.json), and
 [native engineering baseline](../config/peer_baseline.json) are captured. The
@@ -424,6 +424,25 @@ missing artifacts must not trigger an unpinned source rebuild. Exact task-specif
 reference recipes and archived outputs remain to freeze. Original SMPTS access
 returned HTTP 403; original-code parity and verified-original graph claims remain
 unavailable. F22 remains a required implementation and visual acceptance gate.
+
+The grouped manifest repair is independently approved; 15 focused tests, 160 new
+Sol probes and root's 640 identity-closure probes pass. The desktop reference-dialog
+is locally checked but uncommitted and under final Sol review. Renewed explicit
+reviewer instructions resolved the earlier source-transfer rejection. New CUDA
+threshold work does not establish
+full Otsu compatibility: default pinned IPP behavior differs on tied or near-tied
+histograms, and reference defaults must remain unchanged. The narrow original
+threshold stage/checkpoint bridge is frozen awaiting review; ten focused tests and
+15 malformed-result rejection probes pass. The native helper rejects ambiguous
+Otsu partitions; root's 3,132 accepted histogram probes match the pinned masks and
+108 cases reject explicitly. Full discovery against the frozen batch passed 839
+tests in 478.789 seconds (837 passed, two existing skips), with all eleven feature
+file hashes unchanged. Graph, stage and threshold chunks remain uncommitted under
+final requested Sol review; this run does not close WP1, WP2 or F22.
+
+Threshold primitives are approved for their restricted domain. Stage review found
+lossy large-integer offset comparison and an inherited-timeout cap bypass; their
+repair and re-review are required, followed by fresh complete discovery.
 
 Completed WP1 foundation: `seedvision/benchmarking/checkpoints.py` provides
 content-addressed immutable checkpoints, exact stage-input replay, frame-bound
@@ -482,6 +501,15 @@ desktop Open/Save/Save As and existing snapshot round-trips; native settings rem
 schema 20. Forty-seven focused persistence/UI tests (one existing skip) and final
 Sol review pass. Historical checkpoint hashes remain explicitly data-unavailable;
 checkpoint artifact binding/restore/inspection and actual F22 views remain open.
+
+Completed grouped-manifest infrastructure in `seedvision/benchmarking/manifest.py`
+supplies immutable split/source/group/truth/access records and bounded atomic
+serialization. Its metadata-only audit resolves mixed source/group access chains,
+retains separate leakage counts and bounded sorted previews with omissions. Missing
+truth, group identities or complete access logs block eligibility. Fifteen tests,
+160 final Sol probes and root's 640 randomized closure probes pass. Audit eligibility
+does not certify declarations, representative sampling or scientific performance;
+the reviewed locked corpus and paired uncertainty study remain required.
 
 ### WP0 — Freeze scope, source and baseline
 

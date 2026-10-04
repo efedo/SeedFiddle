@@ -1,10 +1,26 @@
 # Current project status
 
-**Status date:** 3 October 2026
+**Status date:** 4 October 2026
 **Engineering baseline:** `094aa7d`; prior implementation review `f244df8`
-**Latest complete local verification:** 738 tests run; 736 passed, 2 skipped,
-before the current review-repair batch. In-progress chunks require a fresh final
-suite; focused checkpoint and recipe suites now pass 24 and 12 tests respectively.
+**Latest complete local verification:** 839 tests run; 837 passed, 2 skipped,
+against the frozen current feature batch. Final requested Sol reviews for the new
+chunks remain pending. Focused checkpoint and recipe suites pass 24 and 12 tests.
+
+The grouped manifest repair is now independently approved by Sol: 15 focused tests,
+160 new review probes and root's 640 identity-closure probes pass. The working-tree
+reference dialog passes 24 graph-view/read-only tests. Renewed explicit reviewer
+instructions resolved the earlier source-transfer rejection; its final Sol review
+and the threshold/stage reviews are running. Native threshold work explicitly
+rejects ambiguous Otsu partitions; 3,132 accepted pinned histogram probes match
+and 108 reject explicitly. The original runner retains its pinned defaults. The
+uncommitted original-threshold checkpoint bridge passes ten focused tests and 15
+malformed-result rejection probes. These chunks do not close delivery gates. Push
+approval is separately pending. Full discovery passed against the frozen batch;
+all eleven feature-file hashes remained unchanged during the run.
+
+Sol approved the threshold primitives for their restricted domain. Stage review
+identified lossy large-integer offset comparison and an inherited-timeout cap bypass;
+those repairs are under way and require focused re-review and fresh full discovery.
 
 Seed Fiddle has an implemented baseline local desktop workflow for image loading,
 calibration diagnostics, material and seed annotation, procedural and optional
@@ -125,11 +141,19 @@ The latest full local run used:
 .\.venv\Scripts\python.exe -m unittest discover -s tests -q
 ```
 
-The latest frozen infrastructure run on 3 October 2026 ran 738 tests in 343.357
+The latest frozen feature-batch run on 4 October 2026 ran 839 tests in 478.789
+seconds: 837 passed and two existing skips. Log:
+`artifacts/peer-current-batch-full-suite.log`. The graph-view, grouped-manifest,
+native threshold and original-threshold stage-bridge chunks remain uncommitted
+pending their final requested Sol reviews. All eleven feature-file hashes remained
+unchanged throughout discovery. This run demonstrates engineering behavior; it
+does not establish full numerical conformance or scientific performance.
+
+The prior frozen infrastructure run on 3 October 2026 ran 738 tests in 343.357
 seconds: 736 passed and two existing skips. Log:
-`artifacts/peer-infrastructure-final-full-suite.log`. Later review repairs require
-a fresh complete run. This includes proposed runner/conformance modules in the
-working tree; a passing suite does not replace independent review or close their
+`artifacts/peer-infrastructure-final-full-suite.log`. That run included proposed
+runner/conformance modules in the working tree; their separate reviews and commits
+are recorded above. A passing suite does not replace independent review or close
 delivery gates.
 
 During the reference-graph objective follow-up on 3 October 2026, it ran 670 tests
