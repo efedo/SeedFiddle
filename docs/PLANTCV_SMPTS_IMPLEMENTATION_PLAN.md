@@ -437,6 +437,11 @@ skips), including the stage repairs, with all eleven reviewed feature-file hashe
 unchanged. The prior 839-test run predates those repairs. These checks do not close WP1, WP2,
 F22 or the independent scientific gates.
 
+The next bounded chunks are native threshold stage/checkpoint binding, CUDA
+erosion/dilation primitives and explicit verified node-checkpoint inspection.
+These are in development, not completed gates; their focused tests and independent
+reviews precede feature commits and fresh full discovery.
+
 Completed WP2 primitive delivery: `seedvision/cuda/plantcv_thresholds.py` provides
 CUDA-resident uint8 binary masks, adaptive mean with replicated borders and
 float32 rounding, and conservative Otsu selection. Binary accepts integer cutoffs

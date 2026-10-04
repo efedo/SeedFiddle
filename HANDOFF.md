@@ -2,6 +2,29 @@
 
 ## Resume here
 
+### Active bounded implementation chunks (2026-10-04)
+
+The reviewed manifest, CUDA thresholds, native graph view and original-threshold
+bridge are committed as `dd4899e`, `be7a77c`, `171f2a5` and `322e1fc`. The frozen
+842-test run and final Sol reviews cover that completed batch. The documentation
+congruence pass preserves all F01–F22, separate functionality/conformance/science
+axes, the accurate native graph objective, and WP0/WP1/WP2 in-progress exit gates.
+All 36 Markdown files' 161 local targets resolve; six register tests, generated
+node-catalogue drift and whitespace checks pass. Historical reports retain their
+dated states; the current status/roadmap/plan/architecture/operator guide agree.
+
+Luna xhigh workers are now implementing three separate chunks: native threshold
+stage/checkpoints (`checkpoint_contracts`), CUDA erosion/dilation primitives
+(`wp0_feature_audit`), and explicit verified checkpoint-store/node inspection
+(`reference_runner`). They own only their assigned new modules/tests, plus the
+reference dialog/view tests for inspection. These chunks are not delivered or
+independently reviewed yet. Root owns docs/register and final integration, runs
+bounded Sol medium reviews after frozen chunks, commits approved features and
+requires a fresh full suite after source changes. Preserve the unrelated untracked
+project file. Push destination approval remains pending; do not retry the blocked
+GitHub transfer without a trusted reply. The active full implementation goal is
+not complete; original SMPTS access and laboratory inputs remain unresolved.
+
 ### Peer implementation: original-threshold stage checkpoints (2026-10-04)
 
 `seedvision/benchmarking/reference_stage.py` binds one public PlantCV binary/mean/

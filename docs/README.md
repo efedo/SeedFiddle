@@ -2,13 +2,13 @@
 
 Start with [Current project status](CURRENT_STATUS.md). It states the implemented
 capabilities, current annotation behavior, latest verification, and remaining
-laboratory work and the accepted peer-functionality direction as of 3 October 2026.
+laboratory work and the accepted peer-functionality direction as of 4 October 2026.
 
 ## Current operational documents
 
 - [Repository README](../README.md): setup, main workflow, compatibility, and checks.
 - [Operator guide](OPERATOR_GUIDE.md): day to day image, annotation, result, project,
-  training, and evaluation workflow.
+  training, evaluation and native reference-graph inspection workflow.
 - [Architecture and contracts](ARCHITECTURE.md): ownership, caching, persistence,
   evaluation, and extension rules.
 - [Implementation roadmap](../PLAN.md): completed baseline phases, accepted
@@ -29,7 +29,7 @@ laboratory work and the accepted peer-functionality direction as of 3 October 20
   canonical F01–F22 capability families, WP0–WP6 delivery gates and comparative design.
 - [Operation-level feature register](plantcv_smpts_features.json): source and native
   mappings, gaps, tests, separate functionality/conformance/science status, and
-  current WP0 source/environment/baseline evidence.
+  current WP0/WP1/WP2 implementation evidence and remaining gates.
 
 The reports define accepted development direction. The register records incremental
 implementation evidence; it does not establish measured peer performance. The root

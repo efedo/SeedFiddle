@@ -13,6 +13,11 @@ manifest identity-closure probes pass. These features are committed separately.
 Reviewer authorization is resolved; push destination approval remains
 separately pending. These engineering checks do not close peer delivery or science.
 
+The next bounded chunks are in development: native threshold stage/checkpoint
+binding, CUDA erosion/dilation primitives and verified per-node checkpoint
+inspection. They require their own focused tests, independent review and fresh
+complete discovery before being recorded as delivered.
+
 Seed Fiddle has an implemented baseline local desktop workflow for image loading,
 calibration diagnostics, material and seed annotation, procedural and optional
 learned instance proposals, reference driven parameter adaptation, result review,
