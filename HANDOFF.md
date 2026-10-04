@@ -2,6 +2,22 @@
 
 ## Resume here
 
+### Peer implementation: read-only native node editor mode (2026-10-03)
+
+`PipelineCanvas` and `PipelineInspector` now support explicit immutable `read_only`
+constructor mode; native editing remains the default. Reference mode blocks topology,
+parameter, enabled/reset, run-to and native optimization/procedural actions and shows
+fixed values. Native-ID collisions do not leak native foreground/project/overlay
+claims. Selection, dragging/layout, zoom, arrange, bundling and routing remain usable.
+
+Luna implemented this feature; final Sol review found no defects after two repairs.
+Five focused read-only tests and 21 targeted Qt tests pass. The independent visible
+socket-to-empty gesture mutates editable mode and clears its connected cache, while
+reference mode preserves graph facts and real `PipelineAnalysisCache.values` object
+identities. Actual reference recipe views/render inspection, checkpoint artifacts
+and overall F22 acceptance remain pending. MainWindow graph persistence is frozen
+for separate review; do not mix that uncommitted plumbing into this feature commit.
+
 ### Peer implementation: strict, nonmutating recipe decoders (2026-10-03)
 
 Shared recipe decoders now copy decoded dictionaries before converting child

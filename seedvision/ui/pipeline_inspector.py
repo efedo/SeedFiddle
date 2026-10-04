@@ -922,8 +922,9 @@ class PipelineInspector(QWidget):
     overlay_selected = Signal(str)
     node_action_requested = Signal(str, str, object)
 
-    def __init__(self, parent=None) -> None:
+    def __init__(self, parent=None, *, read_only: bool = False) -> None:
         super().__init__(parent)
+        self._read_only = bool(read_only)
         self._node: PipelineNode | None = None
         self._unified_optimization = False
         self._optimization_ready = False
@@ -988,6 +989,11 @@ class PipelineInspector(QWidget):
         self.enabled_checkbox = QCheckBox("Enabled", self)
         self.enabled_checkbox.setVisible(False)
         self.enabled_checkbox.toggled.connect(self._enabled_toggled)
+        self.enabled_fact_label = QLabel(self)
+        self.enabled_fact_label.setVisible(False)
+        self.enabled_fact_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
         self.status_label = QLabel("", self)
         self.status_label.setWordWrap(True)
         self.status_label.setStyleSheet(f"color: {self._secondary_colour};")
@@ -1323,6 +1329,9 @@ class PipelineInspector(QWidget):
             "seeds above the ruler. Percentages are their proportions in those "
             "reference pixels; painted foreground references replace this automatic start."
         )
+        if self.read_only:
+            self.foreground_start_label.setToolTip("")
+            self.foreground_start_heading.setToolTip("")
         self.foreground_start_label.setVisible(False)
         self.parameter_container = QWidget(self)
         self.parameter_form = QFormLayout(self.parameter_container)
@@ -1340,6 +1349,9 @@ class PipelineInspector(QWidget):
         )
         self.reset_parameters_button.setMaximumWidth(72)
         self.reset_parameters_button.clicked.connect(self._reset_parameters)
+        if self.read_only:
+            self.reset_parameters_button.hide()
+            self.reset_parameters_button.setToolTip("")
         parameters_header_layout.addWidget(self.parameters_heading)
         parameters_header_layout.addStretch(1)
         parameters_header_layout.addWidget(self.reset_parameters_button)
@@ -1350,6 +1362,7 @@ class PipelineInspector(QWidget):
         layout.addWidget(self.method_heading)
         layout.addWidget(self.details_label)
         layout.addWidget(self.enabled_checkbox)
+        layout.addWidget(self.enabled_fact_label)
         layout.addWidget(self.status_label)
         layout.addWidget(self.project_info_container)
         layout.addWidget(self.procedural_centres_container)
@@ -1387,14 +1400,20 @@ class PipelineInspector(QWidget):
         self.status_label.setText(
             f"Status: {node.status.value}. {node.status_detail}"
         )
-        self.project_info_container.setVisible(node.identifier == "project")
+        self.project_info_container.setVisible(
+            node.identifier == "project" and not self.read_only
+        )
         self.enabled_checkbox.blockSignals(True)
         self.enabled_checkbox.setChecked(node.enabled)
         self.enabled_checkbox.setEnabled(node.implemented and node.bypassable)
-        self.enabled_checkbox.setVisible(True)
+        self.enabled_checkbox.setVisible(not self.read_only)
         self.enabled_checkbox.blockSignals(False)
+        self.enabled_fact_label.setText(
+            "Node enabled: yes" if node.enabled else "Node enabled: no"
+        )
+        self.enabled_fact_label.setVisible(self.read_only)
         self._clear_parameters()
-        if node.identifier == "layout_detection":
+        if node.identifier == "layout_detection" and not self.read_only:
             # Fixed detector capability, not an adjustable analysis parameter:
             # unsupported vessels must not appear selectable or invalidate caches.
             vessel_combo = QComboBox(self.parameter_container)
@@ -1441,6 +1460,19 @@ class PipelineInspector(QWidget):
             for key in section.keys:
                 spec = specs_by_key[key]
                 value = node.parameters[spec.key]
+                if self.read_only:
+                    editor = QLabel(self._render_fixed_value(value), self.parameter_container)
+                    editor.setTextInteractionFlags(
+                        Qt.TextInteractionFlag.TextSelectableByMouse
+                    )
+                    editor.setAccessibleName(f"{spec.label}: fixed value")
+                    editor.setToolTip(f"{spec.description}\nFixed reference value.")
+                    field_label = QLabel(spec.label, self.parameter_container)
+                    field_label.setWordWrap(True)
+                    field_label.setToolTip(spec.description)
+                    self.parameter_form.addRow(field_label, editor)
+                    self._parameter_widgets.append(editor)
+                    continue
                 if spec.kind == "float":
                     editor = QDoubleSpinBox(self.parameter_container)
                     editor.setDecimals(3)
@@ -1494,7 +1526,8 @@ class PipelineInspector(QWidget):
                     editor.setToolTip('Legacy fallback only. The connected resolved material input already combines texture; tune Material evidence decision instead.')
                 field_label = QLabel(spec.label, self.parameter_container)
                 field_label.setWordWrap(True)
-                field_label.setBuddy(editor)
+                if not self.read_only:
+                    field_label.setBuddy(editor)
                 editor.setAccessibleName(spec.label)
                 field_label.setToolTip(spec.description)
                 self.parameter_form.addRow(field_label, editor)
@@ -1509,12 +1542,28 @@ class PipelineInspector(QWidget):
         self.parameters_header.setVisible(bool(node.parameter_specs))
         self._refresh_procedural_fit_action()
         self.reference_edge_fit_container.setVisible(
-            node.identifier == "reference_edge_probability" and not self._unified_optimization
+            node.identifier == "reference_edge_probability"
+            and not self._unified_optimization
+            and not self.read_only
         )
         self.reference_edge_fit_button.setEnabled(node.enabled and node.implemented)
         self._refresh_procedural_centres_action()
         self._update_colour_summary()
         self._refresh_optimization()
+
+    @property
+    def read_only(self) -> bool:
+        """Whether this inspector presents a fixed reference stage."""
+
+        return self._read_only
+
+    @staticmethod
+    def _render_fixed_value(value) -> str:
+        if isinstance(value, bool):
+            return "Yes" if value else "No"
+        if isinstance(value, float):
+            return format(value, ".8g")
+        return str(value)
 
     def enable_unified_optimization(self) -> None:
         self._unified_optimization = True
@@ -1527,6 +1576,9 @@ class PipelineInspector(QWidget):
         self._refresh_optimization()
 
     def _refresh_optimization(self) -> None:
+        if self.read_only:
+            self.optimization_container.hide()
+            return
         from seedvision.optimization.registry import capability
         node = self._node
         self.optimization_container.setVisible(self._unified_optimization and node is not None)
@@ -1545,7 +1597,11 @@ class PipelineInspector(QWidget):
         self.optimization_status.setToolTip('\n'.join(f'{key}: {reason}' for key, reason in contract.fixed))
 
     def _request_optimization(self) -> None:
-        if self._node is not None and self.optimization_button.isEnabled():
+        if (
+            not self.read_only
+            and self._node is not None
+            and self.optimization_button.isEnabled()
+        ):
             self.node_action_requested.emit(self._node.identifier, self.OPTIMIZE_NODE_ACTION, None)
 
     def set_procedural_centres_state(
@@ -1578,6 +1634,8 @@ class PipelineInspector(QWidget):
     def set_project_summary(self, text: str) -> None:
         """Display current master/image/annotation state on the Project node."""
 
+        if self.read_only:
+            return
         summary = str(text).strip() or "No project information is available."
         self.project_info_label.setText(summary)
         self.project_info_label.setToolTip(summary)
@@ -1585,12 +1643,17 @@ class PipelineInspector(QWidget):
     def set_procedural_instance_statistics(self, text: str = "") -> None:
         """Display geometry for the procedural label selected in the image."""
 
+        if self.read_only:
+            return
         self.procedural_instance_statistics_label.setText(
             str(text).strip()
             or "Click a coloured procedural seed in the image to inspect its geometry."
         )
 
     def _refresh_procedural_centres_action(self) -> None:
+        if self.read_only:
+            self.procedural_centres_container.hide()
+            return
         node = self._node
         visible = node is not None and node.identifier in {
             "project",
@@ -1632,6 +1695,8 @@ class PipelineInspector(QWidget):
     @Slot(int)
     def _procedural_centres_mode_changed(self, index: int) -> None:
         del index
+        if self.read_only:
+            return
         node = self._node
         if node is None or node.identifier not in {
             "project",
@@ -1648,7 +1713,8 @@ class PipelineInspector(QWidget):
     def _reference_edge_fit_requested(self) -> None:
         node = self._node
         if (
-            node is not None
+            not self.read_only
+            and node is not None
             and node.identifier == "reference_edge_probability"
             and self.reference_edge_fit_button.isEnabled()
         ):
@@ -1658,6 +1724,8 @@ class PipelineInspector(QWidget):
 
     @Slot(bool)
     def _procedural_centres_edit_toggled(self, editing: bool) -> None:
+        if self.read_only:
+            return
         node = self._node
         if node is None or node.identifier not in {
             "project",
@@ -1672,6 +1740,8 @@ class PipelineInspector(QWidget):
 
     @Slot()
     def _procedural_centres_undo_requested(self) -> None:
+        if self.read_only:
+            return
         node = self._node
         if node is not None and node.identifier in {
             "project",
@@ -1683,6 +1753,8 @@ class PipelineInspector(QWidget):
 
     @Slot()
     def _procedural_centres_reset_requested(self) -> None:
+        if self.read_only:
+            return
         node = self._node
         if node is not None and node.identifier in {
             "project",
@@ -1715,6 +1787,9 @@ class PipelineInspector(QWidget):
         self._refresh_procedural_fit_action()
 
     def _refresh_procedural_fit_action(self) -> None:
+        if self.read_only:
+            self.procedural_fit_container.hide()
+            return
         node = self._node
         visible = node is not None and node.identifier == "procedural_instances"
         self.procedural_fit_container.setVisible(visible and not self._unified_optimization)
@@ -1776,12 +1851,16 @@ class PipelineInspector(QWidget):
 
     @Slot(bool)
     def _procedural_fit_coverage_changed(self, checked: bool) -> None:
+        if self.read_only:
+            return
         self._parameter_edited("reference_error_annotations_complete", bool(checked))
         self._procedural_fit_result_summary = ""
         self._refresh_procedural_fit_action()
 
     @Slot()
     def _procedural_fit_requested(self) -> None:
+        if self.read_only:
+            return
         node = self._node
         if (
             node is None
@@ -1813,6 +1892,12 @@ class PipelineInspector(QWidget):
     ) -> None:
         """Show only the overlays owned by the selected pipeline node."""
 
+        if self.read_only:
+            with QSignalBlocker(self.overlay_combo):
+                self.overlay_combo.clear()
+            self.overlay_combo.setToolTip("")
+            self.overlay_combo.hide()
+            return
         with QSignalBlocker(self.overlay_combo):
             self.overlay_combo.clear()
             for label, mode in options:
@@ -1836,6 +1921,8 @@ class PipelineInspector(QWidget):
     @Slot(int)
     def _overlay_changed(self, index: int) -> None:
         del index
+        if self.read_only:
+            return
         mode = str(self.overlay_combo.currentData() or "")
         if mode:
             self.overlay_selected.emit(mode)
@@ -1855,6 +1942,10 @@ class PipelineInspector(QWidget):
     def set_analysis_result(self, result) -> None:
         """Supply the visible image result for node-specific diagnostics."""
 
+        if self.read_only:
+            self._analysis_result = None
+            self._update_colour_summary()
+            return
         if self._analysis_result is not result:
             self.set_procedural_instance_statistics("")
         self._analysis_result = result
@@ -1865,6 +1956,12 @@ class PipelineInspector(QWidget):
             self.status_label.setText(
                 f"Status: {self._node.status.value}. {self._node.status_detail}"
             )
+            if self.read_only:
+                self.enabled_fact_label.setText(
+                    "Node enabled: yes"
+                    if self._node.enabled
+                    else "Node enabled: no"
+                )
 
     def _clear_parameters(self) -> None:
         while self.parameter_form.rowCount():
@@ -1874,10 +1971,17 @@ class PipelineInspector(QWidget):
 
     def _update_colour_summary(self) -> None:
         node_id = None if self._node is None else self._node.identifier
-        foreground_visible = node_id == "background_likelihood"
+        foreground_visible = (
+            node_id == "background_likelihood" and not self.read_only
+        )
         self.foreground_start_heading.setVisible(foreground_visible)
         self.foreground_start_label.setVisible(foreground_visible)
         if not foreground_visible:
+            if self.read_only:
+                self.foreground_start_heading.setText("")
+                self.foreground_start_label.setText("")
+                self.foreground_start_heading.setToolTip("")
+                self.foreground_start_label.setToolTip("")
             return
         layers = getattr(self._analysis_result, "layers", None)
         profile = getattr(layers, "foreground_colour_profile", None)
@@ -1940,15 +2044,15 @@ class PipelineInspector(QWidget):
         )
 
     def _enabled_toggled(self, enabled: bool) -> None:
-        if self._node is not None:
+        if not self.read_only and self._node is not None:
             self.enabled_changed.emit(self._node.identifier, enabled)
 
     def _parameter_edited(self, key: str, value) -> None:
-        if self._node is not None:
+        if not self.read_only and self._node is not None:
             self.parameter_changed.emit(self._node.identifier, key, value)
 
     def _reset_parameters(self) -> None:
-        if self._node is not None:
+        if not self.read_only and self._node is not None:
             self.parameters_reset.emit(self._node.identifier)
 
 

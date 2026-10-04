@@ -469,6 +469,8 @@ class PipelineNodeItem(QGraphicsObject):
         parameter_callback,
         run_to_callback,
         parent=None,
+        *,
+        read_only: bool = False,
     ) -> None:
         super().__init__(parent)
         self.node = node
@@ -477,6 +479,7 @@ class PipelineNodeItem(QGraphicsObject):
         self._released_callback = released_callback
         self._parameter_callback = parameter_callback
         self._run_to_callback = run_to_callback
+        self._read_only = bool(read_only)
         self.width = 220.0 if node.inline_parameters else self.DEFAULT_WIDTH
         named_port_count = max(len(node.input_ports), len(node.output_ports))
         port_bottom = (
@@ -540,10 +543,15 @@ class PipelineNodeItem(QGraphicsObject):
     def _update_tooltip(self) -> None:
         inputs = ", ".join(label for _, label in self.node.input_ports) or "None"
         outputs = ", ".join(label for _, label in self.node.output_ports) or "None"
+        interaction = (
+            "This reference graph is read-only. Node position is presentation only."
+            if self._read_only
+            else "Drag between sockets to reconnect. Drag a connected input into empty "
+            "space, or right-click an edge, to disconnect it."
+        )
         self.setToolTip(
             f"{self.node.description}\n\nInputs: {inputs}\nOutputs: {outputs}\n\n"
-            "Drag between sockets to reconnect. Drag a connected input into empty "
-            "space, or right-click an edge, to disconnect it."
+            f"{interaction}"
         )
 
     @staticmethod
@@ -559,6 +567,26 @@ class PipelineNodeItem(QGraphicsObject):
     def _build_inline_editors(self) -> None:
         for index, (key, _) in enumerate(self.node.inline_parameters):
             spec = next(item for item in self.node.parameter_specs if item.key == key)
+            if self._read_only:
+                value = self.node.parameters[key]
+                if isinstance(value, bool):
+                    rendered = "Yes" if value else "No"
+                else:
+                    rendered = str(value)
+                editor = QLabel(rendered)
+                editor.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                editor.setFixedSize(108, 22)
+                editor.setStyleSheet("QLabel { color: #edf3f7; padding: 1px 4px; }")
+                editor.setToolTip(f"{spec.description}\nFixed reference value.")
+                proxy = QGraphicsProxyWidget(self)
+                proxy.setWidget(editor)
+                proxy.setPos(
+                    self.width - editor.width() - 12.0,
+                    self._controls_y + index * self.ROW_HEIGHT,
+                )
+                proxy.setZValue(4)
+                self._inline_editors[key] = editor
+                continue
             if spec.kind == "int":
                 editor = QSpinBox()
                 editor.setRange(int(spec.minimum), int(spec.maximum))
@@ -629,13 +657,21 @@ class PipelineNodeItem(QGraphicsObject):
     def refresh(self) -> None:
         for key, editor in self._inline_editors.items():
             with QSignalBlocker(editor):
-                if isinstance(editor, QAbstractSpinBox):
+                if isinstance(editor, QLabel):
+                    value = self.node.parameters[key]
+                    editor.setText(
+                        ("Yes" if value else "No")
+                        if isinstance(value, bool)
+                        else str(value)
+                    )
+                elif isinstance(editor, QAbstractSpinBox):
                     editor.setValue(self.node.parameters[key])
                 elif isinstance(editor, QComboBox):
                     editor.setCurrentText(str(self.node.parameters[key]))
                 else:
                     editor.setChecked(bool(self.node.parameters[key]))
-            editor.setEnabled(self.node.enabled and self.node.implemented)
+            if not self._read_only:
+                editor.setEnabled(self.node.enabled and self.node.implemented)
         self._update_tooltip()
         self.update()
 
@@ -808,6 +844,9 @@ class PipelineNodeItem(QGraphicsObject):
         self._released_callback(self.node.identifier)
 
     def contextMenuEvent(self, event) -> None:  # noqa: N802 - Qt override
+        if self._read_only:
+            event.accept()
+            return
         menu = QMenu()
         run_to = menu.addAction("Run to node")
         run_to.setEnabled(self.node.enabled and self.node.implemented)
@@ -826,6 +865,8 @@ class PipelineEdgeItem(QGraphicsPathItem):
         source: PipelineNodeItem,
         target: PipelineNodeItem,
         disconnect_callback,
+        *,
+        read_only: bool = False,
     ) -> None:
         super().__init__()
         self.connection = connection
@@ -835,6 +876,7 @@ class PipelineEdgeItem(QGraphicsPathItem):
         self.bundle_key: tuple[str, int, int] | None = None
         self.is_bundled = False
         self._disconnect_callback = disconnect_callback
+        self._read_only = bool(read_only)
         self.base_colour = _wire_colour(connection)
         self.setFlag(self.GraphicsItemFlag.ItemIsSelectable, True)
         # A connection's stroked hit area can cover much of a dense graph. If
@@ -850,8 +892,12 @@ class PipelineEdgeItem(QGraphicsPathItem):
         self.setToolTip(
             f"{source.node.title}: {source_label}\n-> "
             f"{target.node.title}: {target_label}\n"
-            f"Type: {connection.data_type}\n\nRight-click to disconnect."
-            " Ctrl-click to select for Delete/Backspace."
+            f"Type: {connection.data_type}\n\n"
+            + (
+                "Reference graph is read-only."
+                if self._read_only
+                else "Right-click to disconnect. Ctrl-click to select for Delete/Backspace."
+            )
         )
         self.update_path()
 
@@ -865,6 +911,9 @@ class PipelineEdgeItem(QGraphicsPathItem):
         self.setZValue(1 if highlighted else 0)
 
     def contextMenuEvent(self, event) -> None:  # noqa: N802 - Qt override
+        if self._read_only:
+            event.accept()
+            return
         menu = QMenu()
         disconnect = menu.addAction("Disconnect")
         selected = menu.exec(event.screenPos())
@@ -938,8 +987,11 @@ class PipelineCanvas(QGraphicsView):
     NODE_GAP = 18.0
     OPTIONAL_TOOLBOX_NODE_IDS = frozenset({"circle_candidates"})
 
-    def __init__(self, graph: PipelineGraph, parent=None) -> None:
+    def __init__(
+        self, graph: PipelineGraph, parent=None, *, read_only: bool = False
+    ) -> None:
         super().__init__(parent)
+        self._read_only = bool(read_only)
         self.graph = graph
         self._scene = QGraphicsScene(self)
         self.setScene(self._scene)
@@ -1112,11 +1164,20 @@ class PipelineCanvas(QGraphicsView):
         controls.addWidget(self.actual_size_button)
         style_canvas_control_bar(self.control_bar, "pipelineControlBar")
         self.control_bar.raise_()
+        if self.read_only:
+            for button in (self.move_to_unused_button, self.unused_nodes_button):
+                button.hide()
+                button.setToolTip("")
 
     def _populate_tools_menu(self) -> None:
         """Keep all editing commands accessible when the pane is narrow."""
         self.tools_menu.clear()
         for button in self._editing_buttons:
+            if self.read_only and button in (
+                self.move_to_unused_button,
+                self.unused_nodes_button,
+            ):
+                continue
             if button is self.unused_nodes_button:
                 self.unused_nodes_menu.setTitle(button.text())
                 self.tools_menu.addMenu(self.unused_nodes_menu)
@@ -1131,12 +1192,24 @@ class PipelineCanvas(QGraphicsView):
         width = max(120, self.viewport().width())
         zoom_controls = (self.zoom_out_button, self.zoom_label,
                          self.zoom_in_button, self.fit_button, self.actual_size_button)
+        editing_buttons = tuple(
+            button
+            for button in self._editing_buttons
+            if not self.read_only
+            or button not in (self.move_to_unused_button, self.unused_nodes_button)
+        )
         required = sum(button.sizeHint().width() for button in (
-            *self._editing_buttons, *zoom_controls
+            *editing_buttons, *zoom_controls
         )) + 80
         compact = width < required
         for button in self._editing_buttons:
-            button.setVisible(not compact)
+            visible = not compact
+            if self.read_only and button in (
+                self.move_to_unused_button,
+                self.unused_nodes_button,
+            ):
+                visible = False
+            button.setVisible(visible)
         self.tools_button.setVisible(compact)
         self.control_bar.setGeometry(self.viewport().x(), 0, width, 38)
         self.control_bar.raise_()
@@ -1149,7 +1222,8 @@ class PipelineCanvas(QGraphicsView):
                 self._node_moved,
                 self._node_released,
                 self._inline_parameter_changed,
-                self.run_to_node_requested.emit,
+                self._request_run_to_node,
+                read_only=self.read_only,
             )
             self.node_items[node.identifier] = item
             self._scene.addItem(item)
@@ -1161,6 +1235,7 @@ class PipelineCanvas(QGraphicsView):
                 self.node_items[connection.source],
                 self.node_items[connection.target],
                 self._disconnect_connection,
+                read_only=self.read_only,
             )
             self.edge_items.append(edge)
             self._scene.addItem(edge)
@@ -1230,6 +1305,7 @@ class PipelineCanvas(QGraphicsView):
                 self.node_items[connection.source],
                 self.node_items[connection.target],
                 self._disconnect_connection,
+                read_only=self.read_only,
             )
             self.edge_items.append(edge)
             self._scene.addItem(edge)
@@ -1496,6 +1572,8 @@ class PipelineCanvas(QGraphicsView):
             edge.set_route(path, route_points=points)
 
     def _disconnect_connection(self, connection: PipelineConnection) -> None:
+        if self.read_only:
+            return
         try:
             affected = self.graph.disconnect(connection)
         except ValueError as error:
@@ -1527,6 +1605,10 @@ class PipelineCanvas(QGraphicsView):
         return cursor, item.input_anchor(port_id)
 
     def _finish_connection_drag(self, scene_position: QPointF) -> None:
+        if self.read_only:
+            self._connection_drag = None
+            self._connection_preview.hide()
+            return
         assert self._connection_drag is not None
         start_node, start_direction, start_port = self._connection_drag
         destination = self._port_at(scene_position)
@@ -1682,7 +1764,10 @@ class PipelineCanvas(QGraphicsView):
         self.unused_nodes_menu.clear()
         count = len(self.graph.unused_nodes)
         self.unused_nodes_button.setText(f"Unused nodes ({count})")
-        self.unused_nodes_button.setEnabled(bool(count))
+        self.unused_nodes_button.setEnabled(bool(count) and not self.read_only)
+        if self.read_only:
+            self.unused_nodes_button.setToolTip("")
+            return
         for node in self.graph.unused_nodes.values():
             action = self.unused_nodes_menu.addAction(
                 f"Add {node.title} to graph"
@@ -1696,6 +1781,8 @@ class PipelineCanvas(QGraphicsView):
             )
 
     def _restore_unused_node(self, node_id: str) -> None:
+        if self.read_only:
+            return
         self.graph.restore_unused_node(node_id)
         self.node_items.clear()
         self.edge_items.clear()
@@ -1708,6 +1795,8 @@ class PipelineCanvas(QGraphicsView):
         self.unused_node_restored.emit(node_id)
 
     def _shelve_selected_optional_node(self) -> None:
+        if self.read_only:
+            return
         selected = [
             item
             for item in self._scene.selectedItems()
@@ -1818,7 +1907,19 @@ class PipelineCanvas(QGraphicsView):
         )
 
     def _inline_parameter_changed(self, node_id: str, key: str, value) -> None:
+        if self.read_only:
+            return
         self.parameter_changed.emit(node_id, key, value)
+
+    @property
+    def read_only(self) -> bool:
+        """Whether this canvas is a fixed reference view."""
+
+        return self._read_only
+
+    def _request_run_to_node(self, node_id: str) -> None:
+        if not self.read_only:
+            self.run_to_node_requested.emit(node_id)
 
     def _update_scene_rect(self) -> None:
         bounds = self._scene.itemsBoundingRect().adjusted(-90, -90, 90, 90)
@@ -1866,6 +1967,12 @@ class PipelineCanvas(QGraphicsView):
             scene_position = self.mapToScene(event.position().toPoint())
             hit = self._port_at(scene_position)
             if hit is not None:
+                if self.read_only:
+                    if not event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                        self._scene.clearSelection()
+                    hit[0].setSelected(True)
+                    event.accept()
+                    return
                 item, direction, port_id = hit
                 self._connection_drag = (item.node.identifier, direction, port_id)
                 start, end = self._drag_endpoints(scene_position)
@@ -1953,6 +2060,12 @@ class PipelineCanvas(QGraphicsView):
             self._connection_preview.hide()
             event.accept()
             return
+        if self.read_only and event.key() in (
+            Qt.Key.Key_Delete,
+            Qt.Key.Key_Backspace,
+        ):
+            event.accept()
+            return
         if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
             selected_connections = [
                 item.connection
@@ -1968,6 +2081,7 @@ class PipelineCanvas(QGraphicsView):
                 event.accept()
                 return
         super().keyPressEvent(event)
+
 
     def fit_graph(self) -> None:
         bounds = self._scene.itemsBoundingRect().adjusted(-45, -45, 45, 45)

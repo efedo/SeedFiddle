@@ -458,6 +458,13 @@ environment and final Sol review pass. Reference source/environment artifacts mu
 be retained externally; their absence is unavailable. Recipe orchestration,
 archived stage outputs, native compatibility and comparative studies remain open.
 
+Completed F22 prerequisite: the existing native canvas and inspector have explicit
+read-only reference mode. It blocks analytical/topology/run actions, presents fixed
+facts and keeps layout, selection, zoom and routing usable. Five focused Qt tests
+and final independent Sol review pass, including a discriminating socket gesture
+and actual cache preservation. Audited recipe views, render acceptance, checkpoint
+inspection and persistence integration are still required to close F22.
+
 ### WP0 — Freeze scope, source and baseline
 
 **Deliverables:** target SeedFiddle commit; current saved recipe and fixture outputs; expanded feature register; pinned PlantCV seed recipe; SMPTS source-access/ambiguity register; dependency and licence inventory.

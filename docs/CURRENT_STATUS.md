@@ -37,7 +37,11 @@ dependencies, parameters, conditions and run identities, and project them into
 the existing `PipelineGraph`. Analytical identity excludes display/layout changes;
 extra, missing, miswired and inactive nodes are rejected. Twelve focused tests and
 independent Sol review cover this infrastructure. Actual audited recipe catalogues,
-desktop reference views and project/snapshot persistence remain pending.
+desktop reference views and project/snapshot persistence remain pending. The
+existing canvas/inspector now have a reviewed read-only mode for reference facts;
+five focused Qt tests verify blocked analytical/topology actions, native-ID fact
+isolation and display-only operations preserving actual cache objects. Native
+editing remains the default. This mode is a prerequisite for the actual F22 views.
 The reviewed conformance API now compares primitive arrays, masks and instance
 partitions from exact-identity checkpoints. It retains stage/pipeline upstream
 provenance, checks raster semantics, uses exact integer errors and reference-relative
