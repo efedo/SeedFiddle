@@ -27,9 +27,13 @@ laboratory work and the accepted peer-functionality direction as of 3 October 20
   and peer-functionality scope, aligned with the native SeedFiddle baseline.
 - [Peer-functionality implementation and benchmark plan](PLANTCV_SMPTS_IMPLEMENTATION_PLAN.md):
   canonical F01–F22 capability families, WP0–WP6 delivery gates and comparative design.
+- [Operation-level feature register](plantcv_smpts_features.json): source and native
+  mappings, gaps, tests, separate functionality/conformance/science status, and
+  current WP0 source/environment/baseline evidence.
 
-These are accepted development direction, not implemented integrations or measured
-performance. The root roadmap owns sequencing; the status summary owns current
+The reports define accepted development direction. The register records incremental
+implementation evidence; it does not establish measured peer performance. The root
+roadmap owns sequencing; the status summary owns current
 capabilities; the scientific protocol owns empirical release requirements. Proposed
 paths/backend names/YAML are not current commands. Historical audits and implementation
 records retain their dated claims; their future-tense passages do not supersede this

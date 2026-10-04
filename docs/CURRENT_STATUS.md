@@ -2,7 +2,9 @@
 
 **Status date:** 3 October 2026
 **Engineering baseline:** `094aa7d`; prior implementation review `f244df8`
-**Latest complete local verification:** 670 tests run; 668 passed, 2 skipped
+**Latest complete local verification:** 684 tests run; 682 passed, 2 skipped;
+six focused WP0 register checks pass after review repairs. In-progress chunks
+require a fresh final suite.
 
 Seed Fiddle has an implemented baseline local desktop workflow for image loading,
 calibration diagnostics, material and seed annotation, procedural and optional
@@ -17,9 +19,14 @@ representative laboratory corpus.
 The project now targets selected PlantCV–SMPTS seed-analysis capabilities under
 [the implementation and benchmark plan](PLANTCV_SMPTS_IMPLEMENTATION_PLAN.md).
 The [comparison report](PLANTCV_SMPTS_COMPARISON.md) explains the scope and evidence.
-WP0–WP6 remain pending: the operation-level feature register, pinned reference
-adapters, stage replay and comparative study are not implemented by this documentation
-change. Faithful display of pinned PlantCV/SMPTS reference implementation graphs in the
+WP0/WP1 are in progress. The [operation-level register](plantcv_smpts_features.json)
+maps F01–F22 to source operations, existing code/tests, gaps and acceptance criteria.
+PlantCV 4.11.3 source and the isolated reference environment are pinned in
+[the source record](../config/peer_reference_sources.json); the default native
+unavailable-policy baseline is captured in [the baseline record](../config/peer_baseline.json).
+Exact task-specific reference recipes and outputs still need freezing. Original
+SMPTS source access remains unavailable; a reconstruction cannot establish original-code
+parity. WP2–WP6 remain pending. Faithful display of pinned reference implementation graphs in the
 native node editor is also an explicit pending objective (F22), with topology,
 parameter, provenance and Qt visual acceptance. Existing native methods remain the
 engineering baseline. Functional coverage,
@@ -30,7 +37,7 @@ proof. Laboratory data collection continues alongside WP0/WP1.
 
 | Area | Current state | Remaining evidence or work |
 |---|---|---|
-| PlantCV–SMPTS peer functionality | Accepted direction; implementation and comparison work pending. | Complete the scoped feature audit, reference/replay infrastructure and WP2–WP6 gates; no parity claim yet. |
+| PlantCV–SMPTS peer functionality | WP0/WP1 in progress; operation-level register, PlantCV source/environment pins and native engineering baseline captured. | Freeze actual reference recipes and outputs, finish reference/replay infrastructure and WP2–WP6 gates; no parity claim yet. |
 | Runtime and desktop shell | Implemented. One `seed_vision.py` launcher, native PySide6 UI, optional local environment bootstrap, diagnostics, cancellation, and responsive persistence. | Validate the frozen dependency and hardware envelope intended for laboratory deployment. |
 | Analysis graph | Implemented. The generated catalogue covers 48 active/toolbox cards. Node local caching and dependency based invalidation are preserved. | New controls must continue to affect calculations and receive optimization coverage or a stated exemption. |
 | Calibration and image evidence | Engineering implementation complete for ruler/card detection, deskew, neutral balance, layout, material, edge, texture, lighting, and quality evidence. | Supply traceable card/camera geometry and independent measurements before enabling or claiming validated physical or colorimetric output. |

@@ -413,6 +413,16 @@ and baseline replay do not yet exist. Existing native infrastructure is reused
 where the audit confirms its contracts. WP0/WP1 engineering can proceed while
 laboratory inputs are collected; final scientific promotion cannot.
 
+**Current progress (3 October 2026):** WP0/WP1 are in progress; WP2–WP6 remain
+pending. The [operation-level register](plantcv_smpts_features.json),
+[PlantCV source/environment record](../config/peer_reference_sources.json), and
+[native engineering baseline](../config/peer_baseline.json) are captured. The
+binary-only reference lock requires the exact externally retained `flyr` wheel;
+missing artifacts must not trigger an unpinned source rebuild. Exact task-specific
+reference recipes and archived outputs remain to freeze. Original SMPTS access
+returned HTTP 403; original-code parity and verified-original graph claims remain
+unavailable. F22 remains a required implementation and visual acceptance gate.
+
 ### WP0 — Freeze scope, source and baseline
 
 **Deliverables:** target SeedFiddle commit; current saved recipe and fixture outputs; expanded feature register; pinned PlantCV seed recipe; SMPTS source-access/ambiguity register; dependency and licence inventory.

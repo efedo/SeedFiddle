@@ -2,6 +2,39 @@
 
 ## Resume here
 
+### Peer implementation: source, scope and engineering baseline (2026-10-03)
+
+Implementation has started under the user's requested Luna xhigh worker / Sol
+medium review workflow, with a separate commit for each completed feature.
+The F22 documentation objective is committed as `e86a4b0`.
+`docs/plantcv_smpts_features.json` expands all F01–F22 into operation contracts,
+source/native/test mappings, gaps and independent functionality/conformance/science
+status. `config/peer_reference_sources.json` pins PlantCV 4.11.3 at
+`77e3322fd0cd5a9bef18bb99402f20c8f2db87a9`, selected original source hashes and
+67 isolated dependency archives. The binary-only requirements lock needs the exact
+retained flyr wheel under ignored `artifacts/reference-wheels/`; missing external
+artifacts make provisioning unavailable, never authorize an unpinned source build.
+The binary-only dry run verified all 67 exact wheel versions and hashes.
+
+`config/peer_baseline.json` freezes the default native graph and committed IMG_9405
+source at `e86a4b0`, its unavailable-policy result revision, native Python/dependency/
+CUDA/device provenance and raw CRLF versus Git-blob hashes. This fixture has no
+reviewed benchmark truth and no Foreground references; the capture is engineering
+evidence only. Original SMPTS capsule access returned HTTP 403; the paper and
+ambiguities are recorded, and original execution/parity remains unavailable.
+
+Sol review found and corrected a copied source hash, a native mapping, the flyr
+source-build gap and missing baseline runtime/checkout identity. Independent Sol
+re-review found no remaining material defects; six focused register checks pass.
+The latest broad suite ran 684 tests in 308.261 seconds: 682 passed, two existing
+skips. Log: `artifacts/peer-infrastructure-full-suite.log`. Later runner and
+checkpoint-repair tests were not all present at that discovery and need their
+focused checks plus a fresh final suite. WP0/WP1 remain in progress; exact selected
+reference recipes and archived outputs, F22 views and WP2–WP6 are still outstanding.
+Checkpoint, isolated runner and recipe-contract chunks are under development/review;
+their presence in the working tree is not a completed peer-functionality claim.
+Keep `analysis.seedfiddle-project.json` untouched and excluded from commits.
+
 ### Reference implementation graph objective (2026-10-03)
 
 Added the user's explicit objective that PlantCV/SMPTS reference implementation

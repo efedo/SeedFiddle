@@ -12,7 +12,7 @@ laboratory photographs. A photograph contains one verified species and may conta
 isolated, touching, overlapping, damaged, patterned, or partially visible seeds.
 
 The existing software engineering workflow is implemented. The newly accepted
-PlantCV–SMPTS peer-functionality extension is pending; completion of the baseline
+PlantCV–SMPTS peer-functionality extension is in progress; completion of the baseline
 does not imply completion of this expanded scope. Laboratory readiness is still
 blocked by representative reviewed data, prespecified tolerances, independent
 physical and colour measurements, trait definitions, and operator validation.
@@ -187,7 +187,12 @@ Distinguish original, compatible, reconstructed and enhanced graphs and mark unr
 stages. Acceptance includes topology/parameter checks, actual Qt visual review,
 persistence and cache behavior; a generic diagram or opaque backend card is insufficient.
 
-All work packages below are pending, including the operation-level feature register.
+WP0/WP1 are in progress; WP2–WP6 remain pending. The
+[operation-level register](docs/plantcv_smpts_features.json) and committed
+source/environment/baseline records are available. Exact reference recipes and
+archived outputs remain to freeze, and original SMPTS source access is unresolved.
+These engineering records establish neither algorithm conformance nor scientific
+performance. Work-package exit gates below remain in force.
 
 | Work package | Deliverable and gate |
 |---|---|
