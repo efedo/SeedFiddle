@@ -438,8 +438,14 @@ binds versioned provenance, typed stages/dependencies, parameters, branch condit
 and run/checkpoint identities to the existing `PipelineGraph`. Display/layout
 changes preserve analytical identity, and exact projection rejects missing, extra,
 miswired or inactive nodes. Twelve focused tests and independent Sol review pass.
-This supplies the data contract for F22; actual audited catalogues, native reference
-views, intermediate inspection and project/snapshot round-trips remain required.
+This supplies the data contract for F22. The independently reviewed catalogue
+provides five deterministic source-inspection graphs: three authored PlantCV seed
+workflows, a colour-correction contract and the SMPTS paper reconstruction. Twelve
+catalogue tests pass, including pinned watershed observation order, unresolved
+SMPTS raster semantics, exact source mapping and malformed graph rejection.
+Required per-image values remain unselected; this does not freeze runnable recipes
+or supply internal watershed replay/checkpoints. Native views, intermediate
+inspection and remaining F22 acceptance evidence are still required.
 
 Completed conformance infrastructure in `seedvision/benchmarking/conformance.py`
 compares exact-identity primitive, mask and instance checkpoints with bounded
@@ -463,7 +469,7 @@ read-only reference mode. It blocks analytical/topology/run actions, presents fi
 facts and keeps layout, selection, zoom and routing usable. Five focused Qt tests
 and final independent Sol review pass, including a discriminating socket gesture
 and actual cache preservation. Audited recipe views, render acceptance, checkpoint
-inspection and persistence integration are still required to close F22.
+inspection and remaining integration evidence are still required to close F22.
 
 Completed graph-metadata persistence extends the existing project document to
 schema 3 with safe v1/v2 migration. Immutable recipe/run/layout attachments survive

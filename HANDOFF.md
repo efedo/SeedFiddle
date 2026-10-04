@@ -2,6 +2,24 @@
 
 ## Resume here
 
+### Peer implementation: audited reference graph catalogue (2026-10-03)
+
+`seedvision/benchmarking/recipe_catalogue.py` supplies five deterministic immutable
+source-inspection graphs from committed pins: three authored PlantCV seed workflows,
+a colour-correction contract and nine-stage SMPTS paper reconstruction. Required
+per-image choices are unselected, not invented defaults. Watershed internal nodes
+describe one audited public call without independent replay/checkpoints; its
+marker-based count observation follows flooding. SMPTS raster semantics remain
+unknown where the paper does not specify them, and original capsule parity is
+unavailable. All F01–F22 and extended seed methods remain in scope.
+
+Luna implemented and repaired the catalogue; final Sol review found no defects.
+Twelve focused tests pass. Source projection uses documented canonical committed
+JSON, distinct from the runner's raw source-audit hash. Actual Qt view integration,
+recipe execution and final scientific evidence remain pending. Persistence is
+committed as `5891a97`; MainWindow is released to the dialog worker. Push destination
+approval remains pending. Fresh full discovery follows a frozen feature batch.
+
 ### Peer implementation: project/snapshot graph metadata (2026-10-03)
 
 Project schema 3 now retains immutable reference recipe attachments, exact per-stage

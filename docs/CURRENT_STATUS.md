@@ -36,8 +36,13 @@ Versioned recipe contracts now serialize provenance, stages, typed ports,
 dependencies, parameters, conditions and run identities, and project them into
 the existing `PipelineGraph`. Analytical identity excludes display/layout changes;
 extra, missing, miswired and inactive nodes are rejected. Twelve focused tests and
-independent Sol review cover this infrastructure. Actual audited recipe catalogues,
-desktop reference views and checkpoint artifact inspection remain pending. The
+independent Sol review cover this infrastructure. The reviewed deterministic
+catalogue now provides three authored PlantCV seed workflows, a colour-correction
+contract and a nine-stage SMPTS paper reconstruction. Original PlantCV operations
+map to pinned source; watershed internals describe one public call, without
+independent replay. Required per-image values remain unselected, so these are
+nonrunnable source-inspection graphs rather than frozen benchmark recipes. Twelve
+catalogue tests pass. Desktop views and checkpoint inspection remain pending. The
 existing canvas/inspector now have a reviewed read-only mode for reference facts;
 five focused Qt tests verify blocked analytical/topology actions, native-ID fact
 isolation and display-only operations preserving actual cache objects. Native
