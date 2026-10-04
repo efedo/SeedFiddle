@@ -3,7 +3,7 @@
 **Prepared for:** Eric Fedosejevs
 **Original external plan:** 1 October 2026
 **Revised and adopted direction:** 3 October 2026
-**Status:** Accepted direction, with implementation in progress. Reviewed checkpoint, recipe-contract and conformance foundations are implemented; backend compatibility, faithful desktop reference views and comparative scientific studies remain pending. Adoption was documentation-only; no comparative scientific performance experiments have been run.
+**Status:** Accepted direction, with implementation in progress. Reviewed checkpoint, recipe-contract, conformance, manifest and native reference-view foundations are implemented; full backend compatibility, checkpoint inspection and comparative scientific studies remain pending. Adoption was documentation-only; no comparative scientific performance experiments have been run.
 **Intended application:** Soybean and lupin seed-image analysis within the existing Python-based SeedFiddle application.
 
 ## 1. Decision and relationship to the comparison report
@@ -429,8 +429,8 @@ unavailable. F22 remains a required implementation and visual acceptance gate.
 The grouped manifest, native threshold primitives, desktop reference-dialog and
 narrow original-threshold checkpoint bridge have independent Sol approval. The
 stage bridge's large-integer offset and inherited-timeout defects are repaired;
-13 focused tests and 84 new review probes pass. Graph and stage feature commits
-are being finalized. Renewed explicit reviewer instructions resolved the earlier
+13 focused tests and 84 new review probes pass. The stage feature commit is being
+finalized. Renewed explicit reviewer instructions resolved the earlier
 source-transfer rejection; push destination approval is separate and pending.
 Full discovery previously passed 839 tests in 478.789 seconds (837 passed, two
 existing skips), but that run predates the stage repairs. Fresh full discovery is
@@ -468,8 +468,8 @@ workflows, a colour-correction contract and the SMPTS paper reconstruction. Twel
 catalogue tests pass, including pinned watershed observation order, unresolved
 SMPTS raster semantics, exact source mapping and malformed graph rejection.
 Required per-image values remain unselected; this does not freeze runnable recipes
-or supply internal watershed replay/checkpoints. Native views, intermediate
-inspection and remaining F22 acceptance evidence are still required.
+or supply internal watershed replay/checkpoints. Native views are delivered below;
+intermediate artifact inspection and remaining F22 acceptance evidence are required.
 
 Completed conformance infrastructure in `seedvision/benchmarking/conformance.py`
 compares exact-identity primitive, mask and instance checkpoints with bounded
@@ -493,19 +493,26 @@ Nine focused tests pass, including a fresh source-present root with no flyr whee
 It performs no environment installation or wheel rebuild. Recipe orchestration,
 archived stage outputs, native compatibility and comparative studies remain open.
 
-Completed F22 prerequisite: the existing native canvas and inspector have explicit
-read-only reference mode. It blocks analytical/topology/run actions, presents fixed
-facts and keeps layout, selection, zoom and routing usable. Five focused Qt tests
-and final independent Sol review pass, including a discriminating socket gesture
-and actual cache preservation. Audited recipe views, render acceptance, checkpoint
-inspection and remaining integration evidence are still required to close F22.
+Completed F22 source-inspection delivery: **View → Reference graphs…** uses the
+existing native canvas and inspector to show all five catalogue graphs and exact
+stored historical/unknown recipe versions. It shows typed directed dependencies,
+branches, pinned functions/parameters, unresolved choices, provenance and recorded
+run states. Read-only mode blocks analytical/topology/run actions while layout,
+selection, zoom and routing remain usable. Metadata capacity exhaustion marks the
+active graph transient and leaves stored attachments intact; malformed identities
+still reject. The 24 focused view/read-only tests and final Sol review pass, including
+exact 8 MiB aggregate boundary and modal cleanup checks. Actual Qt renders of
+PlantCV and SMPTS graphs were inspected; all 52 titles fit at 100/125/150/200% scale.
+Native geometry/cache defaults remain unchanged. Historical hashes do not supply
+pixels: checkpoint binding/restore/inspection and executable frozen recipes are
+still required to close F22, WP1 and WP2/WP3.
 
 Completed graph-metadata persistence extends the existing project document to
 schema 3 with safe v1/v2 migration. Immutable recipe/run/layout attachments survive
 desktop Open/Save/Save As and existing snapshot round-trips; native settings remain
 schema 20. Forty-seven focused persistence/UI tests (one existing skip) and final
 Sol review pass. Historical checkpoint hashes remain explicitly data-unavailable;
-checkpoint artifact binding/restore/inspection and actual F22 views remain open.
+checkpoint artifact binding/restore/inspection remains open.
 
 Completed grouped-manifest infrastructure in `seedvision/benchmarking/manifest.py`
 supplies immutable split/source/group/truth/access records and bounded atomic

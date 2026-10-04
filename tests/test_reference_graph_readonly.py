@@ -367,6 +367,65 @@ class ReferenceGraphReadOnlyTests(unittest.TestCase):
         )
         inspector.close()
 
+    def test_reference_view_wraps_full_stage_titles_without_changing_native_cards(self) -> None:
+        from PySide6.QtCore import QRectF, Qt
+        from PySide6.QtGui import QFont, QFontMetricsF
+
+        from seedvision.benchmarking.recipe_catalogue import build_recipe_catalogue
+        from seedvision.benchmarking.recipes import to_pipeline_graph
+        from seedvision.ui.reference_graph_dialog import ReferenceGraphDialog
+        from seedvision.ui.pipeline_canvas import PipelineCanvas
+
+        catalogue = build_recipe_catalogue()
+        smpts = next(
+            recipe for recipe in catalogue.recipes
+            if recipe.recipe_id == "smpts_paper_reconstruction"
+        )
+        graph = to_pipeline_graph(smpts)
+        first_stage_id = smpts.stages[0].stage_id
+        native = PipelineCanvas(graph)
+        dialog = ReferenceGraphDialog()
+        dialog.recipe_selector.setCurrentIndex(
+            dialog.recipe_selector.findData("smpts_paper_reconstruction")
+        )
+        dialog.resize(1440, 900)
+        dialog.show()
+        self.application.processEvents()
+        reference = dialog.canvas
+
+        self.assertEqual(native.node_items[first_stage_id]._header_height, 34.0)
+        self.assertEqual(native.node_items[first_stage_id].width, 200.0)
+        self.assertGreater(reference.node_items[first_stage_id].width, 200.0)
+        for item in reference.node_items.values():
+            font = QFont()
+            font.setBold(True)
+            font.setPointSizeF(10.0)
+            measured = QFontMetricsF(font).boundingRect(
+                QRectF(0, 0, item.width - 24.0, 1000.0),
+                int(Qt.TextFlag.TextWordWrap),
+                item.node.title,
+            )
+            self.assertGreaterEqual(
+                item._header_height - 12.0,
+                measured.height() - 0.01,
+                item.node.title,
+            )
+            self.assertIn(item.node.title, item.toolTip())
+            if item.node.input_ports or item.node.output_ports:
+                self.assertGreater(
+                    item._port_y(item.node.input_ports or item.node.output_ports, ""),
+                    item._header_height,
+                    item.node.title,
+                )
+
+        selected = dialog.active_attachment.selected_stage_id
+        self.assertAlmostEqual(reference.transform().m11(), 1.0, places=2)
+        self.assertTrue(reference.node_items[selected].isSelected())
+        self.assertEqual(native.node_items[first_stage_id]._header_body_offset, 0.0)
+        dialog.close()
+        native.close()
+        reference.close()
+
 
 if __name__ == "__main__":
     unittest.main()

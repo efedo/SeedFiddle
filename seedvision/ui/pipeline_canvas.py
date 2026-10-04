@@ -9,6 +9,7 @@ from PySide6.QtCore import QPointF, QRectF, QSignalBlocker, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QColor,
     QFont,
+    QFontMetricsF,
     QKeyEvent,
     QMouseEvent,
     QPainter,
@@ -471,6 +472,7 @@ class PipelineNodeItem(QGraphicsObject):
         parent=None,
         *,
         read_only: bool = False,
+        reference_view: bool = False,
     ) -> None:
         super().__init__(parent)
         self.node = node
@@ -480,13 +482,32 @@ class PipelineNodeItem(QGraphicsObject):
         self._parameter_callback = parameter_callback
         self._run_to_callback = run_to_callback
         self._read_only = bool(read_only)
-        self.width = 220.0 if node.inline_parameters else self.DEFAULT_WIDTH
+        self._reference_view = bool(reference_view)
+        self.width = (
+            250.0
+            if self._reference_view
+            else 220.0 if node.inline_parameters else self.DEFAULT_WIDTH
+        )
+        self._header_height = 34.0
+        self._header_body_offset = 0.0
+        if self._reference_view:
+            title_font = QFont()
+            title_font.setBold(True)
+            title_font.setPointSizeF(10.0)
+            title_bounds = QFontMetricsF(title_font).boundingRect(
+                QRectF(0, 0, self.width - 24.0, 1000.0),
+                int(Qt.TextFlag.TextWordWrap),
+                self.node.title,
+            )
+            self._header_height = max(34.0, math.ceil(title_bounds.height() + 12.0))
+            self._header_body_offset = self._header_height - 34.0
         named_port_count = max(len(node.input_ports), len(node.output_ports))
+        port_base = self.NAMED_PORT_Y + self._header_body_offset
         port_bottom = (
-            self.NAMED_PORT_Y + 10.0
+            port_base + 10.0
             + max(0, named_port_count - 1) * self.ROW_HEIGHT
             if named_port_count
-            else 80.0
+            else 80.0 + self._header_body_offset
         )
         self._controls_separator_y = max(84.0, port_bottom + 4.0)
         self._controls_y = self._controls_separator_y + 5.0
@@ -550,19 +571,23 @@ class PipelineNodeItem(QGraphicsObject):
             "space, or right-click an edge, to disconnect it."
         )
         self.setToolTip(
-            f"{self.node.description}\n\nInputs: {inputs}\nOutputs: {outputs}\n\n"
+            f"{self.node.title}\n\n{self.node.description}\n\n"
+            f"Inputs: {inputs}\nOutputs: {outputs}\n\n"
             f"{interaction}"
         )
 
-    @staticmethod
-    def _port_y(ports: tuple[tuple[str, str], ...], port_id: str) -> float:
+    def _port_y(self, ports: tuple[tuple[str, str], ...], port_id: str) -> float:
         if not ports:
-            return PipelineNodeItem.PORT_Y
+            return PipelineNodeItem.PORT_Y + self._header_body_offset
         index = next(
             (index for index, (identifier, _) in enumerate(ports) if identifier == port_id),
             0,
         )
-        return PipelineNodeItem.NAMED_PORT_Y + index * PipelineNodeItem.ROW_HEIGHT
+        return (
+            PipelineNodeItem.NAMED_PORT_Y
+            + self._header_body_offset
+            + index * PipelineNodeItem.ROW_HEIGHT
+        )
 
     def _build_inline_editors(self) -> None:
         for index, (key, _) in enumerate(self.node.inline_parameters):
@@ -713,36 +738,60 @@ class PipelineNodeItem(QGraphicsObject):
         )
         painter.drawRoundedRect(body, 9, 9)
 
-        header = QRectF(1, 1, self.width - 2, 34)
+        header = QRectF(1, 1, self.width - 2, self._header_height)
         status_colour = STATUS_COLOURS[self.node.status]
         if not self.node.enabled:
             status_colour = STATUS_COLOURS[NodeStatus.BYPASSED]
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor("#006bbb") if selected else status_colour)
         painter.drawRoundedRect(header, 8, 8)
-        painter.drawRect(QRectF(1, 24, self.width - 2, 11))
+        painter.drawRect(
+            QRectF(1, 24, self.width - 2, self._header_height - 23)
+        )
         if selected:
             # Keep execution status readable independently of selection.
             painter.setBrush(status_colour)
-            painter.drawRect(QRectF(1, 32, self.width - 2, 3))
+            painter.drawRect(
+                QRectF(1, self._header_height - 2, self.width - 2, 3)
+            )
 
         painter.setPen(QColor("#f6f8fa"))
         title_font = QFont(painter.font())
         title_font.setBold(True)
         title_font.setPointSizeF(10.0)
         painter.setFont(title_font)
-        painter.drawText(QRectF(12, 5, self.width - 24, 26), self.node.title)
+        title_rect = QRectF(
+            12, 5, self.width - 24, self._header_height - 10
+        )
+        if self._reference_view:
+            painter.drawText(
+                title_rect,
+                Qt.AlignmentFlag.AlignLeft
+                | Qt.AlignmentFlag.AlignVCenter
+                | Qt.TextFlag.TextWordWrap,
+                self.node.title,
+            )
+        else:
+            painter.drawText(
+                QRectF(12, 5, self.width - 24, 26), self.node.title
+            )
 
         body_font = QFont(painter.font())
         body_font.setBold(False)
         body_font.setPointSizeF(8.5)
         painter.setFont(body_font)
         painter.setPen(QColor("#aeb8c3"))
-        painter.drawText(QRectF(12, 43, self.width - 24, 18), self.node.category.upper())
+        body_offset = self._header_body_offset
+        painter.drawText(
+            QRectF(12, 43 + body_offset, self.width - 24, 18),
+            self.node.category.upper(),
+        )
         painter.setPen(QColor("#e2e7ec"))
         detail = self.node.status_detail or self.node.status.value.capitalize()
         if self.node.inline_parameters:
-            painter.drawText(QRectF(12, 62, self.width - 24, 18), detail)
+            painter.drawText(
+                QRectF(12, 62 + body_offset, self.width - 24, 18), detail
+            )
             painter.setPen(QPen(QColor("#46515d"), 1.0))
             painter.drawLine(
                 QPointF(10, self._controls_separator_y),
@@ -762,7 +811,7 @@ class PipelineNodeItem(QGraphicsObject):
                 )
         else:
             painter.drawText(
-                QRectF(12, 62, self.width - 24, 18),
+                QRectF(12, 62 + body_offset, self.width - 24, 18),
                 detail,
             )
 
@@ -988,10 +1037,22 @@ class PipelineCanvas(QGraphicsView):
     OPTIONAL_TOOLBOX_NODE_IDS = frozenset({"circle_candidates"})
 
     def __init__(
-        self, graph: PipelineGraph, parent=None, *, read_only: bool = False
+        self,
+        graph: PipelineGraph,
+        parent=None,
+        *,
+        read_only: bool = False,
+        reference_view: bool = False,
+        initial_focus_node_id: str | None = None,
     ) -> None:
         super().__init__(parent)
         self._read_only = bool(read_only)
+        if reference_view and not self._read_only:
+            raise ValueError("The reference canvas view must be read-only.")
+        if initial_focus_node_id is not None and initial_focus_node_id not in graph.nodes:
+            raise ValueError("The initial focus node must exist in the graph.")
+        self._reference_view = bool(reference_view)
+        self._initial_focus_node_id = initial_focus_node_id
         self.graph = graph
         self._scene = QGraphicsScene(self)
         self.setScene(self._scene)
@@ -1224,6 +1285,7 @@ class PipelineCanvas(QGraphicsView):
                 self._inline_parameter_changed,
                 self._request_run_to_node,
                 read_only=self.read_only,
+                reference_view=self._reference_view,
             )
             self.node_items[node.identifier] = item
             self._scene.addItem(item)
@@ -2131,6 +2193,12 @@ class PipelineCanvas(QGraphicsView):
     def _finish_pending_fit(self) -> None:
         self._fit_pending = False
         self.fit_graph()
+        if self._reference_view and self._initial_focus_node_id in self.node_items:
+            item = self.node_items[self._initial_focus_node_id]
+            self.resetTransform()
+            self.centerOn(item.sceneBoundingRect().center())
+            self._zoom_steps = 0
+            self._update_zoom_indicator()
 
     def wheelEvent(self, event: QWheelEvent) -> None:  # noqa: N802 - Qt override
         direction = 1 if event.angleDelta().y() > 0 else -1

@@ -5,7 +5,7 @@ analysis, annotation, instance review and reproducible result export. It uses
 PyTorch CUDA for full-resolution image evidence and retains node-local reusable
 intermediates on the device. There is no application server or bundled executable.
 
-**Project status (3 October 2026):** the existing engineering workflow is
+**Project status (4 October 2026):** the existing engineering workflow is
 implemented through reviewed result export and portable snapshots. The latest
 full local verification and in-progress checks are recorded in the
 [current project status](docs/CURRENT_STATUS.md) for the capability matrix,
@@ -17,8 +17,10 @@ SMPTS seed-analysis capabilities within SeedFiddle. The
 [implementation/benchmark plan](docs/PLANTCV_SMPTS_IMPLEMENTATION_PLAN.md) define
 the accepted extension. Capability auditing and comparison infrastructure come
 first. Reviewed checkpoint, recipe, conformance and isolated original-operation
-APIs are implemented; native compatibility, reference-view integration and peer
-performance remain pending.
+APIs, grouped benchmark manifests and **View → Reference graphs…** are implemented.
+Reviewed native threshold primitives start compatibility work. Runnable recipes,
+checkpoint inspection, complete operation compatibility and peer performance remain
+pending.
 
 **Current limits:** outputs are proposals for review. Real-image counting accuracy,
 physical measurement accuracy and biological trait validity remain unestablished.

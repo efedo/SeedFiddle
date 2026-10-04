@@ -1,6 +1,6 @@
 # Current operator guide
 
-This guide describes the workflow current on 29 September 2026. Dated review reports
+This guide describes the workflow current on 4 October 2026. Dated review reports
 and experiment logs document the state at their original date; their original
 findings are retained for audit. See `CRITICAL_REVIEW_REMEDIATION.md` for disposition,
 `NODE_CATALOGUE.md` for generated controls and `SCIENTIFIC_VALIDATION_PROTOCOL.md`
@@ -37,13 +37,35 @@ for the laboratory work still required. The concise capability matrix is in
 
 The [PlantCV–SMPTS direction](PLANTCV_SMPTS_IMPLEMENTATION_PLAN.md) is accepted
 work in progress. Developer-level checkpoint, recipe, conformance and isolated
-original-operation APIs are implemented. A desktop comparison workflow and native
-compatible modes remain pending. Continue using the existing workflow below; the
+original-operation APIs and reference-graph inspection are implemented. Reviewed
+native threshold primitives are not yet usable desktop compatible recipes. The
+desktop comparison workflow remains pending. Continue using the existing workflow below; the
 scientific validation and physical/trait availability limits remain unchanged.
 
 Project saves now use schema 3 and read versions 1/2. They preserve attached
 reference graph metadata, including historical run hashes, through save/load and
 snapshots. Those hashes do not mean checkpoint arrays are present or restored.
+
+## Inspect reference implementation graphs
+
+Open **View → Reference graphs…**; no loaded image or external runner is required.
+Choose an authored PlantCV seed workflow, the colour-correction contract or the
+SMPTS paper reconstruction. The selector also retains exact stored historical
+recipe versions, including recipes absent from the current catalogue.
+
+Click a stage to inspect its pinned source function, typed dependencies, branch
+conditions, parameters and recorded run state. **UNSELECTED** means a per-image
+choice has not been frozen. The SMPTS graph explicitly shows unresolved paper
+choices and unavailable original code. These are source-inspection descriptions;
+opening them does not execute or freeze a benchmark recipe.
+
+Pan, zoom, move cards, use Auto arrange or change cable routing to inspect the
+graph. Analytical controls are read-only. Project Save/Save As and snapshots retain
+the attached recipe/run/layout metadata. If metadata capacity is reached, the
+dialog displays **TRANSIENT — NOT SAVED**; that view remains inspectable but its
+changes are not saved. Existing attachments remain intact. Historical checkpoint
+digests are metadata only: intermediate pixels and previews remain unavailable
+until artifact binding and verification are implemented.
 
 ## Material and seed annotation
 

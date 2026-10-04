@@ -10,8 +10,8 @@ running against the reviewed batch. Focused checkpoint and recipe suites pass
 Sol approved the grouped manifest (15 tests plus 160 review probes), native threshold
 primitives (10 tests), reference dialog (24 view/read-only tests) and repaired
 original-threshold checkpoint bridge (13 tests plus 84 new probes). Root's 640
-manifest identity-closure probes pass. Graph and stage feature commits are being
-finalized. Reviewer authorization is resolved; push destination approval remains
+manifest identity-closure probes pass. The stage feature commit is being finalized.
+Reviewer authorization is resolved; push destination approval remains
 separately pending. These engineering checks do not close peer delivery or science.
 
 Seed Fiddle has an implemented baseline local desktop workflow for image loading,
@@ -50,11 +50,14 @@ contract and a nine-stage SMPTS paper reconstruction. Original PlantCV operation
 map to pinned source; watershed internals describe one public call, without
 independent replay. Required per-image values remain unselected, so these are
 nonrunnable source-inspection graphs rather than frozen benchmark recipes. Twelve
-catalogue tests pass. Desktop views and checkpoint inspection remain pending. The
-existing canvas/inspector now have a reviewed read-only mode for reference facts;
-five focused Qt tests verify blocked analytical/topology actions, native-ID fact
-isolation and display-only operations preserving actual cache objects. Native
-editing remains the default. This mode is a prerequisite for the actual F22 views.
+catalogue tests pass. **View → Reference graphs…** now displays all five graphs in
+the existing native canvas/inspector. Exact stored versions, stale identities,
+unselected parameters and unresolved provenance remain inspectable. The 24 focused
+view/read-only tests and final Sol review pass; actual Qt render inspection and
+all 52 titles at 100/125/150/200% scale pass. Capacity-limited views remain explicitly
+transient, preserving saved metadata. Display operations preserve actual native
+cache objects and native editing remains the default. Checkpoint artifact binding,
+restore and inspection remain open; this does not close all F22 requirements.
 Project schema 3 now retains strict immutable recipe/run/layout attachments through
 desktop open/save and snapshot round-trips, while safely reading versions 1/2.
 Forty-seven persistence/UI tests pass with one existing filesystem skip. Historical
@@ -86,9 +89,10 @@ Otsu behavior differs on ambiguous partitions, which the helper rejects. Root's
 mask-equivalent empty-bin plateaus do not promise scalar-cutoff equality. Complete
 F04 scope, desktop recipe integration and archived native-reference conformance
 remain open. WP3–WP6 remain pending, with original SMPTS parity blocked. Faithful
-display of pinned reference implementation graphs in the
-native node editor is also an explicit pending objective (F22), with topology,
-parameter, provenance and Qt visual acceptance. Existing native methods remain the
+display of pinned reference implementation graphs in the native node editor remains
+the explicit F22 objective. Its reviewed source-inspection delivery covers topology,
+parameters, provenance, Qt visual checks and metadata persistence; actual checkpoint
+inspection and runnable recipes remain required. Existing native methods remain the
 engineering baseline. Functional coverage,
 numerical conformance, scientific performance and operational cost require separate
 proof. Laboratory data collection continues alongside WP0/WP1/WP2.

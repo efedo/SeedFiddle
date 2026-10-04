@@ -2,6 +2,28 @@
 
 ## Resume here
 
+### Peer implementation: native reference graph view (2026-10-04)
+
+**View → Reference graphs…** opens the reviewed `ReferenceGraphDialog` without an
+image or runner. It displays all five catalogue graphs in the existing read-only
+canvas/inspector and retains exact stored historical/unknown recipe versions.
+Typed dependencies, branches, source functions, unselected parameters, provenance
+and recorded run states remain explicit. PlantCV workflows are authored source
+descriptions; SMPTS remains a paper reconstruction with unresolved choices.
+Checkpoint hashes do not supply pixels; binding/restore/inspection remains open.
+
+Luna implemented and repaired the feature; final Sol review approves it. All 24
+view/read-only tests pass, including exact 8 MiB aggregate boundary, capacity-safe
+selection/layout and modal cleanup. Capacity-limited views show TRANSIENT—NOT SAVED
+while saved metadata stays intact; identity/schema errors still propagate. Actual
+PlantCV/SMPTS Qt renders were inspected and all 52 titles fit at 100/125/150/200%
+scale. Normal native card geometry and actual analytic cache objects are preserved.
+The F22 graph-display objective now has this source-inspection delivery, with
+checkpoint inspection and runnable frozen recipes still required. README, roadmap,
+architecture, operator guide, status, canonical plan and register agree on that
+boundary. Fresh full discovery is running after stage repairs; push approval is
+separately pending. The unrelated untracked project file stays untouched.
+
 ### Peer implementation: CUDA threshold primitives (2026-10-04)
 
 `seedvision/cuda/plantcv_thresholds.py` adds CUDA uint8 binary, adaptive-mean and

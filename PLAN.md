@@ -187,6 +187,13 @@ Distinguish original, compatible, reconstructed and enhanced graphs and mark unr
 stages. Acceptance includes topology/parameter checks, actual Qt visual review,
 persistence and cache behavior; a generic diagram or opaque backend card is insufficient.
 
+The reviewed **View → Reference graphs…** dialog now displays the five audited
+catalogue graphs in the native canvas and inspector. Exact stored recipe versions,
+unselected parameters, paper-only SMPTS provenance and unavailable checkpoint data
+remain visible. Qt title/render, metadata-persistence and cache-isolation checks
+pass. Runnable recipe execution and actual checkpoint binding/inspection are still
+required to close F22.
+
 WP0/WP1/WP2 are in progress; WP3–WP6 remain pending, with original SMPTS parity
 blocked by source access. Reviewed CUDA binary, adaptive-mean and restricted-domain
 Otsu primitives start WP2; desktop recipe integration and complete operation

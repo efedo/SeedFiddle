@@ -1632,6 +1632,55 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         if hasattr(self, "pipeline_canvas"):
             self.pipeline_canvas.refresh(("project",))
 
+    @Slot()
+    def _show_reference_graphs(self) -> None:
+        """Open the read-only reference graph view and retain its metadata edits."""
+
+        from seedvision.ui.reference_graph_dialog import ReferenceGraphDialog
+
+        dialog = ReferenceGraphDialog(
+            self,
+            reference_graphs=self._project_reference_graphs,
+        )
+        dialog.reference_graphs_changed.connect(
+            self._set_project_reference_graphs
+        )
+        try:
+            dialog.exec()
+        finally:
+            # Initial catalogue selection is made in the dialog constructor,
+            # before listeners are connected. Read once on close as well so a
+            # first view becomes part of the next project save, even if the
+            # modal event loop exits through an exception.
+            reference_graphs = dialog.reference_graphs
+            dialog.deleteLater()
+            self._set_project_reference_graphs(reference_graphs)
+
+    @Slot(object)
+    def _set_project_reference_graphs(self, value: object) -> None:
+        """Install display/history metadata without invalidating analysis caches."""
+
+        from seedvision.persistence.reference_graphs import (
+            ReferenceGraphPersistenceError,
+            validate_reference_graphs,
+        )
+
+        try:
+            updated = validate_reference_graphs(value)
+        except ReferenceGraphPersistenceError as error:
+            QMessageBox.warning(
+                self,
+                "Invalid reference graph metadata",
+                str(error),
+            )
+            return
+        if updated == self._project_reference_graphs:
+            return
+        self._project_reference_graphs = updated
+        # Graph layout, selection and wire presentation are project metadata.
+        # They do not alter native pipeline settings or cache keys.
+        self._set_project_dirty()
+
     def _refresh_recent_projects_menu(self) -> None:
         self.recent_projects_menu.clear()
         if not self._recent_project_paths:
@@ -2865,6 +2914,14 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.analyze_action.setEnabled(False)
         self.analyze_action.triggered.connect(self._analyze_current_image)
 
+        self.reference_graphs_action = QAction("Reference graphs…", self)
+        self.reference_graphs_action.setToolTip(
+            "View the read-only PlantCV source-audit and SMPTS paper-reconstruction graphs."
+        )
+        self.reference_graphs_action.triggered.connect(
+            self._show_reference_graphs
+        )
+
         self.image_workspace_action = QAction("Image", self)
         self.image_workspace_action.setShortcut("Ctrl+1")
         self.image_workspace_action.setCheckable(True)
@@ -3013,6 +3070,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         view_menu.addAction(self.image_workspace_action)
         view_menu.addAction(self.pipeline_workspace_action)
         view_menu.addAction(self.split_workspace_action)
+        view_menu.addSeparator()
+        view_menu.addAction(self.reference_graphs_action)
         view_menu.addSeparator()
         view_menu.addAction(self.fit_action)
         view_menu.addAction(self.actual_size_action)
