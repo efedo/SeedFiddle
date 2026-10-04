@@ -88,6 +88,13 @@ def _digest(value: Any, name: str, *, optional: bool = False) -> str | None:
     return value
 
 
+def _enum_value(enum_type, value: Any, name: str):
+    try:
+        return enum_type(value)
+    except (TypeError, ValueError) as error:
+        raise RecipeContractError(f"{name} has an unsupported value {value!r}.") from error
+
+
 def _freeze_json(value: Any, *, name: str) -> Any:
     if value is None or isinstance(value, (str, bool)):
         return value
@@ -137,7 +144,7 @@ def _sha(value: Any) -> str:
 def _exact_object(value: Any, fields: set[str], name: str) -> dict[str, Any]:
     if not isinstance(value, dict) or set(value) != fields:
         raise RecipeContractError(f"{name} has missing or unknown fields.")
-    return value
+    return dict(value)
 
 
 def _reject_duplicate_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -169,8 +176,8 @@ class RecipeProvenance:
     evidence_note: str = ""
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "mode", RecipeProvenanceMode(self.mode))
-        object.__setattr__(self, "evidence_status", SourceResolution(self.evidence_status))
+        object.__setattr__(self, "mode", _enum_value(RecipeProvenanceMode, self.mode, "Provenance mode"))
+        object.__setattr__(self, "evidence_status", _enum_value(SourceResolution, self.evidence_status, "Evidence status"))
         for field in ("backend_id",):
             object.__setattr__(self, field, _text(getattr(self, field), field, identifier=True))
         for field in ("backend_version",):
@@ -247,7 +254,7 @@ class SourceMapping:
     def __post_init__(self) -> None:
         object.__setattr__(self, "reference_id", _text(self.reference_id, "source reference ID", identifier=True))
         object.__setattr__(self, "reference_version", _text(self.reference_version, "source reference version"))
-        object.__setattr__(self, "resolution", SourceResolution(self.resolution))
+        object.__setattr__(self, "resolution", _enum_value(SourceResolution, self.resolution, "Source resolution"))
         for field in ("source_path", "source_symbol", "source_url", "license_id", "note"):
             value = getattr(self, field)
             if not isinstance(value, str) or value != value.strip():
@@ -488,7 +495,7 @@ class RecipeStage:
         if len({(item.reference_id, item.source_path, item.source_symbol) for item in sources}) != len(sources):
             raise RecipeContractError(f"Stage {self.stage_id!r} repeats a source mapping.")
         object.__setattr__(self, "source_mappings", sources)
-        object.__setattr__(self, "resolution", SourceResolution(self.resolution))
+        object.__setattr__(self, "resolution", _enum_value(SourceResolution, self.resolution, "Stage resolution"))
         if not isinstance(self.resolution_note, str) or self.resolution_note != self.resolution_note.strip():
             raise RecipeContractError("Stage resolution note must be trimmed text.")
         if self.resolution is SourceResolution.PINNED:
@@ -562,7 +569,7 @@ class RecipeIdentity:
     def __post_init__(self) -> None:
         object.__setattr__(self, "recipe_id", _text(self.recipe_id, "recipe ID", identifier=True))
         object.__setattr__(self, "recipe_version", _text(self.recipe_version, "recipe version"))
-        object.__setattr__(self, "mode", RecipeProvenanceMode(self.mode))
+        object.__setattr__(self, "mode", _enum_value(RecipeProvenanceMode, self.mode, "Recipe identity mode"))
         object.__setattr__(self, "backend_id", _text(self.backend_id, "backend ID", identifier=True))
         object.__setattr__(self, "backend_version", _text(self.backend_version, "backend version"))
         for field in ("recipe_sha256", "graph_sha256", "settings_sha256", "layout_sha256"):
@@ -818,7 +825,7 @@ class StageRunRecord:
         object.__setattr__(self, "stage_id", _text(self.stage_id, "run stage ID", identifier=True))
         if not isinstance(self.recipe_identity, RecipeIdentity):
             raise RecipeContractError("Stage run requires a RecipeIdentity.")
-        object.__setattr__(self, "state", StageRunState(self.state))
+        object.__setattr__(self, "state", _enum_value(StageRunState, self.state, "Stage run state"))
         object.__setattr__(self, "checkpoint_sha256", _digest(self.checkpoint_sha256, "checkpoint SHA-256", optional=True))
         object.__setattr__(self, "upstream_checkpoint_sha256", _digest(
             self.upstream_checkpoint_sha256, "upstream checkpoint SHA-256", optional=True

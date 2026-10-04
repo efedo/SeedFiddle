@@ -2,6 +2,17 @@
 
 ## Resume here
 
+### Peer implementation: strict, nonmutating recipe decoders (2026-10-03)
+
+Shared recipe decoders now copy decoded dictionaries before converting child
+records, so repeated public decoding preserves caller-owned JSON. Invalid mode,
+source-resolution and run-state enum values consistently raise `RecipeContractError`.
+Luna repaired this issue found during project persistence review; Sol independently
+passed 12 recipe tests, 22 public round-trips, 60 invalid enum cases and 468 nested
+JSON enum cases with no material defects. Persistence/UI retention is frozen for
+re-review; catalogue has two source-fidelity repairs and actual graph views remain
+in development. Full discovery follows the frozen batch; push approval is pending.
+
 ### Peer implementation: isolated original PlantCV runner (2026-10-03)
 
 `seedvision/benchmarking/reference_runner.py` and `plantcv_worker.py` execute twelve

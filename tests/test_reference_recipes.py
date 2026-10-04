@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from dataclasses import replace
 import json
 import unittest
@@ -181,7 +182,9 @@ def _checkpoint_identity(recipe: RecipeSpec, stage_id: str, *, upstream: str | N
 class ReferenceRecipeTests(unittest.TestCase):
     def test_strict_json_round_trip_and_deep_immutability(self) -> None:
         recipe = _contract_recipe()
-        restored = RecipeSpec.from_json(recipe.to_json())
+        encoded = recipe.to_json()
+        restored = RecipeSpec.from_json(encoded)
+        self.assertEqual(RecipeSpec.from_json(encoded), recipe)
         self.assertEqual(restored, recipe)
         parameter = recipe.stage("threshold").parameters[1]
         with self.assertRaises(TypeError):
@@ -196,6 +199,15 @@ class ReferenceRecipeTests(unittest.TestCase):
             RecipeSpec.from_json('{"value":NaN}')
         with self.assertRaises(RecipeContractError):
             RecipeSpec.from_json(b"\xff")
+
+        invalid_mode = recipe.to_dict()
+        invalid_mode["provenance"]["mode"] = "unknown_mode"
+        with self.assertRaises(RecipeContractError):
+            RecipeSpec.from_json(json.dumps(invalid_mode))
+        provenance_payload = recipe.provenance.to_dict()
+        provenance_payload["mode"] = "unknown_mode"
+        with self.assertRaises(RecipeContractError):
+            RecipeProvenance.from_dict(provenance_payload)
 
     def test_parameter_choices_and_one_sided_bounds_validate_the_parameter_value(self) -> None:
         valid_choice = ParameterContract(
@@ -421,7 +433,11 @@ class ReferenceRecipeTests(unittest.TestCase):
         unresolved = initial_stage_run(recipe, "threshold")
         self.assertEqual(unresolved.state, StageRunState.UNRESOLVED)
         self.assertIn("no executable", unresolved.reason)
-        self.assertEqual(StageRunRecord.from_dict(unresolved.to_dict()), unresolved)
+        run_payload = unresolved.to_dict()
+        original_payload = copy.deepcopy(run_payload)
+        self.assertEqual(StageRunRecord.from_dict(run_payload), unresolved)
+        self.assertEqual(StageRunRecord.from_dict(run_payload), unresolved)
+        self.assertEqual(run_payload, original_payload)
         not_run = StageRunRecord("threshold", recipe.identity, StageRunState.NOT_RUN)
         validate_stage_run(recipe, not_run)
         pinned_recipe = _pinned_contract_recipe()
