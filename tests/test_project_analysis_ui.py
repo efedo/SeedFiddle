@@ -79,6 +79,69 @@ class ProjectAnalysisUiTests(unittest.TestCase):
             for index in range(window.image_list.count())
         )
 
+    @staticmethod
+    def _reference_graph_attachment():
+        from seedvision.benchmarking.recipes import (
+            PortContract,
+            RecipeProvenance,
+            RecipeProvenanceMode,
+            RecipeSpec,
+            RecipeStage,
+            SourceMapping,
+            SourceResolution,
+            StageRunRecord,
+            StageRunState,
+        )
+        from seedvision.persistence.reference_graphs import ReferenceGraphAttachment
+
+        source = SourceMapping(
+            reference_id="ui_graph_fixture",
+            reference_version="test-only",
+            resolution=SourceResolution.PINNED,
+            source_path="fixture.py",
+            source_symbol="threshold",
+            source_sha256="a" * 64,
+            license_id="test-only",
+        )
+        recipe = RecipeSpec(
+            recipe_id="ui_graph_fixture",
+            recipe_version="1",
+            title="UI graph fixture",
+            description="Persistence-only UI fixture.",
+            provenance=RecipeProvenance(
+                mode=RecipeProvenanceMode.NATIVE_COMPATIBLE,
+                backend_id="native_fixture",
+                backend_version="test-only",
+                reference_id="ui_graph_fixture",
+                reference_version="test-only",
+                source_manifest_sha256="b" * 64,
+                environment_lock_sha256="c" * 64,
+                environment_versions={"python": "test-only"},
+                evidence_status=SourceResolution.PINNED,
+            ),
+            stages=(RecipeStage(
+                stage_id="threshold",
+                title="Threshold",
+                operation_id="fixture.threshold",
+                description="No execution is performed by this fixture.",
+                ports=(PortContract("mask", "output", "Mask", "Mask"),),
+                source_mappings=(source,),
+            ),),
+        )
+        run = StageRunRecord(
+            stage_id="threshold",
+            recipe_identity=recipe.identity,
+            state=StageRunState.EXECUTED,
+            checkpoint_sha256="d" * 64,
+        )
+        return ReferenceGraphAttachment(
+            recipe=recipe,
+            stage_runs=(run,),
+            selected_stage_id="threshold",
+            bundle_cables=True,
+            route_around_nodes=False,
+        )
+
     def test_actions_and_profile_load_replace_only_portable_analysis_state(self) -> None:
         from PySide6.QtGui import QKeySequence
         from PySide6.QtWidgets import QMessageBox
@@ -554,6 +617,38 @@ class ProjectAnalysisUiTests(unittest.TestCase):
             finally:
                 self._dispose(window)
 
+    def test_open_and_save_retain_reference_graph_metadata(self) -> None:
+        from seedvision.persistence import ProjectAnalysisStore
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._write_image(root / "images" / "capture.png")
+            source_project = root / "projects" / "with-graph.seedfiddle-project.json"
+            first = self._window(root)
+            try:
+                attachment = self._reference_graph_attachment()
+                first._project_reference_graphs = (attachment,)
+                self.assertTrue(first._write_project(source_project))
+            finally:
+                self._dispose(first)
+
+            second = self._window(root)
+            try:
+                with patch.object(second, "_confirm_project_replacement", return_value=True):
+                    self.assertTrue(second._open_project(source_project))
+                self.assertEqual(second._project_reference_graphs, (attachment,))
+
+                resaved_path = root / "projects" / "resaved.seedfiddle-project.json"
+                self.assertTrue(second._write_project(resaved_path))
+                restored = ProjectAnalysisStore(root).load(resaved_path, verify_files=True)
+                self.assertEqual(restored.document.reference_graphs, (attachment,))
+                self.assertEqual(
+                    restored.document.reference_graphs[0].checkpoint_data_status,
+                    "unavailable",
+                )
+            finally:
+                self._dispose(second)
+
     def test_new_project_purges_session_and_restores_default_graph_and_ui(self) -> None:
         from PySide6.QtCore import QSignalBlocker
 
@@ -570,6 +665,9 @@ class ProjectAnalysisUiTests(unittest.TestCase):
                     window._write_project(
                         root / "projects" / "old.seedfiddle-project.json"
                     )
+                )
+                window._project_reference_graphs = (
+                    self._reference_graph_attachment(),
                 )
                 key = window._current_image_key()
                 self.assertIsNotNone(key)
@@ -606,6 +704,7 @@ class ProjectAnalysisUiTests(unittest.TestCase):
                 self.assertEqual(window._applied_foreground_reference_masks, {})
                 self.assertEqual(window._manual_seed_centre_states, {})
                 self.assertEqual(window._reference_undo_histories, {})
+                self.assertEqual(window._project_reference_graphs, ())
                 self.assertEqual(
                     window.pipeline.node("ruler_detection").parameters[
                         "ruler_length_mm"

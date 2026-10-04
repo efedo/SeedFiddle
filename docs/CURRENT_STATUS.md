@@ -37,11 +37,16 @@ dependencies, parameters, conditions and run identities, and project them into
 the existing `PipelineGraph`. Analytical identity excludes display/layout changes;
 extra, missing, miswired and inactive nodes are rejected. Twelve focused tests and
 independent Sol review cover this infrastructure. Actual audited recipe catalogues,
-desktop reference views and project/snapshot persistence remain pending. The
+desktop reference views and checkpoint artifact inspection remain pending. The
 existing canvas/inspector now have a reviewed read-only mode for reference facts;
 five focused Qt tests verify blocked analytical/topology actions, native-ID fact
 isolation and display-only operations preserving actual cache objects. Native
 editing remains the default. This mode is a prerequisite for the actual F22 views.
+Project schema 3 now retains strict immutable recipe/run/layout attachments through
+desktop open/save and snapshot round-trips, while safely reading versions 1/2.
+Forty-seven persistence/UI tests pass with one existing filesystem skip. Historical
+checkpoint hashes are retained, but their arrays remain explicitly unavailable;
+artifact binding, restoration and inspection are separate work.
 The reviewed conformance API now compares primitive arrays, masks and instance
 partitions from exact-identity checkpoints. It retains stage/pipeline upstream
 provenance, checks raster semantics, uses exact integer errors and reference-relative
@@ -78,7 +83,7 @@ proof. Laboratory data collection continues alongside WP0/WP1.
 | Node optimization | Implemented for all 38 computational cards, with 10 explicit exemptions, fixed objectives, project sequencing, proposal review, history, and rollback. | Treat every run as in-sample adaptation; independent performance still needs a frozen evaluation protocol. |
 | Species libraries | Implemented with immutable versioning, content pins, source exclusion, import/export, validation metadata, and product specific coverage. | Build and validate reviewed libraries from representative sources. Coverage is not accuracy. |
 | Results and export | Implemented with explicit availability, method selection, per-instance review, immutable result revisions, CSV/JSON/annotated-image export, and batch parity. | Physical units and unvalidated traits remain withheld until their validation gates pass. |
-| Recovery and provenance | Implemented with source/checkpoint hashes, coordinate bound reference schema 6, project schema 2, analysis settings schema 20, and immutable portable snapshots. | Unknown legacy coordinate frames still require explicit alignment review. |
+| Recovery and provenance | Implemented with source/checkpoint hashes, coordinate bound reference schema 6, project schema 3 (v1/v2 migration), analysis settings schema 20, and immutable portable snapshots. Reference graph metadata persists; checkpoint arrays are explicitly unavailable. | Unknown legacy coordinate frames require explicit alignment review; reference checkpoint artifact binding/restore remains pending. |
 
 ## Current annotation behavior
 

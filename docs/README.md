@@ -35,7 +35,8 @@ The reports define accepted development direction. The register records incremen
 implementation evidence; it does not establish measured peer performance. The root
 roadmap owns sequencing; the status summary owns current
 capabilities; the scientific protocol owns empirical release requirements. Proposed
-paths/backend names/YAML are not current commands. Historical audits and implementation
+YAML remains design material; current status identifies implemented APIs and controls.
+Historical audits and implementation
 records retain their dated claims; their future-tense passages do not supersede this
 roadmap. The future-ideas list remains uncommitted except where explicitly promoted.
 

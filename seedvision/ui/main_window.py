@@ -1212,6 +1212,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._project_species_library_pin: SpeciesLibraryPin | None = None
         self._project_biological_context: BiologicalContext | None = None
         self._project_capture_group_id: str | None = None
+        self._project_reference_graphs = ()
         self._reference_region_autoload_attempted: set[str] = set()
         self._reference_region_load_status: dict[str, tuple[str, str]] = {}
         self._manual_seed_centre_autoload_attempted: set[str] = set()
@@ -1926,6 +1927,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 species_library=captured.species_library,
                 biological_context=captured.biological_context,
                 capture_group_id=captured.capture_group_id,
+                reference_graphs=self._project_reference_graphs,
             )
             self._copy_optimization_companions(destination)
             saved = run_persistence(self, lambda: self._project_analysis_store.save(document, destination), 'Saving project master…')
@@ -2182,6 +2184,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._project_species_library_pin = loaded.document.species_library
         self._project_biological_context = loaded.document.biological_context
         self._project_capture_group_id = loaded.document.capture_group_id
+        self._project_reference_graphs = loaded.document.reference_graphs
         species = loaded.document.species
         if species:
             if self.species_combo.findText(species) < 0:
@@ -2416,6 +2419,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._project_species_library_pin = None
         self._project_biological_context = None
         self._project_capture_group_id = None
+        self._project_reference_graphs = ()
         self._image_paths.clear()
         self.image_list.clear()
         self._analysis_activities.clear()

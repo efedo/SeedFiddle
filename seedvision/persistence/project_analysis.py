@@ -38,6 +38,13 @@ from seedvision.persistence.reference_regions import (
     ReferenceRegionStore,
     file_sha256,
 )
+from seedvision.persistence.reference_graphs import (
+    ReferenceGraphAttachment,
+    ReferenceGraphPersistenceError,
+    reference_graphs_from_payload,
+    reference_graphs_to_payload,
+    validate_reference_graphs,
+)
 from seedvision.reference_library.contracts import (
     BiologicalContext,
     SpeciesLibraryPin,
@@ -45,7 +52,7 @@ from seedvision.reference_library.contracts import (
 
 
 PROJECT_ANALYSIS_FORMAT = "seedfiddle-project"
-PROJECT_ANALYSIS_VERSION = 2
+PROJECT_ANALYSIS_VERSION = 3
 PROJECT_ANALYSIS_EXTENSION = ".seedfiddle-project.json"
 PROJECT_ANALYSIS_DEFAULT_NAME = "analysis.seedfiddle-project.json"
 PROJECT_ANALYSIS_MAX_BYTES = 16 * 1024 * 1024
@@ -153,7 +160,7 @@ class ProjectUiState:
 
 @dataclass(frozen=True, slots=True)
 class ProjectAnalysisDocument:
-    """Immutable compact content of one version-two project master."""
+    """Immutable compact content of one version-three project master."""
 
     analysis_settings: AnalysisSettingsProfile
     images: tuple[ProjectImageRecord, ...]
@@ -163,6 +170,7 @@ class ProjectAnalysisDocument:
     species_library: SpeciesLibraryPin | None = None
     biological_context: BiologicalContext | None = None
     capture_group_id: str | None = None
+    reference_graphs: tuple[ReferenceGraphAttachment, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -232,6 +240,7 @@ class ProjectAnalysisStore:
         species_library: SpeciesLibraryPin | None = None,
         biological_context: BiologicalContext | None = None,
         capture_group_id: str | None = None,
+        reference_graphs: tuple[ReferenceGraphAttachment, ...] = (),
     ) -> ProjectAnalysisDocument:
         """Fingerprint current images and discover their existing compact sidecars."""
 
@@ -245,6 +254,12 @@ class ProjectAnalysisStore:
             raise InvalidProjectAnalysis(
                 f"Invalid embedded analysis-settings profile: {error}"
             ) from error
+        try:
+            graph_attachments = validate_reference_graphs(reference_graphs)
+        except ReferenceGraphPersistenceError as error:
+            raise InvalidProjectAnalysis(f"Invalid embedded reference graph metadata: {error}") from error
+        except (TypeError, ValueError, KeyError, OverflowError, RecursionError) as error:
+            raise InvalidProjectAnalysis(f"Invalid embedded reference graph metadata: {error}") from error
         records: list[ProjectImageRecord] = []
         resolved_sources: dict[str, str] = {}
         reference_store = ReferenceRegionStore(self.project_root)
@@ -388,6 +403,7 @@ class ProjectAnalysisStore:
             capture_group_id=_validated_context_identifier(
                 capture_group_id, "project capture group"
             ),
+            reference_graphs=graph_attachments,
         )
         # The serializer is also the single strict document-level validator.
         _document_payload(document)
@@ -422,6 +438,7 @@ class ProjectAnalysisStore:
         species_library: SpeciesLibraryPin | None = None,
         biological_context: BiologicalContext | None = None,
         capture_group_id: str | None = None,
+        reference_graphs: tuple[ReferenceGraphAttachment, ...] = (),
         destination: Path | str | None = None,
     ) -> Path:
         document = self.capture(
@@ -433,6 +450,7 @@ class ProjectAnalysisStore:
             species_library=species_library,
             biological_context=biological_context,
             capture_group_id=capture_group_id,
+            reference_graphs=reference_graphs,
         )
         return self.save(document, destination)
 
@@ -720,6 +738,16 @@ def _document_payload(document: ProjectAnalysisDocument) -> dict[str, object]:
         raise InvalidProjectAnalysis(
             f"Invalid embedded analysis-settings profile: {error}"
         ) from error
+    try:
+        graph_payload = reference_graphs_to_payload(document.reference_graphs)
+    except ReferenceGraphPersistenceError as error:
+        raise InvalidProjectAnalysis(
+            f"Invalid embedded reference graph metadata: {error}"
+        ) from error
+    except (TypeError, ValueError, KeyError, OverflowError, RecursionError) as error:
+        raise InvalidProjectAnalysis(
+            f"Invalid embedded reference graph metadata: {error}"
+        ) from error
     known_nodes = {node.identifier for node in document.analysis_settings.nodes}
     species = _validated_optional_text(document.species, "project species")
     if not isinstance(document.images, tuple):
@@ -799,6 +827,7 @@ def _document_payload(document: ProjectAnalysisDocument) -> dict[str, object]:
     payload: dict[str, object] = {
         "format": PROJECT_ANALYSIS_FORMAT,
         "version": PROJECT_ANALYSIS_VERSION,
+        "reference_graphs": graph_payload,
         "analysis_settings": settings_payload,
         "project": {
             "species": species,
@@ -824,20 +853,19 @@ def _document_payload(document: ProjectAnalysisDocument) -> dict[str, object]:
 
 def _document_from_payload(payload: object) -> ProjectAnalysisDocument:
     root = _object(payload, "project master")
-    _keys(
-        root,
-        required={"format", "version", "analysis_settings", "project", "images"},
-        optional={"ui"},
-        name="project master",
-    )
-    if root["format"] != PROJECT_ANALYSIS_FORMAT:
+    if root.get("format") != PROJECT_ANALYSIS_FORMAT:
         raise InvalidProjectAnalysis(
-            f"Unsupported project format {root['format']!r}."
+            f"Unsupported project format {root.get('format')!r}."
         )
-    if not _exact_int(root["version"]) or root["version"] not in {1, PROJECT_ANALYSIS_VERSION}:
+    if not _exact_int(root.get("version")) or root["version"] not in {1, 2, PROJECT_ANALYSIS_VERSION}:
         raise InvalidProjectAnalysis(
-            f"Unsupported project version {root['version']!r}."
+            f"Unsupported project version {root.get('version')!r}."
         )
+    project_version = int(root["version"])
+    root_required = {"format", "version", "analysis_settings", "project", "images"}
+    if project_version == PROJECT_ANALYSIS_VERSION:
+        root_required.add("reference_graphs")
+    _keys(root, required=root_required, optional={"ui"}, name="project master")
     try:
         settings = analysis_settings_profile_from_payload(root["analysis_settings"])
     except AnalysisSettingsError as error:
@@ -846,7 +874,6 @@ def _document_from_payload(payload: object) -> ProjectAnalysisDocument:
         ) from error
     known_nodes = {node.identifier for node in settings.nodes}
     project = _object(root["project"], "project metadata")
-    project_version = int(root["version"])
     _keys(
         project,
         required=(
@@ -985,6 +1012,20 @@ def _document_from_payload(payload: object) -> ProjectAnalysisDocument:
     ui_state = None
     if "ui" in root:
         ui_state = _ui_from_payload(root["ui"], known_nodes)
+    try:
+        reference_graphs = (
+            reference_graphs_from_payload(root["reference_graphs"])
+            if project_version == PROJECT_ANALYSIS_VERSION
+            else ()
+        )
+    except ReferenceGraphPersistenceError as error:
+        raise InvalidProjectAnalysis(
+            f"Invalid project reference graph metadata: {error}"
+        ) from error
+    except (TypeError, ValueError, KeyError, OverflowError, RecursionError) as error:
+        raise InvalidProjectAnalysis(
+            f"Invalid project reference graph metadata: {error}"
+        ) from error
     return ProjectAnalysisDocument(
         analysis_settings=settings,
         images=tuple(images),
@@ -994,6 +1035,7 @@ def _document_from_payload(payload: object) -> ProjectAnalysisDocument:
         species_library=species_library,
         biological_context=biological_context,
         capture_group_id=capture_group_id,
+        reference_graphs=reference_graphs,
     )
 
 

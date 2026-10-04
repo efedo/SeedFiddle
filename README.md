@@ -7,7 +7,7 @@ intermediates on the device. There is no application server or bundled executabl
 
 **Project status (3 October 2026):** the existing engineering workflow is
 implemented through reviewed result export and portable snapshots. The latest
-full local suite ran 670 tests: 668 passed and 2 were skipped. See the
+full local verification and in-progress checks are recorded in the
 [current project status](docs/CURRENT_STATUS.md) for the capability matrix,
 annotation behavior, schema versions, and remaining validation work.
 
@@ -16,7 +16,9 @@ SMPTS seed-analysis capabilities within SeedFiddle. The
 [revised comparison](docs/PLANTCV_SMPTS_COMPARISON.md) and
 [implementation/benchmark plan](docs/PLANTCV_SMPTS_IMPLEMENTATION_PLAN.md) define
 the accepted extension. Capability auditing and comparison infrastructure come
-first; peer algorithms, adapters and parity claims are not yet delivered.
+first. Reviewed checkpoint, recipe, conformance and isolated original-operation
+APIs are implemented; native compatibility, reference-view integration and peer
+performance remain pending.
 
 **Current limits:** outputs are proposals for review. Real-image counting accuracy,
 physical measurement accuracy and biological trait validity remain unestablished.

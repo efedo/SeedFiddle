@@ -11,6 +11,8 @@ library framework. All comparison arms must declare permitted library/reference
 membership and exclude test targets from adaptation. Coverage remains distinct from
 accuracy. The original milestone wording below records the implemented baseline;
 new peer capabilities follow the root roadmap and do not create another library store.
+Current project persistence now writes schema 3 and safely reads versions 1/2;
+the version-two migration wording below records the September library milestone.
 
 ## Implemented result
 

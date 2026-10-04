@@ -155,7 +155,7 @@ explicit alignment review. Physical units and unvalidated per-object traits abst
 
 ## Current compatibility versions
 
-- Project analysis document: version 2
+- Project analysis document: version 3 (reads versions 1/2; compact reference graph metadata)
 - Reference-region archive: version 6
 - Analysis-settings profile: version 20
 - Bundled instance-reference manifest: version 1

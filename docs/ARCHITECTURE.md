@@ -41,6 +41,12 @@ content copies and restores a relocated working master. Supplementary audit evid
 is retained with its original identity; restoration does not silently reassign
 review decisions or optimization targets to changed source/result identities.
 
+Project schema 3 adds compact immutable reference graph metadata, with v1/v2
+migration. Recipe/run/layout attachments survive desktop saves and snapshots;
+historical checkpoint digests explicitly do not imply restored or verified arrays.
+Native analysis-settings schema remains 20. Reference checkpoint artifacts require
+separate binding and inspection.
+
 `export/results.py` defines authoritative method selection, unavailable-vs-empty
 state, pixel-space object rows, exact result revisions and JSON/CSV/image export.
 Physical units and unvalidated traits abstain. `export/project_runner.py` loads the
@@ -81,8 +87,9 @@ calibration and biological validation follow the separate laboratory protocol.
 ## Accepted peer-functionality extension (3 October 2026)
 
 The [PlantCV–SMPTS plan](PLANTCV_SMPTS_IMPLEMENTATION_PLAN.md) extends these contracts.
-Its backend identities, benchmark modules and checkpoint schema are proposed, not
-current APIs. Keep reference adapters and their dependency environments separate from
+Checkpoint, recipe/conformance and isolated original-operation APIs are implemented;
+actual backend compatibility and reference-view delivery remain in progress. Keep
+reference adapters and their dependency environments separate from
 the production runtime. Adapters cannot own the graph, project persistence or canonical
 results. Reuse existing metric/geometry definitions with explicit compatibility names
 where reference formulas differ. Normal production must not acquire benchmark-only
@@ -95,7 +102,9 @@ and checkpoints; unavailable or reconstructed stages are explicit. Reuse the exi
 graph model and renderer, not a parallel graph engine. Read-only reference inspection
 is supported by the design; editable controls must affect actual computation. Require
 F22 topology/parameter tests, actual Qt visual inspection, persistence round-trips
-and cache independence for display-only actions. This remains planned functionality.
+and cache independence for display-only actions. Read-only canvas/inspector mode
+and project/snapshot graph metadata are implemented prerequisites; actual audited
+reference views and checkpoint artifact inspection remain pending.
 
 Replay checkpoints must retain source/frame/settings identities and bounded storage.
 Comparison outputs preserve available/empty/failed/unsupported states, instance-ID

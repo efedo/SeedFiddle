@@ -465,6 +465,13 @@ and final independent Sol review pass, including a discriminating socket gesture
 and actual cache preservation. Audited recipe views, render acceptance, checkpoint
 inspection and persistence integration are still required to close F22.
 
+Completed graph-metadata persistence extends the existing project document to
+schema 3 with safe v1/v2 migration. Immutable recipe/run/layout attachments survive
+desktop Open/Save/Save As and existing snapshot round-trips; native settings remain
+schema 20. Forty-seven focused persistence/UI tests (one existing skip) and final
+Sol review pass. Historical checkpoint hashes remain explicitly data-unavailable;
+checkpoint artifact binding/restore/inspection and actual F22 views remain open.
+
 ### WP0 — Freeze scope, source and baseline
 
 **Deliverables:** target SeedFiddle commit; current saved recipe and fixture outputs; expanded feature register; pinned PlantCV seed recipe; SMPTS source-access/ambiguity register; dependency and licence inventory.

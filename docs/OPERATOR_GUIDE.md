@@ -36,9 +36,14 @@ for the laboratory work still required. The concise capability matrix is in
 ## Planned peer capabilities
 
 The [PlantCV–SMPTS direction](PLANTCV_SMPTS_IMPLEMENTATION_PLAN.md) is accepted
-future work. Its backend names, comparison schema and replay tools are not currently
-available commands or controls. Continue using the existing workflow below; the
+work in progress. Developer-level checkpoint, recipe, conformance and isolated
+original-operation APIs are implemented. A desktop comparison workflow and native
+compatible modes remain pending. Continue using the existing workflow below; the
 scientific validation and physical/trait availability limits remain unchanged.
+
+Project saves now use schema 3 and read versions 1/2. They preserve attached
+reference graph metadata, including historical run hashes, through save/load and
+snapshots. Those hashes do not mean checkpoint arrays are present or restored.
 
 ## Material and seed annotation
 

@@ -2,6 +2,25 @@
 
 ## Resume here
 
+### Peer implementation: project/snapshot graph metadata (2026-10-03)
+
+Project schema 3 now retains immutable reference recipe attachments, exact per-stage
+historical run records, layout/selection and cable state. Versions 1/2 migrate to an
+empty attachment collection; v2 cannot carry injected v3 fields. Constructor/save/
+load share count/byte bounds and strict project-error handling. MainWindow open,
+save/save-as and session clearing retain/reset attachments correctly. Existing
+snapshot create/restore carries metadata and preserves source/master tamper checks.
+Native analysis-settings schema remains 20. Checkpoint arrays are explicitly
+unavailable: historical hashes do not mean artifacts were restored or verified.
+
+Luna implemented and repaired this feature; final Sol review found no material
+defects. The 47 persistence/UI tests pass with one existing filesystem skip, and
+107 boundary probes plus actual Open/Save/Save As/New Project checks pass. Catalogue
+source-fidelity repairs are frozen for final review; the actual reference dialog
+and source-preparation helper are developing. Full discovery follows their frozen
+batch. Push destination approval remains pending after automatic review rejected
+the push. Preserve the unrelated untracked project file.
+
 ### Peer implementation: read-only native node editor mode (2026-10-03)
 
 `PipelineCanvas` and `PipelineInspector` now support explicit immutable `read_only`
