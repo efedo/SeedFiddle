@@ -22,8 +22,19 @@ class ReferenceFrameController:
     def _check_source_revision(self, path, *, opening=False):
         from seedvision.persistence.reference_regions import file_sha256
         from seedvision.ui.main_window import _path_identity
+        from seedvision.export.preflight_outcomes import begin_preflight
+        from seedvision.export.run_outcomes import AnalysisInputIntegrityError
+        attempt = begin_preflight(path, 'image', 'desktop_source')
+        revision = self.pipeline.revision
         key = _path_identity(path)
-        digest = file_sha256(path)
+        try:
+            digest = file_sha256(path)
+        except OSError as error:
+            if key not in self._active_tasks:
+                self._discard_analysis_cache(key)
+            diagnostic = self._desktop_rejection(attempt, error, pipeline_revision=revision, image_install=True)
+            QMessageBox.warning(self, 'Source image unavailable', diagnostic)
+            return False
         previous = self._source_fingerprints.get(key)
         if previous is not None and previous != digest:
             self._discard_analysis_cache(key)
@@ -31,14 +42,26 @@ class ReferenceFrameController:
                 '_applied_instance_annotations','_applied_background_reference_masks','_applied_foreground_reference_masks',
                 '_applied_background_exclusion_masks','_manual_seed_centre_states'))
             if has_references or not opening:
+                diagnostic = self._desktop_rejection(attempt, AnalysisInputIntegrityError(
+                    'The image bytes changed outside Seed Fiddle. Cached results were invalidated. References and drafts remain in memory, but cannot be applied to the changed source. Restore the original file or open a fresh workspace to revalidate saved references.'),
+                    pipeline_revision=revision, image_install=True)
                 QMessageBox.warning(self,'Source image changed',
-                    'The image bytes changed outside Seed Fiddle. Cached results were invalidated. References and drafts remain in memory, but cannot be applied to the changed source. Restore the original file or open a fresh workspace to revalidate saved references.')
+                    diagnostic)
                 return False
             self.statusBar().showMessage('Source image changed; cached calculations were invalidated.')
         self._source_fingerprints[key] = digest
         return True
 
     def _prepare_reference_frame(self, key, result):
+        from seedvision.measurement.lineage import reference_source_identity_state
+        archive, snapshot = self._reference_source_identities.get(key, (None, None))
+        try:
+            for known, name in ((archive, 'reference archive source SHA-256'),
+                                (snapshot, 'reference annotation snapshot source SHA-256')):
+                reference_source_identity_state(getattr(result, 'source_sha256', None), known, name)
+        except ValueError as error:
+            self.statusBar().showMessage(str(error))
+            return False
         current = validated_transform(result.calibration.affine_matrix)
         previous = self._reference_transforms.get(key)
         if previous is not None and (not np.allclose(previous,current,rtol=0,atol=1e-8)

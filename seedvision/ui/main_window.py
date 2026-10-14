@@ -60,6 +60,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from seedvision.calibration.neutral import neutral_balance_description
+
+_KEEP_INSTANCE_GENERATION = object()
 from seedvision.pipeline import NodeStatus, build_default_pipeline
 from seedvision.ui.optimization import OptimizationController
 from seedvision.ui.reference_frames import ReferenceFrameController
@@ -156,6 +159,7 @@ from seedvision.ui.learning_workflow import (
     format_learning_audit,
 )
 from seedvision.ui.pipeline_canvas import PipelineCanvas
+from seedvision.ui.trait_training_workflow import TraitTrainingDialog, TraitTrainingTask
 from seedvision.ui.pipeline_inspector import PipelineInspector
 from seedvision.timing import AnalysisCancelled
 
@@ -540,6 +544,7 @@ def _install_overlay_output_connectors(
 
 class _AnalysisSignals(QObject):
     completed = Signal(object, int)
+    terminal_outcome = Signal(object, int)
     failed = Signal(str, str, int)
     cancelled = Signal(str, int)
     node_progress = Signal(str, str, str, int)
@@ -597,10 +602,15 @@ class _AnalysisTask(QRunnable):
         library_shape_bank=None,
         species_library=None,
         reference_transform=None,
+        reference_archive_source_sha256=None,
+        reference_annotation_snapshot_source_sha256=None,
+        trait_settings=None,
     ) -> None:
         super().__init__()
         self.path = path
         self.reference_transform = None if reference_transform is None else np.asarray(reference_transform).copy()
+        self.reference_archive_source_sha256 = reference_archive_source_sha256
+        self.reference_annotation_snapshot_source_sha256 = reference_annotation_snapshot_source_sha256
         self.settings = settings
         self.calibration_settings = calibration_settings
         self.dish_settings = dish_settings
@@ -609,6 +619,7 @@ class _AnalysisTask(QRunnable):
         self.procedural_settings = procedural_settings
         self.unet_settings = unet_settings
         self.stardist_settings = stardist_settings
+        self.trait_settings = trait_settings
         self.learning_root = Path(learning_root)
         self.species = str(species)
         self.background_reference_points = background_reference_points
@@ -616,22 +627,22 @@ class _AnalysisTask(QRunnable):
         self.background_reference_mask = (
             None
             if background_reference_mask is None
-            else np.asarray(background_reference_mask, dtype=bool)
+            else np.asarray(background_reference_mask, dtype=bool).copy()
         )
         self.foreground_reference_mask = (
             None
             if foreground_reference_mask is None
-            else np.asarray(foreground_reference_mask, dtype=bool)
+            else np.asarray(foreground_reference_mask, dtype=bool).copy()
         )
         self.background_exclusion_mask = (
             None
             if background_exclusion_mask is None
-            else np.asarray(background_exclusion_mask, dtype=bool)
+            else np.asarray(background_exclusion_mask, dtype=bool).copy()
         )
         self.foreground_exclusion_mask = (
             None
             if foreground_exclusion_mask is None
-            else np.asarray(foreground_exclusion_mask, dtype=bool)
+            else np.asarray(foreground_exclusion_mask, dtype=bool).copy()
         )
         self.physical_edge_reference_mask = (
             None
@@ -646,7 +657,7 @@ class _AnalysisTask(QRunnable):
         self.seed_instance_annotations = (
             None
             if seed_instance_annotations is None
-            else np.asarray(seed_instance_annotations, dtype=np.uint16)
+            else np.asarray(seed_instance_annotations, dtype=np.uint16).copy()
         )
         self.seed_instance_traits = tuple(seed_instance_traits)
         self.seed_trait_species = str(seed_trait_species)
@@ -663,6 +674,7 @@ class _AnalysisTask(QRunnable):
         self.species_library = species_library
         self.signals = _AnalysisSignals()
         self._cancel_requested = Event()
+        self._cancel_outcome_factory = None
 
     def cancel(self) -> None:
         """Request a stop when the computation next reaches a node boundary."""
@@ -677,18 +689,23 @@ class _AnalysisTask(QRunnable):
     def run(self) -> None:
         try:
             from seedvision.segmentation.baseline import analyze_path
+            from seedvision.export.run_outcomes import run_native_analysis, NativeRunOutcome
+            from seedvision.export.preflight_outcomes import PreflightRunOutcome
             from seedvision.annotation.eligibility import eligible_instances
 
-            result = analyze_path(
+            result = run_native_analysis(
                 self.path,
                 self.settings,
                 self.calibration_settings,
+                analysis_runner=analyze_path,
+                cancel_outcome_receiver=lambda factory: setattr(self, '_cancel_outcome_factory', factory),
                 dish_settings=self.dish_settings,
                 layer_settings=self.layer_settings,
                 advanced_settings=self.advanced_settings,
                 procedural_settings=self.procedural_settings,
                 unet_settings=self.unet_settings,
                 stardist_settings=self.stardist_settings,
+                trait_settings=self.trait_settings,
                 background_reference_points=self.background_reference_points,
                 foreground_reference_points=self.foreground_reference_points,
                 background_reference_mask=self.background_reference_mask,
@@ -717,6 +734,8 @@ class _AnalysisTask(QRunnable):
                 library_shape_bank=self.library_shape_bank,
                 species_library=self.species_library,
                 reference_transform=self.reference_transform,
+                reference_archive_source_sha256=self.reference_archive_source_sha256,
+                reference_annotation_snapshot_source_sha256=self.reference_annotation_snapshot_source_sha256,
             )
         except AnalysisCancelled:
             self.signals.cancelled.emit(
@@ -735,7 +754,19 @@ class _AnalysisTask(QRunnable):
                 self.pipeline_revision,
             )
             return
+        if isinstance(result, (NativeRunOutcome, PreflightRunOutcome)):
+            self.signals.terminal_outcome.emit(result, self.pipeline_revision)
+            payload = result.payload
+            if payload['identity']['state'] == 'cancelled':
+                self.signals.cancelled.emit(str(self.path), self.pipeline_revision)
+            else:
+                self.signals.failed.emit(str(self.path),
+                    payload['identity']['error_type'] + ': ' + (payload['diagnostic'] or payload['identity']['reason_code']),
+                    self.pipeline_revision)
+            return
         if self._cancel_requested.is_set():
+            if self._cancel_outcome_factory is not None:
+                self.signals.terminal_outcome.emit(self._cancel_outcome_factory(), self.pipeline_revision)
             self.signals.cancelled.emit(str(self.path), self.pipeline_revision)
             return
         self.signals.completed.emit(result, self.pipeline_revision)
@@ -1213,11 +1244,16 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._project_biological_context: BiologicalContext | None = None
         self._project_capture_group_id: str | None = None
         self._project_reference_graphs = ()
+        self._project_reference_model_assets = ()
+        self._project_native_recipes = ()
+        self._project_correction_bindings = ()
         self._reference_region_autoload_attempted: set[str] = set()
         self._reference_region_load_status: dict[str, tuple[str, str]] = {}
         self._manual_seed_centre_autoload_attempted: set[str] = set()
         self._reference_layer_shapes: dict[str, tuple[int, int]] = {}
         self._reference_transforms: dict[str, np.ndarray] = {}
+        self._reference_source_identities: dict[str, tuple[str | None, str | None]] = {}
+        self._draft_instance_generation_sources: dict[str, str | None] = {}
         self._project_unbound_reference_loads: set[str] = set()
         self._project_manual_centre_loads: set[str] = set()
         self._project_reference_sidecar_paths: dict[str, Path] = {}
@@ -1234,6 +1270,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._unsaved_manual_centre_sidecars: set[str] = set()
         self._project_original_image_order: tuple[str, ...] = ()
         self._project_original_image_records: dict[str, ProjectImageRecord] = {}
+        self._project_image_biological_contexts: dict[str, BiologicalContext] = {}
         self._project_unresolved_image_records: dict[str, ProjectImageRecord] = {}
         self._project_unresolved_selected_image_id: str | None = None
         self._image_paths: dict[str, Path] = {}
@@ -1281,7 +1318,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         ] = {}
         self._active_tasks: dict[str, _AnalysisTask] = {}
         self._analysis_activities: dict[str, _AnalysisActivity] = {}
-        self._learning_training_task: _LearningTrainingTask | None = None
+        self._learning_training_task: _LearningTrainingTask | TraitTrainingTask | None = None
         self._learning_training_progress: QProgressDialog | None = None
         self._procedural_fit_task: _ProceduralFitTask | None = None
         self._procedural_fit_progress: QProgressDialog | None = None
@@ -1315,8 +1352,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.image_view.reference_mask_edited.connect(
             self._reference_mask_edited
         )
-        self.image_view.instance_annotations_edited.connect(
-            self._instance_annotations_edited
+        self.image_view.instance_annotations_generated.connect(
+            self._instance_annotations_generated
         )
         self.image_view.instance_tool_status.connect(self.statusBar().showMessage)
         self.image_view.shape_fill_size_preference_changed.connect(
@@ -1641,10 +1678,18 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         dialog = ReferenceGraphDialog(
             self,
             reference_graphs=self._project_reference_graphs,
+            project_root=self._root,
+            project_path=self._current_project_path,
+            reference_model_assets=self._project_reference_model_assets,
+            native_recipes=self._project_native_recipes,
+            correction_bindings=self._project_correction_bindings,
+            correction_context_factory=self._capture_correction_project_context,
+            keep_correction=self._keep_project_correction,
         )
         dialog.reference_graphs_changed.connect(
             self._set_project_reference_graphs
         )
+        dialog.native_recipes_changed.connect(self._set_project_native_recipes)
         try:
             dialog.exec()
         finally:
@@ -1653,8 +1698,93 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             # first view becomes part of the next project save, even if the
             # modal event loop exits through an exception.
             reference_graphs = dialog.reference_graphs
+            native_recipes = dialog.native_recipes
             dialog.deleteLater()
             self._set_project_reference_graphs(reference_graphs)
+            self._set_project_native_recipes(native_recipes)
+
+    def _correction_project_state(self):
+        selected = self.image_view.image_path
+        paths = tuple(Path(self.image_list.item(index).data(Qt.ItemDataRole.UserRole)).resolve()
+                      for index in range(self.image_list.count()))
+        return (self._root.resolve(), None if selected is None else Path(selected).resolve(), paths,
+                self._current_project_path, tuple(self._project_original_image_records.items()),
+                self._project_reference_graphs, self._project_native_recipes, self._project_correction_bindings,
+                bool(getattr(self, '_closing_after_work', False)))
+
+    def _capture_correction_project_context(self):
+        from seedvision.persistence.correction_session import capture_correction_context
+        state = self._correction_project_state()
+        if state[1] is None:
+            return None
+        if state[1] not in state[2] or state[-1]:
+            raise ValueError('Select an available current project image for colour correction.')
+        context = run_persistence(self, partial(capture_correction_context, state[0], state[1],
+            original_records=tuple(self._project_original_image_records.values())),
+            'Verifying the selected correction project image…')
+        if self._correction_project_state() != state:
+            raise ValueError('The project or selected image changed while its correction context was prepared.')
+        return context
+
+    def _keep_project_correction(self, request, cancel, current):
+        from seedvision.persistence.correction_session import (
+            CorrectionKeepRequest, capture_correction_keep, validate_correction_keep_result,
+        )
+        from seedvision.persistence.native_recipes import select_native_recipe
+        from seedvision.persistence.correction_inputs import (
+            select_correction_binding, retain_selected_correction_bindings, validate_correction_binding_records,
+        )
+        from seedvision.benchmarking.native_recipe import NativeRecipeCancelled
+        if not isinstance(request, CorrectionKeepRequest):
+            raise ValueError('Correction Keep requires its current metadata request.')
+        if not current():
+            raise NativeRecipeCancelled('Correction project selection changed before Keep.')
+        state = self._correction_project_state()
+        context = request.context
+        def fresh():
+            return (not cancel.is_set() and self._correction_project_state() == state
+                    and state[0] == context.root and state[1] == context.source_path
+                    and context.source_path in state[2] and not state[-1])
+        # The dialog closure runs before file capture only. Later parameter,
+        # layout and close changes set the shared Event; final merging reads
+        # that passive token and our own metadata, without caller callbacks.
+        if not fresh():
+            raise NativeRecipeCancelled('Correction project selection changed before Keep.')
+        original = dict(state[4]).get(context.image.identifier)
+        if original is not None and original != context.image:
+            raise ValueError('The selected project image record changed before Keep.')
+        if request.pinned and request.binding not in state[7]:
+            raise ValueError('The saved correction selection changed before Keep.')
+        captured = run_persistence(self, partial(capture_correction_keep, request, cancel=cancel.is_set),
+                                   'Keeping verified correction input copies…')
+        if not fresh():
+            raise NativeRecipeCancelled('Correction project selection changed while inputs were being kept.')
+        validate_correction_keep_result(request, captured)
+        recipes = select_native_recipe(state[6], request.recipe)
+        bindings = retain_selected_correction_bindings(state[7], state[5], recipes)
+        bindings = validate_correction_binding_records(select_correction_binding(bindings, captured))
+        self._project_native_recipes, self._project_correction_bindings = recipes, bindings
+        if context.image.identifier not in self._project_original_image_records:
+            self._project_original_image_records[context.image.identifier] = context.image
+            self._project_original_image_order += (context.image.identifier,)
+        self._project_tracking_enabled = True
+        self._set_project_dirty()
+        return captured
+
+    @Slot(object)
+    def _set_project_native_recipes(self, value):
+        from seedvision.persistence.native_recipes import validate_native_recipes
+        try:
+            updated = validate_native_recipes(value)
+        except (ValueError, TypeError) as error:
+            QMessageBox.warning(self, 'Invalid working recipes', str(error))
+            return
+        if updated == self._project_native_recipes:
+            return
+        self._project_native_recipes = updated
+        self._retain_selected_correction_bindings()
+        self._project_tracking_enabled = True
+        self._set_project_dirty()
 
     @Slot(object)
     def _set_project_reference_graphs(self, value: object) -> None:
@@ -1677,9 +1807,15 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         if updated == self._project_reference_graphs:
             return
         self._project_reference_graphs = updated
+        self._retain_selected_correction_bindings()
         # Graph layout, selection and wire presentation are project metadata.
         # They do not alter native pipeline settings or cache keys.
         self._set_project_dirty()
+
+    def _retain_selected_correction_bindings(self):
+        from seedvision.persistence.correction_inputs import retain_selected_correction_bindings
+        self._project_correction_bindings = retain_selected_correction_bindings(
+            self._project_correction_bindings, self._project_reference_graphs, self._project_native_recipes)
 
     def _refresh_recent_projects_menu(self) -> None:
         self.recent_projects_menu.clear()
@@ -1750,11 +1886,21 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                         if include_centres
                         else None
                     ),
-                    biological_context=self._effective_biological_context(),
+                    biological_context=self._effective_biological_context(path),
                     capture_group_id=self._project_capture_group_id,
                 )
             )
         return tuple(specs)
+
+    def _instance_generation_source(self, key: str):
+        return self._draft_instance_generation_sources.get(
+            key, self._reference_source_identities.get(key, (None, None))[1])
+
+    def _reference_source_bundle_fields(self, key: str, *, include_draft=False) -> dict[str, str | None]:
+        archive, snapshot = self._reference_source_identities.get(key, (None, None))
+        if include_draft:
+            snapshot = self._instance_generation_source(key)
+        return {'archive_source_sha256': archive, 'annotation_snapshot_source_sha256': snapshot}
 
     def _reference_bundle_for_project_key(
         self, key: str, path: Path
@@ -1783,6 +1929,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         return ReferenceRegionBundle(
             shape=shape,
             source_to_corrected=self._reference_transforms.get(key),
+            **self._reference_source_bundle_fields(key),
             background=self._applied_background_reference_masks.get(key),
             foreground=self._applied_foreground_reference_masks.get(key),
             other=self._applied_background_exclusion_masks.get(key),
@@ -1944,6 +2091,12 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 species_library=self._project_species_library_pin,
                 biological_context=self._effective_biological_context(),
                 capture_group_id=self._project_capture_group_id,
+                reference_graphs=self._project_reference_graphs,
+                reference_model_assets=getattr(self, '_project_reference_model_assets', ()),
+                native_recipes=self._project_native_recipes,
+                correction_bindings=tuple(binding for binding in self._project_correction_bindings
+                    if binding.image_id not in self._project_unresolved_image_records),
+                existing_correction_bindings=self._project_correction_bindings,
             ), 'Preparing verified project data…')
             live_records = {}
             for spec, record in zip(image_specs, captured.images, strict=True):
@@ -1977,9 +2130,16 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 biological_context=captured.biological_context,
                 capture_group_id=captured.capture_group_id,
                 reference_graphs=self._project_reference_graphs,
+                reference_model_assets=captured.reference_model_assets,
+                native_recipes=captured.native_recipes,
+                correction_bindings=captured.correction_bindings+tuple(binding
+                    for binding in self._project_correction_bindings
+                    if binding.image_id in self._project_unresolved_image_records),
             )
             self._copy_optimization_companions(destination)
             saved = run_persistence(self, lambda: self._project_analysis_store.save(document, destination), 'Saving project master…')
+            self._project_reference_model_assets = document.reference_model_assets
+            self._project_correction_bindings = document.correction_bindings
         except (
             AnalysisSettingsError,
             InstanceMaskImportError,
@@ -2147,15 +2307,19 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 "before opening another project.",
             )
             return False
-        source = Path(source).expanduser().resolve()
+        from seedvision.export.preflight_outcomes import begin_preflight
+        attempt = begin_preflight(source, 'project', 'desktop_project_load')
         try:
+            source = Path(source).expanduser().resolve()
             loaded = run_persistence(self, lambda: self._project_analysis_store.load(source, verify_files=True), 'Verifying project sources and annotations…')
+            attempt = begin_preflight(source, 'project', 'desktop_project_settings')
             compatibility_graph = build_default_pipeline()
             apply_analysis_settings_profile(
                 compatibility_graph, loaded.document.analysis_settings
             )
-        except (AnalysisSettingsError, ProjectAnalysisError, OSError) as error:
-            QMessageBox.critical(self, "Could not open project", str(error))
+        except Exception as error:
+            diagnostic = self._desktop_rejection(attempt, error)
+            QMessageBox.critical(self, "Could not open project", diagnostic)
             return False
 
         source_issues = tuple(
@@ -2183,18 +2347,20 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         if not self._confirm_project_replacement():
             return False
 
+        attempt = begin_preflight(source, 'project', 'desktop_project_install')
         self._installing_project = True
-        self._clear_project_session_state()
         try:
+            # The profile applicator owns its rollback. Preserve the old image,
+            # drafts and project values until this transaction succeeds.
             apply_analysis_settings_profile(
                 self.pipeline, loaded.document.analysis_settings
             )
-        except AnalysisSettingsError as error:
-            # The fresh-catalogue probe above makes this unreachable unless the
-            # in-memory authored graph changed concurrently.
-            QMessageBox.critical(self, "Could not install project settings", str(error))
+        except Exception as error:
+            diagnostic = self._desktop_rejection(attempt, error)
+            QMessageBox.critical(self, "Could not install project settings", diagnostic)
             self._installing_project = False
             return False
+        self._clear_project_session_state()
 
         ui_state = loaded.document.ui_state
         catalogue = {**self.pipeline.nodes, **self.pipeline.unused_nodes}
@@ -2234,15 +2400,15 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._project_biological_context = loaded.document.biological_context
         self._project_capture_group_id = loaded.document.capture_group_id
         self._project_reference_graphs = loaded.document.reference_graphs
-        species = loaded.document.species
+        self._project_reference_model_assets = loaded.document.reference_model_assets
+        self._project_native_recipes = loaded.document.native_recipes
+        self._project_correction_bindings = loaded.document.correction_bindings
+        species = loaded.document.species or 'unknown'
         if species:
             if self.species_combo.findText(species) < 0:
                 self.species_combo.addItem(species)
             with QSignalBlocker(self.species_combo):
                 self.species_combo.setCurrentText(species)
-        elif self.species_combo.count():
-            with QSignalBlocker(self.species_combo):
-                self.species_combo.setCurrentIndex(0)
         self._populate_seed_coat_patterns()
         self._sync_seed_trait_controls()
         self._offer_missing_species_library_import()
@@ -2257,6 +2423,10 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         )
         self._project_original_image_records = {
             record.identifier: record for record in loaded.document.images
+        }
+        self._project_image_biological_contexts = {
+            _path_identity(image.path): image.record.biological_context
+            for image in loaded.images if image.record.biological_context is not None
         }
         self._project_unresolved_image_records = {
             image.record.identifier: image.record
@@ -2410,6 +2580,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         for analysis in self._analyses.values():
             release_host_caches(analysis)
         self._analyses.clear()
+        self._image_run_outcomes.clear()
+        self._run_outcome_history.clear()
         self._analysis_caches.clear()
         self._cache_dirty_nodes.clear()
 
@@ -2442,6 +2614,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             self._manual_seed_centre_histories,
             self._reference_layer_shapes,
             self._reference_transforms,
+            self._reference_source_identities,
+            self._draft_instance_generation_sources,
             self._pending_unbound_reference_bundles,
         ):
             values.clear()
@@ -2463,12 +2637,16 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._project_unresolved_manual_centre_sidecars.clear()
         self._project_original_image_order = ()
         self._project_original_image_records.clear()
+        self._project_image_biological_contexts.clear()
         self._project_unresolved_image_records.clear()
         self._project_unresolved_selected_image_id = None
         self._project_species_library_pin = None
         self._project_biological_context = None
         self._project_capture_group_id = None
         self._project_reference_graphs = ()
+        self._project_reference_model_assets = ()
+        self._project_native_recipes = ()
+        self._project_correction_bindings = ()
         self._image_paths.clear()
         self.image_list.clear()
         self._analysis_activities.clear()
@@ -2551,6 +2729,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
     def _apply_and_save_all_project_drafts(
         self, keys: set[str], *, recompute: bool = True
     ) -> bool:
+        if self._current_image_key() in keys:
+            self.image_view.invalidate_instance_edit_events()
         committed: set[str] = set()
         for key in sorted(keys):
             path = self._image_paths.get(key)
@@ -2661,6 +2841,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                     ReferenceRegionBundle(
                         shape=shape,
                         source_to_corrected=self._reference_transforms.get(key),
+                        **self._reference_source_bundle_fields(key, include_draft=True),
                         background=background,
                         foreground=foreground,
                         other=other,
@@ -2713,6 +2894,9 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             installed_instances = self._install_project_applied_value(
                 key, self._applied_instance_annotations, instances, np.uint16
             )
+            archive = self._reference_source_identities.get(key, (None, None))[0]
+            self._reference_source_identities[key] = (archive,
+                self._instance_generation_source(key) if installed_instances is not None else None)
             if installed_instances is None:
                 self._applied_instance_annotation_origins.pop(key, None)
                 self._applied_seed_annotations.pop(key, None)
@@ -2735,6 +2919,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             ):
                 draft.pop(key, None)
             self._draft_instance_annotation_origins.pop(key, None)
+            self._draft_instance_generation_sources.pop(key, None)
             self._draft_seed_annotations.pop(key, None)
             self._draft_seed_annotation_species.pop(key, None)
             self._reference_masks_dirty.discard(key)
@@ -3020,6 +3205,10 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.train_learning_model_action.triggered.connect(
             self._start_learning_training
         )
+        self.train_trait_model_action = QAction('Train object-level seed traits…', self)
+        self.train_trait_model_action.triggered.connect(self._start_trait_training)
+        self.activate_trait_model_action = QAction('Activate frozen seed-trait model…', self)
+        self.activate_trait_model_action.triggered.connect(self._choose_trait_model)
         self.manage_species_libraries_action = QAction(
             "Species reference libraries…", self
         )
@@ -3063,6 +3252,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         learning_menu.addSeparator()
         learning_menu.addAction(self.audit_learning_dataset_action)
         learning_menu.addAction(self.train_learning_model_action)
+        learning_menu.addAction(self.train_trait_model_action)
+        learning_menu.addAction(self.activate_trait_model_action)
         learning_menu.addSeparator()
         learning_menu.addAction(self.manage_species_libraries_action)
 
@@ -5383,14 +5574,16 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 "before loading a settings profile.",
             )
             return False
+        from seedvision.export.preflight_outcomes import begin_preflight
+        attempt = begin_preflight(source, 'settings_profile', 'desktop_profile_load')
         try:
             profile = load_analysis_settings_profile(source)
+            attempt = begin_preflight(source, 'settings_profile', 'desktop_profile_settings')
             compatibility_graph = build_default_pipeline()
             apply_analysis_settings_profile(compatibility_graph, profile)
-        except AnalysisSettingsError as error:
-            QMessageBox.critical(
-                self, "Could not load analysis settings", str(error)
-            )
+        except Exception as error:
+            diagnostic = self._desktop_rejection(attempt, error)
+            QMessageBox.critical(self, "Could not load analysis settings", diagnostic)
             return False
         answer = QMessageBox.question(
             self,
@@ -5404,12 +5597,12 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         )
         if answer != QMessageBox.StandardButton.Yes:
             return False
+        attempt = begin_preflight(source, 'settings_profile', 'desktop_profile_install')
         try:
             result = apply_analysis_settings_profile(self.pipeline, profile)
-        except AnalysisSettingsError as error:
-            QMessageBox.critical(
-                self, "Incompatible analysis settings", str(error)
-            )
+        except Exception as error:
+            diagnostic = self._desktop_rejection(attempt, error)
+            QMessageBox.critical(self, "Incompatible analysis settings", diagnostic)
             return False
         if not result.changed:
             self.statusBar().showMessage(
@@ -5780,6 +5973,10 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         from seedvision.pipeline.settings import production_settings
         return production_settings(self.pipeline)['stardist_settings']
 
+    def _trait_settings(self):
+        from seedvision.pipeline.settings import production_settings
+        return production_settings(self.pipeline)['trait_settings']
+
     def _calibration_settings(self) -> CalibrationSettings:
         from seedvision.pipeline.settings import production_settings
         return production_settings(self.pipeline)['calibration_settings']
@@ -5835,110 +6032,123 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             self._refresh_analysis_activity_panel()
             self._update_analysis_availability()
             return
+        from seedvision.export.preflight_outcomes import begin_preflight
+        attempt_revision = self.pipeline.revision
+        attempt = begin_preflight(path, 'image', 'desktop_prepare')
         requested_dirty = frozenset(pending_dirty)
-        pending_dirty.clear()
-        self._pending_analysis_key = None
-        self._pending_analysis_scope = None
-        self._trim_analysis_caches(protected={key})
-        node_cache = self._analysis_caches.setdefault(
-            key, PipelineAnalysisCache()
-        )
-        self._analysis_caches.move_to_end(key)
-        resolved_library = self._resolved_species_library_for_current_image(path)
-        library_shape_bank = (
-            None
-            if resolved_library.artifact is None
-            else resolved_library.artifact.dimensions_shape
-        )
-        if resolved_library.error:
-            self.pipeline.set_status(
-                "species_reference_library",
-                NodeStatus.BLOCKED,
-                resolved_library.error,
+        try:
+            pending_dirty.clear()
+            self._pending_analysis_key = None
+            self._pending_analysis_scope = None
+            self._trim_analysis_caches(protected={key})
+            node_cache = self._analysis_caches.setdefault(
+                key, PipelineAnalysisCache()
             )
-        else:
-            provenance = resolved_library.provenance
-            self.pipeline.set_status(
-                "species_reference_library",
-                NodeStatus.COMPLETE,
-                (
-                    "No pinned library"
-                    if provenance is None
-                    else (
-                        f"{provenance.eligible_source_count:,} eligible source(s); "
-                        + (
-                            "current image contribution excluded"
-                            if provenance.excluded_source_indices
-                            else "current image is not a library source"
-                        )
-                        + (
-                            "; shape fallback " + " / ".join(
-                                provenance.selected_hierarchy_path
+            self._analysis_caches.move_to_end(key)
+            resolved_library = self._resolved_species_library_for_current_image(path)
+            library_shape_bank = (
+                None
+                if resolved_library.artifact is None
+                else resolved_library.artifact.dimensions_shape
+            )
+            if resolved_library.error:
+                self.pipeline.set_status(
+                    "species_reference_library",
+                    NodeStatus.BLOCKED,
+                    resolved_library.error,
+                )
+            else:
+                provenance = resolved_library.provenance
+                self.pipeline.set_status(
+                    "species_reference_library",
+                    NodeStatus.COMPLETE,
+                    (
+                        "No pinned library"
+                        if provenance is None
+                        else (
+                            f"{provenance.eligible_source_count:,} eligible source(s); "
+                            + (
+                                "current image contribution excluded"
+                                if provenance.excluded_source_indices
+                                else "current image is not a library source"
                             )
-                            if provenance.selected_hierarchy_path
-                            else ""
+                            + (
+                                "; shape fallback " + " / ".join(
+                                    provenance.selected_hierarchy_path
+                                )
+                                if provenance.selected_hierarchy_path
+                                else ""
+                            )
                         )
+                    ),
+                )
+            task = _AnalysisTask(
+                path,
+                self._baseline_settings(),
+                self._calibration_settings(),
+                self._dish_settings(),
+                self._layer_settings(),
+                self._advanced_settings(),
+                self._procedural_settings(),
+                self._unet_settings(),
+                self._stardist_settings(),
+                self._root,
+                self.species_combo.currentText(),
+                (),
+                (),
+                self._applied_background_reference_masks.get(key),
+                self._applied_foreground_reference_masks.get(key),
+                self._applied_background_exclusion_masks.get(key),
+                self._applied_foreground_exclusion_masks.get(key),
+                self._applied_physical_edge_reference_masks.get(key),
+                self._applied_non_edge_reference_masks.get(key),
+                self._applied_instance_annotations.get(key),
+                tuple(
+                    sorted(
+                        self._applied_seed_annotations.get(key, {}).values(),
+                        key=lambda item: item.seed_id,
                     )
                 ),
+                self._applied_seed_annotation_species.get(key, ""),
+                self._current_seed_trait_vocabulary().coat_patterns,
+                self._seed_trait_catalogue.conditions,
+                self._manual_seed_centres_for_analysis(key),
+                bool(
+                    self.pipeline.node("background_likelihood").parameters.get(
+                        "background_colour_enabled", True
+                    )
+                ),
+                (
+                    enabled_node_scope
+                    if enabled_node_scope is not None
+                    else frozenset(
+                        node.identifier
+                        for node in self.pipeline.nodes.values()
+                        if node.enabled
+                    )
+                ),
+                self.pipeline.revision,
+                node_cache,
+                requested_dirty,
+                self._effective_biological_context(),
+                library_shape_bank,
+                resolved_library.artifact,
+                reference_transform=self._reference_transforms.get(key),
+                reference_archive_source_sha256=self._reference_source_identities.get(key, (None, None))[0],
+                reference_annotation_snapshot_source_sha256=self._reference_source_identities.get(key, (None, None))[1],
+                trait_settings=self._trait_settings(),
             )
-        task = _AnalysisTask(
-            path,
-            self._baseline_settings(),
-            self._calibration_settings(),
-            self._dish_settings(),
-            self._layer_settings(),
-            self._advanced_settings(),
-            self._procedural_settings(),
-            self._unet_settings(),
-            self._stardist_settings(),
-            self._root,
-            self.species_combo.currentText(),
-            (),
-            (),
-            self._applied_background_reference_masks.get(key),
-            self._applied_foreground_reference_masks.get(key),
-            self._applied_background_exclusion_masks.get(key),
-            self._applied_foreground_exclusion_masks.get(key),
-            self._applied_physical_edge_reference_masks.get(key),
-            self._applied_non_edge_reference_masks.get(key),
-            self._applied_instance_annotations.get(key),
-            tuple(
-                sorted(
-                    self._applied_seed_annotations.get(key, {}).values(),
-                    key=lambda item: item.seed_id,
-                )
-            ),
-            self._applied_seed_annotation_species.get(key, ""),
-            self._current_seed_trait_vocabulary().coat_patterns,
-            self._seed_trait_catalogue.conditions,
-            self._manual_seed_centres_for_analysis(key),
-            bool(
-                self.pipeline.node("background_likelihood").parameters.get(
-                    "background_colour_enabled", True
-                )
-            ),
-            (
-                enabled_node_scope
-                if enabled_node_scope is not None
-                else frozenset(
-                    node.identifier
-                    for node in self.pipeline.nodes.values()
-                    if node.enabled
-                )
-            ),
-            self.pipeline.revision,
-            node_cache,
-            requested_dirty,
-            self._effective_biological_context(),
-            library_shape_bank,
-            resolved_library.artifact,
-            reference_transform=self._reference_transforms.get(key),
-        )
+        except Exception as error:
+            self._analysis_preflight_failed(attempt.outcome(error), attempt_revision)
+            self._cache_dirty_nodes.setdefault(key, set()).update(requested_dirty)
+            return
         task.signals.completed.connect(self._analysis_completed)
+        task.signals.terminal_outcome.connect(self._analysis_terminal_outcome)
         task.signals.failed.connect(self._analysis_failed)
         task.signals.cancelled.connect(self._analysis_cancelled)
         task.signals.node_progress.connect(self._analysis_node_progress)
         self._active_tasks[key] = task
+        self._image_run_outcomes.pop(key, None)
         now = monotonic()
         self._analysis_activities[key] = _AnalysisActivity(
             path=Path(path),
@@ -6216,17 +6426,107 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         )
         self._start_pending_analysis()
 
+    def _preserve_run_outcome(self, outcome):
+        from seedvision.export.run_outcomes import NativeRunOutcome, export_run_outcome
+        from seedvision.export.preflight_outcomes import PreflightRunOutcome
+        if not isinstance(outcome, (NativeRunOutcome, PreflightRunOutcome)):
+            raise ValueError('Unknown native terminal outcome.')
+        payload = outcome.payload
+        self._run_outcome_history[payload['outcome_revision']] = outcome
+        recording_failure = None
+        # Preserve history even when a queued signal belongs to an old image.
+        try:
+            export_run_outcome(self._root / 'artifacts' / 'run-outcomes', outcome)
+        except (ValueError, OSError) as error:
+            LOGGER.exception('Could not persist terminal native run evidence.')
+            recording_failure = f'Terminal recording also failed: {type(error).__name__}: {error}'
+        return payload, recording_failure
+
+    def _desktop_rejection(self, attempt, error, *, pipeline_revision=None, image_install=False):
+        """Retain a rejected operation without borrowing a worker's ownership."""
+        outcome = attempt.outcome(error)
+        payload, recording_failure = self._preserve_run_outcome(outcome)
+        path = outcome.image_path
+        if image_install and path is not None:
+            from seedvision.export.run_outcomes import _source_digest
+            key = _path_identity(path)
+            if (self._current_image_key() == key and pipeline_revision == self.pipeline.revision
+                    and key not in self._active_tasks
+                    and _source_digest(path) == payload['identity']['subject_at_completion']['sha256']):
+                self._image_run_outcomes[key] = (pipeline_revision, outcome)
+                self._update_analysis_availability()
+        diagnostic = str(error)
+        if recording_failure:
+            diagnostic += '\n' + recording_failure
+        return diagnostic
+
+    def _analysis_preflight_failed(self, outcome, pipeline_revision):
+        payload, recording_failure = self._preserve_run_outcome(outcome)
+        path = outcome.image_path
+        if path is None:
+            return
+        key = _path_identity(path)
+        # This attempt has no task/signal owner. A captured key and revision,
+        # plus absence of a replacement task, guard its UI installation.
+        if (self._current_image_key() != key or self.pipeline.revision != pipeline_revision
+                or key in self._active_tasks):
+            return
+        from seedvision.export.run_outcomes import _source_digest
+        if _source_digest(path) != payload['identity']['subject_at_completion']['sha256']:
+            return
+        self._image_run_outcomes[key] = (pipeline_revision, outcome)
+        error = payload['identity']['error_type'] + ': ' + payload['diagnostic']
+        if recording_failure:
+            error += '\n' + recording_failure
+        if payload['identity']['state'] == 'cancelled':
+            self._finish_analysis_cancellation(path, pipeline_revision)
+        else:
+            self._finish_analysis_failure(path, error, pipeline_revision)
+
+    @Slot(object, int)
+    def _analysis_terminal_outcome(self, outcome, pipeline_revision: int) -> None:
+        payload, _ = self._preserve_run_outcome(outcome)
+        if outcome.image_path is None:
+            return
+        key = _path_identity(outcome.image_path)
+        task = self._active_tasks.get(key)
+        sender = self.sender()
+        try:
+            current_source = file_sha256(outcome.image_path)
+        except OSError:
+            current_source = None
+        if (self._current_image_key() != key or pipeline_revision != self.pipeline.revision
+                or current_source != (payload['identity']['source_at_completion']
+                    if payload['format'] == 'seedfiddle-native-run-outcome'
+                    else payload['identity']['subject_at_completion']['sha256'])
+                or (sender is not None and (task is None or getattr(task, 'signals', None) is not sender))
+                or (task is not None and getattr(task, 'pipeline_revision', pipeline_revision) != pipeline_revision)
+                or (task is not None and bool(getattr(task, 'cancellation_requested', False))
+                    and payload['identity']['state'] != 'cancelled')):
+            return
+        self._image_run_outcomes[key] = (pipeline_revision, outcome)
+
     @Slot(str, str, int)
     def _analysis_failed(
         self, path_text: str, error: str, pipeline_revision: int
     ) -> None:
-        del pipeline_revision
         path = Path(path_text)
+        key = _path_identity(path)
+        activity = self._analysis_activities.get(key)
+        task = self._active_tasks.get(key)
+        if self.sender() is not None and (task is None or getattr(task, 'signals', None) is not self.sender()):
+            return
+        if task is not None and getattr(task, 'pipeline_revision', pipeline_revision) != pipeline_revision:
+            return
+        self._finish_analysis_failure(path, error, pipeline_revision)
+
+    def _finish_analysis_failure(self, path, error, pipeline_revision):
         key = _path_identity(path)
         activity = self._analysis_activities.get(key)
         task = self._active_tasks.get(key)
         cancelled_or_obsolete = (
             self._current_image_key() != key
+            or pipeline_revision != self.pipeline.revision
             or (
                 task is not None
                 and bool(getattr(task, "cancellation_requested", False))
@@ -6297,8 +6597,16 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
     def _analysis_cancelled(self, path_text: str, pipeline_revision: int) -> None:
         """Release a superseded partial run and immediately start the latest one."""
 
-        del pipeline_revision
         path = Path(path_text)
+        key = _path_identity(path)
+        task = self._active_tasks.get(key)
+        if self.sender() is not None and (task is None or getattr(task, 'signals', None) is not self.sender()):
+            return
+        if task is not None and getattr(task, 'pipeline_revision', pipeline_revision) != pipeline_revision:
+            return
+        self._finish_analysis_cancellation(path, pipeline_revision)
+
+    def _finish_analysis_cancellation(self, path, pipeline_revision):
         key = _path_identity(path)
         self._active_tasks.pop(key, None)
         self._analysis_activities.pop(key, None)
@@ -6394,7 +6702,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             gains = calibration.channel_gains_bgr
             self.colour_status_label.setText(
                 f"{card.detected_swatch_count}/24 found; BGR gains "
-                f"{gains[0]:.3f}/{gains[1]:.3f}/{gains[2]:.3f}"
+                f"{gains[0]:.3f}/{gains[1]:.3f}/{gains[2]:.3f}; "
+                + neutral_balance_description(getattr(calibration, "neutral_balance", None))
             )
         ruler = calibration.ruler
         if ruler is None:
@@ -6611,6 +6920,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         return json.dumps(
             {
                 "origin": str(origin or "manual"),
+                "annotation_snapshot_source_sha256": self._instance_generation_source(key),
                 "species": self._draft_seed_annotation_species.get(
                     key, self._applied_seed_annotation_species.get(key, "")
                 ),
@@ -6637,6 +6947,20 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             separators=(",", ":"),
             sort_keys=True,
         )
+
+    @staticmethod
+    def _decode_instance_generation_source(metadata):
+        if metadata is None:
+            return None
+        try:
+            payload = json.loads(metadata)
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        from seedvision.persistence.reference_regions import validated_source_sha256
+        return validated_source_sha256(payload.get('annotation_snapshot_source_sha256'),
+            'seed label generation source SHA-256')
 
     @staticmethod
     def _decode_instance_undo_metadata(
@@ -6787,10 +7111,15 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             self._reference_dirty_classes.pop(key, None)
 
     def _set_instance_draft_state(
-        self, key: str, values: np.ndarray, origin: str | None
+        self, key: str, values: np.ndarray, origin: str | None, *, generation_source=_KEEP_INSTANCE_GENERATION
     ) -> None:
         self._instance_continuity_cache.pop(key, None)
         labels = np.asarray(values, dtype=np.uint16)
+        if generation_source is _KEEP_INSTANCE_GENERATION:
+            generation_source = self._instance_generation_source(key)
+        from seedvision.persistence.reference_regions import validated_source_sha256
+        self._draft_instance_generation_sources[key] = (validated_source_sha256(
+            generation_source, 'seed label generation source SHA-256') if np.any(labels) else None)
         self._draft_instance_annotations[key] = labels
         self._draft_instance_annotation_origins[key] = origin or "manual"
         self._draft_seed_annotations.setdefault(
@@ -6850,9 +7179,11 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             self._matches_applied_raster(labels, applied_labels)
             and current_traits == applied_traits
             and current_species == applied_species
+            and self._instance_generation_source(key) == self._reference_source_identities.get(key, (None, None))[1]
         ):
             self._draft_instance_annotations.pop(key, None)
             self._draft_instance_annotation_origins.pop(key, None)
+            self._draft_instance_generation_sources.pop(key, None)
             self._draft_seed_annotations.pop(key, None)
             self._draft_seed_annotation_species.pop(key, None)
             self._instance_annotations_dirty.discard(key)
@@ -6935,7 +7266,9 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         origin, species, traits = self._decode_instance_undo_metadata(
             result.metadata
         )
-        self._set_instance_draft_state(key, result.rasters[0], origin)
+        self.image_view.invalidate_instance_edit_events()
+        self._set_instance_draft_state(key, result.rasters[0], origin,
+            generation_source=self._decode_instance_generation_source(result.metadata))
         self._draft_seed_annotations[key] = traits
         self._draft_seed_annotation_species[key] = species
         self._prune_seed_annotations(key, result.rasters[0])
@@ -7467,6 +7800,13 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
     ) -> None:
         """Commit one fully validated persistent snapshot to controller state."""
 
+        if sync_view and key == self._current_image_key():
+            self.image_view.invalidate_instance_edit_events()
+        from seedvision.persistence.reference_regions import validated_source_sha256
+        self._reference_source_identities[key] = (
+            validated_source_sha256(bundle.archive_source_sha256, 'reference archive source SHA-256'),
+            validated_source_sha256(bundle.annotation_snapshot_source_sha256, 'reference annotation snapshot source SHA-256'),
+        )
         if bundle.source_to_corrected is not None:
             self._reference_transforms[key] = bundle.source_to_corrected.copy()
         else:
@@ -7484,6 +7824,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             draft.pop(key, None)
         self._draft_instance_annotations.pop(key, None)
         self._draft_instance_annotation_origins.pop(key, None)
+        self._draft_instance_generation_sources.pop(key, None)
         self._draft_seed_annotations.pop(key, None)
         self._draft_seed_annotation_species.pop(key, None)
         self._reference_masks_dirty.discard(key)
@@ -7617,6 +7958,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         bundle = ReferenceRegionBundle(
             shape=(height, width),
             source_to_corrected=self._reference_transforms.get(key),
+            **self._reference_source_bundle_fields(key),
             background=self._applied_background_reference_masks.get(key),
             foreground=self._applied_foreground_reference_masks.get(key),
             other=self._applied_background_exclusion_masks.get(key),
@@ -7727,6 +8069,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         if key is None:
             return
         if key not in self._draft_instance_annotations:
+            self._draft_instance_generation_sources[key] = self._reference_source_identities.get(key, (None, None))[1]
             applied = self._applied_instance_annotations.get(key)
             self._draft_instance_annotations[key] = (
                 self._empty_current_instance_annotations()
@@ -8880,8 +9223,12 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
     def _current_seed_trait_species_id(self) -> str:
         return self._current_seed_trait_vocabulary().species_id
 
-    def _effective_biological_context(self) -> BiologicalContext:
+    def _effective_biological_context(self, path: Path | None = None) -> BiologicalContext:
         species_id = self._current_seed_trait_species_id() or "unknown"
+        key = self._current_image_key() if path is None else _path_identity(path)
+        image_context = self._project_image_biological_contexts.get(key)
+        if image_context is not None and image_context.species_id == species_id:
+            return image_context
         current = self._project_biological_context
         if current is not None and current.species_id == species_id:
             return current
@@ -9290,8 +9637,40 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             "Apply when painting is complete."
         )
 
+    def _generation_source_for_canvas_edit(self, key, before, after, binding):
+        if binding is None:
+            return True, None
+        current = self.image_view.annotation_canvas_binding()
+        result = self._analyses.get(key)
+        if (binding != current or tuple(after.shape) != binding.shape
+                or result is not self.image_view._analysis_result
+                or getattr(result, 'image_path', None) is None
+                or _path_identity(result.image_path) != key
+                or not np.array_equal(binding.source_to_corrected, self._reference_transforms.get(key))):
+            return False, None
+        previous = self._instance_generation_source(key)
+        if previous is not None and previous != binding.source_sha256:
+            return False, None
+        if not np.any(after):
+            return True, None
+        if previous is not None or not np.any(before):
+            return True, binding.source_sha256
+        # New marks do not establish the history of untouched legacy outlines.
+        return True, None
+
+    @Slot(object, object)
+    def _instance_annotations_generated(self, annotations, context):
+        from seedvision.ui.annotation_canvas import AnnotationEditContext
+        if not isinstance(context, AnnotationEditContext) or context.epoch != self.image_view._annotation_canvas_epoch:
+            key = self._current_image_key()
+            if key is not None:
+                self.image_view.set_instance_annotations(self._instance_reference_state(key)[0], copy=False, render=False)
+            self.statusBar().showMessage('Discarded a stroke from a superseded annotation canvas.')
+            return
+        self._instance_annotations_edited(annotations, canvas_binding=context.binding)
+
     @Slot(object)
-    def _instance_annotations_edited(self, annotations) -> None:
+    def _instance_annotations_edited(self, annotations, *, canvas_binding=None) -> None:
         key = self._current_image_key()
         if key is None:
             return
@@ -9302,6 +9681,11 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             if annotations is None
             else np.asarray(annotations, dtype=np.uint16)
         )
+        accepted, generation_source = self._generation_source_for_canvas_edit(key, before[0], values, canvas_binding)
+        if not accepted:
+            self.image_view.set_instance_annotations(before[0], copy=False, render=False)
+            self.statusBar().showMessage('Discarded a stroke from a superseded annotation canvas.')
+            return
         tool_labels = {
             "brush": "seed-instance brush stroke",
             "eraser": "seed-instance eraser stroke",
@@ -9324,7 +9708,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             )
             self._sync_background_controls()
             return
-        self._set_instance_draft_state(key, values, before_origin)
+        self._set_instance_draft_state(key, values, before_origin, generation_source=generation_source)
         self._sync_background_controls()
         self._refresh_reference_association_panel()
         self.statusBar().showMessage(
@@ -9418,6 +9802,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             before_origin=before_origin,
         ):
             return
+        self.image_view.invalidate_instance_edit_events()
         self._set_instance_draft_state(key, values, before_origin)
         self.image_view.set_instance_annotations(
             self._draft_instance_annotations.get(
@@ -9443,6 +9828,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             before_origin=before_origin,
         ):
             return
+        self.image_view.invalidate_instance_edit_events()
         self._set_instance_draft_state(key, values, "manual")
         self.image_view.set_instance_annotations(
             self._draft_instance_annotations.get(
@@ -9457,9 +9843,11 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         key = self._current_image_key()
         if key is None:
             return
+        self.image_view.invalidate_instance_edit_events()
         applied = self._applied_instance_annotations.get(key)
         self._draft_instance_annotations.pop(key, None)
         self._draft_instance_annotation_origins.pop(key, None)
+        self._draft_instance_generation_sources.pop(key, None)
         self._draft_seed_annotations.pop(key, None)
         self._draft_seed_annotation_species.pop(key, None)
         self._instance_annotations_dirty.discard(key)
@@ -9597,11 +9985,14 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         key = self._current_image_key()
         if key is None or key not in self._instance_annotations_dirty:
             return
+        self.image_view.invalidate_instance_edit_events()
         previous_annotations = self._applied_instance_annotations.get(key)
         previous_traits = dict(self._applied_seed_annotations.get(key, {}))
         previous_trait_species = self._applied_seed_annotation_species.get(
             key, ""
         )
+        previous_generation = self._reference_source_identities.get(key, (None, None))[1]
+        generation_source = self._instance_generation_source(key)
         self._instance_continuity_cache.pop(key, None)
         self._stop_instance_annotation_editing()
         annotations = self._draft_instance_annotations.get(key)
@@ -9650,8 +10041,12 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         semantic_traits_changed = self._semantic_annotation_projection(
             previous_traits
         ) != self._semantic_annotation_projection(applied_traits)
+        archive = self._reference_source_identities.get(key, (None, None))[0]
+        self._reference_source_identities[key] = (archive, generation_source if applied is not None else None)
+        generation_changed = previous_generation != self._reference_source_identities[key][1]
         self._draft_instance_annotations.pop(key, None)
         self._draft_instance_annotation_origins.pop(key, None)
+        self._draft_instance_generation_sources.pop(key, None)
         self._draft_seed_annotations.pop(key, None)
         self._draft_seed_annotation_species.pop(key, None)
         self._instance_undo_histories.pop(key, None)
@@ -9682,7 +10077,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                         "reference_seed_traits", recursive=True
                     ))
                 )
-            if shape_traits_changed:
+            if shape_traits_changed or generation_changed:
                 affected.update(
                     {"seed_scale_estimation"}
                     | set(self.pipeline.downstream(
@@ -9903,7 +10298,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 coordinate_space="corrected",
                 origin=self._applied_instance_annotation_origins.get(key, "manual"),
             )
-            if self._install_imported_instance_mask(imported):
+            if self._install_imported_instance_mask(imported,
+                generation_source=self._reference_source_identities.get(key, (None, None))[1]):
                 self._draft_seed_annotations[key] = dict(
                     self._applied_seed_annotations.get(key, {})
                 )
@@ -9916,6 +10312,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                     "Loaded the saved applied seed annotations as an undoable draft."
                 )
             return
+        from seedvision.export.preflight_outcomes import begin_preflight
+        attempt = begin_preflight(image_path, 'image', 'desktop_bundled_reference_import')
         try:
             imported = load_bundled_instance_mask(
                 self._root,
@@ -9924,10 +10322,9 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 corrected_shape=corrected_shape,
                 source_to_corrected=result.calibration.affine_matrix,
             )
-        except InstanceMaskImportError as error:
-            QMessageBox.critical(
-                self, "Could not load bundled seed references", str(error)
-            )
+        except Exception as error:
+            diagnostic = self._desktop_rejection(attempt, error)
+            QMessageBox.critical(self, "Could not load bundled seed references", diagnostic)
             return
 
         if imported is None:
@@ -9951,12 +10348,13 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         )
         if not selected:
             return
+        from seedvision.export.preflight_outcomes import begin_preflight
+        attempt = begin_preflight(selected, 'annotation', 'desktop_mask_import')
         try:
             imported = load_corrected_instance_mask(selected, corrected_shape)
-        except InstanceMaskImportError as error:
-            QMessageBox.critical(
-                self, "Could not load seed-instance mask", str(error)
-            )
+        except Exception as error:
+            diagnostic = self._desktop_rejection(attempt, error)
+            QMessageBox.critical(self, "Could not load seed-instance mask", diagnostic)
             return
         self._install_imported_instance_mask(imported)
 
@@ -9966,7 +10364,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._load_instance_reference_mask()
 
     def _install_imported_instance_mask(
-        self, imported: ImportedInstanceMask
+        self, imported: ImportedInstanceMask, *, generation_source=None
     ) -> bool:
         """Install one already-validated mask as a reviewable, undoable draft."""
 
@@ -10002,7 +10400,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         ):
             self._sync_background_controls()
             return False
-        self._set_instance_draft_state(key, labels, imported.origin)
+        self.image_view.invalidate_instance_edit_events()
+        self._set_instance_draft_state(key, labels, imported.origin, generation_source=generation_source)
         self.image_view.set_instance_annotations(
             self._draft_instance_annotations.get(
                 key, self._applied_instance_annotations.get(key)
@@ -10215,6 +10614,120 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._update_analysis_availability()
 
     @Slot()
+    def _start_trait_training(self) -> None:
+        if self._background_work_is_active():
+            self.statusBar().showMessage('Wait for the current background work to finish.')
+            return
+        dialog = TraitTrainingDialog(project_root=self._root, parent=self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            try:
+                self._begin_trait_training(dialog.request())
+            except (OSError, ValueError) as error:
+                QMessageBox.warning(self, 'Trait training cannot start', str(error))
+
+    def _begin_trait_training(self, request):
+        if self._background_work_is_active():
+            raise ValueError('Background work is busy.')
+        node = self.pipeline.node('trait_classifier')
+        current_path = str(node.parameters['trait_model_path'])
+        if node.enabled and current_path != 'None' and (self._root / current_path).resolve() == request.output_path:
+            raise ValueError('Save to a new file to preserve the active model until activation.')
+        task = TraitTrainingTask(request)
+        task.pipeline_identity, task.pipeline_revision = id(self.pipeline), self.pipeline.revision
+        progress = QProgressDialog('Preparing supplied trait evidence…', 'Cancel', 0, 0, self)
+        progress.setWindowTitle('Training object-level seed traits')
+        progress.setWindowModality(Qt.WindowModality.NonModal)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
+        progress.setMinimumDuration(0)
+        task.signals.progress.connect(self._trait_training_progressed)
+        task.signals.completed.connect(self._trait_training_completed)
+        task.signals.failed.connect(self._trait_training_failed)
+        task.signals.cancelled.connect(self._trait_training_cancelled)
+        progress.canceled.connect(task.cancel)
+        progress.canceled.connect(lambda: progress.setLabelText('Stopping before the next calculation or save…'))
+        self._learning_training_task, self._learning_training_progress = task, progress
+        self._update_analysis_availability()
+        self._sync_background_controls()
+        progress.show()
+        self._thread_pool.start(task)
+        return task
+
+    @Slot(object, str, int, int)
+    def _trait_training_progressed(self, task, stage, current, maximum):
+        if task is not self._learning_training_task or self._learning_training_progress is None:
+            return
+        progress = self._learning_training_progress
+        progress.setMaximum(maximum)
+        progress.setValue(current)
+        progress.setLabelText(f'{stage.capitalize()}: {current}/{maximum}')
+
+    @Slot(object, object)
+    def _trait_training_completed(self, task, report):
+        if task is not self._learning_training_task:
+            return
+        cancelled = task.cancellation_requested() or report['cancellation_after_save']
+        context_matches = task.pipeline_identity == id(self.pipeline) and task.pipeline_revision == self.pipeline.revision
+        self._finish_learning_training_ui()
+        activation_note = 'Saved without activation.'
+        if task.request.activate_after_training and not cancelled and context_matches:
+            try:
+                self._activate_trait_model(task.request.output_path, abstention_threshold=task.request.configuration.abstention_threshold)
+                activation_note = 'Activated in Object-level seed traits.'
+            except (OSError, ValueError, KeyError, TypeError) as error:
+                activation_note = f'Model saved; activation failed: {error}'
+        elif cancelled:
+            activation_note = 'Saved before cancellation; activation skipped.'
+        elif task.request.activate_after_training and not context_matches:
+            activation_note = 'Saved; graph changed during training, so activation was skipped.'
+        self.statusBar().showMessage(f'Trait model saved: {report["output_path"]}. {activation_note}')
+        self._start_pending_analysis()
+
+    @Slot(object, str)
+    def _trait_training_failed(self, task, error):
+        if task is not self._learning_training_task:
+            return
+        self._finish_learning_training_ui()
+        self._start_pending_analysis()
+        QMessageBox.critical(self, 'Trait training failed', error)
+
+    @Slot(object)
+    def _trait_training_cancelled(self, task):
+        if task is not self._learning_training_task:
+            return
+        self._finish_learning_training_ui()
+        self._start_pending_analysis()
+        self.statusBar().showMessage('Trait training cancelled before saving; previous model retained.')
+
+    def _choose_trait_model(self):
+        if self._background_work_is_active():
+            self.statusBar().showMessage('Wait for the current background work to finish.')
+            return
+        path, _ = QFileDialog.getOpenFileName(self, 'Activate frozen seed-trait model', str(self._root), 'JSON (*.json)')
+        if path:
+            try:
+                self._activate_trait_model(path)
+            except (OSError, ValueError, KeyError, TypeError) as error:
+                QMessageBox.warning(self, 'Trait model activation failed', str(error))
+
+    def _activate_trait_model(self, path, *, abstention_threshold=None):
+        from seedvision.learning.trait_training import activate_trait_model
+        if self._background_work_is_active():
+            raise ValueError('Background work is busy.')
+        affected, model = activate_trait_model(self.pipeline, path, abstention_threshold=abstention_threshold)
+        if affected:
+            self._set_project_dirty()
+            for image_key in set(self._analysis_caches) | set(self._analyses):
+                self._cache_dirty_nodes.setdefault(image_key, set()).update(affected)
+                self._analyses.pop(image_key, None)
+            self.pipeline_canvas.refresh(affected)
+            self.pipeline_inspector.set_node(self.pipeline.node('trait_classifier'))
+            key = self._current_image_key()
+            if key is not None and key in self._analysis_caches:
+                self._analyze_current_image(dirty_nodes=set(affected))
+        self.statusBar().showMessage(f'Activated frozen trait model {model.model_sha256[:12]}.')
+        return affected
+
     def _start_learning_training(self) -> None:
         if (
             self._learning_training_task is not None
@@ -11523,7 +12036,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 "absolute metric scale bar."
             ),
             "deskew_colour": (
-                "Deskewed, gamut-safe colour-balanced image. Cyan outlines the "
+                "Geometrically corrected image; neutral balance follows the selected controls. Cyan outlines the "
                 "corrected card extent; yellow outlines corrected swatch locations."
             ),
             "colour_reference": (
@@ -12154,10 +12667,11 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         )
         self.pipeline.set_status(
             "deskew_colour",
-            NodeStatus.COMPLETE if card is not None else NodeStatus.WARNING,
+            NodeStatus.COMPLETE if card is not None and getattr(getattr(calibration, "neutral_balance", None), "state", None) != "unavailable" else NodeStatus.WARNING,
             (
                 f"Rotated {calibration.deskew_degrees:+.2f}°; "
-                f"{card.detected_swatch_count}/24 swatches; balanced colour"
+                f"{card.detected_swatch_count}/24 swatches; "
+                + neutral_balance_description(getattr(calibration, "neutral_balance", None))
                 if card is not None
                 else f"Rotated {calibration.deskew_degrees:+.2f}°; swatch grid not found"
             ),
@@ -12165,9 +12679,10 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         if calibration.perspective_corrected:
             self.pipeline.set_status(
                 "deskew_colour",
-                NodeStatus.COMPLETE,
+                NodeStatus.WARNING if getattr(getattr(calibration, "neutral_balance", None), "state", None) == "unavailable" else NodeStatus.COMPLETE,
                 f"Projective tilt {calibration.perspective_strength:.3f}; "
-                f"rotation {calibration.deskew_degrees:+.2f}°; balanced colour",
+                f"rotation {calibration.deskew_degrees:+.2f}°; "
+                + neutral_balance_description(getattr(calibration, "neutral_balance", None)),
             )
         self.pipeline.set_status(
             "layout_detection",
@@ -12298,6 +12813,15 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 f"{median_confidence:.0%}; {low_fraction:.0%} require review; "
                 "not publication-validated",
             )
+        from seedvision.export.backend_outcomes import read_native_outcomes
+        backend_outcomes = read_native_outcomes(getattr(result, 'backend_outcomes_json', None))
+        for node_id, outcome in (backend_outcomes['outcomes'] or {}).items():
+            if outcome['state'] in {'failed', 'unavailable'}:
+                detail = outcome['reason_code'].replace('_', ' ')
+                if outcome['diagnostic']:
+                    detail += ': ' + outcome['diagnostic']
+                self.pipeline.set_status(node_id,
+                    NodeStatus.FAILED if outcome['state'] == 'failed' else NodeStatus.WARNING, detail)
         background_mode = result.layers.background_mode
         colour_profile = result.layers.background_colour_profile
         background_deviation = float(
@@ -13394,6 +13918,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 status, icon = 'Computing', QStyle.StandardPixmap.SP_BrowserReload
             elif key in self._analyses:
                 status, icon = getattr(self,'_image_review_states',{}).get(key,'Computed; review available'), QStyle.StandardPixmap.SP_DialogApplyButton
+            elif key in self._image_run_outcomes:
+                status, icon = 'Run did not complete; terminal record available', QStyle.StandardPixmap.SP_MessageBoxWarning
             else:
                 status, icon = 'Analysis required', QStyle.StandardPixmap.SP_FileIcon
             item.setIcon(self.style().standardIcon(icon))
@@ -13427,6 +13953,9 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             )
         if hasattr(self, "train_learning_model_action"):
             self.train_learning_model_action.setEnabled(not running)
+        if hasattr(self, 'train_trait_model_action'):
+            self.train_trait_model_action.setEnabled(not running)
+            self.activate_trait_model_action.setEnabled(not running)
         if hasattr(self, "manage_species_libraries_action"):
             self.manage_species_libraries_action.setEnabled(not running)
         if hasattr(self, "load_analysis_settings_action"):

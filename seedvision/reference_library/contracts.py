@@ -466,6 +466,7 @@ class ShapePopulationComponent:
     physical_dimensions_available: bool = True
     calibrated_physical_seed_count: float = 0.0
     dimensionless_physical_seed_count: float = 0.0
+    physical_fit_unavailability_reason: str | None = None
 
     def __post_init__(self) -> None:
         dimension = len(self.mean)
@@ -476,10 +477,16 @@ class ShapePopulationComponent:
         numeric = np.asarray((self.mean, self.mean_uncertainty, *self.covariance), np.float64)
         if not np.all(np.isfinite(numeric)):
             raise ValueError("Shape component statistics must be finite.")
+        if not np.all(np.isfinite(np.asarray(self.predictive_interval_95, np.float64))):
+            raise ValueError("Shape component predictive intervals must be finite.")
         if self.effective_physical_seed_count < 0 or self.source_count < 0:
             raise ValueError("Shape component counts cannot be negative.")
         if not isinstance(self.physical_dimensions_available, bool):
             raise ValueError("Shape component physical-dimension availability must be Boolean.")
+        if (self.physical_fit_unavailability_reason not in {None, "numeric_range"}
+                or (self.physical_dimensions_available
+                    and self.physical_fit_unavailability_reason is not None)):
+            raise ValueError("Shape component physical-fit unavailability reason is invalid.")
         if (
             self.calibrated_physical_seed_count < 0
             or self.dimensionless_physical_seed_count < 0

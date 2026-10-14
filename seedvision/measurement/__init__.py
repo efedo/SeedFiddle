@@ -1,5 +1,9 @@
 """Measurements from reviewed and calibrated seed masks."""
 
+from seedvision.measurement.descriptions import (
+    DescribedShapeValue, DescribedUncertainty, ShapeMeasurementProvenance,
+)
+
 from seedvision.measurement.geometry import (
     LocalContourFeature,
     RobustBodyEllipse,
@@ -24,6 +28,9 @@ from seedvision.measurement.shape_model import (
 )
 
 __all__ = [
+    "DescribedShapeValue",
+    "DescribedUncertainty",
+    "ShapeMeasurementProvenance",
     "LocalContourFeature",
     "RobustBodyEllipse",
     "ReviewedSeedShape",

@@ -1520,6 +1520,7 @@ class PipelineInspector(QWidget):
                         )
                     )
                 editor.setEnabled(node.enabled and node.implemented)
+                editor.setObjectName('parameter_'+spec.key)
                 editor.setToolTip(spec.description)
                 if node.identifier == 'procedural_instances' and spec.key == 'reference_texture_weight':
                     editor.setEnabled(False)
@@ -1539,6 +1540,7 @@ class PipelineInspector(QWidget):
                     self.parameter_form.setRowVisible(row,checked)
             toggle.toggled.connect(expand_section)
         self.parameter_container.setVisible(bool(node.parameter_specs))
+        self._refresh_neutral_controls()
         self.parameters_header.setVisible(bool(node.parameter_specs))
         self._refresh_procedural_fit_action()
         self.reference_edge_fit_container.setVisible(
@@ -1952,6 +1954,7 @@ class PipelineInspector(QWidget):
         self._update_colour_summary()
 
     def refresh_status(self) -> None:
+        self._refresh_neutral_controls()
         if self._node is not None:
             self.status_label.setText(
                 f"Status: {self._node.status.value}. {self._node.status_detail}"
@@ -2049,7 +2052,19 @@ class PipelineInspector(QWidget):
 
     def _parameter_edited(self, key: str, value) -> None:
         if not self.read_only and self._node is not None:
+            if key == 'apply_colour_balance':
+                self._refresh_neutral_controls(bool(value))
             self.parameter_changed.emit(self._node.identifier, key, value)
+
+    def _refresh_neutral_controls(self, enabled_override=None) -> None:
+        node = self._node
+        if node is None or node.identifier != 'deskew_colour':
+            return
+        enabled = (node.parameters['apply_colour_balance'] if enabled_override is None else enabled_override)
+        for key in ('neutral_patch_selection', 'neutral_sample_frame'):
+            editor = self.parameter_container.findChild(QWidget, 'parameter_'+key)
+            if editor is not None:
+                editor.setEnabled(bool(enabled and node.enabled and node.implemented and not self.read_only))
 
     def _reset_parameters(self) -> None:
         if not self.read_only and self._node is not None:

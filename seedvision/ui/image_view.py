@@ -563,6 +563,7 @@ class ImageView(QGraphicsView):
     reference_paint_finished = Signal()
     reference_mask_edited = Signal(str, object)
     instance_annotations_edited = Signal(object)
+    instance_annotations_generated = Signal(object, object)
     instance_tool_status = Signal(str)
     shape_fill_size_preference_changed = Signal(float)
     manual_seed_centres_edited = Signal(object, str, str)
@@ -593,6 +594,9 @@ class ImageView(QGraphicsView):
         self._displayed_base = "source"
         self._overlay_items = []
         self._analysis_result = None
+        self._annotation_canvas_epoch = 0
+        self._annotation_canvas_binding = None
+        self._instance_edit_canvas_binding = None
         self._overlay_mode = "proposals"
         self._overlay_opacity = 0.68
         self._annotation_opacity = 0.68
@@ -1077,6 +1081,9 @@ class ImageView(QGraphicsView):
         if image.isNull():
             return False, reader.errorString() or "Qt could not decode the image."
 
+        self._annotation_canvas_epoch += 1
+        self._annotation_canvas_binding = None
+        self._instance_edit_canvas_binding = None
         self.set_hilum_editing(False)
         self.hilum_editing_cancelled.emit()
         self.set_hilum_landmark(None, None)
@@ -1300,6 +1307,8 @@ class ImageView(QGraphicsView):
         """Store an analysis result and render the selected overlay layer."""
 
         if self._analysis_result is not result:
+            self._annotation_canvas_epoch += 1
+            self._annotation_canvas_binding = None
             release_host_caches(self._analysis_result)
             self._corrected_pixmap = None
             self._corrected_base_key = None
@@ -1330,6 +1339,35 @@ class ImageView(QGraphicsView):
         )
         if corrected is not None:
             self._set_bgr_base_image(corrected)
+
+    def annotation_canvas_binding(self):
+        """Return a binding only while its exact corrected analysis is displayed."""
+        binding = self._annotation_canvas_binding
+        result = self._analysis_result
+        calibration = None if result is None else getattr(result, 'calibration', None)
+        image = None if calibration is None else getattr(calibration, 'corrected_bgr', None)
+        if (binding is None or self._displayed_base != 'corrected' or image is None
+                or binding.epoch != self._annotation_canvas_epoch
+                or binding.source_sha256 != getattr(result, 'source_sha256', None)
+                or binding.shape != tuple(image.shape[:2])
+                or self._corrected_base_key != (id(image), tuple(image.shape), tuple(image.strides))
+                or not np.array_equal(binding.source_to_corrected, getattr(calibration, 'affine_matrix', None))):
+            return None
+        return binding
+
+    def _emit_instance_annotations_edit(self):
+        # Carry the captured canvas with the event, including queued deliveries.
+        self.instance_annotations_generated.emit(self._instance_annotations,
+            self._instance_edit_canvas_binding)
+        self.instance_annotations_edited.emit(self._instance_annotations)
+
+    def annotation_edit_context(self):
+        from seedvision.ui.annotation_canvas import AnnotationEditContext
+        return AnnotationEditContext(self._annotation_canvas_epoch, self.annotation_canvas_binding())
+
+    def invalidate_instance_edit_events(self):
+        """Supersede pending strokes after an authoritative canvas replacement."""
+        self._stop_corrected_annotation_interaction()
 
     def refresh_analysis(self) -> None:
         """Render the current base, overlay, and annotations once."""
@@ -2964,6 +3002,31 @@ class ImageView(QGraphicsView):
             else 1.0
         )
 
+    @staticmethod
+    def _shape_sensitivity(record):
+        if record.uncertainty.semantics in {
+                'unknown', 'unavailable', 'unavailable_boundary_sensitivity'}:
+            return None
+        return record.uncertainty.value
+
+    def _reviewed_shape_tooltip(self, reviewed, records, keys):
+        first = next(iter(records.values()))
+        lines = [f"Seed {reviewed.seed_id}: {first.measurement_basis.replace('_', ' ')}; pose {reviewed.annotation.pose}"]
+        lines.append(f"Visibility: {first.visibility}; source image frame: {first.source_image_frame}")
+        for key in keys:
+            record = records[key]
+            lines.append(f"{key.replace('_', ' ')}: {record.value:.3g} {record.unit}")
+            lines.append(f"Definition: {record.definition}; coordinates: {record.coordinate_frame}")
+            sensitivity = self._shape_sensitivity(record)
+            if sensitivity is None:
+                lines.append("Sensitivity estimate unavailable.")
+            else:
+                suffix = ("shared scale only; boundary estimate unavailable"
+                    if record.uncertainty.semantics == 'shared_scale_sensitivity_only_boundary_unavailable'
+                    else "boundary/scale sensitivity; not a confidence interval")
+                lines.append(f"Sensitivity estimate: {sensitivity:.3g} {record.unit} ({suffix}).")
+        return '\n'.join(lines)
+
     def _render_reviewed_shape_geometry(
         self, result, summary, *, uncertainty: bool
     ) -> None:
@@ -2973,22 +3036,24 @@ class ImageView(QGraphicsView):
             self._contrast_overlay_text(
                 "Annotation measurement sensitivity — not automatic seed predictions\n"
                 "Green: fitted body. Yellow dashes: ±2× boundary/scale sensitivity.\n"
-                "Cyan chord: maximum span; reported ± values are 1σ-equivalent, not guaranteed confidence limits.",
+                "Cyan chord: maximum span; reported ± values are sensitivity estimates, not confidence intervals.",
                 35, 45, max(18, self.image_size[0]*.006))
         for reviewed in summary.observations:
             measurement = reviewed.measurement
             if measurement is None:
                 continue
+            records = {record.key: record for record in measurement.described_values}
             scale = self._shape_scale_to_pixels(result, measurement)
             ellipse = measurement.ellipse
             center_x, center_y = ellipse.center_xy
             length = ellipse.body_length * scale
             width = ellipse.body_width * scale
             colour = QColor("#48f5a2") if reviewed.eligible else QColor("#ff5364")
-            if uncertainty and reviewed.eligible:
-                uncertainty_values = measurement.measurement_uncertainty
-                length_uncertainty = uncertainty_values[1] * scale
-                width_uncertainty = uncertainty_values[2] * scale
+            length_error = self._shape_sensitivity(records['body_length'])
+            width_error = self._shape_sensitivity(records['body_width'])
+            if uncertainty and reviewed.eligible and length_error is not None and width_error is not None:
+                length_uncertainty = length_error * scale
+                width_uncertainty = width_error * scale
                 outer_pen = QPen(QColor("#ffcc4d"), 2.5)
                 outer_pen.setCosmetic(True)
                 outer_pen.setStyle(Qt.PenStyle.DashLine)
@@ -3018,12 +3083,8 @@ class ImageView(QGraphicsView):
             body.setOpacity(self._overlay_opacity)
             body.setVisible(reviewed.eligible)
             body.setZValue(14)
-            body.setToolTip(
-                f"Seed {reviewed.seed_id}: robust body {ellipse.body_length:.2f} × "
-                f"{ellipse.body_width:.2f} {measurement.length_unit}; ovality "
-                f"{measurement.ovality:.3f}; pose {reviewed.annotation.pose}; "
-                f"support {ellipse.support_fraction:.0%}."
-            )
+            body.setToolTip(self._reviewed_shape_tooltip(reviewed, records,
+                ('body_length', 'body_width', 'ovality')))
             self._overlay_items.append(body)
             first, second = measurement.maximum_span_endpoints
             span_pen = QPen(QColor("#42d9ff"), 3.0)
@@ -3033,6 +3094,7 @@ class ImageView(QGraphicsView):
             )
             span.setOpacity(self._overlay_opacity)
             span.setZValue(15)
+            span.setToolTip(self._reviewed_shape_tooltip(reviewed, records, ('maximum_span',)))
             self._overlay_items.append(span)
             for endpoint in (first, second):
                 radius = max(2., length * .025)
@@ -3040,10 +3102,14 @@ class ImageView(QGraphicsView):
                     radius*2, radius*2, span_pen)
                 marker.setZValue(15)
                 self._overlay_items.append(marker)
+            span_error = self._shape_sensitivity(records['maximum_span'])
+            span_uncertainty_text = (f"±{span_error:.2f}" if span_error is not None else "(sensitivity unavailable)")
             text = (f"Seed {reviewed.seed_id}: span {measurement.maximum_span:.2f} "
-                    f"±{measurement.measurement_uncertainty[0]:.2f} {measurement.length_unit}")
+                    f"{span_uncertainty_text} {measurement.length_unit}")
             if reviewed.eligible:
-                text += (f"\novality {measurement.ovality:.3f} ±{measurement.measurement_uncertainty[3]:.3f}"
+                ovality_error = self._shape_sensitivity(records['ovality'])
+                ovality_uncertainty_text = (f"±{ovality_error:.3f}" if ovality_error is not None else "(sensitivity unavailable)")
+                text += (f"\novality {measurement.ovality:.3f} {ovality_uncertainty_text}"
                          f"; concavity {measurement.concavity_fraction:.1%}")
             else:
                 text += "\nSpan only; shape not eligible"
@@ -3114,8 +3180,13 @@ class ImageView(QGraphicsView):
             return
         x_values = np.asarray([item[0] for item in points], float)
         y_values = np.asarray([item[1] for item in points], float)
-        x_errors = np.asarray([p[2].measurement.measurement_uncertainty[0] for p in points])
-        y_errors = np.asarray([p[2].measurement.measurement_uncertainty[3] for p in points])
+        descriptions = {p[2].seed_id: {r.key: r for r in p[2].measurement.described_values} for p in points}
+        sensitivities = {seed: (self._shape_sensitivity(records['maximum_span']),
+                                self._shape_sensitivity(records['ovality']))
+                         for seed, records in descriptions.items()}
+        # Zero is a chart-bounds placeholder only; unavailable bars are omitted.
+        x_errors = np.asarray([sensitivities[p[2].seed_id][0] or 0 for p in points])
+        y_errors = np.asarray([sensitivities[p[2].seed_id][1] or 0 for p in points])
         x_min, x_max = float((x_values-x_errors).min()), float((x_values+x_errors).max())
         y_min, y_max = float((y_values-y_errors).min()), float((y_values+y_errors).max())
         x_pad = max((x_max - x_min) * 0.12, max(abs(x_max), 1.0) * 0.03)
@@ -3140,7 +3211,7 @@ class ImageView(QGraphicsView):
         self._contrast_overlay_text("Ovality = body length / width",
             plot.left(), plot.top()-font_size*2, font_size, z=z+1)
         self._contrast_overlay_text(
-            f"n={len(points)} complete shapes · bars: ±1σ sensitivity\n"
+            f"n={len(points)} complete shapes · bars: ± sensitivity estimate\n"
             "Green: flat · Cyan: oblique · Orange: side · Purple: uncertain",
             plot.left(), plot.bottom()+font_size*4, font_size, z=z+1)
         for x, y, reviewed in points:
@@ -3150,9 +3221,15 @@ class ImageView(QGraphicsView):
                 "flat": "#48f5a2", "oblique": "#42d9ff",
                 "side": "#ffb84a", "uncertain": "#c58cff",
             }.get(reviewed.annotation.pose, "#a8b2bd")
-            dx = reviewed.measurement.measurement_uncertainty[0] / (x_max-x_min+2*x_pad)*plot.width()
-            dy = reviewed.measurement.measurement_uncertainty[3] / (y_max-y_min+2*y_pad)*plot.height()
-            for coords in ((px-dx, py, px+dx, py), (px, py-dy, px, py+dy)):
+            x_error, y_error = sensitivities[reviewed.seed_id]
+            bars = []
+            if x_error is not None:
+                dx = x_error / (x_max-x_min+2*x_pad)*plot.width()
+                bars.append((px-dx, py, px+dx, py))
+            if y_error is not None:
+                dy = y_error / (y_max-y_min+2*y_pad)*plot.height()
+                bars.append((px, py-dy, px, py+dy))
+            for coords in bars:
                 bar = self._scene.addLine(*coords, QPen(QColor(colour), 2))
                 bar.setZValue(z+1)
                 self._overlay_items.append(bar)
@@ -3162,10 +3239,8 @@ class ImageView(QGraphicsView):
             )
             point.setZValue(z + 1)
             point.setOpacity(self._overlay_opacity)
-            point.setToolTip(
-                f"Seed {reviewed.seed_id}: span {x:.3f}, ovality {y:.3f}, "
-                f"pose {reviewed.annotation.pose}."
-            )
+            point.setToolTip(self._reviewed_shape_tooltip(reviewed,
+                descriptions[reviewed.seed_id], ('maximum_span', 'ovality')))
             self._overlay_items.append(point)
 
     def _render_reference_curvature_distribution(self, summary):
@@ -3218,6 +3293,14 @@ class ImageView(QGraphicsView):
                 length = 1.0
                 width = 1.0 / max(float(component.mean[3]), 1.0)
                 dimension_label = "dimensionless shape only"
+                if component.physical_fit_unavailability_reason == "numeric_range":
+                    dimension_label += "; physical fit unavailable: numeric range"
+            update_reason = getattr(family, 'update_unavailability_reason', None)
+            if update_reason is not None:
+                dimension_label += (f"; local pooling unavailable: {update_reason}; "
+                    f"retained {family.source} component")
+            elif getattr(family, 'update_state', None) == 'applied':
+                dimension_label += "; local pooling applied"
             max_size = min(cell_width * 0.72, plot.height() * 0.58)
             scale = max_size / max(length, width, 1e-9)
             center_x = plot.left() + (index + 0.5) * cell_width
@@ -3235,6 +3318,7 @@ class ImageView(QGraphicsView):
             body.setToolTip(
                 f"{family.pose}: {component.effective_physical_seed_count:.1f} "
                 f"effective physical seed(s), {component.source_count} source(s); "
+                f"{component.calibrated_physical_seed_count:.1f} retained calibrated seed(s); "
                 f"{dimension_label}."
             )
             self._overlay_items.append(body)
@@ -3997,6 +4081,10 @@ class ImageView(QGraphicsView):
         self._image_item.setToolTip("")
         key = (id(bgr), tuple(bgr.shape), tuple(bgr.strides))
         if self._corrected_pixmap is None or self._corrected_base_key != key:
+            self._stop_corrected_annotation_interaction()
+            from seedvision.ui.annotation_canvas import displayed_canvas_binding
+            self._annotation_canvas_binding = displayed_canvas_binding(
+                self._analysis_result, bgr, self._annotation_canvas_epoch)
             contiguous = bgr if bgr.flags.c_contiguous else bgr.copy()
             height, width = contiguous.shape[:2]
             image = QImage(
@@ -4220,6 +4308,12 @@ class ImageView(QGraphicsView):
     def _stop_corrected_annotation_interaction(self) -> None:
         """Drop previews and active strokes when the displayed frame changes."""
 
+        from dataclasses import replace
+        self._annotation_canvas_epoch += 1
+        if self._annotation_canvas_binding is not None:
+            self._annotation_canvas_binding = replace(
+                self._annotation_canvas_binding, epoch=self._annotation_canvas_epoch)
+        self._instance_edit_canvas_binding = None
         self._reference_paint_button = None
         self._last_reference_paint_point = None
         self._last_reference_hover_point = None
@@ -4259,7 +4353,10 @@ class ImageView(QGraphicsView):
         bounds_item.setOpacity(self._overlay_opacity)
         self._overlay_items.append(bounds_item)
         swatch_pen = QPen(QColor("#ffdb55"), 6)
+        facts = getattr(calibration, 'neutral_balance', None)
+        used = () if facts is None else facts.used_patch_ids
         for swatch in card.swatches:
+            patch_id = swatch.row*4+swatch.column+1
             corners = (
                 calibration.transform_points(swatch.corners)
                 if corrected
@@ -4267,11 +4364,25 @@ class ImageView(QGraphicsView):
             )
             item = self._scene.addPolygon(
                 QPolygonF([QPointF(float(x), float(y)) for x, y in corners]),
-                swatch_pen,
+                QPen(QColor('#67f0a2'), 8) if patch_id in used else swatch_pen,
             )
             item.setZValue(13)
             item.setOpacity(self._overlay_opacity)
             self._overlay_items.append(item)
+            label = self._scene.addSimpleText(str(patch_id))
+            font = label.font()
+            font.setPixelSize(max(9, round(float(np.ptp(corners, axis=0).min())*.25)))
+            font.setBold(True)
+            label.setFont(font)
+            label.setBrush(QColor('#67f0a2') if patch_id in used else QColor('#ffdb55'))
+            centre = corners.mean(axis=0)
+            rect = label.boundingRect()
+            label.setPos(float(centre[0])-rect.width()/2, float(centre[1])-rect.height()/2)
+            label.setData(0, 'neutral_patch_id')
+            label.setData(1, patch_id)
+            label.setZValue(14)
+            label.setOpacity(self._overlay_opacity)
+            self._overlay_items.append(label)
 
     def _render_ruler_reference(self, result) -> None:
         calibration = getattr(result, "calibration", None)
@@ -4649,26 +4760,39 @@ class ImageView(QGraphicsView):
     def zoom_out(self) -> None:
         self._zoom_by(1.0 / 1.2, center_on_view=True)
 
-    def _zoom_by(self, factor: float, *, center_on_view: bool = False) -> None:
+    def _zoom_by(
+        self,
+        factor: float,
+        *,
+        center_on_view: bool = False,
+        anchor_position: QPoint | None = None,
+    ) -> bool:
         if self._image_item is None:
-            return
+            return False
         current = float(self.transform().m11())
         target = current * float(factor)
         if not 0.03 <= target <= 32.0:
-            return
+            return False
         anchor = self.transformationAnchor()
+        anchor_scene = self.mapToScene(anchor_position) if anchor_position is not None else None
         if center_on_view:
             # The toolbar is outside the viewport. Anchoring its buttons to
             # the mouse can jump from a zoomed seed to the image corner.
             self.setTransformationAnchor(
                 QGraphicsView.ViewportAnchor.AnchorViewCenter
             )
+        elif anchor_position is not None:
+            self.setTransformationAnchor(QGraphicsView.ViewportAnchor.NoAnchor)
         try:
             self.scale(float(factor), float(factor))
+            if anchor_scene is not None:
+                drift = self.mapToScene(anchor_position) - anchor_scene
+                self.translate(drift.x(), drift.y())
         finally:
-            if center_on_view:
+            if center_on_view or anchor_position is not None:
                 self.setTransformationAnchor(anchor)
         self._update_zoom_indicator()
+        return True
 
     def _update_zoom_indicator(self) -> None:
         self.zoom_label.setText(f"{self.transform().m11() * 100.0:.0f}%")
@@ -4676,6 +4800,10 @@ class ImageView(QGraphicsView):
     def wheelEvent(self, event: QWheelEvent) -> None:  # noqa: N802 - Qt override
         if self._image_item is None:
             super().wheelEvent(event)
+            return
+        wheel_delta = int(event.angleDelta().y())
+        if wheel_delta == 0:
+            event.ignore()
             return
         if (
             self._reference_point_mode == "instance"
@@ -4708,9 +4836,11 @@ class ImageView(QGraphicsView):
                 self._schedule_instance_preview(self._last_reference_hover_point)
             event.accept()
             return
-        direction = 1 if event.angleDelta().y() > 0 else -1
-        self._zoom_by(1.2 if direction > 0 else 1 / 1.2)
-        self._zoom_steps += direction
+        direction = 1 if wheel_delta > 0 else -1
+        if self._zoom_by(1.2 if direction > 0 else 1 / 1.2,
+                anchor_position=event.position().toPoint()):
+            self._zoom_steps += direction
+        event.accept()
 
     def resizeEvent(self, event) -> None:  # noqa: N802 - Qt override
         super().resizeEvent(event)
@@ -5092,6 +5222,7 @@ class ImageView(QGraphicsView):
         )
 
     def _commit_instance_assisted_preview(self, scene_point: QPointF) -> bool:
+        self._instance_edit_canvas_binding = self.annotation_edit_context()
         if not self._preview_matches(scene_point):
             self._update_instance_assisted_preview(scene_point)
         if self._instance_annotation_tool == "edge_trace":
@@ -5213,7 +5344,7 @@ class ImageView(QGraphicsView):
             self._refresh_instance_annotation_overlay()
             # The main window owns this draft from here. Avoid a second
             # full-resolution label-map copy on every assisted click.
-            self.instance_annotations_edited.emit(self._instance_annotations)
+            self._emit_instance_annotations_edit()
             self.reference_paint_finished.emit()
         self._schedule_instance_preview(scene_point)
         return changed > 0
@@ -5473,6 +5604,7 @@ class ImageView(QGraphicsView):
     def _apply_instance_assisted_tool(self, end_point: QPointF) -> bool:
         """Apply the current image-aware tool and report whether labels changed."""
 
+        self._instance_edit_canvas_binding = self.annotation_edit_context()
         try:
             if self._instance_annotation_tool == "edge_trace":
                 edge = self._annotation_edge_evidence(
@@ -5881,6 +6013,8 @@ class ImageView(QGraphicsView):
                 return
             self._detach_active_reference_buffers()
             self._reference_paint_button = event.button()
+            if self._reference_point_mode == 'instance':
+                self._instance_edit_canvas_binding = self.annotation_edit_context()
             self._reference_stroke_erases = (
                 self._reference_erase_enabled
                 or event.button() == Qt.MouseButton.RightButton
@@ -6003,7 +6137,7 @@ class ImageView(QGraphicsView):
                 if changed or not assisted:
                     # Emit the mutable draft itself; applied annotations are
                     # copied only when the user commits them.
-                    self.instance_annotations_edited.emit(self._instance_annotations)
+                    self._emit_instance_annotations_edit()
                 self._clear_instance_live_stroke()
             else:
                 # Signal payloads are immutable snapshots for external listeners.

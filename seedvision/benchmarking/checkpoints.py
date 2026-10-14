@@ -617,6 +617,11 @@ def _validate_raster_contract(
 
 def _validate_raster_values(name: str, array: np.ndarray, role: RasterRole, identity: CheckpointIdentity) -> None:
     value_range = _validate_raster_contract(name, role, tuple(array.shape), array.dtype, identity)
+    _validate_raster_payload_values(name, array, role, identity, value_range)
+
+
+def _validate_raster_payload_values(name, array, role, identity, value_range):
+    """Check values independently of shape, including bounded archive chunks."""
     if role.kind == "mask":
         representation = identity.mask_semantics["representation"]
         allowed = {"boolean": {0, 1}, "uint8_0_1": {0, 1}, "uint8_0_255": {0, 255}}[representation]
@@ -977,12 +982,33 @@ def _validate_npz(
     specs: tuple[dict[str, Any], ...],
     limits: CheckpointLimits,
     identity: CheckpointIdentity,
+    *,
+    array_names: tuple[str, ...] | None = None,
+    cancel: Any = None,
 ) -> dict[str, np.ndarray]:
+    requested = _selected_array_names(array_names, {item['name'] for item in specs})
+    if requested is None and cancel is not None:
+        requested = frozenset(item['name'] for item in specs)
+    _raise_if_cancelled(cancel)
     if path.is_symlink() or not path.is_file():
         raise InvalidCheckpoint("Checkpoint array archive is missing or linked.")
     try:
         with path.open("rb") as stream:
-            snapshot = stream.read(limits.max_npz_bytes + 1)
+            if requested is None:
+                snapshot = stream.read(limits.max_npz_bytes + 1)
+            else:
+                # A single read(maximum+1) may transiently reserve the entire
+                # limit even for a much smaller file. Grow a bounded snapshot
+                # incrementally, polling between compressed-byte chunks.
+                with BytesIO() as buffer:
+                    while buffer.tell() <= limits.max_npz_bytes:
+                        _raise_if_cancelled(cancel)
+                        chunk = stream.read(min(1024*1024,limits.max_npz_bytes+1-buffer.tell()))
+                        if not chunk:
+                            break
+                        buffer.write(chunk)
+                    snapshot = buffer.getvalue()
+                del chunk
     except OSError as error:
         raise InvalidCheckpoint("Checkpoint array archive could not be read.") from error
     if len(snapshot) > limits.max_npz_bytes:
@@ -1006,7 +1032,9 @@ def _validate_npz(
             # byte snapshot, so replacing the path between checks cannot alter
             # the headers that NumPy will later deserialize.
             by_name = {item.filename: item for item in infos}
+            selected = {}
             for spec in specs:
+                _raise_if_cancelled(cancel)
                 member = f"{spec['name']}.npy"
                 with archive.open(member, "r") as stream:
                     try:
@@ -1028,6 +1056,53 @@ def _validate_npz(
                         raise InvalidCheckpoint(f"Checkpoint array {spec['name']} is not in the declared C-contiguous layout.")
                     if by_name[member].file_size - stream.tell() != spec["nbytes"]:
                         raise InvalidCheckpoint(f"Checkpoint array {spec['name']} payload length differs from its header.")
+                    if requested is not None:
+                        # All members are read and verified, even when the
+                        # caller requests no arrays. The compressed snapshot
+                        # remains immutable; only selected decoded payloads
+                        # are retained. Peak host memory also includes this
+                        # snapshot, one selected bytearray-to-bytes copy and
+                        # a bounded decompression/value-validation chunk.
+                        name = spec['name']
+                        keep = name in requested
+                        payload = bytearray(spec['nbytes']) if keep else None
+                        digest = sha256()
+                        role = _decode_raster_role(spec['role'])
+                        value_range = (_validate_raster_contract(name, role, tuple(shape), dtype, identity)
+                                       if role is not None else None)
+                        offset = 0
+                        chunk_size = max(dtype.itemsize, (1024*1024//dtype.itemsize)*dtype.itemsize)
+                        while offset < spec['nbytes']:
+                            _raise_if_cancelled(cancel)
+                            chunk = stream.read(min(chunk_size, spec['nbytes']-offset))
+                            if not chunk or len(chunk) % dtype.itemsize:
+                                raise InvalidCheckpoint(f"Checkpoint array {name} payload is truncated.")
+                            digest.update(chunk)
+                            if role is not None:
+                                try:
+                                    _validate_raster_payload_values(name, np.frombuffer(chunk, dtype=dtype),
+                                                                    role, identity, value_range)
+                                except (CheckpointError, TypeError, ValueError) as error:
+                                    raise InvalidCheckpoint(f"Checkpoint raster {name} violates its declared values.") from error
+                            if keep:
+                                payload[offset:offset+len(chunk)] = chunk
+                            offset += len(chunk)
+                        if stream.read(1):
+                            raise InvalidCheckpoint(f"Checkpoint array {name} has extra payload bytes.")
+                        if role is not None and offset == 0:
+                            try:
+                                _validate_raster_payload_values(name, np.empty(0, dtype=dtype),
+                                                                role, identity, value_range)
+                            except (CheckpointError, TypeError, ValueError) as error:
+                                raise InvalidCheckpoint(f"Checkpoint raster {name} violates its declared values.") from error
+                        if digest.hexdigest() != spec['data_sha256']:
+                            raise InvalidCheckpoint(f"Checkpoint array {name} content hash does not match.")
+                        if keep:
+                            selected[name] = np.frombuffer(bytes(payload), dtype=dtype).reshape(shape)
+                        payload = None
+            if requested is not None:
+                _raise_if_cancelled(cancel)
+                return selected
     except (OSError, zipfile.BadZipFile, RuntimeError) as error:
         raise InvalidCheckpoint("Checkpoint array archive is not a valid ZIP/NPZ file.") from error
 
@@ -1059,6 +1134,15 @@ def _validate_npz(
     return result
 
 
+def _selected_array_names(array_names, available):
+    if array_names is None:
+        return None
+    if (type(array_names) is not tuple or any(type(name) is not str for name in array_names)
+            or len(set(array_names)) != len(array_names) or set(array_names)-available):
+        raise InvalidCheckpoint("Selected arrays must be a tuple of distinct names in the full inventory.")
+    return frozenset(array_names)
+
+
 def load_checkpoint(
     root: Path | str,
     checkpoint_sha256: str,
@@ -1066,8 +1150,16 @@ def load_checkpoint(
     expected_identity: CheckpointIdentity | None = None,
     expected_measurement: MeasurementContract | None = None,
     limits: CheckpointLimits = CheckpointLimits(),
+    array_names: tuple[str, ...] | None = None,
+    cancel: Any = None,
 ) -> BenchmarkCheckpoint:
-    """Load an immutable checkpoint and verify every identity and array byte."""
+    """Verify every array byte, optionally returning only selected arrays.
+
+    Selection does not lower aggregate archive admission or skip unselected
+    values/digests. Host memory includes the bounded compressed snapshot and
+    selected immutable payloads, with one transient payload copy. None retains
+    the historical all-array behavior; () verifies without retaining arrays.
+    """
 
     try:
         digest = _require_sha256(checkpoint_sha256, "checkpoint SHA-256")
@@ -1101,11 +1193,14 @@ def load_checkpoint(
         raise InvalidCheckpoint("Available or empty checkpoint has no output arrays.")
     if execution.status in {ExecutionStatus.FAILED, ExecutionStatus.UNSUPPORTED} and measurement.eligible:
         raise InvalidCheckpoint("Failed or unsupported checkpoint marks a measurement eligible.")
-    arrays = _validate_npz(path / "arrays.npz", specs, limits, identity)
+    arrays = (_validate_npz(path / "arrays.npz", specs, limits, identity)
+              if array_names is None and cancel is None else
+              _validate_npz(path / "arrays.npz", specs, limits, identity,
+                            array_names=array_names, cancel=cancel))
     roles = {
         item["name"]: role
         for item in specs
-        if (role := _decode_raster_role(item["role"])) is not None
+        if item['name'] in arrays and (role := _decode_raster_role(item["role"])) is not None
     }
     return BenchmarkCheckpoint(
         checkpoint_sha256=digest,

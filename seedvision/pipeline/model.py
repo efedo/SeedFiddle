@@ -103,6 +103,9 @@ class PipelineNode:
     parameter_specs: tuple[ParameterSpec, ...] = ()
     parameter_sections: tuple[ParameterSection, ...] = ()
     input_ports: tuple[tuple[str, str], ...] = ()
+    # These authored connections remain required, but the connected source
+    # calculation may be disabled when the consumer supports an alternative.
+    optional_enabled_input_ports: tuple[str, ...] = ()
     output_ports: tuple[tuple[str, str], ...] = ()
     input_port_types: dict[str, str] = field(default_factory=dict)
     output_port_types: dict[str, str] = field(default_factory=dict)
@@ -136,7 +139,11 @@ class PipelineNode:
             if value not in spec.choices:
                 raise ValueError(f"{value!r} is not valid for {spec.label}.")
         elif spec.kind == "text":
-            value = str(value).strip()
+            if key == 'neutral_patch_selection':
+                from seedvision.calibration.neutral import normalize_neutral_patch_selection
+                value = normalize_neutral_patch_selection(value)
+            else:
+                value = str(value).strip()
             if not value:
                 raise ValueError(f"{spec.label} cannot be empty.")
         elif spec.kind != "bool":
@@ -742,7 +749,7 @@ class PipelineGraph:
                 continue
             if self.missing_input_ports(node_id):
                 continue
-            if any(not self.node(parent).enabled for parent in self.upstream(node_id)):
+            if any(not self.node(parent).enabled for parent in self._required_enabled_upstream(node_id)):
                 continue
             node = self.node(node_id)
             node.enabled = True
@@ -862,7 +869,7 @@ class PipelineGraph:
                 raise ValueError(f"Reconnect required input(s) first: {missing}.")
             disabled_upstream = tuple(
                 upstream_id
-                for upstream_id in self.upstream(node_id)
+                for upstream_id in self._required_enabled_upstream(node_id)
                 if not self.node(upstream_id).enabled
             )
             if disabled_upstream:
@@ -878,6 +885,11 @@ class PipelineGraph:
             # Re-enabling remains explicit so a user never unknowingly turns a
             # whole unfinished branch back on.
             for affected_id in affected:
+                if affected_id != node_id and all(
+                    self.node(parent).enabled
+                    for parent in self._required_enabled_upstream(affected_id)
+                ):
+                    continue
                 affected_node = self.node(affected_id)
                 affected_node.enabled = False
                 affected_node.status = NodeStatus.BYPASSED
@@ -886,6 +898,11 @@ class PipelineGraph:
         self.revision += 1
         self.invalidate(affected, preserve_bypassed=True)
         return affected
+
+    def _required_enabled_upstream(self, node_id: str) -> tuple[str, ...]:
+        optional = set(self.node(node_id).optional_enabled_input_ports)
+        return tuple(dict.fromkeys(connection.source for connection in self.connections
+            if connection.target == node_id and connection.target_port not in optional))
 
     def set_status(
         self, node_id: str, status: NodeStatus, detail: str = ""
@@ -1008,6 +1025,11 @@ def build_default_pipeline() -> PipelineGraph:
                 "Estimate BGR channel gains from the least-chromatic detected swatches."
             ),
         ),
+        ParameterSpec('neutral_patch_selection', 'Neutral grid patches', 'text',
+            description='automatic or unique comma-separated IDs 1–24; row-major in the detected six-row, four-column grid. These are local grid positions, not manufacturer chip IDs.'),
+        ParameterSpec('neutral_sample_frame', 'Neutral sampling frame', 'choice',
+            choices=('source', 'corrected'),
+            description='Sample source pixels or the geometrically corrected CUDA image before neutral gains are applied.'),
     )
     ruler_parameters = (
         ParameterSpec(
@@ -1741,6 +1763,8 @@ def build_default_pipeline() -> PipelineGraph:
             40,
             parameters={
                 "apply_colour_balance": True,
+                "neutral_patch_selection": "automatic",
+                "neutral_sample_frame": "source",
                 "max_deskew_degrees": 10.0,
                 "apply_perspective_correction": True,
                 "max_perspective_fraction": 0.25,
@@ -3162,6 +3186,27 @@ def build_default_pipeline() -> PipelineGraph:
             },
         ),
         PipelineNode(
+            'trait_classifier', 'Object-level seed traits', 'GPU trait analysis',
+            'Apply a frozen supplied-vocabulary classifier to the selected seed instances',
+            2670, 1060, enabled=False, bypassable=True, status=NodeStatus.BYPASSED,
+            status_detail='Disabled; select a frozen trait model',
+            optional_enabled_input_ports=('procedural', 'unet', 'stardist'),
+            parameters={'trait_model_path': 'None', 'trait_abstention_threshold': .8},
+            inline_parameters=(('trait_abstention_threshold', 'Minimum probability'),),
+            parameter_specs=(
+                ParameterSpec('trait_model_path', 'Frozen trait model', 'text',
+                    description='Path to the frozen JSON model; None gives explicit abstention.'),
+                ParameterSpec('trait_abstention_threshold', 'Minimum predictive probability', 'float',
+                    0., 1., .01, 'Withhold the class below this calibrated predictive probability.'),
+            ),
+            details='Uses the same enabled U-Net, StarDist, then procedural selection as result export. '
+                'CUDA colour and visible-pixel geometry features and calibrated scores are cached separately '
+                'from threshold decisions. Invalid crop/frame/support inputs abstain. Supplied definitions '
+                'and development calibration do not establish biological validation.',
+            output_ports=(('predictions', 'Per-seed trait predictions'),),
+            output_port_types={'predictions': 'TraitPredictions'},
+        ),
+        PipelineNode(
             "wrinkling", "Wrinkling likelihood", "GPU trait analysis",
             "Detect seed-relative ridge and valley texture away from boundaries",
             2640, 480,
@@ -3360,7 +3405,7 @@ def build_default_pipeline() -> PipelineGraph:
             ("Scale interpretation", ("ruler_length_mm", "minor_tick_mm")),
         ),
         "deskew_colour": (
-            ("Neutral colour balance", ("apply_colour_balance",)),
+            ("Neutral colour balance", ("apply_colour_balance", "neutral_patch_selection", "neutral_sample_frame")),
             (
                 "Geometric correction",
                 (
@@ -4003,6 +4048,10 @@ def build_default_pipeline() -> PipelineGraph:
                 ("nms_iou_threshold", "minimum_instance_area_fraction"),
             ),
         ),
+        'trait_classifier': (
+            ('Frozen model', ('trait_model_path',)),
+            ('Decision', ('trait_abstention_threshold',)),
+        ),
         "wrinkling": (
             ("Wrinkle response", ("wrinkle_scale_fraction",)),
         ),
@@ -4635,6 +4684,11 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineConnection("illumination_decomposition", "stardist_instances", "ShadowLikelihood", source_port="shadow", target_port="shadow"),
         PipelineConnection("illumination_decomposition", "stardist_instances", "HighlightLikelihood", source_port="highlight", target_port="highlight"),
         PipelineConnection("image_quality", "stardist_instances", "SensorNoiseLikelihood", source_port="sensor_noise", target_port="sensor_noise"),
+        PipelineConnection('deskew_colour', 'trait_classifier', 'CorrectedImage', target_port='image'),
+        PipelineConnection('layout_detection', 'trait_classifier', 'DishRegion', source_port='dish_region', target_port='valid'),
+        PipelineConnection('procedural_instances', 'trait_classifier', 'SeedInstances', source_port='instances', target_port='procedural'),
+        PipelineConnection('unet_instances', 'trait_classifier', 'SeedInstances', source_port='instances', target_port='unet'),
+        PipelineConnection('stardist_instances', 'trait_classifier', 'SeedInstances', source_port='instances', target_port='stardist'),
         PipelineConnection("instance_masks", "radial_profile", "ProvisionalInstances"),
         PipelineConnection(
             "identification", "radial_profile", "SeedProposals",

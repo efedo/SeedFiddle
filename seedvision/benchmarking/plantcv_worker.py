@@ -25,6 +25,8 @@ from typing import Any, Mapping
 
 import numpy as np
 
+from . import reference_watershed_capture as watershed_capture
+
 from .reference_runner import (
     MAX_ARRAY_BYTES,
     MAX_ARRAY_DIMENSIONS,
@@ -58,6 +60,7 @@ _OPERATION_INPUTS: dict[str, tuple[str, ...]] = {
     "morphology.fill": ("mask",),
     "filter.median_blur": ("gray",),
     "segmentation.watershed": ("rgb", "mask"),
+    "segmentation.watershed.capture": ("rgb", "mask"),
     "analysis.size": ("image", "labels"),
     "analysis.color": ("rgb", "labels"),
     "transform.correct_color": ("target_rgb", "target_mask", "source_rgb", "source_mask"),
@@ -82,6 +85,7 @@ _CALLABLE_SOURCES: dict[str, tuple[str, str, str]] = {
     "morphology.fill": ("fill", "plantcv.plantcv.fill", "plantcv/plantcv/fill.py"),
     "filter.median_blur": ("median_blur", "plantcv.plantcv.median_blur", "plantcv/plantcv/median_blur.py"),
     "segmentation.watershed": ("watershed.watershed_segmentation", "plantcv.plantcv.watershed", "plantcv/plantcv/watershed.py"),
+    "segmentation.watershed.capture": ("watershed.watershed_segmentation", "plantcv.plantcv.watershed", "plantcv/plantcv/watershed.py"),
     "analysis.size": ("analyze.size", "plantcv.plantcv.analyze.size", "plantcv/plantcv/analyze/size.py"),
     "analysis.color": ("analyze.color", "plantcv.plantcv.analyze.color", "plantcv/plantcv/analyze/color.py"),
     "transform.correct_color": ("transform.correct_color", "plantcv.plantcv.transform.color_correction", "plantcv/plantcv/transform/color_correction.py"),
@@ -263,6 +267,8 @@ class _AuditedPlantCVSourceLoader(importlib.abc.Loader):
         self.record = dict(record)
         self.verified_functions: dict[str, Any] = {}
         self.verified_code_objects: dict[str, Any] = {}
+        self.verified_classes: dict[str, Any] = {}
+        self.verified_class_code_objects: dict[tuple[str, str], Any] = {}
 
     def create_module(self, spec: Any) -> None:
         return None
@@ -287,6 +293,15 @@ class _AuditedPlantCVSourceLoader(importlib.abc.Loader):
         }
         self.verified_code_objects = {
             name: function.__code__ for name, function in self.verified_functions.items()
+        }
+        self.verified_classes = {
+            name: value for name, value in module.__dict__.items()
+            if inspect.isclass(value) and getattr(value, "__module__", None) == self.fullname
+        }
+        self.verified_class_code_objects = {
+            (name, member_name): member.__code__
+            for name, cls in self.verified_classes.items()
+            for member_name, member in vars(cls).items() if inspect.isfunction(member)
         }
 
 
@@ -425,6 +440,60 @@ def _plantcv_bgr_to_rgb(array: np.ndarray) -> np.ndarray:
     return np.ascontiguousarray(array[..., ::-1])
 
 
+def _capture_source_inventory(source_files: Any) -> list[dict[str, Any]]:
+    if not isinstance(source_files, list):
+        raise WorkerError("Capture source inventory is missing")
+    records = [dict(record) for record in source_files]
+    by_path = {record.get("path"): record for record in records}
+    for record in watershed_capture.capture_source_records():
+        previous = by_path.get(record["path"])
+        if previous is not None:
+            if any(previous.get(key) != record[key] for key in ("bytes", "sha256")):
+                raise WorkerError("Capture source pin contradicts the canonical audit")
+        else:
+            records.append(record)
+    return records
+
+
+def _capture_bindings(pcv: Any) -> tuple[Any, ...]:
+    """Verify public aliases and retain their compiled identities across the call."""
+    target = pcv.watershed.watershed_segmentation
+    bindings: list[Any] = [target, target.__code__]
+    for alias, module_name in (
+        ("color_palette", "plantcv.plantcv.color_palette"),
+        ("_cv2_findcontours", "plantcv.plantcv._helpers"),
+        ("_debug", "plantcv.plantcv._debug"),
+    ):
+        module = sys.modules.get(module_name)
+        function = getattr(module, alias, None)
+        loader = getattr(getattr(module, "__spec__", None), "loader", None)
+        if (
+            not isinstance(loader, _AuditedPlantCVSourceLoader)
+            or loader.verified_functions.get(alias) is not function
+            or loader.verified_code_objects.get(alias) is not getattr(function, "__code__", None)
+            or target.__globals__.get(alias) is not function
+        ):
+            raise WorkerError(f"Capture helper alias differs from verified source: {alias}")
+        bindings.extend((function, function.__code__))
+    cls = type(pcv.outputs)
+    module = sys.modules.get(cls.__module__)
+    loader = getattr(getattr(module, "__spec__", None), "loader", None)
+    method = getattr(cls, "add_observation", None)
+    if (
+        not isinstance(loader, _AuditedPlantCVSourceLoader)
+        or loader.verified_classes.get(cls.__name__) is not cls
+        or loader.verified_class_code_objects.get((cls.__name__, "add_observation")) is not getattr(method, "__code__", None)
+        or target.__globals__.get("outputs") is not pcv.outputs
+        or target.__globals__.get("params") is not pcv.params
+    ):
+        raise WorkerError("Capture observation/parameter binding differs from verified source")
+    bindings.extend((cls, method, method.__code__, pcv.outputs, pcv.params))
+    for function in (_rgb_to_plantcv_bgr, _plantcv_bgr_to_rgb, watershed_capture.capture_watershed,
+                     watershed_capture._admit, watershed_capture._snapshot):
+        bindings.extend((function, function.__code__))
+    return tuple(bindings)
+
+
 def _array_manifest_matches(manifest: Any, arrays: Mapping[str, np.ndarray]) -> None:
     if not isinstance(manifest, dict) or set(manifest) != set(arrays):
         raise WorkerError("Input NPZ keys differ from the declared input arrays")
@@ -546,15 +615,35 @@ def _run_operation(
         elif operation == "threshold.mean":
             params_only({"ksize", "offset", "object_type"})
             ksize = _integer(parameters.get("ksize"), "ksize", minimum=3, maximum=MAX_KERNEL_SIDE)
-            if ksize % 2 != 1:
-                raise WorkerError("Parameter ksize must be odd for PlantCV adaptive mean threshold")
+            # Retain the request in the protocol/recipe identity. The public
+            # method itself increments even sizes before its OpenCV call.
+            effective_ksize = ksize + int(ksize % 2 == 0)
             offset = _number(parameters.get("offset"), "offset")
-            effective.update({"callable": "plantcv.plantcv.threshold.mean", "ksize": ksize, "offset": offset})
+            effective.update({"callable": "plantcv.plantcv.threshold.mean", "ksize": effective_ksize, "offset": offset})
             result = pcv.threshold.mean(arrays["gray"], ksize=ksize, offset=offset, object_type=object_type)
         else:
             params_only({"object_type"})
             effective["callable"] = "plantcv.plantcv.threshold.otsu"
             result = pcv.threshold.otsu(arrays["gray"], object_type=object_type)
+            # PlantCV returns the mask only. Capture the scalar separately from
+            # the exact pinned OpenCV call, and verify it preserves that mask.
+            import cv2
+            binary_flag = cv2.THRESH_BINARY if object_type == "light" else cv2.THRESH_BINARY_INV
+            selected_cutoff, adapter_mask = cv2.threshold(
+                arrays["gray"], 0, 255, cv2.THRESH_OTSU | binary_flag)
+            if (adapter_mask.dtype != np.uint8 or adapter_mask.shape != arrays["gray"].shape
+                    or not np.array_equal(adapter_mask, result)
+                    or not math.isfinite(selected_cutoff) or not selected_cutoff.is_integer()
+                    or not 0 <= selected_cutoff <= 255):
+                raise WorkerError("Pinned Otsu scalar adapter did not preserve the public mask")
+            observations["otsu_cutoff_adapter"] = {
+                "reference_selected_cutoff": int(selected_cutoff),
+                "origin": "pinned_cv2.threshold_adapter",
+                "public_return": "mask_only",
+                "object_type": object_type,
+                "method": "THRESH_OTSU|THRESH_BINARY" if object_type == "light" else "THRESH_OTSU|THRESH_BINARY_INV",
+                "public_mask_match": True,
+            }
         outputs["mask"] = np.asarray(result)
 
     elif operation in {"morphology.erode", "morphology.dilate"}:
@@ -592,7 +681,7 @@ def _run_operation(
         effective.update({"callable": "plantcv.plantcv.median_blur", "ksize": ksize})
         outputs["image"] = np.asarray(pcv.median_blur(arrays["gray"], ksize=ksize))
 
-    elif operation == "segmentation.watershed":
+    elif operation in {"segmentation.watershed", "segmentation.watershed.capture"}:
         _validate_image(arrays["rgb"], "rgb", channels=3)
         _validate_mask(arrays["mask"], "mask", arrays["rgb"].shape[:2], binary=True)
         params_only({"distance", "label"})
@@ -606,15 +695,48 @@ def _run_operation(
             "callable": "plantcv.plantcv.watershed.watershed_segmentation", "distance": distance, "label": label,
             "algorithm": "PlantCV 4.11.3 public watershed: distanceTransformWithLabels, peak_local_max, connected markers, skimage.watershed(-distance)",
         })
-        result = pcv.watershed.watershed_segmentation(
-            rgb_img=_rgb_to_plantcv_bgr(arrays["rgb"]), mask=arrays["mask"], distance=distance, label=label
-        )
+        if operation == "segmentation.watershed.capture":
+            watershed_capture._admit(
+                arrays["mask"].shape,
+                min(MAX_ARRAY_BYTES, MAX_OUTPUT_ARCHIVE_BYTES - 1024 * 1024), MAX_ARRAY_ELEMENTS,
+            )
+        kwargs = dict(rgb_img=_rgb_to_plantcv_bgr(arrays["rgb"]), mask=arrays["mask"], distance=distance, label=label)
+        if operation == "segmentation.watershed.capture":
+            captured = watershed_capture.capture_watershed(
+                pcv.watershed.watershed_segmentation, mask=arrays["mask"], kwargs=kwargs,
+                max_bytes=min(MAX_ARRAY_BYTES, MAX_OUTPUT_ARCHIVE_BYTES - 1024 * 1024),
+                max_elements=MAX_ARRAY_ELEMENTS,
+            )
+            result = captured.labels
+            effective["capture"] = dict(captured.metadata)
+            effective["capture"]["call_id"] = request.get("request_id", "direct-worker-call")
+            if captured.metadata["status"] == "available":
+                outputs.update(captured.arrays)
+                outputs["diagnostic"] = _plantcv_bgr_to_rgb(outputs["diagnostic_bgr"])
+                effective["capture"]["artifacts"]["diagnostic"] = {
+                    "source_local": "plt_img", "adapter": "BGR to RGB channel reversal",
+                    "shape": list(outputs["diagnostic"].shape), "dtype": outputs["diagnostic"].dtype.str,
+                    "nbytes": int(outputs["diagnostic"].nbytes), "sha256": _sha256(outputs["diagnostic"].tobytes()),
+                }
+                if outputs["coordinates"].shape == (0, 2):
+                    del outputs["coordinates"]
+                    effective["capture"]["empty_coordinates"] = dict(watershed_capture.EMPTY_COORDINATES)
+        else:
+            result = pcv.watershed.watershed_segmentation(**kwargs)
         channel_semantics = {
             "input_boundary": "RGB uint8 HWC",
             "plantcv_input": "BGR uint8 HWC (explicit RGB channel reversal)",
             "raster_output": "integer instance labels; no color channels",
         }
-        outputs["labels"] = np.asarray(result)
+        if "labels" not in outputs:
+            outputs["labels"] = np.asarray(result)
+        if operation == "segmentation.watershed.capture":
+            channel_semantics.update({
+                "diagnostic_bgr": "actual public plt_img in BGR channel order",
+                "diagnostic": "RGB adapter of that same captured BGR raster",
+                "palette": "actual shuffled public RGB triples passed verbatim to OpenCV BGR drawing; indexed by label ID",
+                "coordinates": "actual row,column intp64 coordinates in the input frame",
+            })
         observations = _observations(pcv)
 
     elif operation == "analysis.size":
@@ -622,17 +744,45 @@ def _run_operation(
         if image.dtype != np.uint8 or image.ndim not in (2, 3) or (image.ndim == 3 and image.shape[2] != 3):
             raise WorkerError("image must be a uint8 grayscale or three-channel image")
         _validate_mask(arrays["labels"], "labels", image.shape[:2])
-        params_only({"n_labels", "label"})
+        params_only({"n_labels", "label", "calibration"})
         n_labels = _integer(parameters.get("n_labels", 1), "n_labels", minimum=1)
         label = parameters.get("label", "SeedFiddle")
         if not isinstance(label, str) or not label or len(label) > 128:
             raise WorkerError("Parameter label must be a non-empty string up to 128 characters")
+        calibration = None
+        if "calibration" in parameters:
+            selected = parameters["calibration"]
+            if not isinstance(selected, dict) or set(selected) != {"px_width", "px_height", "unit"}:
+                raise WorkerError("calibration must contain exactly px_width, px_height and unit")
+            px_width = _number(selected["px_width"], "calibration.px_width")
+            px_height = _number(selected["px_height"], "calibration.px_height")
+            unit = selected["unit"]
+            if px_width <= 0 or px_height <= 0 or not isinstance(unit, str) or unit not in {"pixels", "mm"}:
+                raise WorkerError("calibration requires positive scales and a pixels or mm unit")
+            calibration = {"px_width": px_width, "px_height": px_height, "unit": unit}
         effective.update({"callable": "plantcv.plantcv.analyze.size", "n_labels": n_labels, "label": label, "unit": "pixels"})
-        pcv.params.unit = "pixels"
         plantcv_image = _rgb_to_plantcv_bgr(image) if image.ndim == 3 else image
-        size_result = np.asarray(
-            pcv.analyze.size(img=plantcv_image, labeled_mask=arrays["labels"], n_labels=n_labels, label=label)
-        )
+        if calibration is None:
+            pcv.params.unit = "pixels"
+            size_result = np.asarray(
+                pcv.analyze.size(img=plantcv_image, labeled_mask=arrays["labels"], n_labels=n_labels, label=label)
+            )
+        else:
+            previous = (pcv.params.px_width, pcv.params.px_height, pcv.params.unit)
+            effective.update({"unit": calibration["unit"], "calibration": calibration,
+                              "calibration_origin": "explicit_pcv.params_adapter"})
+            try:
+                pcv.params.px_width = calibration["px_width"]
+                pcv.params.px_height = calibration["px_height"]
+                pcv.params.unit = calibration["unit"]
+                size_result = np.asarray(
+                    pcv.analyze.size(img=plantcv_image, labeled_mask=arrays["labels"], n_labels=n_labels, label=label)
+                )
+            finally:
+                pcv.params.px_width, pcv.params.px_height, pcv.params.unit = previous
+                if (pcv.params.px_width, pcv.params.px_height, pcv.params.unit) != previous:
+                    raise WorkerError("The public size calibration context did not restore its previous values")
+            effective["calibration_context_restored"] = True
         outputs["analysis_image"] = _plantcv_bgr_to_rgb(size_result)
         if image.ndim == 3:
             channel_semantics = {
@@ -738,7 +888,7 @@ def _run_operation(
 
     elif operation == "transform.auto_correct_color":
         _validate_image(arrays["rgb"], "rgb", channels=3)
-        allowed = {"color_chip_size", "adaptive_method", "block_size", "radius", "min_size", "aspect_ratio", "solidity"}
+        allowed = {"color_chip_size", "adaptive_method", "block_size", "radius", "min_size", "aspect_ratio", "solidity", "roi_bounds_xyxy"}
         params_only(allowed)
         color_chip_size = parameters.get("color_chip_size")
         color_chip_size_call = color_chip_size
@@ -781,6 +931,30 @@ def _run_operation(
             raise WorkerError("block_size must be odd")
         if kwargs["aspect_ratio"] <= 0 or not (0 <= kwargs["solidity"] <= 1):
             raise WorkerError("aspect_ratio must be positive and solidity must be between 0 and 1")
+        if "roi_bounds_xyxy" in parameters:
+            bounds = parameters["roi_bounds_xyxy"]
+            height, width = arrays["rgb"].shape[:2]
+            if bounds is not None:
+                if not isinstance(bounds, list) or len(bounds) != 4 or any(type(value) is not int for value in bounds):
+                    raise WorkerError("roi_bounds_xyxy must be null or four integer half-open bounds")
+                x0, y0, x1, y1 = bounds
+                if not (0 <= x0 < x1 <= width and 0 <= y0 < y1 <= height):
+                    raise WorkerError("roi_bounds_xyxy must be nonempty and inside the RGB frame")
+                contour = np.array([[[x0, y0]], [[x0, y1]], [[x1, y1]], [[x1, y0]]], dtype=np.int32)
+                kwargs["roi"] = pcv.Objects(
+                    contours=[[contour]], hierarchy=[np.array([[[-1, -1, -1, -1]]], dtype=np.int32)]
+                )
+            else:
+                kwargs["roi"] = None
+            effective["roi_adapter"] = {
+                "requested_bounds_xyxy": bounds,
+                "effective_bounds_xyxy": bounds if bounds is not None else [0, 0, width, height],
+                "bounds_semantics": "half-open source-frame x0,y0,x1,y1",
+                "origin": "explicit_pcv.Objects_adapter",
+                "public_helper": "plantcv.plantcv._helpers._rect_filter",
+                "public_helper_sha256": "c05b0c944210657332ce307f2066caab55f2ebc8d8fea11988db3e476e7cdfba",
+                "corrected_output_frame": "full input frame",
+            }
         effective.update({
             "callable": "plantcv.plantcv.transform.auto_correct_color",
             "color_chip_size": color_chip_size,
@@ -829,6 +1003,10 @@ def _execute(request_path: Path, inputs_path: Path, response_path: Path, outputs
         request = _read_request(request_path)
         identity = _verify_identity(request.get("identity"))
         source_files = request["identity"].get("source_files")
+        capture_mode = request["operation"] == "segmentation.watershed.capture"
+        if capture_mode:
+            source_files = _capture_source_inventory(source_files)
+            identity["capture_source_files"] = watershed_capture.capture_source_records()
         _verify_installed_source({"source_files": source_files})
         distribution_root = _verify_package_import_location()
         arrays = _read_npz(inputs_path, max_archive_bytes=MAX_INPUT_ARCHIVE_BYTES)
@@ -860,12 +1038,22 @@ def _execute(request_path: Path, inputs_path: Path, response_path: Path, outputs
         pcv.params.line_thickness = 1
         pcv.params.unit = "pixels"
         pcv.outputs.clear()
+        capture_bindings = _capture_bindings(pcv) if capture_mode else ()
         with tempfile.TemporaryDirectory(prefix="plantcv-call-", dir=response_path.parent) as scratch_name:
             started = time.perf_counter_ns()
             output_arrays, observations, effective, visualizations, channel_semantics = _run_operation(
                 request, arrays, Path(scratch_name), pcv
             )
             computation_runtime_ns = time.perf_counter_ns() - started
+        if capture_mode:
+            after_identity = _verify_identity(request.get("identity"))
+            if after_identity != {key: value for key, value in identity.items() if key != "capture_source_files"}:
+                raise WorkerError("Capture runtime identity changed during execution")
+            _verify_installed_source({"source_files": source_files})
+            _verify_callable_origin(request["operation"], pcv, source_files, distribution_root, audited_finder)
+            after = _capture_bindings(pcv)
+            if len(after) != len(capture_bindings) or any(a is not b for a, b in zip(after, capture_bindings)):
+                raise WorkerError("Capture public/helper/adapter identity changed during execution")
         if not output_arrays:
             # PlantCV colour analysis returns its original distribution chart
             # and records observations, but has no raster output.

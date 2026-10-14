@@ -69,6 +69,34 @@ class OptimizationContractTests(unittest.TestCase):
                     if spec.kind == 'int':
                         self.assertIs(type(value), int)
 
+    def test_frozen_trait_classifier_has_no_image_local_search_objective(self):
+        graph = build_default_pipeline()
+        classifier = graph.node('trait_classifier')
+        classifier.enabled = True
+        contract = capability(classifier)
+        self.assertNotIn(classifier.identifier, OBJECTIVES)
+        self.assertEqual(contract.objective, '')
+        self.assertEqual(contract.searchable, ())
+        self.assertEqual({key for key, _ in contract.fixed},
+                         {'trait_model_path', 'trait_abstention_threshold'})
+        self.assertTrue(all(reason == EXEMPT['trait_classifier'] for _, reason in contract.fixed))
+        before = dict(classifier.parameters)
+        revision = graph.revision
+        evaluator = FakeEvaluator()
+        with patch('seedvision.optimization.search.candidate_values') as candidates, \
+                patch.object(evaluator, 'parameters') as parameters, \
+                patch.object(evaluator, 'score') as score:
+            report = optimize(graph, evaluator, selected={'trait_classifier'})
+        candidates.assert_not_called()
+        parameters.assert_not_called()
+        score.assert_not_called()
+        row = next(row for row in report.nodes if row.node_id == 'trait_classifier')
+        self.assertEqual(row.status, 'skipped')
+        self.assertEqual(row.reason, EXEMPT['trait_classifier'])
+        self.assertFalse(report.changes)
+        self.assertEqual(classifier.parameters, before)
+        self.assertEqual(graph.revision, revision)
+
     def test_edge_controls_invalidate_true_prototype_owner(self):
         graph = build_default_pipeline()
         affected = affected_nodes(graph, 'reference_edge_probability')

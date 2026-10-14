@@ -7,7 +7,13 @@ that form the public calibration metadata.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, replace
+from hashlib import sha256
+import json
+
+from seedvision.calibration.neutral import (
+    NeutralBalanceFacts, NeutralPatchWitness, normalize_neutral_patch_selection,
+)
 
 import numpy as np
 
@@ -37,8 +43,14 @@ class CalibrationSettings:
     apply_colour_balance: bool = True
     apply_perspective_correction: bool = True
     max_perspective_fraction: float = 0.25
+    neutral_patch_selection: str = "automatic"
+    neutral_sample_frame: str = "source"
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "neutral_patch_selection",
+                           normalize_neutral_patch_selection(self.neutral_patch_selection))
+        if not isinstance(self.neutral_sample_frame, str) or self.neutral_sample_frame not in ("source", "corrected"):
+            raise ValueError("neutral_sample_frame must be source or corrected.")
         if not 10.0 <= self.ruler_length_mm <= 1000.0:
             raise ValueError("ruler_length_mm must be between 10 and 1000.")
         if not 0.1 <= self.minor_tick_mm <= 10.0:
@@ -147,6 +159,11 @@ class ImageCalibration:
     warnings: tuple[str, ...]
     ruler_in_corrected_coordinates: bool = True
     gpu_corrected_bgr: object | None = None
+    calibration_settings: CalibrationSettings | None = None
+    source_shape_hw: tuple[int, int] | None = None
+    neutral_balance: NeutralBalanceFacts | None = None
+    _geometry: _CalibrationGeometry | None = None
+    _run_key: str | None = None
 
     def transform_points(
         self, points: tuple[tuple[float, float], ...] | list[tuple[float, float]]
@@ -192,18 +209,114 @@ class ImageCalibration:
                 else _transform_points(points, self.affine_matrix))
 
 
-def calibrate_image(
-    image: np.ndarray,
-    settings: CalibrationSettings | None = None,
-    *,
-    cuda_context: CudaContext | None = None,
-    timing_recorder=None,
-) -> ImageCalibration:
-    """Detect references and perform all raster calibration on one GPU."""
+@dataclass(frozen=True, slots=True)
+class _CalibrationGeometry:
+    source_key: tuple
+    geometry_settings: tuple
+    corrected_bgr: np.ndarray
+    corrected_tensor: object
+    colour_card: ColourCardDetection | None
+    transform: np.ndarray
+    deskew_degrees: float
+    perspective_corrected: bool
+    perspective_strength: float
+    gains: tuple[float, float, float]
+    neutral_facts: NeutralBalanceFacts
+    warnings: tuple[str, ...]
+    product_key: tuple | None
+    metadata_key: str | None = None
 
-    _validate_image(image)
-    settings = settings or CalibrationSettings()
-    context = cuda_context or CudaContext.resolve()
+
+def _array_key(value):
+    array = np.ascontiguousarray(value)
+    return array.shape, array.dtype.str, sha256(memoryview(array)).hexdigest()
+
+
+def _calibration_source_key(image, context):
+    import torch
+
+    device = torch.device(context.device)
+    if device.type == "cuda" and device.index is None:
+        device = torch.device("cuda", torch.cuda.current_device())
+    return _array_key(image), str(device), "source.uint8-bgr-hwc"
+
+
+def _geometry_settings(settings):
+    return (settings.max_deskew_degrees, settings.apply_colour_balance,
+            settings.apply_perspective_correction, settings.max_perspective_fraction,
+            settings.neutral_patch_selection, settings.neutral_sample_frame)
+
+
+def _compact_metadata_key(value):
+    try:
+        return sha256(json.dumps(value, sort_keys=True, allow_nan=False,
+                                 separators=(',', ':')).encode('utf-8')).hexdigest()
+    except (TypeError, ValueError):
+        return None
+
+
+def _geometry_metadata_key(geometry):
+    return _compact_metadata_key((
+        None if geometry.colour_card is None else asdict(geometry.colour_card),
+        asdict(geometry.neutral_facts), geometry.geometry_settings,
+        geometry.deskew_degrees, geometry.perspective_corrected,
+        geometry.perspective_strength, geometry.gains, geometry.warnings))
+
+
+def _calibration_run_key(calibration):
+    return _compact_metadata_key((
+        None if calibration.ruler is None else asdict(calibration.ruler),
+        asdict(calibration.calibration_settings), calibration.source_shape_hw,
+        calibration.deskew_degrees, calibration.perspective_corrected,
+        calibration.perspective_strength, calibration.pixels_per_mm,
+        calibration.scale_confidence, calibration.ruler_tick_spacing_px,
+        calibration.scale_bar_mm, calibration.ruler_in_corrected_coordinates,
+        calibration.warnings))
+
+
+def _geometry_product_key(corrected, transform, tensor):
+    # Inference tensors do not track in-place changes. Keep their fresh result
+    # available, but never treat them as a reusable guarded product.
+    try:
+        version = tensor._version
+    except RuntimeError:
+        return None
+    return (_array_key(corrected), _array_key(transform),
+            (str(tensor.device), str(tensor.dtype), tuple(tensor.shape), tuple(tensor.stride()),
+             tensor.storage_offset(), tensor.untyped_storage().data_ptr(),
+             tensor.untyped_storage().nbytes(), version))
+
+
+def _reusable_geometry(previous, source_key, settings):
+    geometry = getattr(previous, '_geometry', None)
+    if not isinstance(geometry, _CalibrationGeometry):
+        return None
+    if geometry.source_key != source_key or geometry.geometry_settings != _geometry_settings(settings):
+        return None
+    if geometry.metadata_key is None or geometry.metadata_key != _geometry_metadata_key(geometry):
+        return None
+    if (previous.corrected_bgr is not geometry.corrected_bgr
+            or previous.gpu_corrected_bgr is not geometry.corrected_tensor
+            or previous.affine_matrix is not geometry.transform
+            or previous.colour_card is not geometry.colour_card
+            or previous.neutral_balance is not geometry.neutral_facts
+            or previous.channel_gains_bgr != geometry.gains):
+        return None
+    if geometry.product_key is None or geometry.product_key != _geometry_product_key(
+            geometry.corrected_bgr, geometry.transform, geometry.corrected_tensor):
+        return None
+    return geometry
+
+
+def calibration_cache_matches(previous, image, settings, context):
+    """Require actual settings, source pixels/device and retained products."""
+    return (getattr(previous, 'calibration_settings', None) == settings
+            and getattr(previous, '_run_key', None) is not None
+            and previous._run_key == _calibration_run_key(previous)
+            and _reusable_geometry(previous, _calibration_source_key(image, context), settings) is not None)
+
+
+def _calibrate_geometry(image, settings, context, timing_recorder, source_key):
     colour_timing = (
         None
         if timing_recorder is None
@@ -216,11 +329,6 @@ def calibrate_image(
     except CalibrationDetectionError as error:
         colour_card = None
         warnings.append(str(error))
-    gains = (
-        _neutral_balance_gains(colour_card)
-        if colour_card is not None and settings.apply_colour_balance
-        else np.ones(3, np.float32)
-    )
     if colour_timing is not None:
         timing_recorder.stop(colour_timing)
     deskew_timing = (
@@ -266,6 +374,9 @@ def calibrate_image(
     # whenever deskew moved its already-near-border swatches out of frame.
     transform, output_size = _expanded_warp_canvas(transform, height, width)
     corrected_tensor = warp_perspective(tensor, transform, output_size)
+    gains, neutral_facts = _neutral_balance(colour_card, settings, corrected_tensor, transform)
+    if neutral_facts.state == "unavailable":
+        warnings.append(neutral_facts.reason)
     import torch
 
     gain_tensor = torch.as_tensor(
@@ -282,6 +393,36 @@ def calibrate_image(
     corrected = tensor_to_image(corrected_tensor)
     if deskew_timing is not None:
         timing_recorder.stop(deskew_timing)
+
+    geometry = _CalibrationGeometry(source_key, _geometry_settings(settings), corrected,
+        corrected_tensor, colour_card, transform, float(deskew_degrees), perspective_corrected,
+        float(perspective_strength), tuple(float(value) for value in gains), neutral_facts,
+        tuple(warnings), _geometry_product_key(corrected, transform, corrected_tensor))
+    return replace(geometry, metadata_key=_geometry_metadata_key(geometry))
+
+
+def calibrate_image(
+    image: np.ndarray,
+    settings: CalibrationSettings | None = None,
+    *,
+    cuda_context: CudaContext | None = None,
+    timing_recorder=None,
+    _previous_geometry: ImageCalibration | None = None,
+) -> ImageCalibration:
+    """Detect references and perform all raster calibration on one GPU."""
+
+    _validate_image(image)
+    settings = settings or CalibrationSettings()
+    context = cuda_context or CudaContext.resolve()
+    source_key = _calibration_source_key(image, context)
+    geometry = _reusable_geometry(_previous_geometry, source_key, settings)
+    if geometry is None:
+        geometry = _calibrate_geometry(image, settings, context, timing_recorder, source_key)
+    corrected, corrected_tensor = geometry.corrected_bgr, geometry.corrected_tensor
+    colour_card, transform = geometry.colour_card, geometry.transform
+    deskew_degrees, perspective_corrected = geometry.deskew_degrees, geometry.perspective_corrected
+    perspective_strength, gains = geometry.perspective_strength, geometry.gains
+    warnings = list(geometry.warnings)
 
     ruler_timing = (
         None
@@ -348,7 +489,9 @@ def calibrate_image(
             f"{ruler.scale_disagreement_percent:.2f}%; metric remains authoritative."
         )
 
-    return ImageCalibration(
+    if _calibration_source_key(image, context) != source_key:
+        raise ValueError("Source pixels changed during calibration.")
+    result = ImageCalibration(
         corrected_bgr=corrected,
         colour_card=colour_card,
         ruler=ruler,
@@ -364,7 +507,12 @@ def calibrate_image(
         warnings=tuple(warnings),
         ruler_in_corrected_coordinates=True,
         gpu_corrected_bgr=corrected_tensor,
+        calibration_settings=settings,
+        source_shape_hw=tuple(image.shape[:2]),
+        neutral_balance=geometry.neutral_facts,
+        _geometry=geometry,
     )
+    return replace(result, _run_key=_calibration_run_key(result))
 
 
 def detect_colour_card(
@@ -1451,14 +1599,14 @@ def _refine_swatch_grid_edges(
     return tuple(vertical_edges), tuple(horizontal_edges)
 
 
-def _sample_quadrilateral_mean(source, corners: np.ndarray) -> tuple[float, float, float]:
+def _quadrilateral_sample_points(corners, device):
     import torch
 
     top_left, top_right, bottom_right, bottom_left = (
-        torch.as_tensor(corner, device=source.device, dtype=torch.float32)
+        torch.as_tensor(corner, device=device, dtype=torch.float32)
         for corner in corners
     )
-    axis = torch.linspace(0.12, 0.88, 11, device=source.device)
+    axis = torch.linspace(0.12, 0.88, 11, device=device)
     vv, uu = torch.meshgrid(axis, axis, indexing="ij")
     points = (
         top_left * ((1.0 - uu) * (1.0 - vv))[..., None]
@@ -1466,6 +1614,11 @@ def _sample_quadrilateral_mean(source, corners: np.ndarray) -> tuple[float, floa
         + bottom_right * (uu * vv)[..., None]
         + bottom_left * ((1.0 - uu) * vv)[..., None]
     )
+    return points
+
+
+def _sample_quadrilateral_mean(source, corners: np.ndarray) -> tuple[float, float, float]:
+    points = _quadrilateral_sample_points(corners, source.device)
     means = [
         float(bilinear_sample(source[:, channel : channel + 1], points[..., 0], points[..., 1]).mean().item())
         for channel in range(3)
@@ -2798,6 +2951,74 @@ def _regular_tick_span(
     )
     confidence = float(np.clip(0.68 * contrast + 0.32 * coverage, 0.0, 1.0))
     return best[1], best[2], best[3], confidence, matched, matched_indices
+
+
+def _neutral_balance(card, settings, corrected_tensor, transform):
+    """Sample selected grid positions in the requested unbalanced frame."""
+    swatches = () if card is None else card.swatches
+    by_id = {swatch.row * 4 + swatch.column + 1: swatch for swatch in swatches}
+    available = tuple(sorted(by_id))
+    detection = None if card is None else sha256(json.dumps(
+        asdict(card), sort_keys=True, allow_nan=False, separators=(',', ':')).encode('utf-8')).hexdigest()
+    identity = np.ones(3, np.float32)
+
+    def facts(state, mode='none', selected=(), witnesses=(), gains=identity, reason=''):
+        return NeutralBalanceFacts(settings.apply_colour_balance, settings.neutral_patch_selection,
+            settings.neutral_sample_frame, state, mode, available, tuple(selected), tuple(witnesses),
+            tuple(float(value) for value in gains), detection, reason)
+
+    if not settings.apply_colour_balance:
+        return identity, facts('disabled', reason='Neutral balance is disabled.')
+    manual = settings.neutral_patch_selection != 'automatic'
+    requested = tuple(map(int, settings.neutral_patch_selection.split(','))) if manual else ()
+    if not swatches or any(identifier not in by_id for identifier in requested):
+        return identity, facts('unavailable', reason='Requested neutral grid patches are unavailable; identity gains were used.')
+
+    candidates = [by_id[identifier] for identifier in requested] if manual else list(swatches)
+    witnesses = []
+    for swatch in candidates:
+        corners = np.asarray(swatch.corners, dtype=np.float64)
+        if settings.neutral_sample_frame == 'corrected':
+            homogeneous = np.column_stack((corners, np.ones(4))) @ np.asarray(transform, np.float64).T
+            if not np.isfinite(homogeneous).all() or (homogeneous[:, 2] <= 0).any():
+                return identity, facts('unavailable', reason='Neutral sampling has an invalid projective denominator; identity gains were used.')
+        sample_corners = (_transform_points(corners, transform)
+                          if settings.neutral_sample_frame == 'corrected' else corners)
+        if settings.neutral_sample_frame == 'corrected':
+            # Check the actual 11x11 sampling domain, not an edge-clamped proxy.
+            import torch
+            points = _quadrilateral_sample_points(sample_corners, corrected_tensor.device)
+            height, width = corrected_tensor.shape[-2:]
+            # The warp uses inverse homogeneous coordinates and clamps its
+            # denominator. Do not certify samples that would use that clamp.
+            inverse = torch.linalg.inv(torch.as_tensor(transform, device=points.device, dtype=torch.float32))
+            mapped = torch.cat((points, torch.ones_like(points[..., :1])), dim=-1) @ inverse.T
+            if bool((~torch.isfinite(points).all() | (points[..., 0] < 0).any()
+                    | (points[..., 0] > width-1).any() | (points[..., 1] < 0).any()
+                    | (points[..., 1] > height-1).any()
+                    | ~torch.isfinite(mapped).all() | (mapped[..., 2] <= 1e-8).any()).item()):
+                return identity, facts('unavailable', reason='Neutral sampling leaves the corrected image; identity gains were used.')
+            mean = _sample_quadrilateral_mean(corrected_tensor, sample_corners)
+        else:
+            mean = swatch.mean_bgr
+        if len(mean) != 3 or not np.isfinite(mean).all():
+            return identity, facts('unavailable', reason='Neutral samples are nonfinite; identity gains were used.')
+        witnesses.append(NeutralPatchWitness(swatch.row*4+swatch.column+1, swatch.corners,
+            tuple((float(x), float(y)) for x, y in sample_corners), swatch.mean_bgr, tuple(mean)))
+    mode = 'manual'
+    if not manual:
+        chosen = [w for w in witnesses if max(w.sampled_mean_bgr)-min(w.sampled_mean_bgr) < 18
+                  and 35 < float(np.mean(w.sampled_mean_bgr)) < 240]
+        mode = 'automatic_threshold'
+        if len(chosen) < 2:
+            chosen = sorted(witnesses, key=lambda w: max(w.sampled_mean_bgr)-min(w.sampled_mean_bgr))[:6]
+            mode = 'automatic_fallback'
+    else:
+        chosen = witnesses
+    channels = np.median(np.asarray([w.sampled_mean_bgr for w in chosen], np.float32), axis=0)
+    target = float(np.mean(channels))
+    gains = np.clip(target / np.maximum(channels, 1.0), .72, 1.35).astype(np.float32)
+    return gains, facts('applied', mode, [w.patch_id for w in chosen], chosen, gains)
 
 
 def _neutral_balance_gains(card: ColourCardDetection) -> np.ndarray:

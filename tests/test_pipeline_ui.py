@@ -32,8 +32,8 @@ class PipelineCanvasTests(unittest.TestCase):
         self.application.processEvents()
         canvas.fit_graph()
         self.assertGreater(canvas.horizontalScrollBar().maximum(), 0)
-        self.assertEqual(len(canvas.node_items), 29)
-        self.assertEqual(len(canvas.edge_items), 179)
+        self.assertEqual(len(canvas.node_items), 30)
+        self.assertEqual(len(canvas.edge_items), 184)
         self.assertNotIn("circle_candidates", canvas.node_items)
         self.assertEqual(canvas.unused_nodes_button.text(), "Unused nodes (19)")
         unused_actions = [
@@ -622,8 +622,8 @@ class PipelineCanvasTests(unittest.TestCase):
         self.application.processEvents()
         self.assertEqual(restored, ["circle_candidates"])
         self.assertIn("circle_candidates", canvas.node_items)
-        self.assertEqual(len(canvas.node_items), 30)
-        self.assertEqual(len(canvas.edge_items), 187)
+        self.assertEqual(len(canvas.node_items), 31)
+        self.assertEqual(len(canvas.edge_items), 192)
         self.assertEqual(canvas.unused_nodes_button.text(), "Unused nodes (18)")
         self.assertTrue(canvas.unused_nodes_button.isEnabled())
         self.assertTrue(canvas.node_items["circle_candidates"].isSelected())
@@ -636,7 +636,7 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertNotIn("circle_candidates", canvas.node_items)
         self.assertIn("circle_candidates", graph.unused_nodes)
         self.assertFalse(graph.node("circle_candidates").enabled)
-        self.assertEqual(len(canvas.edge_items), 179)
+        self.assertEqual(len(canvas.edge_items), 184)
         self.assertEqual(canvas.unused_nodes_button.text(), "Unused nodes (19)")
         restore_action = next(
             action
@@ -706,7 +706,7 @@ class PipelineCanvasTests(unittest.TestCase):
             and edge.source_port == "corrected_image"
         )
         canvas._disconnect_connection(connection)
-        self.assertEqual(len(canvas.edge_items), 178)
+        self.assertEqual(len(canvas.edge_items), 183)
         self.assertFalse(graph.node(connection.target).enabled)
         self.assertIsNone(
             graph.connection_for_input(connection.target, connection.target_port)
@@ -723,7 +723,7 @@ class PipelineCanvasTests(unittest.TestCase):
                 connection.source_port
             )
         )
-        self.assertEqual(len(canvas.edge_items), 179)
+        self.assertEqual(len(canvas.edge_items), 184)
         self.assertTrue(graph.node(connection.target).enabled)
         self.assertIsNotNone(
             graph.connection_for_input(connection.target, connection.target_port)
@@ -909,7 +909,8 @@ class PipelineCanvasTests(unittest.TestCase):
             self.assertLess((restored - before).manhattanLength(), 2.0)
 
             pointer = QPoint(350, 230)
-            QTest.mouseMove(view.viewport(), pointer)
+            # The event position must anchor zoom even when the cursor differs.
+            QTest.mouseMove(view.viewport(), QPoint(90, 70))
             self.application.processEvents()
             before = view.mapToScene(pointer)
             event = QWheelEvent(
@@ -922,6 +923,18 @@ class PipelineCanvasTests(unittest.TestCase):
             self.application.processEvents()
             after = view.mapToScene(pointer)
             self.assertLess((after - before).manhattanLength(), 2.0)
+            transform_before_zero = view.transform()
+            zoom_steps_before_zero = view._zoom_steps
+            zero_delta = QWheelEvent(
+                QPointF(pointer), QPointF(view.viewport().mapToGlobal(pointer)),
+                QPoint(), QPoint(), Qt.MouseButton.NoButton,
+                Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.NoScrollPhase,
+                False,
+            )
+            self.application.sendEvent(view.viewport(), zero_delta)
+            self.application.processEvents()
+            self.assertEqual(view.transform(), transform_before_zero)
+            self.assertEqual(view._zoom_steps, zoom_steps_before_zero)
         finally:
             view.close()
 
@@ -1925,7 +1938,8 @@ class PipelineCanvasTests(unittest.TestCase):
         dispose_window(window)
 
     def test_compact_toolbar_and_contextual_paint_panel(self) -> None:
-        from PySide6.QtCore import QPoint, Qt
+        from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
+        from PySide6.QtGui import QMouseEvent
         from PySide6.QtTest import QTest
         from PySide6.QtWidgets import QLabel
 
@@ -2032,25 +2046,33 @@ class PipelineCanvasTests(unittest.TestCase):
             window.reference_panel_contents.width(),
             window.reference_panel_scroll.viewport().width(),
         )
+        # Start with room to drag horizontally inside the workspace.
+        window.image_view._move_context_panel_to(QPoint(180, 90), remember=True)
         initial_panel_position = window.reference_panel.pos()
+        drag_delta = QPoint(-60, 0)
         drag_center = window.reference_panel_drag_handle.rect().center()
         QTest.mousePress(
             window.reference_panel_drag_handle,
             Qt.MouseButton.LeftButton,
             pos=drag_center,
         )
-        QTest.mouseMove(
-            window.reference_panel_drag_handle,
-            drag_center + QPoint(60, 30),
-            delay=10,
+        target_local = drag_center + drag_delta
+        move_event = QMouseEvent(
+            QEvent.Type.MouseMove,
+            QPointF(target_local),
+            QPointF(window.reference_panel_drag_handle.mapToGlobal(target_local)),
+            Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
         )
+        self.application.sendEvent(window.reference_panel_drag_handle, move_event)
         QTest.mouseRelease(
             window.reference_panel_drag_handle,
             Qt.MouseButton.LeftButton,
-            pos=drag_center + QPoint(60, 30),
+            pos=target_local,
         )
         self.application.processEvents()
         self.assertNotEqual(window.reference_panel.pos(), initial_panel_position)
+        self.assertEqual(window.reference_panel.pos(), initial_panel_position + drag_delta)
         window.image_view._move_context_panel_to(QPoint(180, 90), remember=True)
         self.application.processEvents()
         moved_panel_position = window.reference_panel.pos()
@@ -2464,6 +2486,7 @@ class PipelineCanvasTests(unittest.TestCase):
                 "stardist_instances",
                 "seed_edge_curves",
                 "procedural_instances",
+                "trait_classifier",
             }
             analyze.assert_called_once_with(dirty_nodes=affected)
             self.assertNotIn(key, window._analyses)

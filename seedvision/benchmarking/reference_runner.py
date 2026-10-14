@@ -53,6 +53,7 @@ SUPPORTED_PLANTCV_OPERATIONS = frozenset({
     "morphology.fill",
     "filter.median_blur",
     "segmentation.watershed",
+    "segmentation.watershed.capture",
     "analysis.size",
     "analysis.color",
     "transform.correct_color",
@@ -702,6 +703,98 @@ def smpts_reference_status() -> dict[str, Any]:
     }
 
 
+def _validate_watershed_capture(
+    arrays: dict[str, np.ndarray], declarations: list[Mapping[str, Any]],
+    effective: Mapping[str, Any], request_id: str, inputs: Mapping[str, np.ndarray],
+) -> None:
+    """Validate this operation's logical artifacts without relaxing NPZ rules."""
+    from .reference_watershed_capture import EMPTY_COORDINATES, SOURCE_LOCALS
+
+    capture = effective.get("capture")
+    if (
+        not isinstance(capture, dict)
+        or capture.get("schema") != "seedfiddle.public-watershed-capture.v1"
+        or capture.get("call_id") != request_id
+        or capture.get("scientifically_validated") is not False
+    ):
+        raise ReferenceProtocolError("Watershed capture metadata is invalid")
+    mask = inputs.get("mask")
+    labels = arrays.get("labels")
+    if (
+        mask is None or labels is None or labels.dtype != np.int32
+        or labels.shape != mask.shape or np.any(labels < 0) or np.any(labels[mask == 0] != 0)
+    ):
+        raise ReferenceProtocolError("Watershed labels differ from their input frame/support")
+    if capture.get("status") == "unavailable":
+        if set(arrays) != {"labels"} or "artifacts" in capture or "empty_coordinates" in capture:
+            raise ReferenceProtocolError("Unavailable capture must retain only public labels")
+        if not isinstance(capture.get("reason"), str) or not capture["reason"]:
+            raise ReferenceProtocolError("Unavailable capture omitted its reason")
+        return
+    if capture.get("status") != "available":
+        raise ReferenceProtocolError("Unknown watershed capture status")
+    expected = set(SOURCE_LOCALS) | {"diagnostic"}
+    empty = capture.get("empty_coordinates")
+    if empty is not None:
+        if _json_bytes(empty) != _json_bytes(EMPTY_COORDINATES) or "coordinates" in arrays:
+            raise ReferenceProtocolError("Invalid empty-coordinate capture transport")
+        if set(arrays) != expected - {"coordinates"} or len(arrays) + 1 > MAX_ARRAYS:
+            raise ReferenceProtocolError("Empty-coordinate logical artifact inventory differs")
+        arrays["coordinates"] = np.empty((0, 2), dtype=np.dtype("<i8"))
+        declarations.append({"name": "coordinates", "shape": [0, 2], "dtype": "<i8", "nbytes": 0})
+    elif set(arrays) != expected:
+        raise ReferenceProtocolError("Watershed capture artifact inventory differs")
+    if len(arrays) > MAX_ARRAYS or sum(a.nbytes for a in arrays.values()) > MAX_ARRAY_BYTES or sum(a.size for a in arrays.values()) > MAX_ARRAY_ELEMENTS:
+        raise ReferenceProtocolError("Watershed capture logical artifacts exceed their aggregate limit")
+    shape = mask.shape
+    specs = {
+        "distance": (np.dtype(np.float32), shape), "negative_distance": (np.dtype(np.float32), shape),
+        "peaks": (np.dtype(np.bool_), shape), "markers": (np.dtype(np.int32), shape),
+        "diagnostic_bgr": (np.dtype(np.uint8), (*shape, 3)), "diagnostic": (np.dtype(np.uint8), (*shape, 3)),
+    }
+    for name, (dtype, expected_shape) in specs.items():
+        if arrays[name].dtype != dtype or arrays[name].shape != expected_shape:
+            raise ReferenceProtocolError(f"Watershed capture {name} has invalid dtype/frame")
+    coords, palette = arrays["coordinates"], arrays["palette"]
+    if coords.dtype != np.dtype("<i8") or coords.ndim != 2 or coords.shape[1] != 2 or coords.shape[0] > mask.size:
+        raise ReferenceProtocolError("Watershed coordinates have invalid dtype/shape")
+    if palette.dtype != np.uint8 or palette.ndim != 2 or palette.shape[1] != 3 or not 1 <= palette.shape[0] <= mask.size:
+        raise ReferenceProtocolError("Watershed palette has invalid dtype/shape")
+    artifacts = capture.get("artifacts")
+    if not isinstance(artifacts, dict) or set(artifacts) != expected:
+        raise ReferenceProtocolError("Watershed capture omitted artifact provenance")
+    for name, array in arrays.items():
+        artifact = artifacts[name]
+        if not isinstance(artifact, dict):
+            raise ReferenceProtocolError("Watershed artifact provenance is invalid")
+        actual = {"shape": list(array.shape), "dtype": array.dtype.str, "nbytes": int(array.nbytes), "sha256": _sha256(array.tobytes())}
+        if any(_json_bytes(artifact.get(key)) != _json_bytes(value) for key, value in actual.items()):
+            raise ReferenceProtocolError(f"Watershed capture artifact identity differs: {name}")
+        if artifact.get("source_local") != SOURCE_LOCALS.get(name, "plt_img"):
+            raise ReferenceProtocolError(f"Watershed capture source-local identity differs: {name}")
+    if artifacts["diagnostic"].get("adapter") != "BGR to RGB channel reversal" or not np.array_equal(arrays["diagnostic"], arrays["diagnostic_bgr"][..., ::-1]):
+        raise ReferenceProtocolError("Watershed diagnostic RGB adapter differs")
+    if not np.isfinite(arrays["distance"]).all() or np.any(arrays["distance"] < 0) or not np.array_equal(arrays["negative_distance"], -arrays["distance"]):
+        raise ReferenceProtocolError("Watershed distance relation differs")
+    if coords.size and (np.any(coords < 0) or np.any(coords[:, 0] >= shape[0]) or np.any(coords[:, 1] >= shape[1]) or len(np.unique(coords, axis=0)) != len(coords)):
+        raise ReferenceProtocolError("Watershed coordinates leave their frame or duplicate peaks")
+    if np.count_nonzero(arrays["peaks"]) != len(coords) or (coords.size and not np.all(arrays["peaks"][tuple(coords.T)])):
+        raise ReferenceProtocolError("Watershed peak support differs from coordinates")
+    markers = arrays["markers"]
+    marker_ids, label_ids = np.unique(markers), np.unique(labels)
+    if np.any(markers < 0) or not np.array_equal(markers > 0, arrays["peaks"]) or not np.isin(label_ids[label_ids > 0], marker_ids).all():
+        raise ReferenceProtocolError("Watershed marker/label relation differs")
+    if (
+        type(capture.get("estimated_object_count")) is not int
+        or capture["estimated_object_count"] != len(marker_ids) - 1
+        or _json_bytes(capture.get("positive_marker_ids")) != _json_bytes(marker_ids[marker_ids > 0].tolist())
+        or _json_bytes(capture.get("positive_label_ids")) != _json_bytes(label_ids[label_ids > 0].tolist())
+        or type(capture.get("label_max")) is not int or capture["label_max"] != int(labels.max())
+        or len(palette) != len(label_ids) or int(labels.max()) >= len(palette)
+    ):
+        raise ReferenceProtocolError("Watershed capture count/ID/palette facts differ")
+
+
 class PlantCVReferenceRunner:
     """Run an audited PlantCV operation in an explicit reference interpreter."""
 
@@ -865,6 +958,10 @@ class PlantCVReferenceRunner:
                 or response_identity.get("platform") != PINNED_REFERENCE_PLATFORM
             ):
                 raise ReferenceIdentityError("Worker runtime identity does not match the pinned reference release")
+            if operation == "segmentation.watershed.capture":
+                from .reference_watershed_capture import capture_source_records
+                if response_identity.get("capture_source_files") != capture_source_records():
+                    raise ReferenceIdentityError("Worker capture source identities differ from their pins")
             declared_arrays = response.get("intermediates")
             if not isinstance(declared_arrays, list):
                 raise ReferenceProtocolError("PlantCV worker returned invalid intermediate declarations")
@@ -905,12 +1002,15 @@ class PlantCVReferenceRunner:
             runtime_ns = response.get("computation_runtime_ns")
             if not isinstance(effective, dict) or not isinstance(observations, dict):
                 raise ReferenceProtocolError("PlantCV worker omitted effective parameters or observations")
+            if operation == "segmentation.watershed.capture":
+                _validate_watershed_capture(result_arrays, checked_intermediates, effective, request_id, input_arrays)
             if not isinstance(visualizations, dict):
                 raise ReferenceProtocolError("PlantCV worker returned invalid visualizations")
             if not isinstance(channel_semantics, dict):
                 raise ReferenceProtocolError("PlantCV worker returned invalid channel semantics")
             required_channel_fields = {
                 "segmentation.watershed": {"input_boundary", "plantcv_input", "raster_output"},
+                "segmentation.watershed.capture": {"input_boundary", "plantcv_input", "raster_output", "diagnostic", "diagnostic_bgr", "palette", "coordinates"},
                 "analysis.color": {"input_boundary", "plantcv_input", "observations", "visualizations"},
                 "transform.correct_color": {"input_boundary", "plantcv_input", "corrected_image", "color_matrices"},
                 "transform.auto_correct_color": {"input_boundary", "plantcv_input", "corrected_image", "observations"},
@@ -921,6 +1021,8 @@ class PlantCVReferenceRunner:
                 raise ReferenceProtocolError("PlantCV worker omitted required size-analysis channel semantics")
             if isinstance(runtime_ns, bool) or not isinstance(runtime_ns, int) or runtime_ns < 0:
                 raise ReferenceProtocolError("PlantCV worker returned invalid runtime metadata")
+            if operation == "segmentation.watershed.capture" and _cancelled(cancel_event):
+                raise ReferenceCancelledError("PlantCV capture cancelled before publication")
             return ReferenceResult(
                 operation=operation,
                 arrays=result_arrays,

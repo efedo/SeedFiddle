@@ -1044,6 +1044,7 @@ class PipelineCanvas(QGraphicsView):
         read_only: bool = False,
         reference_view: bool = False,
         initial_focus_node_id: str | None = None,
+        preserve_initial_layout: bool = False,
     ) -> None:
         super().__init__(parent)
         self._read_only = bool(read_only)
@@ -1053,6 +1054,7 @@ class PipelineCanvas(QGraphicsView):
             raise ValueError("The initial focus node must exist in the graph.")
         self._reference_view = bool(reference_view)
         self._initial_focus_node_id = initial_focus_node_id
+        self._preserve_initial_layout = bool(preserve_initial_layout)
         self.graph = graph
         self._scene = QGraphicsScene(self)
         self.setScene(self._scene)
@@ -1099,7 +1101,7 @@ class PipelineCanvas(QGraphicsView):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setViewportMargins(0, 38, 0, 0)
         self._build_control_bar()
-        self._populate()
+        self._populate(resolve_overlaps=not self._preserve_initial_layout)
         self._scene.selectionChanged.connect(self._selection_changed)
 
     def rebuild_graph_items(self) -> None:

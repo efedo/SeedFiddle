@@ -1075,7 +1075,9 @@ class RecipeCatalogue:
             raise RecipeCatalogueError("Catalogue recipes must be an array.")
         if data["execution_claims"] != _EXECUTION_CLAIMS:
             raise RecipeCatalogueError("Catalogue run evidence or execution claims are not the frozen empty state.")
-        return cls(data["version"], tuple(RecipeSpec.from_json(_canonical_bytes(item)) for item in data["recipes"]))
+        catalogue = cls(data["version"], tuple(RecipeSpec.from_json(_canonical_bytes(item)) for item in data["recipes"]))
+        validate_recipe_catalogue(catalogue)
+        return catalogue
 
 
 def validate_recipe_catalogue(catalogue: RecipeCatalogue) -> None:
@@ -1091,6 +1093,26 @@ def validate_recipe_catalogue(catalogue: RecipeCatalogue) -> None:
     }
     if {recipe.recipe_id for recipe in catalogue.recipes} != required_ids:
         raise RecipeCatalogueError("Catalogue recipe set is missing, extra, or renamed.")
+    # Source pins alone do not establish the authored operation contracts. A
+    # coherent supplied graph could otherwise change its stages/ports while
+    # retaining those pins, then validate against its own altered RecipeSpec.
+    # This fixed catalogue is distinct from selected or historical recipes.
+    canonical = {
+        recipe.recipe_id: recipe
+        for recipe in (
+            _plantcv_seed_recipe("binary"), _plantcv_seed_recipe("otsu"),
+            _plantcv_seed_recipe("mean"), _color_correction_recipe(), _smpts_paper_recipe(),
+        )
+    }
+    for recipe in catalogue.recipes:
+        actual = recipe.to_dict()
+        expected = canonical[recipe.recipe_id].to_dict()
+        actual.pop("layout")
+        expected.pop("layout")
+        if _canonical_bytes(actual) != _canonical_bytes(expected):
+            raise RecipeCatalogueError(
+                f"Catalogue recipe {recipe.recipe_id!r} differs from its canonical source-mapped contract."
+            )
     plantcv_manifest = source_manifest_sha256(config, "plantcv")
     paper_manifest = source_manifest_sha256(config, "smpts_paper")
     environment = config["environment"]

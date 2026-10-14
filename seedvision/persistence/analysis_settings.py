@@ -21,7 +21,7 @@ from seedvision.pipeline import NodeStatus, ParameterSpec, PipelineConnection, P
 
 
 ANALYSIS_SETTINGS_FORMAT = "seedfiddle-analysis-settings"
-ANALYSIS_SETTINGS_VERSION = 20
+ANALYSIS_SETTINGS_VERSION = 22
 _LEGACY_ANALYSIS_SETTINGS_VERSIONS = frozenset(
     {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19}
 )
@@ -200,7 +200,7 @@ def analysis_settings_profile_from_payload(
     version = root["version"]
     if isinstance(version, bool) or not isinstance(version, int):
         raise InvalidAnalysisSettingsProfile("Profile version must be an integer.")
-    if version not in {*_LEGACY_ANALYSIS_SETTINGS_VERSIONS, ANALYSIS_SETTINGS_VERSION}:
+    if version not in {*_LEGACY_ANALYSIS_SETTINGS_VERSIONS, 20, 21, ANALYSIS_SETTINGS_VERSION}:
         raise IncompatibleAnalysisSettingsProfile(
             f"Unsupported analysis-settings version {version}; this application "
             f"supports versions 1 through {ANALYSIS_SETTINGS_VERSION}."
@@ -683,6 +683,12 @@ def _prepare_analysis_settings(
                 for spec in trait_node.parameter_specs
             ),
         )
+    if canonical.version < 22 and 'trait_classifier' not in profile_by_id:
+        classifier = catalogue['trait_classifier']
+        profile_by_id['trait_classifier'] = AnalysisNodeSettings(
+            identifier='trait_classifier', active=True, enabled=False,
+            connection_suspended=False, parameters=tuple(
+                (spec.key, classifier.default_parameters[spec.key]) for spec in classifier.parameter_specs))
     profile_ids = set(profile_by_id)
     missing_ids = expected_ids - profile_ids
     unknown_ids = profile_ids - expected_ids
@@ -833,7 +839,9 @@ def _prepare_analysis_settings(
                 f"({'; '.join(details)})."
             )
         if missing_keys:
-            if canonical.version not in _LEGACY_ANALYSIS_SETTINGS_VERSIONS:
+            neutral_migration = (canonical.version == 20 and node_id == 'deskew_colour'
+                and missing_keys <= {'neutral_patch_selection', 'neutral_sample_frame'})
+            if canonical.version not in _LEGACY_ANALYSIS_SETTINGS_VERSIONS and not neutral_migration:
                 raise IncompatibleAnalysisSettingsProfile(
                     f"Settings for node {node_id!r} do not match this application "
                     f"(missing parameters: {_formatted_names(missing_keys)})."
@@ -1005,7 +1013,9 @@ def _prepare_analysis_settings(
             + ")."
         )
     if missing_connections:
-        if canonical.version not in _LEGACY_ANALYSIS_SETTINGS_VERSIONS:
+        classifier_migration = (canonical.version in {20, 21}
+            and all(key[2] == 'trait_classifier' for key in missing_connections))
+        if canonical.version not in _LEGACY_ANALYSIS_SETTINGS_VERSIONS and not classifier_migration:
             raise IncompatibleAnalysisSettingsProfile(
                 "Analysis-settings connection catalogue mismatch (missing connections: "
                 + _formatted_connections(missing_connections)
@@ -1084,6 +1094,7 @@ def _prepare_analysis_settings(
                 for key in connected_keys
                 if key[2] == node_id
                 and key[0] in active_ids
+                and key[3] not in catalogue[node_id].optional_enabled_input_ports
                 and not enabled_by_id[key[0]]
             }
         )

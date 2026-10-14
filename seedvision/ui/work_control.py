@@ -23,7 +23,7 @@ class WorkController:
         self._pending_analysis_key = None
         self._pending_analysis_scope = None
         tasks = list(self._active_tasks.values()) + [getattr(self, name, None) for name in
-            ('_learning_training_task', '_procedural_fit_task', '_reference_edge_fit_task', '_optimization_task', '_species_library_build_task')]
+            ('_learning_training_task', '_procedural_fit_task', '_reference_edge_fit_task', '_optimization_task', '_species_library_build_task', '_result_export_task')]
         for task in tasks:
             if task is not None and callable(getattr(task, 'cancel', None)):
                 task.cancel()

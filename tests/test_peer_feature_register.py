@@ -133,7 +133,9 @@ class PeerFeatureRegisterTests(unittest.TestCase):
             for operation in feature["operations"] if operation["id"] == "F08.2"
         )
         mapping, = operation["native_mapping"]
-        self.assertEqual(mapping["path"], "seedvision/segmentation/procedural_fit.py")
+        self.assertEqual(mapping["path"], "seedvision/cuda/smpts_paper.py")
+        self.assertEqual(mapping["symbol"], "select_contacts")
+        self.assertEqual(operation['status']['conformance'], 'blocked_source')
         tree = ast.parse((ROOT / mapping["path"]).read_text(encoding="utf-8"), filename=mapping["path"])
         self.assertTrue(any(
             isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == mapping["symbol"]

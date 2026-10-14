@@ -179,8 +179,8 @@ def _calculation_parameters(recipe: RecipeSpec, stage_id: str, operation_id: str
     elif operation_id == "threshold.mean":
         ksize = parameters["ksize"]
         offset = parameters["offset"]
-        if type(ksize) is not int or not 3 <= ksize <= 255 or ksize % 2 != 1:
-            raise ReferenceStageError("Mean-threshold ksize must be an odd integer in [3,255].")
+        if type(ksize) is not int or not 3 <= ksize <= 255:
+            raise ReferenceStageError("Mean-threshold requested ksize must be an integer in [3,255]; even sizes round up to odd.")
         if isinstance(offset, bool) or type(offset) not in (int, float):
             raise ReferenceStageError("Mean-threshold offset must be a finite number.")
         try:
@@ -371,6 +371,28 @@ def _validate_reference_identity(result: ReferenceResult, recipe: RecipeSpec) ->
         raise ReferenceStageError("Runner installed dependency inventory differs from the pinned recipe.")
 
 
+def validate_otsu_cutoff_adapter(value, object_type):
+    """Validate explicitly adapter-derived scalar evidence, never a public return."""
+    if not isinstance(value, Mapping):
+        raise ReferenceStageError("Pinned Otsu scalar adapter metadata must be a mapping.")
+    cutoff = value.get("reference_selected_cutoff")
+    if type(cutoff) is not int or not 0 <= cutoff <= 255:
+        raise ReferenceStageError("Pinned Otsu scalar adapter cutoff must be an integer in [0,255].")
+    expected = {
+        "reference_selected_cutoff": cutoff,
+        "origin": "pinned_cv2.threshold_adapter",
+        "public_return": "mask_only",
+        "object_type": object_type,
+        "method": "THRESH_OTSU|THRESH_BINARY" if object_type == "light" else "THRESH_OTSU|THRESH_BINARY_INV",
+        "public_mask_match": True,
+    }
+    if object_type not in ("light", "dark") or set(value) != set(expected) or any(
+            type(value[name]) is not type(actual) or value[name] != actual
+            for name, actual in expected.items()):
+        raise ReferenceStageError("Pinned Otsu scalar adapter metadata differs from its exact call.")
+    return expected
+
+
 def _validate_result(
     result: Any,
     *,
@@ -392,6 +414,8 @@ def _validate_result(
     if mask.size and not np.isin(mask, (0, 255)).all():
         raise ReferenceStageError("Threshold output mask is not the exact uint8 0/255 representation.")
     expected_effective = dict(parameters)
+    if operation_id == "threshold.mean":
+        expected_effective["ksize"] += int(parameters["ksize"] % 2 == 0)
     expected_effective["callable"] = _CALLABLES[operation_id]
     actual_effective = result.effective_parameters
     if not isinstance(actual_effective, Mapping) or set(actual_effective) != set(expected_effective):
@@ -412,6 +436,10 @@ def _validate_result(
             raise ReferenceStageError(f"Runner effective parameter {key!r} differs from the recipe setting.")
     if not isinstance(result.observations, Mapping) or not isinstance(result.channel_semantics, Mapping):
         raise ReferenceStageError("Runner observations or channel semantics are malformed.")
+    if operation_id == "threshold.otsu":
+        if set(result.observations) != {"otsu_cutoff_adapter"}:
+            raise ReferenceStageError("Pinned Otsu result is missing its separate scalar adapter record.")
+        validate_otsu_cutoff_adapter(result.observations["otsu_cutoff_adapter"], parameters["object_type"])
     if not isinstance(result.visualizations, Mapping) or not isinstance(result.intermediates, tuple):
         raise ReferenceStageError("Runner diagnostic products are malformed.")
     for field in ("wall_runtime_ns", "computation_runtime_ns"):

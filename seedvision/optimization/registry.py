@@ -8,6 +8,7 @@ EXEMPT = {
     'project': 'Project data and references are not search parameters.',
     'metadata': 'Species and specimen metadata are facts.',
     'species_reference_library': 'Library provenance is fixed; consuming nodes own blend controls.',
+    'trait_classifier': 'Frozen trait-model identity and abstention policy are explicit operator inputs; training/evaluation uses separately audited evidence, not image-local parameter search.',
     'ruler_detection': 'Ruler length and tick spacing are physical facts.',
     'hue_only': 'Fixed colour conversion has no adjustable calculation.',
     'measurements': 'Deterministic measurements have no exposed estimator parameters.',
@@ -42,6 +43,8 @@ OBJECTIVES = {
 }
 
 FIXED = {
+    'neutral_patch_selection': 'Operator-selected neutral reference grid positions.',
+    'neutral_sample_frame': 'Frozen neutral reference sampling frame.',
     'ruler_length_mm': 'Known physical ruler length.',
     'minor_tick_mm': 'Known physical tick spacing.',
     'expected_outer_diameter_mm': 'Known physical vessel diameter.',

@@ -50,8 +50,11 @@ from seedvision.measurement import (
     SeedDimensionsShapeModel,
     SeedMeasurementSummary,
     assemble_seed_dimensions_shape_model,
-    measure_reviewed_seed_instances,
 )
+from seedvision.measurement.lineage import (
+    facts_sha256, prepare_reviewed_inputs, reviewed_measurement_context,
+)
+from seedvision.measurement.shape_model import _measure_prepared_seed_instances
 from seedvision.reference_library.contracts import (
     BiologicalContext,
     SpeciesDimensionsShapeBank,
@@ -432,6 +435,10 @@ class BaselineAnalysis:
     method: str = "classical fused review proposals"
     approximate: bool = True
     source_sha256: str | None = None
+    trait_classifier: object | None = None
+    analysis_inputs_json: str | None = None
+    artifact_selections_json: str | None = None
+    backend_outcomes_json: str | None = None
 
     @property
     def count(self) -> int:
@@ -499,6 +506,9 @@ def analyze_path(
     library_shape_bank: SpeciesDimensionsShapeBank | None = None,
     species_library: SpeciesLibraryArtifact | None = None,
     reference_transform: np.ndarray | None = None,
+    reference_archive_source_sha256: str | None = None,
+    reference_annotation_snapshot_source_sha256: str | None = None,
+    trait_settings=None,
 ) -> BaselineAnalysis:
     """Read and analyze an image from disk."""
 
@@ -508,11 +518,19 @@ def analyze_path(
     resolved_path = str(path.resolve()).casefold()
     from seedvision.persistence.reference_regions import file_sha256
     source_digest = file_sha256(path)
+    from seedvision.measurement.lineage import reference_source_identity_state
+    from seedvision.export.run_outcomes import AnalysisInputIntegrityError
+    for known, name in ((reference_archive_source_sha256, 'reference archive source SHA-256'),
+                        (reference_annotation_snapshot_source_sha256, 'reference annotation snapshot source SHA-256')):
+        try:
+            reference_source_identity_state(source_digest, known, name)
+        except ValueError as error:
+            raise AnalysisInputIntegrityError(str(error)) from error
     if cache_values is not None and cache_values.get('raw.sha256') not in (None, source_digest):
         if any(value is not None for value in (
             background_reference_mask, foreground_reference_mask, background_exclusion_mask,
             foreground_exclusion_mask, seed_instance_annotations, manual_seed_centres)):
-            raise ValueError('Source image contents changed. Reload the image/project to revalidate its reference bindings before analysis.')
+            raise AnalysisInputIntegrityError('Source image contents changed. Reload the image/project to revalidate its reference bindings before analysis.')
         cache_values.clear()
     # Per-image caches are keyed by source path, so annotation changes on the
     # Project root must not force the same raw raster to be decoded again.
@@ -549,7 +567,7 @@ def analyze_path(
     if file_sha256(path) != source_digest:
         if cache_values is not None:
             cache_values.clear()
-        raise ValueError('Source changed while decoding. Retry with a stable source file.')
+        raise AnalysisInputIntegrityError('Source changed while decoding. Retry with a stable source file.')
     if cancellation_requested is not None and cancellation_requested():
         raise AnalysisCancelled("Analysis superseded after image decoding.")
     # The retired boundary-painting UI may still supply empty legacy arguments
@@ -568,6 +586,7 @@ def analyze_path(
         procedural_settings=procedural_settings,
         unet_settings=unet_settings,
         stardist_settings=stardist_settings,
+        trait_settings=trait_settings,
         background_reference_points=background_reference_points,
         foreground_reference_points=foreground_reference_points,
         background_reference_mask=background_reference_mask,
@@ -592,6 +611,8 @@ def analyze_path(
         library_shape_bank=library_shape_bank,
         species_library=species_library,
         reference_transform=reference_transform,
+        reference_archive_source_sha256=reference_archive_source_sha256,
+        reference_annotation_snapshot_source_sha256=reference_annotation_snapshot_source_sha256,
         _initial_timings=(
             {"project": raw_elapsed}
             if raw_elapsed is not None
@@ -636,11 +657,18 @@ def analyze_image(
     library_shape_bank: SpeciesDimensionsShapeBank | None = None,
     species_library: SpeciesLibraryArtifact | None = None,
     reference_transform: np.ndarray | None = None,
+    reference_archive_source_sha256: str | None = None,
+    reference_annotation_snapshot_source_sha256: str | None = None,
     _initial_timings: dict[str, float] | None = None,
     _source_sha256: str | None = None,
+    trait_settings=None,
 ) -> BaselineAnalysis:
     """Generate approximate seed proposals for a controlled-layout image."""
 
+    from seedvision.measurement.lineage import reference_source_identity_state
+    for known, name in ((reference_archive_source_sha256, 'reference archive source SHA-256'),
+                        (reference_annotation_snapshot_source_sha256, 'reference annotation snapshot source SHA-256')):
+        reference_source_identity_state(_source_sha256, known, name)
     settings = settings or BaselineSettings()
     layer_settings = layer_settings or AnalysisLayerSettings()
     advanced_settings = advanced_settings or AdvancedAnalysisSettings()
@@ -678,20 +706,35 @@ def analyze_image(
         }.get(node_id, node_id)
         return enabled_nodes is None or visible_node_id in enabled_nodes
 
+    from seedvision.calibration.image import _calibration_source_key, calibration_cache_matches
+    source_key = _calibration_source_key(image, cuda_context)
+    if 'classic.source_key' in values and values['classic.source_key'] != source_key:
+        values.clear()
+    values['classic.source_key'] = source_key
+    calibration_settings = calibration_settings or CalibrationSettings()
     calibration_nodes = {"ruler_detection", "deskew_colour"}
-    calibration_dirty = bool(dirty & calibration_nodes) or "calibration" not in values
+    previous_calibration = values.get('calibration')
+    calibration_dirty = (bool(dirty & calibration_nodes) or previous_calibration is None
+        or not calibration_cache_matches(previous_calibration, image, calibration_settings, cuda_context))
     if calibration_dirty:
         calibration = calibrate_image(
             image,
             calibration_settings,
             cuda_context=cuda_context,
             timing_recorder=timings,
+            _previous_geometry=(previous_calibration if 'deskew_colour' not in dirty else None),
         )
         values["calibration"] = calibration
-        computed.extend(sorted(dirty & calibration_nodes or {"deskew_colour"}))
+        if (getattr(calibration, '_geometry', None) is not None
+                and calibration._geometry is getattr(previous_calibration, '_geometry', None)):
+            reused.append('deskew_colour')
+            computed.append('ruler_detection')
+        else:
+            computed.extend(('deskew_colour', 'ruler_detection'))
     else:
         calibration = values["calibration"]
         reused.append("deskew_colour")
+        reused.append('ruler_detection')
     analysis_image = calibration.corrected_bgr
     if reference_transform is not None:
         from seedvision.annotation.coordinates import reproject_raster, reproject_annotations, reproject_bundle
@@ -728,6 +771,36 @@ def analyze_image(
     seed_instance_annotations = _aligned_instance_annotations(
         seed_instance_annotations, analysis_image.shape[:2]
     )
+    from seedvision.export.calibration_facts import calibration_facts
+    reviewed_inputs = prepare_reviewed_inputs(seed_instance_annotations,
+        (item for item in seed_instance_traits if hasattr(item, 'seed_id')),
+        context=reviewed_measurement_context(_source_sha256, analysis_image,
+            calibration.affine_matrix, reference_transform,
+            calibration_facts=calibration_facts(calibration),
+            transport_applied=reference_transform is not None,
+            reference_archive_source_sha256=reference_archive_source_sha256,
+            reference_annotation_snapshot_source_sha256=reference_annotation_snapshot_source_sha256))
+    seed_instance_annotations = reviewed_inputs.labels
+    seed_instance_traits = reviewed_inputs.annotations
+    from seedvision.export.analysis_inputs import capture_analysis_inputs
+    analysis_inputs_json = capture_analysis_inputs(
+        masks={'instances': seed_instance_annotations, 'foreground': foreground_reference_mask,
+               'background': background_reference_mask, 'foreground_exclusion': foreground_exclusion_mask,
+               'background_exclusion': background_exclusion_mask},
+        annotations=seed_instance_traits, species=species, biological_context=biological_context,
+        trait_species=seed_trait_species, coat_patterns=seed_trait_coat_patterns,
+        conditions=seed_trait_conditions, background_points=background_reference_points,
+        foreground_points=foreground_reference_points, manual_centres=manual_seed_centres,
+        enabled_nodes=enabled_nodes, background_colour_enabled=background_colour_enabled,
+        reviewed_input_key=reviewed_inputs.cache_key, species_library=species_library,
+        library_shape_bank=library_shape_bank)
+    reviewed_input_key = facts_sha256({
+        'inputs': reviewed_inputs.cache_key,
+        'pixels_per_mm': calibration.pixels_per_mm,
+        'calibration_relative_uncertainty': settings.shape_calibration_uncertainty_fraction,
+        'contour_samples': settings.shape_contour_samples,
+        'boundary_perturbation_radius_px': settings.shape_boundary_perturbation_radius_px,
+    })
 
     layout_dirty = (
         calibration_dirty
@@ -786,6 +859,7 @@ def analyze_image(
         or "seed_scale_estimation" in dirty
         or "species_reference_library" in dirty
         or "seed_scale" not in values
+        or values.get('seed_scale.reviewed_input_key') != reviewed_input_key
     )
     if seed_scale_dirty:
         with timings.measure("seed_scale_estimation"):
@@ -824,13 +898,8 @@ def analyze_image(
                 if reference_diameter is not None
                 else "dish fallback"
             )
-            seed_measurement_summary = measure_reviewed_seed_instances(
-                seed_instance_annotations,
-                tuple(
-                    item
-                    for item in seed_instance_traits
-                    if hasattr(item, "seed_id")
-                ),
+            seed_measurement_summary = _measure_prepared_seed_instances(
+                reviewed_inputs,
                 pixels_per_mm=calibration.pixels_per_mm,
                 calibration_relative_uncertainty=(
                     settings.shape_calibration_uncertainty_fraction
@@ -869,6 +938,7 @@ def analyze_image(
             seed_measurement_summary,
             seed_dimensions_shape_model,
         )
+        values['seed_scale.reviewed_input_key'] = reviewed_input_key
         computed.append("seed_scale_estimation")
     else:
         (
@@ -2229,12 +2299,18 @@ def analyze_image(
         )
     )
 
+    backend_failures = {}
+
     def learned_branch(node_id, family, branch_settings):
         enabled = enabled_nodes is not None and node_id in enabled_nodes
         prefix = f"learning.{node_id}"
-        if not enabled:
+
+        def clear_branch():
             for suffix in ("outputs", "checkpoint", "inference_signature", "decoder_signature", "result"):
                 values.pop(f"{prefix}.{suffix}", None)
+
+        if not enabled:
+            clear_branch()
             return None
         configured_checkpoint = Path(branch_settings.checkpoint_path).expanduser()
         resolved_checkpoint = (
@@ -2248,6 +2324,10 @@ def analyze_image(
             if resolved_checkpoint.is_file()
             else None
         )
+        if checkpoint_fingerprint is None:
+            clear_branch()
+            backend_failures[node_id] = ('unavailable', 'checkpoint_missing', None, None)
+            return None
         inference_signature = (
             *branch_settings.inference_signature,
             str(resolved_checkpoint).casefold(),
@@ -2271,37 +2351,52 @@ def analyze_image(
             or f"{prefix}.result" not in values
         )
         if decoder_dirty:
-            with timings.measure(node_id):
-                if inference_dirty:
-                    outputs, checkpoint_id = predict_pipeline_model(
+            phase = 'inference_failed' if inference_dirty else 'decoder_failed'
+            try:
+                with timings.measure(node_id):
+                    if inference_dirty:
+                        outputs, checkpoint_id = predict_pipeline_model(
+                            family,
+                            root=learning_root,
+                            settings=branch_settings,
+                            source_bgr=layers.gpu_source,
+                            valid_mask=layers.gpu_valid,
+                            evidence=learned_evidence,
+                            species=species,
+                            seed_diameter_px=seed_diameter,
+                            cancellation_requested=cancellation_requested,
+                        )
+                        values[f"{prefix}.outputs"] = outputs
+                        values[f"{prefix}.checkpoint"] = checkpoint_id
+                        values[f"{prefix}.inference_signature"] = inference_signature
+                    else:
+                        outputs = values[f"{prefix}.outputs"]
+                        checkpoint_id = values[f"{prefix}.checkpoint"]
+                    phase = 'decoder_failed'
+                    decoded = decode_pipeline_model(
                         family,
-                        root=learning_root,
+                        outputs,
                         settings=branch_settings,
-                        source_bgr=layers.gpu_source,
-                        valid_mask=layers.gpu_valid,
-                        evidence=learned_evidence,
-                        species=species,
                         seed_diameter_px=seed_diameter,
-                        cancellation_requested=cancellation_requested,
+                        # Reviewed masks are evaluation targets, never inference markers.
+                        painted_instances=None,
+                        valid_mask=layers.valid_mask,
+                        checkpoint_id=checkpoint_id,
                     )
-                    values[f"{prefix}.outputs"] = outputs
-                    values[f"{prefix}.checkpoint"] = checkpoint_id
-                    values[f"{prefix}.inference_signature"] = inference_signature
-                else:
-                    outputs = values[f"{prefix}.outputs"]
-                    checkpoint_id = values[f"{prefix}.checkpoint"]
-                decoded = decode_pipeline_model(
-                    family,
-                    outputs,
-                    settings=branch_settings,
-                    seed_diameter_px=seed_diameter,
-                    # Ground-truth masks are training/evaluation targets, not
-                    # inference-time markers. Passing them here reproduced
-                    # reviewed shapes exactly and invalidated model auditing.
-                    painted_instances=None,
-                    valid_mask=layers.valid_mask,
-                    checkpoint_id=checkpoint_id,
-                )
+            except AnalysisCancelled:
+                clear_branch()
+                raise
+            except Exception as error:
+                clear_branch()
+                # A poisoned CUDA context cannot establish a usable fallback.
+                import torch
+                if isinstance(error, torch.cuda.OutOfMemoryError) or (
+                        isinstance(error, RuntimeError) and any(text in str(error).lower()
+                        for text in ('cuda', 'device-side assert', 'illegal memory access'))):
+                    raise
+                backend_failures[node_id] = ('failed', phase, type(error).__name__, str(error) or type(error).__name__)
+                computed.append(node_id)
+                return None
             values[f"{prefix}.result"] = decoded
             values[f"{prefix}.decoder_signature"] = decoder_signature
             computed.append(node_id)
@@ -2315,6 +2410,24 @@ def analyze_image(
     stardist_result = learned_branch(
         "stardist_instances", ModelFamily.STARDIST, stardist_settings
     )
+
+    trait_result = None
+    if enabled_nodes is not None and 'trait_classifier' in enabled_nodes:
+        from seedvision.learning.instance_selection import select_instances
+        from seedvision.learning.trait_pipeline import TraitClassifierSettings, run_trait_classifier
+        selected_method, selected_instances, _ = select_instances(unet=unet_result,
+            stardist=stardist_result, procedural=procedural_result, enabled=enabled_nodes,
+            foreground_available=layers.foreground_colour_profile is not None)
+        with timings.measure('trait_classifier'):
+            trait_result, trait_computed = run_trait_classifier(selected_method, selected_instances,
+                corrected_bgr=calibration.corrected_bgr, crop_offset=(offset_x, offset_y),
+                affine=calibration.affine_matrix, gpu_source=layers.gpu_source, gpu_valid=layers.gpu_valid,
+                settings=trait_settings or TraitClassifierSettings(), root=learning_root, cache=values)
+        (computed if trait_computed else reused).append('trait_classifier')
+    else:
+        for key in tuple(values):
+            if key.startswith('trait_classifier.'):
+                values.pop(key, None)
 
     reported_instance_count = (
         unet_result.count
@@ -2405,9 +2518,27 @@ def analyze_image(
     )
     node_timings_seconds.update(measured_timings)
 
+    from seedvision.export.artifact_identity import capture_artifact_selections
+    from seedvision.learning.trait_pipeline import TraitClassifierSettings
+    artifact_selections_json = capture_artifact_selections(learning_root,
+        selections={'unet_instances': unet_settings.checkpoint_path,
+                    'stardist_instances': stardist_settings.checkpoint_path,
+                    'trait_classifier': (trait_settings or TraitClassifierSettings()).trait_model_path},
+        enabled=enabled_nodes or (), trait_result=trait_result,
+        checkpoints={node: branch.checkpoint_id for node, branch in
+                     (('unet_instances', unet_result), ('stardist_instances', stardist_result))
+                     if branch is not None})
+    from seedvision.export.backend_outcomes import capture_native_outcomes
+    backend_outcomes_json = capture_native_outcomes(enabled=enabled_nodes or (),
+        results={'procedural_instances': procedural_result, 'unet_instances': unet_result,
+                 'stardist_instances': stardist_result}, failures=backend_failures,
+        foreground_available=layers.foreground_colour_profile is not None)
     result = BaselineAnalysis(
         image_path=image_path,
         source_sha256=_source_sha256,
+        analysis_inputs_json=analysis_inputs_json,
+        artifact_selections_json=artifact_selections_json,
+        backend_outcomes_json=backend_outcomes_json,
         dish=dish,
         proposals=proposals,
         estimated_seed_diameter_px=float(seed_diameter),
@@ -2467,6 +2598,7 @@ def analyze_image(
         seed_diameter_source=seed_diameter_source,
         seed_measurement_summary=seed_measurement_summary,
         seed_dimensions_shape_model=seed_dimensions_shape_model,
+        trait_classifier=trait_result,
         method=(
             "multi-head U-Net plus pattern-aware watershed (review required)"
             if unet_result is not None

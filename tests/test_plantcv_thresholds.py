@@ -14,7 +14,9 @@ from seedvision.cuda.plantcv_thresholds import (
     PLANTCV_VERSION,
     MIN_OTSU_RELATIVE_PARTITION_GAP,
     OtsuAmbiguityError,
+    AdaptiveMeanPrecisionError,
     _otsu_cutoff_from_histogram,
+    _adaptive_mean_condition,
     threshold_binary,
     threshold_mean,
     threshold_otsu,
@@ -40,6 +42,20 @@ REFERENCE_ENV_READY = all(
 
 @unittest.skipUnless(torch.cuda.is_available(), "CUDA threshold primitives require an available CUDA device")
 class PlantCVThresholdPrimitiveTests(unittest.TestCase):
+    def test_mean_certificate_covers_both_polarities_fractional_offsets_and_safe_disagreement(self):
+        # One exact sum has f32 mean216 and rational/double mean217.
+        sums = torch.tensor([[14_077_913]],dtype=torch.int64,device='cuda')
+        for polarity,offset,source_value in (('light',1.5,215),('dark',1.5,216),
+                ('light',-0.5,217),('dark',-0.5,218)):
+            delta = int(np.ceil(offset) if polarity=='light' else np.floor(offset))
+            source = torch.tensor([[source_value]],dtype=torch.uint8,device='cuda')
+            with self.assertRaises(AdaptiveMeanPrecisionError):
+                _adaptive_mean_condition(sums,source,255,delta,polarity,frame_shape=(255,255))
+        for polarity in ('light','dark'):
+            source = torch.tensor([[0]],dtype=torch.uint8,device='cuda')
+            actual = _adaptive_mean_condition(sums,source,255,2,polarity,frame_shape=(255,255))
+            self.assertEqual(bool(actual.item()),polarity=='dark')
+
     def test_source_pin_matches_committed_registry_and_available_source_bytes(self) -> None:
         config = json.loads(SOURCE_CONFIG.read_text(encoding="utf-8"))
         source_record = next(
@@ -176,7 +192,7 @@ class PlantCVThresholdPrimitiveTests(unittest.TestCase):
         for bad_object_type in ("medium", None):
             with self.subTest(object_type=bad_object_type), self.assertRaises((TypeError, ValueError)):
                 threshold_binary(valid, 100, bad_object_type)
-        for bad_kernel in (True, 2, 4, 257):
+        for bad_kernel in (True, 2, 256, 257):
             with self.subTest(ksize=bad_kernel), self.assertRaises((TypeError, ValueError)):
                 threshold_mean(valid, bad_kernel, 0)
         for bad_offset in (True, float("nan"), float("inf"), 256.0):
@@ -288,7 +304,7 @@ class PlantCVOriginalRunnerComparisonTests(unittest.TestCase):
             lambda tensor: threshold_mean(tensor, 5, 0.25, "dark"),
         )
 
-    def test_maximum_mean_kernel_matches_runner_on_edge_and_float32_half_case(self) -> None:
+    def test_maximum_mean_kernel_certifies_edges_and_withholds_float32_half_case(self) -> None:
         rng = np.random.default_rng(0x255)
         image = rng.integers(0, 256, size=(768, 1024), dtype=np.uint8)
         # Place one exact 255x255 window whose integer mean is 216.500007689...
@@ -301,14 +317,33 @@ class PlantCVOriginalRunnerComparisonTests(unittest.TestCase):
         near_half_window[127, 127] = 216
         image[128:383, 128:383] = near_half_window
         tensor = torch.from_numpy(image).cuda()
+        # Stable small random frames still compare against the actual runner.
+        edge = rng.integers(0,256,size=(19,23),dtype=np.uint8)
         for polarity in ("light", "dark"):
             self._compare(
-                "threshold.mean", image,
+                "threshold.mean", edge,
                 {"ksize": 255, "offset": 0.5, "object_type": polarity},
-                tensor,
+                torch.as_tensor(edge,device='cuda'),
                 lambda value, polarity=polarity: threshold_mean(value, 255, 0.5, polarity),
             )
-        self.assertEqual(int(threshold_mean(tensor, 255, 0.5, "light")[255, 255].item()), 255)
+        original = self.runner.run('threshold.mean',{'gray':image},
+            {'ksize':255,'offset':0.5,'object_type':'light'})
+        self.assertEqual(int(original.arrays['mask'][255,255]),255)
+        # SIMD happens to choose the float32 byte here. The portable native
+        # contract now withholds decisions that differ from the scalar tail.
+        with self.assertRaises(AdaptiveMeanPrecisionError):
+            threshold_mean(tensor,255,0.5,'light')
+
+    def test_scalar_mean_tail_counterexample_is_not_silently_miscomputed(self) -> None:
+        image = np.full((255,3),255,dtype=np.uint8)
+        image[0,0],image[1,0],image[127,2] = 0,254,253
+        original = self.runner.run('threshold.mean',{'gray':image},
+            {'ksize':255,'offset':2,'object_type':'dark'})
+        self.assertEqual(int(original.arrays['mask'][127,2]),255)
+        tensor = torch.as_tensor(image,device='cuda')
+        with self.assertRaisesRegex(AdaptiveMeanPrecisionError,'scalar/SIMD'):
+            threshold_mean(tensor,255,2,'dark')
+        np.testing.assert_array_equal(tensor.cpu().numpy(),image)
 
     def test_otsu_extreme_class_imbalance_matches_default_ipp_runner(self) -> None:
         bins = (127, 128)

@@ -141,7 +141,7 @@ class ReferenceGraphViewTests(unittest.TestCase):
         stage = recipe.stage(selected)
         self.assertIn(stage.stage_id, dialog._facts_browser.toPlainText())
         self.assertIn("Typed ports", dialog._facts_browser.toPlainText())
-        self.assertIn("Checkpoint arrays: UNAVAILABLE", dialog._facts_browser.toPlainText())
+        self.assertIn("Checkpoint arrays: NOT_RUN", dialog._facts_browser.toPlainText())
         self.assertIn("No output preview", dialog._facts_browser.toPlainText())
         self.assertEqual(
             tuple(run.state.value for run in dialog.active_attachment.stage_runs),
@@ -222,7 +222,7 @@ class ReferenceGraphViewTests(unittest.TestCase):
         self.assertIn("Contact candidate selected", text)
         self.assertIn("not been evaluated", text)
         self.assertIn("UNSELECTED", text)
-        self.assertIn("UNAVAILABLE", text)
+        self.assertIn("RECORDED_WITHOUT_CHECKPOINT", text)
         self.assertIn("smpts_original v1 — unavailable", text.lower())
         self.assertIn("no PlantCV erosion is substituted", text)
 
@@ -247,7 +247,7 @@ class ReferenceGraphViewTests(unittest.TestCase):
         text = dialog._facts_browser.toPlainText()
         self.assertIn("HISTORICAL CHECKPOINT DIGEST", text.upper())
         self.assertIn(digest, text)
-        self.assertIn("Checkpoint arrays: UNAVAILABLE", text)
+        self.assertIn("Checkpoint arrays: UNSUPPORTED", text)
         self.assertIn("No output preview", text)
 
     def test_stored_identity_mismatch_is_explicit_and_preserved(self) -> None:

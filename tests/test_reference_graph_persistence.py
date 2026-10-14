@@ -277,7 +277,7 @@ class ReferenceGraphPersistenceTests(unittest.TestCase):
             self.assertEqual(loaded.document.reference_graphs, (attachment,))
             self.assertEqual(loaded.document.reference_graphs[0].checkpoint_data_status, "unavailable")
             payload = json.loads(project.read_text(encoding="utf-8"))
-            self.assertEqual(payload["version"], 3)
+            self.assertEqual(payload["version"], 6)
             self.assertEqual(payload["reference_graphs"][0]["format"], REFERENCE_GRAPH_FORMAT)
 
             snapshot = create_snapshot(root, project, root / "snapshots")

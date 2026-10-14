@@ -30,6 +30,14 @@
       "purpose": "image decoding and legacy geometric calibration"
     },
     {
+      "distribution": "matplotlib",
+      "import_name": "matplotlib",
+      "install_spec": "matplotlib==3.11.2",
+      "minimum": "3.11.0",
+      "maximum_exclusive": "3.12.0",
+      "purpose": "Naive Bayes probability density SVG plots"
+    },
+    {
       "distribution": "torch",
       "import_name": "torch",
       "install_spec": "torch==2.13.0",

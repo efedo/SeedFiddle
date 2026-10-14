@@ -796,6 +796,7 @@ def _shape_component_payload(item: ShapePopulationComponent) -> dict[str, object
         "physical_dimensions_available": item.physical_dimensions_available,
         "calibrated_physical_seed_count": item.calibrated_physical_seed_count,
         "dimensionless_physical_seed_count": item.dimensionless_physical_seed_count,
+        "physical_fit_unavailability_reason": item.physical_fit_unavailability_reason,
     }
 
 
@@ -807,6 +808,10 @@ def _shape_component_from_payload(value) -> ShapePopulationComponent:
         "physical_dimensions_available", "calibrated_physical_seed_count",
         "dimensionless_physical_seed_count",
     }
+    # Legacy content is verified before decoding; do not insert this default
+    # into a payload whose immutable content digest must remain unchanged.
+    if isinstance(value, dict) and "physical_fit_unavailability_reason" in value:
+        required.add("physical_fit_unavailability_reason")
     _exact_keys(value, required, "shape component")
     return ShapePopulationComponent(
         tuple(value["hierarchy_path"]), value["pose"], tuple(value["mean"]),
@@ -820,6 +825,7 @@ def _shape_component_from_payload(value) -> ShapePopulationComponent:
         bool(value["physical_dimensions_available"]),
         value["calibrated_physical_seed_count"],
         value["dimensionless_physical_seed_count"],
+        value.get("physical_fit_unavailability_reason"),
     )
 
 

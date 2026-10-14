@@ -88,6 +88,13 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="UNET_CHECKPOINT",
         help="evaluate U-Net boundaries with interior-gated StarDist markers",
     )
+    learning.add_argument("--benchmark-comparison", metavar="INPUT_JSON",
+                         help="evaluate a prespecified grouped comparison and exit")
+    learning.add_argument("--benchmark-resources", metavar="INPUT_JSON",
+                         help="measure an explicitly native recipe workload and exit")
+    parser.add_argument("--benchmark-output", help="benchmark report JSON destination")
+    parser.add_argument("--classifier-evidence", metavar="PATH",
+                        help="typed classifier evidence bindings for a grouped comparison")
     parser.add_argument("--learning-manifest", help="manifest used for learned-model training")
     parser.add_argument("--model-output", help="destination .pt checkpoint")
     parser.add_argument("--training-report", help="optional training-report JSON destination")
@@ -215,6 +222,13 @@ def _learning_arguments(args) -> list[str]:
     """Forward only non-bootstrap command arguments into a project venv."""
 
     values: list[str] = []
+    for option, value in (("--benchmark-comparison", args.benchmark_comparison),
+                          ("--benchmark-resources", args.benchmark_resources)):
+        if value:
+            values.extend((option, value))
+            values.extend(("--benchmark-output", args.benchmark_output))
+            if args.classifier_evidence:
+                values.extend(("--classifier-evidence", args.classifier_evidence))
     if args.learning_audit:
         values.extend(("--learning-audit", args.learning_audit))
     if args.create_synthetic_learning_data:
@@ -308,6 +322,21 @@ def _learning_arguments(args) -> list[str]:
 
 
 def _run_learning_action(args) -> int | None:
+    if args.benchmark_comparison or args.benchmark_resources:
+        _validate_benchmark_arguments(args)
+        try:
+            from seedvision.benchmarking.benchmark_cli import run_comparison, run_resources
+            if args.benchmark_comparison:
+                result = run_comparison(args.benchmark_comparison, args.benchmark_output,
+                                        classifier_evidence=args.classifier_evidence)
+            else:
+                result = run_resources(args.benchmark_resources, args.benchmark_output)
+        except (ImportError, OSError, ValueError, TypeError, RuntimeError, OverflowError) as error:
+            raise BootstrapError(f"Benchmark request could not complete: {error}") from error
+        print(json.dumps({"report": args.benchmark_output,
+                          "state": result.get("state", result.get("status")),
+                          "scientifically_validated": False}, indent=2))
+        return 0
     if args.learning_audit:
         from seedvision.learning.data import audit_manifest
 
@@ -451,11 +480,22 @@ def _run_learning_action(args) -> int | None:
     return None
 
 
+def _validate_benchmark_arguments(args) -> None:
+    benchmark = args.benchmark_comparison or args.benchmark_resources
+    if benchmark and not args.benchmark_output:
+        raise BootstrapError("Benchmark actions require --benchmark-output.")
+    if args.benchmark_output and not benchmark:
+        raise BootstrapError("--benchmark-output requires a benchmark action.")
+    if args.classifier_evidence and not args.benchmark_comparison:
+        raise BootstrapError("--classifier-evidence requires --benchmark-comparison.")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     bootstrap_mode = "never" if args.no_bootstrap else args.bootstrap
 
     try:
+        _validate_benchmark_arguments(args)
         configuration = load_configuration(ROOT)
         report = inspect_runtime(configuration)
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha256
+from io import BytesIO
 import json
 import os
 from pathlib import Path
@@ -16,7 +17,7 @@ from zipfile import BadZipFile
 import numpy as np
 
 
-REFERENCE_REGION_VERSION = 6
+REFERENCE_REGION_VERSION = 7
 _MATERIAL_CLASSES = frozenset((0, 1, 2, 3))
 _BOUNDARY_CLASSES = frozenset((0, 1, 2))
 
@@ -93,6 +94,18 @@ class ReferenceRegionBundle:
     seed_annotations: tuple[SeedInstanceAnnotation, ...] = ()
     annotation_species: str = ""
     source_to_corrected: np.ndarray | None = None
+    # Archive association and annotation-generation history are distinct facts.
+    archive_source_sha256: str | None = None
+    annotation_snapshot_source_sha256: str | None = None
+
+
+def validated_source_sha256(value: str | None, name: str) -> str | None:
+    """Validate a recorded source identity without inventing missing history."""
+    if value is not None and (
+        not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None
+    ):
+        raise ReferenceRegionError(f"Invalid {name}; expected a lowercase SHA-256 digest.")
+    return value
 
 
 def file_sha256(path: Path | str) -> str:
@@ -141,6 +154,11 @@ class ReferenceRegionStore:
         image = Path(image_path).resolve()
         if not image.is_file():
             raise ReferenceRegionError(f"Source image does not exist: {image}")
+        source_digest = file_sha256(image)
+        for name in ("archive_source_sha256", "annotation_snapshot_source_sha256"):
+            known = validated_source_sha256(getattr(bundle, name), name)
+            if known is not None and known != source_digest:
+                raise ImageFingerprintMismatch(image, self.path_for(image), known, source_digest)
         height, width = _validated_shape(bundle.shape)
         background = _binary_mask(bundle.background, (height, width), "background")
         foreground = _binary_mask(bundle.foreground, (height, width), "foreground")
@@ -181,7 +199,7 @@ class ReferenceRegionStore:
                     stream,
                     version=np.asarray(REFERENCE_REGION_VERSION, dtype=np.uint16),
                     image_identity=np.asarray(self.image_identity(image)),
-                    image_sha256=np.asarray(file_sha256(image)),
+                    image_sha256=np.asarray(source_digest),
                     height=np.asarray(height, dtype=np.int64),
                     width=np.asarray(width, dtype=np.int64),
                     material=material,
@@ -225,6 +243,9 @@ class ReferenceRegionStore:
                     annotation_species=np.asarray(annotation_species),
                     source_to_corrected=transform,
                     coordinate_space=np.asarray('unbound' if bundle.source_to_corrected is None else 'corrected_image'),
+                    **({} if bundle.annotation_snapshot_source_sha256 is None else {
+                        'annotation_snapshot_source_sha256': np.asarray(bundle.annotation_snapshot_source_sha256)
+                    }),
                 )
             temporary.replace(destination)
         finally:
@@ -326,6 +347,21 @@ class ReferenceRegionStore:
             require_current_identity=False,
         )
 
+    def load_project_archive_snapshot(
+        self, image_path, archive_path, *, image_content: bytes, archive_content: bytes,
+    ) -> ReferenceRegionBundle:
+        """Validate one immutable source/archive pair without reopening either path.
+
+        Paths supply diagnostic identity only. Source association and recorded
+        generation are checked against the exact provided source bytes before
+        materializing annotation rasters. Caller owns compressed-input limits.
+        """
+        if type(image_content) is not bytes or type(archive_content) is not bytes:
+            raise InvalidReferenceArchive('Reference snapshots must be immutable bytes.')
+        return self._load_archive(Path(image_path).resolve(), Path(archive_path).resolve(), None,
+            require_current_identity=False, archive_content=archive_content,
+            source_sha256=sha256(image_content).hexdigest())
+
     def _load_archive(
         self,
         image: Path,
@@ -333,20 +369,22 @@ class ReferenceRegionStore:
         expected_shape: tuple[int, int] | None,
         *,
         require_current_identity: bool,
+        archive_content: bytes | None = None,
+        source_sha256: str | None = None,
     ) -> ReferenceRegionBundle | None:
-        if not source.is_file():
+        if archive_content is None and not source.is_file():
             return None
         expected = (
             None if expected_shape is None else _validated_shape(expected_shape)
         )
         try:
-            with np.load(source, allow_pickle=False) as archive:
+            with np.load(source if archive_content is None else BytesIO(archive_content), allow_pickle=False) as archive:
                 if "version" not in archive.files:
                     raise InvalidReferenceArchive(
                         f"Saved reference archive is missing 'version': {source}"
                     )
                 version = _scalar_int(archive["version"], "version")
-                if version not in {1, 2, 3, 4, 5, REFERENCE_REGION_VERSION}:
+                if version not in {1, 2, 3, 4, 5, 6, REFERENCE_REGION_VERSION}:
                     raise InvalidReferenceArchive(
                         f"Unsupported reference-region version {version} in {source}."
                     )
@@ -391,11 +429,18 @@ class ReferenceRegionStore:
 
                 # Do not materialize any full-resolution annotation raster until
                 # the byte-exact source-image fingerprint has been checked.
-                actual_digest = file_sha256(image)
+                actual_digest = file_sha256(image) if source_sha256 is None else source_sha256
                 if saved_digest != actual_digest:
                     raise ImageFingerprintMismatch(
                         image, source, saved_digest, actual_digest
                     )
+                snapshot_digest = None
+                if version >= 7 and 'annotation_snapshot_source_sha256' in archive.files:
+                    snapshot_digest = validated_source_sha256(_scalar_text(
+                        archive['annotation_snapshot_source_sha256'], 'annotation snapshot source SHA-256'),
+                        'annotation snapshot source SHA-256')
+                    if snapshot_digest != actual_digest:
+                        raise ImageFingerprintMismatch(image, source, snapshot_digest, actual_digest)
                 saved_shape = _validated_shape(
                     (
                         _scalar_int(archive["height"], "height"),
@@ -499,6 +544,8 @@ class ReferenceRegionStore:
             seed_annotations=seed_annotations,
             annotation_species=annotation_species,
             source_to_corrected=transform,
+            archive_source_sha256=saved_digest,
+            annotation_snapshot_source_sha256=snapshot_digest,
         )
 
 

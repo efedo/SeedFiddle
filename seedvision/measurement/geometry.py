@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
+from numbers import Real
 
 import numpy as np
+
+from seedvision.measurement.descriptions import (
+    SHAPE_DEFINITION_REVISION, ShapeMeasurementProvenance, describe_shape_measurement,
+)
 
 from seedvision.cuda import (
     CudaContext,
@@ -73,10 +78,22 @@ class SeedShapeMeasurement:
     measurement_uncertainty: tuple[float, ...]
     length_unit: str
     area_unit: str
+    body_aspect_ratio: float | None = None
+    provenance: ShapeMeasurementProvenance | None = None
+
+    def __post_init__(self):
+        if self.body_aspect_ratio is not None:
+            object.__setattr__(self, "body_aspect_ratio", _validated_body_aspect_ratio(self.body_aspect_ratio))
 
     @property
     def ovality(self) -> float:
+        if self.body_aspect_ratio is not None:
+            return _validated_body_aspect_ratio(self.body_aspect_ratio)
         return self.ellipse.body_length / max(self.ellipse.body_width, 1e-9)
+
+    @property
+    def described_values(self):
+        return describe_shape_measurement(self)
 
     def vector(self) -> tuple[float, ...]:
         feature = self.local_feature
@@ -106,6 +123,78 @@ class SeedShapeMeasurement:
         )
 
 
+def _validated_body_aspect_ratio(value):
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, Real):
+        raise ValueError("Body aspect ratio must be a finite positive real number.")
+    try:
+        ratio = float(value)
+    except (ValueError, OverflowError):
+        raise ValueError("Body aspect ratio must be a finite positive real number.") from None
+    if not math.isfinite(ratio) or ratio <= 0:
+        raise ValueError("Body aspect ratio must be a finite positive real number.")
+    return ratio
+
+
+def _validated_pixels_per_mm(value):
+    if value is None:
+        return None
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, Real):
+        raise ValueError("pixels_per_mm must be a finite positive real number.")
+    try:
+        scale = float(value)
+    except (ValueError, OverflowError):
+        raise ValueError("pixels_per_mm must be a finite positive real number.") from None
+    if not math.isfinite(scale) or scale <= 0:
+        raise ValueError("pixels_per_mm must be a finite positive real number.")
+    return scale
+
+
+def _scaled_dimension(value, scale, *, area=False, name="Dimension"):
+    value = float(value)
+    if not math.isfinite(value) or value < 0:
+        raise ValueError(f"{name} must be finite and nonnegative before conversion.")
+    if area:
+        denominator = scale * scale
+        converted = (value / denominator if math.isfinite(denominator) and denominator > 0
+                     else (value / scale) / scale)
+    else:
+        converted = value / scale
+    if not math.isfinite(converted) or (value > 0 and converted == 0):
+        raise ValueError(f"{name} is not representable at the supplied pixels_per_mm.")
+    return converted
+
+
+def _scale_shape_measurement(measurement, pixels_per_mm):
+    """Convert one compact pixel bundle; no raster upload or repeated fit."""
+    scale = _validated_pixels_per_mm(pixels_per_mm)
+    if scale is None:
+        return measurement
+    if measurement.length_unit != "px" or measurement.area_unit != "px²":
+        raise ValueError("Shape conversion requires a pixel measurement bundle.")
+    if (not isinstance(measurement.measurement_uncertainty, tuple)
+            or len(measurement.measurement_uncertainty) != len(measurement.vector())
+            or any(isinstance(v, (bool, np.bool_)) or not isinstance(v, Real)
+                   or not math.isfinite(v) or v < 0 for v in measurement.measurement_uncertainty)):
+        raise ValueError("Shape conversion requires a complete finite nonnegative uncertainty bundle.")
+    ellipse = measurement.ellipse
+    uncertainty = tuple(_scaled_dimension(value, scale, area=index == 4,
+                        name="Measurement uncertainty") if index in (0, 1, 2, 4)
+                        else float(value) for index, value in enumerate(measurement.measurement_uncertainty))
+    result = replace(measurement,
+        maximum_span=_scaled_dimension(measurement.maximum_span, scale, name="Maximum span"),
+        ellipse=replace(ellipse,
+            body_length=_scaled_dimension(ellipse.body_length, scale, name="Body length"),
+            body_width=_scaled_dimension(ellipse.body_width, scale, name="Body width")),
+        projected_area=_scaled_dimension(measurement.projected_area, scale, area=True, name="Projected area"),
+        measurement_uncertainty=uncertainty, length_unit="mm", area_unit="mm²",
+        body_aspect_ratio=measurement.ovality,
+        provenance=(replace(measurement.provenance, pixels_per_mm=scale)
+                    if measurement.provenance is not None else None))
+    if not all(math.isfinite(v) for v in result.vector()+result.measurement_uncertainty):
+        raise ValueError("Calibrated shape vector and uncertainties must be finite.")
+    return result
+
+
 def measure_shape_mask(
     mask: np.ndarray,
     *,
@@ -127,8 +216,7 @@ def measure_shape_mask(
     values = np.asarray(mask, dtype=np.uint8)
     if values.ndim != 2 or not np.any(values):
         raise ValueError("A non-empty two-dimensional seed mask is required.")
-    if pixels_per_mm is not None and pixels_per_mm <= 0:
-        raise ValueError("pixels_per_mm must be positive.")
+    scale = _validated_pixels_per_mm(pixels_per_mm)
     if not 0.0 <= calibration_relative_uncertainty <= 0.5:
         raise ValueError("Calibration relative uncertainty must be between 0 and 0.5.")
     if contour_samples < 32 or contour_samples > 1024:
@@ -147,10 +235,12 @@ def measure_shape_mask(
         values, contour, hilum_point=hilum_point, contour_samples=contour_samples
     )
     alternatives = []
+    used_radii = []
     for radius in perturbation_radii:
         radius = int(radius)
         if radius <= 0:
             continue
+        used_radii.append(radius)
         kernel = cv2.getStructuringElement(
             cv2.MORPH_ELLIPSE, (radius * 2 + 1, radius * 2 + 1)
         )
@@ -189,22 +279,20 @@ def measure_shape_mask(
     uncertainty = np.sqrt(
         np.square(boundary_uncertainty) + np.square(calibration_uncertainty)
     )
-    scale = 1.0 if pixels_per_mm is None else float(pixels_per_mm)
-    area_scale = scale * scale
     ellipse = measurement_px.ellipse
-    return SeedShapeMeasurement(
-        maximum_span=measurement_px.maximum_span / scale,
+    result = SeedShapeMeasurement(
+        maximum_span=measurement_px.maximum_span,
         maximum_span_endpoints=tuple((x+offset_x, y+offset_y)
                                      for x, y in measurement_px.maximum_span_endpoints),
         ellipse=RobustBodyEllipse(
             (ellipse.center_xy[0]+offset_x, ellipse.center_xy[1]+offset_y),
-            ellipse.body_length / scale,
-            ellipse.body_width / scale,
+            ellipse.body_length,
+            ellipse.body_width,
             ellipse.orientation_degrees,
             ellipse.orientation_uncertainty_degrees,
             ellipse.support_fraction,
         ),
-        projected_area=measurement_px.projected_area / area_scale,
+        projected_area=measurement_px.projected_area,
         ellipse_relative_area=measurement_px.ellipse_relative_area,
         non_ellipticity=measurement_px.non_ellipticity,
         asymmetry=measurement_px.asymmetry,
@@ -215,13 +303,14 @@ def measure_shape_mask(
         thin_extension_fraction=measurement_px.thin_extension_fraction,
         local_feature=measurement_px.local_feature,
         contour_signature=measurement_px.contour_signature,
-        measurement_uncertainty=tuple(
-            float(value / scale if index in {0, 1, 2} else value / area_scale if index == 4 else value)
-            for index, value in enumerate(uncertainty)
-        ),
-        length_unit="mm" if pixels_per_mm is not None else "px",
-        area_unit="mm²" if pixels_per_mm is not None else "px²",
+        measurement_uncertainty=tuple(float(value) for value in uncertainty),
+        length_unit="px",
+        area_unit="px²",
+        provenance=ShapeMeasurementProvenance(
+            SHAPE_DEFINITION_REVISION, tuple(used_radii), len(alternatives),
+            float(calibration_relative_uncertainty)),
     )
+    return _scale_shape_measurement(result, scale)
 
 
 def measure_mask(
@@ -239,8 +328,7 @@ def measure_mask(
 
     if mask is None or mask.ndim != 2:
         raise ValueError("A two-dimensional binary mask is required.")
-    if pixels_per_mm is not None and pixels_per_mm <= 0:
-        raise ValueError("pixels_per_mm must be positive.")
+    supplied_scale = _validated_pixels_per_mm(pixels_per_mm)
 
     import torch
 
@@ -283,15 +371,15 @@ def measure_mask(
     minimum_feret_px = _minimum_caliper_width(hull)
     equivalent_diameter_px = float(np.sqrt(4.0 * area_px / np.pi))
 
-    scale = pixels_per_mm or 1.0
+    scale = 1.0 if supplied_scale is None else supplied_scale
     length_unit = "mm" if pixels_per_mm is not None else "px"
     area_unit = "mm²" if pixels_per_mm is not None else "px²"
     return ShapeMeasurements(
-        maximum_feret=maximum_feret_px / scale,
-        minimum_feret=minimum_feret_px / scale,
-        area=area_px / (scale * scale),
-        perimeter=perimeter_px / scale,
-        equivalent_diameter=equivalent_diameter_px / scale,
+        maximum_feret=_scaled_dimension(maximum_feret_px, scale, name="Maximum Feret"),
+        minimum_feret=_scaled_dimension(minimum_feret_px, scale, name="Minimum Feret"),
+        area=_scaled_dimension(area_px, scale, area=True, name="Area"),
+        perimeter=_scaled_dimension(perimeter_px, scale, name="Perimeter"),
+        equivalent_diameter=_scaled_dimension(equivalent_diameter_px, scale, name="Equivalent diameter"),
         aspect_ratio=maximum_feret_px / max(minimum_feret_px, 1e-9),
         circularity=4.0 * np.pi * area_px / (perimeter_px * perimeter_px),
         roundness=4.0 * area_px / (np.pi * maximum_feret_px * maximum_feret_px),

@@ -45,6 +45,19 @@ from seedvision.persistence.reference_graphs import (
     reference_graphs_to_payload,
     validate_reference_graphs,
 )
+from seedvision.persistence.reference_models import (
+    ReferenceModelAsset, capture_reference_model_assets, reference_model_assets_from_payload,
+    resolve_asset_path, validate_reference_model_assets, verify_reference_model_assets,
+    unbound_model_selections, verify_original_model_selection,
+)
+from seedvision.persistence.native_recipes import (
+    validate_native_recipes, native_recipes_to_payload, native_recipes_from_payload,
+)
+from seedvision.persistence.correction_inputs import (
+    ProjectCorrectionBinding, validate_correction_bindings, correction_bindings_from_payload,
+    capture_correction_bindings, resolve_correction_asset_path, copy_verified_input,
+)
+from seedvision.benchmarking.recipes import RecipeSpec
 from seedvision.reference_library.contracts import (
     BiologicalContext,
     SpeciesLibraryPin,
@@ -52,7 +65,7 @@ from seedvision.reference_library.contracts import (
 
 
 PROJECT_ANALYSIS_FORMAT = "seedfiddle-project"
-PROJECT_ANALYSIS_VERSION = 3
+PROJECT_ANALYSIS_VERSION = 6
 PROJECT_ANALYSIS_EXTENSION = ".seedfiddle-project.json"
 PROJECT_ANALYSIS_DEFAULT_NAME = "analysis.seedfiddle-project.json"
 PROJECT_ANALYSIS_MAX_BYTES = 16 * 1024 * 1024
@@ -160,7 +173,7 @@ class ProjectUiState:
 
 @dataclass(frozen=True, slots=True)
 class ProjectAnalysisDocument:
-    """Immutable compact content of one version-three project master."""
+    """Immutable compact content of one version-six project master."""
 
     analysis_settings: AnalysisSettingsProfile
     images: tuple[ProjectImageRecord, ...]
@@ -171,6 +184,9 @@ class ProjectAnalysisDocument:
     biological_context: BiologicalContext | None = None
     capture_group_id: str | None = None
     reference_graphs: tuple[ReferenceGraphAttachment, ...] = ()
+    reference_model_assets: tuple[ReferenceModelAsset, ...] = ()
+    native_recipes: tuple[RecipeSpec, ...] = ()
+    correction_bindings: tuple[ProjectCorrectionBinding, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -241,6 +257,10 @@ class ProjectAnalysisStore:
         biological_context: BiologicalContext | None = None,
         capture_group_id: str | None = None,
         reference_graphs: tuple[ReferenceGraphAttachment, ...] = (),
+        reference_model_assets: tuple[ReferenceModelAsset, ...] = (),
+        native_recipes: tuple[RecipeSpec, ...] = (),
+        correction_bindings: tuple[ProjectCorrectionBinding, ...] = (),
+        existing_correction_bindings: tuple[ProjectCorrectionBinding, ...] | None = None,
     ) -> ProjectAnalysisDocument:
         """Fingerprint current images and discover their existing compact sidecars."""
 
@@ -256,6 +276,7 @@ class ProjectAnalysisStore:
             ) from error
         try:
             graph_attachments = validate_reference_graphs(reference_graphs)
+            working_recipes = validate_native_recipes(native_recipes)
         except ReferenceGraphPersistenceError as error:
             raise InvalidProjectAnalysis(f"Invalid embedded reference graph metadata: {error}") from error
         except (TypeError, ValueError, KeyError, OverflowError, RecursionError) as error:
@@ -390,6 +411,16 @@ class ProjectAnalysisStore:
                 raise InvalidProjectAnalysis(
                     "The selected image must be one of the captured project images."
                 )
+        try:
+            validate_correction_bindings(correction_bindings, tuple(records), graph_attachments, working_recipes)
+            captured_correction_bindings = capture_correction_bindings(
+                self.project_root, correction_bindings, tuple(records), graph_attachments, working_recipes,
+                existing=existing_correction_bindings)
+            captured_model_assets = capture_reference_model_assets(
+                self.project_root, graph_attachments, reference_model_assets, allow_unavailable=True,
+                native_recipes=working_recipes)
+        except (ValueError, TypeError, OSError) as error:
+            raise InvalidProjectAnalysis(f'Could not bind selected native inputs/models: {error}') from error
         document = ProjectAnalysisDocument(
             analysis_settings=settings,
             images=tuple(records),
@@ -404,6 +435,9 @@ class ProjectAnalysisStore:
                 capture_group_id, "project capture group"
             ),
             reference_graphs=graph_attachments,
+            reference_model_assets=captured_model_assets,
+            native_recipes=working_recipes,
+            correction_bindings=captured_correction_bindings,
         )
         # The serializer is also the single strict document-level validator.
         _document_payload(document)
@@ -439,6 +473,10 @@ class ProjectAnalysisStore:
         biological_context: BiologicalContext | None = None,
         capture_group_id: str | None = None,
         reference_graphs: tuple[ReferenceGraphAttachment, ...] = (),
+        reference_model_assets: tuple[ReferenceModelAsset, ...] = (),
+        native_recipes: tuple[RecipeSpec, ...] = (),
+        correction_bindings: tuple[ProjectCorrectionBinding, ...] = (),
+        existing_correction_bindings: tuple[ProjectCorrectionBinding, ...] | None = None,
         destination: Path | str | None = None,
     ) -> Path:
         document = self.capture(
@@ -451,6 +489,10 @@ class ProjectAnalysisStore:
             biological_context=biological_context,
             capture_group_id=capture_group_id,
             reference_graphs=reference_graphs,
+            reference_model_assets=reference_model_assets,
+            native_recipes=native_recipes,
+            correction_bindings=correction_bindings,
+            existing_correction_bindings=existing_correction_bindings,
         )
         return self.save(document, destination)
 
@@ -673,6 +715,50 @@ class ProjectAnalysisStore:
                     sidecars=tuple(resolved_sidecars),
                 )
             )
+        for binding in document.correction_bindings:
+            for asset in binding.inputs:
+                path = resolve_correction_asset_path(self.project_root, asset.path)
+                if not verify_files:
+                    continue
+                try:
+                    copy_verified_input(path, asset)
+                except FileNotFoundError:
+                    status = ProjectFileStatus.MISSING
+                except (ValueError, TypeError, OSError):
+                    status = ProjectFileStatus.FINGERPRINT_MISMATCH
+                else:
+                    continue
+                issues.append(ProjectFileIssue(binding.image_id, 'correction_input:'+asset.role,
+                    path, status, asset.source_sha256))
+        for asset in document.reference_model_assets:
+            path = resolve_asset_path(self.project_root, asset.path)
+            if not verify_files:
+                continue
+            try:
+                verify_reference_model_assets(self.project_root, (asset,), document.reference_graphs,
+                                              native_recipes=document.native_recipes)
+            except FileNotFoundError:
+                status = ProjectFileStatus.MISSING
+            except (ValueError, TypeError, OSError):
+                status = ProjectFileStatus.FINGERPRINT_MISMATCH
+            else:
+                continue
+            issues.append(ProjectFileIssue('recipe:'+asset.recipe_id, 'classifier_model:'+asset.stage_id,
+                path, status, asset.source_sha256))
+        if verify_files:
+            for recipe, stage, selection in unbound_model_selections(document.reference_model_assets,
+                                                                     document.reference_graphs,
+                                                                     document.native_recipes):
+                try:
+                    verify_original_model_selection(stage, selection)
+                except FileNotFoundError:
+                    status = ProjectFileStatus.MISSING
+                except (ValueError, TypeError, OSError, RuntimeError):
+                    status = ProjectFileStatus.UNREADABLE
+                else:
+                    continue
+                issues.append(ProjectFileIssue('recipe:'+recipe.recipe_id, 'classifier_model:'+stage.stage_id,
+                    Path(selection['path']), status, selection['source_sha256']))
         return ProjectAnalysisLoadResult(
             document=document,
             images=tuple(resolved_images),
@@ -740,6 +826,9 @@ def _document_payload(document: ProjectAnalysisDocument) -> dict[str, object]:
         ) from error
     try:
         graph_payload = reference_graphs_to_payload(document.reference_graphs)
+        native_payload = native_recipes_to_payload(document.native_recipes)
+        model_assets = validate_reference_model_assets(document.reference_model_assets, document.reference_graphs,
+                                                       document.native_recipes)
     except ReferenceGraphPersistenceError as error:
         raise InvalidProjectAnalysis(
             f"Invalid embedded reference graph metadata: {error}"
@@ -824,10 +913,18 @@ def _document_payload(document: ProjectAnalysisDocument) -> dict[str, object]:
         raise InvalidProjectAnalysis(
             "Selected image identifier is not present in the project image list."
         )
+    try:
+        correction_bindings = validate_correction_bindings(document.correction_bindings, document.images,
+                                                          document.reference_graphs, document.native_recipes)
+    except (TypeError, ValueError, KeyError, OverflowError, RecursionError) as error:
+        raise InvalidProjectAnalysis(f'Invalid embedded correction bindings: {error}') from error
     payload: dict[str, object] = {
         "format": PROJECT_ANALYSIS_FORMAT,
         "version": PROJECT_ANALYSIS_VERSION,
         "reference_graphs": graph_payload,
+        "reference_model_assets": [asset.to_dict() for asset in model_assets],
+        "native_recipes": native_payload,
+        "correction_bindings": [binding.to_dict() for binding in correction_bindings],
         "analysis_settings": settings_payload,
         "project": {
             "species": species,
@@ -857,14 +954,20 @@ def _document_from_payload(payload: object) -> ProjectAnalysisDocument:
         raise InvalidProjectAnalysis(
             f"Unsupported project format {root.get('format')!r}."
         )
-    if not _exact_int(root.get("version")) or root["version"] not in {1, 2, PROJECT_ANALYSIS_VERSION}:
+    if not _exact_int(root.get("version")) or root["version"] not in {1, 2, 3, 4, 5, PROJECT_ANALYSIS_VERSION}:
         raise InvalidProjectAnalysis(
             f"Unsupported project version {root.get('version')!r}."
         )
     project_version = int(root["version"])
     root_required = {"format", "version", "analysis_settings", "project", "images"}
-    if project_version == PROJECT_ANALYSIS_VERSION:
+    if project_version >= 3:
         root_required.add("reference_graphs")
+    if project_version >= 4:
+        root_required.add("reference_model_assets")
+    if project_version >= 5:
+        root_required.add("native_recipes")
+    if project_version >= 6:
+        root_required.add("correction_bindings")
     _keys(root, required=root_required, optional={"ui"}, name="project master")
     try:
         settings = analysis_settings_profile_from_payload(root["analysis_settings"])
@@ -1015,9 +1118,16 @@ def _document_from_payload(payload: object) -> ProjectAnalysisDocument:
     try:
         reference_graphs = (
             reference_graphs_from_payload(root["reference_graphs"])
-            if project_version == PROJECT_ANALYSIS_VERSION
+            if project_version >= 3
             else ()
         )
+        native_recipes = native_recipes_from_payload(root['native_recipes']) if project_version >= 5 else ()
+        reference_model_assets = (reference_model_assets_from_payload(root['reference_model_assets'], reference_graphs,
+                                                                     native_recipes)
+                                  if project_version >= 4 else ())
+        correction_bindings = (correction_bindings_from_payload(root['correction_bindings'], tuple(images),
+                                                               reference_graphs, native_recipes)
+                               if project_version >= 6 else ())
     except ReferenceGraphPersistenceError as error:
         raise InvalidProjectAnalysis(
             f"Invalid project reference graph metadata: {error}"
@@ -1036,6 +1146,9 @@ def _document_from_payload(payload: object) -> ProjectAnalysisDocument:
         biological_context=biological_context,
         capture_group_id=capture_group_id,
         reference_graphs=reference_graphs,
+        reference_model_assets=reference_model_assets,
+        native_recipes=native_recipes,
+        correction_bindings=correction_bindings,
     )
 
 

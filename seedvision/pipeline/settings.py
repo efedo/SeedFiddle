@@ -16,6 +16,7 @@ def production_settings(graph):
     from seedvision.visualization.advanced import AdvancedAnalysisSettings, ADVANCED_NODE_MODES
     from seedvision.segmentation.procedural import ProceduralInstanceSettings
     from seedvision.learning.pipeline import UNetPipelineSettings, StarDistPipelineSettings
+    from seedvision.learning.trait_pipeline import TraitClassifierSettings
 
     def build(cls, owners, *, active_only=True):
         values = {}
@@ -31,5 +32,6 @@ def production_settings(graph):
         advanced_settings=build(AdvancedAnalysisSettings, ADVANCED_NODE_MODES),
         procedural_settings=build(ProceduralInstanceSettings, ('procedural_instances',)),
         unet_settings=build(UNetPipelineSettings, ('unet_instances',),active_only=False),
-        stardist_settings=build(StarDistPipelineSettings, ('stardist_instances',),active_only=False))
+        stardist_settings=build(StarDistPipelineSettings, ('stardist_instances',),active_only=False),
+        trait_settings=build(TraitClassifierSettings, ('trait_classifier',),active_only=False))
 

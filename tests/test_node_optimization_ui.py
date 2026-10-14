@@ -66,6 +66,50 @@ class NodeOptimizationUITests(unittest.TestCase):
                 window._pipeline_node_action_requested('background_likelihood', PipelineInspector.OPTIMIZE_NODE_ACTION, None)
                 self.assertEqual(start.call_args.args, ('background_likelihood',))
 
+    def test_classifier_manual_controls_remain_editable_without_optimization(self):
+        from PySide6.QtWidgets import QDoubleSpinBox, QLineEdit
+        from seedvision.ui.pipeline_inspector import PipelineInspector
+        from seedvision.optimization.registry import EXEMPT
+        inspector = PipelineInspector()
+        self.addCleanup(inspector.close)
+        graph = build_default_pipeline()
+        classifier = graph.node('trait_classifier')
+        classifier.enabled = True
+        inspector.parameter_changed.connect(graph.set_parameter)
+        changes, actions = [], []
+        inspector.parameter_changed.connect(lambda *args: changes.append(args))
+        inspector.node_action_requested.connect(lambda *args: actions.append(args))
+        inspector.enable_unified_optimization()
+        inspector.set_optimization_context(ready=True, busy=False)
+        inspector.set_node(classifier)
+        self.assertTrue(inspector.optimization_button.isHidden())
+        self.assertFalse(inspector.optimization_button.isEnabled())
+        self.assertEqual(inspector.optimization_status.text(), EXEMPT['trait_classifier'])
+        path = inspector.findChild(QLineEdit, 'parameter_trait_model_path')
+        threshold = inspector.findChild(QDoubleSpinBox, 'parameter_trait_abstention_threshold')
+        self.assertIsNotNone(path)
+        self.assertIsNotNone(threshold)
+        self.assertTrue(path.isEnabled())
+        self.assertFalse(path.isReadOnly())
+        self.assertTrue(threshold.isEnabled())
+        self.assertFalse(threshold.isReadOnly())
+        path.setText('selected-frozen-traits.json')
+        path.editingFinished.emit()
+        threshold.setValue(.63)
+        threshold.editingFinished.emit()
+        self.assertEqual(classifier.parameters['trait_model_path'], 'selected-frozen-traits.json')
+        self.assertEqual(classifier.parameters['trait_abstention_threshold'], .63)
+        self.assertEqual(changes, [('trait_classifier', 'trait_model_path', 'selected-frozen-traits.json'),
+                                  ('trait_classifier', 'trait_abstention_threshold', .63)])
+        self.assertFalse(actions)
+        for enabled in (False, True):
+            classifier.enabled = enabled
+            inspector.set_node(classifier)
+            self.assertEqual(inspector.findChild(QLineEdit, 'parameter_trait_model_path').isEnabled(), enabled)
+            self.assertEqual(inspector.findChild(QDoubleSpinBox, 'parameter_trait_abstention_threshold').isEnabled(), enabled)
+            self.assertTrue(inspector.optimization_button.isHidden())
+            self.assertFalse(inspector.optimization_button.isEnabled())
+
     def test_completed_progress_does_not_cancel_success_and_apply_is_atomic(self):
         from PySide6.QtWidgets import QDialog, QProgressDialog
         with TemporaryDirectory() as directory:

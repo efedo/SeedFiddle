@@ -3,9 +3,12 @@ from __future__ import annotations
 from dataclasses import replace
 from io import BytesIO
 import json
+import inspect
 import os
 from pathlib import Path
+import struct
 import tempfile
+import tracemalloc
 import unittest
 import warnings
 import zipfile
@@ -181,6 +184,154 @@ class BenchmarkCheckpointTests(unittest.TestCase):
                 execution=ExecutionRecord(ExecutionStatus.AVAILABLE),
                 measurement=_measurement(),
             )
+
+    def test_selected_loading_verifies_all_members_without_numpy_archive_materialization(self):
+        reference = self.publish()
+        expected = load_checkpoint(self.root, reference.checkpoint_sha256)
+        with patch.object(checkpoint_module.np, 'load', side_effect=AssertionError('full decode')):
+            selected = load_checkpoint(self.root, reference.checkpoint_sha256, array_names=('labels',))
+            verified_only = load_checkpoint(self.root, reference.checkpoint_sha256, array_names=())
+        self.assertEqual(set(selected.arrays), {'labels'})
+        self.assertEqual(set(selected.raster_roles), {'labels'})
+        np.testing.assert_array_equal(selected.arrays['labels'], expected.arrays['labels'])
+        with self.assertRaises(ValueError): selected.arrays['labels'].setflags(write=True)
+        self.assertEqual(dict(verified_only.arrays), {})
+        self.assertEqual(dict(verified_only.raster_roles), {})
+        self.assertEqual(selected.metadata, expected.metadata)
+
+    def test_selected_loading_preserves_compact_scalar_zero_endian_and_complex_domains(self):
+        values = {'scalar':np.array(12, dtype='>i2'), 'zero':np.empty((0,3), dtype=np.float32),
+                  'complex':np.array([1+2j, -3-4j], dtype='>c16')}
+        reference = self.publish(arrays=values, raster_roles={})
+        for names in (tuple(values), ('scalar',), ('zero',), ('complex',)):
+            loaded = load_checkpoint(self.root, reference.checkpoint_sha256, array_names=names)
+            self.assertEqual(set(loaded.arrays), set(names))
+            for name in names:
+                self.assertEqual(loaded.arrays[name].dtype.str, values[name].dtype.str)
+                self.assertEqual(loaded.arrays[name].shape, values[name].shape)
+                np.testing.assert_array_equal(loaded.arrays[name], values[name])
+
+    def test_selected_loading_rejects_unknown_names_and_keeps_aggregate_admission(self):
+        reference = self.publish()
+        for names in (('missing',), ('labels','labels'), ['labels'], (12,)):
+            with self.subTest(names=names), self.assertRaises(InvalidCheckpoint):
+                load_checkpoint(self.root, reference.checkpoint_sha256, array_names=names)
+        limits = CheckpointLimits(max_array_bytes=63, max_total_array_bytes=63)
+        with patch.object(checkpoint_module, '_validate_npz') as decode:
+            with self.assertRaises(InvalidCheckpoint):
+                load_checkpoint(self.root, reference.checkpoint_sha256, limits=limits, array_names=())
+            decode.assert_not_called()
+
+    def test_selected_loading_rejects_changed_unselected_payload_and_header(self):
+        for failure in ('hash','header'):
+            with self.subTest(failure=failure):
+                reference = self.publish(metadata={'failure':failure})
+                labels = np.arange(63, dtype=np.int32).reshape(7,9)
+                if failure == 'hash': labels[1,1] += 1
+                else: labels = labels.reshape(9,7)
+                with (reference.path/'arrays.npz').open('wb') as stream:
+                    np.savez(stream, labels=labels, mask=np.eye(7,9,dtype=np.bool_))
+                with self.assertRaises(InvalidCheckpoint):
+                    load_checkpoint(self.root, reference.checkpoint_sha256, array_names=('mask',))
+
+    def test_selected_loading_checks_unselected_semantics_even_with_rehashed_manifest(self):
+        reference = self.publish()
+        labels = np.arange(63, dtype=np.int32).reshape(7,9); labels[1,1] = -1
+        with (reference.path/'arrays.npz').open('wb') as stream:
+            np.savez(stream, labels=labels, mask=np.eye(7,9,dtype=np.bool_))
+        manifest_path = reference.path/'manifest.json'
+        manifest = json.loads(manifest_path.read_text())
+        next(item for item in manifest['arrays'] if item['name']=='labels')['data_sha256'] = checkpoint_module._array_data_sha256(labels)
+        manifest['checkpoint_sha256'] = checkpoint_module._content_sha256(manifest)
+        manifest_path.write_text(json.dumps(manifest))
+        changed = manifest['checkpoint_sha256']; reference.path.rename(self.root/f'{changed}.checkpoint')
+        with self.assertRaisesRegex(InvalidCheckpoint, 'declared values'):
+            load_checkpoint(self.root, changed, array_names=('mask',))
+
+    def test_selected_loading_cancels_while_streaming_unselected_array(self):
+        reference = self.publish(arrays={'large':np.zeros(3*1024*1024, dtype=np.uint8),
+                                         'small':np.ones(4, dtype=np.uint8)}, raster_roles={})
+        polls = 0
+        def cancel():
+            nonlocal polls
+            polls += 1
+            frame = inspect.currentframe()
+            while frame is not None:
+                if (frame.f_code is checkpoint_module._validate_npz.__code__
+                        and frame.f_locals.get('name')=='large'
+                        and frame.f_locals.get('offset',0)>=1024*1024):
+                    return True
+                frame = frame.f_back
+            return False
+        with self.assertRaises(CheckpointCancelled):
+            load_checkpoint(self.root, reference.checkpoint_sha256, array_names=('small',), cancel=cancel)
+        self.assertGreater(polls, 4)
+
+    def test_selected_loading_checks_unselected_tail_hash_values_and_crc(self):
+        identity = replace(_identity(), coordinate_frame=replace(_identity().coordinate_frame, shape=(768,1024)))
+        for failure in ('hash','values','crc'):
+            with self.subTest(failure=failure):
+                labels = np.zeros(identity.coordinate_frame.shape, dtype=np.int32)
+                values = {'a_small':np.arange(4,dtype=np.uint8), 'labels':labels}
+                reference = self.publish(identity=identity, arrays=values,
+                    raster_roles={'labels':RasterRole('instances',np.dtype(np.int32).str)},
+                    metadata={'case':failure})
+                npz = reference.path/'arrays.npz'
+                if failure == 'crc':
+                    with zipfile.ZipFile(npz) as archive:
+                        info = archive.getinfo('labels.npy')
+                        self.assertEqual(info.compress_type,zipfile.ZIP_STORED)
+                    raw = bytearray(npz.read_bytes())
+                    name_length, extra_length = struct.unpack_from('<HH',raw,info.header_offset+26)
+                    tail = info.header_offset+30+name_length+extra_length+info.file_size-1
+                    raw[tail] ^= 1; npz.write_bytes(raw)
+                else:
+                    labels[-1,-1] = -1 if failure=='values' else 1
+                    with npz.open('wb') as stream: np.savez(stream,**values)
+                    if failure == 'values':
+                        manifest_path = reference.path/'manifest.json'
+                        manifest = json.loads(manifest_path.read_text())
+                        next(item for item in manifest['arrays'] if item['name']=='labels')['data_sha256'] = checkpoint_module._array_data_sha256(labels)
+                        manifest['checkpoint_sha256'] = checkpoint_module._content_sha256(manifest)
+                        manifest_path.write_text(json.dumps(manifest))
+                        changed = manifest['checkpoint_sha256']
+                        reference.path.rename(self.root/f'{changed}.checkpoint')
+                digest = changed if failure=='values' else reference.checkpoint_sha256
+                message = 'declared values' if failure=='values' else 'ZIP' if failure=='crc' else 'content hash'
+                with self.assertRaisesRegex(InvalidCheckpoint,message):
+                    load_checkpoint(self.root,digest,array_names=('a_small',))
+
+    def test_selected_loading_rejects_empty_raster_member_before_payload_decode(self):
+        reference = self.publish()
+        manifest_path = reference.path/'manifest.json'
+        manifest = json.loads(manifest_path.read_text())
+        labels = np.empty((0,9),dtype=np.int32)
+        spec = next(item for item in manifest['arrays'] if item['name']=='labels')
+        spec.update(shape=[0,9],nbytes=0,data_sha256=checkpoint_module._array_data_sha256(labels))
+        with (reference.path/'arrays.npz').open('wb') as stream:
+            np.savez(stream,labels=labels,mask=np.eye(7,9,dtype=np.bool_))
+        manifest['checkpoint_sha256'] = checkpoint_module._content_sha256(manifest)
+        manifest_path.write_text(json.dumps(manifest)); changed = manifest['checkpoint_sha256']
+        reference.path.rename(self.root/f'{changed}.checkpoint')
+        with patch.object(checkpoint_module,'_validate_npz') as decode:
+            with self.assertRaisesRegex(InvalidCheckpoint,'frame or semantic contract'):
+                load_checkpoint(self.root,changed,array_names=('mask',))
+            decode.assert_not_called()
+
+    def test_selected_loading_streams_incompressible_32mib_member_with_bounded_host_peak(self):
+        large = np.random.default_rng(23).integers(0,256,32*1024*1024,dtype=np.uint8)
+        reference = self.publish(arrays={'large':large,'small':np.arange(4,dtype=np.uint8)},raster_roles={})
+        del large
+        snapshot_bytes = (reference.path/'arrays.npz').stat().st_size
+        tracemalloc.start()
+        try:
+            with patch.object(checkpoint_module.np,'load',side_effect=AssertionError('full decode')):
+                selected = load_checkpoint(self.root,reference.checkpoint_sha256,array_names=('small',))
+            _, peak = tracemalloc.get_traced_memory()
+        finally: tracemalloc.stop()
+        self.assertEqual(set(selected.arrays),{'small'})
+        self.assertLessEqual(peak,snapshot_bytes+10*1024*1024)
+        print(f'\nSelected archive32MiB stream: traced peak {peak:,}; snapshot {snapshot_bytes:,}.',flush=True)
 
     def test_stage_replay_requires_exact_source_frame_recipe_and_upstream_identity(self) -> None:
         upstream = "f" * 64

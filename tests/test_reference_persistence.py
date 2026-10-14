@@ -124,7 +124,7 @@ class ReferenceRegionStoreTests(unittest.TestCase):
                 ),
             )
             with np.load(destination, allow_pickle=False) as archive:
-                self.assertEqual(int(archive["version"]), 6)
+                self.assertEqual(int(archive["version"]), 7)
                 self.assertEqual(archive["material"].dtype, np.uint8)
                 self.assertNotIn("boundary", archive.files)
                 self.assertEqual(archive["annotated_seeds"].dtype, np.uint16)

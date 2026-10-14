@@ -8,6 +8,7 @@ independent scientific validation.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 import hashlib
 import json
 import math
@@ -24,8 +25,23 @@ from seedvision.benchmarking.checkpoints import (
     CheckpointIdentity,
     CoordinateFrame,
     ExecutionStatus,
+    MeasurementContract,
     RasterRole,
     load_checkpoint,
+)
+from seedvision.benchmarking.native_threshold_stage import (
+    NativeThresholdIdentity,
+    expected_native_threshold_stage_identity,
+)
+from seedvision.benchmarking.reference_stage import expected_reference_stage_identity
+from seedvision.benchmarking.recipes import RecipeProvenanceMode, RecipeSpec
+from seedvision.benchmarking.reference_runner import (
+    PINNED_PLANTCV_COMMIT,
+    PINNED_PLANTCV_VERSION,
+    PINNED_REFERENCE_PLATFORM,
+    PINNED_REFERENCE_PYTHON,
+    PINNED_REQUIREMENTS_SHA256,
+    PINNED_SOURCE_AUDIT_SHA256,
 )
 from seedvision.learning.metrics import (
     _overlap_iou_pairs,
@@ -47,6 +63,178 @@ _COMPARE_CHUNK_ELEMENTS = 1_000_000
 
 class ConformanceError(ValueError):
     """Raised when a checkpoint pair is stale, unavailable, or incompatible."""
+
+
+class ThresholdBorderCorrespondence(StrEnum):
+    """The only bridge-declared border meanings eligible for threshold adaptation."""
+
+    NOT_APPLICABLE_POINTWISE = "not_applicable_pointwise"
+    REPLICATED_INPUT = "replicated_input_border"
+
+
+_THRESHOLD_RECIPE_IDS = {
+    "threshold.binary": "plantcv_seed_binary",
+    "threshold.mean": "plantcv_seed_mean",
+    "threshold.otsu": "plantcv_seed_otsu",
+}
+_THRESHOLD_PARAMETER_KEYS = {
+    "threshold.binary": frozenset({"threshold", "object_type"}),
+    "threshold.mean": frozenset({"ksize", "offset", "object_type"}),
+    "threshold.otsu": frozenset({"object_type"}),
+}
+_THRESHOLD_BORDER_LABELS = {
+    "threshold.binary": ("pinned_threshold.binary_operation", "native_supported_threshold.binary"),
+    "threshold.mean": ("pinned_threshold.mean_operation", "native_supported_threshold.mean"),
+    "threshold.otsu": ("pinned_threshold.otsu_operation", "native_supported_threshold.otsu"),
+}
+_NATIVE_THRESHOLD_DOMAINS = {
+    "threshold.binary": "uint8 cutoff in [0,255]; light uses > and dark uses <=",
+    "threshold.mean": "integer requested ksize [3,255] (even rounds up to odd), finite offset [-255,255], replicated borders, certified scalar/SIMD decisions",
+    "threshold.otsu": "unique separated eligible histogram partition; ambiguous histograms are unsupported",
+}
+
+
+def _exact_json_value_equal(left: Any, right: Any) -> bool:
+    """Compare JSON primitives without Python's bool/int or int/float coercion."""
+    if isinstance(left, Mapping):
+        return isinstance(right, Mapping) and set(left) == set(right) and all(
+            _exact_json_value_equal(left[key], right[key]) for key in left
+        )
+    if isinstance(left, (tuple, list)):
+        return isinstance(right, (tuple, list)) and len(left) == len(right) and all(
+            _exact_json_value_equal(a, b) for a, b in zip(left, right)
+        )
+    if type(left) is not type(right):
+        return False
+    return left == right
+
+
+@dataclass(frozen=True, slots=True)
+class ThresholdMaskSemanticCorrespondence:
+    """Narrow adapter for the pinned original/native threshold mask contracts.
+
+    It binds the complete recipes and expected checkpoint identities, common
+    input checkpoint, implementation pin, measurement, and gray input binding.
+    It reconciles only the two bridge-authored border-policy labels for one of
+    the three public threshold operations. It is not a general semantic waiver.
+    """
+
+    operation_id: str
+    reference_recipe: RecipeSpec
+    candidate_recipe: RecipeSpec
+    input_identity: CheckpointIdentity
+    input_checkpoint_sha256: str
+    reference_identity: CheckpointIdentity
+    candidate_identity: CheckpointIdentity
+    native_implementation_identity: NativeThresholdIdentity
+    input_array_name: str
+    input_role: RasterRole
+    output_measurement: MeasurementContract
+    border_correspondence: ThresholdBorderCorrespondence
+
+    def __post_init__(self) -> None:
+        if self.operation_id not in _THRESHOLD_RECIPE_IDS:
+            raise ValueError("Threshold mask correspondence supports binary, mean, or Otsu only.")
+        if not isinstance(self.reference_recipe, RecipeSpec) or not isinstance(self.candidate_recipe, RecipeSpec):
+            raise TypeError("Threshold correspondence requires both exact RecipeSpec values.")
+        if not isinstance(self.input_identity, CheckpointIdentity):
+            raise TypeError("Threshold correspondence requires the exact input CheckpointIdentity.")
+        if not isinstance(self.reference_identity, CheckpointIdentity) or not isinstance(self.candidate_identity, CheckpointIdentity):
+            raise TypeError("Threshold correspondence requires both exact output identities.")
+        if not isinstance(self.native_implementation_identity, NativeThresholdIdentity):
+            raise TypeError("Threshold correspondence requires the explicit native implementation identity.")
+        if not isinstance(self.input_array_name, str) or not self.input_array_name:
+            raise ValueError("Threshold correspondence requires an exact input array name.")
+        if not isinstance(self.input_role, RasterRole):
+            raise TypeError("Threshold correspondence requires the exact gray input RasterRole.")
+        if self.input_role != RasterRole("image", np.dtype(np.uint8).str, "HW", (0, 255)):
+            raise ValueError("Threshold correspondence accepts only a whole-frame uint8 [0,255] gray role.")
+        if not isinstance(self.output_measurement, MeasurementContract) or self.output_measurement.eligible:
+            raise ValueError("Threshold comparison measurement must be explicit and ineligible.")
+        expected_border = (
+            ThresholdBorderCorrespondence.REPLICATED_INPUT
+            if self.operation_id == "threshold.mean"
+            else ThresholdBorderCorrespondence.NOT_APPLICABLE_POINTWISE
+        )
+        if type(self.border_correspondence) is not ThresholdBorderCorrespondence or self.border_correspondence != expected_border:
+            raise ValueError("Border correspondence does not match the narrow threshold operation contract.")
+        if self.reference_recipe.provenance.mode is not RecipeProvenanceMode.ORIGINAL_REFERENCE:
+            raise ValueError("Reference recipe must retain original-reference provenance.")
+        if self.candidate_recipe.provenance.mode is not RecipeProvenanceMode.NATIVE_COMPATIBLE:
+            raise ValueError("Candidate recipe must retain distinct native-compatible provenance.")
+        if (
+            self.reference_recipe.recipe_id != _THRESHOLD_RECIPE_IDS[self.operation_id]
+            or self.candidate_recipe.recipe_id != _THRESHOLD_RECIPE_IDS[self.operation_id]
+        ):
+            raise ValueError("Recipes do not identify the exact canonical operation family.")
+        try:
+            reference_stage = next(stage for stage in self.reference_recipe.stages if stage.operation_id == self.operation_id)
+            candidate_stage = next(stage for stage in self.candidate_recipe.stages if stage.operation_id == self.operation_id)
+        except StopIteration as error:
+            raise ValueError("Both recipes must contain exactly the selected threshold operation.") from error
+        if sum(stage.operation_id == self.operation_id for stage in self.reference_recipe.stages) != 1:
+            raise ValueError("Reference recipe must contain one selected threshold operation.")
+        if sum(stage.operation_id == self.operation_id for stage in self.candidate_recipe.stages) != 1:
+            raise ValueError("Native recipe must contain one selected threshold operation.")
+        reference_parameters = self.reference_recipe.parameters_for_runner(reference_stage.stage_id)
+        candidate_parameters = self.candidate_recipe.parameters_for_runner(candidate_stage.stage_id)
+        if set(reference_parameters) != _THRESHOLD_PARAMETER_KEYS[self.operation_id]:
+            raise ValueError("Reference recipe does not contain the exact selected calculation parameters.")
+        if not _exact_json_value_equal(reference_parameters, candidate_parameters):
+            raise ValueError("Reference and native selected parameters must match exactly, including numeric types.")
+        if self.input_identity.source_sha256 != self.reference_identity.source_sha256 or self.input_identity.source_sha256 != self.candidate_identity.source_sha256:
+            raise ValueError("Input and both output identities must bind the same source SHA-256.")
+        if self.input_identity.coordinate_frame != self.reference_identity.coordinate_frame or self.input_identity.coordinate_frame != self.candidate_identity.coordinate_frame:
+            raise ValueError("Input and both outputs must bind the exact same coordinate frame.")
+        if not isinstance(self.input_checkpoint_sha256, str) or not _SHA256.fullmatch(self.input_checkpoint_sha256):
+            raise ValueError("input_checkpoint_sha256 must be a lowercase SHA-256 digest.")
+        if self.reference_identity.upstream_checkpoint_sha256 != self.input_checkpoint_sha256 or self.candidate_identity.upstream_checkpoint_sha256 != self.input_checkpoint_sha256:
+            raise ValueError("Both outputs must bind the exact common input checkpoint.")
+        if self.reference_identity.stage_id != reference_stage.stage_id or self.candidate_identity.stage_id != candidate_stage.stage_id:
+            raise ValueError("Output identity stage IDs differ from their exact recipe stages.")
+        derived_reference = expected_reference_stage_identity(
+            self.input_identity, self.reference_recipe, reference_stage.stage_id, self.input_checkpoint_sha256,
+        )
+        derived_candidate = expected_native_threshold_stage_identity(
+            self.input_identity, self.candidate_recipe, candidate_stage.stage_id,
+            self.input_checkpoint_sha256, self.native_implementation_identity,
+        )
+        if self.reference_identity != derived_reference or self.candidate_identity != derived_candidate:
+            raise ValueError("Threshold correspondence output identities differ from exact bridge-derived identities.")
+        if self.reference_recipe.provenance.backend_id != self.reference_identity.backend_id:
+            raise ValueError("Reference recipe backend differs from its expected checkpoint identity.")
+        if self.candidate_recipe.provenance.backend_id != self.candidate_identity.backend_id:
+            raise ValueError("Native recipe backend differs from its expected checkpoint identity.")
+
+    @property
+    def selected_parameters(self) -> Mapping[str, Any]:
+        stage = next(stage for stage in self.reference_recipe.stages if stage.operation_id == self.operation_id)
+        return self.reference_recipe.parameters_for_runner(stage.stage_id)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "adapter": "plantcv-threshold-border-correspondence-v1",
+            "operation_id": self.operation_id,
+            "reference_recipe_identity": self.reference_recipe.identity.to_dict(),
+            "candidate_recipe_identity": self.candidate_recipe.identity.to_dict(),
+            "reference_checkpoint_identity": self.reference_identity.to_dict(),
+            "candidate_checkpoint_identity": self.candidate_identity.to_dict(),
+            "input_identity": self.input_identity.to_dict(),
+            "input_checkpoint_sha256": self.input_checkpoint_sha256,
+            "native_implementation_identity": self.native_implementation_identity.to_dict(),
+            "selected_parameters": dict(self.selected_parameters),
+            "input_binding": {"gray": self.input_array_name, "role": self.input_role.to_dict()},
+            "output_measurement": self.output_measurement.to_dict(),
+            "border_policy_correspondence": {
+                "reference": _THRESHOLD_BORDER_LABELS[self.operation_id][0],
+                "candidate": _THRESHOLD_BORDER_LABELS[self.operation_id][1],
+                "common_contract": self.border_correspondence,
+            },
+            "basis": (
+                "The two exact pinned bridge labels are mapped to the operation's declared border contract. "
+                "This adapter permits pixel comparison only; it does not claim full function equivalence or science validation."
+            ),
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -325,6 +513,7 @@ def _report(
     candidate: BenchmarkCheckpoint,
     passed: bool,
     conformance: Mapping[str, Any],
+    mask_semantics_correspondence: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     result = {
         "schema": "seedfiddle.stage_conformance.v1",
@@ -348,6 +537,8 @@ def _report(
             "claim": "Agreement with a reference is conformance evidence only, not independent scientific validation.",
         },
     }
+    if mask_semantics_correspondence is not None:
+        result["mask_semantics_correspondence"] = dict(mask_semantics_correspondence)
     if len(_canonical_json(result)) > MAX_CONFORMANCE_REPORT_BYTES:
         raise ConformanceError("Conformance result exceeds the one-megabyte JSON report limit.")
     return result
@@ -522,6 +713,7 @@ def _require_raster_pair(
     kind: str,
     reference_array: str,
     candidate_array: str,
+    threshold_correspondence: ThresholdMaskSemanticCorrespondence | None = None,
 ) -> tuple[np.ndarray, np.ndarray, RasterRole, RasterRole]:
     left = _check_array_name(reference, reference_array, "reference")
     right = _check_array_name(candidate, candidate_array, "candidate")
@@ -533,11 +725,175 @@ def _require_raster_pair(
         raise ConformanceError("Raster role dtype, layout, or representation differs between checkpoints.")
     if left.shape != right.shape or left.dtype != right.dtype:
         raise ConformanceError("Raster shape or dtype differs between checkpoints.")
-    if kind == "mask" and reference.identity.mask_semantics != candidate.identity.mask_semantics:
-        raise ConformanceError("Mask representation semantics differ between checkpoints.")
+    if kind == "mask":
+        if threshold_correspondence is None and reference.identity.mask_semantics != candidate.identity.mask_semantics:
+            raise ConformanceError("Mask representation semantics differ between checkpoints.")
+        if threshold_correspondence is not None:
+            if reference.identity.mask_semantics == candidate.identity.mask_semantics:
+                raise ConformanceError("Threshold correspondence is only valid for the exact bridge border-policy difference.")
+            _validate_threshold_mask_correspondence(
+                reference,
+                candidate,
+                threshold_correspondence,
+                reference_array=reference_array,
+                candidate_array=candidate_array,
+            )
     if kind == "instances" and reference.identity.instance_semantics != candidate.identity.instance_semantics:
         raise ConformanceError("Instance label representation semantics differ between checkpoints.")
     return left, right, left_role, right_role
+
+
+def _validate_threshold_mask_correspondence(
+    reference: BenchmarkCheckpoint,
+    candidate: BenchmarkCheckpoint,
+    correspondence: ThresholdMaskSemanticCorrespondence,
+    *,
+    reference_array: str,
+    candidate_array: str,
+) -> None:
+    """Validate the one supported bridge-specific mask-policy correspondence."""
+    if type(correspondence) is not ThresholdMaskSemanticCorrespondence:
+        raise ConformanceError("Threshold border correspondence must use the exact typed adapter.")
+    if correspondence.reference_identity != reference.identity or correspondence.candidate_identity != candidate.identity:
+        raise ConformanceError("Threshold correspondence is not bound to both exact expected and loaded identities.")
+    if correspondence.output_measurement != reference.measurement or correspondence.output_measurement != candidate.measurement:
+        raise ConformanceError("Threshold correspondence output measurement differs from a loaded checkpoint.")
+    if correspondence.output_measurement.eligible:
+        raise ConformanceError("Threshold agreement cannot mark a measurement eligible.")
+
+    expected_role = RasterRole("mask", np.dtype(np.uint8).str)
+    if reference.raster_roles.get(reference_array) != expected_role or candidate.raster_roles.get(candidate_array) != expected_role:
+        raise ConformanceError("Threshold border correspondence requires exact uint8 HW mask roles.")
+
+    reference_stage = next(stage for stage in correspondence.reference_recipe.stages if stage.operation_id == correspondence.operation_id)
+    candidate_stage = next(stage for stage in correspondence.candidate_recipe.stages if stage.operation_id == correspondence.operation_id)
+    reference_parameters = correspondence.reference_recipe.parameters_for_runner(reference_stage.stage_id)
+    candidate_parameters = correspondence.candidate_recipe.parameters_for_runner(candidate_stage.stage_id)
+    if not _exact_json_value_equal(reference_parameters, candidate_parameters):
+        raise ConformanceError("Threshold recipes no longer bind exactly equal selected parameters.")
+
+    reference_semantics = dict(reference.identity.mask_semantics)
+    candidate_semantics = dict(candidate.identity.mask_semantics)
+    reference_border = reference_semantics.pop("border_policy", None)
+    candidate_border = candidate_semantics.pop("border_policy", None)
+    if (reference_border, candidate_border) != _THRESHOLD_BORDER_LABELS[correspondence.operation_id]:
+        raise ConformanceError("Threshold border labels differ from the exact audited bridge identities.")
+    if not _exact_json_value_equal(reference_semantics, candidate_semantics):
+        raise ConformanceError("Threshold correspondence cannot waive polarity, representation, connectivity, or validity differences.")
+    required_semantics = {
+        "foreground_polarity": reference_parameters["object_type"],
+        "representation": "uint8_0_255",
+        "connectivity": "not_applicable_to_threshold",
+        "validity_region": "full_input_frame",
+    }
+    if any(
+        type(reference_semantics.get(key)) is not type(value) or reference_semantics.get(key) != value
+        for key, value in required_semantics.items()
+    ):
+        raise ConformanceError("Threshold masks do not share the exact polarity and binary representation contract.")
+
+    expected_metadata = (
+        (reference, correspondence.reference_recipe, reference_stage, "seedfiddle.reference-stage-output", 1, "parameters"),
+        (candidate, correspondence.candidate_recipe, candidate_stage, "seedfiddle.native-threshold-stage-output", 1, "selected_parameters"),
+    )
+    for checkpoint, recipe, stage, format_name, version, parameter_field in expected_metadata:
+        metadata = checkpoint.metadata
+        expected_role_record = {"mask": expected_role.to_dict()}
+        expected_inventory = [{
+            "name": "mask",
+            "dtype": np.dtype(np.uint8).str,
+            "shape": list(correspondence.input_identity.coordinate_frame.shape),
+            "nbytes": int(correspondence.input_identity.coordinate_frame.shape[0]) * int(
+                correspondence.input_identity.coordinate_frame.shape[1]
+            ),
+        }]
+        if checkpoint is candidate:
+            expected_inventory[0]["device"] = correspondence.native_implementation_identity.device
+        if (
+            metadata.get("format") != format_name
+            or metadata.get("version") != version
+            or metadata.get("stage_id") != stage.stage_id
+            or metadata.get("operation_id") != correspondence.operation_id
+            or not _exact_json_value_equal(metadata.get("recipe_identity"), recipe.identity.to_dict())
+            or not _exact_json_value_equal(metadata.get(parameter_field), reference_parameters)
+            or metadata.get("source_sha256") != correspondence.input_identity.source_sha256
+            or not _exact_json_value_equal(metadata.get("coordinate_frame"), correspondence.input_identity.coordinate_frame.to_dict())
+            or metadata.get("upstream_checkpoint_sha256") != correspondence.input_checkpoint_sha256
+            or not _exact_json_value_equal(metadata.get("input_checkpoint_identity"), correspondence.input_identity.to_dict())
+            or not _exact_json_value_equal(metadata.get("input_bindings"), {"gray": correspondence.input_array_name})
+            or not _exact_json_value_equal(metadata.get("input_raster_roles"), {"gray": correspondence.input_role.to_dict()})
+            or not _exact_json_value_equal(metadata.get("output_raster_roles"), expected_role_record)
+            or not _exact_json_value_equal(metadata.get("output_inventory"), expected_inventory)
+            or not _exact_json_value_equal(metadata.get("measurement_contract"), correspondence.output_measurement.to_dict())
+        ):
+            raise ConformanceError("Loaded threshold output metadata does not bind the exact stage-pair adapter contract.")
+        source_mappings = stage.source_mappings
+        if len(source_mappings) != 1 or not _exact_json_value_equal(
+            metadata.get("source_mapping"), source_mappings[0].to_dict(),
+        ):
+            raise ConformanceError("Loaded threshold output source mapping differs from its exact recipe stage.")
+        if metadata.get("scientific_validation_status") != "not_certified":
+            raise ConformanceError("Threshold checkpoint metadata must preserve the not-certified science status.")
+    runner_identity = reference.metadata.get("runner_identity")
+    expected_runner_fields = {
+        "reference": "plantcv",
+        "version": PINNED_PLANTCV_VERSION,
+        "commit": PINNED_PLANTCV_COMMIT,
+        "python": PINNED_REFERENCE_PYTHON,
+        "platform": PINNED_REFERENCE_PLATFORM,
+        "source_audit_sha256": PINNED_SOURCE_AUDIT_SHA256,
+        "requirements_lock_sha256": PINNED_REQUIREMENTS_SHA256,
+    }
+    if not isinstance(runner_identity, Mapping) or any(
+        runner_identity.get(key) != value for key, value in expected_runner_fields.items()
+    ):
+        raise ConformanceError("Reference output lacks the exact pinned PlantCV runner identity.")
+    runner_digest = runner_identity.get("identity_digest")
+    if not isinstance(runner_digest, str) or not _SHA256.fullmatch(runner_digest):
+        raise ConformanceError("Reference output runner identity digest is malformed.")
+    expected_distributions: dict[str, str] = {}
+    for name, version in correspondence.reference_recipe.provenance.environment_versions.items():
+        normalized = re.sub(r"[-_.]+", "-", name).lower()
+        if normalized in expected_distributions:
+            raise ConformanceError("Reference environment repeats a normalized dependency identity.")
+        expected_distributions[normalized] = version
+    if not _exact_json_value_equal(runner_identity.get("actual_distributions"), expected_distributions):
+        raise ConformanceError("Reference runner installed distributions differ from the pinned recipe environment.")
+    if (
+        candidate.metadata.get("execution_mode") != RecipeProvenanceMode.NATIVE_COMPATIBLE.value
+        or candidate.metadata.get("native_supported_domain") != _NATIVE_THRESHOLD_DOMAINS[correspondence.operation_id]
+        or candidate.metadata.get("reference_comparison_status") != "not_evaluated"
+    ):
+        raise ConformanceError("Native threshold metadata does not preserve its mode/domain and unevaluated comparison state.")
+    if not _exact_json_value_equal(
+        candidate.metadata.get("implementation_identity"),
+        correspondence.native_implementation_identity.to_dict(),
+    ):
+        raise ConformanceError("Native checkpoint metadata differs from the exact implementation identity pin.")
+
+    if correspondence.operation_id == "threshold.otsu":
+        from seedvision.cuda.plantcv_thresholds import validate_otsu_calculation_facts
+        try:
+            validate_otsu_calculation_facts(candidate.metadata.get("calculation"),
+                correspondence.selected_parameters["object_type"])
+            from seedvision.benchmarking.reference_stage import validate_otsu_cutoff_adapter
+            observations = reference.metadata.get("observations")
+            if not isinstance(observations, Mapping) or set(observations) != {"otsu_cutoff_adapter"}:
+                raise ValueError("Pinned Otsu result is missing its separate scalar adapter record")
+            validate_otsu_cutoff_adapter(observations["otsu_cutoff_adapter"],
+                correspondence.selected_parameters["object_type"])
+        except (ValueError, TypeError) as error:
+            raise ConformanceError(f"Native Otsu cutoff metadata is invalid: {error}") from error
+
+    # The only adapted field describes the border behavior of these specific
+    # threshold functions; source, frame, upstream, recipe, role and raster
+    # bytes remain checked by CheckpointPairContract and compare_masks.
+    flat_reference = reference.arrays[reference_array].reshape(-1)
+    flat_candidate = candidate.arrays[candidate_array].reshape(-1)
+    for start in range(0, flat_reference.size, _COMPARE_CHUNK_ELEMENTS):
+        end = min(flat_reference.size, start + _COMPARE_CHUNK_ELEMENTS)
+        if not np.isin(flat_reference[start:end], (0, 255)).all() or not np.isin(flat_candidate[start:end], (0, 255)).all():
+            raise ConformanceError("Threshold mask contents differ from the declared uint8 0/255 representation.")
 
 
 def _require_empty_status_content(
@@ -561,9 +917,12 @@ def compare_masks(
     *,
     reference_array: str,
     candidate_array: str,
+    semantic_correspondence: ThresholdMaskSemanticCorrespondence | None = None,
 ) -> dict[str, Any]:
-    """Compare checkpoint-bound binary masks exactly in their shared frame."""
+    """Compare checkpoint-bound masks; threshold adaptation is explicit and narrow."""
 
+    if semantic_correspondence is not None and pair.comparison_scope != "stage":
+        raise ConformanceError("Threshold semantic correspondence requires an exact same-input stage comparison.")
     reference, candidate = _load_pair(root, pair)
     left, right, _, _ = _require_raster_pair(
         reference,
@@ -571,6 +930,7 @@ def compare_masks(
         kind="mask",
         reference_array=reference_array,
         candidate_array=candidate_array,
+        threshold_correspondence=semantic_correspondence,
     )
     _require_empty_status_content(reference, left, label="reference", kind="mask")
     _require_empty_status_content(candidate, right, label="candidate", kind="mask")
@@ -594,13 +954,30 @@ def compare_masks(
         "candidate_execution_status": candidate.execution.status.value,
         "execution_status_match": status_match,
     }
+    cutoff_match = True
+    if semantic_correspondence is not None:
+        summary["mask_semantics_correspondence"] = semantic_correspondence.to_dict()
+        if semantic_correspondence.operation_id == "threshold.otsu":
+            native_cutoff = candidate.metadata["calculation"]["native_selected_cutoff"]
+            source_cutoff = reference.metadata["observations"]["otsu_cutoff_adapter"]["reference_selected_cutoff"]
+            cutoff_match = native_cutoff == source_cutoff
+            summary["selected_cutoff"] = {
+                "native": native_cutoff, "reference_adapter": source_cutoff,
+                "reference_origin": "pinned_cv2.threshold_adapter",
+                "public_return": "mask_only", "exactly_equal": cutoff_match,
+                "mask_and_cutoff_equal": mismatch == 0 and status_match and cutoff_match,
+                "native_selection_profile": candidate.metadata["calculation"]["cutoff_selection_profile"],
+            }
     return _report(
         kind="mask",
         pair=pair,
         reference=reference,
         candidate=candidate,
-        passed=mismatch == 0 and status_match,
+        passed=mismatch == 0 and status_match and cutoff_match,
         conformance=summary,
+        mask_semantics_correspondence=(
+            None if semantic_correspondence is None else semantic_correspondence.to_dict()
+        ),
     )
 
 

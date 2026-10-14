@@ -156,7 +156,7 @@ class ProjectAnalysisPersistenceTests(unittest.TestCase):
             payload = json.loads(destination.read_text(encoding="utf-8"))
             self.assertEqual(
                 set(payload),
-                {"format", "version", "analysis_settings", "project", "images", "ui", "reference_graphs"},
+                {"format", "version", "analysis_settings", "project", "images", "ui", "reference_graphs", "reference_model_assets", "native_recipes", "correction_bindings"},
             )
             self.assertEqual(
                 set(payload["images"][0]),
@@ -190,6 +190,9 @@ class ProjectAnalysisPersistenceTests(unittest.TestCase):
             version_two = copy.deepcopy(current)
             version_two["version"] = 2
             del version_two["reference_graphs"]
+            del version_two['reference_model_assets']
+            del version_two['native_recipes']
+            del version_two['correction_bindings']
             version_two_path = root / "projects" / f"version-two{PROJECT_ANALYSIS_EXTENSION}"
             version_two_path.write_text(json.dumps(version_two), encoding="utf-8")
 
@@ -218,7 +221,7 @@ class ProjectAnalysisPersistenceTests(unittest.TestCase):
                         root / "projects" / f"migrated-{legacy_path.name}",
                     )
                     migrated = json.loads(migrated_path.read_text(encoding="utf-8"))
-                    self.assertEqual(migrated["version"], 3)
+                    self.assertEqual(migrated["version"], 6)
                     self.assertEqual(migrated["reference_graphs"], [])
 
             injected = copy.deepcopy(version_two)

@@ -14,13 +14,16 @@ separated from the runner-up by more than 1e-6; ambiguous histograms raise
 ``OtsuAmbiguityError``. Candidate partitions with a class probability below
 ``FLT_EPSILON`` are skipped, and cutoff zero is used when none pass. This is a
 conservative supported domain, not a claim of full IPP Otsu parity. Adaptive
-mean computes replicated-border sums on CUDA and applies OpenCV's float32 scale
-and uint8 rounding behavior. Unsupported input domains fail instead of being
+mean computes replicated-border sums on CUDA and certifies the binary decision
+across OpenCV's scalar, SIMD and small-kernel scaling paths. A backend-sensitive
+decision raises ``AdaptiveMeanPrecisionError``. Unsupported input domains fail instead of being
 silently coerced.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from dataclasses import dataclass
 import math
 import struct
 from typing import Literal
@@ -35,11 +38,50 @@ MAX_ABSOLUTE_OFFSET = 255.0
 _OTSU_RELATIVE_GAP_DENOMINATOR = 1_000_000
 _OTSU_MIN_CLASS_WEIGHT_DENOMINATOR = 1 << 23  # reciprocal of OpenCV's FLT_EPSILON
 MIN_OTSU_RELATIVE_PARTITION_GAP = 1 / _OTSU_RELATIVE_GAP_DENOMINATOR
+OTSU_CUTOFF_SELECTION_PROFILE = "exact-rational-occupied-partition-v1"
 ObjectType = Literal["light", "dark"]
 
 
 class OtsuAmbiguityError(ValueError):
     """Raised when distinct Otsu partitions are tied or too close to trust."""
+
+
+@dataclass(frozen=True, slots=True)
+class OtsuResult:
+    """Mask and native cutoff selected by the same histogram calculation."""
+    mask: object
+    native_selected_cutoff: int
+    object_type: str
+
+
+def otsu_calculation_facts(cutoff: int, object_type: str) -> dict:
+    """Compact native calculation facts; OpenCV scalar parity is unproven."""
+    if type(cutoff) is not int or not 0 <= cutoff <= 255:
+        raise ValueError("Native Otsu cutoff must be an integer in [0,255]")
+    polarity = _object_type(object_type)
+    return {
+        "native_selected_cutoff": cutoff,
+        "cutoff_selection_profile": OTSU_CUTOFF_SELECTION_PROFILE,
+        "object_type": polarity,
+        "comparison_rule": "gray > cutoff" if polarity == "light" else "gray <= cutoff",
+        "reference_scalar_conformance": "not_established",
+    }
+
+
+def validate_otsu_calculation_facts(value, object_type: str) -> dict:
+    """Validate saved compact facts without calculating another histogram."""
+    if not isinstance(value, Mapping):
+        raise ValueError("Native Otsu calculation facts must be a mapping")
+    expected = otsu_calculation_facts(value.get("native_selected_cutoff"), object_type)
+    if set(value) != set(expected) or any(
+            type(value[name]) is not type(actual) or value[name] != actual
+            for name, actual in expected.items()):
+        raise ValueError("Native Otsu calculation facts differ from the selected calculation")
+    return expected
+
+
+class AdaptiveMeanPrecisionError(ValueError):
+    """Scalar and vector box-filter scaling can change a binary decision."""
 
 
 def _validate_gray(gray):
@@ -178,7 +220,7 @@ def _otsu_cutoff_from_histogram(histogram: list[int]) -> int:
     return best_threshold
 
 
-def threshold_otsu(gray, object_type: str = "light"):
+def threshold_otsu_result(gray, object_type: str = "light"):
     """Apply the supported unambiguous subset of PlantCV ``threshold.otsu``.
 
     The input image stays on CUDA. Only the exact 256-bin integer histogram is
@@ -197,16 +239,23 @@ def threshold_otsu(gray, object_type: str = "light"):
     compact_counts = [int(value) for value in histogram.detach().cpu().tolist()]
     cutoff = _otsu_cutoff_from_histogram(compact_counts)
     condition = gray > cutoff if polarity == "light" else gray <= cutoff
-    return _mask_from_condition(condition)
+    return OtsuResult(_mask_from_condition(condition), cutoff, polarity)
+
+
+def threshold_otsu(gray, object_type: str = "light"):
+    """Return the mask from the supported Otsu calculation, preserving the API."""
+    return threshold_otsu_result(gray, object_type).mask
 
 
 def _validate_mean_parameters(ksize: int, offset: int | float) -> tuple[int, float]:
     if isinstance(ksize, bool) or not isinstance(ksize, int):
         raise TypeError("ksize must be an integer")
-    if ksize < MIN_ADAPTIVE_KERNEL or ksize > MAX_ADAPTIVE_KERNEL or ksize % 2 == 0:
-        raise ValueError(
-            f"ksize must be odd and between {MIN_ADAPTIVE_KERNEL} and {MAX_ADAPTIVE_KERNEL}"
-        )
+    if ksize < MIN_ADAPTIVE_KERNEL:
+        raise ValueError(f"ksize must be at least {MIN_ADAPTIVE_KERNEL}")
+    # PlantCV normalizes an even requested size before invoking OpenCV.
+    ksize += int(ksize % 2 == 0)
+    if ksize > MAX_ADAPTIVE_KERNEL:
+        raise ValueError(f"effective ksize must not exceed {MAX_ADAPTIVE_KERNEL}")
     if isinstance(offset, bool) or not isinstance(offset, (int, float)):
         raise TypeError("offset must be a finite number")
     effective_offset = float(offset)
@@ -253,6 +302,53 @@ def _replicated_box_sum(values, axis: int, radius: int):
     return window_sum
 
 
+def _adaptive_mean_condition(window_sum, source, ksize, delta, polarity, *, frame_shape):
+    """Certify a binary decision across pinned OpenCV box-filter backends.
+
+    ColumnSum<int,uchar> uses a float32 scale/product in SIMD lanes and a
+    double scale/product in the scalar tail. Odd kernel area precludes exact
+    half ties in the rational mean. Its distance from a half is at least
+    1/(2*65025), whereas double division/multiplication error is below1e-12;
+    therefore exact integer rounding also proves the scalar double byte.
+    ColumnSum<ushort,uchar> (area<=256) uses the separate SHIFT23 integer rule.
+    The whole mask is withheld only when these paths can change its predicate.
+    Source: OpenCV4.11.0 modules/imgproc/src/box_filter.simd.hpp.
+    """
+    import torch
+
+    # adaptiveThreshold uses BORDER_ISOLATED; boxFilter reduces a singleton
+    # full-frame axis to one tap before selecting its arithmetic path. Tile
+    # edges are not image edges. Full replicated sums contain exact duplicates.
+    area = (1 if frame_shape[0] == 1 else ksize) * (1 if frame_shape[1] == 1 else ksize)
+    repeats = ksize * ksize // area
+    if repeats != 1:
+        if bool((window_sum.remainder(repeats) != 0).any().item()):
+            raise AdaptiveMeanPrecisionError('Singleton-axis box sums are not exactly divisible')
+        window_sum = torch.div(window_sum, repeats, rounding_mode='floor')
+    scale = struct.unpack('<f', struct.pack('<f', 1.0 / area))[0]
+    vector_mean = window_sum.to(torch.float32).mul_(scale).round_().clamp_(0,255)
+    scalar_mean = torch.div(window_sum + area//2, area, rounding_mode='floor').clamp_(0,255)
+    vector_threshold, scalar_threshold = vector_mean - delta, scalar_mean - delta
+    # Preserve integer thresholds: source subtraction would wrap uint8.
+    selected = source > vector_threshold if polarity == 'light' else source <= vector_threshold
+    scalar = source > scalar_threshold if polarity == 'light' else source <= scalar_threshold
+    if bool((selected != scalar).any().item()):
+        raise AdaptiveMeanPrecisionError('OpenCV scalar/SIMD mean scaling changes the binary decision')
+    if 1 < area <= 256:
+        divisor = (1 << 23) // area
+        adjustment = area // 2
+        if 2 * ((1 << 23) % area) < area:
+            adjustment += 1
+        else:
+            divisor += 1
+        integer_mean = (((window_sum + adjustment) * divisor) >> 23).clamp_(0,255)
+        integer_threshold = integer_mean - delta
+        integer = source > integer_threshold if polarity == 'light' else source <= integer_threshold
+        if bool((selected != integer).any().item()):
+            raise AdaptiveMeanPrecisionError('OpenCV small-kernel mean scaling changes the binary decision')
+    return selected
+
+
 def threshold_mean(
     gray,
     ksize: int,
@@ -261,9 +357,11 @@ def threshold_mean(
 ):
     """Apply PlantCV ``threshold.mean`` semantics to a CUDA gray raster.
 
-    The supported kernel is odd [3, 255]. The local mean uses exact integer
-    sums and replicated borders, then reproduces OpenCV's float32 scale,
-    multiplication, and ties-to-even uint8 rounding. For light objects the
+    Integer requests in [3, 255] are supported; even sizes round up to odd.
+    The effective local mean uses exact integer
+    sums and replicated borders, then certifies the binary decision across
+    OpenCV's float32 SIMD, double scalar and small-kernel integer scaling.
+    Backend-sensitive decisions raise AdaptiveMeanPrecisionError. For light objects the
     threshold offset is rounded with ``ceil``; for dark objects it is rounded
     with ``floor``. Light pixels use strict ``>`` and dark pixels use ``<=``.
     Finite offsets in [-255, 255] are supported; larger values are rejected.
@@ -279,18 +377,13 @@ def threshold_mean(
     horizontal = _replicated_box_sum(gray.to(dtype=torch.int64), axis=1, radius=radius)
     window_sum = _replicated_box_sum(horizontal, axis=0, radius=radius)
     del horizontal
-    area = ksize * ksize
-    # OpenCV's uint8 boxFilter uses a float scale and rounds the resulting
-    # float32 mean to nearest-even. Exact integer division differs in rare
-    # near-half cases (for example 14,077,913 / 65,025 can become 216.5f).
-    scale = struct.unpack("f", struct.pack("f", 1.0 / area))[0]
-    rounded_mean = window_sum.to(dtype=torch.float32).mul_(scale).round_()
-    local_threshold = rounded_mean - delta
-    condition = source > local_threshold if polarity == "light" else source <= local_threshold
+    condition = _adaptive_mean_condition(window_sum, source, ksize, delta, polarity,
+        frame_shape=gray.shape)
     return _mask_from_condition(condition)
 
 
 __all__ = [
+    "AdaptiveMeanPrecisionError",
     "MAX_ABSOLUTE_OFFSET",
     "MAX_ADAPTIVE_KERNEL",
     "MIN_ADAPTIVE_KERNEL",

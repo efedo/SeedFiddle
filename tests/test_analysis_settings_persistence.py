@@ -154,6 +154,7 @@ class AnalysisSettingsPersistenceTests(unittest.TestCase):
                 "procedural_instances",
                 "unet_instances",
                 "stardist_instances",
+                "trait_classifier",
             ),
         )
         self.assertEqual(graph.revision, revision + 1)

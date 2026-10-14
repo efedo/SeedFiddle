@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 import hashlib
 from pathlib import Path
+import re
 import tempfile
 import unittest
 
@@ -15,16 +16,34 @@ from seedvision.benchmarking.checkpoints import (
     ExecutionStatus,
     MeasurementContract,
     RasterRole,
+    load_checkpoint,
     publish_checkpoint,
 )
 from seedvision.benchmarking.conformance import (
     CheckpointPairContract,
     ConformanceError,
     PrimitiveArrayContract,
+    ThresholdBorderCorrespondence,
+    ThresholdMaskSemanticCorrespondence,
     compare_instance_partitions,
     compare_masks,
     compare_primitive_outputs,
 )
+from seedvision.benchmarking.native_threshold_stage import (
+    NativeThresholdIdentity,
+    expected_native_threshold_stage_identity,
+)
+from seedvision.benchmarking.recipe_catalogue import build_recipe_catalogue
+from seedvision.benchmarking.recipes import RecipeProvenanceMode
+from seedvision.benchmarking.reference_runner import (
+    PINNED_PLANTCV_COMMIT,
+    PINNED_PLANTCV_VERSION,
+    PINNED_REFERENCE_PLATFORM,
+    PINNED_REFERENCE_PYTHON,
+    PINNED_REQUIREMENTS_SHA256,
+    PINNED_SOURCE_AUDIT_SHA256,
+)
+from seedvision.benchmarking.reference_stage import expected_reference_stage_identity
 
 
 def _digest(value: str) -> str:
@@ -144,6 +163,265 @@ class BenchmarkConformanceTests(unittest.TestCase):
             candidate_identity=candidate_identity,
             comparison_scope=scope,
         )
+
+    def _threshold_pair(self, operation_id: str = "threshold.binary"):
+        recipe_id = {
+            "threshold.binary": "plantcv_seed_binary",
+            "threshold.mean": "plantcv_seed_mean",
+            "threshold.otsu": "plantcv_seed_otsu",
+        }[operation_id]
+        reference_recipe = build_recipe_catalogue().recipe(recipe_id)
+        reference_stage = next(stage for stage in reference_recipe.stages if stage.operation_id == operation_id)
+        selected = {
+            "threshold.binary": {"threshold": 127, "object_type": "light"},
+            "threshold.mean": {"ksize": 3, "offset": 1.25, "object_type": "light"},
+            "threshold.otsu": {"object_type": "light"},
+        }[operation_id]
+        selected_stage = replace(
+            reference_stage,
+            parameters=tuple(
+                replace(parameter, value=selected[parameter.parameter_id])
+                if parameter.parameter_id in selected else parameter
+                for parameter in reference_stage.parameters
+            ),
+        )
+        reference_recipe = replace(
+            reference_recipe,
+            stages=tuple(selected_stage if stage.stage_id == reference_stage.stage_id else stage for stage in reference_recipe.stages),
+        )
+        implementation = NativeThresholdIdentity(
+            implementation_sha256=_digest("test native code"),
+            python_version="3.12.4",
+            torch_version="2.6.0+cu126",
+            numpy_version=np.__version__,
+            cuda_runtime_version="12.6",
+            platform="win32",
+            machine="engineering-test-device",
+            device_index=0,
+            device_name="engineering-test-device",
+            compute_capability="8.6",
+        )
+        candidate_recipe = replace(reference_recipe, provenance=implementation.recipe_provenance())
+        frame = CoordinateFrame(
+            frame_id="threshold_input_frame",
+            shape=(8, 12),
+            origin="top_left_pixel_centres",
+            axes="x_right_y_down",
+            units="pixel",
+            transform_sha256=_digest("threshold identity frame"),
+        )
+        input_identity = replace(
+            _identity("prepared_gray", stage="prepared_gray"),
+            source_sha256=_digest("threshold source"),
+            coordinate_frame=frame,
+            image_semantics={
+                "color_order": "GRAY", "dtype": "uint8", "value_range": [0, 255],
+                "channel_conversion": "caller_supplied_gray", "geometric_transform": "identity",
+                "interpolation": "not_applicable",
+            },
+            upstream_checkpoint_sha256=_digest("threshold upstream"),
+        )
+        gray = np.arange(96, dtype=np.uint8).reshape(8, 12)
+        input_measurement = _measurement(eligible=False)
+        input_reference = publish_checkpoint(
+            self.root,
+            input_identity,
+            {"gray": gray},
+            execution=ExecutionRecord(ExecutionStatus.AVAILABLE),
+            measurement=input_measurement,
+            raster_roles={"gray": RasterRole("image", gray.dtype.str, "HW", (0, 255))},
+            allow_cpu_transfer=True,
+        )
+        output_measurement = _measurement(eligible=False)
+        reference_identity = expected_reference_stage_identity(
+            input_identity, reference_recipe, reference_stage.stage_id, input_reference.checkpoint_sha256,
+        )
+        candidate_stage = next(stage for stage in candidate_recipe.stages if stage.operation_id == operation_id)
+        candidate_identity = expected_native_threshold_stage_identity(
+            input_identity, candidate_recipe, candidate_stage.stage_id,
+            input_reference.checkpoint_sha256, implementation,
+        )
+        mask = np.zeros((8, 12), dtype=np.uint8)
+        mask[2:6, 3:8] = 255
+        role_record = {"mask": RasterRole("mask", mask.dtype.str).to_dict()}
+        input_role_record = {"gray": RasterRole("image", gray.dtype.str, "HW", (0, 255)).to_dict()}
+        shared_metadata = {
+            "stage_id": reference_stage.stage_id,
+            "operation_id": operation_id,
+            "source_sha256": input_identity.source_sha256,
+            "coordinate_frame": frame.to_dict(),
+            "upstream_checkpoint_sha256": input_reference.checkpoint_sha256,
+            "input_checkpoint_identity": input_identity.to_dict(),
+            "input_bindings": {"gray": "gray"},
+            "input_raster_roles": input_role_record,
+            "output_raster_roles": role_record,
+            "measurement_contract": output_measurement.to_dict(),
+            "output_inventory": [{"name": "mask", "dtype": mask.dtype.str, "shape": [8, 12], "nbytes": mask.nbytes}],
+        }
+        reference_metadata = {
+            **shared_metadata,
+            "format": "seedfiddle.reference-stage-output",
+            "version": 1,
+            "recipe_identity": reference_recipe.identity.to_dict(),
+            "source_mapping": reference_stage.source_mappings[0].to_dict(),
+            "parameters": selected,
+            "runner_identity": {
+                "reference": "plantcv",
+                "version": PINNED_PLANTCV_VERSION,
+                "commit": PINNED_PLANTCV_COMMIT,
+                "python": PINNED_REFERENCE_PYTHON,
+                "platform": PINNED_REFERENCE_PLATFORM,
+                "source_audit_sha256": PINNED_SOURCE_AUDIT_SHA256,
+                "requirements_lock_sha256": PINNED_REQUIREMENTS_SHA256,
+                "identity_digest": _digest("verified test runner identity"),
+                "actual_distributions": {
+                    re.sub(r"[-_.]+", "-", name).lower(): version
+                    for name, version in reference_recipe.provenance.environment_versions.items()
+                },
+            },
+            "scientific_validation_status": "not_certified",
+        }
+        candidate_metadata = {
+            **shared_metadata,
+            "format": "seedfiddle.native-threshold-stage-output",
+            "version": 1,
+            "execution_mode": RecipeProvenanceMode.NATIVE_COMPATIBLE.value,
+            "recipe_identity": candidate_recipe.identity.to_dict(),
+            "source_mapping": candidate_stage.source_mappings[0].to_dict(),
+            "selected_parameters": selected,
+            "implementation_identity": implementation.to_dict(),
+            "output_inventory": [{
+                "name": "mask", "dtype": mask.dtype.str, "shape": [8, 12],
+                "nbytes": mask.nbytes, "device": implementation.device,
+            }],
+            "native_supported_domain": {
+                "threshold.binary": "uint8 cutoff in [0,255]; light uses > and dark uses <=",
+                "threshold.mean": "odd ksize [3,255], finite offset [-255,255], replicated borders, pinned float32 rounding",
+                "threshold.otsu": "unique separated eligible histogram partition; ambiguous histograms are unsupported",
+            }[operation_id],
+            "reference_comparison_status": "not_evaluated",
+            "scientific_validation_status": "not_certified",
+        }
+        reference_output = publish_checkpoint(
+            self.root,
+            reference_identity,
+            {"mask": mask},
+            execution=ExecutionRecord(ExecutionStatus.AVAILABLE),
+            measurement=output_measurement,
+            raster_roles={"mask": RasterRole("mask", mask.dtype.str)},
+            metadata=reference_metadata,
+            allow_cpu_transfer=True,
+        )
+        candidate_output = publish_checkpoint(
+            self.root,
+            candidate_identity,
+            {"mask": mask.copy()},
+            execution=ExecutionRecord(ExecutionStatus.AVAILABLE),
+            measurement=output_measurement,
+            raster_roles={"mask": RasterRole("mask", mask.dtype.str)},
+            metadata=candidate_metadata,
+            allow_cpu_transfer=True,
+        )
+        border = (
+            ThresholdBorderCorrespondence.REPLICATED_INPUT
+            if operation_id == "threshold.mean"
+            else ThresholdBorderCorrespondence.NOT_APPLICABLE_POINTWISE
+        )
+        adapter = ThresholdMaskSemanticCorrespondence(
+            operation_id=operation_id,
+            reference_recipe=reference_recipe,
+            candidate_recipe=candidate_recipe,
+            input_identity=input_identity,
+            input_checkpoint_sha256=input_reference.checkpoint_sha256,
+            reference_identity=reference_identity,
+            candidate_identity=candidate_identity,
+            native_implementation_identity=implementation,
+            input_array_name="gray",
+            input_role=RasterRole("image", gray.dtype.str, "HW", (0, 255)),
+            output_measurement=output_measurement,
+            border_correspondence=border,
+        )
+        pair = self.pair(reference_output, candidate_output, reference_identity, candidate_identity)
+        return pair, adapter, reference_identity, candidate_identity, reference_output, candidate_output
+
+    def test_threshold_border_correspondence_is_explicit_and_exact(self) -> None:
+        pair, adapter, reference_identity, candidate_identity, _reference, _candidate = self._threshold_pair()
+        with self.assertRaisesRegex(ConformanceError, "Mask representation semantics differ"):
+            compare_masks(self.root, pair, reference_array="mask", candidate_array="mask")
+        report = compare_masks(
+            self.root,
+            pair,
+            reference_array="mask",
+            candidate_array="mask",
+            semantic_correspondence=adapter,
+        )
+        self.assertTrue(report["conformance"]["passed"])
+        self.assertEqual(
+            report["mask_semantics_correspondence"]["border_policy_correspondence"]["common_contract"],
+            "not_applicable_pointwise",
+        )
+        self.assertEqual(report["scientific_metrics"]["status"], "not_evaluated")
+
+        with self.assertRaisesRegex(ValueError, "supports binary, mean, or Otsu"):
+            replace(adapter, operation_id="threshold.watershed")
+        with self.assertRaisesRegex(ValueError, "Border correspondence"):
+            replace(adapter, border_correspondence=ThresholdBorderCorrespondence.REPLICATED_INPUT)
+        forged_identity = replace(candidate_identity, mask_semantics={**dict(candidate_identity.mask_semantics), "border_policy": "anything"})
+        malformed_adapter = object.__new__(ThresholdMaskSemanticCorrespondence)
+        for name in adapter.__dataclass_fields__:
+            object.__setattr__(malformed_adapter, name, getattr(adapter, name))
+        object.__setattr__(malformed_adapter, "candidate_identity", forged_identity)
+        with self.assertRaisesRegex(ConformanceError, "exact expected and loaded identities"):
+            compare_masks(
+                self.root,
+                pair,
+                reference_array="mask",
+                candidate_array="mask",
+                semantic_correspondence=malformed_adapter,
+            )
+
+    def test_threshold_correspondence_rejects_parameter_type_and_nonborder_semantic_changes(self) -> None:
+        pair, adapter, reference_identity, candidate_identity, reference, candidate = self._threshold_pair("threshold.mean")
+        changed_stage = next(stage for stage in adapter.candidate_recipe.stages if stage.operation_id == "threshold.mean")
+        changed_stage = replace(
+            changed_stage,
+            parameters=tuple(
+                replace(parameter, value=1) if parameter.parameter_id == "offset" else parameter
+                for parameter in changed_stage.parameters
+            ),
+        )
+        changed_recipe = replace(
+            adapter.candidate_recipe,
+            stages=tuple(changed_stage if stage.stage_id == changed_stage.stage_id else stage for stage in adapter.candidate_recipe.stages),
+        )
+        with self.assertRaisesRegex(ValueError, "selected parameters must match exactly"):
+            replace(adapter, candidate_recipe=changed_recipe)
+
+        changed_semantics = dict(candidate_identity.mask_semantics)
+        changed_semantics["foreground_polarity"] = "dark"
+        corrupted_identity = replace(candidate_identity, mask_semantics=changed_semantics)
+        candidate_checkpoint = load_checkpoint(self.root, candidate.checkpoint_sha256)
+        corrupted_output = publish_checkpoint(
+            self.root,
+            corrupted_identity,
+            {"mask": candidate_checkpoint.arrays["mask"]},
+            execution=ExecutionRecord(ExecutionStatus.AVAILABLE),
+            measurement=candidate_checkpoint.measurement,
+            raster_roles={"mask": candidate_checkpoint.raster_roles["mask"]},
+            metadata=dict(candidate_checkpoint.metadata),
+            allow_cpu_transfer=True,
+        )
+        corrupted_pair = self.pair(reference, corrupted_output, reference_identity, corrupted_identity)
+        with self.assertRaisesRegex(ValueError, "exact bridge-derived identities"):
+            replace(adapter, candidate_identity=corrupted_identity)
+        with self.assertRaisesRegex(ConformanceError, "exact expected and loaded identities"):
+            compare_masks(
+                self.root,
+                corrupted_pair,
+                reference_array="mask",
+                candidate_array="mask",
+                semantic_correspondence=adapter,
+            )
 
     def test_primitive_arrays_obey_explicit_shape_dtype_range_and_tolerance(self) -> None:
         reference_identity = _identity("plantcv_reference", stage="distance_map")

@@ -1,0 +1,59 @@
+{
+  "schema": "seedfiddle.input-decoder-contract.v1",
+  "reader": {
+    "reference": "PlantCV",
+    "version": "4.11.3",
+    "source_path": "plantcv/plantcv/readimage.py",
+    "source_symbol": "plantcv.plantcv.readimage",
+    "source_url": "https://github.com/danforthcenter/plantcv/blob/v4.11.3/plantcv/plantcv/readimage.py",
+    "source_sha256": "09035b0caa1f91a503ecda82e39e082dfec2d84f78c8f8fdc8c3fe3854fbe770",
+    "license": "MIT",
+    "mode": "rgb",
+    "color_order": "BGR",
+    "opencv_python": "4.11.0.86",
+    "numpy": "2.2.6"
+  },
+  "native": {
+    "module": "seedvision.benchmarking.native_image_inputs",
+    "decode_flags": 1,
+    "max_encoded_bytes": 268435456,
+    "pixel_policy": "Apply the selected graph admission after decoder output and before CUDA upload.",
+    "rgb": "CUDA BGR channel reversal.",
+    "gray": "CUDA pinned BGR2GRAY from the same color-decoded raster; not codec-direct grayscale."
+  },
+  "grayscale_reader_extension": {
+    "module": "seedvision.benchmarking.native_reader_recipe",
+    "recipe_versions": ["3.0.0", "3.1.0"],
+    "eligible_existing_working_ids": 24,
+    "parameter": "gray_source_mode",
+    "default": "color-derived",
+    "choices": ["color-derived", "codec-gray"],
+    "public_reader_mode": "gray",
+    "decode_flags": 0,
+    "max_owned_decoded_bytes": 268435456,
+    "frame_policy": "Decode color and requested gray from the same immutable byte snapshot; require matching uint8 dimensions/orientation before CUDA upload; no resizing.",
+    "calibrated_policy": "Reader control is unavailable; grayscale continues deriving from corrected RGB.",
+    "cache_policy": "Mode binds preparation and archived facts; retain guarded RGB across a same-source mode change and publish the new gray atomically after source/code audits."
+  },
+  "scope": [
+    "PNG/JPEG/BMP/TIFF color",
+    "gray and palette expansion",
+    "alpha discard",
+    "16-bit quantization",
+    "JPEG EXIF orientations 2..8",
+    "CMYK JPEG",
+    "first page of multipage TIFF",
+    "content-decoded misleading extensions",
+    "selected invalid-input outcomes"
+  ],
+  "limits": [
+    "Historical input boundary uses readimage(mode=rgb). Reader versions3.0/3.1 additionally select readimage(mode=gray) on24 uncalibrated working identities.",
+    "Encoded cap is not decoder memory or process RSS proof.",
+    "Exact supported fixture comparisons do not cover every codec variant.",
+    "Owned decoded-array cap is not a bound on encoded bytes, codec-internal scratch or process RSS.",
+    "Native/RGBA/normalize and non-raster public reader modes, original SMPTS and scientific validation remain separate gates."
+  ],
+  "native_extensions": [
+    "Unicode paths load via Python byte snapshots; pinned OpenCV4.11 Windows path imread rejects the selected Unicode filename. Codec pixels match the identical ASCII-path input; path-outcome parity is not claimed."
+  ]
+}

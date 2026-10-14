@@ -67,8 +67,8 @@ class PipelineModelTests(unittest.TestCase):
         order = graph.topological_order()
         self.assertEqual(order[0], "project")
         self.assertEqual(set(order), set(graph.nodes))
-        self.assertEqual(len(graph.nodes), 29)
-        self.assertEqual(len(graph.connections), 179)
+        self.assertEqual(len(graph.nodes), 30)
+        self.assertEqual(len(graph.connections), 184)
         self.assertNotIn("perimeter_background_reference", graph.nodes)
         self.assertEqual(
             graph.connection_for_input(
@@ -155,7 +155,7 @@ class PipelineModelTests(unittest.TestCase):
         graph = build_default_pipeline()
         all_nodes = {**graph.nodes, **graph.unused_nodes}
         all_connections = (*graph.connections, *graph.unused_connections)
-        self.assertEqual(len(graph.connection_templates), 257)
+        self.assertEqual(len(graph.connection_templates), 262)
         self.assertTrue(all(node.output_ports for node in all_nodes.values()))
         self.assertEqual(
             len(all_connections),
@@ -358,6 +358,10 @@ class PipelineModelTests(unittest.TestCase):
             },
             "aggregation": {"measurements", "classification"},
             "output": {"aggregation"},
+            "trait_classifier": {
+                "deskew_colour", "layout_detection", "procedural_instances",
+                "unet_instances", "stardist_instances",
+            },
         }
         self.assertEqual(set(expected), set(graph.nodes))
         self.assertEqual(
@@ -628,6 +632,7 @@ class PipelineModelTests(unittest.TestCase):
                 "stardist_instances",
                 "seed_edge_curves",
                 "procedural_instances",
+                "trait_classifier",
             ),
         )
         self.assertEqual(
@@ -696,7 +701,7 @@ class PipelineModelTests(unittest.TestCase):
         affected = graph.set_parameter(
             "procedural_instances", "minimum_marker_score", 0.13
         )
-        self.assertEqual(affected, ("procedural_instances",))
+        self.assertEqual(affected, ("procedural_instances", "trait_classifier"))
         self.assertEqual(graph.node("procedural_instances").status, NodeStatus.IDLE)
 
     def test_parameter_batch_is_one_revision_and_one_invalidation(self) -> None:
@@ -714,7 +719,7 @@ class PipelineModelTests(unittest.TestCase):
             },
         )
 
-        self.assertEqual(affected, ("procedural_instances",))
+        self.assertEqual(affected, ("procedural_instances", "trait_classifier"))
         self.assertEqual(graph.revision, starting_revision + 1)
         self.assertEqual(
             graph.node("procedural_instances").parameters["marker_count_multiplier"],
@@ -999,7 +1004,7 @@ class PipelineModelTests(unittest.TestCase):
         expected = set(roots)
         for root in roots:
             expected.update(graph.downstream(root, recursive=True))
-        expected.update({"unet_instances", "stardist_instances"})
+        expected.update({"unet_instances", "stardist_instances", "trait_classifier"})
         self.assertEqual(
             {node.identifier for node in graph.nodes.values() if not node.enabled},
             expected,
@@ -1574,6 +1579,7 @@ class BaselineSettingsTests(unittest.TestCase):
                 "stardist_instances",
                 "seed_edge_curves",
                 "procedural_instances",
+                "trait_classifier",
             ),
         )
         self.assertEqual(graph.revision, revision + 1)
@@ -1630,6 +1636,7 @@ class BaselineSettingsTests(unittest.TestCase):
                 "stardist_instances",
                 "seed_edge_curves",
                 "procedural_instances",
+                "trait_classifier",
             ),
         )
 
@@ -1658,7 +1665,7 @@ class BaselineSettingsTests(unittest.TestCase):
             graph.set_parameter(
                 "edge_traces", "trace_edge_source", "reference_ridges"
             ),
-            ("edge_traces", "seed_edge_curves", "procedural_instances"),
+            ("edge_traces", "seed_edge_curves", "procedural_instances", "trait_classifier"),
         )
 
 
