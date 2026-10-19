@@ -117,3 +117,26 @@ Did this flaw only affect the "Other" class or were other classes also affected?
 - The Material references/Annotate seed instances control should be made into a properly control widget; resizable with a drag-able top bar (no "Move painting controls" button)
 - The Annotate seed instances control should have an option to select an existing seed annotation. Also, the "Show selected seed only" control should be immediately under the seed selector spinner. And there are huge vertical expanses of white space below the "Brush radius" control and below the "Freehand interior painting..." label. Also, under the seed selector spinner, there should be a note in red that says "empty" if a numbered seed instance is currently empty.
 - For reviewed seed measurements, even in the absence of fully annotated nodes, you should be able to use the seed width perpendicular to the maximum width axis to obtain an initial minimum ovality estimate
+
+Use two reusable GPT-6 Luna xhigh workers and one reusable GPT-6.1 Sol medium reviewer. Create this pool once, then reuse the same workers through bounded follow-up assignments until the goal is completed. Run only relevant tests while implementation is ongoing.
+
+
+---
+
+Goal:
+
+Complete the requested SeedFiddle PlantCV/SMPTS seed-analysis feature implementation across F01–F22 and WP0–WP6, first reconcile the feature register and planning documents with actual tested implementation, then use a delegated worker strategy for implementation, integration, independent review where authorized, focused tests and full unittest verification. Use two reusable 6.1 Sol medium workers and one reusable GPT-6.1 Sol medium reviewer. Create this pool once, then reuse the same workers through bounded follow-up assignments until the goal is completed. Run only minimal focused tests while implementation is ongoing. Preserve native PySide6/CUDA architecture and distinguish implemented functionality, reference conformance, and scientific validation; record genuine external source/laboratory blockers without claiming completion.
+
+---
+
+
+Make the following improvements, and then succinctly confirm/describe your implementation for each numbered item.
+
+1. The Pipeline view should always start enabled by default. 
+2. The Images list should start by default at 1/3 of application height or thereabouts.
+3. The Workflow selector, save, and export controls should be moved to the top of the pipeline view to the left of the current view control buttons. The Workflow dropdown should be shrunk horizontally to abotu the same size as the other buttons. The redundant "Run" button should be removed in favour of the "Run pipeline" button at the top of the application. Also move the stop button to the right of the "Run pipeline" button (see attached doodled screenshot).
+4. The Workflow selector entries should be cleaned up to match the compacted list in the reference graph "Reference graph" selector.
+5. In the Pipeline view, "Unused nodes" should be replaced by "Add node" which allows addition of any node from the current catalogue (including new PlantCV and SMTP nodes). In the drop-down, colour nodes according to whether they already have an instance present in the graph or not.
+6. From the top "View" menu, everything other than the Reference graphs selector is redundant and should be removed. Move the "Reference graphs..." entry to the "Analysis" menu and rename it "Reference pipelines", then delete the View menu.
+
+---
