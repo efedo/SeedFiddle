@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.functional_units import functional_units
+
 import json
 import os
 from pathlib import Path
@@ -203,8 +205,9 @@ def _fitellipse_oracle_masks():
         ('saddle', saddle), ('translated_saddle', translated_saddle)]
 
 
+@functional_units
 class PlantCVSizeSparseContourTests(unittest.TestCase):
-    def test_supported_single_contours_match_pinned_order_hierarchy_and_revisits(self):
+    def check_test_supported_single_contours_match_pinned_order_hierarchy_and_revisits(self):
         rectangle = np.zeros((13, 17), dtype=np.uint8)
         rectangle[2:11, 3:14] = 255
         concave = np.zeros((15, 15), dtype=np.uint8)
@@ -225,7 +228,7 @@ class PlantCVSizeSparseContourTests(unittest.TestCase):
                 self.assertEqual([c.tolist() for c in contours], expected['contours'])
                 self.assertEqual(hierarchy.tolist(), expected['hierarchy'])
 
-    def test_two_and_three_external_contours_match_pinned_order_and_hierarchy(self):
+    def check_test_two_and_three_external_contours_match_pinned_order_and_hierarchy(self):
         two = np.zeros((14, 31), dtype=np.uint8)
         two[2:11, 2:12] = 255
         two[3:12, 20:29] = 255
@@ -243,7 +246,7 @@ class PlantCVSizeSparseContourTests(unittest.TestCase):
                 self.assertEqual([c.tolist() for c in contours], expected['contours'])
                 self.assertEqual(hierarchy.tolist(), expected['hierarchy'])
 
-    def test_holes_nested_islands_and_siblings_match_pinned_order_and_hierarchy(self):
+    def check_test_holes_nested_islands_and_siblings_match_pinned_order_and_hierarchy(self):
         fixtures = _nested_contour_fixtures()
         for (name, mask), expected in zip(fixtures, _pinned_contours_batch([m for _, m in fixtures])):
             with self.subTest(kind=name):
@@ -254,7 +257,7 @@ class PlantCVSizeSparseContourTests(unittest.TestCase):
                 self.assertEqual([c.tolist() for c in contours], expected['contours'])
                 self.assertEqual(hierarchy.tolist(), expected['hierarchy'])
 
-    def test_exhaustive_small_masks_and_seeded_random_masks_match_pinned_tree(self):
+    def check_test_exhaustive_small_masks_and_seeded_random_masks_match_pinned_tree(self):
         masks = [np.asarray([(bits >> bit) & 1 for bit in range(9)],
             dtype=np.uint8).reshape(3, 3)*255 for bits in range(512)]
         rng = np.random.default_rng(418631)
@@ -278,7 +281,7 @@ class PlantCVSizeSparseContourTests(unittest.TestCase):
                 else:
                     self.assertEqual(hierarchy.tolist(), expected_links)
 
-    def test_hierarchy_validation_rejects_malformed_and_detached_forests_and_cancels(self):
+    def check_test_hierarchy_validation_rejects_malformed_and_detached_forests_and_cancels(self):
         valid = np.asarray([[
             [4, -1, 1, -1], [3, -1, 2, 0], [-1, -1, -1, 1],
             [-1, 1, -1, 0], [-1, 0, -1, -1]]], dtype=np.int32)
@@ -311,7 +314,7 @@ class PlantCVSizeSparseContourTests(unittest.TestCase):
             _valid_retr_hierarchy(chain, cancel=cancel)
         self.assertEqual(calls, 3)
 
-    def test_missing_background_rows_are_foreground_barriers(self):
+    def check_test_missing_background_rows_are_foreground_barriers(self):
         ring = np.full((7, 7), 255, dtype=np.uint8)
         ring[2:5, 2:5] = 0
         separated_holes = np.full((7, 7), 255, dtype=np.uint8)
@@ -328,7 +331,7 @@ class PlantCVSizeSparseContourTests(unittest.TestCase):
         self.assertEqual(len(set(ids)), 2)
         self.assertFalse(exterior)
 
-    def test_cancel_point_limit_and_oversized_scan_extent_are_explicit(self):
+    def check_test_cancel_point_limit_and_oversized_scan_extent_are_explicit(self):
         mask = np.zeros((7, 9), dtype=np.uint8)
         mask[1:6, 2:7] = 255
         records = _compact_boundary_records(mask)
@@ -346,7 +349,7 @@ class PlantCVSizeSparseContourTests(unittest.TestCase):
         self.assertIsNone(contours)
         self.assertIsNone(hierarchy)
 
-    def test_component_work_aggregate_step_and_point_caps_and_mid_trace_cancel(self):
+    def check_test_component_work_aggregate_step_and_point_caps_and_mid_trace_cancel(self):
         from seedvision.cuda import plantcv_size as module
         mask = np.zeros((11, 17), dtype=np.uint8)
         mask[2:5, 2:5] = 255
@@ -375,7 +378,7 @@ class PlantCVSizeSparseContourTests(unittest.TestCase):
         self.assertEqual(completed, 1)
         self.assertEqual(traced.call_count, 2)
 
-    def test_holes_share_component_point_step_caps_and_cancel_without_partial_output(self):
+    def check_test_holes_share_component_point_step_caps_and_cancel_without_partial_output(self):
         from seedvision.cuda import plantcv_size as module
         mask = _nested_contour_fixtures()[0][1]
         records = _compact_boundary_records(mask)
@@ -410,7 +413,7 @@ class PlantCVSizeSparseContourTests(unittest.TestCase):
         self.assertEqual(completed, 1)
         self.assertEqual(traced.call_count, 2)
 
-    def test_aggregate_point_limit_counts_returned_points_without_closure_duplicate(self):
+    def check_test_aggregate_point_limit_counts_returned_points_without_closure_duplicate(self):
         from seedvision.cuda import plantcv_size as module
         mask = np.zeros((11, 17), dtype=np.uint8)
         mask[2:5, 2:5] = 255
@@ -424,7 +427,7 @@ class PlantCVSizeSparseContourTests(unittest.TestCase):
         self.assertEqual([c.tolist() for c in contours], expected['contours'])
         self.assertEqual(hierarchy.tolist(), expected['hierarchy'])
 
-    def test_ellipse_conditioning_detects_pinned_perturbation_and_polls_cancellation(self):
+    def check_test_ellipse_conditioning_detects_pinned_perturbation_and_polls_cancellation(self):
         mask = np.asarray([[255, 0, 255], [0, 255, 0], [255, 0, 255]], dtype=np.uint8)
         contour = np.asarray(_pinned_contours(mask)['contours'][0], dtype=np.int32)
         self.assertTrue(_fitellipse_uses_411_perturbation(contour))
@@ -437,7 +440,7 @@ class PlantCVSizeSparseContourTests(unittest.TestCase):
             _fitellipse_uses_411_perturbation(contour, cancel=cancel)
 
 
-    def test_orientation_ambiguity_guard_and_batched_transformed_contour_oracle(self):
+    def check_test_orientation_ambiguity_guard_and_batched_transformed_contour_oracle(self):
         for cross, delta, expected in ((0.0, -1.0, True), (1e-12, 1e-9, True),
                 (0.0, 1.0, False), (1e-5, -1.0, False), (np.nan, 1.0, True),
                 (0.0, np.inf, True)):
@@ -467,7 +470,7 @@ class PlantCVSizeSparseContourTests(unittest.TestCase):
         self.assertGreater(ambiguous, 0, 'corpus must exercise the pinned atan2 cut')
         self.assertGreater(stable, 0, 'corpus must retain stable orientation controls')
 
-    def test_411_ellipse_port_polls_after_svd_and_each_solve(self):
+    def check_test_411_ellipse_port_polls_after_svd_and_each_solve(self):
         from seedvision.cuda import plantcv_size as module
         mask = np.asarray([[255, 0, 255], [0, 255, 0], [255, 0, 255]], dtype=np.uint8)
         contour = np.asarray(_pinned_contours(mask)['contours'][0], dtype=np.int32)
@@ -488,7 +491,7 @@ class PlantCVSizeSparseContourTests(unittest.TestCase):
                         _fitellipse_no_direct_411_details(contour, cancel=cancel)
                 self.assertTrue(state['cancel'])
 
-    def test_411_ellipse_point_cap_precedes_design_allocation(self):
+    def check_test_411_ellipse_point_cap_precedes_design_allocation(self):
         from seedvision.cuda import plantcv_size as module
         mask = np.asarray([[255, 0, 255], [0, 255, 0], [255, 0, 255]], dtype=np.uint8)
         contour = np.asarray(_pinned_contours(mask)['contours'][0], dtype=np.int32)
@@ -497,7 +500,7 @@ class PlantCVSizeSparseContourTests(unittest.TestCase):
                 with self.assertRaises(PlantCVSizeResourceError):
                     _fitellipse_no_direct_411_details(contour)
 
-    def test_deterministic_411_ellipse_port_matches_public_saddle(self):
+    def check_test_deterministic_411_ellipse_port_matches_public_saddle(self):
         mask = np.asarray([[255, 0, 255], [0, 255, 0], [255, 0, 255]], dtype=np.uint8)
         contour = np.asarray(_pinned_contours(mask)['contours'][0], dtype=np.int32)
         self.assertTrue(_fitellipse_uses_411_perturbation(contour))
@@ -511,7 +514,7 @@ class PlantCVSizeSparseContourTests(unittest.TestCase):
         eccentricity = float(np.sqrt(1-(min(axes)/max(axes))**2))
         np.testing.assert_allclose(eccentricity, expected['ellipse_eccentricity']['value'], rtol=0, atol=1e-6)
 
-    def test_deterministic_411_ellipse_port_is_bounded_and_cancellable(self):
+    def check_test_deterministic_411_ellipse_port_is_bounded_and_cancellable(self):
         from seedvision.cuda import plantcv_size as module
         mask = np.asarray([[255, 0, 255], [0, 255, 0], [255, 0, 255]], dtype=np.uint8)
         contour = np.asarray(_pinned_contours(mask)['contours'][0], dtype=np.int32)
@@ -526,10 +529,33 @@ class PlantCVSizeSparseContourTests(unittest.TestCase):
         with self.assertRaises(PlantCVSizeCancelledError):
             _fitellipse_no_direct_411(contour, cancel=cancel)
 
+    def test_workflow_lifecycle(self):
+        """7 related PlantCVSizeSparseContourTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_supported_single_contours_match_pinned_order_hierarchy_and_revisits)
+        self.scenario(self.check_test_two_and_three_external_contours_match_pinned_order_and_hierarchy)
+        self.scenario(self.check_test_holes_nested_islands_and_siblings_match_pinned_order_and_hierarchy)
+        self.scenario(self.check_test_exhaustive_small_masks_and_seeded_random_masks_match_pinned_tree)
+        self.scenario(self.check_test_orientation_ambiguity_guard_and_batched_transformed_contour_oracle)
+        self.scenario(self.check_test_411_ellipse_port_polls_after_svd_and_each_solve)
+        self.scenario(self.check_test_deterministic_411_ellipse_port_matches_public_saddle)
+
+    def test_validation_and_recovery(self):
+        """9 related PlantCVSizeSparseContourTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_hierarchy_validation_rejects_malformed_and_detached_forests_and_cancels)
+        self.scenario(self.check_test_missing_background_rows_are_foreground_barriers)
+        self.scenario(self.check_test_cancel_point_limit_and_oversized_scan_extent_are_explicit)
+        self.scenario(self.check_test_component_work_aggregate_step_and_point_caps_and_mid_trace_cancel)
+        self.scenario(self.check_test_holes_share_component_point_step_caps_and_cancel_without_partial_output)
+        self.scenario(self.check_test_aggregate_point_limit_counts_returned_points_without_closure_duplicate)
+        self.scenario(self.check_test_ellipse_conditioning_detects_pinned_perturbation_and_polls_cancellation)
+        self.scenario(self.check_test_411_ellipse_point_cap_precedes_design_allocation)
+        self.scenario(self.check_test_deterministic_411_ellipse_port_is_bounded_and_cancellable)
+
 
 @unittest.skipUnless(torch.cuda.is_available(), "CUDA size premeasurements require an available CUDA device")
+@functional_units
 class PlantCVSizePremeasurementTests(unittest.TestCase):
-    def test_explicit_line_thickness_matches_all_pinned_observations(self):
+    def check_test_explicit_line_thickness_matches_all_pinned_observations(self):
         mask = np.zeros((64, 80), dtype=np.uint8)
         cv2.fillPoly(mask, [np.asarray([[9,45],[49,9],[57,18],[22,55]], np.int32)], 255)
         source = torch.as_tensor(mask, device='cuda')
@@ -549,7 +575,7 @@ class PlantCVSizePremeasurementTests(unittest.TestCase):
         self.assertNotEqual(results[1].plantcv_observations.longest_path,
             results[5].plantcv_observations.longest_path)
 
-    def test_actual_cuda_boundary_exports_trace_exactly_and_cancel_without_mutation(self):
+    def check_test_actual_cuda_boundary_exports_trace_exactly_and_cancel_without_mutation(self):
         mask = torch.zeros((13, 17), dtype=torch.uint8, device='cuda')
         mask[2:11, 3:14] = 255
         before = mask.clone()
@@ -568,7 +594,7 @@ class PlantCVSizePremeasurementTests(unittest.TestCase):
             premeasure_plantcv_binary_mask(mask, cancel=cancel)
         torch.testing.assert_close(mask, before)
 
-    def test_single_external_contour_matches_pinned_public_size_and_metadata(self):
+    def check_test_single_external_contour_matches_pinned_public_size_and_metadata(self):
         for kind in ("polygon", "clipped", "concave"):
             with self.subTest(kind=kind):
                 mask = np.zeros((96, 112), dtype=np.uint8)
@@ -596,7 +622,7 @@ class PlantCVSizePremeasurementTests(unittest.TestCase):
                 self.assertAlmostEqual(result.plantcv_observations.longest_path,
                     expected["longest_path"]["value"], places=10)
 
-    def test_small_empty_and_frame_touching_objects_match_public_gate(self):
+    def check_test_small_empty_and_frame_touching_objects_match_public_gate(self):
         for point in (None, (0,0), (3,4)):
             with self.subTest(point=point):
                 mask = np.zeros((12,15), dtype=np.uint8)
@@ -610,7 +636,7 @@ class PlantCVSizePremeasurementTests(unittest.TestCase):
                         err_msg=item.variable)
                 self.assertEqual(result.plantcv_observations.object_in_frame, point != (0,0))
 
-    def test_holes_nesting_and_separate_regions_match_pinned_public_size_and_metadata(self):
+    def check_test_holes_nesting_and_separate_regions_match_pinned_public_size_and_metadata(self):
         for name, mask in _nested_contour_fixtures():
             with self.subTest(kind=name):
                 before = torch.as_tensor(mask, device='cuda')
@@ -636,7 +662,7 @@ class PlantCVSizePremeasurementTests(unittest.TestCase):
                 self.assertEqual(result.plantcv_observations.object_in_frame, not touches)
                 torch.testing.assert_close(before, original)
 
-    def test_disjoint_components_frame_contact_and_diagonal_saddle_match_pinned_public_size(self):
+    def check_test_disjoint_components_frame_contact_and_diagonal_saddle_match_pinned_public_size(self):
         two = np.zeros((24, 31), dtype=np.uint8)
         two[2:10, 2:10] = 255
         two[13:21, 20:28] = 255
@@ -678,7 +704,7 @@ class PlantCVSizePremeasurementTests(unittest.TestCase):
                 self.assertAlmostEqual(result.plantcv_observations.longest_path,
                     expected['longest_path']['value'], places=10)
 
-    def test_ambiguous_orientation_withholds_whole_public_bundle_but_stable_fits_remain(self):
+    def check_test_ambiguous_orientation_withholds_whole_public_bundle_but_stable_fits_remain(self):
         fixtures = _fitellipse_oracle_masks()
         topology = _pinned_contours_batch([mask for _, mask in fixtures])
         unavailable = available = 0
@@ -707,7 +733,7 @@ class PlantCVSizePremeasurementTests(unittest.TestCase):
             self.assertGreater(unavailable, 0)
         self.assertGreater(available, 0)
 
-    def test_raw_mask_moments_bounds_and_sparse_neighbor_bits(self) -> None:
+    def check_test_raw_mask_moments_bounds_and_sparse_neighbor_bits(self) -> None:
         mask = torch.zeros((5, 7), dtype=torch.uint8, device="cuda")
         mask[1:4, 2:6] = 255
         before = mask.clone()
@@ -736,7 +762,7 @@ class PlantCVSizePremeasurementTests(unittest.TestCase):
         self.assertNotIn([3, 2], records[:, :2].tolist())
         self.assertTrue(torch.equal(mask, before))
 
-    def test_empty_mask_has_raw_empty_state_without_claiming_observation_bundle(self) -> None:
+    def check_test_empty_mask_has_raw_empty_state_without_claiming_observation_bundle(self) -> None:
         mask = torch.zeros((4, 6), dtype=torch.uint8, device="cuda")
 
         result = premeasure_plantcv_binary_mask(mask)
@@ -753,7 +779,7 @@ class PlantCVSizePremeasurementTests(unittest.TestCase):
         self.assertTrue(result.plantcv_observations.object_in_frame)
         self.assertEqual(result.plantcv_observations.area, 0)
 
-    def test_frame_contact_matches_one_pixel_border_rule_as_a_candidate(self) -> None:
+    def check_test_frame_contact_matches_one_pixel_border_rule_as_a_candidate(self) -> None:
         mask = torch.zeros((5, 7), dtype=torch.uint8, device="cuda")
         mask[0, 3] = 255
         mask[2, 2] = 255
@@ -769,7 +795,7 @@ class PlantCVSizePremeasurementTests(unittest.TestCase):
         self.assertEqual(result.plantcv_observations.area, 0)
         self.assertFalse(result.plantcv_observations.object_in_frame)
 
-    def test_neighbor_table_reads_across_internal_tile_seam(self) -> None:
+    def check_test_neighbor_table_reads_across_internal_tile_seam(self) -> None:
         width = MAX_TILE_PIXELS + 5
         mask = torch.zeros((3, width), dtype=torch.uint8, device="cuda")
         mask[1, MAX_TILE_PIXELS - 1 : MAX_TILE_PIXELS + 1] = 255
@@ -783,7 +809,7 @@ class PlantCVSizePremeasurementTests(unittest.TestCase):
         self.assertEqual(bit_by_xy[(MAX_TILE_PIXELS - 1, 1)] & (1 << 2), 1 << 2)
         self.assertEqual(bit_by_xy[(MAX_TILE_PIXELS, 1)] & (1 << 6), 1 << 6)
 
-    def test_validation_rejects_cpu_nonbinary_and_oversized_inputs(self) -> None:
+    def check_test_validation_rejects_cpu_nonbinary_and_oversized_inputs(self) -> None:
         with self.assertRaisesRegex(ValueError, "CUDA"):
             premeasure_plantcv_binary_mask(torch.zeros((3, 4), dtype=torch.uint8))
         with self.assertRaisesRegex(ValueError, "binary"):
@@ -795,6 +821,24 @@ class PlantCVSizePremeasurementTests(unittest.TestCase):
         self.assertGreater(oversized.numel(), MAX_RASTER_PIXELS)
         with self.assertRaises(PlantCVSizeResourceError):
             premeasure_plantcv_binary_mask(oversized)
+
+    def test_workflow_lifecycle(self):
+        """9 related PlantCVSizePremeasurementTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_explicit_line_thickness_matches_all_pinned_observations)
+        self.scenario(self.check_test_single_external_contour_matches_pinned_public_size_and_metadata)
+        self.scenario(self.check_test_small_empty_and_frame_touching_objects_match_public_gate)
+        self.scenario(self.check_test_holes_nesting_and_separate_regions_match_pinned_public_size_and_metadata)
+        self.scenario(self.check_test_disjoint_components_frame_contact_and_diagonal_saddle_match_pinned_public_size)
+        self.scenario(self.check_test_raw_mask_moments_bounds_and_sparse_neighbor_bits)
+        self.scenario(self.check_test_empty_mask_has_raw_empty_state_without_claiming_observation_bundle)
+        self.scenario(self.check_test_frame_contact_matches_one_pixel_border_rule_as_a_candidate)
+        self.scenario(self.check_test_neighbor_table_reads_across_internal_tile_seam)
+
+    def test_validation_and_recovery(self):
+        """3 related PlantCVSizePremeasurementTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_actual_cuda_boundary_exports_trace_exactly_and_cancel_without_mutation)
+        self.scenario(self.check_test_ambiguous_orientation_withholds_whole_public_bundle_but_stable_fits_remain)
+        self.scenario(self.check_test_validation_rejects_cpu_nonbinary_and_oversized_inputs)
 
 
 if __name__ == "__main__":

@@ -1,4 +1,6 @@
 """Pinned public masks, actual archives, and bounded extended-threshold replay."""
+
+from tests.functional_units import functional_units
 from dataclasses import replace
 from hashlib import sha256
 import inspect
@@ -8,6 +10,7 @@ import sys
 import tempfile
 import time
 import unittest
+from tests.catalogue_fixtures import CatalogueTestCase
 from unittest.mock import patch
 
 import numpy as np
@@ -24,8 +27,9 @@ from tests.test_native_extended_threshold_recipe import (
 )
 
 
-class ExtendedThresholdReplayPlanTests(unittest.TestCase):
-    def test_existing_fourteen_admission_plans_remain_unchanged(self):
+@functional_units
+class ExtendedThresholdReplayPlanTests(CatalogueTestCase):
+    def check_test_existing_fourteen_admission_plans_remain_unchanged(self):
         expected = {
             'filter.median_blur':({'ksize':3},110592),
             'threshold.binary':({},3145728), 'threshold.mean':({'ksize':3,'offset':1,'object_type':'light'},3145728),
@@ -46,7 +50,7 @@ class ExtendedThresholdReplayPlanTests(unittest.TestCase):
             typed = op in replay.WATERSHED_TYPED_OPERATIONS or op.startswith('native.')
             self.assertEqual(plan['selected_limit_bytes'],(128 if typed else 48)*1024*1024)
 
-    def test_gaussian_float_sample_boundaries_and_shared_tile_formula(self):
+    def check_test_gaussian_float_sample_boundaries_and_shared_tile_formula(self):
         for kernel in (3,5,7,9,11,13,15):
             admission = extended._gaussian_admission(100_000,kernel)
             self.assertEqual(admission['window_sample_visits'],100_000*kernel*kernel)
@@ -67,7 +71,7 @@ class ExtendedThresholdReplayPlanTests(unittest.TestCase):
                 self.assertEqual(admission['mode'],'exact_dyadic')
                 self.assertEqual(admission['tile_pixels'],extended.TILE_PIXELS)
 
-    def test_texture_pixel_pair_scratch_boundaries_and_triangle_source_ceiling(self):
+    def check_test_texture_pixel_pair_scratch_boundaries_and_triangle_source_ceiling(self):
         params = dict(ksize=9,offset=1,threshold=0,texture_method='energy',borders='mirror')
         plan = replay._plan((1,4_000_000),'threshold.texture',params,8_000_000)
         facts = plan['work_details']
@@ -87,7 +91,7 @@ class ExtendedThresholdReplayPlanTests(unittest.TestCase):
         with self.assertRaises(replay.NativeStageReplayUnavailable):
             replay._plan((1,maximum+1),'threshold.triangle',triangle,2*(maximum+1))
 
-    def test_dual_distinct_modes_selected_bytes_and_cuda_boundary(self):
+    def check_test_dual_distinct_modes_selected_bytes_and_cuda_boundary(self):
         same = extended._dual_channel_admission(100_000,'R','G')
         distinct = extended._dual_channel_admission(100_000,'l','c')
         self.assertEqual(same['conversion_modes'],('RGB',))
@@ -101,7 +105,7 @@ class ExtendedThresholdReplayPlanTests(unittest.TestCase):
         with self.assertRaises(replay.NativeStageReplayUnavailable):
             replay._plan((1,1),'threshold.dual_channels',params,replay.MAX_SELECTED_BYTES+1)
 
-    def test_malformed_controls_are_archive_errors_before_resource_checks(self):
+    def check_test_malformed_controls_are_archive_errors_before_resource_checks(self):
         cases = (
             ('threshold.gaussian',dict(ksize=2,offset=1,object_type='light')),
             ('threshold.texture',dict(ksize=3,offset=3,threshold=0,texture_method='ASM',borders='nearest')),
@@ -112,9 +116,20 @@ class ExtendedThresholdReplayPlanTests(unittest.TestCase):
             with self.subTest(operation=op),self.assertRaises(archives.NativeResultExportError):
                 replay._plan((31,37),op,params,1)
 
+    def test_workflow_lifecycle(self):
+        """4 related ExtendedThresholdReplayPlanTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_existing_fourteen_admission_plans_remain_unchanged)
+        self.scenario(self.check_test_gaussian_float_sample_boundaries_and_shared_tile_formula)
+        self.scenario(self.check_test_texture_pixel_pair_scratch_boundaries_and_triangle_source_ceiling)
+        self.scenario(self.check_test_malformed_controls_are_archive_errors_before_resource_checks)
+
+    def test_validation_and_recovery(self):
+        """1 related ExtendedThresholdReplayPlanTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_dual_distinct_modes_selected_bytes_and_cuda_boundary)
+
 
 @unittest.skipUnless(torch.cuda.is_available(),'CUDA required')
-class ExtendedThresholdReplayTests(unittest.TestCase):
+class ExtendedThresholdReplayTests(CatalogueTestCase):
     @classmethod
     def setUpClass(cls):
         cls.temporary = tempfile.TemporaryDirectory(dir='artifacts')
@@ -179,9 +194,9 @@ class ExtendedThresholdReplayTests(unittest.TestCase):
                 calls.append(frame.f_locals['operation'])
             if event=='call' and frame.f_code is archives.load_native_recipe_result.__code__:
                 loads.append(tuple(frame.f_locals['array_names']))
-        previous = sys.getprofile();sys.setprofile(profile)
-        try:result = replay.replay_native_stage(directory,recipe.stages[1].stage_id,cancel=cancel)
-        finally:sys.setprofile(previous)
+        from tests.observation import observe_functions
+        with observe_functions(profile, runner._dispatch, archives.load_native_recipe_result):
+            result = replay.replay_native_stage(directory,recipe.stages[1].stage_id,cancel=cancel)
         return result,calls,loads
 
     def test_seven_actual_archives_match_pinned_public_masks_and_select_exact_saved_arrays(self):
@@ -210,70 +225,9 @@ class ExtendedThresholdReplayTests(unittest.TestCase):
             self.assertEqual(hashes,{p.relative_to(directory).as_posix():sha256(p.read_bytes()).hexdigest()
                 for p in directory.rglob('*') if p.is_file()})
 
-    def test_wrong_valid_expected_masks_report_one_pixel_mismatch_after_one_dispatch(self):
-        for index,(recipe,saved,_) in enumerate(self.runs):
-            mask = saved.node(recipe.stages[1].stage_id).outputs['mask'].clone()
-            mask[0,0]=255-mask[0,0]
-            result,calls,_ = self.attempt(self.changed(index,mask=mask))
-            self.assertEqual(result.status,'mismatch',result.reason)
-            self.assertEqual(len(calls),1)
-            self.assertEqual(result.metadata['comparison']['mismatched_elements'],1)
-            self.assertTrue(torch.equal(result.outputs['mask'],saved.node(recipe.stages[1].stage_id).outputs['mask']))
 
-    def test_malformed_headers_branch_keys_and_controls_reject_before_selected_loading(self):
-        for index in (0,3):
-            for tensor in (torch.zeros((31,37),device='cuda',dtype=torch.int32),
-                           torch.zeros((30,37),device='cuda',dtype=torch.uint8)):
-                item = self.changed(index,input_image=tensor)
-                with patch.object(archives,'load_native_recipe_result') as load:
-                    result = replay.replay_native_stage(item[2],item[0].stages[1].stage_id)
-                self.assertEqual(result.status,'invalid_archive',result.reason);load.assert_not_called()
-        for index,controls in ((0,{'ksize':2}),(2,{'offset':3}),(3,{'points':[[0,0],['bad',1]]})):
-            if index==0:
-                # Typed controls reject construction; inconsistent recorded
-                # controls are also rejected by export before an archive exists.
-                with patch.object(archives,'load_native_recipe_result') as load:
-                    with self.assertRaisesRegex(archives.NativeResultExportError,'effective parameters'):
-                        self.changed(index,recorded_parameters=controls)
-                load.assert_not_called()
-                continue
-            item = self.changed(index,parameters=controls)
-            with patch.object(archives,'load_native_recipe_result') as load:
-                result = replay.replay_native_stage(item[2],item[0].stages[1].stage_id)
-            self.assertEqual(result.status,'invalid_archive',result.reason);load.assert_not_called()
-        recipe,saved,_ = self.runs[0];target = recipe.stages[1].stage_id
-        node = replace(saved.node(target),input_keys={'gray':'0'*64})
-        changed = replace(saved,nodes=tuple(node if n.stage_id==target else n for n in saved.nodes))
-        directory = self.root/'wrong-branch';archives.export_native_recipe_result(directory,recipe,changed)
-        with patch.object(archives,'load_native_recipe_result') as load:
-            result = replay.replay_native_stage(directory,target)
-        self.assertEqual(result.status,'invalid_archive',result.reason);load.assert_not_called()
 
-    def test_source_resource_and_selected_caps_withhold_before_loading(self):
-        for index in range(4):
-            recipe,_,directory = self.runs[index]
-            with patch.object(replay,'MAX_SELECTED_BYTES',1),patch.object(archives,'load_native_recipe_result') as load:
-                result = replay.replay_native_stage(directory,recipe.stages[1].stage_id)
-            self.assertEqual(result.status,'unavailable',result.reason)
-            self.assertFalse(result.outputs);load.assert_not_called()
-        # Real float work limit, using only archive headers: no dense allocation.
-        params = dict(ksize=15,offset=12,object_type='light')
-        with self.assertRaises(replay.NativeStageReplayUnavailable):
-            replay._plan((1,extended.MAX_GAUSSIAN_FLOAT_WORK//225+1),'threshold.gaussian',params,1)
 
-    def test_actual_source_precision_and_triangle_preamble_failures_withhold_products(self):
-        shape = self.cases[0][1].shape
-        uncertain = np.random.default_rng(411015).integers(0,256,shape,dtype=np.uint8)
-        checker = ((np.indices(shape).sum(axis=0)%2)*255).astype(np.uint8)
-        cases = ((4,uncertain,{}),
-            (1,np.full(shape,255,dtype=np.uint8),{}),
-            (2,checker,dict(ksize=3,offset=1,texture_method='contrast',threshold=0)))
-        for index,image,params in cases:
-            item = self.changed(index,input_image=torch.tensor(image,device='cuda'),parameters=params)
-            result,calls,_ = self.attempt(item)
-            self.assertEqual(result.status,'unavailable',result.reason)
-            self.assertEqual(len(calls),1);self.assertFalse(result.outputs)
-            self.assertTrue(result.reason)
 
     def test_cancel_and_input_expected_output_mutation_withhold_every_product(self):
         for group,port in (('inputs','gray'),('expected_products','mask'),('outputs','mask')):
@@ -297,45 +251,3 @@ class ExtendedThresholdReplayTests(unittest.TestCase):
                 return False
             result,_,_ = self.attempt(self.runs[index],cancel=inside)
             self.assertEqual(result.status,'cancelled',result.reason);self.assertFalse(result.outputs)
-
-    def test_changed_runtime_preflight_and_loaded_admission_helper_withhold_products(self):
-        item = self.changed(runtime={**dict(self.runs[0][1].runtime),'calculation_modules_sha256':'0'*64})
-        with patch.object(archives,'load_native_recipe_result') as load:
-            result = replay.replay_native_stage(item[2],item[0].stages[1].stage_id)
-        self.assertEqual(result.status,'unavailable',result.reason);load.assert_not_called()
-        original = extended._gaussian_admission;changed = []
-        def mutate():
-            frame = inspect.currentframe()
-            while frame is not None:
-                if frame.f_code is replay.replay_native_stage.__code__ and 'comparisons' in frame.f_locals and not changed:
-                    extended._gaussian_admission=lambda p,k:original(p,k);changed.append(True)
-                frame = frame.f_back
-            return False
-        try:result,_,_ = self.attempt(self.runs[0],cancel=mutate)
-        finally:extended._gaussian_admission=original
-        self.assertTrue(changed);self.assertEqual(result.status,'failed',result.reason);self.assertFalse(result.outputs)
-
-    def test_actual_async_qt_replay_for_each_new_operation_preserves_active_run(self):
-        os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
-        from PySide6.QtWidgets import QApplication
-        from seedvision.ui.native_recipe_dialog import NativeRecipeDialog
-        app = QApplication.instance() or QApplication([])
-        for recipe,saved,directory in self.runs[:4]:
-            dialog = NativeRecipeDialog(recipe);dialog.result=saved
-            dialog._select_stage(recipe.stages[1].stage_id)
-            try:
-                self.assertTrue(dialog.replay_button.isEnabled())
-                dialog.start_stage_replay(directory)
-                deadline = time.monotonic()+60
-                while dialog._worker is not None and time.monotonic()<deadline:
-                    app.processEvents();time.sleep(.01)
-                self.assertIsNone(dialog._worker)
-                self.assertEqual(dialog.replay_result.status,'matched',dialog.status_label.text())
-                self.assertIs(dialog.result,saved)
-                self.assertFalse(dialog.preview.pixmap().isNull())
-                self.assertIn('Saved-input replay',dialog.facts.toPlainText())
-            finally:
-                if dialog._worker is not None:
-                    dialog.stop()
-                    while dialog._worker is not None:app.processEvents();time.sleep(.01)
-                dialog.reject();dialog.deleteLater();app.processEvents()

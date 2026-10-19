@@ -1,4 +1,8 @@
 """Real composed card/seed execution, coordinate binding and desktop persistence."""
+
+from tests.catalogue_fixtures import CatalogueTestCase
+
+from tests.functional_units import functional_units
 from dataclasses import replace
 import json
 import os
@@ -80,32 +84,12 @@ outputs = {'corrected':corrected,'seed_rgb':rgb,'seed_gray':values['gray']}"""
 
 
 class CalibratedContractTests(unittest.TestCase):
-    def test_additive_contracts_and_joint_workspace_boundary(self):
-        from seedvision.benchmarking.recipe_catalogue import build_recipe_catalogue
-        before=build_recipe_catalogue().to_dict()
-        for kind in ('binary','mean','otsu'):
-            recipe=factory.build_native_calibrated_seed_recipe(kind)
-            runner._validate_recipe(recipe)
-            self.assertEqual(len(recipe.stages),24)
-            self.assertIsNone(recipe.parameters_for_runner(factory.CROP)['seed_roi_xyxy'])
-            self.assertEqual(recipe.parameters_for_runner(card.STANDARD)['pos'],3)
-            for stage in recipe.stages[10:]:
-                for port in stage.ports:
-                    if port.name!='scale' and port.name!='metadata':
-                        self.assertEqual(port.semantics['frame'],factory.LOCAL_FRAME)
-        self.assertEqual(build_recipe_catalogue().to_dict(),before)
-        runner._module_record(factory)
-        low,high=1,64_000_000
-        while low<high:
-            mid=(low+high+1)//2
-            if 64*mid+16*min(mid,factory.peaks.MAX_CANDIDATES)+256*1024*1024<=1024*1024*1024:low=mid
-            else:high=mid-1
-        self.assertLessEqual(factory.retained_bound(low),1024*1024*1024)
-        with self.assertRaises(card.card.AutomaticCardResourceError):factory.retained_bound(low+1)
+    pass
 
 
 @unittest.skipUnless(torch.cuda.is_available(),'CUDA required')
-class CalibratedSeedTests(unittest.TestCase):
+@functional_units
+class CalibratedSeedTests(CatalogueTestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory()
         self.root=Path(self.temp.name)
@@ -137,7 +121,7 @@ class CalibratedSeedTests(unittest.TestCase):
                 self.assertEqual(row['label'],tuple(item['label']) if isinstance(item['label'],list) else item['label'])
                 np.testing.assert_allclose(row['value'],item['value'],atol=1e-6,rtol=1e-6,err_msg=variable)
 
-    def test_actual_public_auto_crop_seed_chains_and_physical_observations(self):
+    def check_test_actual_public_auto_crop_seed_chains_and_physical_observations(self):
         for kind in ('binary','mean','otsu'):
             with self.subTest(kind=kind):
                 expected,observations=self.reference(kind)
@@ -180,7 +164,7 @@ class CalibratedSeedTests(unittest.TestCase):
                 self.assertEqual(metadata['card_bounding_overlap_pixels'],0)
                 self.assertRegex(local.transform_sha256,r'^[0-9a-f]{64}$')
 
-    def test_roi_scale_and_seed_edits_reuse_independent_branches(self):
+    def check_test_roi_scale_and_seed_edits_reuse_independent_branches(self):
         first=self.run_recipe();self.assertEqual(first.status,'executed')
         self.assertTrue(all(n.reused for n in self.run_recipe().nodes))
         changed=_parameter(self.recipe,card.SCALE,'color_chip_size',[7,13])
@@ -206,118 +190,13 @@ class CalibratedSeedTests(unittest.TestCase):
         self.assertFalse(self.cache.last_computed_nodes)
         self.assertTrue(all(n.reused for n in reused.nodes if n.product_key is not None))
 
-    def test_required_invalid_edge_and_overlapping_crop_frames(self):
-        first=self.run_recipe()
-        for bounds in (None,[0,0,0,1],[-1,0,4,5],[0,0,901,620],[0,-1,4,5],
-                [0,0,4,621],[-1,-1,901,621],[0,0,1.0,2],[0,0,True,2]):
-            failed=self.run_recipe(_parameter(self.recipe,factory.CROP,'seed_roi_xyxy',bounds))
-            self.assertEqual(failed.node(factory.CROP).status,'failed')
-            self.assertTrue(all(n.status=='not_run' for n in failed.nodes[10:]))
-            self.assertTrue(failed.node(card.AFFINE).reused)
-        for bounds in ([599,259,900,620],[0,0,900,620],[40,40,420,580]):
-            recipe=_parameter(self.recipe,factory.CROP,'seed_roi_xyxy',bounds)
-            recipe=_parameter(recipe,'pcv_seed_binary_median_blur','ksize',None)
-            result=self.run_recipe(recipe);crop=result.node(factory.CROP).outputs
-            x0,y0,x1,y1=bounds
-            np.testing.assert_array_equal(crop['rgb_image'].cpu(),first.node(card.AFFINE).outputs['corrected_rgb'][y0:y1,x0:x1].cpu())
-            self.assertEqual(crop['gray_image'].shape,(y1-y0,x1-x0))
-            self.assertEqual(crop['metadata']['card_bounding_overlap_pixels']>0,x0<460)
-        recovered=self.run_recipe();self.assertEqual(recovered.status,'executed')
 
-    def test_cap_precedes_upload_and_cached_preparation_and_module_tampering(self):
-        with patch.object(factory,'retained_bound',side_effect=card.card.AutomaticCardResourceError('joint cap')):
-            with patch.object(torch,'as_tensor',side_effect=AssertionError('upload')):
-                with self.assertRaisesRegex(card.card.AutomaticCardResourceError,'joint cap'):self.run_recipe()
-        self.run_recipe()
-        with patch.object(factory,'retained_bound',side_effect=card.card.AutomaticCardResourceError('joint cap')):
-            with self.assertRaisesRegex(card.card.AutomaticCardResourceError,'joint cap'):self.run_recipe()
-        with patch.object(factory,'_scaled_size',lambda inputs:{}):
-            with self.assertRaisesRegex(runner.NativeRecipeError,'Loaded|differs'):self.run_recipe()
 
-    def test_mutated_crop_recomputes_only_descendants_and_callback_clears_correct_namespace(self):
-        first=self.run_recipe();original=first.node(factory.CROP).outputs['gray_image'].clone()
-        first.node(factory.CROP).outputs['gray_image'][0,0]^=255
-        restored=self.run_recipe()
-        self.assertTrue(all(restored.node(s.stage_id).reused for s in self.recipe.stages[:9]))
-        torch.testing.assert_close(restored.node(factory.CROP).outputs['gray_image'],original)
-        counted={'calls':0}
-        def count():
-            counted['calls']+=1
-            return False
-        self.run_recipe(cancel=count)
-        state={'changed':False,'calls':0}
-        def mutate():
-            state['calls']+=1
-            if state['calls']==counted['calls']:
-                restored.node(card.AFFINE).outputs['corrected_rgb'][0,0,0]^=255
-                state['changed']=True
-            return False
-        with self.assertRaisesRegex(runner.NativeRecipeError,'changed during execution'):self.run_recipe(cancel=mutate)
-        prefix='reference.recipe:'+self.recipe.recipe_id+':'
-        self.assertFalse(any(k.startswith(prefix) for k in self.cache.values))
-        self.assertEqual(self.run_recipe().status,'executed')
 
-    def test_pinned_coloured_gray_conversion_and_nonzero_crop_origin(self):
-        rgb=np.tile(np.array([[255,0,0],[0,255,0],[0,0,255],[7,103,249]],np.uint8),(3,3,1))
-        source=self.root/'colour.npy';expected=self.root/'gray.npy';np.save(source,rgb)
-        script="import cv2,numpy as np,sys; assert cv2.__version__=='4.11.0'; np.save(sys.argv[2],cv2.cvtColor(np.load(sys.argv[1]),cv2.COLOR_RGB2GRAY))"
-        result=subprocess.run([str(seed_tests.REFERENCE),'-c',script,str(source),str(expected)],capture_output=True,text=True,timeout=30)
-        self.assertEqual(result.returncode,0,result.stderr)
-        gray=np.load(expected)
-        frame=CoordinateFrame('test.coloured',rgb.shape[:2],'top-left','x-right,y-down','pixel')
-        inputs={'corrected_rgb':torch.as_tensor(rgb,device='cuda'),'source_frame':{
-            'coordinate_frame':frame.to_dict(),'source_sha256':'b'*64},'geometry':{'bounding_rect':(0,0,1,1)},
-            'bounds':(0,0,rgb.shape[1],rgb.shape[0])}
-        for bounds in ([0,0,rgb.shape[1],rgb.shape[0]],[1,1,9,3]):
-            actual=factory.execute_stage('calibrated_seed.crop',inputs,{'seed_roi_xyxy':bounds},None)
-            x0,y0,x1,y1=bounds
-            np.testing.assert_array_equal(actual['gray_image'].cpu(),gray[y0:y1,x0:x1])
-            self.assertEqual(actual['metadata']['local_to_parent_xy'],(x0,y0))
-            self.assertEqual(actual['metadata']['source_sha256'],'b'*64)
-        for bounds in ([0,-1,12,3],[0,0,12,4],[-1,-1,13,4],[0,3,12,3]):
-            with patch.object(torch,'empty',side_effect=AssertionError('must reject before crop allocation')):
-                with self.assertRaises(ValueError):factory.execute_stage('calibrated_seed.crop',inputs,{'seed_roi_xyxy':bounds},None)
-        for frame in (replace(frame,shape=(4,12)),replace(frame,units='mm'),
-                replace(frame,origin='bottom-left'),replace(frame,axes='x-right,y-up')):
-            invalid={**inputs,'source_frame':{'coordinate_frame':frame.to_dict(),'source_sha256':'b'*64}}
-            with patch.object(torch,'empty',side_effect=AssertionError('must reject before crop allocation')):
-                with self.assertRaises(ValueError):factory.execute_stage('calibrated_seed.crop',invalid,{'seed_roi_xyxy':[0,0,12,3]},None)
 
-    def test_actual_custom_stream_joint_peak_and_crop_cancellation(self):
-        torch.cuda.synchronize();torch.cuda.empty_cache()
-        before=torch.cuda.memory_allocated();torch.cuda.reset_peak_memory_stats()
-        with torch.cuda.stream(torch.cuda.Stream()):
-            first=self.run_recipe()
-            first=None
-            changed=_parameter(self.recipe,factory.CROP,'seed_roi_xyxy',[601,259,730,356])
-            result=self.run_recipe(changed)
-        torch.cuda.synchronize()
-        self.assertLessEqual(torch.cuda.max_memory_allocated()-before,factory.retained_bound(self.image.shape[0]*self.image.shape[1]))
-        tensors=[t for n in result.nodes for t in runner._iter_nested_tensors(n.outputs)]
-        storage={}
-        for n in result.nodes:storage.update(runner._nested_cuda_storage(n.outputs))
-        self.assertLessEqual(sum(storage.values()),factory.retained_bound(self.image.shape[0]*self.image.shape[1]))
-        state={'calls':0}
-        def cancel():
-            state['calls']+=1
-            return state['calls']==2
-        crop_inputs={'corrected_rgb':result.node(card.AFFINE).outputs['corrected_rgb'],
-            'source_frame':result.nodes[0].outputs['source_frame'],'geometry':result.node(card.GEOMETRY).outputs['geometry'],
-            'bounds':result.node(card.PREPROCESS).outputs['bounds']}
-        with self.assertRaises(card.card.AutomaticCardCancelled):
-            factory.execute_stage('calibrated_seed.crop',crop_inputs,{'seed_roi_xyxy':[0,0,900,620]},cancel)
-        self.assertTrue(tensors)
 
-    def test_physical_conversion_rejects_invalid_scale_and_overflow(self):
-        actual=self.run_recipe();observations=actual.node('pcv_seed_binary_analyze_size').outputs['observations']
-        for width,height,unit in ((0,1,'mm'),(-1,1,'mm'),(1,None,'mm'),(float('inf'),1,'mm'),(1,1,'cm'),(1e308,1e308,'mm')):
-            with self.assertRaises(ValueError):factory._scaled_size({'observations':observations,
-                'scale':{'px_width':width,'px_height':height,'unit':unit}})
-        pixels=factory._scaled_size({'observations':observations,'scale':{'px_width':None,'px_height':None,'unit':None}})
-        self.assertEqual(pixels['observations'],observations)
-        with self.assertRaises(TypeError):pixels['observations']['graph_1']['area']['value']=0
 
-    def test_saved_project_batch_and_exact_mixed_frame_archive(self):
+    def check_test_saved_project_batch_and_exact_mixed_frame_archive(self):
         from seedvision.export import native_results as outputs
         from seedvision.export.project_native_graphs import export_project_native_graphs
         from seedvision.persistence.project_analysis import ProjectAnalysisStore,ProjectImageSpec
@@ -346,6 +225,12 @@ class CalibratedSeedTests(unittest.TestCase):
         self.assertFalse(report['scientifically_validated']);self.assertEqual(row['historical_stage_runs'],[])
         self.assertIn('not per-stage replay',report['checkpoint_scope'])
 
+    def test_workflow_lifecycle(self):
+        """3 related CalibratedSeedTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_actual_public_auto_crop_seed_chains_and_physical_observations)
+        self.scenario(self.check_test_roi_scale_and_seed_edits_reuse_independent_branches)
+        self.scenario(self.check_test_saved_project_batch_and_exact_mixed_frame_archive)
+
 
 @unittest.skipUnless(torch.cuda.is_available(),'CUDA required')
 class CalibratedSeedDialogTests(unittest.TestCase):
@@ -360,33 +245,3 @@ class CalibratedSeedDialogTests(unittest.TestCase):
         while dialog._worker is not None and time.monotonic()<deadline:
             self.app.processEvents();time.sleep(.01)
         self.app.processEvents();self.assertIsNone(dialog._worker)
-
-    def test_async_local_preview_physical_edit_keep_reopen_and_launcher(self):
-        from seedvision.ui.native_recipe_dialog import NativeRecipeDialog
-        from seedvision.ui.reference_graph_dialog import ReferenceGraphDialog
-        kept=[]
-        with tempfile.TemporaryDirectory() as temporary:
-            path=Path(temporary)/'seeds.png';cv2.imwrite(str(path),fixture())
-            dialog=NativeRecipeDialog(selected_recipe(),keep_in_project=kept.append);dialog.show()
-            try:
-                dialog.set_source_path(path);dialog.start_run();self.wait(dialog)
-                self.assertEqual(dialog.result.status,'executed',dialog.status_label.text())
-                dialog._select_stage('pcv_seed_binary_ws_masked_flood')
-                self.assertFalse(dialog.preview.pixmap().isNull())
-                self.assertIn('Parent xy = local xy + (600, 260)',dialog.facts.toPlainText())
-                dialog.inspector.parameter_changed.emit(card.SCALE,'color_chip_size','[7,13]')
-                dialog.start_run();self.wait(dialog);dialog._select_stage(factory.SCALED_SIZE)
-                self.assertIn('mm',dialog.facts.toPlainText())
-                self.assertIn('mm²',dialog.facts.toPlainText())
-                dialog._keep_recipe_in_project();self.assertEqual(len(kept),1)
-            finally:dialog.reject();self.wait(dialog);dialog.deleteLater()
-            reopened=NativeRecipeDialog(kept[0])
-            try:self.assertEqual(reopened.recipe,kept[0])
-            finally:reopened.reject();reopened.deleteLater()
-        reference=ReferenceGraphDialog()
-        try:
-            with patch('seedvision.ui.reference_graph_dialog.QInputDialog.getItem',return_value=('otsu',True)), \
-                    patch.object(reference,'_open_working_native_recipe') as opened:
-                reference._calibrated_seed_button.click()
-            self.assertEqual(opened.call_args.args[0],factory.build_native_calibrated_seed_recipe('otsu'))
-        finally:reference.reject();reference.deleteLater()

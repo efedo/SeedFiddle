@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.functional_units import functional_units
+
 import unittest
 from time import perf_counter
 
@@ -16,15 +18,16 @@ from seedvision.annotation import (
 from seedvision.annotation.tools import _smart_fill_extension_pressure
 
 
+@functional_units
 class AnnotationToolTests(unittest.TestCase):
-    def test_edge_cursor_prefers_nearby_ridge_to_stronger_parallel_ridge(self) -> None:
+    def check_test_edge_cursor_prefers_nearby_ridge_to_stronger_parallel_ridge(self) -> None:
         edge = np.zeros((40, 60), dtype=np.float32)
         edge[20, 5:55] = 0.72
         edge[24, 5:55] = 1.0
 
         self.assertTupleEqual(snap_edge_point((30, 20), edge, 12), (30, 20))
 
-    def test_edge_trace_follows_a_curved_high_strength_ridge(self) -> None:
+    def check_test_edge_trace_follows_a_curved_high_strength_ridge(self) -> None:
         edge = np.zeros((48, 64), dtype=np.uint8)
         curve = np.asarray(
             [(x, round(20 - 10 * np.sin((x - 5) / 50 * np.pi))) for x in range(5, 56)],
@@ -48,7 +51,7 @@ class AnnotationToolTests(unittest.TestCase):
         self.assertLess(int(path[:, 1].min()), 14)
         self.assertGreater(float(np.mean(edge[path[:, 1], path[:, 0]] > 0)), 0.75)
 
-    def test_edge_trace_long_preview_stays_interactive(self) -> None:
+    def check_test_edge_trace_long_preview_stays_interactive(self) -> None:
         edge = np.random.default_rng(4).integers(
             0, 256, (1400, 2400), dtype=np.uint8
         )
@@ -64,7 +67,7 @@ class AnnotationToolTests(unittest.TestCase):
         self.assertGreater(len(path), 500)
         self.assertLess(elapsed, 0.35)
 
-    def test_edge_trace_never_switches_to_stronger_parallel_ridge(self) -> None:
+    def check_test_edge_trace_never_switches_to_stronger_parallel_ridge(self) -> None:
         edge = np.zeros((44, 64), dtype=np.float32)
         edge[20, 5:56] = 0.72
         edge[24, 5:56] = 1.0
@@ -85,7 +88,7 @@ class AnnotationToolTests(unittest.TestCase):
         self.assertGreater(float(np.mean(path[:, 1] == 20)), 0.95)
         self.assertFalse(np.any(path[:, 1] == 24))
 
-    def test_retired_plain_shape_snap_has_no_core_api(self) -> None:
+    def check_test_retired_plain_shape_snap_has_no_core_api(self) -> None:
         import seedvision.annotation as annotation
         import seedvision.annotation.tools as tools
 
@@ -94,7 +97,7 @@ class AnnotationToolTests(unittest.TestCase):
         self.assertFalse(hasattr(tools, "ShapeSnapOptions"))
         self.assertFalse(hasattr(tools, "snap_shape_polygon"))
 
-    def test_smart_fill_adapts_to_touching_colours_and_stops_at_edge(self) -> None:
+    def check_test_smart_fill_adapts_to_touching_colours_and_stops_at_edge(self) -> None:
         height, width = 50, 70
         image = np.zeros((height, width, 3), dtype=np.uint8)
         for x in range(width):
@@ -122,7 +125,7 @@ class AnnotationToolTests(unittest.TestCase):
         self.assertTrue(np.any(filled[:, 49] == 4))
         self.assertFalse(np.any(filled[:, 50:] == 4))
 
-    def test_smart_fill_reaches_selected_thinned_ridge_not_broad_shoulder(self) -> None:
+    def check_test_smart_fill_reaches_selected_thinned_ridge_not_broad_shoulder(self) -> None:
         height, width = 51, 72
         image = np.full((height, width, 3), 110, dtype=np.uint8)
         labels = np.zeros((height, width), dtype=np.uint16)
@@ -161,7 +164,7 @@ class AnnotationToolTests(unittest.TestCase):
         self.assertEqual(precise_frontier, 50)
         self.assertFalse(np.any(precise[:, 51:] == 3))
 
-    def test_smart_fill_click_origin_range_stops_accumulated_colour_drift(self) -> None:
+    def check_test_smart_fill_click_origin_range_stops_accumulated_colour_drift(self) -> None:
         height, width = 31, 61
         image = np.zeros((height, width, 3), dtype=np.uint8)
         corrected_lab = np.zeros((height, width, 3), dtype=np.uint8)
@@ -192,7 +195,7 @@ class AnnotationToolTests(unittest.TestCase):
         self.assertEqual(int(limited[15, 23]), 0)
         self.assertFalse(np.any(limited[:, 23:] == 9))
 
-    def test_smart_fill_tunnelling_crosses_only_a_short_weak_barrier(self) -> None:
+    def check_test_smart_fill_tunnelling_crosses_only_a_short_weak_barrier(self) -> None:
         image = np.full((31, 55, 3), 100, dtype=np.uint8)
         edge = np.zeros((31, 55), dtype=np.float32)
         edge[:, 26] = 0.30
@@ -223,7 +226,7 @@ class AnnotationToolTests(unittest.TestCase):
         self.assertFalse(np.any(stopped[:, 27:] == 2))
         self.assertTrue(np.any(tunnelled[:, 27:] == 2))
 
-    def test_smart_fill_seals_short_holes_in_an_aligned_edge_wall(self) -> None:
+    def check_test_smart_fill_seals_short_holes_in_an_aligned_edge_wall(self) -> None:
         shape = (81, 91)
         image = np.full((*shape, 3), 120, np.uint8)
         edge = np.zeros(shape, np.uint8)
@@ -259,7 +262,7 @@ class AnnotationToolTests(unittest.TestCase):
         self.assertFalse(np.any(sealed[:, 49:] == 3))
         self.assertEqual(int(sealed[40, 25]), 3)
 
-    def test_edge_barrier_threshold_changes_whether_a_weak_ridge_is_crossed(self) -> None:
+    def check_test_edge_barrier_threshold_changes_whether_a_weak_ridge_is_crossed(self) -> None:
         shape = (81, 81)
         image = np.full((*shape, 3), 105, np.uint8)
         edge = np.zeros(shape, np.float32)
@@ -294,7 +297,7 @@ class AnnotationToolTests(unittest.TestCase):
         self.assertFalse(np.any(stopped[:16] == 5))
         self.assertTrue(np.any(crossed[:16] == 5))
 
-    def test_smart_fill_never_overwrites_another_seed_id(self) -> None:
+    def check_test_smart_fill_never_overwrites_another_seed_id(self) -> None:
         image = np.full((35, 50, 3), 120, dtype=np.uint8)
         edge = np.zeros((35, 50), dtype=np.uint8)
         labels = np.zeros((35, 50), dtype=np.uint16)
@@ -313,7 +316,7 @@ class AnnotationToolTests(unittest.TestCase):
         )
         self.assertTrue(np.all(filled[10:25, 28:34] == 9))
 
-    def test_smart_fill_enforces_maximum_distance_from_cursor(self) -> None:
+    def check_test_smart_fill_enforces_maximum_distance_from_cursor(self) -> None:
         image = np.full((81, 81, 3), 120, dtype=np.uint8)
         edge = np.zeros((81, 81), dtype=np.uint8)
         labels = np.zeros((81, 81), dtype=np.uint16)
@@ -339,7 +342,7 @@ class AnnotationToolTests(unittest.TestCase):
         self.assertEqual(int(filled[40, 52]), 6)
         self.assertEqual(int(filled[40, 53]), 0)
 
-    def test_smart_fill_falloff_half_life_limits_repeated_colour_steps(self) -> None:
+    def check_test_smart_fill_falloff_half_life_limits_repeated_colour_steps(self) -> None:
         self.assertAlmostEqual(
             float(_smart_fill_extension_pressure(10.0, 10.0)),
             0.5,
@@ -395,7 +398,7 @@ class AnnotationToolTests(unittest.TestCase):
         self.assertEqual(int(decayed[30, 31]), 0)
         self.assertEqual(int(nearly_constant[30, 31]), 4)
 
-    def test_smart_fill_recovers_one_seed_when_a_boundary_gap_leaks(self) -> None:
+    def check_test_smart_fill_recovers_one_seed_when_a_boundary_gap_leaks(self) -> None:
         image = np.full((130, 180, 3), 120, dtype=np.uint8)
         edge = np.zeros((130, 180), dtype=np.uint8)
         cv2.circle(edge, (70, 65), 20, 255, 1)
@@ -423,7 +426,7 @@ class AnnotationToolTests(unittest.TestCase):
         self.assertEqual(int(filled[65, 70]), 5)
         self.assertEqual(int(filled[65, 109]), 0)
 
-    def test_smart_fill_starts_an_empty_instance_and_is_preview_fast(self) -> None:
+    def check_test_smart_fill_starts_an_empty_instance_and_is_preview_fast(self) -> None:
         image = np.full((900, 900, 3), 126, dtype=np.uint8)
         edge = np.zeros((900, 900), dtype=np.uint8)
         cv2.circle(edge, (450, 450), 120, 255, 2)
@@ -446,6 +449,28 @@ class AnnotationToolTests(unittest.TestCase):
         self.assertEqual(int(filled[450, 450]), 7)
         self.assertFalse(np.any(filled[330, :] == 7))
         self.assertLess(elapsed, 0.50)
+
+    def test_workflow_lifecycle(self):
+        """12 related AnnotationToolTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_edge_cursor_prefers_nearby_ridge_to_stronger_parallel_ridge)
+        self.scenario(self.check_test_edge_trace_follows_a_curved_high_strength_ridge)
+        self.scenario(self.check_test_edge_trace_long_preview_stays_interactive)
+        self.scenario(self.check_test_edge_trace_never_switches_to_stronger_parallel_ridge)
+        self.scenario(self.check_test_retired_plain_shape_snap_has_no_core_api)
+        self.scenario(self.check_test_smart_fill_reaches_selected_thinned_ridge_not_broad_shoulder)
+        self.scenario(self.check_test_smart_fill_tunnelling_crosses_only_a_short_weak_barrier)
+        self.scenario(self.check_test_smart_fill_seals_short_holes_in_an_aligned_edge_wall)
+        self.scenario(self.check_test_edge_barrier_threshold_changes_whether_a_weak_ridge_is_crossed)
+        self.scenario(self.check_test_smart_fill_never_overwrites_another_seed_id)
+        self.scenario(self.check_test_smart_fill_enforces_maximum_distance_from_cursor)
+        self.scenario(self.check_test_smart_fill_starts_an_empty_instance_and_is_preview_fast)
+
+    def test_validation_and_recovery(self):
+        """4 related AnnotationToolTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_smart_fill_adapts_to_touching_colours_and_stops_at_edge)
+        self.scenario(self.check_test_smart_fill_click_origin_range_stops_accumulated_colour_drift)
+        self.scenario(self.check_test_smart_fill_falloff_half_life_limits_repeated_colour_steps)
+        self.scenario(self.check_test_smart_fill_recovers_one_seed_when_a_boundary_gap_leaks)
 
 
 if __name__ == "__main__":

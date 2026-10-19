@@ -1,0 +1,54 @@
+{
+  "schema": "seedfiddle.test-fixture-definitions.v1",
+  "scope": "Original fixture ASTs remain exact except test bodies, functional grouping and the explicit CatalogueTestCase ownership base/import. Numerical helpers, constants, setup and teardown remain exact. Digests derive from the pre-consolidation source snapshot; frozen baseline bytes remain unchanged.",
+  "files": {
+    "tests/test_native_calibrated_range_recipe.py": {
+      "historical_source_sha256": "0f7e02936aa1d66b0347e655852483040cd37e8a67e18896cec8b1becb23746e",
+      "definition_sha256": "45edbc24156b9e3ea684c7d0817ee15cf37dc995987f9e834ccd06e8b3a56567"
+    },
+    "tests/test_native_calibrated_seed_recipe.py": {
+      "historical_source_sha256": "47d0e2652d70f45adfd56096dda6fc8d4021a18e1696446bf50f6e62bc12bd54",
+      "definition_sha256": "2aea53be0d127b7f6a1ffc5b9ad99cb8fa5b7bc22a6e87739c45c95435c3dda4"
+    },
+    "tests/test_native_core_recovery_recipe.py": {
+      "historical_source_sha256": "5bc84fca7b29338b458325fe59e576b9f1d5a60bf547ef491171e74db97bbdf2",
+      "definition_sha256": "2b7f8cd1b0f0eca3f29a6b3f307b2913709be3b61b51311a62127c76f2dafb5b"
+    },
+    "tests/test_native_correction_dialog.py": {
+      "historical_source_sha256": "0bc21d04051b6950dcd47cfadfaae48db8598b215970ba92ef2b4230e32536f5",
+      "definition_sha256": "fa3753dba99fa2d1c6f74c1aba96be6a1bb7fdefd3a93cce588c8bdc4cdb6f09"
+    },
+    "tests/test_native_extended_threshold_recipe.py": {
+      "historical_source_sha256": "fa10644b46aca18bc5beef6b5c2fdea172e7ee84adb273d485d3f2a3a688e9b1",
+      "definition_sha256": "7e6c96ca68a59a0e9f96958b626696ffc1980434957e871a17316fb2810f1cde"
+    },
+    "tests/test_native_kmeans_recipe.py": {
+      "historical_source_sha256": "7e738783d9306d2a69bcf447df460020861de80c0431c364ebee913ddac6a6c5",
+      "definition_sha256": "75174fe855ea86514a8fb2205999107a4f8ea1c5812cb2b0a834a0b52e2b344f"
+    },
+    "tests/test_native_naive_bayes_recipe.py": {
+      "historical_source_sha256": "6977c094b82916de008c08189ccac051121d8b0e2888d688d54dc7c91abc349e",
+      "definition_sha256": "80df700e37c2ef03fbe47e2e27bf033e74261bb1f3656a280173bff9ac41da63"
+    },
+    "tests/test_native_recipe.py": {
+      "historical_source_sha256": "939304afbb1e514d4b886113db6ff8b031db121d52479b7167687ec8c47b3123",
+      "definition_sha256": "9069d37fef73f0b7be945250b55d37e4527cbfc703a6c40fb9142d4b9af4ff84"
+    },
+    "tests/test_native_smpts_recipe.py": {
+      "historical_source_sha256": "9c0e6bb6d553a2027996630153dc7f3c1ebf810a95135d9a5b421a4e3e333468",
+      "definition_sha256": "c22d71ad435a9b2e5fa93aa0136dd19841e576e29578290cf4ac07136bd31b60"
+    },
+    "tests/test_plantcv_card_detection.py": {
+      "historical_source_sha256": "c88c1771bb1ad274875fb0090219c0e53b1b63f4357762bf381aa7bffbead6b4",
+      "definition_sha256": "c438cff11913a2ede7e984e08d287290a60a4440e5939c9076aa75e117f8e4e8"
+    },
+    "tests/test_plantcv_naive_bayes.py": {
+      "historical_source_sha256": "1fcfb687ddfb810dc1f825bce6dac659804230e17d21a1d9a4b3753e013dd2b7",
+      "definition_sha256": "0d8f17a58aea7c8c158e51e5d76daa55162269981f03a91f08541cc846ebbd81"
+    },
+    "tests/test_smpts_paper.py": {
+      "historical_source_sha256": "1de2c4587d6048bf45e14310acabb004081d369163a2307ac99d27263e4482d3",
+      "definition_sha256": "70f62789cbc104eb780248748f124374333f2619c44474166b3d42e827dbf4ef"
+    }
+  }
+}

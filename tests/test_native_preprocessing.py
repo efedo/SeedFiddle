@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.functional_units import functional_units
+
 from contextlib import ExitStack
 from dataclasses import replace
 from hashlib import sha256
@@ -7,6 +9,7 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
+from tests.catalogue_fixtures import CatalogueTestCase
 from unittest.mock import patch
 
 import numpy as np
@@ -283,8 +286,9 @@ class _NativePreprocessingFixtures:
         return bridge
 
 
-class NativePreprocessingContractTests(_NativePreprocessingFixtures, unittest.TestCase):
-    def test_layout_is_display_only_and_stage_projections_are_exact(self) -> None:
+@functional_units
+class NativePreprocessingContractTests(_NativePreprocessingFixtures, CatalogueTestCase):
+    def check_test_layout_is_display_only_and_stage_projections_are_exact(self) -> None:
         recipe = _selected_recipe()
         moved = replace(recipe.layout[0], x=recipe.layout[0].x + 90.0, y=recipe.layout[0].y + 20.0)
         selected = replace(recipe, layout=(moved, *recipe.layout[1:]))
@@ -326,7 +330,7 @@ class NativePreprocessingContractTests(_NativePreprocessingFixtures, unittest.Te
                             build_recipe_catalogue().recipe("plantcv_seed_binary").identity.layout_sha256
                             for stage in outcome.stages))
 
-    def test_empty_masks_are_valid_and_chain_continues_through_all_stages(self) -> None:
+    def check_test_empty_masks_are_valid_and_chain_continues_through_all_stages(self) -> None:
         arguments = self._arguments(empty=True)
         calls: list[dict[str, object]] = []
         fake = self._fake_stage(
@@ -350,7 +354,7 @@ class NativePreprocessingContractTests(_NativePreprocessingFixtures, unittest.Te
         self.assertEqual(len(calls), 5)
         self.assertIsNotNone(outcome.final_checkpoint)
 
-    def test_mean_and_otsu_use_their_exact_threshold_contracts_and_mask_bridge_projections(self) -> None:
+    def check_test_mean_and_otsu_use_their_exact_threshold_contracts_and_mask_bridge_projections(self) -> None:
         for recipe_id, operation_id in (
             ("plantcv_seed_mean", "threshold.mean"),
             ("plantcv_seed_otsu", "threshold.otsu"),
@@ -381,7 +385,7 @@ class NativePreprocessingContractTests(_NativePreprocessingFixtures, unittest.Te
                 ))
                 self.assertEqual(len(calls), 5)
 
-    def test_unsupported_selected_stage_is_found_before_any_native_bridge_runs(self) -> None:
+    def check_test_unsupported_selected_stage_is_found_before_any_native_bridge_runs(self) -> None:
         recipe = _selected_recipe("plantcv_seed_mean", mean_ksize=256)
         arguments = self._arguments(recipe)
         with self._patched_identities(), patch(
@@ -404,7 +408,7 @@ class NativePreprocessingContractTests(_NativePreprocessingFixtures, unittest.Te
         mask_bridge.assert_not_called()
         threshold_bridge.assert_not_called()
 
-    def test_precancelled_chain_records_cancellation_without_calling_a_bridge(self) -> None:
+    def check_test_precancelled_chain_records_cancellation_without_calling_a_bridge(self) -> None:
         arguments = self._arguments()
         cancel = threading.Event()
         cancel.set()
@@ -422,7 +426,7 @@ class NativePreprocessingContractTests(_NativePreprocessingFixtures, unittest.Te
         mask_bridge.assert_not_called()
         threshold_bridge.assert_not_called()
 
-    def test_failure_text_does_not_turn_an_unrelated_threshold_failure_into_cancellation(self) -> None:
+    def check_test_failure_text_does_not_turn_an_unrelated_threshold_failure_into_cancellation(self) -> None:
         arguments = self._arguments()
         calls: list[dict[str, object]] = []
         mask_bridge = self._fake_stage(calls=calls)
@@ -443,7 +447,7 @@ class NativePreprocessingContractTests(_NativePreprocessingFixtures, unittest.Te
         self.assertTrue(all(stage.status is NativePreprocessingStageStatus.NOT_RUN for stage in outcome.stages[2:]))
         self.assertIsNone(outcome.final_checkpoint)
 
-    def test_failed_threshold_with_cancellation_event_set_during_call_is_cancelled(self) -> None:
+    def check_test_failed_threshold_with_cancellation_event_set_during_call_is_cancelled(self) -> None:
         arguments = self._arguments()
         cancel = threading.Event()
         arguments["cancel"] = cancel
@@ -473,7 +477,7 @@ class NativePreprocessingContractTests(_NativePreprocessingFixtures, unittest.Te
         self.assertEqual(outcome.stages[1].status, NativePreprocessingStageStatus.CANCELLED)
         self.assertTrue(all(stage.status is NativePreprocessingStageStatus.NOT_RUN for stage in outcome.stages[2:]))
 
-    def test_unavailable_stage_stops_chain_and_never_exposes_intermediate_as_final(self) -> None:
+    def check_test_unavailable_stage_stops_chain_and_never_exposes_intermediate_as_final(self) -> None:
         arguments = self._arguments()
         mask_calls: list[dict[str, object]] = []
         threshold_calls: list[dict[str, object]] = []
@@ -496,7 +500,7 @@ class NativePreprocessingContractTests(_NativePreprocessingFixtures, unittest.Te
         self.assertEqual(len(mask_calls), 2)
         self.assertEqual(len(threshold_calls), 1)
 
-    def test_runtime_identity_mismatch_stops_before_the_first_stage(self) -> None:
+    def check_test_runtime_identity_mismatch_stops_before_the_first_stage(self) -> None:
         arguments = self._arguments()
         changed = replace(self.mask_identity, implementation_sha256=sha256(b"different implementation").hexdigest())
         with patch(
@@ -513,7 +517,7 @@ class NativePreprocessingContractTests(_NativePreprocessingFixtures, unittest.Te
         self.assertTrue(all(stage.status is NativePreprocessingStageStatus.NOT_RUN for stage in outcome.stages[1:]))
         mask_bridge.assert_not_called()
 
-    def test_unavailable_native_environment_is_recorded_before_computation(self) -> None:
+    def check_test_unavailable_native_environment_is_recorded_before_computation(self) -> None:
         from seedvision.benchmarking.native_mask_stage import NativeMaskUnavailableError
 
         arguments = self._arguments()
@@ -532,7 +536,7 @@ class NativePreprocessingContractTests(_NativePreprocessingFixtures, unittest.Te
         self.assertTrue(all(stage.status is NativePreprocessingStageStatus.NOT_RUN for stage in outcome.stages[1:]))
         mask_bridge.assert_not_called()
 
-    def test_stage_checkpoint_identity_mismatch_fails_and_stops_downstream(self) -> None:
+    def check_test_stage_checkpoint_identity_mismatch_fails_and_stops_downstream(self) -> None:
         arguments = self._arguments()
         calls: list[dict[str, object]] = []
         generic = self._fake_stage(calls=calls)
@@ -561,7 +565,7 @@ class NativePreprocessingContractTests(_NativePreprocessingFixtures, unittest.Te
         self.assertIsNone(outcome.final_checkpoint)
         self.assertEqual(len(calls), 3)
 
-    def test_preflight_binds_exact_source_frame_and_input_array_role(self) -> None:
+    def check_test_preflight_binds_exact_source_frame_and_input_array_role(self) -> None:
         arguments = self._arguments()
         arguments["input_bindings"] = {"gray": "missing"}
         with self.assertRaisesRegex(ValueError, "grayscale binding"):
@@ -577,9 +581,27 @@ class NativePreprocessingContractTests(_NativePreprocessingFixtures, unittest.Te
         with self.assertRaisesRegex(ValueError, "different coordinate frame"):
             run_native_preprocessing(**wrong_frame)
 
+    def test_workflow_lifecycle(self):
+        """5 related NativePreprocessingContractTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_layout_is_display_only_and_stage_projections_are_exact)
+        self.scenario(self.check_test_empty_masks_are_valid_and_chain_continues_through_all_stages)
+        self.scenario(self.check_test_mean_and_otsu_use_their_exact_threshold_contracts_and_mask_bridge_projections)
+        self.scenario(self.check_test_unsupported_selected_stage_is_found_before_any_native_bridge_runs)
+        self.scenario(self.check_test_preflight_binds_exact_source_frame_and_input_array_role)
+
+    def test_validation_and_recovery(self):
+        """7 related NativePreprocessingContractTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_precancelled_chain_records_cancellation_without_calling_a_bridge)
+        self.scenario(self.check_test_failure_text_does_not_turn_an_unrelated_threshold_failure_into_cancellation)
+        self.scenario(self.check_test_failed_threshold_with_cancellation_event_set_during_call_is_cancelled)
+        self.scenario(self.check_test_unavailable_stage_stops_chain_and_never_exposes_intermediate_as_final)
+        self.scenario(self.check_test_runtime_identity_mismatch_stops_before_the_first_stage)
+        self.scenario(self.check_test_unavailable_native_environment_is_recorded_before_computation)
+        self.scenario(self.check_test_stage_checkpoint_identity_mismatch_fails_and_stops_downstream)
+
 
 @unittest.skipUnless(HAS_REFERENCE_ENV, "the ignored pinned PlantCV reference environment is unavailable")
-class NativePreprocessingPlantCVParityTests(_NativePreprocessingFixtures, unittest.TestCase):
+class NativePreprocessingPlantCVParityTests(_NativePreprocessingFixtures, CatalogueTestCase):
     def test_native_binary_mean_and_restricted_otsu_chains_match_original_stage_pixels(self) -> None:
         import torch
 

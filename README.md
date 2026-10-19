@@ -1,5 +1,15 @@
 # Seed Fiddle
 
+Analysis workflows load in the main **Pipeline** workspace, which starts visible. Open an image or project and choose a pipeline from the compact **Workflow** selector at the top of its canvas; thirteen further templates are under **… → Other pipelines**. Select nodes to configure calculations, use **Run pipeline** and **Stop** at the top of the application, and **Save** / **Export** in Pipeline. **Add node** searches the full catalogue; blue entries are already present and green entries are absent. Each choice adds a separate instance with its required inputs, controls and cache. Supported internal connections remain editable; connections between independent components require an explicit adapter. Project saving preserves workflows, instance settings, layout and selection. The Images divider is adjustable. Factory workflows are inspected directly in Pipeline; the separate Reference window is removed. Loaded pipelines start with **Freeze** checked. Clear it to edit parameters or connections; execution, backend selection and node layout remain available. **Save** requires a distinct custom name for factory edits. **…** contains pipeline and layout load/save commands. Use the global **Native/PlantCV** selector or selected-node **Backend** control to choose actual execution where equivalent public calls are available. Native-only stages explain their restriction; the six watershed stages share one public-call choice. Use **Open…** beside **Images** to add files. Each image row’s **×** removes its workspace entry while preserving source files. The Overlay selector stays beside its label and keeps full names in its menu and tooltip.
+
+The selector includes 18 templates covering seed thresholds, extended thresholds/range, frozen classifiers, colour-card/correction and calibrated seed analysis, recovery, and the SMPTS paper reconstruction. ROI, reader, diagnostic and model choices are contextual node actions. Native classifier training is in **Learning**. Source details, recorded QC and replay are available on demand. Original SMPTS parity is unverified; scientific validation remains separate.
+
+The full test suite now has **639 functional units** and passes in **12 minutes 42 seconds** (635 passes, four existing skips). Run `.venv\Scripts\python.exe -m tests --full`; the canonical runner uses three isolated processes and enforces the under-1,000/15-minute budget. See the [complete inventory](docs/testing/TEST_INVENTORY.md), [all original test decisions](docs/testing/consolidation-2026-10-18/TEST_DISPOSITIONS.md) and [redesign and coverage scope](docs/testing/TEST_SUITE_REDESIGN.md).
+
+For routine regression checks, run `.venv\Scripts\python.exe -m tests`. Use `--full` for unfiltered complete acceptance. See the [testing guide](docs/TESTING.md) for scope, timing reports and fixture policy.
+
+Earlier implementation history follows.
+
 Size and units saved-stage replay checkpoint (9 October). `analysis.size` now replays original RGB/labels and all seventeen observation records in source or verified seed-ROI frames, comparing the optional CUDA diagnostic separately. Exact source descriptors, nominal datatypes and finite local coordinates are preserved. `calibrated_seed.size_units` replays the compact physical conversion with zero selected arrays and binds the saved size/frame and card-scale producers. Its conversion allocates no CUDA tensors; the shared runtime audit has a separately admitted 64 KiB reserve. Upstream label maxima and card measurements are not recomputed by the units stage. There are now 22 declared replay operations.
 
 The shared 15-module gate passes 185 tests in 1155.051s before the final audit-budget refinement. The final affected size/unit and existing planner/contract gate passes 28 tests in 86.761s after that refinement (zero skips; overlapping gates). Nine final source/test files have bounded supplied-projection/root-evidence review approval. Earlier freezes remain historical when shared modules change.
@@ -512,7 +522,7 @@ SMPTS seed-analysis capabilities within SeedFiddle. The
 [implementation/benchmark plan](docs/PLANTCV_SMPTS_IMPLEMENTATION_PLAN.md) define
 the accepted extension. Capability auditing and comparison infrastructure come
 first. Reviewed checkpoint, recipe, conformance and isolated original-operation
-APIs, grouped benchmark manifests and **View → Reference graphs…** are implemented.
+APIs and grouped benchmark manifests remain available; factory workflows load in the main Pipeline workspace.
 Reviewed bounded implementations add CUDA thresholds, median/morphology, small-object
 removal, stage comparisons and verified original-operation checkpoint inspection.
 Original/native five-stage benchmark preprocessing is reviewed and passes focused

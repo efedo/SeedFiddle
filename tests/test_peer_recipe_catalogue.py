@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.functional_units import functional_units
+
 from dataclasses import replace
 import hashlib
 import json
@@ -39,13 +41,14 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+@functional_units
 class PeerRecipeCatalogueTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.catalogue = build_recipe_catalogue()
         cls.config = _read_source_config()
 
-    def test_catalogue_json_and_recipe_identities_are_deterministic(self) -> None:
+    def check_test_catalogue_json_and_recipe_identities_are_deterministic(self) -> None:
         first = self.catalogue.to_json()
         restored = RecipeCatalogue.from_json(first)
 
@@ -63,7 +66,7 @@ class PeerRecipeCatalogueTests(unittest.TestCase):
             ],
         )
 
-    def test_catalogue_json_rejects_duplicate_keys_and_execution_claims(self) -> None:
+    def check_test_catalogue_json_rejects_duplicate_keys_and_execution_claims(self) -> None:
         document = self.catalogue.to_json()
         duplicated = document.replace(
             "{\"execution_claims\":",
@@ -78,7 +81,7 @@ class PeerRecipeCatalogueTests(unittest.TestCase):
         with self.assertRaises(RecipeCatalogueError):
             RecipeCatalogue.from_json(json.dumps(altered))
 
-    def test_scope_keeps_every_accepted_family_and_extended_operation(self) -> None:
+    def check_test_scope_keeps_every_accepted_family_and_extended_operation(self) -> None:
         scope = self.catalogue.to_dict()["feature_scope"]
         self.assertEqual(scope["accepted_feature_families"], [f"F{i:02d}" for i in range(1, 23)])
         self.assertTrue(scope["remaining_scope_is_still_accepted"])
@@ -92,7 +95,7 @@ class PeerRecipeCatalogueTests(unittest.TestCase):
         self.assertFalse(self.catalogue.to_dict()["execution_claims"]["runnable"])
         self.assertEqual(self.catalogue.to_dict()["execution_claims"]["run_evidence"], [])
 
-    def test_committed_source_projection_and_environment_lock_match_their_pins(self) -> None:
+    def check_test_committed_source_projection_and_environment_lock_match_their_pins(self) -> None:
         for reference in ("plantcv", "smpts_paper"):
             projection = source_manifest_projection(self.config, reference)
             canonical = json.dumps(
@@ -143,7 +146,7 @@ class PeerRecipeCatalogueTests(unittest.TestCase):
             stage = next(item for item in recipe.stages if item.operation_id == operation_id)
             self.assertEqual(stage.source_mappings[0].source_symbol, symbol)
 
-    def test_seed_recipe_order_ports_and_unselected_required_values_are_explicit(self) -> None:
+    def check_test_seed_recipe_order_ports_and_unselected_required_values_are_explicit(self) -> None:
         expected_thresholds = {
             "plantcv_seed_binary": "threshold.binary",
             "plantcv_seed_otsu": "threshold.otsu",
@@ -203,7 +206,7 @@ class PeerRecipeCatalogueTests(unittest.TestCase):
             self.assertEqual(stages["analysis.color"].parameters[1].value, "all")
             self.assertTrue(all(item.affects_calculation for stage in recipe.stages for item in stage.parameters))
 
-    def test_watershed_source_substages_describe_one_public_runner_call(self) -> None:
+    def check_test_watershed_source_substages_describe_one_public_runner_call(self) -> None:
         recipe = self.catalogue.recipe("plantcv_seed_otsu")
         internal = [stage for stage in recipe.stages if stage.operation_id.startswith("reference.internal.watershed.")]
         self.assertEqual(len(internal), 6)
@@ -255,7 +258,7 @@ class PeerRecipeCatalogueTests(unittest.TestCase):
         self.assertIn("lines 76-78 emit it later", count_evidence.note)
         self.assertEqual(count_evidence.source_path, "plantcv/plantcv/watershed.py")
 
-    def test_measurement_and_colour_outputs_name_pinned_observations(self) -> None:
+    def check_test_measurement_and_colour_outputs_name_pinned_observations(self) -> None:
         recipe = self.catalogue.recipe("plantcv_seed_otsu")
         stages = {stage.operation_id: stage for stage in recipe.stages}
         size_outputs = {port.name: port for port in stages["analysis.size"].ports if port.direction == "output"}
@@ -273,7 +276,7 @@ class PeerRecipeCatalogueTests(unittest.TestCase):
         self.assertEqual(colour_outputs["histogram"].data_type, "Visualization")
         self.assertIn("does not claim biological colour validity", stages["analysis.color"].description)
 
-    def test_color_correction_is_an_explicit_external_input_operation(self) -> None:
+    def check_test_color_correction_is_an_explicit_external_input_operation(self) -> None:
         recipe = self.catalogue.recipe("plantcv_color_card_correct_color")
         self.assertEqual(len(recipe.stages), 1)
         stage = recipe.stages[0]
@@ -289,7 +292,7 @@ class PeerRecipeCatalogueTests(unittest.TestCase):
         self.assertIn("No image decoder, card detector, matrix source", stage.description)
         self.assertIn("temporary output directory", stage.source_mappings[0].note)
 
-    def test_smpts_paper_graph_preserves_ambiguity_and_original_unavailability(self) -> None:
+    def check_test_smpts_paper_graph_preserves_ambiguity_and_original_unavailability(self) -> None:
         recipe = self.catalogue.recipe("smpts_paper_reconstruction")
         self.assertEqual(recipe.provenance.mode, RecipeProvenanceMode.PAPER_RECONSTRUCTION)
         self.assertEqual(recipe.provenance.evidence_status, SourceResolution.PINNED)
@@ -351,14 +354,14 @@ class PeerRecipeCatalogueTests(unittest.TestCase):
             "unresolved",
         )
 
-    def test_recipe_layout_changes_do_not_change_analytical_identity(self) -> None:
+    def check_test_recipe_layout_changes_do_not_change_analytical_identity(self) -> None:
         recipe = self.catalogue.recipe("plantcv_seed_binary")
         first = recipe.layout[0]
         moved = replace(recipe, layout=(replace(first, x=first.x + 100), *recipe.layout[1:]))
         self.assertEqual(recipe.identity.analytical_dict(), moved.identity.analytical_dict())
         self.assertNotEqual(recipe.identity.layout_sha256, moved.identity.layout_sha256)
 
-    def test_graph_projection_rejects_miswire_omission_extra_stale_and_unused_nodes(self) -> None:
+    def check_test_graph_projection_rejects_miswire_omission_extra_stale_and_unused_nodes(self) -> None:
         recipe = self.catalogue.recipe("plantcv_seed_binary")
         graph = to_pipeline_graph(recipe)
         first_edge = graph.connections[0]
@@ -394,7 +397,7 @@ class PeerRecipeCatalogueTests(unittest.TestCase):
         with self.assertRaises(RecipeGraphMismatch):
             validate_pipeline_graph(recipe, graph)
 
-    def test_projected_graphs_keep_execution_states_unrun_or_unresolved(self) -> None:
+    def check_test_projected_graphs_keep_execution_states_unrun_or_unresolved(self) -> None:
         validate_recipe_catalogue(self.catalogue)
         for recipe in self.catalogue.recipes:
             graph = to_pipeline_graph(recipe)
@@ -402,6 +405,24 @@ class PeerRecipeCatalogueTests(unittest.TestCase):
             self.assertFalse(any(node.status is NodeStatus.COMPLETE for node in graph.nodes.values()))
             for record in graph.reference_recipe_runs.values():
                 self.assertIn(record.state, {StageRunState.NOT_RUN, StageRunState.UNRESOLVED})
+
+    def test_workflow_lifecycle(self):
+        """10 related PeerRecipeCatalogueTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_catalogue_json_and_recipe_identities_are_deterministic)
+        self.scenario(self.check_test_scope_keeps_every_accepted_family_and_extended_operation)
+        self.scenario(self.check_test_committed_source_projection_and_environment_lock_match_their_pins)
+        self.scenario(self.check_test_seed_recipe_order_ports_and_unselected_required_values_are_explicit)
+        self.scenario(self.check_test_watershed_source_substages_describe_one_public_runner_call)
+        self.scenario(self.check_test_measurement_and_colour_outputs_name_pinned_observations)
+        self.scenario(self.check_test_color_correction_is_an_explicit_external_input_operation)
+        self.scenario(self.check_test_smpts_paper_graph_preserves_ambiguity_and_original_unavailability)
+        self.scenario(self.check_test_recipe_layout_changes_do_not_change_analytical_identity)
+        self.scenario(self.check_test_projected_graphs_keep_execution_states_unrun_or_unresolved)
+
+    def test_validation_and_recovery(self):
+        """2 related PeerRecipeCatalogueTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_catalogue_json_rejects_duplicate_keys_and_execution_claims)
+        self.scenario(self.check_test_graph_projection_rejects_miswire_omission_extra_stale_and_unused_nodes)
 
 
 if __name__ == "__main__":

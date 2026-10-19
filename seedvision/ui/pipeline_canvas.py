@@ -32,10 +32,15 @@ from PySide6.QtWidgets import (
     QLayout,
     QLabel,
     QMenu,
+    QListWidget,
+    QListWidgetItem,
+    QLineEdit,
+    QVBoxLayout,
+    QWidget,
+    QWidgetAction,
     QSpinBox,
     QStyleOptionGraphicsItem,
     QToolButton,
-    QWidget,
 )
 
 from seedvision.pipeline import NodeStatus, PipelineConnection, PipelineGraph, PipelineNode
@@ -473,6 +478,7 @@ class PipelineNodeItem(QGraphicsObject):
         *,
         read_only: bool = False,
         reference_view: bool = False,
+        editing_locked: bool = False,
     ) -> None:
         super().__init__(parent)
         self.node = node
@@ -482,6 +488,7 @@ class PipelineNodeItem(QGraphicsObject):
         self._parameter_callback = parameter_callback
         self._run_to_callback = run_to_callback
         self._read_only = bool(read_only)
+        self._editing_locked = bool(editing_locked)
         self._reference_view = bool(reference_view)
         self.width = (
             250.0
@@ -669,7 +676,7 @@ class PipelineNodeItem(QGraphicsObject):
                     )
                 )
             editor.setToolTip(spec.description)
-            editor.setEnabled(self.node.enabled and self.node.implemented)
+            editor.setEnabled(self.node.enabled and self.node.implemented and not self._editing_locked)
             proxy = QGraphicsProxyWidget(self)
             proxy.setWidget(editor)
             proxy.setPos(
@@ -696,7 +703,7 @@ class PipelineNodeItem(QGraphicsObject):
                 else:
                     editor.setChecked(bool(self.node.parameters[key]))
             if not self._read_only:
-                editor.setEnabled(self.node.enabled and self.node.implemented)
+                editor.setEnabled(self.node.enabled and self.node.implemented and not self._editing_locked)
         self._update_tooltip()
         self.update()
 
@@ -1053,7 +1060,10 @@ class PipelineCanvas(QGraphicsView):
         if initial_focus_node_id is not None and initial_focus_node_id not in graph.nodes:
             raise ValueError("The initial focus node must exist in the graph.")
         self._reference_view = bool(reference_view)
+        self._editing_locked = False
         self._initial_focus_node_id = initial_focus_node_id
+        self._workflow_controls = None
+        self._catalogue_provider = None
         self._preserve_initial_layout = bool(preserve_initial_layout)
         self.graph = graph
         self._scene = QGraphicsScene(self)
@@ -1126,8 +1136,15 @@ class PipelineCanvas(QGraphicsView):
 
     def _build_control_bar(self) -> None:
         self.control_bar = QFrame(self)
-        controls = QHBoxLayout(self.control_bar)
-        controls.setContentsMargins(8, 4, 8, 4)
+        rows = QVBoxLayout(self.control_bar)
+        rows.setContentsMargins(8, 4, 8, 4)
+        rows.setSpacing(4)
+        rows.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
+        controls = QHBoxLayout()
+        rows.addLayout(controls)
+        self._controls_layout = controls
+        self._workflow_stacked = False
+        controls.setContentsMargins(0, 0, 0, 0)
         controls.setSpacing(5)
         controls.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
         self.auto_arrange_button = QToolButton(self.control_bar)
@@ -1232,6 +1249,96 @@ class PipelineCanvas(QGraphicsView):
                 button.hide()
                 button.setToolTip("")
 
+    def set_workflow_controls(self, widget) -> None:
+        """Put the active workflow controls beside the existing canvas tools."""
+        self._workflow_controls = widget
+        widget.setParent(self.control_bar)
+        self._controls_layout.insertWidget(0, widget)
+        self._layout_control_bar()
+
+    @property
+    def editing_locked(self) -> bool:
+        return self._editing_locked
+
+    def set_editing_locked(self, locked: bool) -> None:
+        """Lock analytical edits while retaining layout, selection and execution."""
+        self._editing_locked = bool(locked)
+        self._connection_drag = None
+        self._connection_preview.hide()
+        for item in self.node_items.values():
+            item._editing_locked = self._editing_locked
+            item.refresh()
+        for item in self.edge_items:
+            item._read_only = self.read_only or self._editing_locked
+        self._refresh_unused_node_toolbox()
+
+    def set_node_catalogue(self, provider, add_callback) -> None:
+        """A searchable, colour-coded picker for independent catalogue instances."""
+        self._catalogue_provider = provider
+        self._catalogue_add = add_callback
+        self.add_node_menu = QMenu(self.unused_nodes_button)
+        panel = QWidget(self.add_node_menu)
+        box = QVBoxLayout(panel)
+        box.setContentsMargins(7, 7, 7, 7)
+        self.node_search = QLineEdit(panel)
+        self.node_search.setPlaceholderText('Find node…')
+        self.node_search.setClearButtonEnabled(True)
+        box.addWidget(self.node_search)
+        legend = QLabel('Blue: already present   ·   Green: not present', panel)
+        legend.setStyleSheet('color: #46515d;')
+        box.addWidget(legend)
+        self.node_catalogue_list = QListWidget(panel)
+        self.node_catalogue_list.setMinimumSize(320, 280)
+        self.node_catalogue_list.setMaximumHeight(460)
+        box.addWidget(self.node_catalogue_list)
+        action = QWidgetAction(self.add_node_menu)
+        action.setDefaultWidget(panel)
+        self.add_node_menu.addAction(action)
+        self.unused_nodes_button.setMenu(self.add_node_menu)
+        self.add_node_button = self.unused_nodes_button
+        self.node_search.textChanged.connect(self._filter_node_catalogue)
+        self.node_search.returnPressed.connect(self._add_first_catalogue_match)
+        self.node_catalogue_list.itemClicked.connect(self._add_catalogue_item)
+        self.node_catalogue_list.itemActivated.connect(self._add_catalogue_item)
+        self.add_node_menu.aboutToShow.connect(self._populate_node_catalogue)
+        self._refresh_unused_node_toolbox()
+        self.unused_nodes_button.setToolTip('Add a catalogue node with its required inputs. Selecting an existing node adds another independent instance.')
+
+    def _populate_node_catalogue(self) -> None:
+        self.node_catalogue_list.clear()
+        for entry in self._catalogue_provider():
+            count = entry.get('count', int(entry['present']))
+            item = QListWidgetItem(entry['title'])
+            item.setData(Qt.ItemDataRole.UserRole, entry['key'])
+            item.setData(Qt.ItemDataRole.UserRole + 1, entry.get('category', ''))
+            item.setForeground(QColor('#1768ad' if entry['present'] else '#218044'))
+            item.setToolTip(entry['description'] + '\n' +
+                (f'{count} instance(s) present. Add another independent instance.' if count else 'Add an independent instance.'))
+            self.node_catalogue_list.addItem(item)
+        self._filter_node_catalogue(self.node_search.text())
+        self.node_search.setFocus()
+
+    def _filter_node_catalogue(self, text) -> None:
+        needle = text.casefold().strip()
+        for index in range(self.node_catalogue_list.count()):
+            item = self.node_catalogue_list.item(index)
+            item.setHidden(needle not in (item.text() + ' ' + str(item.data(Qt.ItemDataRole.UserRole + 1))).casefold())
+
+    def _add_catalogue_item(self, item) -> None:
+        if self.read_only or self._editing_locked:
+            return
+        if not self.add_node_menu.isVisible():
+            return
+        self.add_node_menu.close()
+        self._catalogue_add(item.data(Qt.ItemDataRole.UserRole))
+
+    def _add_first_catalogue_match(self) -> None:
+        for index in range(self.node_catalogue_list.count()):
+            item = self.node_catalogue_list.item(index)
+            if not item.isHidden():
+                self._add_catalogue_item(item)
+                return
+
     def _populate_tools_menu(self) -> None:
         """Keep all editing commands accessible when the pane is narrow."""
         self.tools_menu.clear()
@@ -1242,8 +1349,9 @@ class PipelineCanvas(QGraphicsView):
             ):
                 continue
             if button is self.unused_nodes_button:
-                self.unused_nodes_menu.setTitle(button.text())
-                self.tools_menu.addMenu(self.unused_nodes_menu)
+                menu = button.menu()
+                menu.setTitle(button.text())
+                self.tools_menu.addMenu(menu).setEnabled(button.isEnabled())
                 continue
             action = self.tools_menu.addAction(button.text())
             action.setEnabled(button.isEnabled())
@@ -1253,6 +1361,10 @@ class PipelineCanvas(QGraphicsView):
 
     def _layout_control_bar(self) -> None:
         width = max(120, self.viewport().width())
+        if self._workflow_controls is not None:
+            adjust = getattr(self._workflow_controls, 'adjust_for_width', None)
+            if adjust is not None:
+                adjust(width - 16)
         zoom_controls = (self.zoom_out_button, self.zoom_label,
                          self.zoom_in_button, self.fit_button, self.actual_size_button)
         editing_buttons = tuple(
@@ -1261,12 +1373,12 @@ class PipelineCanvas(QGraphicsView):
             if not self.read_only
             or button not in (self.move_to_unused_button, self.unused_nodes_button)
         )
-        required = sum(button.sizeHint().width() for button in (
+        required = (self._workflow_controls.sizeHint().width() if self._workflow_controls is not None else 0) + sum(button.sizeHint().width() for button in (
             *editing_buttons, *zoom_controls
         )) + 80
         compact = width < required
         for button in self._editing_buttons:
-            visible = not compact
+            visible = not compact or (button is self.unused_nodes_button and self._catalogue_provider is not None)
             if self.read_only and button in (
                 self.move_to_unused_button,
                 self.unused_nodes_button,
@@ -1274,7 +1386,22 @@ class PipelineCanvas(QGraphicsView):
                 visible = False
             button.setVisible(visible)
         self.tools_button.setVisible(compact)
-        self.control_bar.setGeometry(self.viewport().x(), 0, width, 38)
+        minimum_row = sum(button.sizeHint().width() for button in zoom_controls) + self.tools_button.sizeHint().width() + 60
+        if self._catalogue_provider is not None:
+            minimum_row += self.unused_nodes_button.sizeHint().width() + 5
+        stacked = self._workflow_controls is not None and width < self._workflow_controls.sizeHint().width() + minimum_row
+        if stacked != self._workflow_stacked:
+            self._controls_layout.removeWidget(self._workflow_controls)
+            self.control_bar.layout().removeWidget(self._workflow_controls)
+            if stacked:
+                self.control_bar.layout().insertWidget(0, self._workflow_controls)
+            else:
+                self._controls_layout.insertWidget(0, self._workflow_controls)
+            self._workflow_stacked = stacked
+        height = 68 if stacked else 38
+        if self.viewportMargins().top() != height:
+            self.setViewportMargins(0, height, 0, 0)
+        self.control_bar.setGeometry(self.viewport().x(), 0, width, height)
         self.control_bar.raise_()
 
     def _populate(self, *, resolve_overlaps: bool = True) -> None:
@@ -1288,6 +1415,7 @@ class PipelineCanvas(QGraphicsView):
                 self._request_run_to_node,
                 read_only=self.read_only,
                 reference_view=self._reference_view,
+                editing_locked=self._editing_locked,
             )
             self.node_items[node.identifier] = item
             self._scene.addItem(item)
@@ -1299,7 +1427,7 @@ class PipelineCanvas(QGraphicsView):
                 self.node_items[connection.source],
                 self.node_items[connection.target],
                 self._disconnect_connection,
-                read_only=self.read_only,
+                read_only=self.read_only or self._editing_locked,
             )
             self.edge_items.append(edge)
             self._scene.addItem(edge)
@@ -1369,7 +1497,7 @@ class PipelineCanvas(QGraphicsView):
                 self.node_items[connection.source],
                 self.node_items[connection.target],
                 self._disconnect_connection,
-                read_only=self.read_only,
+                read_only=self.read_only or self._editing_locked,
             )
             self.edge_items.append(edge)
             self._scene.addItem(edge)
@@ -1636,7 +1764,7 @@ class PipelineCanvas(QGraphicsView):
             edge.set_route(path, route_points=points)
 
     def _disconnect_connection(self, connection: PipelineConnection) -> None:
-        if self.read_only:
+        if self.read_only or self._editing_locked:
             return
         try:
             affected = self.graph.disconnect(connection)
@@ -1669,7 +1797,7 @@ class PipelineCanvas(QGraphicsView):
         return cursor, item.input_anchor(port_id)
 
     def _finish_connection_drag(self, scene_position: QPointF) -> None:
-        if self.read_only:
+        if self.read_only or self._editing_locked:
             self._connection_drag = None
             self._connection_preview.hide()
             return
@@ -1827,8 +1955,8 @@ class PipelineCanvas(QGraphicsView):
     def _refresh_unused_node_toolbox(self) -> None:
         self.unused_nodes_menu.clear()
         count = len(self.graph.unused_nodes)
-        self.unused_nodes_button.setText(f"Unused nodes ({count})")
-        self.unused_nodes_button.setEnabled(bool(count) and not self.read_only)
+        self.unused_nodes_button.setText('Add node')
+        self.unused_nodes_button.setEnabled((bool(count) or self._catalogue_provider is not None) and not self.read_only and not self._editing_locked)
         if self.read_only:
             self.unused_nodes_button.setToolTip("")
             return
@@ -1845,7 +1973,7 @@ class PipelineCanvas(QGraphicsView):
             )
 
     def _restore_unused_node(self, node_id: str) -> None:
-        if self.read_only:
+        if self.read_only or self._editing_locked:
             return
         self.graph.restore_unused_node(node_id)
         self.node_items.clear()
@@ -1859,7 +1987,7 @@ class PipelineCanvas(QGraphicsView):
         self.unused_node_restored.emit(node_id)
 
     def _shelve_selected_optional_node(self) -> None:
-        if self.read_only:
+        if self.read_only or self._editing_locked:
             return
         selected = [
             item
@@ -1971,7 +2099,7 @@ class PipelineCanvas(QGraphicsView):
         )
 
     def _inline_parameter_changed(self, node_id: str, key: str, value) -> None:
-        if self.read_only:
+        if self.read_only or self._editing_locked:
             return
         self.parameter_changed.emit(node_id, key, value)
 
@@ -2031,7 +2159,7 @@ class PipelineCanvas(QGraphicsView):
             scene_position = self.mapToScene(event.position().toPoint())
             hit = self._port_at(scene_position)
             if hit is not None:
-                if self.read_only:
+                if self.read_only or self._editing_locked:
                     if not event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
                         self._scene.clearSelection()
                     hit[0].setSelected(True)
@@ -2124,7 +2252,7 @@ class PipelineCanvas(QGraphicsView):
             self._connection_preview.hide()
             event.accept()
             return
-        if self.read_only and event.key() in (
+        if (self.read_only or self._editing_locked) and event.key() in (
             Qt.Key.Key_Delete,
             Qt.Key.Key_Backspace,
         ):

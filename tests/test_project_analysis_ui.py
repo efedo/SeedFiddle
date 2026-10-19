@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from tests.catalogue_fixtures import CatalogueTestCase
+
+from tests.functional_units import functional_units
+
 from copy import deepcopy
 import json
 import os
@@ -12,7 +16,8 @@ from unittest.mock import Mock, patch
 import numpy as np
 
 
-class ProjectAnalysisUiTests(unittest.TestCase):
+@functional_units
+class ProjectAnalysisUiTests(CatalogueTestCase):
     @classmethod
     def setUpClass(cls) -> None:
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -41,20 +46,8 @@ class ProjectAnalysisUiTests(unittest.TestCase):
     @staticmethod
     def _window(root: Path):
         """Construct a window whose recent-project settings are test-local."""
-
-        from PySide6.QtCore import QSettings
-
-        from seedvision.ui.main_window import MainWindow
-
-        settings = QSettings(
-            str(root / "test-application-settings.ini"),
-            QSettings.Format.IniFormat,
-        )
-        settings.clear()
-        with patch("seedvision.ui.main_window.QSettings", return_value=settings):
-            window = MainWindow(root)
-        window._test_application_settings = settings
-        return window
+        from tests.review_fixtures import isolated_window
+        return isolated_window(root)
 
     @classmethod
     def _dispose(cls, window) -> None:
@@ -142,7 +135,7 @@ class ProjectAnalysisUiTests(unittest.TestCase):
             route_around_nodes=False,
         )
 
-    def test_actions_and_profile_load_replace_only_portable_analysis_state(self) -> None:
+    def check_test_actions_and_profile_load_replace_only_portable_analysis_state(self) -> None:
         from PySide6.QtGui import QKeySequence
         from PySide6.QtWidgets import QMessageBox
 
@@ -237,7 +230,7 @@ class ProjectAnalysisUiTests(unittest.TestCase):
             finally:
                 self._dispose(window)
 
-    def test_incompatible_profile_is_rejected_before_confirmation_and_is_atomic(self) -> None:
+    def check_test_incompatible_profile_is_rejected_before_confirmation_and_is_atomic(self) -> None:
         from PySide6.QtWidgets import QMessageBox
 
         from seedvision.persistence import (
@@ -283,7 +276,7 @@ class ProjectAnalysisUiTests(unittest.TestCase):
             finally:
                 self._dispose(window)
 
-    def test_project_round_trip_restores_state_and_purges_every_old_image_value(self) -> None:
+    def check_test_project_round_trip_restores_state_and_purges_every_old_image_value(self) -> None:
         from PySide6.QtCore import QSignalBlocker
 
         from seedvision.persistence import (
@@ -474,7 +467,7 @@ class ProjectAnalysisUiTests(unittest.TestCase):
             finally:
                 self._dispose(window)
 
-    def test_absent_and_partial_ui_state_reset_unspecified_presentation_to_defaults(self) -> None:
+    def check_test_absent_and_partial_ui_state_reset_unspecified_presentation_to_defaults(self) -> None:
         from PySide6.QtWidgets import QMessageBox
 
         from seedvision.persistence import (
@@ -563,7 +556,7 @@ class ProjectAnalysisUiTests(unittest.TestCase):
             finally:
                 self._dispose(window)
 
-    def test_tracked_untitled_close_prompts_and_save_routes_through_save_as(self) -> None:
+    def check_test_tracked_untitled_close_prompts_and_save_routes_through_save_as(self) -> None:
         from PySide6.QtWidgets import QMessageBox
 
         with tempfile.TemporaryDirectory() as temporary:
@@ -617,7 +610,7 @@ class ProjectAnalysisUiTests(unittest.TestCase):
             finally:
                 self._dispose(window)
 
-    def test_open_and_save_retain_reference_graph_metadata(self) -> None:
+    def check_test_open_and_save_retain_reference_graph_metadata(self) -> None:
         from seedvision.persistence import ProjectAnalysisStore
 
         with tempfile.TemporaryDirectory() as temporary:
@@ -649,7 +642,7 @@ class ProjectAnalysisUiTests(unittest.TestCase):
             finally:
                 self._dispose(second)
 
-    def test_new_project_purges_session_and_restores_default_graph_and_ui(self) -> None:
+    def check_test_new_project_purges_session_and_restores_default_graph_and_ui(self) -> None:
         from PySide6.QtCore import QSignalBlocker
 
         from seedvision.pipeline import build_default_pipeline
@@ -732,7 +725,7 @@ class ProjectAnalysisUiTests(unittest.TestCase):
             finally:
                 self._dispose(window)
 
-    def test_ordinary_analysis_allows_project_save_but_guards_context_replacement(self) -> None:
+    def check_test_ordinary_analysis_allows_project_save_but_guards_context_replacement(self) -> None:
         from PySide6.QtWidgets import QMessageBox
 
         from seedvision.persistence import (
@@ -784,7 +777,7 @@ class ProjectAnalysisUiTests(unittest.TestCase):
                 window._active_tasks.clear()
                 self._dispose(window)
 
-    def test_ordinary_recompute_keeps_reference_and_annotation_entry_points_enabled(self) -> None:
+    def check_test_ordinary_recompute_keeps_reference_and_annotation_entry_points_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             self._write_image(root / "images" / "capture.png")
@@ -805,7 +798,7 @@ class ProjectAnalysisUiTests(unittest.TestCase):
                 window._active_tasks.clear()
                 self._dispose(window)
 
-    def test_changed_source_cancel_is_nonmutating_and_failed_paths_are_not_recent(self) -> None:
+    def check_test_changed_source_cancel_is_nonmutating_and_failed_paths_are_not_recent(self) -> None:
         from PySide6.QtWidgets import QMessageBox
 
         from seedvision.persistence import (
@@ -874,7 +867,7 @@ class ProjectAnalysisUiTests(unittest.TestCase):
             finally:
                 self._dispose(window)
 
-    def test_live_source_corruption_aborts_master_save_without_replacing_it(self) -> None:
+    def check_test_live_source_corruption_aborts_master_save_without_replacing_it(self) -> None:
         from PySide6.QtWidgets import QMessageBox
 
         with tempfile.TemporaryDirectory() as temporary:
@@ -897,7 +890,7 @@ class ProjectAnalysisUiTests(unittest.TestCase):
             finally:
                 self._dispose(window)
 
-    def test_unavailable_selected_image_survives_fallback_until_user_selects(self) -> None:
+    def check_test_unavailable_selected_image_survives_fallback_until_user_selects(self) -> None:
         from PySide6.QtWidgets import QMessageBox
 
         from seedvision.persistence import (
@@ -968,7 +961,7 @@ class ProjectAnalysisUiTests(unittest.TestCase):
             finally:
                 self._dispose(window)
 
-    def test_failed_applied_and_manual_sidecar_autosaves_are_retried_before_master_save(self) -> None:
+    def check_test_failed_applied_and_manual_sidecar_autosaves_are_retried_before_master_save(self) -> None:
         from PySide6.QtWidgets import QMessageBox
 
         from seedvision.persistence import (
@@ -1068,7 +1061,7 @@ class ProjectAnalysisUiTests(unittest.TestCase):
             finally:
                 self._dispose(window)
 
-    def test_bulk_draft_clear_persists_an_empty_corrected_shape_archive(self) -> None:
+    def check_test_bulk_draft_clear_persists_an_empty_corrected_shape_archive(self) -> None:
         from seedvision.persistence import ReferenceRegionStore
 
         with tempfile.TemporaryDirectory() as temporary:
@@ -1117,7 +1110,7 @@ class ProjectAnalysisUiTests(unittest.TestCase):
             finally:
                 self._dispose(window)
 
-    def test_user_image_node_and_overlay_selection_dirty_tracked_project_only(self) -> None:
+    def check_test_user_image_node_and_overlay_selection_dirty_tracked_project_only(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             first = self._write_image(root / "images" / "a.png")
@@ -1155,7 +1148,7 @@ class ProjectAnalysisUiTests(unittest.TestCase):
             finally:
                 self._dispose(window)
 
-    def test_project_sidecar_binding_omits_unlisted_and_loads_only_listed_files(self) -> None:
+    def check_test_project_sidecar_binding_omits_unlisted_and_loads_only_listed_files(self) -> None:
         from seedvision.persistence import (
             ManualSeedCentreStore,
             ProjectAnalysisStore,
@@ -1228,7 +1221,7 @@ class ProjectAnalysisUiTests(unittest.TestCase):
             finally:
                 self._dispose(window)
 
-    def test_changed_valid_sidecars_load_but_keep_master_dirty(self) -> None:
+    def check_test_changed_valid_sidecars_load_but_keep_master_dirty(self) -> None:
         from PySide6.QtWidgets import QMessageBox
 
         from seedvision.persistence import (
@@ -1319,7 +1312,7 @@ class ProjectAnalysisUiTests(unittest.TestCase):
             finally:
                 self._dispose(window)
 
-    def test_invalid_listed_sidecar_is_withheld_preserved_then_explicitly_superseded(self) -> None:
+    def check_test_invalid_listed_sidecar_is_withheld_preserved_then_explicitly_superseded(self) -> None:
         from hashlib import sha256
 
         from PySide6.QtWidgets import QMessageBox
@@ -1418,7 +1411,7 @@ class ProjectAnalysisUiTests(unittest.TestCase):
             finally:
                 self._dispose(window)
 
-    def test_degraded_save_preserves_unresolved_record_until_locator_is_readded(self) -> None:
+    def check_test_degraded_save_preserves_unresolved_record_until_locator_is_readded(self) -> None:
         from PySide6.QtWidgets import QMessageBox
 
         from seedvision.persistence import (
@@ -1483,7 +1476,7 @@ class ProjectAnalysisUiTests(unittest.TestCase):
             finally:
                 self._dispose(window)
 
-    def test_restored_source_keeps_unavailable_record_explicit_sidecar_paths(self) -> None:
+    def check_test_restored_source_keeps_unavailable_record_explicit_sidecar_paths(self) -> None:
         from PySide6.QtWidgets import QMessageBox
 
         from seedvision.persistence import (
@@ -1585,7 +1578,7 @@ class ProjectAnalysisUiTests(unittest.TestCase):
             finally:
                 self._dispose(window)
 
-    def test_new_project_image_does_not_capture_unseen_loose_sidecars(self) -> None:
+    def check_test_new_project_image_does_not_capture_unseen_loose_sidecars(self) -> None:
         from seedvision.persistence import (
             ManualSeedCentreStore,
             ProjectAnalysisStore,
@@ -1645,7 +1638,7 @@ class ProjectAnalysisUiTests(unittest.TestCase):
             finally:
                 self._dispose(window)
 
-    def test_explicit_noncanonical_sidecar_loads_and_locator_is_preserved_until_resaved(self) -> None:
+    def check_test_explicit_noncanonical_sidecar_loads_and_locator_is_preserved_until_resaved(self) -> None:
         from seedvision.persistence import (
             REFERENCE_REGIONS_SIDECAR,
             ProjectAnalysisStore,
@@ -1736,7 +1729,7 @@ class ProjectAnalysisUiTests(unittest.TestCase):
             finally:
                 self._dispose(window)
 
-    def test_corrected_shape_sidecar_waits_for_calibration_then_installs_or_withholds(self) -> None:
+    def check_test_corrected_shape_sidecar_waits_for_calibration_then_installs_or_withholds(self) -> None:
         from PySide6.QtWidgets import QMessageBox
 
         from seedvision.persistence import (
@@ -1828,6 +1821,35 @@ class ProjectAnalysisUiTests(unittest.TestCase):
                 self.assertNotIn(key, window._withheld_reference_sidecars)
             finally:
                 self._dispose(window)
+
+    def test_workflow_lifecycle(self):
+        """15 related ProjectAnalysisUiTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_actions_and_profile_load_replace_only_portable_analysis_state)
+        self.scenario(self.check_test_project_round_trip_restores_state_and_purges_every_old_image_value)
+        self.scenario(self.check_test_absent_and_partial_ui_state_reset_unspecified_presentation_to_defaults)
+        self.scenario(self.check_test_tracked_untitled_close_prompts_and_save_routes_through_save_as)
+        self.scenario(self.check_test_open_and_save_retain_reference_graph_metadata)
+        self.scenario(self.check_test_new_project_purges_session_and_restores_default_graph_and_ui)
+        self.scenario(self.check_test_ordinary_analysis_allows_project_save_but_guards_context_replacement)
+        self.scenario(self.check_test_ordinary_recompute_keeps_reference_and_annotation_entry_points_enabled)
+        self.scenario(self.check_test_bulk_draft_clear_persists_an_empty_corrected_shape_archive)
+        self.scenario(self.check_test_user_image_node_and_overlay_selection_dirty_tracked_project_only)
+        self.scenario(self.check_test_project_sidecar_binding_omits_unlisted_and_loads_only_listed_files)
+        self.scenario(self.check_test_changed_valid_sidecars_load_but_keep_master_dirty)
+        self.scenario(self.check_test_degraded_save_preserves_unresolved_record_until_locator_is_readded)
+        self.scenario(self.check_test_new_project_image_does_not_capture_unseen_loose_sidecars)
+        self.scenario(self.check_test_explicit_noncanonical_sidecar_loads_and_locator_is_preserved_until_resaved)
+
+    def test_validation_and_recovery(self):
+        """8 related ProjectAnalysisUiTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_incompatible_profile_is_rejected_before_confirmation_and_is_atomic)
+        self.scenario(self.check_test_changed_source_cancel_is_nonmutating_and_failed_paths_are_not_recent)
+        self.scenario(self.check_test_live_source_corruption_aborts_master_save_without_replacing_it)
+        self.scenario(self.check_test_unavailable_selected_image_survives_fallback_until_user_selects)
+        self.scenario(self.check_test_failed_applied_and_manual_sidecar_autosaves_are_retried_before_master_save)
+        self.scenario(self.check_test_invalid_listed_sidecar_is_withheld_preserved_then_explicitly_superseded)
+        self.scenario(self.check_test_restored_source_keeps_unavailable_record_explicit_sidecar_paths)
+        self.scenario(self.check_test_corrected_shape_sidecar_waits_for_calibration_then_installs_or_withholds)
 
 
 if __name__ == "__main__":

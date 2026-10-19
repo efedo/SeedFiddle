@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from tests.catalogue_fixtures import CatalogueTestCase
+
+from tests.functional_units import functional_units
+
 from dataclasses import replace
 from pathlib import Path
 import tempfile
@@ -131,8 +135,9 @@ def _contribution(index: int, *, duplicate_rows: int = 1) -> ExtractedSourceCont
     )
 
 
-class SpeciesReferenceLibraryTests(unittest.TestCase):
-    def test_extraction_uses_production_descriptor_schemas(self) -> None:
+@functional_units
+class SpeciesReferenceLibraryTests(CatalogueTestCase):
+    def check_test_extraction_uses_production_descriptor_schemas(self) -> None:
         height, width = 96, 112
         yy, xx = np.mgrid[:height, :width]
         labels = np.zeros((height, width), np.uint16)
@@ -199,7 +204,7 @@ class SpeciesReferenceLibraryTests(unittest.TestCase):
         self.assertEqual(extracted.seed_traits.feature_names, MATERIAL_FEATURE_NAMES)
         self.assertTrue(extracted.shape_observations)
 
-    def test_aggregation_is_order_independent_and_source_balanced(self) -> None:
+    def check_test_aggregation_is_order_independent_and_source_balanced(self) -> None:
         first = aggregate_contributions((_contribution(0), _contribution(1)))
         second = aggregate_contributions((_contribution(1), _contribution(0)))
 
@@ -216,7 +221,7 @@ class SpeciesReferenceLibraryTests(unittest.TestCase):
             tuple(item.source_sha256 for item in second["sources"]),
         )
 
-    def test_duplicate_rows_cannot_increase_source_authority(self) -> None:
+    def check_test_duplicate_rows_cannot_increase_source_authority(self) -> None:
         ordinary = aggregate_contributions((_contribution(0), _contribution(1)))
         duplicated = aggregate_contributions(
             (_contribution(0, duplicate_rows=12), _contribution(1))
@@ -228,7 +233,7 @@ class SpeciesReferenceLibraryTests(unittest.TestCase):
             )
         )
 
-    def test_source_exclusion_removes_profiles_and_refits_shape(self) -> None:
+    def check_test_source_exclusion_removes_profiles_and_refits_shape(self) -> None:
         aggregated = aggregate_contributions(
             (_contribution(0), _contribution(1), _contribution(2)),
             settings=LibraryAggregationSettings(
@@ -257,7 +262,7 @@ class SpeciesReferenceLibraryTests(unittest.TestCase):
         self.assertEqual(filtered.dimensions_shape.shrinkage_seed_count, 7.0)
         self.assertEqual(filtered.dimensions_shape.maximum_contour_modes, 2)
 
-    def test_fork_recovery_preserves_per_source_contributions(self) -> None:
+    def check_test_fork_recovery_preserves_per_source_contributions(self) -> None:
         aggregated = aggregate_contributions((_contribution(0), _contribution(1)))
         artifact = SpeciesLibraryArtifact(
             _manifest(aggregated),
@@ -280,7 +285,7 @@ class SpeciesReferenceLibraryTests(unittest.TestCase):
             tuple(rebuilt["shape_summary"].observations),
         )
 
-    def test_publish_load_export_import_and_tamper_detection(self) -> None:
+    def check_test_publish_load_export_import_and_tamper_detection(self) -> None:
         aggregated = aggregate_contributions((_contribution(0), _contribution(1)))
         artifact = SpeciesLibraryArtifact(
             _manifest(aggregated),
@@ -321,7 +326,7 @@ class SpeciesReferenceLibraryTests(unittest.TestCase):
             with self.assertRaises(InvalidSpeciesLibrary):
                 imported_store.load(pin)
 
-    def test_validation_reports_grouped_shape_and_source_metrics(self) -> None:
+    def check_test_validation_reports_grouped_shape_and_source_metrics(self) -> None:
         aggregated = aggregate_contributions(
             (_contribution(0), _contribution(1), _contribution(2))
         )
@@ -332,6 +337,19 @@ class SpeciesReferenceLibraryTests(unittest.TestCase):
         self.assertIn("leave_one_source_out_distance", colour.metrics)
         self.assertEqual(shape.metrics["physical_seed_count"], 3.0)
         self.assertEqual(shape.metrics["accession_count"], 2.0)
+
+    def test_workflow_lifecycle(self):
+        """6 related SpeciesReferenceLibraryTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_extraction_uses_production_descriptor_schemas)
+        self.scenario(self.check_test_aggregation_is_order_independent_and_source_balanced)
+        self.scenario(self.check_test_duplicate_rows_cannot_increase_source_authority)
+        self.scenario(self.check_test_source_exclusion_removes_profiles_and_refits_shape)
+        self.scenario(self.check_test_fork_recovery_preserves_per_source_contributions)
+        self.scenario(self.check_test_validation_reports_grouped_shape_and_source_metrics)
+
+    def test_validation_and_recovery(self):
+        """1 related SpeciesReferenceLibraryTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_publish_load_export_import_and_tamper_detection)
 
 
 def _manifest(aggregated):

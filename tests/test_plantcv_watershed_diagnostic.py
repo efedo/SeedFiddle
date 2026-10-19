@@ -1,3 +1,5 @@
+
+from tests.functional_units import functional_units
 import json
 from pathlib import Path
 import subprocess
@@ -127,8 +129,9 @@ class WatershedPaletteTests(unittest.TestCase):
 
 
 @unittest.skipUnless(torch.cuda.is_available(),'CUDA required')
+@functional_units
 class WatershedDiagnosticTests(unittest.TestCase):
-    def test_long_contour_streams_exact_public_pixels_with_bounded_cpu_geometry(self):
+    def check_test_long_contour_streams_exact_public_pixels_with_bounded_cpu_geometry(self):
         labels = np.zeros((10000,19),np.int32)
         labels[2:-2,5:14] = 1
         rgb = np.zeros((*labels.shape,3),np.uint8)
@@ -141,7 +144,7 @@ class WatershedDiagnosticTests(unittest.TestCase):
         self.assertGreater(actual.metadata['contour_points'],19000)
         self.assertLess(actual.metadata['max_cpu_geometry_estimate_bytes'],16*1024*1024)
 
-    def test_exact_public_debug_pixels_nested_disconnected_diagonal_edges_and_thickness(self):
+    def check_test_exact_public_debug_pixels_nested_disconnected_diagonal_edges_and_thickness(self):
         cases = []
         for index, labels in enumerate(fixtures()):
             rgb = np.random.default_rng(index).integers(0,256,(*labels.shape,3),dtype=np.uint8)
@@ -168,7 +171,7 @@ class WatershedDiagnosticTests(unittest.TestCase):
             with self.assertRaises(TypeError):
                 actual.metadata['line_thickness'] = 99
 
-    def test_bounding_boxes_preserve_global_frame_and_avoid_per_label_full_scans(self):
+    def check_test_bounding_boxes_preserve_global_frame_and_avoid_per_label_full_scans(self):
         labels = torch.zeros((300,400),dtype=torch.int32,device='cuda')
         labels[77:86,95:105] = 1
         labels[199:207,301:314] = 2
@@ -185,7 +188,7 @@ class WatershedDiagnosticTests(unittest.TestCase):
         self.assertEqual(result.metadata['scan_work'],16*120000+32*194)
         self.assertEqual(result.metadata['label_ids'],(1,2))
 
-    def test_invalid_inputs_sparse_source_palette_and_preallocation_resource_caps(self):
+    def check_test_invalid_inputs_sparse_source_palette_and_preallocation_resource_caps(self):
         image = torch.zeros((9,13,3),dtype=torch.uint8,device='cuda')
         labels = torch.zeros((9,13),dtype=torch.int32,device='cuda');labels[4,5]=1
         for a,b,options in ((image.cpu(),labels,{}),(image,labels.long(),{}),
@@ -208,7 +211,7 @@ class WatershedDiagnosticTests(unittest.TestCase):
             with self.assertRaises(drawing.WatershedDiagnosticResourceError):
                 drawing.render_watershed_diagnostic_rgb(image,labels)
 
-    def test_cancellation_and_input_mutation_withhold_private_canvas(self):
+    def check_test_cancellation_and_input_mutation_withhold_private_canvas(self):
         labels = torch.tensor(fixtures()[0],device='cuda',dtype=torch.int32)
         image = torch.zeros((*labels.shape,3),device='cuda',dtype=torch.uint8)
         for stop in (1,4,12,40):
@@ -234,7 +237,7 @@ class WatershedDiagnosticTests(unittest.TestCase):
             else:
                 labels.sub_(1)
 
-    def test_shared_topology_work_and_cpu_geometry_admission_withhold_the_canvas(self):
+    def check_test_shared_topology_work_and_cpu_geometry_admission_withhold_the_canvas(self):
         labels = torch.tensor(fixtures()[0],device='cuda',dtype=torch.int32)
         image = torch.zeros((*labels.shape,3),device='cuda',dtype=torch.uint8)
         original = drawing.contours.trace_binary_contours_cuda
@@ -259,7 +262,7 @@ class WatershedDiagnosticTests(unittest.TestCase):
                 drawing.render_watershed_diagnostic_rgb(image,labels)
         self.assertEqual((image._version,labels._version),(0,0))
 
-    def test_existing_contour_api_shared_budget_accumulates_and_rejects_invalid_before_scan(self):
+    def check_test_existing_contour_api_shared_budget_accumulates_and_rejects_invalid_before_scan(self):
         mask = (torch.tensor(fixtures()[0],device='cuda')==1).to(torch.uint8)*255
         budget = [0]
         first = drawing.contours.trace_binary_contours_cuda(mask,work_budget=budget)
@@ -274,7 +277,7 @@ class WatershedDiagnosticTests(unittest.TestCase):
                     drawing.contours.trace_binary_contours_cuda(mask,work_budget=invalid)
                 scan.assert_not_called()
 
-    def test_strict_callback_finally_checks_and_owned_canvas_data_and_storage(self):
+    def check_test_strict_callback_finally_checks_and_owned_canvas_data_and_storage(self):
         labels = torch.tensor(fixtures()[0],device='cuda',dtype=torch.int32)
         image = torch.zeros((*labels.shape,3),device='cuda',dtype=torch.uint8)
         for value in (None,0,1,[],np.bool_(False)):
@@ -312,3 +315,17 @@ class WatershedDiagnosticTests(unittest.TestCase):
             with patch.object(torch.Tensor,'clone',capture):
                 with self.assertRaisesRegex(drawing.WatershedDiagnosticError,'canvas changed'):
                     drawing.render_watershed_diagnostic_rgb(image,labels,cancel=mutate_final)
+
+    def test_workflow_lifecycle(self):
+        """4 related WatershedDiagnosticTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_long_contour_streams_exact_public_pixels_with_bounded_cpu_geometry)
+        self.scenario(self.check_test_exact_public_debug_pixels_nested_disconnected_diagonal_edges_and_thickness)
+        self.scenario(self.check_test_bounding_boxes_preserve_global_frame_and_avoid_per_label_full_scans)
+        self.scenario(self.check_test_strict_callback_finally_checks_and_owned_canvas_data_and_storage)
+
+    def test_validation_and_recovery(self):
+        """4 related WatershedDiagnosticTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_invalid_inputs_sparse_source_palette_and_preallocation_resource_caps)
+        self.scenario(self.check_test_cancellation_and_input_mutation_withhold_private_canvas)
+        self.scenario(self.check_test_shared_topology_work_and_cpu_geometry_admission_withhold_the_canvas)
+        self.scenario(self.check_test_existing_contour_api_shared_budget_accumulates_and_rejects_invalid_before_scan)

@@ -1,4 +1,6 @@
 """Software oracles for trait classification; all truth is explicitly synthetic."""
+
+from tests.functional_units import functional_units
 from dataclasses import replace
 import json
 import math
@@ -18,6 +20,7 @@ from seedvision.learning.trait_classifier import (
 
 
 @unittest.skipUnless(torch.cuda.is_available(), 'CUDA is required for trait features and training')
+@functional_units
 class TraitClassifierTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -49,7 +52,7 @@ class TraitClassifierTests(unittest.TestCase):
         return train_trait_model(training or self.training, calibration or self.calibration,
                                  self.vocabulary, iterations=120, calibration_iterations=31, **kwargs)
 
-    def test_synthetic_grouped_training_predicts_supplied_definition_ids(self):
+    def check_test_synthetic_grouped_training_predicts_supplied_definition_ids(self):
         result = predict_traits(self.model, self.batch(), abstention_threshold=.7)
         self.assertEqual([x['predicted_trait_id'] for x in result['predictions']], ['dark', 'dark', 'light', 'light'])
         self.assertFalse(result['scientifically_validated'])
@@ -60,7 +63,7 @@ class TraitClassifierTests(unittest.TestCase):
         self.assertFalse(diagnostics['scientifically_validated'])
         self.assertEqual(self.model.payload['standardization']['constant_columns'], list(range(1, 20)))
 
-    def test_group_physical_and_example_overlap_reject_before_optimization(self):
+    def check_test_group_physical_and_example_overlap_reject_before_optimization(self):
         for key in ('group_id', 'physical_id', 'example_id'):
             facts = list(self.calibration.facts)
             facts[0] = replace(facts[0], **{key: getattr(self.training.facts[0], key)})
@@ -69,7 +72,7 @@ class TraitClassifierTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, f'overlap by {key}'):
                     self.train(calibration=evidence)
 
-    def test_denied_nonfinite_features_never_enter_statistics_fit_or_calibration(self):
+    def check_test_denied_nonfinite_features_never_enter_statistics_fit_or_calibration(self):
         extended = self.evidence('denied-train', [.1, .15, .2, .25, .75, .8, .85, .9, float('nan')],
                                  permitted=[True] * 8 + [False])
         extended_calibration = self.evidence('denied-cal', [.12, .22, .78, .88, float('inf')],
@@ -80,7 +83,7 @@ class TraitClassifierTests(unittest.TestCase):
         self.assertEqual(len(candidate.payload['split_audit']['training']['excluded']), 1)
         self.assertFalse(candidate.payload['split_audit']['calibration']['excluded'][0]['permitted_use'])
 
-    def test_calibration_changes_temperature_without_changing_training_statistics_or_weights(self):
+    def check_test_calibration_changes_temperature_without_changing_training_statistics_or_weights(self):
         noisy = self.evidence('noisy-cal', [.12, .22, .78, .88], targets=['light', 'dark', 'light', 'dark'])
         model = self.train(calibration=noisy)
         for key in ('weights', 'bias', 'standardization'):
@@ -92,7 +95,7 @@ class TraitClassifierTests(unittest.TestCase):
         self.assertLessEqual(model.payload['development_diagnostics']['nll'],
                             model.payload['development_diagnostics']['uncalibrated_nll'] + 1e-12)
 
-    def test_actual_threshold_no_model_schema_and_invalid_feature_abstention(self):
+    def check_test_actual_threshold_no_model_schema_and_invalid_feature_abstention(self):
         values = self.calibration.values.clone()
         values[0, 0] = .5
         batch = self.batch(values)
@@ -110,7 +113,7 @@ class TraitClassifierTests(unittest.TestCase):
         self.assertEqual(invalid['predictions'][0]['abstention_reason'], 'invalid_features')
         self.assertIsNone(invalid['predictions'][0]['probabilities'])
 
-    def test_frozen_json_roundtrip_hash_and_nested_detachment(self):
+    def check_test_frozen_json_roundtrip_hash_and_nested_detachment(self):
         restored = FrozenTraitModel.from_json(self.model.to_json())
         self.assertEqual(restored.model_sha256, self.model.model_sha256)
         self.assertEqual(predict_traits(restored, self.batch()), predict_traits(self.model, self.batch()))
@@ -124,7 +127,7 @@ class TraitClassifierTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Duplicate'):
             FrozenTraitModel.from_json('{"model":{},"model":{},"model_sha256":"x"}')
 
-    def test_frozen_model_rejects_invalid_numbers_dimensions_and_claims(self):
+    def check_test_frozen_model_rejects_invalid_numbers_dimensions_and_claims(self):
         alterations = [
             lambda p: p['weights'][0].pop(),
             lambda p: p['bias'].__setitem__(0, True),
@@ -144,7 +147,7 @@ class TraitClassifierTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     FrozenTraitModel(json.dumps(payload))
 
-    def test_disjoint_evaluation_never_refits_and_reports_zero_coverage_error_unavailable(self):
+    def check_test_disjoint_evaluation_never_refits_and_reports_zero_coverage_error_unavailable(self):
         evidence = self.evidence('heldout', [.5, .5], targets=['dark', 'light'])
         with patch('torch.optim.Adam', side_effect=AssertionError('evaluation trained')):
             result = evaluate_trait_model(self.model, evidence, abstention_threshold=1)
@@ -158,7 +161,7 @@ class TraitClassifierTests(unittest.TestCase):
                 with self.subTest(key=key), self.assertRaisesRegex(ValueError, 'overlap'):
                     evaluate_trait_model(self.model, replace(evidence, facts=tuple(facts)))
 
-    def test_cuda_probabilities_match_independent_numpy_softmax(self):
+    def check_test_cuda_probabilities_match_independent_numpy_softmax(self):
         payload = self.model.payload
         values = self.calibration.values.cpu().numpy()
         logits = ((values - np.array(payload['standardization']['mean'])) /
@@ -170,7 +173,7 @@ class TraitClassifierTests(unittest.TestCase):
         actual = np.array([list(row['probabilities'].values()) for row in result['predictions']])
         np.testing.assert_allclose(actual, reference, rtol=1e-12, atol=1e-12)
 
-    def test_training_controls_change_calculation_and_invalid_domains_reject(self):
+    def check_test_training_controls_change_calculation_and_invalid_domains_reject(self):
         shorter = train_trait_model(self.training, self.calibration, self.vocabulary, iterations=2)
         self.assertNotEqual(shorter.payload['weights'], self.model.payload['weights'])
         regularized = self.train(l2=.5)
@@ -183,13 +186,13 @@ class TraitClassifierTests(unittest.TestCase):
         missing = replace(self.training, facts=tuple(replace(x, trait_id='dark') for x in self.training.facts))
         with self.assertRaisesRegex(ValueError, 'Every defined class'): self.train(training=missing)
 
-    def test_extreme_finite_normalization_rejects_without_model(self):
+    def check_test_extreme_finite_normalization_rejects_without_model(self):
         values = self.training.values.clone()
         values[:, 0] = torch.tensor([-1e308] * 4 + [1e308] * 4, device='cuda', dtype=torch.float64)
         with self.assertRaisesRegex(ValueError, 'numeric range'):
             self.train(training=replace(self.training, values=values))
 
-    def test_contradictory_physical_views_reject_and_repeated_fit_is_deterministic(self):
+    def check_test_contradictory_physical_views_reject_and_repeated_fit_is_deterministic(self):
         facts = list(self.training.facts)
         facts[-1] = replace(facts[-1], physical_id=facts[0].physical_id)
         with patch('torch.optim.Adam', side_effect=AssertionError('optimization ran')):
@@ -198,7 +201,7 @@ class TraitClassifierTests(unittest.TestCase):
         repeated = self.train()
         self.assertEqual(repeated.model_sha256, self.model.model_sha256)
 
-    def test_calibrated_numeric_overflow_abstains_without_nonfinite_probabilities(self):
+    def check_test_calibrated_numeric_overflow_abstains_without_nonfinite_probabilities(self):
         payload = self.model.payload
         payload['temperature_calibration'].update(temperature=1e-300, bounds=[1e-300, 1.])
         payload['weights'][0][0] = 1e300
@@ -209,7 +212,7 @@ class TraitClassifierTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'calibrated numeric range'):
             evaluate_trait_model(model, self.evidence('overflow-heldout', [.12, .88]))
 
-    def test_training_calibration_and_evaluation_schema_mismatch_reject_before_computation(self):
+    def check_test_training_calibration_and_evaluation_schema_mismatch_reject_before_computation(self):
         with patch('torch.optim.Adam', side_effect=AssertionError('optimization ran')):
             for evidence in (self.training, self.calibration):
                 with self.assertRaisesRegex(ValueError, 'pixel schema'):
@@ -230,7 +233,7 @@ class TraitClassifierTests(unittest.TestCase):
             encoding=kwargs.get('encoding', 'rgb_unit'), image_frame=kwargs.get('image_frame', 'corrected-A'),
             label_frame=kwargs.get('label_frame', 'corrected-A'))
 
-    def test_uniform_square_and_multicolour_cpu_feature_oracles(self):
+    def check_test_uniform_square_and_multicolour_cpu_feature_oracles(self):
         image = torch.tensor([.2, .4, .8], device='cuda', dtype=torch.float64).expand(2, 2, 3)
         labels = torch.ones((2, 2), device='cuda', dtype=torch.int32)
         batch = self.extract(image, labels)
@@ -246,7 +249,7 @@ class TraitClassifierTests(unittest.TestCase):
         geometry = [math.log(6), math.log(1.5), 1, (eigen[-1] - eigen[0]) / eigen.sum(), 10 / math.sqrt(6)]
         np.testing.assert_allclose(batch.values.cpu().numpy()[0], np.r_[colour, geometry], atol=1e-12)
 
-    def test_feature_encoding_rotation_translation_and_other_pixels_invariance(self):
+    def check_test_feature_encoding_rotation_translation_and_other_pixels_invariance(self):
         byte = torch.arange(18, device='cuda', dtype=torch.uint8).reshape(2, 3, 3) * 10
         labels = torch.ones((2, 3), device='cuda', dtype=torch.int32)
         baseline = self.extract(byte, labels, encoding='rgb_byte')
@@ -263,7 +266,7 @@ class TraitClassifierTests(unittest.TestCase):
         moved = self.extract(padded_image, padded_labels)
         torch.testing.assert_close(moved.values, baseline.values, rtol=1e-12, atol=1e-12)
 
-    def test_feature_rejection_provenance_and_cuda_retention_without_raster_transfer(self):
+    def check_test_feature_rejection_provenance_and_cuda_retention_without_raster_transfer(self):
         image = torch.full((2, 2, 3), .5, device='cuda')
         labels = torch.ones((2, 2), device='cuda', dtype=torch.int32)
         with patch.object(torch.Tensor, 'cpu', side_effect=AssertionError('raster transferred')):
@@ -279,6 +282,29 @@ class TraitClassifierTests(unittest.TestCase):
         self.assertEqual(result['predictions'][0]['eligibility_reason'], 'invalid_pixels')
         with self.assertRaises(ValueError): self.extract(image, labels, requested=(1, 1))
         with self.assertRaises(ValueError): self.extract(image, labels, encoding='unknown')
+
+    def test_workflow_lifecycle(self):
+        """8 related TraitClassifierTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_synthetic_grouped_training_predicts_supplied_definition_ids)
+        self.scenario(self.check_test_denied_nonfinite_features_never_enter_statistics_fit_or_calibration)
+        self.scenario(self.check_test_calibration_changes_temperature_without_changing_training_statistics_or_weights)
+        self.scenario(self.check_test_frozen_json_roundtrip_hash_and_nested_detachment)
+        self.scenario(self.check_test_cuda_probabilities_match_independent_numpy_softmax)
+        self.scenario(self.check_test_calibrated_numeric_overflow_abstains_without_nonfinite_probabilities)
+        self.scenario(self.check_test_uniform_square_and_multicolour_cpu_feature_oracles)
+        self.scenario(self.check_test_feature_encoding_rotation_translation_and_other_pixels_invariance)
+
+    def test_validation_and_recovery(self):
+        """9 related TraitClassifierTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_group_physical_and_example_overlap_reject_before_optimization)
+        self.scenario(self.check_test_actual_threshold_no_model_schema_and_invalid_feature_abstention)
+        self.scenario(self.check_test_frozen_model_rejects_invalid_numbers_dimensions_and_claims)
+        self.scenario(self.check_test_disjoint_evaluation_never_refits_and_reports_zero_coverage_error_unavailable)
+        self.scenario(self.check_test_training_controls_change_calculation_and_invalid_domains_reject)
+        self.scenario(self.check_test_extreme_finite_normalization_rejects_without_model)
+        self.scenario(self.check_test_contradictory_physical_views_reject_and_repeated_fit_is_deterministic)
+        self.scenario(self.check_test_training_calibration_and_evaluation_schema_mismatch_reject_before_computation)
+        self.scenario(self.check_test_feature_rejection_provenance_and_cuda_retention_without_raster_transfer)
 
 
 if __name__ == '__main__':

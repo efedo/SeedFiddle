@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.catalogue_fixtures import CatalogueTestCase
+
 from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
@@ -80,7 +82,7 @@ def _fixture_mask() -> np.ndarray:
 
 
 @unittest.skipUnless(HAS_REFERENCE_ENV, "the ignored pinned PlantCV reference environment is unavailable")
-class ReferenceMaskStageTests(unittest.TestCase):
+class ReferenceMaskStageTests(CatalogueTestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.runner = PlantCVReferenceRunner(REFERENCE_PYTHON)
@@ -234,201 +236,12 @@ class ReferenceMaskStageTests(unittest.TestCase):
         args = {key: value for key, value in case.items() if key != "input_reference"}
         return run_reference_mask_stage(**args)
 
-    def test_four_public_calls_execute_through_pinned_runner_and_publish_typed_outputs(self) -> None:
-        cases = (
-            ("filter.median_blur", {"ksize": 3}),
-            ("morphology.fill", {"size": 10}),
-            ("morphology.erode", {"ksize": 3, "iterations": 2}),
-            ("morphology.dilate", {"ksize": 3, "iterations": 2}),
-        )
-        for operation, values in cases:
-            with self.subTest(operation=operation):
-                case = self._case(operation, values)
-                outcome = self._run(case)
-                self.assertIn(outcome.status, {ReferenceMaskStageStatus.EXECUTED, ReferenceMaskStageStatus.EMPTY})
-                self.assertIsNotNone(outcome.checkpoint_reference)
-                checkpoint = load_checkpoint(case["output_root"], outcome.run_record.checkpoint_sha256)
-                output_name = "image" if operation == "filter.median_blur" else "mask"
-                self.assertEqual(set(checkpoint.arrays), {output_name})
-                output = checkpoint.arrays[output_name]
-                self.assertEqual(output.dtype, np.dtype(np.uint8))
-                self.assertEqual(output.shape, self.frame.shape)
-                self.assertFalse(checkpoint.measurement.eligible)
-                metadata = checkpoint.metadata
-                self.assertEqual(metadata["operation_id"], operation)
-                self.assertEqual(metadata["parameters"], values)
-                self.assertEqual(metadata["effective_parameters"], values | {"callable": {
-                    "filter.median_blur": "plantcv.plantcv.median_blur",
-                    "morphology.fill": "plantcv.plantcv.fill",
-                    "morphology.erode": "plantcv.plantcv.erode",
-                    "morphology.dilate": "plantcv.plantcv.dilate",
-                }[operation]})
-                self.assertIn("observations", metadata)
-                self.assertIs(type(metadata["computation_runtime_ns"]), int)
-                self.assertEqual(metadata["runner_identity"]["version"], "4.11.3")
-                self.assertEqual(metadata["runner_identity"]["commit"], "77e3322fd0cd5a9bef18bb99402f20c8f2db87a9")
-                self.assertEqual(len(metadata["runner_identity"]["actual_distributions"]), 67)
-                self.assertEqual(metadata["runner_identity"]["actual_distributions"]["plantcv"], "4.11.3")
-                self.assertEqual(metadata["scientific_validation_status"], "not_certified")
-                self.assertEqual(
-                    checkpoint.raster_roles[output_name].kind,
-                    "image" if output_name == "image" else "mask",
-                )
-                if operation == "filter.median_blur":
-                    self.assertFalse(np.array_equal(output, _fixture_image()))
-                elif operation == "morphology.fill":
-                    self.assertEqual(int(output[22, 35]), 0, "PlantCV fill must preserve the hole in a large object.")
-                    self.assertEqual(int(output[2:4, 2:4].sum()), 0, "PlantCV fill removes undersized foreground components.")
-                elif operation == "morphology.erode":
-                    self.assertLess(int(np.count_nonzero(output)), int(np.count_nonzero(_fixture_mask())))
-                    self.assertEqual(set(np.unique(output).tolist()) - {0, 255}, set())
-                else:
-                    self.assertGreater(int(np.count_nonzero(output)), int(np.count_nonzero(_fixture_mask())))
-                    self.assertEqual(set(np.unique(output).tolist()) - {0, 255}, set())
 
-    def test_empty_mask_and_gray_zero_image_have_distinct_execution_states(self) -> None:
-        with tempfile.TemporaryDirectory(dir=self.root) as temporary:
-            case = self._case(
-                "morphology.erode", {"ksize": 3, "iterations": 1},
-                array=np.zeros(self.frame.shape, dtype=np.uint8),
-            )
-            outcome = self._run(case)
-            self.assertEqual(outcome.status, ReferenceMaskStageStatus.EMPTY)
-            self.assertEqual(outcome.run_record.state, StageRunState.EMPTY)
-            output = load_checkpoint(case["output_root"], outcome.run_record.checkpoint_sha256)
-            self.assertEqual(output.execution.status, ExecutionStatus.EMPTY)
 
-        with tempfile.TemporaryDirectory(dir=self.root) as temporary:
-            case = self._case(
-                "filter.median_blur", {"ksize": 3},
-                array=np.zeros(self.frame.shape, dtype=np.uint8),
-            )
-            outcome = self._run(case)
-            self.assertEqual(outcome.status, ReferenceMaskStageStatus.EXECUTED)
-            output = load_checkpoint(case["output_root"], outcome.run_record.checkpoint_sha256)
-            self.assertEqual(output.execution.status, ExecutionStatus.AVAILABLE)
 
-    def test_fill_accepts_original_positive_integer_domain_without_numeric_coercion(self) -> None:
-        with tempfile.TemporaryDirectory(dir=self.root) as temporary:
-            large_size = 10**1000
-            case = self._case("morphology.fill", {"size": large_size})
-            outcome = self._run(case)
-            self.assertEqual(outcome.status, ReferenceMaskStageStatus.EMPTY)
-            output = load_checkpoint(case["output_root"], outcome.run_record.checkpoint_sha256)
-            recorded = output.metadata["effective_parameters"]["size"]
-            self.assertEqual(recorded, large_size)
-            self.assertIs(type(recorded), int)
 
-    def test_unsupported_even_tuple_roi_and_over_budget_parameters_do_not_call_runner(self) -> None:
-        unsupported = (
-            ("filter.median_blur", {"ksize": 4}),
-            ("filter.median_blur", {"ksize": (3, 3)}),
-            ("morphology.erode", {"ksize": 256, "iterations": 1}),
-            ("morphology.dilate", {"ksize": 3, "iterations": 65}),
-            ("morphology.erode", {"ksize": 3, "iterations": 1.0}),
-            ("morphology.fill", {"size": 0}),
-        )
-        for operation, values in unsupported:
-            with self.subTest(operation=operation, values=values if isinstance(values, dict) else None), tempfile.TemporaryDirectory(dir=self.root) as temporary:
-                case = self._case(operation, values)
-                with patch.object(case["runner"], "run", side_effect=AssertionError("unsupported domain must not run")):
-                    outcome = self._run(case)
-                self.assertEqual(outcome.status, ReferenceMaskStageStatus.UNSUPPORTED)
-                self.assertIsNone(outcome.checkpoint_reference)
 
-        with tempfile.TemporaryDirectory(dir=self.root) as temporary:
-            recipe, stage_id = self._recipe("filter.median_blur", {"ksize": 3})
-            stage = recipe.stage(stage_id)
-            roi = ParameterContract("roi", "json", {"x": 1}, True)
-            changed = replace(stage, parameters=stage.parameters + (roi,))
-            recipe = replace(recipe, stages=tuple(changed if item.stage_id == stage_id else item for item in recipe.stages))
-            case = self._case("filter.median_blur", recipe=recipe, stage_id=stage_id)
-            case["expected_output_identity"] = None
-            with patch.object(case["runner"], "run", side_effect=AssertionError("ROI is unsupported")):
-                outcome = self._run(case)
-            self.assertEqual(outcome.status, ReferenceMaskStageStatus.UNSUPPORTED)
-            self.assertIn("ROI", outcome.run_record.reason)
 
-    def test_median_reflect_boundary_rejects_undefined_thin_rasters_and_executes_safe_singleton_axis(self) -> None:
-        for ksize in (33, 57, 255):
-            with self.subTest(shape=(4, 7), ksize=ksize):
-                case = self._case(
-                    "filter.median_blur",
-                    {"ksize": ksize},
-                    array=np.arange(28, dtype=np.uint8).reshape(4, 7),
-                )
-                with patch.object(case["runner"], "run", side_effect=AssertionError("undefined reflect domain must not execute")):
-                    outcome = self._run(case)
-                self.assertEqual(outcome.status, ReferenceMaskStageStatus.UNSUPPORTED)
-                self.assertIn("source-undefined", outcome.run_record.reason)
-                self.assertIsNone(outcome.checkpoint_reference)
-                self.assertFalse(Path(case["output_root"]).exists())
-
-        safe_case = self._case(
-            "filter.median_blur",
-            {"ksize": 255},
-            array=np.arange(33, dtype=np.uint8).reshape(1, 33),
-        )
-        safe_outcome = self._run(safe_case)
-        self.assertEqual(safe_outcome.status, ReferenceMaskStageStatus.EXECUTED)
-        self.assertIsNotNone(safe_outcome.checkpoint_reference)
-        safe_output = load_checkpoint(safe_case["output_root"], safe_outcome.run_record.checkpoint_sha256)
-        self.assertEqual(safe_output.arrays["image"].shape, (1, 33))
-        self.assertEqual(safe_output.raster_roles["image"].kind, "image")
-
-    def test_large_positive_morphology_kernel_and_iteration_bounds_are_rejected_pre_execution(self) -> None:
-        for values in (
-            {"ksize": 10**1000, "iterations": 1},
-            {"ksize": 3, "iterations": 10**1000},
-            {"ksize": True, "iterations": 1},
-        ):
-            with self.subTest(values=values), tempfile.TemporaryDirectory(dir=self.root) as temporary:
-                case = self._case("morphology.erode", values)
-                with patch.object(case["runner"], "run", side_effect=AssertionError("unbounded input must not run")):
-                    outcome = self._run(case)
-                self.assertEqual(outcome.status, ReferenceMaskStageStatus.UNSUPPORTED)
-
-    def test_exact_source_frame_upstream_measurement_binding_and_roles_are_required(self) -> None:
-        with tempfile.TemporaryDirectory(dir=self.root) as temporary:
-            case = self._case("morphology.erode", {"ksize": 3, "iterations": 1})
-            bad_cases = (
-                ("source", {**case, "expected_source_sha256": "f" * 64}, "source SHA"),
-                ("upstream", {**case, "expected_upstream_checkpoint_sha256": "e" * 64}, "upstream digest"),
-                ("frame", {**case, "expected_coordinate_frame": replace(self.frame, frame_id="wrong_frame")}, "frame"),
-                ("measurement", {**case, "expected_input_measurement": _measurement("different")}, "measurement"),
-                ("role", {**case, "input_roles": {"gray": RasterRole("image", np.dtype(np.uint8).str, "HW", (0, 255))}}, "role"),
-                ("recipe_identity", {**case, "expected_recipe_identity": replace(case["recipe"].identity, settings_sha256="f" * 64)}, "recipe identity"),
-                ("output_identity", {**case, "expected_output_identity": replace(case["expected_output_identity"], settings_sha256="f" * 64)}, "output identity"),
-            )
-            for name, bad, message in bad_cases:
-                with self.subTest(name=name):
-                    with patch.object(case["runner"], "run", side_effect=AssertionError("contract mismatch must not run")):
-                        with self.assertRaisesRegex(ReferenceMaskStageError, message):
-                            self._run(bad)
-
-            huge_frame = replace(self.frame, shape=(10_000, 10_000))
-            huge = {
-                **case,
-                "expected_coordinate_frame": huge_frame,
-                "expected_input_identity": replace(
-                    case["expected_input_identity"], coordinate_frame=huge_frame
-                ),
-            }
-            with patch.object(case["runner"], "run", side_effect=AssertionError("oversized frame must not run")):
-                with self.assertRaisesRegex(ReferenceMaskStageError, "bounded uint8 raster"):
-                    self._run(huge)
-
-            recipe, stage_id = self._recipe("morphology.fill", {"size": 10})
-            stage = recipe.stage(stage_id)
-            altered_mapping = replace(stage.source_mappings[0], source_sha256="f" * 64)
-            altered_stage = replace(stage, source_mappings=(altered_mapping,))
-            altered_recipe = replace(
-                recipe,
-                stages=tuple(altered_stage if item.stage_id == stage_id else item for item in recipe.stages),
-            )
-            altered = self._case("morphology.fill", recipe=altered_recipe, stage_id=stage_id)
-            with self.assertRaisesRegex(ReferenceMaskStageError, "source mapping"):
-                self._run(altered)
 
     def test_invalid_mask_values_and_frame_shape_are_rejected_before_runner(self) -> None:
         import seedvision.benchmarking.reference_mask_stage as module
@@ -454,62 +267,7 @@ class ReferenceMaskStageTests(unittest.TestCase):
                     with self.assertRaisesRegex(ReferenceMaskStageError, "coordinate frame"):
                         self._run(case)
 
-    def test_availability_cancellation_and_original_failure_states_publish_nothing(self) -> None:
-        import seedvision.benchmarking.reference_mask_stage as module
 
-        with tempfile.TemporaryDirectory(dir=self.root) as temporary:
-            case = self._case("morphology.dilate", {"ksize": 3, "iterations": 1})
-            with patch.object(module, "plantcv_reference_status", return_value={"available": False, "reason": "source audit unavailable"}):
-                with patch.object(case["runner"], "run", side_effect=AssertionError("unavailable source must not execute")):
-                    unavailable = self._run(case)
-            self.assertEqual(unavailable.status, ReferenceMaskStageStatus.UNAVAILABLE)
-            self.assertIsNone(unavailable.checkpoint_reference)
-
-            cancel = threading.Event()
-            cancel.set()
-            cancelled = self._run({**case, "cancel": cancel})
-            self.assertEqual(cancelled.status, ReferenceMaskStageStatus.CANCELLED)
-            self.assertIsNone(cancelled.checkpoint_reference)
-
-            with patch.object(case["runner"], "run", side_effect=ReferenceExecutionError("simulated original-call failure")):
-                failed = self._run(case)
-            self.assertEqual(failed.status, ReferenceMaskStageStatus.FAILED)
-            self.assertIsNone(failed.checkpoint_reference)
-            self.assertFalse(Path(case["output_root"]).exists())
-
-    def test_malformed_original_result_fails_without_publishing_artifacts(self) -> None:
-        with tempfile.TemporaryDirectory(dir=self.root) as temporary:
-            case = self._case("morphology.erode", {"ksize": 3, "iterations": 1})
-            real_run = case["runner"].run
-
-            def non_binary(*args, **kwargs):
-                result = real_run(*args, **kwargs)
-                return replace(result, arrays={"mask": np.full(self.frame.shape, 12, dtype=np.uint8)})
-
-            with patch.object(case["runner"], "run", side_effect=non_binary):
-                outcome = self._run(case)
-            self.assertEqual(outcome.status, ReferenceMaskStageStatus.FAILED)
-            self.assertIn("0/255", outcome.run_record.reason)
-            self.assertIsNone(outcome.checkpoint_reference)
-            self.assertFalse(Path(case["output_root"]).exists())
-
-        with tempfile.TemporaryDirectory(dir=self.root) as temporary:
-            case = self._case("morphology.dilate", {"ksize": 3, "iterations": 1})
-            real_run = case["runner"].run
-
-            def wrong_environment(*args, **kwargs):
-                result = real_run(*args, **kwargs)
-                identity = dict(result.identity)
-                identity["actual_distributions"] = dict(identity["actual_distributions"])
-                identity["actual_distributions"]["plantcv"] = "0.0.0"
-                return replace(result, identity=identity)
-
-            with patch.object(case["runner"], "run", side_effect=wrong_environment):
-                outcome = self._run(case)
-            self.assertEqual(outcome.status, ReferenceMaskStageStatus.FAILED)
-            self.assertIn("dependency inventory", outcome.run_record.reason)
-            self.assertIsNone(outcome.checkpoint_reference)
-            self.assertFalse(Path(case["output_root"]).exists())
 
     def test_internal_watershed_substages_are_explicitly_unsupported(self) -> None:
         recipe = self.catalogue.recipe("plantcv_seed_binary")

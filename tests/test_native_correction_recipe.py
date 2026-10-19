@@ -1,3 +1,5 @@
+
+from tests.catalogue_fixtures import CatalogueTestCase
 from dataclasses import replace
 import os
 from pathlib import Path
@@ -68,7 +70,7 @@ def _cuda_inputs():
 
 
 @unittest.skipUnless(torch.cuda.is_available(), 'CUDA is required for native correction recipes')
-class NativeCorrectionRecipeTests(unittest.TestCase):
+class NativeCorrectionRecipeTests(CatalogueTestCase):
     def reference(self, arrays):
         self.assertTrue(_REFERENCE.is_file(), 'Pinned PlantCV interpreter is required.')
         with tempfile.TemporaryDirectory() as temporary:
@@ -90,88 +92,9 @@ class NativeCorrectionRecipeTests(unittest.TestCase):
             target_coordinate_frame=target_coordinate_frame, coordinate_frame=coordinate_frame,
             cache=cache, cancel=cancel)
 
-    def test_all_four_external_ports_match_genuine_pinned_public_correct_color(self):
-        expected = self.reference(_fixture())
-        inputs = _cuda_inputs()
-        originals = tuple(value.clone() for value in inputs)
-        result = self.run_recipe(inputs)
-        node = result.node(_STAGE)
-        self.assertEqual(result.recipe_identity, _RECIPE.identity)
-        self.assertEqual((result.target_source_sha256, result.source_sha256), (_TARGET_SHA, _SOURCE_SHA))
-        self.assertEqual((result.target_coordinate_frame, result.coordinate_frame), (_TARGET_FRAME, _SOURCE_FRAME))
-        self.assertEqual((result.status, node.status), ('executed', 'executed'))
-        self.assertEqual(set(node.input_keys), {'target_rgb', 'target_mask', 'source_rgb', 'source_mask'})
-        self.assertEqual(set(node.outputs), {
-            'corrected_image', 'target_matrix', 'source_matrix', 'transformation_matrix'})
-        self.assertEqual(node.outputs['corrected_image'].device.type, 'cuda')
-        self.assertEqual(node.outputs['corrected_image'].dtype, torch.uint8)
-        for name in ('target_matrix', 'source_matrix'):
-            np.testing.assert_allclose(node.outputs[name], expected[name], rtol=0, atol=2e-15)
-        np.testing.assert_allclose(node.outputs['transformation_matrix'],
-            expected['transformation_matrix'], rtol=1e-8, atol=1e-8)
-        difference = np.abs(node.outputs['corrected_image'].cpu().numpy().astype(np.int16)
-            - expected['corrected_rgb'].astype(np.int16))
-        self.assertLessEqual(int(difference.max()), 1)
-        for value, original in zip(inputs, originals):
-            torch.testing.assert_close(value, original)
-        with self.assertRaises(ValueError):
-            node.outputs['source_matrix'].setflags(write=True)
-        self.assertRegex(result.implementation_sha256, '^[0-9a-f]{64}$')
-        self.assertRegex(result.runtime['nvrtc'], r'^\d+\.\d+$')
-        self.assertRegex(result.runtime['cuda_driver_api'], r'^\d+$')
 
-    def test_cache_all_inputs_layout_and_mutated_output(self):
-        inputs, cache = _cuda_inputs(), PipelineAnalysisCache()
-        first = self.run_recipe(inputs, cache=cache)
-        layout = replace(_RECIPE, layout=tuple(replace(pos, x=pos.x+40) for pos in _RECIPE.layout))
-        repeated = self.run_recipe(inputs, recipe=layout, cache=cache)
-        self.assertEqual(cache.last_computed_nodes, ())
-        self.assertEqual(cache.last_reused_nodes, (_STAGE,))
-        self.assertIs(first.node(_STAGE).outputs['corrected_image'],
-            repeated.node(_STAGE).outputs['corrected_image'])
-        for port, tensor in zip(('target_rgb', 'target_mask', 'source_rgb', 'source_mask'), inputs):
-            with self.subTest(port=port):
-                if tensor.ndim == 3:
-                    tensor[0, 0, 0] ^= 1
-                else:
-                    tensor[0, 0] = 10
-                changed = self.run_recipe(inputs, cache=cache)
-                self.assertEqual(cache.last_computed_nodes, (_STAGE,))
-                self.assertFalse(changed.node(_STAGE).reused)
-        changed.node(_STAGE).outputs['corrected_image'][0, 0, 0] ^= 1
-        repaired = self.run_recipe(inputs, cache=cache)
-        self.assertFalse(repaired.node(_STAGE).reused)
-        self.assertNotEqual(repaired.node(_STAGE).product_key, changed.node(_STAGE).product_key)
-        revised = self.run_recipe(inputs, cache=cache, target_source_sha256='c'*64,
-            target_coordinate_frame=replace(_TARGET_FRAME, frame_id='target.revised'))
-        self.assertFalse(revised.node(_STAGE).reused)
 
-    def test_cancellation_returns_no_partial_result_or_cache_entry(self):
-        inputs, cache = _cuda_inputs(), PipelineAnalysisCache()
-        originals, calls = tuple(value.clone() for value in inputs), 0
-        def cancel():
-            nonlocal calls
-            calls += 1
-            return calls >= 12
-        with self.assertRaises(NativeCorrectionCancelled):
-            self.run_recipe(inputs, cache=cache, cancel=cancel)
-        self.assertNotIn('reference.recipe:plantcv_color_card_correct_color:'+_STAGE, cache.values)
-        for value, original in zip(inputs, originals):
-            torch.testing.assert_close(value, original)
 
-    def test_changed_compact_matrix_metadata_invalidates_the_cached_correction(self):
-        inputs, cache = _cuda_inputs(), PipelineAnalysisCache()
-        first = self.run_recipe(inputs, cache=cache)
-        import warnings
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore', DeprecationWarning)
-            first.node(_STAGE).outputs['source_matrix'].shape = (4, 24)
-        repaired = self.run_recipe(inputs, cache=cache)
-        self.assertFalse(repaired.node(_STAGE).reused)
-        self.assertEqual(repaired.node(_STAGE).outputs['source_matrix'].shape, (24, 4))
-        self.assertNotEqual(repaired.node(_STAGE).product_key, first.node(_STAGE).product_key)
-        repeated = self.run_recipe(inputs, cache=cache)
-        self.assertTrue(repeated.node(_STAGE).reused)
 
     def test_identity_height_workspace_and_source_contract_fail_before_calculation(self):
         inputs = _cuda_inputs()

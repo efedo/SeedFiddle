@@ -112,6 +112,8 @@ class NativeRecipeNode:
     reused: bool = False
     reason: str = ''
     calculation: Mapping[str, object] | None = None
+    backend: str = 'native'
+    backend_provenance: Mapping[str, object] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,6 +157,7 @@ class _CacheEntry:
     node: NativeRecipeNode
     signatures: tuple
     calculation_signature: str | None = None
+    execution_signature: tuple | None = None
 
 
 def _digest(value):
@@ -255,6 +258,12 @@ def _compact_recovery_signature(outputs):
 
 def _output_signatures(outputs, *, compact_recovery=False):
     return _compact_recovery_signature(outputs) if compact_recovery else _nested_signature((), outputs)
+
+
+def _execution_signature(node):
+    if node.backend == 'native' and node.backend_provenance is None:
+        return None
+    return _nested_signature((), {'backend': node.backend, 'provenance': node.backend_provenance})
 
 
 class _CardTensorGuard:
@@ -781,6 +790,10 @@ def _calculation_signature(node):
     if node.operation_id != 'threshold.otsu' or node.status not in ('executed', 'empty'):
         return 'invalid'
     try:
+        if node.backend == 'plantcv':
+            from seedvision.benchmarking.reference_stage import validate_otsu_cutoff_adapter
+            validate_otsu_cutoff_adapter(node.calculation, node.parameters['object_type'])
+            return _digest(dict(node.calculation))
         return _digest(_threshold.validate_otsu_calculation_facts(
             node.calculation, node.parameters['object_type']))
     except (ValueError, TypeError, KeyError):
@@ -1240,14 +1253,21 @@ def _checked_model_asset_paths(recipe, value):
 
 
 def run_native_recipe_path(recipe, path, *, device='cuda', cache=None, cancel=None,
-                           model_asset_paths=None, timing_recorder=None):
+                           model_asset_paths=None, timing_recorder=None, working_workflow=None, target_node_id=None,
+                           reference_runner=None):
     """Shared desktop/batch path entry point; the selected RecipeSpec is unchanged."""
     if cache is None:
         cache = PipelineAnalysisCache()
     if not isinstance(cache, PipelineAnalysisCache):
         raise TypeError('cache must be a PipelineAnalysisCache or None.')
     _path_preparation_poll(path,cache,cancel)
-    _validate_recipe(recipe)
+    if working_workflow is None:
+        _validate_recipe(recipe)
+    else:
+        from seedvision.pipeline.workflows import validate_workflow
+        validate_workflow(working_workflow)
+        if recipe != working_workflow.recipe:
+            raise NativeRecipeError('Working workflow differs from the executed recipe.')
     model_asset_paths = _checked_model_asset_paths(recipe, model_asset_paths)
     model = None
     categories = None
@@ -1279,12 +1299,13 @@ def run_native_recipe_path(recipe, path, *, device='cuda', cache=None, cancel=No
     return run_native_recipe(recipe, prepared.gray, prepared.rgb, source_sha256=prepared.source_sha256,
         coordinate_frame=prepared.coordinate_frame, preparation=prepared.preparation,
         cache=cache, cancel=cancel, external_inputs=external_inputs, model_asset_paths=model_asset_paths,
-        timing_recorder=timing_recorder)
+        timing_recorder=timing_recorder, working_workflow=working_workflow, target_node_id=target_node_id,
+        reference_runner=reference_runner)
 
 
 def run_native_recipe(recipe, gray, rgb, *, source_sha256, coordinate_frame,
                       preparation, cache=None, cancel=None, external_inputs=None, model_asset_paths=None,
-                      timing_recorder=None):
+                      timing_recorder=None, working_workflow=None, target_node_id=None, reference_runner=None):
     """Execute the exact selected graph; retain valid per-node CUDA products.
 
     Preparation records must explain the caller's grayscale/RGB boundaries. A
@@ -1307,14 +1328,22 @@ def run_native_recipe(recipe, gray, rgb, *, source_sha256, coordinate_frame,
     recovery_run = isinstance(recipe, RecipeSpec) and recipe.recipe_id == _recovery_recipe.RECIPE_ID
     paper_run = isinstance(recipe, RecipeSpec) and recipe.recipe_id == _paper_recipe.RECIPE_ID
     range_run = isinstance(recipe, RecipeSpec) and recipe.recipe_id == _range_recipe.RECIPE_ID
-    guarded_run = card_run or recovery_run or diagnostic_run or paper_run or range_run
+    guarded_run = card_run or recovery_run or diagnostic_run or paper_run or range_run or working_workflow is not None
     card_guard = (_CardTensorGuard(gray, rgb, cancel, cache, recipe.recipe_id,
                     label='Custom range' if range_run else 'SMPTS paper reconstruction' if paper_run else 'Core recovery' if recovery_run else 'Watershed diagnostic' if diagnostic_run else 'Automatic card',
-                    clear_on_callback_error=recovery_run or diagnostic_run or paper_run or range_run or calibrated_range) if guarded_run else None)
+                    clear_on_callback_error=recovery_run or diagnostic_run or paper_run or range_run or calibrated_range or working_workflow is not None) if guarded_run else None)
     if guarded_run:
+        if working_workflow is not None:
+            card_guard.prefix = 'reference.recipe:workspace:' + recipe.recipe_id + ':'
         cancel = card_guard
     _cancel(cancel)
-    _validate_recipe(recipe)
+    if working_workflow is None:
+        _validate_recipe(recipe)
+    else:
+        from seedvision.pipeline.workflows import validate_workflow
+        validate_workflow(working_workflow)
+        if recipe != working_workflow.recipe:
+            raise NativeRecipeError('Working workflow differs from the executed recipe.')
     model_asset_paths = _checked_model_asset_paths(recipe, model_asset_paths)
     if cache is None:
         cache = PipelineAnalysisCache()
@@ -1401,7 +1430,7 @@ def run_native_recipe(recipe, gray, rgb, *, source_sha256, coordinate_frame,
             if name.startswith('reference.recipe:'):
                 del cache.values[name]
         cache.values['reference.source.scope'] = scope
-    prefix = f'reference.recipe:{recipe.recipe_id}:'
+    prefix = f'reference.recipe:{recipe.recipe_id}:' if working_workflow is None else f'reference.recipe:workspace:{recipe.recipe_id}:'
     calculation_watched = []
     if any(stage.operation_id == 'threshold.otsu' for stage in recipe.stages):
         original_cancel = cancel
@@ -1435,11 +1464,33 @@ def run_native_recipe(recipe, gray, rgb, *, source_sha256, coordinate_frame,
                                _runtime_records(gray.device, card=True, calibrated=True) if calibrated else
                                _runtime_records(gray.device, card=True) if card_run
                                else _runtime_records(gray.device))
+    if working_workflow is not None:
+        _bind_working_runtime(module_records, runtime)
     execution = _digest({'runtime': runtime, 'modules': module_records})
     base = {'source': source_sha256, 'frame': coordinate_frame.to_dict(),
-        'preparation': dict(preparation), 'graph': recipe.identity.graph_sha256, 'execution': execution}
+        'preparation': dict(preparation), 'execution': execution}
+    if working_workflow is None:
+        base['graph'] = recipe.identity.graph_sha256
+    else:
+        base['working_source'] = working_workflow.source_recipe.identity.graph_sha256
     nodes, computed, reused, timings = {}, [], [], {}
+    required_stages = {s.stage_id for s in recipe.stages}
+    if target_node_id is not None:
+        recipe.stage(target_node_id)
+        required_stages = {target_node_id}
+        while True:
+            expanded = required_stages | {e.source_stage for e in recipe.dependencies if e.target_stage in required_stages}
+            if expanded == required_stages:
+                break
+            required_stages = expanded
+    disabled = set(working_workflow.disabled_nodes) if working_workflow is not None else set()
+    from seedvision.pipeline.backend_execution import BackendExecution
+    backend_execution = BackendExecution(recipe, workflow=working_workflow, runner=reference_runner,
+        cancel=cancel, cache=cache, prefix=prefix, watch=card_guard.watch if guarded_run else None)
+    backend_execution.validate_cached_groups()
     for stage in _topological_stages(recipe):
+        if stage.stage_id not in required_stages:
+            continue
         _cancel(cancel)
         parameters = recipe.parameters_for_runner(stage.stage_id)
         incoming = [edge for edge in recipe.dependencies if edge.target_stage == stage.stage_id]
@@ -1465,19 +1516,35 @@ def run_native_recipe(recipe, gray, rgb, *, source_sha256, coordinate_frame,
         if stage.operation_id == 'external.plantcv.naive_bayes_pdf':
             calculation_parameters = {**parameters, 'model_source':
                 _naive_bayes_recipe.calculation_model_source(parameters['model_source'])}
-        key_payload = {**base, 'stage': stage.stage_id, 'parameters': calculation_parameters, 'inputs': input_keys}
+        key_payload = {**base, 'stage': stage.stage_id, 'operation': stage.operation_id,
+            'bypassed': stage.stage_id in disabled, 'parameters': calculation_parameters, 'inputs': input_keys}
+        selected_backend = ('native' if stage.stage_id in disabled
+                            else backend_execution.backend_for(stage.stage_id))
+        if working_workflow is not None:
+            try:
+                key_payload['backend_execution'] = ({'backend': 'native', 'adapter': 'typed_bypass'}
+                    if stage.stage_id in disabled else backend_execution.key_for(stage.stage_id, nodes))
+            except NotImplementedError as error:
+                cache.values.pop(cache_name, None)
+                _evict_recipe_descendants(recipe, stage.stage_id, cache, prefix)
+                nodes[stage.stage_id] = NativeRecipeNode(stage.stage_id, stage.operation_id, 'unavailable',
+                    MappingProxyType({}), MappingProxyType(parameters), MappingProxyType(input_keys), None,
+                    reason=str(error), backend=selected_backend)
+                continue
         if stage.operation_id == 'external.image_inputs':
             key_payload['tensors'] = [_tensor_signature(gray), _tensor_signature(rgb)]
         key = _digest(key_payload)
         entry = cache.values.get(cache_name)
         if isinstance(entry, _CacheEntry) and entry.key == key and entry.signatures == _output_signatures(
                 entry.node.outputs,compact_recovery=recovery_run or paper_run) and (
-                entry.calculation_signature == _calculation_signature(entry.node)):
+                entry.calculation_signature == _calculation_signature(entry.node)) and (
+                entry.execution_signature == _execution_signature(entry.node)):
             previous = entry.node
             node = NativeRecipeNode(previous.stage_id, previous.operation_id, previous.status,
                 previous.outputs, _freeze_json(parameters, name='resolved parameters'),
                 previous.input_keys, previous.product_key,
-                reused=True, reason=previous.reason, calculation=previous.calculation)
+                reused=True, reason=previous.reason, calculation=previous.calculation,
+                backend=previous.backend, backend_provenance=previous.backend_provenance)
             nodes[stage.stage_id] = node
             if node.calculation is not None:
                 calculation_watched.append((node, _calculation_signature(node)))
@@ -1489,7 +1556,7 @@ def run_native_recipe(recipe, gray, rgb, *, source_sha256, coordinate_frame,
                 timing_recorder.add_seconds(stage.stage_id, 0.0)
             continue
         cache.values.pop(cache_name, None)
-        if guarded_run:
+        if guarded_run or working_workflow is not None:
             _evict_recipe_descendants(recipe, stage.stage_id, cache, prefix)
         if recipe.recipe_id in _KMEANS_RECIPES:
             # Drop invalid downstream products before allocating a replacement
@@ -1504,6 +1571,8 @@ def run_native_recipe(recipe, gray, rgb, *, source_sha256, coordinate_frame,
         started = time.perf_counter()
         span = timing_recorder.start(stage.stage_id, report_progress=False) if timing_recorder else None
         try:
+            backend_provenance = None
+            calculation = None
             optional = {'analysis.kmeans_masks': ('cat_list',),
                 'recovery.validity': ('validity_roi',),
                 'color_card.preprocess': ('roi_bounds_xyxy',),
@@ -1514,8 +1583,12 @@ def run_native_recipe(recipe, gray, rgb, *, source_sha256, coordinate_frame,
                 optional = (_fill_roi_recipe.PARAMETER,)
             if stage.operation_id == _median_roi_recipe.OPERATION:
                 optional = (_median_roi_recipe.PARAMETER,)
-            _required_parameters(parameters, optional=optional)
-            if stage.operation_id == 'external.image_inputs':
+            if stage.stage_id not in disabled:
+                _required_parameters(parameters, optional=optional)
+            if stage.stage_id in disabled:
+                from seedvision.pipeline.workflows import bypass_ports
+                outputs, status = {out: inputs[inp] for out, inp in bypass_ports(stage).items()}, 'bypassed'
+            elif stage.operation_id == 'external.image_inputs':
                 outputs, status = {'gray_image': gray, 'rgb_image': rgb}, 'provided'
                 if any(port.name == 'source_frame' and port.direction == 'output' for port in stage.ports):
                     outputs['source_frame'] = _freeze_json({'coordinate_frame':coordinate_frame.to_dict(),
@@ -1524,11 +1597,15 @@ def run_native_recipe(recipe, gray, rgb, *, source_sha256, coordinate_frame,
                 outputs, status = {'model': selected_model, 'model_identity': selected_identity}, 'provided'
             elif stage.operation_id == 'external.plantcv.kmeans_centres':
                 outputs, status = {'model': selected_model, 'model_identity': selected_identity}, 'provided'
+            elif selected_backend == 'plantcv':
+                outputs, backend_provenance, calculation = backend_execution.execute(stage, inputs, parameters, nodes)
+                status = 'executed'
             else:
                 if stage.operation_id in ('analysis.color', 'analysis.size') and not 1 <= parameters['n_labels'] <= MAX_LABELS:
                     raise NativeRecipeError('Analysis requires an actual object count in [1,128].')
                 outputs, status = _dispatch(stage.operation_id, inputs, parameters, cancel), 'executed'
-            calculation = _dispatch_calculation(stage.operation_id, outputs, parameters)
+            if selected_backend == 'native':
+                calculation = _dispatch_calculation(stage.operation_id, outputs, parameters)
             if guarded_run:
                 card_guard.watch(outputs)
             _cancel(cancel)
@@ -1545,9 +1622,11 @@ def run_native_recipe(recipe, gray, rgb, *, source_sha256, coordinate_frame,
                 reason = 'Unavailable outputs: '+', '.join(missing_outputs)
             node = NativeRecipeNode(stage.stage_id, stage.operation_id, status, MappingProxyType(outputs),
                 _freeze_json(parameters, name='resolved parameters'), MappingProxyType(input_keys), product_key,
-                reason=reason, calculation=calculation)
+                reason=reason, calculation=calculation, backend=selected_backend,
+                backend_provenance=backend_provenance)
             cache.values[cache_name] = _CacheEntry(key, node,
-                _output_signatures(outputs,compact_recovery=recovery_run or paper_run), _calculation_signature(node))
+                _output_signatures(outputs,compact_recovery=recovery_run or paper_run), _calculation_signature(node),
+                _execution_signature(node))
             if calculation is not None:
                 calculation_watched.append((node, _calculation_signature(node)))
             computed.append(stage.stage_id)
@@ -1567,36 +1646,59 @@ def run_native_recipe(recipe, gray, rgb, *, source_sha256, coordinate_frame,
             raise NativeRecipeCancelled(str(error)) from error
         except NotImplementedError as error:
             node = NativeRecipeNode(stage.stage_id, stage.operation_id, 'unavailable', MappingProxyType({}),
-                MappingProxyType(parameters), MappingProxyType(input_keys), None, reason=str(error))
-            cache.values[cache_name] = _CacheEntry(key, node, ())
+                MappingProxyType(parameters), MappingProxyType(input_keys), None, reason=str(error),
+                backend=selected_backend)
+            cache.values[cache_name] = _CacheEntry(key, node, (), execution_signature=_execution_signature(node))
         except Exception as error:
             _cancel(cancel)
             node = NativeRecipeNode(stage.stage_id, stage.operation_id, 'failed', MappingProxyType({}),
                 MappingProxyType(parameters), MappingProxyType(input_keys), None,
-                reason=f'{type(error).__name__}: {error}')
+                reason=f'{type(error).__name__}: {error}', backend=selected_backend)
         finally:
             if span is not None:
                 timing_recorder.stop(span, completed=False)
         nodes[stage.stage_id] = node
         timings[stage.stage_id] = time.perf_counter()-started
     _cancel(cancel)
-    if recovery_run or diagnostic_run or paper_run or range_run or calibrated_range:
+    if recovery_run or diagnostic_run or paper_run or range_run or calibrated_range or working_workflow is not None:
         # Caller callbacks have finished. Recheck the actual loaded calculation
         # closure before publishing products under its initial runtime digest.
         try:
             final_records,final_runtime=(runtime_audit(gray.device, card=card_run, calibrated=calibrated,
                 diagnostic=True) if diagnostic_run else runtime_audit(gray.device,paper=True) if paper_run
-                else runtime_audit(gray.device,card=True,calibrated=True) if calibrated_range
-                else runtime_audit(gray.device) if range_run else runtime_audit(gray.device,recovery=True))
+                else runtime_audit(gray.device,recovery=True) if recovery_run
+                else runtime_audit(gray.device,card=True,calibrated=True) if calibrated
+                else runtime_audit(gray.device,card=True) if card_run
+                else runtime_audit(gray.device))
+            if working_workflow is not None:
+                _bind_working_runtime(final_records, final_runtime)
             if final_records != module_records or final_runtime != runtime:
                 raise NativeRecipeError('Guarded graph implementation changed during execution.')
         except BaseException:
             card_guard._clear()
             raise
+    try:
+        backend_execution.audit()
+    except BaseException:
+        if guarded_run:
+            card_guard._clear()
+        raise
     cache.last_computed_nodes, cache.last_reused_nodes = tuple(computed), tuple(reused)
     cache.node_timings_seconds = timings
+    for skipped in recipe.stages:
+        if skipped.stage_id not in nodes:
+            nodes[skipped.stage_id] = NativeRecipeNode(skipped.stage_id, skipped.operation_id, 'not_run',
+                MappingProxyType({}), _freeze_json(recipe.parameters_for_runner(skipped.stage_id), name='unexecuted parameters'),
+                MappingProxyType({}), None, reason='Outside the selected run-to-node dependency scope.')
     ordered = tuple(nodes[stage.stage_id] for stage in recipe.stages)
-    complete = all(node.status in ('executed', 'provided', 'empty') for node in ordered)
+    complete = all(node.status in ('executed', 'provided', 'empty', 'bypassed') for node in ordered)
     return NativeRecipeResult(recipe.identity, source_sha256, coordinate_frame,
         MappingProxyType(dict(preparation)), MappingProxyType(runtime), ordered,
         'executed' if complete else 'partial', model_asset_paths)
+
+
+def _bind_working_runtime(records, runtime):
+    from seedvision.pipeline import workflows
+    records[workflows.__name__] = _digest(_module_record(workflows))
+    runtime['workspace_workflow_adapter'] = records[workflows.__name__]
+    runtime['calculation_modules_sha256'] = _digest(records)

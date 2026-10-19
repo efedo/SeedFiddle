@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.functional_units import functional_units
+
 import ast
 import hashlib
 import json
@@ -13,12 +15,13 @@ ROOT = Path(__file__).resolve().parents[1]
 REGISTER_PATH = ROOT / "docs" / "plantcv_smpts_features.json"
 
 
+@functional_units
 class PeerFeatureRegisterTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.register = json.loads(REGISTER_PATH.read_text(encoding="utf-8"))
 
-    def test_all_families_and_operation_rows_have_independent_status_and_contracts(self) -> None:
+    def check_test_all_families_and_operation_rows_have_independent_status_and_contracts(self) -> None:
         features = self.register["features"]
         self.assertEqual([f"F{index:02}" for index in range(1, 23)], [item["id"] for item in features])
         operation_ids = []
@@ -44,7 +47,7 @@ class PeerFeatureRegisterTests(unittest.TestCase):
                 self.assertTrue(all(test_id.startswith("planned:") for test_id in operation["tests"]["required"]))
         self.assertEqual(len(operation_ids), len(set(operation_ids)))
 
-    def test_every_existing_test_reference_resolves_without_importing_test_modules(self) -> None:
+    def check_test_every_existing_test_reference_resolves_without_importing_test_modules(self) -> None:
         parsed_test_functions: dict[str, set[str]] = {}
         for feature in self.register["features"]:
             for operation in feature["operations"]:
@@ -62,7 +65,7 @@ class PeerFeatureRegisterTests(unittest.TestCase):
                         }
                     self.assertIn(test_name, parsed_test_functions[relative_path], test_id)
 
-    def test_core_recipe_cannot_omit_required_reference_stages_or_claim_validation(self) -> None:
+    def check_test_core_recipe_cannot_omit_required_reference_stages_or_claim_validation(self) -> None:
         self.assertEqual([f"F{index:02}" for index in range(1, 23)], [item["id"] for item in self.register["features"]])
         plantcv = self.register["selected_scope"]["plantcv_core_recipe"]
         joined = " ".join(plantcv["required_stage_groups"]).casefold()
@@ -79,7 +82,7 @@ class PeerFeatureRegisterTests(unittest.TestCase):
             for operation in feature["operations"]
         ))
 
-    def test_plantcv_source_and_binary_lock_pins_match_canonical_records(self) -> None:
+    def check_test_plantcv_source_and_binary_lock_pins_match_canonical_records(self) -> None:
         pin = self.register["reference_pins"]["plantcv"]
         source = json.loads((ROOT / "config" / "peer_reference_sources.json").read_text(encoding="utf-8"))
         self.assertEqual(pin["version"], source["version"])
@@ -110,7 +113,7 @@ class PeerFeatureRegisterTests(unittest.TestCase):
         if wheel_path.is_file():
             self.assertEqual(hashlib.sha256(wheel_path.read_bytes()).hexdigest(), retained_wheel["sha256"])
 
-    def test_baseline_keeps_runtime_and_raw_checkout_identity_explicit(self) -> None:
+    def check_test_baseline_keeps_runtime_and_raw_checkout_identity_explicit(self) -> None:
         baseline = json.loads((ROOT / "config" / "peer_baseline.json").read_text(encoding="utf-8"))
         self.assertFalse(baseline["scientifically_validated"])
         runtime = baseline["runtime_environment"]
@@ -126,7 +129,7 @@ class PeerFeatureRegisterTests(unittest.TestCase):
             self.assertRegex(record["git_blob_sha256"], r"^[0-9a-f]{64}$", relative)
             self.assertEqual(record["checked_out_sha256"], baseline["implementation"]["files"][relative])
 
-    def test_unambiguous_f08_rectangle_geometry_symbol_resolves(self) -> None:
+    def check_test_unambiguous_f08_rectangle_geometry_symbol_resolves(self) -> None:
         operation = next(
             operation
             for feature in self.register["features"] if feature["id"] == "F08"
@@ -141,6 +144,15 @@ class PeerFeatureRegisterTests(unittest.TestCase):
             isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == mapping["symbol"]
             for node in ast.walk(tree)
         ), mapping["symbol"])
+
+    def test_workflow_lifecycle(self):
+        """6 related PeerFeatureRegisterTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_all_families_and_operation_rows_have_independent_status_and_contracts)
+        self.scenario(self.check_test_every_existing_test_reference_resolves_without_importing_test_modules)
+        self.scenario(self.check_test_core_recipe_cannot_omit_required_reference_stages_or_claim_validation)
+        self.scenario(self.check_test_plantcv_source_and_binary_lock_pins_match_canonical_records)
+        self.scenario(self.check_test_baseline_keeps_runtime_and_raw_checkout_identity_explicit)
+        self.scenario(self.check_test_unambiguous_f08_rectangle_geometry_symbol_resolves)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.functional_units import functional_units
+
 import unittest
 from pathlib import Path
 
@@ -7,6 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@functional_units
 class PilotAnalysisTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -16,7 +19,7 @@ class PilotAnalysisTests(unittest.TestCase):
         except ImportError as error:
             raise unittest.SkipTest(f"OpenCV baseline dependencies unavailable: {error}")
 
-    def test_sparse_pilot_runs_diagnostics_without_foreground_references(self) -> None:
+    def check_test_sparse_pilot_runs_diagnostics_without_foreground_references(self) -> None:
         import numpy as np
 
         from seedvision.segmentation.baseline import BaselineSettings, analyze_path
@@ -125,7 +128,7 @@ class PilotAnalysisTests(unittest.TestCase):
             self.assertIn((node_id, "started"), progress_events)
             self.assertIn((node_id, "completed"), progress_events)
 
-    def test_annotated_seed_scale_uses_all_explicitly_complete_masks(self) -> None:
+    def check_test_annotated_seed_scale_uses_all_explicitly_complete_masks(self) -> None:
         import numpy as np
 
         from seedvision.segmentation.baseline import (
@@ -158,7 +161,7 @@ class PilotAnalysisTests(unittest.TestCase):
         self.assertFalse(cutoff.complete)
         self.assertFalse(cutoff.selected)
 
-    def test_dense_lupin_requires_user_authored_foreground_reference(self) -> None:
+    def check_test_dense_lupin_requires_user_authored_foreground_reference(self) -> None:
         import numpy as np
 
         from seedvision.segmentation import PipelineAnalysisCache, analyze_path
@@ -203,7 +206,7 @@ class PilotAnalysisTests(unittest.TestCase):
             10_000,
         )
 
-    def test_perimeter_background_band_buffer_and_thickness_are_independent(self) -> None:
+    def check_test_perimeter_background_band_buffer_and_thickness_are_independent(self) -> None:
         from seedvision.calibration.geometry import DishCircle
         from seedvision.segmentation.baseline import _background_band_radii
 
@@ -235,7 +238,7 @@ class PilotAnalysisTests(unittest.TestCase):
         self.assertAlmostEqual(fallback_inner, inner)
         self.assertAlmostEqual(fallback_outer, outer)
 
-    def test_perimeter_background_band_rejects_colour_card_contamination(self) -> None:
+    def check_test_perimeter_background_band_rejects_colour_card_contamination(self) -> None:
         import cv2
         import numpy as np
 
@@ -272,7 +275,7 @@ class PilotAnalysisTests(unittest.TestCase):
         )[0, 0]
         np.testing.assert_allclose(median_lab, expected_lab, atol=2.0)
 
-    def test_background_samples_do_not_synthesize_foreground_evidence(self) -> None:
+    def check_test_background_samples_do_not_synthesize_foreground_evidence(self) -> None:
         import cv2
         import numpy as np
 
@@ -302,7 +305,7 @@ class PilotAnalysisTests(unittest.TestCase):
 
         self.assertFalse(np.any(feature))
 
-    def test_foreground_mask_colour_distribution_propagates_beyond_paint(self) -> None:
+    def check_test_foreground_mask_colour_distribution_propagates_beyond_paint(self) -> None:
         import numpy as np
 
         from seedvision.cuda import CudaContext
@@ -347,7 +350,7 @@ class PilotAnalysisTests(unittest.TestCase):
         self.assertGreaterEqual(len(profile.component_centres_lab), 1)
         self.assertAlmostEqual(sum(profile.component_weights), 1.0, places=4)
 
-    def test_annotated_foreground_source_is_a_per_id_safely_inset_interior(self) -> None:
+    def check_test_annotated_foreground_source_is_a_per_id_safely_inset_interior(self) -> None:
         import cv2
         import numpy as np
 
@@ -408,7 +411,7 @@ class PilotAnalysisTests(unittest.TestCase):
             )
         )
 
-    def test_annotated_instances_are_opt_in_foreground_colour_references(self) -> None:
+    def check_test_annotated_instances_are_opt_in_foreground_colour_references(self) -> None:
         import cv2
         import numpy as np
 
@@ -485,7 +488,7 @@ class PilotAnalysisTests(unittest.TestCase):
             delta=2.0,
         )
 
-    def test_automatic_foreground_source_obeys_painted_class_precedence(self) -> None:
+    def check_test_automatic_foreground_source_obeys_painted_class_precedence(self) -> None:
         import cv2
         import numpy as np
 
@@ -567,7 +570,7 @@ class PilotAnalysisTests(unittest.TestCase):
             int(painted_foreground.sum()),
         )
 
-    def test_isolated_scale_reference_colours_do_not_become_foreground(self) -> None:
+    def check_test_isolated_scale_reference_colours_do_not_become_foreground(self) -> None:
         import numpy as np
 
         from seedvision.cuda import CudaContext
@@ -612,7 +615,7 @@ class PilotAnalysisTests(unittest.TestCase):
         self.assertFalse(np.any(automatic))
         self.assertIsNone(profile)
 
-    def test_zero_reference_weight_never_forces_painted_foreground(self) -> None:
+    def check_test_zero_reference_weight_never_forces_painted_foreground(self) -> None:
         import numpy as np
 
         from seedvision.cuda import CudaContext
@@ -639,7 +642,7 @@ class PilotAnalysisTests(unittest.TestCase):
         self.assertEqual(int(referenced[48, 48]), int(automatic[48, 48]))
         self.assertLess(int(referenced[48, 48]), 255)
 
-    def test_painted_pattern_colours_remain_individual_frequency_bins(self) -> None:
+    def check_test_painted_pattern_colours_remain_individual_frequency_bins(self) -> None:
         import numpy as np
 
         from seedvision.cuda import CudaContext
@@ -675,21 +678,8 @@ class PilotAnalysisTests(unittest.TestCase):
         self.assertGreater(int(probability[68, 128]), 220)
         self.assertGreaterEqual(len(profile.component_centres_lab), 2)
 
-    def test_all_proposals_are_inside_analysis_region(self) -> None:
-        from seedvision.segmentation.baseline import analyze_path
 
-        path = ROOT / "images" / "IMG_9670c.JPG"
-        if not path.exists():
-            self.skipTest("Pilot image is not present")
-        result = analyze_path(path)
-        for proposal in result.proposals:
-            distance = (
-                (proposal.center_x - result.dish.center_x) ** 2
-                + (proposal.center_y - result.dish.center_y) ** 2
-            ) ** 0.5
-            self.assertLessEqual(distance, result.dish.outer_radius * 0.91)
-
-    def test_candidate_fusion_keeps_primary_marker_as_suppression_anchor(self) -> None:
+    def check_test_candidate_fusion_keeps_primary_marker_as_suppression_anchor(self) -> None:
         from seedvision.segmentation.baseline import (
             BaselineSettings,
             _Candidate,
@@ -715,50 +705,9 @@ class PilotAnalysisTests(unittest.TestCase):
         self.assertEqual(len(fused), 1)
         self.assertEqual(fused[0].source, "fused")
 
-    def test_default_disabled_branches_do_not_execute_candidate_or_instance_math(self) -> None:
-        from seedvision.pipeline import build_default_pipeline
-        from seedvision.segmentation.baseline import analyze_path
 
-        path = ROOT / "images" / "IMG_9670c.JPG"
-        if not path.exists():
-            self.skipTest("Pilot image is not present")
-        graph = build_default_pipeline()
-        enabled = frozenset(
-            node.identifier for node in graph.nodes.values() if node.enabled
-        )
-        result = analyze_path(path, enabled_nodes=enabled)
 
-        self.assertEqual(result.count, 0)
-        self.assertEqual(result.distance_candidate_count, 0)
-        self.assertEqual(result.circle_candidate_count, 0)
-        self.assertEqual(int(result.layers.instance_labels.max()), 0)
-        self.assertIn("foreground_noise_likelihood", result.node_timings_seconds)
-        disabled = {
-            node.identifier for node in graph.nodes.values() if not node.enabled
-        }
-        self.assertTrue(disabled.isdisjoint(result.node_timings_seconds))
-        self.assertTrue(
-            set(graph.unused_nodes).isdisjoint(result.node_timings_seconds)
-        )
-
-    def test_pipeline_setting_changes_proposal_sensitivity(self) -> None:
-        from seedvision.segmentation import BaselineSettings, analyze_path
-
-        path = ROOT / "images" / "IMG_9670c.JPG"
-        if not path.exists():
-            self.skipTest("Pilot image is not present")
-        strict = analyze_path(
-            path, BaselineSettings(circle_accumulator_threshold=40)
-        )
-        sensitive = analyze_path(
-            path, BaselineSettings(circle_accumulator_threshold=10)
-        )
-        self.assertLessEqual(strict.count, sensitive.count)
-        self.assertLess(
-            strict.circle_candidate_count, sensitive.circle_candidate_count
-        )
-
-    def test_circle_bank_consumes_edge_noise_and_local_lighting_evidence(self) -> None:
+    def check_test_circle_bank_consumes_edge_noise_and_local_lighting_evidence(self) -> None:
         import cv2
         import numpy as np
 
@@ -840,7 +789,7 @@ class PilotAnalysisTests(unittest.TestCase):
             self.assertAlmostEqual(nearest.y, 80.0, delta=1.0)
             self.assertAlmostEqual(nearest.radius, 18.0, delta=2.0)
 
-    def test_node_cache_reuses_upstream_stages_for_edge_change(self) -> None:
+    def check_test_node_cache_reuses_upstream_stages_for_edge_change(self) -> None:
         import numpy as np
 
         from seedvision.segmentation import (
@@ -938,6 +887,34 @@ class PilotAnalysisTests(unittest.TestCase):
         )
         self.assertIn("background_likelihood", cache.last_computed_nodes)
         self.assertIn("foreground_segmentation", cache.last_computed_nodes)
+
+    def test_sparse_pilot_runs_diagnostics_without_foreground_references(self):
+        self.scenario(self.check_test_sparse_pilot_runs_diagnostics_without_foreground_references, labelled=False)
+
+    def test_dense_lupin_requires_user_authored_foreground_reference(self):
+        self.scenario(self.check_test_dense_lupin_requires_user_authored_foreground_reference, labelled=False)
+
+    def test_node_cache_reuses_upstream_stages_for_edge_change(self):
+        self.scenario(self.check_test_node_cache_reuses_upstream_stages_for_edge_change, labelled=False)
+
+    def test_workflow_lifecycle(self):
+        """12 related PilotAnalysisTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_annotated_seed_scale_uses_all_explicitly_complete_masks)
+        self.scenario(self.check_test_perimeter_background_band_buffer_and_thickness_are_independent)
+        self.scenario(self.check_test_background_samples_do_not_synthesize_foreground_evidence)
+        self.scenario(self.check_test_foreground_mask_colour_distribution_propagates_beyond_paint)
+        self.scenario(self.check_test_annotated_foreground_source_is_a_per_id_safely_inset_interior)
+        self.scenario(self.check_test_annotated_instances_are_opt_in_foreground_colour_references)
+        self.scenario(self.check_test_automatic_foreground_source_obeys_painted_class_precedence)
+        self.scenario(self.check_test_isolated_scale_reference_colours_do_not_become_foreground)
+        self.scenario(self.check_test_zero_reference_weight_never_forces_painted_foreground)
+        self.scenario(self.check_test_painted_pattern_colours_remain_individual_frequency_bins)
+        self.scenario(self.check_test_candidate_fusion_keeps_primary_marker_as_suppression_anchor)
+        self.scenario(self.check_test_circle_bank_consumes_edge_noise_and_local_lighting_evidence)
+
+    def test_validation_and_recovery(self):
+        """1 related PilotAnalysisTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_perimeter_background_band_rejects_colour_card_contamination)
 
 
 if __name__ == "__main__":

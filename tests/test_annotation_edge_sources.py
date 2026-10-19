@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.functional_units import functional_units
+
 import os
 import tempfile
 import unittest
@@ -9,6 +11,7 @@ from types import SimpleNamespace
 import numpy as np
 
 
+@functional_units
 class AnnotationEdgeSourceTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -19,7 +22,7 @@ class AnnotationEdgeSourceTests(unittest.TestCase):
             raise unittest.SkipTest(f"PySide6 unavailable: {error}")
         cls.application = QApplication.instance() or QApplication([])
 
-    def test_trace_and_fill_selectors_expose_only_applicable_edge_sources(self) -> None:
+    def check_test_trace_and_fill_selectors_expose_only_applicable_edge_sources(self) -> None:
         from PySide6.QtGui import QColor, QImage
 
         from seedvision.annotation import (
@@ -195,7 +198,7 @@ class AnnotationEdgeSourceTests(unittest.TestCase):
                     window.shape_fill_evidence_combo.itemData(index),
                 )
 
-    def test_image_view_adapts_each_edge_source_and_invalidates_cached_values(self) -> None:
+    def check_test_image_view_adapts_each_edge_source_and_invalidates_cached_values(self) -> None:
         from PySide6.QtGui import QColor, QImage
 
         from seedvision.ui.image_view import ImageView
@@ -343,7 +346,7 @@ class AnnotationEdgeSourceTests(unittest.TestCase):
             self.assertEqual(int(refreshed_net[5, 5]), 0)
             self.assertEqual(int(refreshed_net[0, 7]), 0)
 
-    def test_compact_fallback_separates_probability_from_conservative_evidence(self) -> None:
+    def check_test_compact_fallback_separates_probability_from_conservative_evidence(self) -> None:
         from unittest.mock import patch
 
         from seedvision.ui.image_view import ImageView
@@ -431,6 +434,15 @@ class AnnotationEdgeSourceTests(unittest.TestCase):
             ),
             crop_offset=(0, 0),
         )
+
+    def test_workflow_lifecycle(self):
+        """2 related AnnotationEdgeSourceTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_trace_and_fill_selectors_expose_only_applicable_edge_sources)
+        self.scenario(self.check_test_compact_fallback_separates_probability_from_conservative_evidence)
+
+    def test_validation_and_recovery(self):
+        """1 related AnnotationEdgeSourceTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_image_view_adapts_each_edge_source_and_invalidates_cached_values)
 
 
 if __name__ == "__main__":

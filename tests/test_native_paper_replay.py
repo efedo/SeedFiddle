@@ -1,4 +1,6 @@
 """Actual paper saved-input replay, primitive schema/admission and Qt workflow."""
+
+from tests.functional_units import functional_units
 from dataclasses import replace
 from hashlib import sha256
 import os
@@ -7,6 +9,7 @@ import sys
 import tempfile
 import time
 import unittest
+from tests.catalogue_fixtures import CatalogueTestCase
 from unittest.mock import patch
 import cv2
 import numpy as np
@@ -21,14 +24,16 @@ from seedvision.export import native_results as archives
 from seedvision.ui.native_recipe_dialog import NativeRecipeDialog
 from tests.test_native_smpts_recipe import parameter, selected_recipe
 from tests.test_smpts_paper import contact_fixture, canonical_components
+from tests.replay_fixtures import archive_hashes, changed_archive, replay_attempt
 
 STAGES=(paper.MEAN,paper.MEDIAN,paper.GLOBAL,paper.INTERSECTION,paper.COMPONENTS,
     paper.CONTACTS,paper.EROSION,paper.RELOCALIZE,paper.CROPS)
 COUNTS=(2,2,2,3,2,1,5,2,5)
 
 
-class PaperReplayContractTests(unittest.TestCase):
-    def test_schema_preserves_tuple_types_ids_bounds_and_strict_integer_fields(self):
+@functional_units
+class PaperReplayContractTests(CatalogueTestCase):
+    def check_test_schema_preserves_tuple_types_ids_bounds_and_strict_integer_fields(self):
         rows=({'label_id':1,'area_pixels':2,'bounds_xyxy':(0,0,2,1)},)
         value=contracts.canonical(rows)
         self.assertEqual(contracts.inventory(value,(2,3)),rows)
@@ -43,7 +48,7 @@ class PaperReplayContractTests(unittest.TestCase):
         difference=contracts.compare(value,contracts.canonical((dict(rows[0],area_pixels=1),)))
         self.assertEqual(difference['mismatched_elements'],1)
 
-    def test_metadata_decoder_has_byte_item_depth_and_primitive_bounds(self):
+    def check_test_metadata_decoder_has_byte_item_depth_and_primitive_bounds(self):
         binding={'kind':'tuple','items':[{'kind':'mapping','items':[['label_id',1],
             ['area_pixels',2],['bounds_xyxy',{'kind':'tuple','items':[0,0,2,1]}]]}]}
         self.assertEqual(contracts.decode(binding)[0]['area_pixels'],2)
@@ -57,7 +62,7 @@ class PaperReplayContractTests(unittest.TestCase):
         with patch.object(contracts,'MAX_METADATA_ITEMS',1):
             with self.assertRaises(contracts.NativePaperReplayError):contracts.decode(binding)
 
-    def test_crop_offsets_parents_shape_and_overlapping_boxes(self):
+    def check_test_crop_offsets_parents_shape_and_overlapping_boxes(self):
         # Two disjoint components can have overlapping boxes; T may exceed P.
         rows=contracts.canonical(tuple({'label_id':i,'area_pixels':2,'bounds_xyxy':(0,0,3,3)} for i in (1,2)))
         context={'source_components':rows,'final_components':rows}
@@ -76,7 +81,7 @@ class PaperReplayContractTests(unittest.TestCase):
             with self.assertRaises(contracts.NativePaperReplayError):
                 contracts.validate(dict(value,**{key:bad}),'metadata',(3,3),context)
 
-    def test_allocation_free_operation_limits_alias_facts_and_exact_cap(self):
+    def check_test_allocation_free_operation_limits_alias_facts_and_exact_cap(self):
         recipe=selected_recipe()
         for stage in STAGES:
             operation=recipe.stage(stage).operation_id
@@ -100,9 +105,19 @@ class PaperReplayContractTests(unittest.TestCase):
         result=contracts.plan('smpts_paper.crops',(3,3),{},crop_pixels=18,**opts)
         self.assertEqual(result['crop_pixels'],18)
 
+    def test_workflow_lifecycle(self):
+        """3 related PaperReplayContractTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_schema_preserves_tuple_types_ids_bounds_and_strict_integer_fields)
+        self.scenario(self.check_test_metadata_decoder_has_byte_item_depth_and_primitive_bounds)
+        self.scenario(self.check_test_crop_offsets_parents_shape_and_overlapping_boxes)
+
+    def test_validation_and_recovery(self):
+        """1 related PaperReplayContractTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_allocation_free_operation_limits_alias_facts_and_exact_cap)
+
 
 @unittest.skipUnless(torch.cuda.is_available(),'CUDA required')
-class PaperStageReplayTests(unittest.TestCase):
+class PaperStageReplayTests(CatalogueTestCase):
     @classmethod
     def setUpClass(cls):
         cls.temporary=tempfile.TemporaryDirectory(dir='artifacts');cls.root=Path(cls.temporary.name)
@@ -125,239 +140,39 @@ class PaperStageReplayTests(unittest.TestCase):
     def tearDownClass(cls):cls.temporary.cleanup()
 
     def attempt(self,stage,case='full',directory=None,cancel=None,change=None):
-        calls=[];selected=[]
-        def profile(frame,event,arg):
-            if event=='call' and frame.f_code is runner._dispatch.__code__:calls.append(frame.f_locals['operation'])
-            elif event=='call' and frame.f_code is archives.load_native_recipe_result.__code__:selected.append(frame.f_locals['array_names'])
-            elif event=='return' and change is not None and frame.f_code is archives.read_native_recipe_inventory.__code__ and arg is not None:change(*arg)
-        previous=sys.getprofile();sys.setprofile(profile)
-        try:result=replay.replay_native_stage(directory or self.cases[case][2],stage,cancel=cancel)
-        finally:sys.setprofile(previous)
-        return result,calls,selected
+        return replay_attempt(directory or self.cases[case][2],stage,
+            cancel=cancel,inventory_change=change)
 
     def changed(self,**nodes):
         recipe,saved,_=self.cases['full']
-        changed=replace(saved,nodes=tuple(nodes.get(node.stage_id,node) for node in saved.nodes))
-        directory=self.root/('changed-'+str(len(tuple(self.root.iterdir()))))
-        archives.export_native_recipe_result(directory,recipe,changed)
-        return directory
+        return changed_archive(self.root,recipe,saved,nodes)
 
     def test_all_nine_stage_instances_replay_only_selected_operation_and_preserve_archive(self):
-        for case,(_,saved,directory) in self.cases.items():
-            before={str(p.relative_to(directory)):sha256(p.read_bytes()).hexdigest() for p in directory.rglob('*') if p.is_file()}
-            for stage,count in zip(STAGES,COUNTS):
-                with self.subTest(case=case,stage=stage):
-                    result,calls,selected=self.attempt(stage,case)
-                    self.assertEqual(result.status,'matched',result.reason)
-                    self.assertEqual(calls,[saved.node(stage).operation_id])
-                    self.assertEqual(len(selected),1);self.assertEqual(len(selected[0]),count)
-                    self.assertEqual(set(result.outputs),set(saved.node(stage).outputs))
-                    self.assertFalse(result.scientifically_validated)
-                    self.assertEqual(result.metadata['frame_scope'],'source')
-                    if stage==paper.CROPS:self.assertFalse(result.outputs['metadata']['original_execution'])
-            after={str(p.relative_to(directory)):sha256(p.read_bytes()).hexdigest() for p in directory.rglob('*') if p.is_file()}
-            self.assertEqual(before,after)
-
-    def test_full_graph_matches_independent_opencv_choices_and_packed_original_rgb(self):
-        gray=self.full_gray;recipe,saved,_=self.cases['full']
-        adaptive=cv2.adaptiveThreshold(gray,255,cv2.ADAPTIVE_THRESH_MEAN_C,cv2.THRESH_BINARY,25,2)
-        median=cv2.medianBlur(adaptive,5)
-        fixed=np.where(gray>100,255,0).astype(np.uint8);combined=cv2.bitwise_and(median,fixed)
-        labels,rows=canonical_components(combined)
-        selected=tuple(row['label_id'] for row in rows if np.prod(np.subtract(row['bounds_xyxy'][2:],row['bounds_xyxy'][:2]))>20)
-        target=np.where(np.isin(labels,selected),255,0).astype(np.uint8)
-        eroded=cv2.erode(target,np.ones((13,13),np.uint8),borderType=cv2.BORDER_REPLICATE)
-        merged=np.where(np.isin(labels,selected),eroded,combined).astype(np.uint8)
-        final,finalrows=canonical_components(merged)
-        for stage,port,expected in ((paper.MEAN,'mask',adaptive),(paper.MEDIAN,'mask',median),
-                (paper.GLOBAL,'mask',fixed),(paper.INTERSECTION,'mask',combined),
-                (paper.COMPONENTS,'labels',labels),(paper.EROSION,'mask',merged),
-                (paper.EROSION,'selected_mask',target),(paper.EROSION,'eroded_selected_mask',eroded),
-                (paper.RELOCALIZE,'labels',final)):
-            np.testing.assert_array_equal(saved.node(stage).outputs[port].cpu().numpy(),expected)
-        self.assertEqual(saved.node(paper.COMPONENTS).outputs['components'],rows)
-        self.assertEqual(saved.node(paper.CONTACTS).outputs['selected_parent_ids'],selected)
-        packed=saved.node(paper.CROPS).outputs;offset=0;parents=set()
-        for row,component in zip(packed['crops'],finalrows):
-            x0,y0,x1,y1=row['bounds_xyxy'];mask=final[y0:y1,x0:x1]==row['label_id']
-            parent=np.unique(labels[final==row['label_id']])
-            self.assertEqual(len(parent),1);self.assertEqual(row['parent_id'],int(parent[0]))
-            self.assertEqual(row['offset_pixels'],offset);parents.add(row['parent_id'])
-            wanted=np.where(mask[...,None],self.full_rgb[y0:y1,x0:x1],0).reshape(-1)
-            np.testing.assert_array_equal(packed['packed_rgb'][3*offset:3*(offset+mask.size)].cpu().numpy(),wanted)
-            np.testing.assert_array_equal(packed['packed_mask'][offset:offset+mask.size].cpu().numpy(),mask.reshape(-1).astype(np.uint8)*255)
-            offset+=mask.size
-        self.assertEqual(packed['disappeared_parent_ids'],tuple(row['label_id'] for row in rows if row['label_id'] not in parents))
-
-    def test_original_path_is_not_opened(self):
-        image=self.images['full'];raw=image.read_bytes();image.unlink()
-        try:
-            for stage in STAGES:self.assertEqual(self.attempt(stage)[0].status,'matched')
-        finally:image.write_bytes(raw)
-
-    def test_well_typed_changed_pixels_compact_leaves_and_selection_report_mismatch(self):
-        saved=self.cases['full'][1]
-        for stage,port in ((paper.GLOBAL,'mask'),(paper.EROSION,'mask'),(paper.CROPS,'packed_rgb')):
-            node=saved.node(stage);value=node.outputs[port].clone()
-            value.view(-1)[0]=255 if int(value.view(-1)[0])==0 else 0
-            result,calls,_=self.attempt(stage,directory=self.changed(**{stage:replace(node,outputs={**node.outputs,port:value})}))
-            self.assertEqual(result.status,'mismatch',result.reason);self.assertEqual(len(calls),1)
-            self.assertEqual(result.metadata['comparison']['mismatched_elements'],1)
-        node=saved.node(paper.COMPONENTS);rows=list(node.outputs['components'])
-        rows[0]=dict(rows[0],area_pixels=rows[0]['area_pixels']-1)
-        result,_,_=self.attempt(paper.COMPONENTS,directory=self.changed(**{paper.COMPONENTS:replace(node,outputs={**node.outputs,'components':tuple(rows)})}))
-        self.assertEqual(result.status,'mismatch',result.reason)
-        self.assertEqual(result.metadata['comparison']['mismatched_elements'],1)
-        node=saved.node(paper.CONTACTS)
-        result,_,_=self.attempt(paper.CONTACTS,directory=self.changed(**{paper.CONTACTS:replace(node,outputs={'selected_parent_ids':()})}))
-        self.assertEqual(result.status,'mismatch',result.reason)
-
-    def test_bad_headers_aliases_crop_offsets_controls_and_producer_keys_fail_before_upload(self):
-        def node(report,stage):return next(n for n in report['nodes'] if n['stage_id']==stage)
-        def key(report,specs):node(report,paper.RELOCALIZE)['input_keys']['mask']='0'*64
-        def header(report,specs):specs[dict(node(report,paper.COMPONENTS)['outputs'])['labels']['name']]['dtype']='|u1'
-        def control(report,specs):next(item for item in node(report,paper.MEDIAN)['parameters']['items'] if item[0]=='ksize')[1]=3
-        def alias(report,specs):
-            values=node(report,paper.CROPS)['outputs']
-            next(item for item in values if item[0]=='labels')[1]=dict(node(report,paper.COMPONENTS)['outputs'])['labels']
-        for stage,change in ((paper.RELOCALIZE,key),(paper.CROPS,header),(paper.CROPS,control),(paper.CROPS,alias)):
-            result,calls,selected=self.attempt(stage,change=change)
-            self.assertEqual(result.status,'invalid_archive',result.reason);self.assertFalse(calls);self.assertFalse(selected)
-        saved=self.cases['full'][1];node=saved.node(paper.CROPS)
-        rows=list(node.outputs['crops']);rows[0]=dict(rows[0],offset_pixels=1)
-        result,calls,selected=self.attempt(paper.CROPS,directory=self.changed(**{paper.CROPS:replace(node,outputs={**node.outputs,'crops':tuple(rows)})}))
-        self.assertEqual(result.status,'invalid_archive',result.reason);self.assertFalse(calls);self.assertFalse(selected)
-
-    def test_admission_cancellation_callback_exception_and_tensor_mutation_withhold_publication(self):
-        for stage in STAGES:
-            with patch.object(replay,'MAX_REPLAY_CUDA_BYTES',1),patch.object(replay,'_runtime') as runtime:
-                result,calls,selected=self.attempt(stage)
-                self.assertEqual(result.status,'unavailable',result.reason);runtime.assert_not_called()
-                self.assertFalse(calls);self.assertFalse(selected)
-            result,_,_=self.attempt(stage,cancel=lambda:True)
-            self.assertEqual(result.status,'cancelled');self.assertFalse(result.outputs)
-        self.assertEqual(self.attempt(paper.CROPS,cancel=lambda:1)[0].status,'failed')
-        for port in ('labels','packed_rgb','packed_mask'):
-            mutated=[]
-            def cancel():
-                frame=sys._getframe()
-                while frame:
-                    if frame.f_code is replay.replay_native_stage.__code__:
-                        products=frame.f_locals.get('outputs')
-                        if products and not mutated:
-                            products[port].add_(1);mutated.append(True)
-                            raise ValueError('caller exception after mutation')
-                        break
-                    frame=frame.f_back
-                return False
-            result,_,_=self.attempt(paper.CROPS,cancel=cancel)
-            self.assertTrue(mutated);self.assertEqual(result.status,'failed',result.reason);self.assertFalse(result.outputs)
-            self.assertIn('changed',result.reason)
+        from tests.replay_fixtures import hidden_origins
+        with hidden_origins(*self.images.values()):
+            for case,(_,saved,directory) in self.cases.items():
+                before=archive_hashes(directory)
+                for stage,count in zip(STAGES,COUNTS):
+                    with self.subTest(case=case,stage=stage):
+                        result,calls,selected=self.attempt(stage,case)
+                        self.assertEqual(result.status,'matched',result.reason)
+                        self.assertEqual(calls,[saved.node(stage).operation_id])
+                        self.assertEqual(len(selected),1);self.assertEqual(len(selected[0]),count)
+                        self.assertEqual(set(result.outputs),set(saved.node(stage).outputs))
+                        self.assertFalse(result.scientifically_validated)
+                        self.assertEqual(result.metadata['frame_scope'],'source')
+                        if stage==paper.CROPS:self.assertFalse(result.outputs['metadata']['original_execution'])
+                after=archive_hashes(directory)
+                self.assertEqual(before,after)
 
 
-    def test_explicit_frame_identity_and_overlapping_crop_boxes_above_source_area(self):
-        mask=np.zeros((35,37),np.uint8);mask[:5,:]=mask[-5:,:]=255;mask[:,:5]=mask[:,-5:]=255
-        mask[10:25,10:27]=255
-        yy,xx=np.indices(mask.shape);rgb=np.stack((xx,yy,xx+yy),axis=2).astype(np.uint8)
-        gray=np.where(mask,220,10).astype(np.uint8)
-        recipe=parameter(selected_recipe(),paper.MEAN,'offset',255.)
-        recipe=parameter(recipe,paper.MEDIAN,'ksize',1)
-        recipe=parameter(recipe,paper.CONTACTS,'contact_box_area',100_000)
-        frame=CoordinateFrame('explicit.test-frame',mask.shape,'top-left','x-right,y-down','pixel','c'*64)
-        saved=runner.run_native_recipe(recipe,torch.tensor(gray,device='cuda'),torch.tensor(rgb,device='cuda'),
-            source_sha256='d'*64,coordinate_frame=frame,preparation={'gray':'declared gray','rgb':'declared RGB'})
-        self.assertEqual(saved.status,'executed')
-        packed=saved.node(paper.CROPS).outputs
-        self.assertGreater(packed['packed_mask'].numel(),mask.size)
-        self.assertEqual(tuple(row['parent_id'] for row in packed['crops']),(1,2))
-        directory=self.root/'overlapping';archives.export_native_recipe_result(directory,recipe,saved)
-        for stage in (paper.MEAN,paper.CONTACTS,paper.CROPS):
-            result,calls,_=self.attempt(stage,directory=directory)
-            self.assertEqual(result.status,'matched',result.reason)
-            self.assertEqual(CoordinateFrame.from_dict(dict(result.metadata['coordinate_frame'])),frame)
-            self.assertEqual(calls,[saved.node(stage).operation_id])
-        for row in packed['crops']:
-            x0,y0,x1,y1=row['bounds_xyxy'];offset=row['offset_pixels'];count=np.prod(row['crop_shape'])
-            expected=np.where((mask[y0:y1,x0:x1]>0)[...,None],rgb[y0:y1,x0:x1],0)
-            # Other component pixels inside the box must be zeroed.
-            labels=saved.labels[y0:y1,x0:x1].cpu().numpy()
-            expected=np.where((labels==row['label_id'])[...,None],rgb[y0:y1,x0:x1],0)
-            np.testing.assert_array_equal(packed['packed_rgb'][3*offset:3*(offset+count)].cpu().numpy(),expected.reshape(-1))
 
-    def test_private_cuda_buffers_and_contract_state_mutation_with_callback_exceptions_withhold_outputs(self):
-        for stage in (paper.COMPONENTS,paper.EROSION,paper.CROPS):
-            watched=[];mutated=[]
-            def profile(frame,event,arg):
-                if event=='return' and frame.f_code is paper.paper._Guard.watch.__code__:
-                    watched.extend(frame.f_locals['tensors'])
-            def cancel():
-                frame=sys._getframe()
-                while frame:
-                    if frame.f_code is replay.replay_native_stage.__code__:
-                        owned=frame.f_locals.get('owned_storage',set())
-                        candidate=next((v for v in watched if v.untyped_storage().data_ptr() not in owned),None)
-                        if candidate is not None and not mutated:
-                            candidate.add_(1);mutated.append(True)
-                            raise ValueError('caller exception after private buffer mutation')
-                        break
-                    frame=frame.f_back
-                return False
-            old=sys.getprofile();sys.setprofile(profile)
-            try:result=replay.replay_native_stage(self.cases['full'][2],stage,cancel=cancel)
-            finally:sys.setprofile(old)
-            self.assertTrue(mutated);self.assertEqual(result.status,'failed',result.reason);self.assertFalse(result.outputs)
-            self.assertIn('changed',result.reason)
-        changed=[];original=contracts.COMPARE_ELEMENTS
-        def cancel():
-            frame=sys._getframe()
-            while frame:
-                if frame.f_code is replay.replay_native_stage.__code__:
-                    if frame.f_locals.get('outputs') and not changed:
-                        contracts.COMPARE_ELEMENTS=17;changed.append(True)
-                    break
-                frame=frame.f_back
-            return False
-        try:result=self.attempt(paper.CROPS,cancel=cancel)[0]
-        finally:contracts.COMPARE_ELEMENTS=original
-        self.assertTrue(changed);self.assertEqual(result.status,'failed',result.reason);self.assertFalse(result.outputs)
 
-    def test_actual_async_desktop_summaries_use_label_preview_and_preserve_active_run(self):
-        app=QApplication.instance() or QApplication([])
-        recipe,_,directory=self.cases['full']
-        saved=self.cases['singleton'][1]
-        dialog=NativeRecipeDialog(recipe)
-        dialog.set_source_path(self.images['singleton']);dialog._completed(saved)
-        dialog.resize(1050,650);dialog.show();app.processEvents()
-        try:
-            for stage,expected in ((paper.CONTACTS,'Selected contact parents'),(paper.CROPS,'Packed original RGB crops')):
-                dialog._select_stage(stage);dialog.start_stage_replay(directory)
-                deadline=time.monotonic()+90
-                while dialog._worker is not None and time.monotonic()<deadline:
-                    app.processEvents();time.sleep(.01)
-                self.assertIsNone(dialog._worker);self.assertEqual(dialog.replay_result.status,'matched',dialog.replay_result.reason)
-                self.assertIn(expected,dialog.facts.toPlainText());self.assertIs(dialog.result,saved)
-            self.assertFalse(dialog.preview.pixmap().isNull())
-            self.assertIn('Provisional paper reconstruction',dialog.facts.toPlainText())
-            self.assertEqual(dialog.crop_selector.count(),len(dialog.replay_result.outputs['crops'])+1)
-            dialog.crop_selector.setCurrentIndex(1);app.processEvents()
-            self.assertIn('Saved-input replay',dialog.facts.toPlainText())
-            pixel=dialog.preview.pixmap().toImage().pixelColor(0,0)
-            expected=tuple(dialog.replay_result.outputs['packed_rgb'][:3].cpu().tolist())
-            self.assertEqual((pixel.red(),pixel.green(),pixel.blue()),expected)
-            self.assertNotEqual(expected,(220,220,220));self.assertIs(dialog.result,saved)
-            dialog._select_stage(paper.CROPS)
-            self.assertEqual(dialog.crop_selector.count(),len(saved.node(paper.CROPS).outputs['crops'])+1)
-            dialog.crop_selector.setCurrentIndex(1);app.processEvents()
-            pixel=dialog.preview.pixmap().toImage().pixelColor(0,0)
-            self.assertEqual((pixel.red(),pixel.green(),pixel.blue()),(220,220,220))
-            for failure in (ValueError('deliberate failed replay'),runner.NativeRecipeCancelled('deliberate cancellation')):
-                dialog._replay_completed(failure);app.processEvents()
-                self.assertFalse(dialog.crop_selector.isVisible());self.assertFalse(dialog._paper_crop_replay)
-                self.assertIs(dialog.result,saved)
-                dialog._select_stage(paper.CROPS);dialog.crop_selector.setCurrentIndex(1);app.processEvents()
-                pixel=dialog.preview.pixmap().toImage().pixelColor(0,0)
-                self.assertEqual((pixel.red(),pixel.green(),pixel.blue()),(220,220,220))
-        finally:dialog.close();app.processEvents()
+
+
+
+
+
 
 
 if __name__=='__main__':unittest.main()

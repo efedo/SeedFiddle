@@ -7,7 +7,8 @@ class WorkController:
     def _init_work_control(self):
         self._closing_after_work = False
         self._stop_requested = False
-        self.stop_action = QAction('Stop current work', self)
+        self.stop_action = QAction('Stop', self)
+        self.stop_action.setToolTip('Stop the current pipeline or background calculation (Ctrl+.)')
         self.stop_action.setShortcut('Ctrl+.')
         self.stop_action.triggered.connect(self._stop_current_work)
         self.addAction(self.stop_action)
@@ -19,6 +20,7 @@ class WorkController:
         self._shutdown_timer.timeout.connect(self._poll_shutdown)
 
     def _stop_current_work(self):
+        self.catalogue_nodes.stop()
         self._stop_requested = True
         self._pending_analysis_key = None
         self._pending_analysis_scope = None

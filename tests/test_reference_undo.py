@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from tests.review_fixtures import dispose_window
+from tests.catalogue_fixtures import CatalogueTestCase
+
+from tests.functional_units import functional_units
+
+from tests.review_fixtures import dispose_window, isolated_window
 
 import os
 import tempfile
@@ -13,7 +17,8 @@ import numpy as np
 from seedvision.persistence import ReferenceRegionBundle
 
 
-class ReferenceUndoUiTests(unittest.TestCase):
+@functional_units
+class ReferenceUndoUiTests(CatalogueTestCase):
     @classmethod
     def setUpClass(cls) -> None:
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -34,8 +39,6 @@ class ReferenceUndoUiTests(unittest.TestCase):
             raise RuntimeError(f"Could not write test image {path}.")
 
     def setUp(self) -> None:
-        from seedvision.ui.main_window import MainWindow
-
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
@@ -43,7 +46,7 @@ class ReferenceUndoUiTests(unittest.TestCase):
         self.second_path = self.root / "images" / "b.png"
         self._write_image(self.first_path)
         self._write_image(self.second_path, "#7f8692")
-        self.window = MainWindow(self.root)
+        self.window = isolated_window(self.root)
         self.addCleanup(dispose_window, self.window)
         self.window.resize(960, 700)
         self.window.show()
@@ -164,7 +167,7 @@ class ReferenceUndoUiTests(unittest.TestCase):
             self.window.image_view._instance_annotations
         )
 
-    def test_material_exclusivity_multi_undo_returns_to_clean_baseline(self) -> None:
+    def check_test_material_exclusivity_multi_undo_returns_to_clean_baseline(self) -> None:
         from PySide6.QtCore import Qt
         from PySide6.QtTest import QTest
 
@@ -217,7 +220,7 @@ class ReferenceUndoUiTests(unittest.TestCase):
         self.assertFalse(self.window.apply_reference_masks_button.isEnabled())
         self.assertFalse(self.window.revert_reference_masks_button.isEnabled())
 
-    def test_retired_boundary_reference_edits_are_ignored(self) -> None:
+    def check_test_retired_boundary_reference_edits_are_ignored(self) -> None:
         height, width = self._shape()
         region = np.zeros((height, width), dtype=bool)
         region[31:35, 35:57] = True
@@ -234,7 +237,7 @@ class ReferenceUndoUiTests(unittest.TestCase):
         self.window._undo_active_reference_edit()
         self.assertNotIn(key, self.window._reference_masks_dirty)
 
-    def test_instance_history_restores_labels_origin_and_clear_commands(self) -> None:
+    def check_test_instance_history_restores_labels_origin_and_clear_commands(self) -> None:
         key = self._key()
         height, width = self._shape()
         applied = np.zeros((height, width), dtype=np.uint16)
@@ -282,7 +285,7 @@ class ReferenceUndoUiTests(unittest.TestCase):
         self.assertEqual(len(self.window._instance_undo_histories[key]),0)
         self.assertTrue(self.window._instance_undo_histories[key].can_redo)
 
-    def test_apply_and_revert_are_history_barriers(self) -> None:
+    def check_test_apply_and_revert_are_history_barriers(self) -> None:
         self._activate_reference_mode()
         key = self._key()
         height, width = self._shape()
@@ -313,7 +316,7 @@ class ReferenceUndoUiTests(unittest.TestCase):
             np.any(self.window.image_view.reference_mask("background"))
         )
 
-    def test_histories_are_isolated_per_image_and_autoload_is_a_barrier(self) -> None:
+    def check_test_histories_are_isolated_per_image_and_autoload_is_a_barrier(self) -> None:
         self._activate_reference_mode()
         first_key = self._key()
         first_region = np.zeros(self._shape(), dtype=bool)
@@ -358,7 +361,7 @@ class ReferenceUndoUiTests(unittest.TestCase):
             )
         )
 
-    def test_ui_queue_is_bounded_and_no_op_does_not_consume_it(self) -> None:
+    def check_test_ui_queue_is_bounded_and_no_op_does_not_consume_it(self) -> None:
         self._activate_reference_mode()
         key = self._key()
         height, width = self._shape()
@@ -389,7 +392,7 @@ class ReferenceUndoUiTests(unittest.TestCase):
         self.assertIn(key, self.window._reference_masks_dirty)
         self.assertFalse(self.window.reference_undo_button.isEnabled())
 
-    def test_right_drag_and_explicit_eraser_are_single_undoable_strokes(self) -> None:
+    def check_test_right_drag_and_explicit_eraser_are_single_undoable_strokes(self) -> None:
         from PySide6.QtCore import QPointF, Qt
         from PySide6.QtTest import QTest
 
@@ -413,7 +416,7 @@ class ReferenceUndoUiTests(unittest.TestCase):
         self.window._undo_active_reference_edit()
         self.assertTrue(self._reference_mask("background")[36, 48])
 
-    def test_assisted_instance_commits_are_atomic_and_anchor_is_a_no_op(self) -> None:
+    def check_test_assisted_instance_commits_are_atomic_and_anchor_is_a_no_op(self) -> None:
         from PySide6.QtCore import QPointF
 
         from seedvision.annotation import SmartFillRegion
@@ -451,6 +454,20 @@ class ReferenceUndoUiTests(unittest.TestCase):
         self.assertEqual(len(self.window._instance_undo_histories[key]), 1)
         self.window._undo_active_reference_edit()
         self.assertFalse(np.any(view._instance_annotations))
+
+    def test_workflow_lifecycle(self):
+        """7 related ReferenceUndoUiTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_material_exclusivity_multi_undo_returns_to_clean_baseline)
+        self.scenario(self.check_test_instance_history_restores_labels_origin_and_clear_commands)
+        self.scenario(self.check_test_apply_and_revert_are_history_barriers)
+        self.scenario(self.check_test_histories_are_isolated_per_image_and_autoload_is_a_barrier)
+        self.scenario(self.check_test_ui_queue_is_bounded_and_no_op_does_not_consume_it)
+        self.scenario(self.check_test_right_drag_and_explicit_eraser_are_single_undoable_strokes)
+        self.scenario(self.check_test_assisted_instance_commits_are_atomic_and_anchor_is_a_no_op)
+
+    def test_validation_and_recovery(self):
+        """1 related ReferenceUndoUiTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_retired_boundary_reference_edits_are_ignored)
 
 
 if __name__ == "__main__":

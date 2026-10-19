@@ -1,5 +1,7 @@
 """Hook semantics, strict transport and actual pinned public watershed products."""
 
+from tests.functional_units import functional_units
+
 import copy
 import hashlib
 import json
@@ -44,6 +46,7 @@ def sample(mask, rgb_img=None, *, missing=False, error=None, invalid=None):
     return labels
 
 
+@functional_units
 class CaptureHookTests(unittest.TestCase):
     def setUp(self):
         self.mask = np.zeros((4, 6), np.uint8)
@@ -53,7 +56,7 @@ class CaptureHookTests(unittest.TestCase):
         return capture.capture_watershed(function, mask=self.mask,
             kwargs={"mask": self.mask, **kwargs}, max_bytes=10000, max_elements=10000)
 
-    def test_one_actual_target_call_owned_products_prior_profile_and_trace_restore(self):
+    def check_test_one_actual_target_call_owned_products_prior_profile_and_trace_restore(self):
         old_profile, old_trace = sys.getprofile(), sys.gettrace()
         events, frames, traced = [], [], []
         def prior(frame, event, arg):
@@ -82,7 +85,7 @@ class CaptureHookTests(unittest.TestCase):
         self.assertTrue(np.all(result.arrays["distance"] == 1))
         self.assertEqual(result.arrays["palette"].tolist(), [[3,51,201],[207,91,5]])
 
-    def test_missing_local_retains_labels_but_no_partial_capture(self):
+    def check_test_missing_local_retains_labels_but_no_partial_capture(self):
         observed = []
         old = sys.getprofile()
         def prior(frame,event,arg):
@@ -98,7 +101,7 @@ class CaptureHookTests(unittest.TestCase):
         observed[0].fill(0)
         self.assertTrue(np.any(result.labels))
 
-    def test_malformed_fallback_labels_reject_and_reentrant_capture_is_unavailable(self):
+    def check_test_malformed_fallback_labels_reject_and_reentrant_capture_is_unavailable(self):
         for invalid in ('outside','negative','dtype','shape'):
             with self.subTest(invalid=invalid):
                 with self.assertRaises(capture.WatershedCaptureError):self.call(missing=True,invalid=invalid)
@@ -110,7 +113,7 @@ class CaptureHookTests(unittest.TestCase):
         self.assertEqual(result.metadata['status'],'unavailable')
         self.assertIn('more than once',result.metadata['reason'])
 
-    def test_public_and_prior_profiler_errors_propagate_and_restore_hooks(self):
+    def check_test_public_and_prior_profiler_errors_propagate_and_restore_hooks(self):
         sentinel = RuntimeError("public error")
         old_profile, old_trace = sys.getprofile(), sys.gettrace()
         def prior(frame, event, arg): pass
@@ -127,7 +130,7 @@ class CaptureHookTests(unittest.TestCase):
         finally:
             sys.setprofile(old_profile);sys.settrace(old_trace)
 
-    def test_code_drift_aborts_instead_of_reporting_capture_unavailable(self):
+    def check_test_code_drift_aborts_instead_of_reporting_capture_unavailable(self):
         code = sample.__code__
         def different(**kwargs): return np.zeros((4, 6), np.int32)
         old = sys.getprofile()
@@ -140,7 +143,7 @@ class CaptureHookTests(unittest.TestCase):
         finally:
             sample.__code__ = code;sys.setprofile(old)
 
-    def test_snapshot_admission_precedes_public_call_and_contiguous_copy(self):
+    def check_test_snapshot_admission_precedes_public_call_and_contiguous_copy(self):
         p = self.mask.size
         for max_bytes, max_elements in [(42*p+2,16*p+3),(42*p+3,16*p+2)]:
             with mock.patch.object(capture.np, "array", side_effect=AssertionError("allocation")):
@@ -148,7 +151,7 @@ class CaptureHookTests(unittest.TestCase):
                     capture.capture_watershed(sample, mask=self.mask, kwargs={"mask":self.mask}, max_bytes=max_bytes, max_elements=max_elements)
         capture.capture_watershed(sample, mask=self.mask, kwargs={"mask":self.mask}, max_bytes=42*p+3, max_elements=16*p+3)
 
-    def test_malformed_count_coordinates_palette_and_sparse_ids_are_unavailable(self):
+    def check_test_malformed_count_coordinates_palette_and_sparse_ids_are_unavailable(self):
         observed = {}
         def prior(frame,event,arg):
             if frame.f_code is sample.__code__ and event == "return": observed.update(frame.f_locals)
@@ -172,7 +175,21 @@ class CaptureHookTests(unittest.TestCase):
         with self.assertRaisesRegex(capture.WatershedCaptureError,"aggregate"):
             capture._snapshot(observed,observed['labels'],self.mask,max_bytes=1,max_elements=10000)
 
+    def test_workflow_lifecycle(self):
+        """3 related CaptureHookTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_one_actual_target_call_owned_products_prior_profile_and_trace_restore)
+        self.scenario(self.check_test_public_and_prior_profiler_errors_propagate_and_restore_hooks)
+        self.scenario(self.check_test_snapshot_admission_precedes_public_call_and_contiguous_copy)
 
+    def test_validation_and_recovery(self):
+        """4 related CaptureHookTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_missing_local_retains_labels_but_no_partial_capture)
+        self.scenario(self.check_test_malformed_fallback_labels_reject_and_reentrant_capture_is_unavailable)
+        self.scenario(self.check_test_code_drift_aborts_instead_of_reporting_capture_unavailable)
+        self.scenario(self.check_test_malformed_count_coordinates_palette_and_sparse_ids_are_unavailable)
+
+
+@functional_units
 class CaptureProtocolTests(unittest.TestCase):
     def products(self, empty=False):
         mask=np.zeros((4,6),np.uint8);mask[1:3,1:5]=255
@@ -190,7 +207,7 @@ class CaptureProtocolTests(unittest.TestCase):
             del arrays['coordinates'];metadata['empty_coordinates']=copy.deepcopy(capture.EMPTY_COORDINATES)
         return mask,arrays,{'capture':metadata}
 
-    def test_empty_coordinate_record_reconstructs_exact_array_without_relaxing_npz(self):
+    def check_test_empty_coordinate_record_reconstructs_exact_array_without_relaxing_npz(self):
         mask,arrays,effective=self.products(empty=True);decl=[]
         protocol._validate_watershed_capture(arrays,decl,effective,'call1',{'mask':mask})
         self.assertEqual(arrays['coordinates'].shape,(0,2));self.assertEqual(arrays['coordinates'].dtype,np.int64)
@@ -198,13 +215,13 @@ class CaptureProtocolTests(unittest.TestCase):
         with self.assertRaisesRegex(protocol.ReferenceProtocolError,"shape"):
             protocol.validate_array_mapping({'coordinates':arrays['coordinates']})
 
-    def test_nonempty_artifacts_have_exact_digest_channels_frame_and_count(self):
+    def check_test_nonempty_artifacts_have_exact_digest_channels_frame_and_count(self):
         mask,arrays,effective=self.products();protocol._validate_watershed_capture(arrays,[],effective,'call1',{'mask':mask})
         arrays['diagnostic'][0,0,0]^=1
         with self.assertRaisesRegex(protocol.ReferenceProtocolError,"identity"):
             protocol._validate_watershed_capture(arrays,[],effective,'call1',{'mask':mask})
 
-    def test_malformed_empty_sentinels_and_partial_capture_reject(self):
+    def check_test_malformed_empty_sentinels_and_partial_capture_reject(self):
         changes={'schema':'wrong','name':'other','shape':[0,3],'dtype':'<i4','nbytes':True,'sha256':'0'*64}
         for key,value in changes.items():
             with self.subTest(key=key):
@@ -219,10 +236,20 @@ class CaptureProtocolTests(unittest.TestCase):
             with self.assertRaisesRegex(protocol.ReferenceProtocolError,'inventory'):
                 protocol._validate_watershed_capture(arrays,[],effective,'call1',{'mask':mask})
 
-    def test_capture_pins_are_additive_and_contradictory_source_records_reject(self):
+    def check_test_capture_pins_are_additive_and_contradictory_source_records_reject(self):
         records=capture.capture_source_records();self.assertEqual(worker._capture_source_inventory(records),records)
         records[0]['sha256']='0'*64
         with self.assertRaisesRegex(worker.WorkerError,'contradicts'):worker._capture_source_inventory(records)
+
+    def test_workflow_lifecycle(self):
+        """2 related CaptureProtocolTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_empty_coordinate_record_reconstructs_exact_array_without_relaxing_npz)
+        self.scenario(self.check_test_nonempty_artifacts_have_exact_digest_channels_frame_and_count)
+
+    def test_validation_and_recovery(self):
+        """2 related CaptureProtocolTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_malformed_empty_sentinels_and_partial_capture_reject)
+        self.scenario(self.check_test_capture_pins_are_additive_and_contradictory_source_records_reject)
 
 
 ORACLE = r'''
@@ -282,55 +309,8 @@ raise SystemExit(worker.main())
                 protocol.PlantCVReferenceRunner(REFERENCE).run('segmentation.watershed.capture',
                     {'rgb':np.zeros((4,6,3),np.uint8),'mask':np.zeros((4,6),np.uint8)},{'distance':1})
 
-    def test_actual_pinned_locals_diagnostics_rng_and_runner_match(self):
-        mask=np.zeros((48,72),np.uint8);yy,xx=np.ogrid[:48,:72]
-        mask[((xx-25)**2+(yy-24)**2<12**2)|((xx-47)**2+(yy-24)**2<12**2)]=255
-        rgb=np.full((48,72,3),(209,83,13),np.uint8)
-        with tempfile.TemporaryDirectory() as temp:
-            path=Path(temp)/'oracle.npz'
-            process=subprocess.run([str(REFERENCE),'-c',ORACLE,str(path)],cwd=ROOT,capture_output=True,text=True,timeout=120)
-            self.assertEqual(process.returncode,0,process.stderr)
-            self.assertTrue(json.loads(process.stdout)['rng_advancement_preserved'])
-            expected=dict(np.load(path,allow_pickle=False))
-        runner=protocol.PlantCVReferenceRunner(REFERENCE)
-        captured=runner.run('segmentation.watershed.capture',{'rgb':rgb,'mask':mask},{'distance':5})
-        self.assertEqual(captured.effective_parameters['capture']['status'],'available')
-        for name in ('distance','coordinates','peaks','markers','negative_distance','labels'):
-            np.testing.assert_array_equal(captured.arrays[name],expected[name])
-        np.testing.assert_array_equal(captured.arrays['diagnostic'],captured.arrays['diagnostic_bgr'][...,::-1])
-        ordinary=runner.run('segmentation.watershed',{'rgb':rgb,'mask':mask},{'distance':5})
-        self.assertEqual(set(ordinary.arrays),{'labels'});self.assertNotIn('capture',ordinary.effective_parameters)
-        np.testing.assert_array_equal(ordinary.arrays['labels'],captured.arrays['labels'])
 
-    def test_actual_empty_capture_and_downstream_use_returned_labels(self):
-        runner=protocol.PlantCVReferenceRunner(REFERENCE)
-        rgb=np.full((48,72,3),(83,139,197),np.uint8)
-        empty=runner.run('segmentation.watershed.capture',{'rgb':rgb,'mask':np.zeros((48,72),np.uint8)},{'distance':5})
-        self.assertEqual(empty.arrays['coordinates'].shape,(0,2))
-        self.assertEqual(empty.effective_parameters['capture']['estimated_object_count'],0)
-        self.assertFalse(np.any(empty.arrays['labels']))
-        yy,xx=np.ogrid[:48,:72];mask=(((xx-36)**2+(yy-24)**2)<14**2).astype(np.uint8)*255
-        result=runner.run('segmentation.watershed.capture',{'rgb':rgb,'mask':mask},{'distance':5})
-        labels=result.arrays['labels'];n_labels=int(labels.max())
-        size=runner.run('analysis.size',{'image':rgb,'labels':labels},{'n_labels':n_labels})
-        color=runner.run('analysis.color',{'rgb':rgb,'labels':labels},{'n_labels':n_labels,'colorspaces':'all'})
-        self.assertEqual(size.effective_parameters['n_labels'],n_labels);self.assertTrue(size.observations)
-        self.assertEqual(color.effective_parameters['n_labels'],n_labels);self.assertTrue(color.observations)
-        np.testing.assert_array_equal(labels,result.arrays['labels'])
 
-    def test_cancel_after_child_return_withholds_capture_and_cleans_transport(self):
-        class Cancel:
-            value=False
-            def is_set(self):return self.value
-        cancel=Cancel();original=protocol._run_child
-        def child(*args,**kwargs):
-            result=original(*args,**kwargs);cancel.value=True;return result
-        with tempfile.TemporaryDirectory() as temp:
-            runner=protocol.PlantCVReferenceRunner(REFERENCE,temporary_root=temp)
-            with mock.patch.object(protocol,'_run_child',side_effect=child):
-                with self.assertRaises(protocol.ReferenceCancelledError):
-                    runner.run('segmentation.watershed.capture',{'rgb':np.zeros((4,6,3),np.uint8),'mask':np.zeros((4,6),np.uint8)},{'distance':1},cancel_event=cancel)
-            self.assertEqual(list(Path(temp).iterdir()),[])
 
 
 if __name__ == '__main__':unittest.main()

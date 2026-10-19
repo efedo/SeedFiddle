@@ -1,4 +1,6 @@
 """CUDA Naive Bayes masks versus the pinned PlantCV public function."""
+
+from tests.functional_units import functional_units
 from dataclasses import replace
 import hashlib
 import io
@@ -81,8 +83,9 @@ def _reference(image, model_bytes):
         for name, mask in json.loads(result.stdout).items()}
 
 
+@functional_units
 class PlantCVNaiveBayesModelTests(unittest.TestCase):
-    def test_parsing_duplicate_channels_newlines_unknown_channels_and_model_hash(self):
+    def check_test_parsing_duplicate_channels_newlines_unknown_channels_and_model_hash(self):
         raw = _pdf(duplicate=True)
         model = native.parse_plantcv_pdf(raw)
         self.assertEqual(model.class_names, ('leaf', 'soil', 'shadow'))
@@ -93,7 +96,7 @@ class PlantCVNaiveBayesModelTests(unittest.TestCase):
         extra = raw+(_row('leaf', 'ignored', np.ones(256))+'\n').encode()
         self.assertEqual(native.parse_plantcv_pdf(extra).probabilities, model.probabilities)
 
-    def test_malformed_nonfinite_negative_missing_and_oversized_models_are_explicit(self):
+    def check_test_malformed_nonfinite_negative_missing_and_oversized_models_are_explicit(self):
         raw = _pdf()
         for invalid in (b'', b'header\nclass\thue\t1\n',
                 raw.replace(b'0.02', b'nan', 1), raw.replace(b'0.02', b'-0.02', 1),
@@ -107,7 +110,7 @@ class PlantCVNaiveBayesModelTests(unittest.TestCase):
             with self.subTest(kwargs=kwargs), self.assertRaises(native.NaiveBayesError):
                 native.parse_plantcv_pdf(raw, **kwargs)
 
-    def test_file_loading_is_bounded_before_parse_even_when_file_size_changes(self):
+    def check_test_file_loading_is_bounded_before_parse_even_when_file_size_changes(self):
         class TrackedStream(io.BytesIO):
             def read(self, size=-1):
                 self.requested = size
@@ -125,8 +128,18 @@ class PlantCVNaiveBayesModelTests(unittest.TestCase):
             with self.assertRaises(native.NaiveBayesError):
                 native.load_plantcv_pdf('unread-placeholder', max_model_bytes=0)
 
+    def test_workflow_lifecycle(self):
+        """2 related PlantCVNaiveBayesModelTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_parsing_duplicate_channels_newlines_unknown_channels_and_model_hash)
+        self.scenario(self.check_test_file_loading_is_bounded_before_parse_even_when_file_size_changes)
+
+    def test_validation_and_recovery(self):
+        """1 related PlantCVNaiveBayesModelTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_malformed_nonfinite_negative_missing_and_oversized_models_are_explicit)
+
 
 @unittest.skipUnless(torch.cuda.is_available(), 'CUDA is required for Naive Bayes inference')
+@functional_units
 class PlantCVNaiveBayesTests(unittest.TestCase):
     def assert_masks(self, actual, expected, device):
         self.assertEqual(tuple(actual.masks), tuple(expected))
@@ -136,7 +149,7 @@ class PlantCVNaiveBayesTests(unittest.TestCase):
             self.assertTrue(mask.is_contiguous())
             np.testing.assert_array_equal(mask.cpu().numpy(), expected[name], err_msg=name)
 
-    def test_public_masks_class_order_duplicate_channel_rows_and_input_preservation(self):
+    def check_test_public_masks_class_order_duplicate_channel_rows_and_input_preservation(self):
         image, raw = _image(), _pdf(duplicate=True)
         bgr = torch.as_tensor(image, device='cuda')
         before = bgr.clone()
@@ -148,7 +161,7 @@ class PlantCVNaiveBayesTests(unittest.TestCase):
         self.assertEqual(result.reference_source_sha256, native.PLANTCV_SOURCE_SHA256)
         torch.testing.assert_close(bgr, before, rtol=0, atol=0)
 
-    def test_first_class_ties_zero_underflow_and_large_finite_products_match_public(self):
+    def check_test_first_class_ties_zero_underflow_and_large_finite_products_match_public(self):
         image = _image()
         for values in ({'first': 1.0, 'second': 1.0}, {'first': 0.0, 'second': 0.0},
                 {'first': 1e-200, 'second': 1e-200}, {'first': 1e100, 'second': 1e-100},
@@ -159,7 +172,7 @@ class PlantCVNaiveBayesTests(unittest.TestCase):
                 result = native.naive_bayes_masks(bgr, native.parse_plantcv_pdf(raw))
                 self.assert_masks(result, _reference(image, raw), bgr.device)
 
-    def test_custom_stream_and_tiled_likelihoods_match_public_call(self):
+    def check_test_custom_stream_and_tiled_likelihoods_match_public_call(self):
         image, raw = _image(), _pdf()
         bgr = torch.as_tensor(image, device='cuda')
         stream = torch.cuda.Stream()
@@ -168,7 +181,7 @@ class PlantCVNaiveBayesTests(unittest.TestCase):
         stream.synchronize()
         self.assert_masks(result, _reference(image, raw), bgr.device)
 
-    def test_invalid_frozen_models_preflight_and_cancellation_publish_no_partial_masks(self):
+    def check_test_invalid_frozen_models_preflight_and_cancellation_publish_no_partial_masks(self):
         model = native.parse_plantcv_pdf(_pdf())
         altered = tuple(tuple(tuple(value+0.01 if i == 0 else value
             for i, value in enumerate(channel)) for channel in channels)
@@ -194,7 +207,7 @@ class PlantCVNaiveBayesTests(unittest.TestCase):
             native.naive_bayes_masks(bgr, model, tile_pixels=5, cancel=cancel)
         torch.testing.assert_close(bgr, before, rtol=0, atol=0)
 
-    def test_largest_class_count_multi_tile_actual_allocation_stays_below_preflight(self):
+    def check_test_largest_class_count_multi_tile_actual_allocation_stays_below_preflight(self):
         model = native.parse_plantcv_pdf(_constant_pdf({f'class{i}': 1.0 for i in range(native.MAX_CLASSES)}))
         bgr = torch.zeros((1, native.TILE_PIXELS*3+17, 3), dtype=torch.uint8, device='cuda')
         native.naive_bayes_masks(bgr[:, :1].contiguous(), model)
@@ -212,6 +225,17 @@ class PlantCVNaiveBayesTests(unittest.TestCase):
         self.assertEqual(len(result.masks), native.MAX_CLASSES)
         self.assertTrue(bool(torch.all(result.masks['class0'] == 255).item()))
         self.assertTrue(bool(torch.all(result.masks[f'class{native.MAX_CLASSES-1}'] == 0).item()))
+
+    def test_workflow_lifecycle(self):
+        """4 related PlantCVNaiveBayesTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_public_masks_class_order_duplicate_channel_rows_and_input_preservation)
+        self.scenario(self.check_test_first_class_ties_zero_underflow_and_large_finite_products_match_public)
+        self.scenario(self.check_test_custom_stream_and_tiled_likelihoods_match_public_call)
+        self.scenario(self.check_test_largest_class_count_multi_tile_actual_allocation_stays_below_preflight)
+
+    def test_validation_and_recovery(self):
+        """1 related PlantCVNaiveBayesTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_invalid_frozen_models_preflight_and_cancellation_publish_no_partial_masks)
 
 
 if __name__ == '__main__':

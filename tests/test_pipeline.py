@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.functional_units import functional_units
+
 import json
 import unittest
 import ast
@@ -13,8 +15,9 @@ from seedvision.pipeline import (
 )
 
 
+@functional_units
 class PipelineModelTests(unittest.TestCase):
-    def test_foreground_requires_authored_evidence_and_has_no_refinement_controls(self) -> None:
+    def check_test_foreground_requires_authored_evidence_and_has_no_refinement_controls(self) -> None:
         graph = build_default_pipeline()
         colour_keys = set(graph.node("background_likelihood").parameters)
         foreground_keys = {key for key in colour_keys if key.startswith("foreground_")}
@@ -27,7 +30,7 @@ class PipelineModelTests(unittest.TestCase):
             "foreground_include_annotated_seed_instances", foreground_keys
         )
 
-    def test_reference_seed_traits_are_terminal_and_do_not_replace_material_classes(
+    def check_test_reference_seed_traits_are_terminal_and_do_not_replace_material_classes(
         self,
     ) -> None:
         graph = build_default_pipeline()
@@ -62,7 +65,7 @@ class PipelineModelTests(unittest.TestCase):
         )
         self.assertEqual(affected, ("reference_seed_traits",))
 
-    def test_default_pipeline_is_left_to_right_and_acyclic(self) -> None:
+    def check_test_default_pipeline_is_left_to_right_and_acyclic(self) -> None:
         graph = build_default_pipeline()
         order = graph.topological_order()
         self.assertEqual(order[0], "project")
@@ -151,7 +154,7 @@ class PipelineModelTests(unittest.TestCase):
         for connection in graph.connections:
             self.assertLess(graph.node(connection.source).x, graph.node(connection.target).x)
 
-    def test_every_authored_dependency_has_labelled_typed_ports(self) -> None:
+    def check_test_every_authored_dependency_has_labelled_typed_ports(self) -> None:
         graph = build_default_pipeline()
         all_nodes = {**graph.nodes, **graph.unused_nodes}
         all_connections = (*graph.connections, *graph.unused_connections)
@@ -177,7 +180,7 @@ class PipelineModelTests(unittest.TestCase):
                 connection.data_type,
             )
 
-    def test_restored_toolbox_connections_are_also_left_to_right(self) -> None:
+    def check_test_restored_toolbox_connections_are_also_left_to_right(self) -> None:
         graph = build_default_pipeline()
         for node_id in tuple(graph.unused_nodes):
             graph.restore_unused_node(node_id)
@@ -188,7 +191,7 @@ class PipelineModelTests(unittest.TestCase):
                 (connection.source, connection.target),
             )
 
-    def test_every_node_matches_the_audited_direct_input_contract(self) -> None:
+    def check_test_every_node_matches_the_audited_direct_input_contract(self) -> None:
         """Lock runtime inputs independently of the wires that create ports."""
 
         graph = build_default_pipeline()
@@ -372,13 +375,13 @@ class PipelineModelTests(unittest.TestCase):
             expected,
         )
 
-    def test_each_generated_datum_has_one_succinct_output_socket(self) -> None:
+    def check_test_each_generated_datum_has_one_succinct_output_socket(self) -> None:
         graph = build_default_pipeline()
         for node in (*graph.nodes.values(), *graph.unused_nodes.values()):
             types = tuple(node.output_port_types.values())
             self.assertEqual(len(types), len(set(types)), node.identifier)
 
-    def test_geometry_and_scale_changes_reach_their_hidden_consumers(self) -> None:
+    def check_test_geometry_and_scale_changes_reach_their_hidden_consumers(self) -> None:
         graph = build_default_pipeline()
         for node_id in tuple(graph.unused_nodes):
             graph.restore_unused_node(node_id)
@@ -396,7 +399,7 @@ class PipelineModelTests(unittest.TestCase):
         self.assertIn("reference_edge_probability", scale_affected)
         self.assertIn("seed_edge_curves", scale_affected)
 
-    def test_disconnection_bypasses_and_reconnection_restores_only_dependents(self) -> None:
+    def check_test_disconnection_bypasses_and_reconnection_restores_only_dependents(self) -> None:
         graph = build_default_pipeline()
         connection = next(
             edge
@@ -429,7 +432,7 @@ class PipelineModelTests(unittest.TestCase):
         self.assertFalse(graph.node("procedural_instances").enabled)
         self.assertFalse(graph.node("unet_instances").enabled)
 
-    def test_reconnection_rejects_unimplemented_typed_substitutions(self) -> None:
+    def check_test_reconnection_rejects_unimplemented_typed_substitutions(self) -> None:
         graph = build_default_pipeline()
         connection = next(
             edge
@@ -456,7 +459,7 @@ class PipelineModelTests(unittest.TestCase):
                 connection.target_port,
             )
 
-    def test_identification_change_invalidates_only_downstream_nodes(self) -> None:
+    def check_test_identification_change_invalidates_only_downstream_nodes(self) -> None:
         graph = build_default_pipeline()
         for node_id in tuple(graph.unused_nodes):
             graph.restore_unused_node(node_id)
@@ -489,7 +492,7 @@ class PipelineModelTests(unittest.TestCase):
         self.assertEqual(graph.node("layout_detection").status, NodeStatus.COMPLETE)
         self.assertEqual(graph.node("project").status, NodeStatus.COMPLETE)
 
-    def test_overlay_nodes_expose_the_analysis_branches(self) -> None:
+    def check_test_overlay_nodes_expose_the_analysis_branches(self) -> None:
         graph = build_default_pipeline()
         for node_id in tuple(graph.unused_nodes):
             graph.restore_unused_node(node_id)
@@ -680,7 +683,7 @@ class PipelineModelTests(unittest.TestCase):
             },
         )
 
-    def test_procedural_instances_have_explicit_evidence_dependencies(self) -> None:
+    def check_test_procedural_instances_have_explicit_evidence_dependencies(self) -> None:
         graph = build_default_pipeline()
         self.assertEqual(
             graph.upstream("procedural_instances"),
@@ -704,7 +707,7 @@ class PipelineModelTests(unittest.TestCase):
         self.assertEqual(affected, ("procedural_instances", "trait_classifier"))
         self.assertEqual(graph.node("procedural_instances").status, NodeStatus.IDLE)
 
-    def test_parameter_batch_is_one_revision_and_one_invalidation(self) -> None:
+    def check_test_parameter_batch_is_one_revision_and_one_invalidation(self) -> None:
         graph = build_default_pipeline()
         graph.set_status("procedural_instances", NodeStatus.COMPLETE, "Calculated")
         starting_revision = graph.revision
@@ -745,7 +748,7 @@ class PipelineModelTests(unittest.TestCase):
         self.assertEqual(graph.revision, starting_revision + 1)
         self.assertEqual(graph.invalidate.call_count, 1)
 
-    def test_parameter_batch_validation_is_atomic(self) -> None:
+    def check_test_parameter_batch_validation_is_atomic(self) -> None:
         graph = build_default_pipeline()
         graph.set_status("procedural_instances", NodeStatus.COMPLETE, "Calculated")
         node = graph.node("procedural_instances")
@@ -768,7 +771,7 @@ class PipelineModelTests(unittest.TestCase):
         self.assertEqual(graph.revision, starting_revision)
         graph.invalidate.assert_not_called()
 
-    def test_procedural_marker_count_multiplier_is_exposed(self) -> None:
+    def check_test_procedural_marker_count_multiplier_is_exposed(self) -> None:
         from seedvision.segmentation.procedural import ProceduralInstanceSettings
 
         node = build_default_pipeline().node("procedural_instances")
@@ -786,7 +789,7 @@ class PipelineModelTests(unittest.TestCase):
             1.02,
         )
 
-    def test_calibration_nodes_feed_the_corrected_analysis_path(self) -> None:
+    def check_test_calibration_nodes_feed_the_corrected_analysis_path(self) -> None:
         graph = build_default_pipeline()
         self.assertEqual(graph.upstream("metadata"), ("project",))
         self.assertEqual(
@@ -830,7 +833,7 @@ class PipelineModelTests(unittest.TestCase):
         self.assertNotIn("circle_candidates", affected)
         self.assertNotIn("output", affected)
 
-    def test_gradient_method_change_invalidates_only_gradient_descendants(self) -> None:
+    def check_test_gradient_method_change_invalidates_only_gradient_descendants(self) -> None:
         graph = build_default_pipeline()
         for node_id in graph.nodes:
             graph.node(node_id).status = NodeStatus.COMPLETE
@@ -856,7 +859,7 @@ class PipelineModelTests(unittest.TestCase):
             self.assertNotIn(upstream_id, affected)
             self.assertIs(graph.node(upstream_id).status, NodeStatus.COMPLETE)
 
-    def test_circle_candidates_are_preserved_in_the_unused_node_toolbox(self) -> None:
+    def check_test_circle_candidates_are_preserved_in_the_unused_node_toolbox(self) -> None:
         graph = build_default_pipeline()
         self.assertNotIn("circle_candidates", graph.nodes)
         self.assertIn("circle_candidates", graph.unused_nodes)
@@ -876,7 +879,7 @@ class PipelineModelTests(unittest.TestCase):
             "illumination_decomposition",
         ))
 
-    def test_surface_darkness_is_active_while_threshold_ceiling_diagnostics_are_optional(self) -> None:
+    def check_test_surface_darkness_is_active_while_threshold_ceiling_diagnostics_are_optional(self) -> None:
         graph = build_default_pipeline()
         ceilings = {
             "lightening_gradient_ceiling",
@@ -901,7 +904,7 @@ class PipelineModelTests(unittest.TestCase):
         self.assertEqual(len(restored), 2)
         self.assertFalse(graph.node("lightening_gradient_ceiling").enabled)
 
-    def test_calibration_residual_risk_is_preserved_in_unused_toolbox(self) -> None:
+    def check_test_calibration_residual_risk_is_preserved_in_unused_toolbox(self) -> None:
         graph = build_default_pipeline()
         self.assertNotIn("calibration_residuals", graph.nodes)
         self.assertIn("calibration_residuals", graph.unused_nodes)
@@ -922,7 +925,7 @@ class PipelineModelTests(unittest.TestCase):
         )
         self.assertFalse(node.enabled)
 
-    def test_pipeline_configuration_is_json_serializable(self) -> None:
+    def check_test_pipeline_configuration_is_json_serializable(self) -> None:
         payload = build_default_pipeline().to_dict()
         encoded = json.dumps(payload)
         self.assertIn("Seed identification", encoded)
@@ -931,7 +934,7 @@ class PipelineModelTests(unittest.TestCase):
         self.assertIn("calculation_seconds", payload["nodes"][0])
         self.assertEqual(len(payload["unused_nodes"]), 19)
 
-    def test_project_is_the_only_root_and_supplies_image_and_annotations(self) -> None:
+    def check_test_project_is_the_only_root_and_supplies_image_and_annotations(self) -> None:
         graph = build_default_pipeline()
         node = graph.node("project")
         self.assertEqual(node.category, "Project")
@@ -998,7 +1001,7 @@ class PipelineModelTests(unittest.TestCase):
             }.issubset(affected)
         )
 
-    def test_unfinished_candidate_and_mask_branches_default_to_disabled(self) -> None:
+    def check_test_unfinished_candidate_and_mask_branches_default_to_disabled(self) -> None:
         graph = build_default_pipeline()
         roots = {"boundary_normals"}
         expected = set(roots)
@@ -1021,7 +1024,7 @@ class PipelineModelTests(unittest.TestCase):
         self.assertFalse(graph.node("stardist_instances").enabled)
         self.assertIn("surface_darkness_gradients", graph.nodes)
 
-    def test_disabling_a_node_disables_all_dependents(self) -> None:
+    def check_test_disabling_a_node_disables_all_dependents(self) -> None:
         graph = build_default_pipeline()
         affected = graph.set_parameter(
             "background_likelihood", "background_colour_enabled", False
@@ -1035,7 +1038,7 @@ class PipelineModelTests(unittest.TestCase):
         self.assertTrue(graph.node("refined_background_likelihood").enabled)
         self.assertIn("refined_background_likelihood", affected)
 
-    def test_combined_noise_node_keeps_independent_enable_controls(self) -> None:
+    def check_test_combined_noise_node_keeps_independent_enable_controls(self) -> None:
         graph = build_default_pipeline()
         affected = graph.set_parameter(
             "refined_background_likelihood", "foreground_noise_enabled", False
@@ -1046,7 +1049,7 @@ class PipelineModelTests(unittest.TestCase):
         self.assertTrue(node.enabled)
         self.assertIn("material_evidence_decision", affected)
 
-    def test_reset_parameters_restores_authored_defaults(self) -> None:
+    def check_test_reset_parameters_restores_authored_defaults(self) -> None:
         graph = build_default_pipeline()
         original = graph.node("background_likelihood").parameters[
             "foreground_reference_weight"
@@ -1064,7 +1067,7 @@ class PipelineModelTests(unittest.TestCase):
         self.assertIn("background_likelihood", affected)
         self.assertEqual(graph.reset_parameters("background_likelihood"), ())
 
-    def test_reference_colour_capacity_controls_share_honest_naming(self) -> None:
+    def check_test_reference_colour_capacity_controls_share_honest_naming(self) -> None:
         graph = build_default_pipeline()
         background = graph.node("background_likelihood")
         foreground_spec = next(
@@ -1089,7 +1092,7 @@ class PipelineModelTests(unittest.TestCase):
         self.assertEqual(background_spec.maximum, 256)
         self.assertEqual(background_spec.step, 4)
 
-    def test_every_configurable_node_has_compact_graph_controls(self) -> None:
+    def check_test_every_configurable_node_has_compact_graph_controls(self) -> None:
         graph = build_default_pipeline()
         for node in (*graph.nodes.values(), *graph.unused_nodes.values()):
             if not node.parameter_specs:
@@ -1102,7 +1105,7 @@ class PipelineModelTests(unittest.TestCase):
                 node.identifier,
             )
 
-    def test_every_configurable_node_has_complete_operation_ordered_sections(self) -> None:
+    def check_test_every_configurable_node_has_complete_operation_ordered_sections(self) -> None:
         graph = build_default_pipeline()
         for node in (*graph.nodes.values(), *graph.unused_nodes.values()):
             keys = tuple(spec.key for spec in node.parameter_specs)
@@ -1156,7 +1159,7 @@ class PipelineModelTests(unittest.TestCase):
             ),
         )
 
-    def test_every_computational_setting_is_exposed_or_explicitly_private(self) -> None:
+    def check_test_every_computational_setting_is_exposed_or_explicitly_private(self) -> None:
         from dataclasses import fields
 
         from seedvision.calibration.geometry import DishDetectionSettings
@@ -1193,7 +1196,7 @@ class PipelineModelTests(unittest.TestCase):
         self.assertEqual(hidden, set(INTENTIONALLY_UNEXPOSED_SETTINGS))
         self.assertTrue(all(INTENTIONALLY_UNEXPOSED_SETTINGS.values()))
 
-    def test_every_exposed_parameter_has_a_computational_consumer(self) -> None:
+    def check_test_every_exposed_parameter_has_a_computational_consumer(self) -> None:
         graph = build_default_pipeline()
         controls = {
             (node.identifier, spec.key)
@@ -1236,7 +1239,7 @@ class PipelineModelTests(unittest.TestCase):
         )
         self.assertEqual(unused, [])
 
-    def test_invalid_parameter_value_is_rejected(self) -> None:
+    def check_test_invalid_parameter_value_is_rejected(self) -> None:
         graph = build_default_pipeline()
         graph.restore_unused_node("circle_candidates")
         with self.assertRaises(ValueError):
@@ -1244,7 +1247,7 @@ class PipelineModelTests(unittest.TestCase):
                 "circle_candidates", "circle_accumulator_threshold", 100
             )
 
-    def test_oriented_trace_convexity_controls_are_explicit_and_consumed(self) -> None:
+    def check_test_oriented_trace_convexity_controls_are_explicit_and_consumed(self) -> None:
         graph = build_default_pipeline()
         node = graph.node("edge_traces")
         specs = {spec.key: spec for spec in node.parameter_specs}
@@ -1273,7 +1276,7 @@ class PipelineModelTests(unittest.TestCase):
                 "edge_traces", "trace_curvature_policy", "globally convex"
             )
 
-    def test_foreground_noise_first_tertile_is_default_and_exposed(self) -> None:
+    def check_test_foreground_noise_first_tertile_is_default_and_exposed(self) -> None:
         graph = build_default_pipeline()
         noise = graph.node("refined_background_likelihood")
         spec = next(
@@ -1316,6 +1319,47 @@ class PipelineModelTests(unittest.TestCase):
                 "foreground_noise_direction_integration",
                 "lower-ish",
             )
+
+    def test_workflow_lifecycle(self):
+        """30 related PipelineModelTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_foreground_requires_authored_evidence_and_has_no_refinement_controls)
+        self.scenario(self.check_test_reference_seed_traits_are_terminal_and_do_not_replace_material_classes)
+        self.scenario(self.check_test_default_pipeline_is_left_to_right_and_acyclic)
+        self.scenario(self.check_test_every_authored_dependency_has_labelled_typed_ports)
+        self.scenario(self.check_test_restored_toolbox_connections_are_also_left_to_right)
+        self.scenario(self.check_test_every_node_matches_the_audited_direct_input_contract)
+        self.scenario(self.check_test_each_generated_datum_has_one_succinct_output_socket)
+        self.scenario(self.check_test_geometry_and_scale_changes_reach_their_hidden_consumers)
+        self.scenario(self.check_test_disconnection_bypasses_and_reconnection_restores_only_dependents)
+        self.scenario(self.check_test_overlay_nodes_expose_the_analysis_branches)
+        self.scenario(self.check_test_procedural_instances_have_explicit_evidence_dependencies)
+        self.scenario(self.check_test_parameter_batch_validation_is_atomic)
+        self.scenario(self.check_test_procedural_marker_count_multiplier_is_exposed)
+        self.scenario(self.check_test_calibration_nodes_feed_the_corrected_analysis_path)
+        self.scenario(self.check_test_circle_candidates_are_preserved_in_the_unused_node_toolbox)
+        self.scenario(self.check_test_surface_darkness_is_active_while_threshold_ceiling_diagnostics_are_optional)
+        self.scenario(self.check_test_calibration_residual_risk_is_preserved_in_unused_toolbox)
+        self.scenario(self.check_test_pipeline_configuration_is_json_serializable)
+        self.scenario(self.check_test_project_is_the_only_root_and_supplies_image_and_annotations)
+        self.scenario(self.check_test_unfinished_candidate_and_mask_branches_default_to_disabled)
+        self.scenario(self.check_test_disabling_a_node_disables_all_dependents)
+        self.scenario(self.check_test_combined_noise_node_keeps_independent_enable_controls)
+        self.scenario(self.check_test_reset_parameters_restores_authored_defaults)
+        self.scenario(self.check_test_reference_colour_capacity_controls_share_honest_naming)
+        self.scenario(self.check_test_every_configurable_node_has_compact_graph_controls)
+        self.scenario(self.check_test_every_configurable_node_has_complete_operation_ordered_sections)
+        self.scenario(self.check_test_every_computational_setting_is_exposed_or_explicitly_private)
+        self.scenario(self.check_test_every_exposed_parameter_has_a_computational_consumer)
+        self.scenario(self.check_test_oriented_trace_convexity_controls_are_explicit_and_consumed)
+        self.scenario(self.check_test_foreground_noise_first_tertile_is_default_and_exposed)
+
+    def test_validation_and_recovery(self):
+        """5 related PipelineModelTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_reconnection_rejects_unimplemented_typed_substitutions)
+        self.scenario(self.check_test_identification_change_invalidates_only_downstream_nodes)
+        self.scenario(self.check_test_parameter_batch_is_one_revision_and_one_invalidation)
+        self.scenario(self.check_test_gradient_method_change_invalidates_only_gradient_descendants)
+        self.scenario(self.check_test_invalid_parameter_value_is_rejected)
 
 
 class NodeTimingRecorderTests(unittest.TestCase):
@@ -1361,8 +1405,9 @@ class NodeTimingRecorderTests(unittest.TestCase):
             recorder.start("second")
 
 
+@functional_units
 class BaselineSettingsTests(unittest.TestCase):
-    def test_out_of_range_setting_is_rejected(self) -> None:
+    def check_test_out_of_range_setting_is_rejected(self) -> None:
         try:
             from seedvision.segmentation import BaselineSettings
         except ImportError as error:
@@ -1385,7 +1430,7 @@ class BaselineSettingsTests(unittest.TestCase):
                 circle_highlight_weight=0.0,
             )
 
-    def test_composite_dish_and_layer_settings_are_validated(self) -> None:
+    def check_test_composite_dish_and_layer_settings_are_validated(self) -> None:
         from seedvision.segmentation import (
             AdvancedAnalysisSettings,
             AnalysisLayerSettings,
@@ -1437,7 +1482,7 @@ class BaselineSettingsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             AdvancedAnalysisSettings(compute_device="metal")
 
-    def test_background_reference_colour_capacity_default_and_range(self) -> None:
+    def check_test_background_reference_colour_capacity_default_and_range(self) -> None:
         from seedvision.segmentation import AnalysisLayerSettings
 
         self.assertEqual(
@@ -1453,7 +1498,7 @@ class BaselineSettingsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             AnalysisLayerSettings(background_colour_components=257)
 
-    def test_reference_texture_material_and_edge_capacities_are_independent(self) -> None:
+    def check_test_reference_texture_material_and_edge_capacities_are_independent(self) -> None:
         from seedvision.segmentation import AnalysisLayerSettings
 
         defaults = AnalysisLayerSettings()
@@ -1545,7 +1590,7 @@ class BaselineSettingsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             AnalysisLayerSettings(reference_edge_class_contrast=12.5)
 
-    def test_net_physical_edge_internal_subtraction_control(self) -> None:
+    def check_test_net_physical_edge_internal_subtraction_control(self) -> None:
         from seedvision.segmentation import AnalysisLayerSettings
 
         defaults = AnalysisLayerSettings()
@@ -1593,7 +1638,7 @@ class BaselineSettingsTests(unittest.TestCase):
         self.assertEqual(node.status, NodeStatus.IDLE)
         self.assertEqual(node.parameters["net_physical_edge_internal_scale"], 0.5)
 
-    def test_local_edge_normalization_controls_are_postclassification(self) -> None:
+    def check_test_local_edge_normalization_controls_are_postclassification(self) -> None:
         from seedvision.segmentation import AnalysisLayerSettings
 
         defaults = AnalysisLayerSettings()
@@ -1640,7 +1685,7 @@ class BaselineSettingsTests(unittest.TestCase):
             ),
         )
 
-    def test_oriented_trace_ridge_source_is_explicit_and_computational(self) -> None:
+    def check_test_oriented_trace_ridge_source_is_explicit_and_computational(self) -> None:
         from seedvision.segmentation import AnalysisLayerSettings
 
         self.assertEqual(AnalysisLayerSettings().trace_edge_source, "generic_ridges")
@@ -1667,6 +1712,18 @@ class BaselineSettingsTests(unittest.TestCase):
             ),
             ("edge_traces", "seed_edge_curves", "procedural_instances", "trait_classifier"),
         )
+
+    def test_out_of_range_setting_is_rejected(self):
+        self.scenario(self.check_test_out_of_range_setting_is_rejected, labelled=False)
+
+    def test_workflow_lifecycle(self):
+        """6 related BaselineSettingsTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_composite_dish_and_layer_settings_are_validated)
+        self.scenario(self.check_test_background_reference_colour_capacity_default_and_range)
+        self.scenario(self.check_test_reference_texture_material_and_edge_capacities_are_independent)
+        self.scenario(self.check_test_net_physical_edge_internal_subtraction_control)
+        self.scenario(self.check_test_local_edge_normalization_controls_are_postclassification)
+        self.scenario(self.check_test_oriented_trace_ridge_source_is_explicit_and_computational)
 
 
 if __name__ == "__main__":

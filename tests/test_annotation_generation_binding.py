@@ -1,4 +1,6 @@
 """Native label producers bind to the displayed corrected source, including history."""
+
+from tests.functional_units import functional_units
 from dataclasses import FrozenInstanceError, replace
 from hashlib import sha256
 from pathlib import Path
@@ -15,6 +17,7 @@ from seedvision.ui.annotation_canvas import AnnotationEditContext, displayed_can
 from tests.review_fixtures import dispose_window
 
 
+@functional_units
 class AnnotationGenerationBindingTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -84,7 +87,7 @@ class AnnotationGenerationBindingTests(unittest.TestCase):
     def current_labels(self):
         return self.window._instance_reference_state(self.key)[0]
 
-    def test_actual_mouse_brush_binds_source_and_retains_legacy_signal(self):
+    def check_test_actual_mouse_brush_binds_source_and_retains_legacy_signal(self):
         from PySide6.QtCore import QPointF, Qt
         from PySide6.QtTest import QTest
         view = self.window.image_view
@@ -105,7 +108,7 @@ class AnnotationGenerationBindingTests(unittest.TestCase):
             generated[0].epoch = -1
         self.assertEqual(self.result.calibration.gpu_corrected_bgr.device.type, 'cuda')
 
-    def test_first_edit_known_edits_clear_and_fresh_drawing(self):
+    def check_test_first_edit_known_edits_clear_and_fresh_drawing(self):
         self.deliver(self.labels())
         self.assertEqual(self.generation(), self.digest)
         self.deliver(self.labels(second=True))
@@ -115,7 +118,7 @@ class AnnotationGenerationBindingTests(unittest.TestCase):
         self.deliver(self.labels())
         self.assertEqual(self.generation(), self.digest)
 
-    def test_legacy_partial_and_trait_edits_do_not_upgrade_history(self):
+    def check_test_legacy_partial_and_trait_edits_do_not_upgrade_history(self):
         self.window._instance_annotations_edited(self.labels())
         self.assertIsNone(self.generation())
         self.deliver(self.labels(second=True))
@@ -124,7 +127,7 @@ class AnnotationGenerationBindingTests(unittest.TestCase):
         self.assertIsNone(self.generation())
         self.assertTrue(self.window._draft_seed_annotations[self.key][1].conditions_reviewed)
 
-    def test_undo_redo_restore_known_and_explicit_unknown_atomically(self):
+    def check_test_undo_redo_restore_known_and_explicit_unknown_atomically(self):
         self.window._instance_annotations_edited(self.labels())
         self.window._clear_all_instance_annotations()
         self.deliver(self.labels(second=True))
@@ -140,7 +143,7 @@ class AnnotationGenerationBindingTests(unittest.TestCase):
         np.testing.assert_array_equal(self.current_labels(), self.labels(second=True))
         self.assertEqual(self.generation(), self.digest)
 
-    def test_revert_restores_saved_source_and_discards_pending_event(self):
+    def check_test_revert_restores_saved_source_and_discards_pending_event(self):
         saved = self.labels()
         self.window._install_reference_region_bundle(self.key, ReferenceRegionBundle(saved.shape,
             annotated_seeds=saved, source_to_corrected=self.result.calibration.affine_matrix,
@@ -154,7 +157,7 @@ class AnnotationGenerationBindingTests(unittest.TestCase):
         np.testing.assert_array_equal(self.current_labels(), saved)
         self.assertEqual(self.generation(), self.digest)
 
-    def test_queued_old_result_and_empty_events_are_rejected(self):
+    def check_test_queued_old_result_and_empty_events_are_rejected(self):
         from PySide6.QtCore import Qt
         view = self.window.image_view
         self.deliver(self.labels())
@@ -173,7 +176,7 @@ class AnnotationGenerationBindingTests(unittest.TestCase):
         np.testing.assert_array_equal(self.current_labels(), before)
         self.assertEqual(self.generation(), self.digest)
 
-    def test_same_result_source_round_trip_and_history_replacement_invalidate_events(self):
+    def check_test_same_result_source_round_trip_and_history_replacement_invalidate_events(self):
         view = self.window.image_view
         self.deliver(self.labels())
         for replace_history in (lambda: self.window._undo_instance_reference_edit(),
@@ -186,7 +189,7 @@ class AnnotationGenerationBindingTests(unittest.TestCase):
             self.deliver(self.labels(second=True), context)
             np.testing.assert_array_equal(self.current_labels(), expected)
 
-    def test_unknown_source_queued_event_cannot_cross_image_switch(self):
+    def check_test_unknown_source_queued_event_cannot_cross_image_switch(self):
         self._open(replace(self.result, source_sha256=None))
         view = self.window.image_view
         old = view.annotation_edit_context()
@@ -198,7 +201,7 @@ class AnnotationGenerationBindingTests(unittest.TestCase):
         self.assertFalse(np.any(self.current_labels()))
         self.assertIsNone(self.generation())
 
-    def test_two_queued_initial_edits_preserve_order_and_source(self):
+    def check_test_two_queued_initial_edits_preserve_order_and_source(self):
         from PySide6.QtCore import Qt
         view = self.window.image_view
         view.instance_annotations_generated.disconnect(self.window._instance_annotations_generated)
@@ -212,7 +215,7 @@ class AnnotationGenerationBindingTests(unittest.TestCase):
         self.assertEqual(self.generation(), self.digest)
         self.assertEqual(len(self.window._instance_undo_histories[self.key]), 2)
 
-    def test_same_shape_changed_transform_and_controller_result_do_not_bind(self):
+    def check_test_same_shape_changed_transform_and_controller_result_do_not_bind(self):
         view = self.window.image_view
         context = view.annotation_edit_context()
         altered = np.array(self.result.calibration.affine_matrix, copy=True)
@@ -225,7 +228,7 @@ class AnnotationGenerationBindingTests(unittest.TestCase):
         self.deliver(self.labels(), context)
         self.assertFalse(np.any(self.current_labels()))
 
-    def test_raw_diagnostic_stale_or_copied_buffers_cannot_establish_proof(self):
+    def check_test_raw_diagnostic_stale_or_copied_buffers_cannot_establish_proof(self):
         view = self.window.image_view
         self.assertIsNone(displayed_canvas_binding(self.result,
             self.result.calibration.corrected_bgr.copy(), 0))
@@ -236,7 +239,7 @@ class AnnotationGenerationBindingTests(unittest.TestCase):
         view.prepare_analysis_coordinates()
         self.assertIsNotNone(view.annotation_canvas_binding())
 
-    def test_external_pipeline_origin_is_unknown_and_supported_saved_identity_restores(self):
+    def check_test_external_pipeline_origin_is_unknown_and_supported_saved_identity_restores(self):
         imported = ImportedInstanceMask(self.labels(), self.source, 'corrected', 'pipeline:historical')
         self.assertTrue(self.window._install_imported_instance_mask(imported))
         self.assertIsNone(self.generation())
@@ -244,7 +247,7 @@ class AnnotationGenerationBindingTests(unittest.TestCase):
         self.assertTrue(self.window._install_imported_instance_mask(imported, generation_source=self.digest))
         self.assertEqual(self.generation(), self.digest)
 
-    def test_apply_autosave_preserves_source_before_analysis_invalidation(self):
+    def check_test_apply_autosave_preserves_source_before_analysis_invalidation(self):
         self.deliver(self.labels())
         self.window._apply_instance_annotations()
         loaded = self.window._reference_region_store.load_if_present(self.source)
@@ -254,7 +257,7 @@ class AnnotationGenerationBindingTests(unittest.TestCase):
         self.assertNotIn(self.key, self.window._draft_instance_generation_sources)
         self.assertNotIn(self.key, self.window._analyses)
 
-    def test_bulk_two_image_drafts_keep_known_and_unknown_source_overrides(self):
+    def check_test_bulk_two_image_drafts_keep_known_and_unknown_source_overrides(self):
         self.deliver(self.labels())
         first_key = self.key
         second = self.source.with_name('b.png')
@@ -273,22 +276,45 @@ class AnnotationGenerationBindingTests(unittest.TestCase):
         self.window._clear_project_session_state()
         self.assertEqual(self.window._draft_instance_generation_sources, {})
 
-    def test_identical_unbound_notification_does_not_erase_known_source(self):
+    def check_test_identical_unbound_notification_does_not_erase_known_source(self):
         self.deliver(self.labels())
         self.window._instance_annotations_edited(self.current_labels().copy())
         self.assertEqual(self.generation(), self.digest)
 
-    def test_known_trait_edits_preserve_outline_source_without_repainting(self):
+    def check_test_known_trait_edits_preserve_outline_source_without_repainting(self):
         self.deliver(self.labels())
         before = self.current_labels().copy()
         self.window.seed_conditions_reviewed_checkbox.setChecked(True)
         np.testing.assert_array_equal(self.current_labels(), before)
         self.assertEqual(self.generation(), self.digest)
 
-    def test_wrong_label_shape_cannot_acquire_corrected_canvas_identity(self):
+    def check_test_wrong_label_shape_cannot_acquire_corrected_canvas_identity(self):
         self.deliver(np.ones((10, 10), np.uint16))
         self.assertFalse(np.any(self.current_labels()))
         self.assertIsNone(self.generation())
+
+    def test_workflow_lifecycle(self):
+        """12 related AnnotationGenerationBindingTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_actual_mouse_brush_binds_source_and_retains_legacy_signal)
+        self.scenario(self.check_test_first_edit_known_edits_clear_and_fresh_drawing)
+        self.scenario(self.check_test_legacy_partial_and_trait_edits_do_not_upgrade_history)
+        self.scenario(self.check_test_undo_redo_restore_known_and_explicit_unknown_atomically)
+        self.scenario(self.check_test_revert_restores_saved_source_and_discards_pending_event)
+        self.scenario(self.check_test_unknown_source_queued_event_cannot_cross_image_switch)
+        self.scenario(self.check_test_two_queued_initial_edits_preserve_order_and_source)
+        self.scenario(self.check_test_same_shape_changed_transform_and_controller_result_do_not_bind)
+        self.scenario(self.check_test_external_pipeline_origin_is_unknown_and_supported_saved_identity_restores)
+        self.scenario(self.check_test_bulk_two_image_drafts_keep_known_and_unknown_source_overrides)
+        self.scenario(self.check_test_identical_unbound_notification_does_not_erase_known_source)
+        self.scenario(self.check_test_known_trait_edits_preserve_outline_source_without_repainting)
+
+    def test_validation_and_recovery(self):
+        """5 related AnnotationGenerationBindingTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_queued_old_result_and_empty_events_are_rejected)
+        self.scenario(self.check_test_same_result_source_round_trip_and_history_replacement_invalidate_events)
+        self.scenario(self.check_test_raw_diagnostic_stale_or_copied_buffers_cannot_establish_proof)
+        self.scenario(self.check_test_apply_autosave_preserves_source_before_analysis_invalidation)
+        self.scenario(self.check_test_wrong_label_shape_cannot_acquire_corrected_canvas_identity)
 
 
 if __name__ == '__main__':

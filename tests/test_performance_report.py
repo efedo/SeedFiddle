@@ -1,4 +1,6 @@
 """Actual synchronized CUDA/resource/cache facts and explicit correction timing."""
+
+from tests.functional_units import functional_units
 from copy import deepcopy
 from hashlib import sha256
 import json
@@ -16,6 +18,7 @@ from seedvision.benchmarking.native_recipe import build_native_seed_recipe
 from tests.test_native_recipe import selected_recipe, fixture
 
 
+@functional_units
 class PerformanceContractTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix='performance-report-')
@@ -27,7 +30,7 @@ class PerformanceContractTests(unittest.TestCase):
         self.assertTrue(cv2.imwrite(str(self.source), rgb))
         self.recipe = build_native_seed_recipe(selected_recipe())
 
-    def test_resource_controls_reject_invalid_and_unbounded_requests_before_cuda(self):
+    def check_test_resource_controls_reject_invalid_and_unbounded_requests_before_cuda(self):
         with patch.object(p.torch.cuda, 'synchronize', side_effect=AssertionError('No CUDA execution')):
             for kwargs in ({'repeats': True}, {'repeats': 65}, {'warmups': -1},
                            {'modes': ('warm',), 'warmups': 0}, {'modes': ('cold', 'cold')},
@@ -36,7 +39,7 @@ class PerformanceContractTests(unittest.TestCase):
                 with self.subTest(kwargs=kwargs), self.assertRaises((ValueError, TypeError)):
                     p.benchmark_native_recipe(self.recipe, self.source, **kwargs)
 
-    def test_unavailable_cuda_has_explicit_report_and_no_cpu_substitution(self):
+    def check_test_unavailable_cuda_has_explicit_report_and_no_cpu_substitution(self):
         with patch.object(p.torch.cuda, 'is_available', return_value=False), patch.object(
                 p, 'run_native_recipe_path', side_effect=AssertionError('No substitute')):
             report = p.benchmark_native_recipe(self.recipe, self.source)
@@ -45,7 +48,7 @@ class PerformanceContractTests(unittest.TestCase):
         self.assertIsNone(report['operator_correction']['records'] or None)
         self.assertFalse(report['scientifically_validated'])
 
-    def test_explicit_correction_timer_preserves_completed_and_interrupted_work(self):
+    def check_test_explicit_correction_timer_preserves_completed_and_interrupted_work(self):
         binding = dict(operator='reviewer', acceptance_standard='visible-outline-review-v1',
             source_sha256=sha256(self.source.read_bytes()).hexdigest(), recipe_sha256=self.recipe.identity.recipe_sha256)
         with p.measure_operator_correction(**binding) as complete:
@@ -66,7 +69,7 @@ class PerformanceContractTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             p.benchmark_native_recipe(self.recipe, self.source, correction_records=(stale,))
 
-    def test_report_export_is_bounded_finite_and_preserves_prior_destination(self):
+    def check_test_report_export_is_bounded_finite_and_preserves_prior_destination(self):
         path = self.root / 'report.json'
         p.export_performance_report({'status': 'failed', 'scientifically_validated': False}, path)
         original = path.read_bytes()
@@ -77,11 +80,22 @@ class PerformanceContractTests(unittest.TestCase):
             p.export_performance_report({'seconds': float('nan')}, self.root / 'invalid.json')
         self.assertFalse((self.root / 'invalid.json').exists())
 
+    def test_validation_and_recovery(self):
+        """2 related PerformanceContractTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_resource_controls_reject_invalid_and_unbounded_requests_before_cuda)
+        self.scenario(self.check_test_unavailable_cuda_has_explicit_report_and_no_cpu_substitution)
+
+    def test_workflow_lifecycle(self):
+        """2 related PerformanceContractTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_explicit_correction_timer_preserves_completed_and_interrupted_work)
+        self.scenario(self.check_test_report_export_is_bounded_finite_and_preserves_prior_destination)
+
 
 @unittest.skipUnless(torch.cuda.is_available(), 'CUDA required')
+@functional_units
 class ActualPerformanceTests(unittest.TestCase):
     setUp = PerformanceContractTests.setUp
-    def test_actual_cold_warm_timings_peaks_and_transfer_trace_preserve_native_products(self):
+    def check_test_actual_cold_warm_timings_peaks_and_transfer_trace_preserve_native_products(self):
         observed = []
         actual = p.run_native_recipe_path
         def record(*args, **kwargs):
@@ -109,7 +123,7 @@ class ActualPerformanceTests(unittest.TestCase):
         p.export_performance_report(report, self.root / 'actual.json')
         self.assertEqual(json.loads((self.root / 'actual.json').read_bytes()), report)
 
-    def test_measured_threshold_stops_following_runs_and_cancel_is_distinct(self):
+    def check_test_measured_threshold_stops_following_runs_and_cancel_is_distinct(self):
         report = p.benchmark_native_recipe(self.recipe, self.source, repeats=3, warmups=0,
             modes=('cold',), maximum_elapsed_seconds=1e-12)
         self.assertEqual(report['status'], 'threshold_exceeded')
@@ -119,7 +133,7 @@ class ActualPerformanceTests(unittest.TestCase):
         self.assertEqual(cancelled['status'], 'cancelled')
         self.assertFalse(cancelled['runs'])
 
-    def test_actual_producer_failure_retains_synchronized_measurements_without_products(self):
+    def check_test_actual_producer_failure_retains_synchronized_measurements_without_products(self):
         error = RuntimeError('Controlled path producer failure')
         with patch.object(p, 'run_native_recipe_path', side_effect=error):
             report = p.benchmark_native_recipe(self.recipe, self.source, repeats=2, warmups=0, modes=('cold',))
@@ -129,7 +143,7 @@ class ActualPerformanceTests(unittest.TestCase):
         self.assertIsNone(report['runs'][0]['nodes'])
         self.assertGreaterEqual(report['runs'][0]['peak_allocated_bytes'], 0)
 
-    def test_failed_measurement_keeps_original_failure_and_unknown_gpu_facts(self):
+    def check_test_failed_measurement_keeps_original_failure_and_unknown_gpu_facts(self):
         with patch.object(p, 'run_native_recipe_path', side_effect=RuntimeError('Original producer error')), \
                 patch.object(p.torch.cuda, 'synchronize', side_effect=(None, RuntimeError('Sync error'))):
             report = p.benchmark_native_recipe(self.recipe, self.source, repeats=1, warmups=0, modes=('cold',))
@@ -140,3 +154,13 @@ class ActualPerformanceTests(unittest.TestCase):
         self.assertIsNone(row['cuda_event_seconds'])
         self.assertIsNone(row['peak_allocated_bytes'])
         self.assertFalse(row['synchronized'])
+
+    def test_workflow_lifecycle(self):
+        """1 related ActualPerformanceTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_actual_cold_warm_timings_peaks_and_transfer_trace_preserve_native_products)
+
+    def test_validation_and_recovery(self):
+        """3 related ActualPerformanceTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_measured_threshold_stops_following_runs_and_cancel_is_distinct)
+        self.scenario(self.check_test_actual_producer_failure_retains_synchronized_measurements_without_products)
+        self.scenario(self.check_test_failed_measurement_keeps_original_failure_and_unknown_gpu_facts)

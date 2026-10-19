@@ -1,4 +1,6 @@
 """Ordered CUDA image training compared with pinned public PlantCV and sklearn."""
+
+from tests.functional_units import functional_units
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -57,6 +59,7 @@ def _sha(tensor):
 
 
 @unittest.skipUnless(torch.cuda.is_available(), 'CUDA required')
+@functional_units
 class KMeansImageTrainingTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -90,7 +93,7 @@ class KMeansImageTrainingTests(unittest.TestCase):
         return dict(case['parameters'], patch_size=case['patch_size'], sampling=case['sampling'],
             seed=case['seed'], source_n_threads=self.reference[index]['threads'])
 
-    def test_actual_public_patches_and_complete_fit_match_gray_bgr_and_source_defaults(self):
+    def check_test_actual_public_patches_and_complete_fit_match_gray_bgr_and_source_defaults(self):
         for index, expected in enumerate(self.reference):
             with self.subTest(case=index):
                 images = self.inputs(index)
@@ -107,7 +110,7 @@ class KMeansImageTrainingTests(unittest.TestCase):
                 self.assertEqual(versions, tuple(image._version for image in images))
                 self.assertEqual(result.fit.source_n_threads, expected['threads'])
 
-    def test_sampling_restarts_seed_one_per_image_and_repartition_preserves_cached_rows(self):
+    def check_test_sampling_restarts_seed_one_per_image_and_repartition_preserves_cached_rows(self):
         images = self.inputs(2)
         first = native.assemble_kmeans_training_images(images, 3, sampling=.37)
         second = native.assemble_kmeans_training_images(images, 3, sampling=.37, tile_pixels=3, gaussian_tile_side=7)
@@ -120,7 +123,7 @@ class KMeansImageTrainingTests(unittest.TestCase):
             result = native.fit_kmeans_training_images(images, 1, **dict(self.parameters(2), seed=seed))
             self.assertEqual(_sha(result.training_rows.features), self.reference[2]['features'])
 
-    def test_trained_exported_numeric_models_predict_and_mask_like_public_joblib_models(self):
+    def check_test_trained_exported_numeric_models_predict_and_mask_like_public_joblib_models(self):
         from seedvision.cuda.plantcv_kmeans_export import export_kmeans_fit
         from seedvision.cuda.plantcv_kmeans_predict import predict_kmeans
         from seedvision.cuda.plantcv_kmeans import mask_kmeans
@@ -135,7 +138,7 @@ class KMeansImageTrainingTests(unittest.TestCase):
                 masks = mask_kmeans(labels, case['k'])
                 self.assertEqual({key:_sha(value) for key,value in masks.items()}, expected['masks'])
 
-    def test_actual_multimage_p31_custom_stream_peak_fits_combined_job_plan(self):
+    def check_test_actual_multimage_p31_custom_stream_peak_fits_combined_job_plan(self):
         images = self.inputs(4)
         parameters = self.parameters(4)
         plan = native.preflight_kmeans_image_fit(images, 1, **parameters)
@@ -152,7 +155,7 @@ class KMeansImageTrainingTests(unittest.TestCase):
         self.assertLessEqual(torch.cuda.max_memory_allocated()-baseline, plan.peak_live_bytes-plan.data.input_bytes)
         self.assertEqual(result.plan, plan)
 
-    def test_combined_caps_and_bad_fit_parameters_precede_gaussian_rng_and_allocation(self):
+    def check_test_combined_caps_and_bad_fit_parameters_precede_gaussian_rng_and_allocation(self):
         images = self.inputs(0)
         for name in ('MAX_IMAGES', 'MAX_DATASET_BYTES', 'MAX_COMBINED_WORK', 'MAX_CUDA_LIVE_BYTES'):
             with patch.object(native, name, 1), patch.object(torch, 'empty', side_effect=AssertionError('allocation before cap')), \
@@ -170,7 +173,7 @@ class KMeansImageTrainingTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 native.assemble_kmeans_training_images(invalid, 1)
 
-    def test_cancellation_and_every_assembly_callback_mutation_withhold_all_rows(self):
+    def check_test_cancellation_and_every_assembly_callback_mutation_withhold_all_rows(self):
         sources = [torch.zeros((3, 4), dtype=torch.uint8, device='cuda') for _ in range(2)]
         total = 0
         def count():
@@ -205,7 +208,7 @@ class KMeansImageTrainingTests(unittest.TestCase):
         with self.assertRaisesRegex(native.KMeansImageTrainingError, 'bool'):
             native.assemble_kmeans_training_images(images, 1, cancel=lambda: 1)
 
-    def test_wrong_patch_coverage_and_other_image_mutation_stop_before_copy(self):
+    def check_test_wrong_patch_coverage_and_other_image_mutation_stop_before_copy(self):
         images = self.inputs(0)
         original = native._full.extract_full_kmeans_training_patches
         def mutated(*args, **kwargs):
@@ -220,7 +223,7 @@ class KMeansImageTrainingTests(unittest.TestCase):
             with self.assertRaisesRegex(native.KMeansImageTrainingError, 'complete matrix'):
                 native.assemble_kmeans_training_images(images, 1)
 
-    def test_early_callback_mutation_precedes_stop_and_caller_exception(self):
+    def check_test_early_callback_mutation_precedes_stop_and_caller_exception(self):
         for action in ('continue', 'stop', 'raise'):
             for fit in (False, True):
                 with self.subTest(action=action, fit=fit):
@@ -245,7 +248,7 @@ class KMeansImageTrainingTests(unittest.TestCase):
         with self.assertRaises(native.KMeansImageTrainingCancelled):
             native.assemble_kmeans_training_images(images, 1, cancel=lambda: True)
 
-    def test_real_nested_patch_callback_preserves_typed_mutation_and_unrelated_exception(self):
+    def check_test_real_nested_patch_callback_preserves_typed_mutation_and_unrelated_exception(self):
         from seedvision.cuda.tensor_callback import TensorCallbackMutation
         for sampling in (None, .5):
             producer = native._full if sampling is None else native._sampled
@@ -285,7 +288,7 @@ class KMeansImageTrainingTests(unittest.TestCase):
                         self.assertIn('changed', str(caught.exception))
                         self.assertIsInstance(caught.exception.__cause__, TensorCallbackMutation)
 
-    def test_plain_sampled_errors_preserve_identity_and_unrelated_cause(self):
+    def check_test_plain_sampled_errors_preserve_identity_and_unrelated_cause(self):
         for cause in (None, RuntimeError('ordinary sampler callback failure')):
             with self.subTest(cause=type(cause).__name__):
                 images = [torch.zeros((3, 4), dtype=torch.uint8, device='cuda') for _ in range(2)]
@@ -298,16 +301,34 @@ class KMeansImageTrainingTests(unittest.TestCase):
                 self.assertIs(caught.exception, failure)
                 self.assertIs(caught.exception.__cause__, cause)
 
-    def test_loaded_source_binds_patch_seed_and_combined_limits(self):
+    def check_test_loaded_source_binds_patch_seed_and_combined_limits(self):
         from seedvision.benchmarking.native_recipe import _module_record
         self.assertTrue(_module_record(native)['loaded_code'])
         for name, value in (('PATCH_SEED', 7), ('MAX_COMBINED_WORK', 1), ('PLANTCV_TRAIN_SHA256', 'changed')):
             with patch.object(native, name, value), self.assertRaises(ValueError):
                 _module_record(native)
 
-    def test_duplicate_occurrences_share_input_storage_but_repeat_all_patch_rows(self):
+    def check_test_duplicate_occurrences_share_input_storage_but_repeat_all_patch_rows(self):
         image = self.inputs(2)[0]
         result = native.assemble_kmeans_training_images((image, image), 3, sampling=.37)
         self.assertEqual(result.plan.input_bytes, image.untyped_storage().nbytes())
         self.assertEqual(_sha(result.features), self.reference[2]['features'])
         self.assertEqual(result.plan.rows, 2*result.plan.image_plans[0].patch_count)
+
+    def test_workflow_lifecycle(self):
+        """7 related KMeansImageTrainingTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_actual_public_patches_and_complete_fit_match_gray_bgr_and_source_defaults)
+        self.scenario(self.check_test_sampling_restarts_seed_one_per_image_and_repartition_preserves_cached_rows)
+        self.scenario(self.check_test_trained_exported_numeric_models_predict_and_mask_like_public_joblib_models)
+        self.scenario(self.check_test_actual_multimage_p31_custom_stream_peak_fits_combined_job_plan)
+        self.scenario(self.check_test_combined_caps_and_bad_fit_parameters_precede_gaussian_rng_and_allocation)
+        self.scenario(self.check_test_plain_sampled_errors_preserve_identity_and_unrelated_cause)
+        self.scenario(self.check_test_duplicate_occurrences_share_input_storage_but_repeat_all_patch_rows)
+
+    def test_validation_and_recovery(self):
+        """5 related KMeansImageTrainingTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_cancellation_and_every_assembly_callback_mutation_withhold_all_rows)
+        self.scenario(self.check_test_wrong_patch_coverage_and_other_image_mutation_stop_before_copy)
+        self.scenario(self.check_test_early_callback_mutation_precedes_stop_and_caller_exception)
+        self.scenario(self.check_test_real_nested_patch_callback_preserves_typed_mutation_and_unrelated_exception)
+        self.scenario(self.check_test_loaded_source_binds_patch_seed_and_combined_limits)

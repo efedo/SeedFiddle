@@ -1,3 +1,5 @@
+
+from tests.functional_units import functional_units
 import json
 from pathlib import Path
 import subprocess
@@ -29,6 +31,7 @@ print(json.dumps(output))
 
 
 @unittest.skipUnless(torch.cuda.is_available(), 'CUDA required')
+@functional_units
 class BinaryContourTests(unittest.TestCase):
     def oracle(self, masks, approximation='simple'):
         result = subprocess.run([str(REFERENCE), '-c', SCRIPT],
@@ -56,12 +59,12 @@ class BinaryContourTests(unittest.TestCase):
             self.assertEqual(source._version,version)
             np.testing.assert_array_equal(source.cpu().numpy(),mask)
 
-    def test_all_512_three_by_three_masks_exact_simple_order_and_hierarchy(self):
+    def check_test_all_512_three_by_three_masks_exact_simple_order_and_hierarchy(self):
         masks = [(((value >> np.arange(9)) & 1).reshape(3,3)*255).astype(np.uint8)
                  for value in range(512)]
         self.compare(masks)
 
-    def test_nested_seam_diagonal_lines_self_touch_and_seeded_masks(self):
+    def check_test_nested_seam_diagonal_lines_self_touch_and_seeded_masks(self):
         ring = np.zeros((31,47),dtype=np.uint8)
         ring[1:-1,1:-1]=255
         ring[5:-5,5:-5]=0
@@ -76,7 +79,7 @@ class BinaryContourTests(unittest.TestCase):
         self.compare(masks,tile_pixels=31)
         self.compare(masks,approximation='none',tile_pixels=23)
 
-    def test_noncontiguous_nonoverlapping_input_preserves_view_and_source(self):
+    def check_test_noncontiguous_nonoverlapping_input_preserves_view_and_source(self):
         source=torch.zeros((29,37),dtype=torch.uint8,device='cuda')
         source[4:25,5:32]=255
         source[9:21,11:25]=0
@@ -86,7 +89,7 @@ class BinaryContourTests(unittest.TestCase):
         self.assertEqual([c.tolist() for c in result.contours],expected['contours'])
         self.assertEqual(result.hierarchy.tolist(),expected['hierarchy'])
 
-    def test_empty_is_valid_and_unsupported_and_resources_never_become_empty(self):
+    def check_test_empty_is_valid_and_unsupported_and_resources_never_become_empty(self):
         source=torch.zeros((5,7),dtype=torch.uint8,device='cuda')
         self.assertEqual(contours.trace_binary_contours_cuda(source).topology_status,'empty_mask')
         for status, error in [('unsupported_test',contours.BinaryContourUnsupportedError),
@@ -104,7 +107,7 @@ class BinaryContourTests(unittest.TestCase):
             with self.assertRaises(contours.BinaryContourResourceError):
                 contours.trace_binary_contours_cuda(source)
 
-    def test_validation_scratch_cancel_and_first_or_final_callback_mutation(self):
+    def check_test_validation_scratch_cancel_and_first_or_final_callback_mutation(self):
         source=torch.zeros((13,17),dtype=torch.uint8,device='cuda')
         source[2:11,2:15]=255
         with patch.object(contours,'MAX_SCRATCH_BYTES',1):
@@ -139,7 +142,7 @@ class BinaryContourTests(unittest.TestCase):
         with self.assertRaises(contours.BinaryContourResourceError):
             contours.trace_binary_contours_cuda(source,tile_pixels=True)
 
-    def test_actual_custom_stream_allocation_is_within_declared_scratch(self):
+    def check_test_actual_custom_stream_allocation_is_within_declared_scratch(self):
         source=torch.zeros((513,769),dtype=torch.uint8,device='cuda')
         source[40:-40,40:-40]=255;source[140:-140,140:-140]=0
         stream=torch.cuda.Stream(device=source.device)
@@ -152,6 +155,18 @@ class BinaryContourTests(unittest.TestCase):
         self.assertEqual(len(result.contours),2)
         self.assertLessEqual(torch.cuda.max_memory_allocated(source.device)-baseline,
                             contours.MAX_SCRATCH_BYTES)
+
+    def test_workflow_lifecycle(self):
+        """5 related BinaryContourTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_all_512_three_by_three_masks_exact_simple_order_and_hierarchy)
+        self.scenario(self.check_test_nested_seam_diagonal_lines_self_touch_and_seeded_masks)
+        self.scenario(self.check_test_noncontiguous_nonoverlapping_input_preserves_view_and_source)
+        self.scenario(self.check_test_empty_is_valid_and_unsupported_and_resources_never_become_empty)
+        self.scenario(self.check_test_actual_custom_stream_allocation_is_within_declared_scratch)
+
+    def test_validation_and_recovery(self):
+        """1 related BinaryContourTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_validation_scratch_cancel_and_first_or_final_callback_mutation)
 
 
 if __name__=='__main__':

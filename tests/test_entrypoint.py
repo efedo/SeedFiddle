@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.functional_units import functional_units
+
 import sys
 import subprocess
 import types
@@ -8,8 +10,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 
+@functional_units
 class EntrypointTests(unittest.TestCase):
-    def test_importing_entrypoint_does_not_import_gui_or_ml_packages(self) -> None:
+    def check_test_importing_entrypoint_does_not_import_gui_or_ml_packages(self) -> None:
         root = Path(__file__).resolve().parents[1]
         completed = subprocess.run(
             (
@@ -26,7 +29,7 @@ class EntrypointTests(unittest.TestCase):
         )
         self.assertEqual(completed.stdout.strip(), "")
 
-    def test_parser_defaults_to_safe_interactive_bootstrap(self) -> None:
+    def check_test_parser_defaults_to_safe_interactive_bootstrap(self) -> None:
         import seed_vision
 
         arguments = seed_vision.build_parser().parse_args([])
@@ -34,7 +37,7 @@ class EntrypointTests(unittest.TestCase):
         self.assertEqual(arguments.bootstrap, "ask")
         self.assertFalse(arguments.offline)
 
-    def test_application_starts_main_window_maximized(self) -> None:
+    def check_test_application_starts_main_window_maximized(self) -> None:
         from seedvision.application import run
 
         events: list[tuple[str, object]] = []
@@ -100,6 +103,12 @@ class EntrypointTests(unittest.TestCase):
         window_icons = [value for name, value in events if name == "window_icon"]
         self.assertEqual(application_icons, window_icons)
         self.assertTrue(application_icons[0].endswith("seed_vision_icon.png"))
+
+    def test_workflow_lifecycle(self):
+        """3 related EntrypointTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_importing_entrypoint_does_not_import_gui_or_ml_packages)
+        self.scenario(self.check_test_parser_defaults_to_safe_interactive_bootstrap)
+        self.scenario(self.check_test_application_starts_main_window_maximized)
 
 
 if __name__ == "__main__":

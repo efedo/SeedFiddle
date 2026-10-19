@@ -1,3 +1,5 @@
+
+from tests.functional_units import functional_units
 import hashlib
 import inspect
 import json
@@ -72,6 +74,7 @@ print(json.dumps(outcomes))
 
 
 @unittest.skipUnless(torch.cuda.is_available(), 'CUDA required for extended thresholds')
+@functional_units
 class ExtendedThresholdTests(unittest.TestCase):
     def reference(self, image, operation, cases):
         self.assertTrue(REFERENCE.is_file(), 'Pinned original reference environment is required')
@@ -81,7 +84,7 @@ class ExtendedThresholdTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         return [np.asarray(value, dtype=np.uint8) for value in json.loads(completed.stdout)]
 
-    def test_large_gaussian_kernel_bits_match_pinned_opencv(self):
+    def check_test_large_gaussian_kernel_bits_match_pinned_opencv(self):
         script = '''
 import json,cv2,numpy as np
 from importlib.metadata import version
@@ -96,7 +99,7 @@ print(json.dumps({str(k):cv2.getGaussianKernel(k,0,cv2.CV_32F).reshape(-1).view(
         for kernel, bits in extended.GAUSSIAN_FLOAT32_KERNEL_BITS.items():
             self.assertEqual(bits, tuple(expected[str(kernel)]))
 
-    def test_gaussian_11_13_15_safe_decisions_match_pinned_public(self):
+    def check_test_gaussian_11_13_15_safe_decisions_match_pinned_public(self):
         image = np.full((31,47), 37, dtype=np.uint8)
         image[:,19:] = 219
         cases = [dict(ksize=k, offset=offset, object_type=polarity)
@@ -116,7 +119,7 @@ print(json.dumps({str(k):cv2.getGaussianKernel(k,0,cv2.CV_32F).reshape(-1).view(
             for a,b in ((11,13),(13,15),(11,15))))
         np.testing.assert_array_equal(source.cpu().numpy(), image)
 
-    def test_gaussian_float32_ambiguous_byte_rounding_withholds_complete_mask(self):
+    def check_test_gaussian_float32_ambiguous_byte_rounding_withholds_complete_mask(self):
         image = np.random.default_rng(411015).integers(0,256,(128,128),dtype=np.uint8)
         self.reference(image, 'gaussian', [dict(ksize=15,offset=0,object_type='light')])
         source = torch.as_tensor(image, device='cuda')
@@ -126,7 +129,7 @@ print(json.dumps({str(k):cv2.getGaussianKernel(k,0,cv2.CV_32F).reshape(-1).view(
         self.assertEqual(source._version, version)
         np.testing.assert_array_equal(source.cpu().numpy(), image)
 
-    def test_gaussian_large_work_scratch_preflight_and_cancellation(self):
+    def check_test_gaussian_large_work_scratch_preflight_and_cancellation(self):
         source = torch.full((257,257),80,dtype=torch.uint8,device='cuda')
         for name, limit in (('MAX_GAUSSIAN_FLOAT_WORK',1), ('MAX_GAUSSIAN_FLOAT_SCRATCH_BYTES',1)):
             with patch.object(extended,name,limit), patch.object(torch,'empty_like') as allocate:
@@ -145,7 +148,7 @@ print(json.dumps({str(k):cv2.getGaussianKernel(k,0,cv2.CV_32F).reshape(-1).view(
         self.assertEqual(source._version,version)
         torch.testing.assert_close(source,before)
 
-    def test_gaussian_large_multitile_actual_allocator_stays_within_scratch_cap(self):
+    def check_test_gaussian_large_multitile_actual_allocator_stays_within_scratch_cap(self):
         kernel = 15
         tile = min(extended.TILE_PIXELS, extended.MAX_GAUSSIAN_FLOAT_SCRATCH_BYTES //
             (25*kernel*kernel+64*kernel+128))
@@ -160,7 +163,7 @@ print(json.dumps({str(k):cv2.getGaussianKernel(k,0,cv2.CV_32F).reshape(-1).view(
         self.assertLessEqual(peak,extended.MAX_GAUSSIAN_FLOAT_SCRATCH_BYTES)
         self.assertEqual(int(torch.count_nonzero(actual != 255)),0)
 
-    def test_gaussian_all_kernels_offsets_polarities_and_replicated_borders_match_public_calls(self):
+    def check_test_gaussian_all_kernels_offsets_polarities_and_replicated_borders_match_public_calls(self):
         rng = np.random.default_rng(20261007)
         cases = [dict(ksize=kernel, offset=offset, object_type=polarity)
             for kernel in (3, 5, 7, 9) for offset in (-255, -1.25, -0.5, 0, 0.5, 1.25, 255)
@@ -175,7 +178,7 @@ print(json.dumps({str(k):cv2.getGaussianKernel(k,0,cv2.CV_32F).reshape(-1).view(
                 self.assertEqual(actual.device, source.device)
             np.testing.assert_array_equal(source.cpu().numpy(), image)
 
-    def test_gaussian_tiled_halo_stream_and_rounding_match_original(self):
+    def check_test_gaussian_tiled_halo_stream_and_rounding_match_original(self):
         rng = np.random.default_rng(309)
         image = rng.integers(0, 256, (21, 25), dtype=np.uint8)
         image[::2, ::2] = 0
@@ -190,7 +193,7 @@ print(json.dumps({str(k):cv2.getGaussianKernel(k,0,cv2.CV_32F).reshape(-1).view(
         for actual, original in zip(results, expected):
             np.testing.assert_array_equal(actual.cpu().numpy(), original)
 
-    def test_dual_all_channels_and_strict_polarities_match_public_calls(self):
+    def check_test_dual_all_channels_and_strict_polarities_match_public_calls(self):
         image = np.random.default_rng(512).integers(0, 256, (9, 13, 3), dtype=np.uint8)
         image[0, :4] = ((0, 0, 0), (255, 255, 255), (0, 0, 255), (255, 0, 0))
         names = list(extended.CHANNELS)
@@ -205,7 +208,7 @@ print(json.dumps({str(k):cv2.getGaussianKernel(k,0,cv2.CV_32F).reshape(-1).view(
                 np.testing.assert_array_equal(actual.cpu().numpy(), original, err_msg=str(parameters))
         np.testing.assert_array_equal(source.cpu().numpy(), image)
 
-    def test_dual_vertical_coincident_extra_points_and_global_indices_match_original(self):
+    def check_test_dual_vertical_coincident_extra_points_and_global_indices_match_original(self):
         image = np.arange(120, dtype=np.uint8).reshape(5, 8, 3)
         cases = [dict(x_channel=x, y_channel=y, points=points, above=above)
             for x, y in (('R', 'R'), ('index', 'G'), ('gray', 'index'))
@@ -223,7 +226,7 @@ print(json.dumps({str(k):cv2.getGaussianKernel(k,0,cv2.CV_32F).reshape(-1).view(
         equal = extended.threshold_dual_channels(source, 'R', 'R', [[0, 0], [0, 0]], above=False)
         self.assertEqual(int(torch.count_nonzero(equal)), 0)
 
-    def test_invalid_inputs_resource_preflight_and_mid_calculation_cancellation(self):
+    def check_test_invalid_inputs_resource_preflight_and_mid_calculation_cancellation(self):
         gray = torch.arange(30, dtype=torch.uint8, device='cuda').reshape(5, 6)
         image = gray.unsqueeze(-1).expand(-1, -1, 3).contiguous()
         for kernel in (1, 2, 17, True):
@@ -258,7 +261,7 @@ print(json.dumps({str(k):cv2.getGaussianKernel(k,0,cv2.CV_32F).reshape(-1).view(
         np.testing.assert_array_equal(gray.cpu().numpy(), np.arange(30, dtype=np.uint8).reshape(5, 6))
 
 
-    def test_triangle_matches_public_masks_and_ignored_xstep_is_not_a_control(self):
+    def check_test_triangle_matches_public_masks_and_ignored_xstep_is_not_a_control(self):
         two_level = np.full((12, 12), 30, dtype=np.uint8)
         two_level.flat[::3] = 180
         last_bin = np.full((7, 9), 254, dtype=np.uint8)
@@ -280,7 +283,7 @@ print(json.dumps({str(k):cv2.getGaussianKernel(k,0,cv2.CV_32F).reshape(-1).view(
                 np.testing.assert_array_equal(source.cpu().numpy(), image)
         self.assertNotIn('xstep', inspect.signature(extended.threshold_triangle).parameters)
 
-    def test_triangle_preserves_public_no_peak_preamble_failures(self):
+    def check_test_triangle_preserves_public_no_peak_preamble_failures(self):
         for image in (np.zeros((5, 7), dtype=np.uint8), np.full((5, 7), 255, dtype=np.uint8)):
             completed = subprocess.run([str(REFERENCE), '-c', TRIANGLE_OUTCOME_SCRIPT],
                 input=json.dumps(dict(image=image.tolist(), cases=[dict(object_type='light', xstep=1)])),
@@ -290,14 +293,14 @@ print(json.dumps({str(k):cv2.getGaussianKernel(k,0,cv2.CV_32F).reshape(-1).view(
             with self.assertRaises(extended.TrianglePreambleError):
                 extended.threshold_triangle(torch.as_tensor(image, device='cuda'))
 
-    def test_triangle_withholds_ambiguous_otsu_partitions(self):
+    def check_test_triangle_withholds_ambiguous_otsu_partitions(self):
         image = np.repeat(np.asarray((20, 120, 220), dtype=np.uint8), 36).reshape(9, 12)
         public = self.reference(image, 'triangle', [dict(object_type='light', xstep=1)])[0]
         self.assertEqual(public.shape, image.shape)
         with self.assertRaises(OtsuAmbiguityError):
             extended.threshold_triangle(torch.as_tensor(image, device='cuda'))
 
-    def test_triangle_cancel_after_histogram_preserves_input_and_returns_no_mask(self):
+    def check_test_triangle_cancel_after_histogram_preserves_input_and_returns_no_mask(self):
         source = torch.full((12, 12), 30, dtype=torch.uint8, device='cuda')
         source.reshape(-1)[::3] = 180
         before = source.clone()
@@ -312,7 +315,7 @@ print(json.dumps({str(k):cv2.getGaussianKernel(k,0,cv2.CV_32F).reshape(-1).view(
             otsu.assert_not_called()
         torch.testing.assert_close(source, before)
 
-    def test_triangle_pixel_cap_and_initial_cancel_preflight_before_histogram(self):
+    def check_test_triangle_pixel_cap_and_initial_cancel_preflight_before_histogram(self):
         from threading import Event
         source = torch.full((5, 7), 30, dtype=torch.uint8, device='cuda')
         with patch.object(extended, 'MAX_TRIANGLE_PIXELS', 1), patch.object(torch, 'bincount') as histogram:
@@ -329,7 +332,7 @@ print(json.dumps({str(k):cv2.getGaussianKernel(k,0,cv2.CV_32F).reshape(-1).view(
             with self.assertRaises(ValueError):
                 extended.threshold_triangle(invalid)
 
-    def test_texture_constant_cells_and_byte_cutoff_equality_match_public(self):
+    def check_test_texture_constant_cells_and_byte_cutoff_equality_match_public(self):
         methods = extended.TEXTURE_PROPERTIES
         zero = np.zeros((3, 4), dtype=np.uint8)
         cases = [dict(ksize=3, offset=1, texture_method=method, borders=border,
@@ -351,7 +354,7 @@ print(json.dumps({str(k):cv2.getGaussianKernel(k,0,cv2.CV_32F).reshape(-1).view(
             np.testing.assert_array_equal(extended.threshold_texture(source, **parameters).cpu().numpy(), expected)
         np.testing.assert_array_equal(source.cpu().numpy(), image)
 
-    def test_texture_nonconstant_properties_borders_and_tiled_halos_match_public(self):
+    def check_test_texture_nonconstant_properties_borders_and_tiled_halos_match_public(self):
         rows, columns = np.indices((11, 19))
         image = (((rows//3+columns//4) % 2)*255).astype(np.uint8)
         cases = [dict(ksize=5, offset=2, texture_method='dissimilarity', borders=border, threshold=0)
@@ -370,7 +373,7 @@ print(json.dumps({str(k):cv2.getGaussianKernel(k,0,cv2.CV_32F).reshape(-1).view(
             for parameters, original in zip(cases, self.reference(image, 'texture', cases), strict=True):
                 np.testing.assert_array_equal(extended.threshold_texture(source, **parameters).cpu().numpy(), original)
 
-    def test_texture_k7_k9_all_documented_properties_match_public(self):
+    def check_test_texture_k7_k9_all_documented_properties_match_public(self):
         image = np.random.default_rng(92017).integers(0, 16, size=(13, 17), dtype=np.uint8)
         cases = [dict(ksize=kernel, offset=2, texture_method=method, borders='reflect', threshold=0)
             for kernel in (7, 9) for method in extended.TEXTURE_PROPERTIES]
@@ -379,7 +382,7 @@ print(json.dumps({str(k):cv2.getGaussianKernel(k,0,cv2.CV_32F).reshape(-1).view(
             with self.subTest(parameters=parameters):
                 np.testing.assert_array_equal(extended.threshold_texture(source, **parameters).cpu().numpy(), original)
 
-    def test_texture_custom_stream_and_nonconstant_correlation_match_public(self):
+    def check_test_texture_custom_stream_and_nonconstant_correlation_match_public(self):
         image = np.random.default_rng(119).integers(0, 64, size=(11, 15), dtype=np.uint8)
         cases = [dict(ksize=5, offset=2, texture_method=method, borders='mirror', threshold=0)
             for method in ('dissimilarity', 'ASM', 'energy')]
@@ -397,7 +400,7 @@ print(json.dumps({str(k):cv2.getGaussianKernel(k,0,cv2.CV_32F).reshape(-1).view(
         np.testing.assert_array_equal(extended.threshold_texture(torch.as_tensor(image, device='cuda'),
             **cases[0]).cpu().numpy(), expected)
 
-    def test_texture_uncertain_byte_boundaries_and_conversion_range_are_withheld(self):
+    def check_test_texture_uncertain_byte_boundaries_and_conversion_range_are_withheld(self):
         ramp = np.tile(np.arange(3, dtype=np.uint8), (3, 1))
         for method in ('contrast', 'dissimilarity'):
             with self.subTest(method=method), self.assertRaises(extended.ExtendedThresholdPrecisionError):
@@ -420,7 +423,7 @@ print(json.dumps({str(k):cv2.getGaussianKernel(k,0,cv2.CV_32F).reshape(-1).view(
             with self.assertRaises(extended.ExtendedThresholdPrecisionError):
                 extended.threshold_texture(torch.as_tensor(diagonal, device='cuda'), **cases[0])
 
-    def test_texture_largest_kernel_multiple_tiles_stay_within_scratch_budget(self):
+    def check_test_texture_largest_kernel_multiple_tiles_stay_within_scratch_budget(self):
         source = torch.randint(0, 16, (80, 100), dtype=torch.uint8, device='cuda')
         before = source.clone()
         torch.cuda.synchronize(source.device)
@@ -434,7 +437,7 @@ print(json.dumps({str(k):cv2.getGaussianKernel(k,0,cv2.CV_32F).reshape(-1).view(
         self.assertEqual(result.dtype, torch.uint8)
         torch.testing.assert_close(source, before)
 
-    def test_texture_invalid_domains_budgets_and_cancellation_preserve_input(self):
+    def check_test_texture_invalid_domains_budgets_and_cancellation_preserve_input(self):
         from threading import Event
         image = np.arange(30, dtype=np.uint8).reshape(5, 6)
         source = torch.as_tensor(image, device='cuda')
@@ -466,6 +469,34 @@ print(json.dumps({str(k):cv2.getGaussianKernel(k,0,cv2.CV_32F).reshape(-1).view(
         with patch.object(extended, 'TILE_PIXELS', 3), self.assertRaises(extended.ExtendedThresholdCancelled):
             extended.threshold_texture(source, **parameters, cancel=cancel_mid_tile)
         np.testing.assert_array_equal(source.cpu().numpy(), image)
+
+    def test_workflow_lifecycle(self):
+        """13 related ExtendedThresholdTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_large_gaussian_kernel_bits_match_pinned_opencv)
+        self.scenario(self.check_test_gaussian_11_13_15_safe_decisions_match_pinned_public)
+        self.scenario(self.check_test_gaussian_large_multitile_actual_allocator_stays_within_scratch_cap)
+        self.scenario(self.check_test_gaussian_all_kernels_offsets_polarities_and_replicated_borders_match_public_calls)
+        self.scenario(self.check_test_gaussian_tiled_halo_stream_and_rounding_match_original)
+        self.scenario(self.check_test_dual_all_channels_and_strict_polarities_match_public_calls)
+        self.scenario(self.check_test_dual_vertical_coincident_extra_points_and_global_indices_match_original)
+        self.scenario(self.check_test_triangle_matches_public_masks_and_ignored_xstep_is_not_a_control)
+        self.scenario(self.check_test_texture_constant_cells_and_byte_cutoff_equality_match_public)
+        self.scenario(self.check_test_texture_nonconstant_properties_borders_and_tiled_halos_match_public)
+        self.scenario(self.check_test_texture_k7_k9_all_documented_properties_match_public)
+        self.scenario(self.check_test_texture_custom_stream_and_nonconstant_correlation_match_public)
+        self.scenario(self.check_test_texture_uncertain_byte_boundaries_and_conversion_range_are_withheld)
+
+    def test_validation_and_recovery(self):
+        """9 related ExtendedThresholdTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_gaussian_float32_ambiguous_byte_rounding_withholds_complete_mask)
+        self.scenario(self.check_test_gaussian_large_work_scratch_preflight_and_cancellation)
+        self.scenario(self.check_test_invalid_inputs_resource_preflight_and_mid_calculation_cancellation)
+        self.scenario(self.check_test_triangle_preserves_public_no_peak_preamble_failures)
+        self.scenario(self.check_test_triangle_withholds_ambiguous_otsu_partitions)
+        self.scenario(self.check_test_triangle_cancel_after_histogram_preserves_input_and_returns_no_mask)
+        self.scenario(self.check_test_triangle_pixel_cap_and_initial_cancel_preflight_before_histogram)
+        self.scenario(self.check_test_texture_largest_kernel_multiple_tiles_stay_within_scratch_budget)
+        self.scenario(self.check_test_texture_invalid_domains_budgets_and_cancellation_preserve_input)
 
 
 if __name__ == '__main__':

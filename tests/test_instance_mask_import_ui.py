@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.functional_units import functional_units
+
 from tests.review_fixtures import dispose_window
 
 import os
@@ -12,6 +14,7 @@ from unittest.mock import patch
 import numpy as np
 
 
+@functional_units
 class InstanceMaskImportUiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -80,7 +83,7 @@ class InstanceMaskImportUiTests(unittest.TestCase):
             external_reference_count=(1 if bundled else None),
         )
 
-    def test_panel_import_is_draft_with_provenance_warning_and_undo(self) -> None:
+    def check_test_panel_import_is_draft_with_provenance_warning_and_undo(self) -> None:
         labels = np.zeros((60, 80), dtype=np.uint16)
         labels[4:9, 5:10] = 7
         labels[30:35, 45:50] = 7
@@ -127,7 +130,7 @@ class InstanceMaskImportUiTests(unittest.TestCase):
         self.assertEqual(len(self.window._instance_undo_histories[self.key]),0)
         self.assertTrue(self.window._instance_undo_histories[self.key].can_redo)
 
-    def test_saved_manual_mask_takes_priority_over_bundled_pre_annotation(self) -> None:
+    def check_test_saved_manual_mask_takes_priority_over_bundled_pre_annotation(self) -> None:
         from PySide6.QtWidgets import QMessageBox
 
         bundled = np.zeros((60, 80), np.uint16)
@@ -187,7 +190,7 @@ class InstanceMaskImportUiTests(unittest.TestCase):
             self.window.image_view.instance_annotations(), changed
         )
 
-    def test_no_bundle_falls_back_to_npz_file_chooser(self) -> None:
+    def check_test_no_bundle_falls_back_to_npz_file_chooser(self) -> None:
         labels = np.zeros((60, 80), dtype=np.uint16)
         labels[5:20, 8:24] = 31_777
         selected = self.root / "manual.npz"
@@ -210,7 +213,7 @@ class InstanceMaskImportUiTests(unittest.TestCase):
             f"import:{selected.resolve()}",
         )
 
-    def test_explicit_file_chooser_bypasses_an_available_bundle(self) -> None:
+    def check_test_explicit_file_chooser_bypasses_an_available_bundle(self) -> None:
         bundled_labels = np.zeros((60, 80), dtype=np.uint16)
         bundled_labels[2:10, 3:12] = 4
         manual_labels = np.zeros_like(bundled_labels)
@@ -243,7 +246,7 @@ class InstanceMaskImportUiTests(unittest.TestCase):
             "imported seed-instance reference mask",
         )
 
-    def test_validation_failure_warns_without_mutating_draft_or_history(self) -> None:
+    def check_test_validation_failure_warns_without_mutating_draft_or_history(self) -> None:
         from seedvision.persistence import InstanceMaskImportError
 
         baseline = np.zeros((60, 80), dtype=np.uint16)
@@ -274,7 +277,7 @@ class InstanceMaskImportUiTests(unittest.TestCase):
         )
         self.assertNotIn(self.key, self.window._instance_undo_histories)
 
-    def test_replacement_cancel_leaves_existing_draft_untouched(self) -> None:
+    def check_test_replacement_cancel_leaves_existing_draft_untouched(self) -> None:
         from PySide6.QtWidgets import QMessageBox
 
         existing = np.zeros((60, 80), dtype=np.uint16)
@@ -295,6 +298,18 @@ class InstanceMaskImportUiTests(unittest.TestCase):
             np.array_equal(self.window._draft_instance_annotations[self.key], existing)
         )
         self.assertNotIn(self.key, self.window._instance_undo_histories)
+
+    def test_workflow_lifecycle(self):
+        """4 related InstanceMaskImportUiTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_panel_import_is_draft_with_provenance_warning_and_undo)
+        self.scenario(self.check_test_saved_manual_mask_takes_priority_over_bundled_pre_annotation)
+        self.scenario(self.check_test_no_bundle_falls_back_to_npz_file_chooser)
+        self.scenario(self.check_test_explicit_file_chooser_bypasses_an_available_bundle)
+
+    def test_validation_and_recovery(self):
+        """2 related InstanceMaskImportUiTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_validation_failure_warns_without_mutating_draft_or_history)
+        self.scenario(self.check_test_replacement_cancel_leaves_existing_draft_untouched)
 
 
 if __name__ == "__main__":

@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+from tests.catalogue_fixtures import CatalogueTestCase
+
+from tests.functional_units import functional_units
+
 import os
 import unittest
 
 
-class PipelineInspectorActionTests(unittest.TestCase):
+@functional_units
+class PipelineInspectorActionTests(CatalogueTestCase):
     @classmethod
     def setUpClass(cls) -> None:
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -14,7 +19,7 @@ class PipelineInspectorActionTests(unittest.TestCase):
             raise unittest.SkipTest(f"PySide6 unavailable: {error}")
         cls.application = QApplication.instance() or QApplication([])
 
-    def test_procedural_fit_action_is_contextual_and_emits_loss_weights(self) -> None:
+    def check_test_procedural_fit_action_is_contextual_and_emits_loss_weights(self) -> None:
         from seedvision.pipeline import build_default_pipeline
         from seedvision.ui.pipeline_inspector import PipelineInspector
 
@@ -68,7 +73,7 @@ class PipelineInspectorActionTests(unittest.TestCase):
         self.assertTrue(payload["annotations_are_complete"])
         inspector.close()
 
-    def test_procedural_fit_cost_aliases_follow_live_node_without_duplicate_state(self) -> None:
+    def check_test_procedural_fit_cost_aliases_follow_live_node_without_duplicate_state(self) -> None:
         from seedvision.pipeline import build_default_pipeline
         from seedvision.ui.pipeline_inspector import PipelineInspector
 
@@ -91,7 +96,7 @@ class PipelineInspectorActionTests(unittest.TestCase):
         self.assertTrue(inspector.procedural_fit_complete_annotations_checkbox.isChecked())
         inspector.close()
 
-    def test_reference_edge_fit_action_is_owned_by_probability_node(self) -> None:
+    def check_test_reference_edge_fit_action_is_owned_by_probability_node(self) -> None:
         from seedvision.pipeline import build_default_pipeline
         from seedvision.ui.pipeline_inspector import PipelineInspector
 
@@ -123,7 +128,7 @@ class PipelineInspectorActionTests(unittest.TestCase):
         )
         inspector.close()
 
-    def test_procedural_fit_state_api_disables_busy_or_ineligible_requests(self) -> None:
+    def check_test_procedural_fit_state_api_disables_busy_or_ineligible_requests(self) -> None:
         from seedvision.pipeline import build_default_pipeline
         from seedvision.ui.pipeline_inspector import PipelineInspector
 
@@ -163,6 +168,13 @@ class PipelineInspectorActionTests(unittest.TestCase):
             "Loss improved 0.42 → 0.19.",
         )
         inspector.close()
+
+    def test_workflow_lifecycle(self):
+        """4 related PipelineInspectorActionTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_procedural_fit_action_is_contextual_and_emits_loss_weights)
+        self.scenario(self.check_test_procedural_fit_cost_aliases_follow_live_node_without_duplicate_state)
+        self.scenario(self.check_test_reference_edge_fit_action_is_owned_by_probability_node)
+        self.scenario(self.check_test_procedural_fit_state_api_disables_busy_or_ineligible_requests)
 
 
 if __name__ == "__main__":

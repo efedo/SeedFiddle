@@ -1,4 +1,6 @@
 """Actual pinned public sampled patches, CUDA storage and source RNG order."""
+
+from tests.functional_units import functional_units
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -56,6 +58,7 @@ def _reference(cases):
 
 
 @unittest.skipUnless(torch.cuda.is_available(), 'CUDA required')
+@functional_units
 class KMeansSampledDataTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -70,7 +73,7 @@ class KMeansSampledDataTests(unittest.TestCase):
             (np.asarray([[128]], dtype=np.uint8), 1, 1, 2**32-1)))
         cls.expected = _reference(cls.cases)
 
-    def test_gray_bgr_odd_even_degenerate_and_replacement_modes_match_actual_public(self):
+    def check_test_gray_bgr_odd_even_degenerate_and_replacement_modes_match_actual_public(self):
         for case, expected in zip(self.cases, self.expected):
             image, size, sampling, seed = case
             with self.subTest(shape=image.shape, patch=size, sampling=sampling, seed=seed):
@@ -89,7 +92,7 @@ class KMeansSampledDataTests(unittest.TestCase):
         self.assertTrue(self.expected[-3]['duplicates'])
         self.assertTrue(self.expected[-2]['duplicates'])
 
-    def test_actual_p31_bgr_multitile_output_peak_and_public_checksum(self):
+    def check_test_actual_p31_bgr_multitile_output_peak_and_public_checksum(self):
         y = np.arange(101, dtype=np.uint16)[:, None, None]
         x = np.arange(100, dtype=np.uint16)[None, :, None]
         c = np.arange(3, dtype=np.uint16)[None, None, :]
@@ -111,7 +114,7 @@ class KMeansSampledDataTests(unittest.TestCase):
         self.assertEqual(sha256(result.cpu().numpy().tobytes()).hexdigest(), expected['sha256'])
         self.assertEqual(result.numel()*result.element_size(), plan.dataset_bytes)
 
-    def test_zero_fraction_floor_matches_actual_public_failure_before_gaussian(self):
+    def check_test_zero_fraction_floor_matches_actual_public_failure_before_gaussian(self):
         image = np.zeros((34, 35, 3), dtype=np.uint8)
         expected = _reference([(image, 31, .01, 1)])[0]
         self.assertEqual(expected['error'], 'ValueError')
@@ -120,7 +123,7 @@ class KMeansSampledDataTests(unittest.TestCase):
             with self.assertRaisesRegex(native.KMeansSampledDataError, 'zero sampled rows'):
                 native.extract_sampled_kmeans_training_patches(torch.tensor(image, device='cuda'), 31, .01)
 
-    def test_custom_stream_and_tile_repartition_preserve_draw_order(self):
+    def check_test_custom_stream_and_tile_repartition_preserve_draw_order(self):
         image, size, sampling, seed = self.cases[7]
         source = torch.tensor(image, device='cuda')
         expected = native.extract_sampled_kmeans_training_patches(source, size, sampling, seed=seed)
@@ -132,7 +135,7 @@ class KMeansSampledDataTests(unittest.TestCase):
         stream.synchronize()
         self.assertTrue(torch.equal(result, expected))
 
-    def test_early_gaussian_late_tile_and_final_cancellation_withhold_matrix(self):
+    def check_test_early_gaussian_late_tile_and_final_cancellation_withhold_matrix(self):
         source = torch.zeros((36, 39, 3), dtype=torch.uint8, device='cuda')
         version, calls = source._version, 0
         def count_polls():
@@ -154,7 +157,7 @@ class KMeansSampledDataTests(unittest.TestCase):
             self.assertEqual(calls, target)
             self.assertEqual(source._version, version)
 
-    def test_callback_mutations_in_preflight_gaussian_tiles_and_final_poll_withhold_matrix(self):
+    def check_test_callback_mutations_in_preflight_gaussian_tiles_and_final_poll_withhold_matrix(self):
         source = torch.zeros((36, 39, 3), dtype=torch.uint8, device='cuda')
         calls = 0
         def count_polls():
@@ -177,7 +180,7 @@ class KMeansSampledDataTests(unittest.TestCase):
                     tile_pixels=13, gaussian_tile_side=7, cancel=mutate_at_target)
             self.assertEqual(calls, target)
 
-    def test_unchanged_callback_exceptions_preserve_identity_across_gaussian_boundary(self):
+    def check_test_unchanged_callback_exceptions_preserve_identity_across_gaussian_boundary(self):
         source = torch.zeros((36, 39, 3), dtype=torch.uint8, device='cuda')
         calls = 0
         def count_polls():
@@ -204,7 +207,7 @@ class KMeansSampledDataTests(unittest.TestCase):
             self.assertEqual(calls, target)
             self.assertEqual(source._version, version)
 
-    def test_output_index_work_live_and_geometry_caps_precede_gaussian_allocation(self):
+    def check_test_output_index_work_live_and_geometry_caps_precede_gaussian_allocation(self):
         output_limited = torch.zeros((600, 600, 3), dtype=torch.uint8, device='cuda')
         index_limited = torch.zeros((1025, 2048), dtype=torch.uint8, device='cuda')
         with patch.object(preprocess, 'gaussian_patch_raster', side_effect=AssertionError('allocated before cap')):
@@ -222,7 +225,7 @@ class KMeansSampledDataTests(unittest.TestCase):
         with self.assertRaises(native.KMeansSampledDataError):
             native.preflight_sampled_kmeans_training_patches(small, 40, 5)
 
-    def test_invalid_rasters_sampling_seeds_callbacks_and_tiles_are_explicit(self):
+    def check_test_invalid_rasters_sampling_seeds_callbacks_and_tiles_are_explicit(self):
         source = torch.zeros((7, 9, 3), dtype=torch.uint8, device='cuda')
         for value in (source.cpu(), source.to(torch.float32), source.transpose(0, 1), source[:0], None):
             with self.subTest(raster=type(value).__name__), self.assertRaises(ValueError):
@@ -241,10 +244,26 @@ class KMeansSampledDataTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             native.extract_sampled_kmeans_training_patches(source, 3, 5, cancel=42)
 
-    def test_loaded_source_binds_index_layout_and_storage_constants(self):
+    def check_test_loaded_source_binds_index_layout_and_storage_constants(self):
         from seedvision.benchmarking.native_recipe import _module_record
         self.assertTrue(_module_record(native)['loaded_code'])
         for name, value in (('RANDOM_INDEX_DTYPE', 'q'), ('MAX_SAMPLE_INDEX_BYTES', 1)):
             with self.subTest(constant=name), patch.object(native, name, value):
                 with self.assertRaises(ValueError):
                     _module_record(native)
+
+    def test_workflow_lifecycle(self):
+        """5 related KMeansSampledDataTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_gray_bgr_odd_even_degenerate_and_replacement_modes_match_actual_public)
+        self.scenario(self.check_test_actual_p31_bgr_multitile_output_peak_and_public_checksum)
+        self.scenario(self.check_test_custom_stream_and_tile_repartition_preserve_draw_order)
+        self.scenario(self.check_test_output_index_work_live_and_geometry_caps_precede_gaussian_allocation)
+        self.scenario(self.check_test_loaded_source_binds_index_layout_and_storage_constants)
+
+    def test_validation_and_recovery(self):
+        """5 related KMeansSampledDataTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_zero_fraction_floor_matches_actual_public_failure_before_gaussian)
+        self.scenario(self.check_test_early_gaussian_late_tile_and_final_cancellation_withhold_matrix)
+        self.scenario(self.check_test_callback_mutations_in_preflight_gaussian_tiles_and_final_poll_withhold_matrix)
+        self.scenario(self.check_test_unchanged_callback_exceptions_preserve_identity_across_gaussian_boundary)
+        self.scenario(self.check_test_invalid_rasters_sampling_seeds_callbacks_and_tiles_are_explicit)

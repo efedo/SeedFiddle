@@ -1,4 +1,6 @@
 """Actual pinned Lloyd/inertia calls and CUDA training-score contracts."""
+
+from tests.functional_units import functional_units
 from hashlib import sha256
 import json
 import math
@@ -50,6 +52,7 @@ print(json.dumps(results))
 
 
 @unittest.skipUnless(torch.cuda.is_available(), 'CUDA required')
+@functional_units
 class KMeansTrainingScoreTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -97,7 +100,7 @@ class KMeansTrainingScoreTests(unittest.TestCase):
             errors = np.abs(result.row_distances.cpu().numpy()-np.asarray(expected['rows']))
             self.assertLessEqual(float(errors.max()), _decision_margin_bound(len(item['centres'][0])))
 
-    def test_actual_pinned_labels_rows_and_inertia_threads_match_certified_result(self):
+    def check_test_actual_pinned_labels_rows_and_inertia_threads_match_certified_result(self):
         for index in range(len(self.cases)-2):
             for threads in (1, 2, 4):
                 with self.subTest(case=index, threads=threads):
@@ -111,7 +114,7 @@ class KMeansTrainingScoreTests(unittest.TestCase):
         self.assertEqual(self.reference[19]['labels'][0], 0)
         self.assertEqual(self.reference[21]['labels'][0], 255)
 
-    def test_multitile_actual_peak_stays_bounded_and_matches_pinned_threaded_inertia(self):
+    def check_test_multitile_actual_peak_stays_bounded_and_matches_pinned_threaded_inertia(self):
         native.score_kmeans_training_rows(*self.tensors(), source_n_threads=1)
         for index in (len(self.cases)-2, len(self.cases)-1):
             values = self.tensors(index)
@@ -125,7 +128,7 @@ class KMeansTrainingScoreTests(unittest.TestCase):
             self.assert_reference(result, index, 4)
             self.assertLessEqual(plan.peak_live_bytes, native.MAX_CUDA_LIVE_BYTES)
 
-    def test_custom_stream_partition_and_mutable_centre_norm_recompute(self):
+    def check_test_custom_stream_partition_and_mutable_centre_norm_recompute(self):
         index = len(self.cases)-2
         values = self.tensors(index)
         stream = torch.cuda.Stream()
@@ -142,7 +145,7 @@ class KMeansTrainingScoreTests(unittest.TestCase):
         self.assertEqual(first.labels.cpu().tolist(), [0, 1])
         self.assertEqual(second.labels.cpu().tolist(), [1, 0])
 
-    def test_fractional_bisector_in_late_tile_withholds_all_labels(self):
+    def check_test_fractional_bisector_in_late_tile_withholds_all_labels(self):
         features = torch.tensor([[0], [200], [1]], dtype=torch.uint16, device='cuda')
         centres = torch.tensor([[.5], [1.5]], dtype=torch.float64, device='cuda')
         versions = (features._version, centres._version)
@@ -150,7 +153,7 @@ class KMeansTrainingScoreTests(unittest.TestCase):
             native.score_kmeans_training_rows(features, centres, source_n_threads=4, tile_rows=2)
         self.assertEqual((features._version, centres._version), versions)
 
-    def test_all_reduction_profile_encloses_all_actual_public_threaded_inertias(self):
+    def check_test_all_reduction_profile_encloses_all_actual_public_threaded_inertias(self):
         for index in (0, 1, 19, len(self.cases)-2):
             with self.subTest(case=index):
                 result = native.score_kmeans_training_rows(*self.tensors(index), source_n_threads=None)
@@ -170,7 +173,7 @@ class KMeansTrainingScoreTests(unittest.TestCase):
         with self.assertRaises(native.KMeansTrainingScorePrecisionError):
             native.score_kmeans_training_rows(features, centres, source_n_threads=None)
 
-    def test_every_callback_cancellation_and_storage_mutation_precedes_further_work(self):
+    def check_test_every_callback_cancellation_and_storage_mutation_precedes_further_work(self):
         total = 0
         def count():
             nonlocal total
@@ -209,7 +212,7 @@ class KMeansTrainingScoreTests(unittest.TestCase):
                         native.score_kmeans_training_rows(*values, source_n_threads=1, cancel=mutate)
                 self.assertEqual(calls, target)
 
-    def test_global_caps_invalid_shapes_values_and_callbacks_reject_before_kernel(self):
+    def check_test_global_caps_invalid_shapes_values_and_callbacks_reject_before_kernel(self):
         values = self.tensors()
         for constant in ('MAX_DATASET_BYTES', 'MAX_WORK', 'MAX_SCRATCH_BYTES', 'MAX_CUDA_LIVE_BYTES'):
             with self.subTest(cap=constant), patch.object(native, constant, 1):
@@ -239,10 +242,24 @@ class KMeansTrainingScoreTests(unittest.TestCase):
             with self.assertRaises(native.KMeansTrainingScoreError):
                 native.score_kmeans_training_rows(*inputs, source_n_threads=1)
 
-    def test_loaded_source_records_bind_kernel_limits_and_pinned_cython_identity(self):
+    def check_test_loaded_source_records_bind_kernel_limits_and_pinned_cython_identity(self):
         from seedvision.benchmarking.native_recipe import _module_record
         self.assertTrue(_module_record(native)['loaded_code'])
         for name, value in (('MAX_WORK', 1), ('SKLEARN_COMMON_SHA256', 'changed')):
             with patch.object(native, name, value):
                 with self.assertRaises(ValueError):
                     _module_record(native)
+
+    def test_workflow_lifecycle(self):
+        """4 related KMeansTrainingScoreTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_actual_pinned_labels_rows_and_inertia_threads_match_certified_result)
+        self.scenario(self.check_test_multitile_actual_peak_stays_bounded_and_matches_pinned_threaded_inertia)
+        self.scenario(self.check_test_custom_stream_partition_and_mutable_centre_norm_recompute)
+        self.scenario(self.check_test_all_reduction_profile_encloses_all_actual_public_threaded_inertias)
+
+    def test_validation_and_recovery(self):
+        """4 related KMeansTrainingScoreTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_fractional_bisector_in_late_tile_withholds_all_labels)
+        self.scenario(self.check_test_every_callback_cancellation_and_storage_mutation_precedes_further_work)
+        self.scenario(self.check_test_global_caps_invalid_shapes_values_and_callbacks_reject_before_kernel)
+        self.scenario(self.check_test_loaded_source_records_bind_kernel_limits_and_pinned_cython_identity)

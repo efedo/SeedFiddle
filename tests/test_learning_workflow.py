@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.functional_units import functional_units
+
 import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -11,6 +13,7 @@ import numpy as np
 from seedvision.persistence.reference_regions import SeedInstanceAnnotation
 
 
+@functional_units
 class LearningWorkflowTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -19,7 +22,7 @@ class LearningWorkflowTests(unittest.TestCase):
 
         cls.application = QApplication.instance() or QApplication([])
 
-    def test_export_dialog_returns_review_and_split_metadata(self) -> None:
+    def check_test_export_dialog_returns_review_and_split_metadata(self) -> None:
         from seedvision.ui.learning_workflow import LearningExportDialog
 
         with TemporaryDirectory() as temporary:
@@ -44,7 +47,7 @@ class LearningWorkflowTests(unittest.TestCase):
             self.assertEqual(options.annotation_author, "Reviewer")
             dialog.close()
 
-    def test_training_dialog_constructs_new_and_refinement_requests(self) -> None:
+    def check_test_training_dialog_constructs_new_and_refinement_requests(self) -> None:
         from seedvision.ui.learning_workflow import LearningTrainingDialog
 
         with TemporaryDirectory() as temporary:
@@ -67,7 +70,7 @@ class LearningWorkflowTests(unittest.TestCase):
             self.assertTrue(request.activate_after_training)
             dialog.close()
 
-    def test_training_task_forwards_epoch_progress_and_completion(self) -> None:
+    def check_test_training_task_forwards_epoch_progress_and_completion(self) -> None:
         from seedvision.learning.training import TrainingConfiguration
         from seedvision.ui.learning_workflow import LearningTrainingRequest
         from seedvision.ui.main_window import _LearningTrainingTask
@@ -114,7 +117,7 @@ class LearningWorkflowTests(unittest.TestCase):
         self.assertEqual(completed[0]["best_epoch"], 1)
         self.assertEqual(failures, [])
 
-    def test_analysis_export_derives_nonphysical_targets_from_instance_interiors(self) -> None:
+    def check_test_analysis_export_derives_nonphysical_targets_from_instance_interiors(self) -> None:
         import cv2
         import torch
 
@@ -196,7 +199,7 @@ class LearningWorkflowTests(unittest.TestCase):
                 int(np.count_nonzero(pattern_valid)),
             )
 
-    def test_reviewed_manifest_trains_and_refines_a_real_checkpoint(self) -> None:
+    def check_test_reviewed_manifest_trains_and_refines_a_real_checkpoint(self) -> None:
         import torch
 
         from seedvision.learning.contracts import FeatureStackSpec
@@ -284,6 +287,14 @@ class LearningWorkflowTests(unittest.TestCase):
         self.assertEqual(
             torch.is_deterministic_algorithms_warn_only_enabled(), warn_only_before
         )
+
+    def test_workflow_lifecycle(self):
+        """5 related LearningWorkflowTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_export_dialog_returns_review_and_split_metadata)
+        self.scenario(self.check_test_training_dialog_constructs_new_and_refinement_requests)
+        self.scenario(self.check_test_training_task_forwards_epoch_progress_and_completion)
+        self.scenario(self.check_test_analysis_export_derives_nonphysical_targets_from_instance_interiors)
+        self.scenario(self.check_test_reviewed_manifest_trains_and_refines_a_real_checkpoint)
 
 
 if __name__ == "__main__":

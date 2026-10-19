@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.functional_units import functional_units
+
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,6 +16,7 @@ from seedvision.persistence import (
 )
 
 
+@functional_units
 class ManualSeedCentreStoreTests(unittest.TestCase):
     @staticmethod
     def _image(root: Path, name: str, payload: bytes) -> Path:
@@ -22,7 +25,7 @@ class ManualSeedCentreStoreTests(unittest.TestCase):
         path.write_bytes(payload)
         return path
 
-    def test_round_trip_preserves_exact_source_floats_mode_and_empty_replace(self) -> None:
+    def check_test_round_trip_preserves_exact_source_floats_mode_and_empty_replace(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             image = self._image(root, "capture.png", b"source photograph")
@@ -62,7 +65,7 @@ class ManualSeedCentreStoreTests(unittest.TestCase):
             self.assertEqual(deleted.mode, "replace_automatic")
             self.assertEqual(deleted.centres_xy.shape, (0, 2))
 
-    def test_each_image_has_independent_source_bound_state(self) -> None:
+    def check_test_each_image_has_independent_source_bound_state(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             first = self._image(root, "first.png", b"first source")
@@ -97,7 +100,7 @@ class ManualSeedCentreStoreTests(unittest.TestCase):
             self.assertEqual(loaded_first.mode, "augment")
             self.assertEqual(loaded_second.mode, "replace_automatic")
 
-    def test_changed_source_bytes_are_rejected_without_mutating_sidecar(self) -> None:
+    def check_test_changed_source_bytes_are_rejected_without_mutating_sidecar(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             image = self._image(root, "capture.png", b"original source")
@@ -116,7 +119,7 @@ class ManualSeedCentreStoreTests(unittest.TestCase):
 
             self.assertEqual(sidecar.read_bytes(), before)
 
-    def test_same_named_external_images_do_not_share_a_sidecar(self) -> None:
+    def check_test_same_named_external_images_do_not_share_a_sidecar(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             temporary_root = Path(temporary)
             project = temporary_root / "project"
@@ -130,7 +133,7 @@ class ManualSeedCentreStoreTests(unittest.TestCase):
 
             self.assertNotEqual(store.path_for(first), store.path_for(second))
 
-    def test_invalid_saved_or_loaded_coordinates_are_rejected(self) -> None:
+    def check_test_invalid_saved_or_loaded_coordinates_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             image = self._image(root, "capture.png", b"source")
@@ -158,6 +161,17 @@ class ManualSeedCentreStoreTests(unittest.TestCase):
             )
             with self.assertRaises(InvalidManualSeedCentreArchive):
                 store.load_if_present(image, (21, 30))
+
+    def test_workflow_lifecycle(self):
+        """3 related ManualSeedCentreStoreTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_round_trip_preserves_exact_source_floats_mode_and_empty_replace)
+        self.scenario(self.check_test_each_image_has_independent_source_bound_state)
+        self.scenario(self.check_test_same_named_external_images_do_not_share_a_sidecar)
+
+    def test_validation_and_recovery(self):
+        """2 related ManualSeedCentreStoreTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_changed_source_bytes_are_rejected_without_mutating_sidecar)
+        self.scenario(self.check_test_invalid_saved_or_loaded_coordinates_are_rejected)
 
 
 if __name__ == "__main__":

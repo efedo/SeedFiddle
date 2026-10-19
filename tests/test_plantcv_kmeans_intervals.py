@@ -1,4 +1,6 @@
 """Certified compact numeric decisions and actual pinned scalar-state parity."""
+
+from tests.functional_units import functional_units
 from dataclasses import asdict
 from fractions import Fraction
 import itertools
@@ -10,8 +12,9 @@ from seedvision.cuda import plantcv_kmeans_intervals as native
 from tests.test_plantcv_kmeans_control import _bits, _fixtures
 
 
+@functional_units
 class KMeansIntervalTests(unittest.TestCase):
-    def test_point_sequences_preserve_actual_pinned_convergence_bits_and_branch_order(self):
+    def check_test_point_sequences_preserve_actual_pinned_convergence_bits_and_branch_order(self):
         request, reference = _fixtures()
         for item, expected in zip(request['convergence'], reference['convergence']):
             point = native.F64Interval.point
@@ -29,7 +32,7 @@ class KMeansIntervalTests(unittest.TestCase):
                 self.assertEqual([stop, bits(control.ewa_inertia), bits(control.ewa_inertia_min),
                     control.no_improvement], state)
 
-    def test_strict_interval_improvement_equality_and_overlap_are_certified(self):
+    def check_test_strict_interval_improvement_equality_and_overlap_are_certified(self):
         interval, point = native.F64Interval, native.F64Interval.point
         self.assertTrue(native.strict_interval_less(interval(7, 8), interval(9, 10)))
         self.assertFalse(native.strict_interval_less(interval(10, 11), interval(9, 10)))
@@ -47,7 +50,7 @@ class KMeansIntervalTests(unittest.TestCase):
         self.assertEqual(control.no_improvement, 0)
         self.assertLess(control.ewa_inertia.hi, 9)
 
-    def test_interval_tolerance_stop_bypass_and_ambiguity_preserve_state_order(self):
+    def check_test_interval_tolerance_stop_bypass_and_ambiguity_preserve_state_order(self):
         interval, point = native.F64Interval, native.F64Interval.point
         for tolerance, difference, expected in ((point(1), point(1), True),
                 (interval(.9, 1.1), interval(.5, .8), True),
@@ -70,7 +73,7 @@ class KMeansIntervalTests(unittest.TestCase):
                     batch_inertia=point(4), centres_squared_diff=difference)
             self.assertEqual(asdict(control), before)
 
-    def test_point_operations_match_binary64_and_nonpoint_endpoints_enclose_operations(self):
+    def check_test_point_operations_match_binary64_and_nonpoint_endpoints_enclose_operations(self):
         interval, point = native.F64Interval, native.F64Interval.point
         self.assertEqual(_bits(native.interval_add(point(.1), point(.2)).lo), _bits(.1+.2))
         self.assertEqual(_bits(native.interval_scale(point(.1), .3).lo), _bits(.1*.3))
@@ -92,7 +95,7 @@ class KMeansIntervalTests(unittest.TestCase):
                     self.assertLessEqual(result.lo, left+right)
                     self.assertGreaterEqual(result.hi, left+right)
 
-    def test_directed_fraction_conversion_handles_inexact_and_subnormal_boundaries(self):
+    def check_test_directed_fraction_conversion_handles_inexact_and_subnormal_boundaries(self):
         for value in (Fraction(1, 10), Fraction(1, 2**1075), Fraction(1, 2**1074), Fraction(7, 3)):
             lower = native._directed_fraction(value, upper=False)
             upper = native._directed_fraction(value, upper=True)
@@ -100,7 +103,7 @@ class KMeansIntervalTests(unittest.TestCase):
             self.assertGreaterEqual(Fraction.from_float(upper), value)
             self.assertLessEqual(upper-lower, math.ulp(upper))
 
-    def test_fractional_inertia_bounds_all_small_permutations_and_binary_groupings(self):
+    def check_test_fractional_inertia_bounds_all_small_permutations_and_binary_groupings(self):
         values = [65025., 1e-12, 1e-12, 17.125, .5]
         serial = 0.
         for value in values:
@@ -127,14 +130,14 @@ class KMeansIntervalTests(unittest.TestCase):
         self.assertEqual(zero.lo, 0.)
         self.assertGreater(zero.hi, 0.)
 
-    def test_integral_inertia_is_exact_for_all_thread_counts_within_proved_domain(self):
+    def check_test_integral_inertia_is_exact_for_all_thread_counts_within_proved_domain(self):
         total = 1_000_000 * 4096 * 65025
         for threads in (None, 1, 2, 4, 1024):
             interval = native.source_inertia_interval(float(total), row_count=1_000_000,
                 feature_count=4096, source_n_threads=threads, integral=True)
             self.assertEqual(interval, native.F64Interval.point(total))
 
-    def test_all_reduction_profile_preserves_the_same_proof_without_inferred_provenance(self):
+    def check_test_all_reduction_profile_preserves_the_same_proof_without_inferred_provenance(self):
         self.assertEqual(native.source_reduction_profile(None), 'all-valid-openmp-reductions-v1')
         for threads in (1, 2, 4, 1024):
             self.assertEqual(native.source_reduction_profile(threads), 'recorded-openmp-threads-v1')
@@ -146,7 +149,7 @@ class KMeansIntervalTests(unittest.TestCase):
             with self.assertRaises(native.KMeansIntervalError):
                 native.source_reduction_profile(value)
 
-    def test_invalid_inputs_mutable_state_and_loaded_source_fail_explicitly(self):
+    def check_test_invalid_inputs_mutable_state_and_loaded_source_fail_explicitly(self):
         for values in ((-1, 0), (2, 1), (float('nan'), 1), (0, float('inf')), (True, 1)):
             with self.assertRaises(native.KMeansIntervalError):
                 native.F64Interval(*values)
@@ -170,3 +173,18 @@ class KMeansIntervalTests(unittest.TestCase):
         with patch.object(native, 'EXACT_INTEGER_LIMIT', 7):
             with self.assertRaises(ValueError):
                 _module_record(native)
+
+    def test_workflow_lifecycle(self):
+        """6 related KMeansIntervalTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_point_sequences_preserve_actual_pinned_convergence_bits_and_branch_order)
+        self.scenario(self.check_test_strict_interval_improvement_equality_and_overlap_are_certified)
+        self.scenario(self.check_test_point_operations_match_binary64_and_nonpoint_endpoints_enclose_operations)
+        self.scenario(self.check_test_directed_fraction_conversion_handles_inexact_and_subnormal_boundaries)
+        self.scenario(self.check_test_integral_inertia_is_exact_for_all_thread_counts_within_proved_domain)
+        self.scenario(self.check_test_all_reduction_profile_preserves_the_same_proof_without_inferred_provenance)
+
+    def test_validation_and_recovery(self):
+        """3 related KMeansIntervalTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_interval_tolerance_stop_bypass_and_ambiguity_preserve_state_order)
+        self.scenario(self.check_test_fractional_inertia_bounds_all_small_permutations_and_binary_groupings)
+        self.scenario(self.check_test_invalid_inputs_mutable_state_and_loaded_source_fail_explicitly)

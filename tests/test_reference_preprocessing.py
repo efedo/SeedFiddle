@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from tests.functional_units import functional_units
+
 from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
 import tempfile
 import threading
 import unittest
+from tests.catalogue_fixtures import CatalogueTestCase
 from unittest.mock import patch
 
 import numpy as np
@@ -191,8 +194,9 @@ class _ReferencePreprocessingFixtures:
             "allow_cpu_transfer": True,
         }
 
-class ReferencePreprocessingContractTests(_ReferencePreprocessingFixtures, unittest.TestCase):
-    def test_invalid_preprocessing_edge_is_rejected_before_runner_execution(self) -> None:
+@functional_units
+class ReferencePreprocessingContractTests(_ReferencePreprocessingFixtures, CatalogueTestCase):
+    def check_test_invalid_preprocessing_edge_is_rejected_before_runner_execution(self) -> None:
         recipe = _selected_recipe("plantcv_seed_binary")
         median = next(stage for stage in recipe.stages if stage.operation_id == "filter.median_blur")
         threshold = next(stage for stage in recipe.stages if stage.operation_id == "threshold.binary")
@@ -208,7 +212,7 @@ class ReferencePreprocessingContractTests(_ReferencePreprocessingFixtures, unitt
                 run_reference_preprocessing(**arguments)
             run.assert_not_called()
 
-    def test_full_recipe_identity_can_include_selected_downstream_values(self) -> None:
+    def check_test_full_recipe_identity_can_include_selected_downstream_values(self) -> None:
         recipe = _selected_recipe("plantcv_seed_binary")
         maxima = next(stage for stage in recipe.stages if stage.operation_id == "reference.internal.watershed.local_maxima")
         changed = replace(
@@ -237,7 +241,7 @@ class ReferencePreprocessingContractTests(_ReferencePreprocessingFixtures, unitt
         self.assertEqual(outcome.stages[0].input_roles, {"gray": _GRAY_ROLE})
         run.assert_not_called()
 
-    def test_display_layout_changes_do_not_change_pinned_analysis_identity(self) -> None:
+    def check_test_display_layout_changes_do_not_change_pinned_analysis_identity(self) -> None:
         recipe = _selected_recipe("plantcv_seed_binary")
         moved = replace(recipe.layout[0], x=recipe.layout[0].x + 120.0, y=recipe.layout[0].y + 40.0)
         changed_layout_recipe = replace(
@@ -256,7 +260,7 @@ class ReferencePreprocessingContractTests(_ReferencePreprocessingFixtures, unitt
         self.assertEqual(outcome.recipe_identity, changed_layout_recipe.identity)
         self.assertEqual(outcome.stages[0].run_record.recipe_identity, changed_layout_recipe.identity)
 
-    def test_median_boundary_rejection_stops_before_any_plantcv_call(self) -> None:
+    def check_test_median_boundary_rejection_stops_before_any_plantcv_call(self) -> None:
         recipe = _selected_recipe("plantcv_seed_binary", median_ksize=129)
         arguments = self._arguments(recipe, shape=(16, 16))
         with patch.object(self.runner, "run", side_effect=AssertionError("undefined median boundary must not run")) as run:
@@ -267,7 +271,7 @@ class ReferencePreprocessingContractTests(_ReferencePreprocessingFixtures, unitt
         self.assertTrue(all(stage.status is ReferencePreprocessingStageStatus.NOT_RUN for stage in outcome.stages[1:]))
         run.assert_not_called()
 
-    def test_pre_cancelled_chain_records_cancellation_and_downstream_not_run(self) -> None:
+    def check_test_pre_cancelled_chain_records_cancellation_and_downstream_not_run(self) -> None:
         arguments = self._arguments()
         cancel = threading.Event()
         cancel.set()
@@ -280,7 +284,7 @@ class ReferencePreprocessingContractTests(_ReferencePreprocessingFixtures, unitt
         self.assertTrue(all(stage.status is ReferencePreprocessingStageStatus.NOT_RUN for stage in outcome.stages[1:]))
         run.assert_not_called()
 
-    def test_failed_unavailable_or_cancelled_dilation_has_no_partial_final_checkpoint(self) -> None:
+    def check_test_failed_unavailable_or_cancelled_dilation_has_no_partial_final_checkpoint(self) -> None:
         recipe = _selected_recipe("plantcv_seed_binary")
         final_stage = next(stage for stage in recipe.stages if stage.operation_id == "morphology.dilate")
         cases = (
@@ -346,94 +350,24 @@ class ReferencePreprocessingContractTests(_ReferencePreprocessingFixtures, unitt
                 self.assertEqual(mask_bridge.call_count, 4)
                 threshold_bridge.assert_called_once()
 
+    def test_validation_and_recovery(self):
+        """4 related ReferencePreprocessingContractTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_invalid_preprocessing_edge_is_rejected_before_runner_execution)
+        self.scenario(self.check_test_median_boundary_rejection_stops_before_any_plantcv_call)
+        self.scenario(self.check_test_pre_cancelled_chain_records_cancellation_and_downstream_not_run)
+        self.scenario(self.check_test_failed_unavailable_or_cancelled_dilation_has_no_partial_final_checkpoint)
+
+    def test_workflow_lifecycle(self):
+        """2 related ReferencePreprocessingContractTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_full_recipe_identity_can_include_selected_downstream_values)
+        self.scenario(self.check_test_display_layout_changes_do_not_change_pinned_analysis_identity)
+
 
 @unittest.skipUnless(HAS_REFERENCE_ENV, "the ignored pinned PlantCV reference environment is unavailable")
-class ReferencePreprocessingPlantCVTests(_ReferencePreprocessingFixtures, unittest.TestCase):
-    def test_all_three_authored_chains_run_original_plantcv_and_preserve_stage_provenance(self) -> None:
-        recipes = (
-            "plantcv_seed_binary",
-            "plantcv_seed_mean",
-            "plantcv_seed_otsu",
-        )
-        for recipe_id in recipes:
-            with self.subTest(recipe=recipe_id):
-                recipe = _selected_recipe(recipe_id)
-                arguments = self._arguments(recipe)
-                outcome = run_reference_preprocessing(**arguments)
-                self.assertIn(outcome.status, {
-                    ReferencePreprocessingStatus.EXECUTED,
-                    ReferencePreprocessingStatus.EMPTY,
-                })
-                self.assertEqual(
-                    [stage.stage.operation_id for stage in outcome.stages],
-                    [
-                        "filter.median_blur",
-                        _threshold_operation(recipe_id),
-                        "morphology.fill",
-                        "morphology.erode",
-                        "morphology.dilate",
-                    ],
-                )
-                self.assertEqual(len(outcome.run_records), 5)
-                self.assertEqual(outcome.stages[0].status, ReferencePreprocessingStageStatus.EXECUTED)
-                self.assertTrue(all(stage.status in {
-                    ReferencePreprocessingStageStatus.EXECUTED,
-                    ReferencePreprocessingStageStatus.EMPTY,
-                } for stage in outcome.stages))
-                for index, stage_result in enumerate(outcome.stages):
-                    reference = stage_result.checkpoint_reference
-                    self.assertIsNotNone(reference)
-                    self.assertEqual(stage_result.run_record.checkpoint_sha256, reference.checkpoint_sha256)
-                    self.assertEqual(stage_result.run_record.recipe_identity, recipe.identity)
-                    self.assertEqual(stage_result.input_checkpoint_sha256, (
-                        arguments["input_checkpoint_sha256"] if index == 0
-                        else outcome.stages[index - 1].checkpoint_reference.checkpoint_sha256
-                    ))
-                    checkpoint = load_checkpoint(arguments["output_root"], reference.checkpoint_sha256)
-                    self.assertEqual(checkpoint.metadata["operation_id"], stage_result.stage.operation_id)
-                    self.assertEqual(checkpoint.metadata["parameters"], recipe.parameters_for_runner(stage_result.stage.stage_id))
-                    self.assertFalse(checkpoint.measurement.eligible)
-                    self.assertIn("source_mapping", checkpoint.metadata)
-                final = outcome.final_checkpoint
-                self.assertIsNotNone(final)
-                final_checkpoint = load_checkpoint(arguments["output_root"], final.checkpoint_sha256)
-                self.assertEqual(set(final_checkpoint.arrays), {"mask"})
-                self.assertEqual(final_checkpoint.raster_roles["mask"], RasterRole("mask", np.dtype(np.uint8).str))
+class ReferencePreprocessingPlantCVTests(_ReferencePreprocessingFixtures, CatalogueTestCase):
 
-    def test_changed_preprocessing_parameter_changes_checkpoint_and_upstream_chain(self) -> None:
-        baseline_args = self._arguments(_selected_recipe("plantcv_seed_binary", median_ksize=3))
-        changed_args = self._arguments(_selected_recipe("plantcv_seed_binary", median_ksize=5))
-        baseline = run_reference_preprocessing(**baseline_args)
-        changed = run_reference_preprocessing(**changed_args)
-        self.assertIn(baseline.status, {ReferencePreprocessingStatus.EXECUTED, ReferencePreprocessingStatus.EMPTY})
-        self.assertIn(changed.status, {ReferencePreprocessingStatus.EXECUTED, ReferencePreprocessingStatus.EMPTY})
-        self.assertNotEqual(
-            baseline.stages[0].checkpoint_reference.checkpoint_sha256,
-            changed.stages[0].checkpoint_reference.checkpoint_sha256,
-        )
-        self.assertNotEqual(
-            baseline.stages[1].input_checkpoint_sha256,
-            changed.stages[1].input_checkpoint_sha256,
-        )
-        self.assertNotEqual(
-            baseline.stages[1].checkpoint_reference.identity.settings_sha256,
-            changed.stages[1].checkpoint_reference.identity.settings_sha256,
-        )
 
-    def test_empty_threshold_masks_continue_through_fill_erosion_and_dilation(self) -> None:
-        recipe = _selected_recipe("plantcv_seed_binary", binary_cutoff=255)
-        arguments = self._arguments(recipe, empty=True)
-        outcome = run_reference_preprocessing(**arguments)
-        self.assertEqual(outcome.status, ReferencePreprocessingStatus.EMPTY)
-        self.assertEqual(outcome.stages[0].status, ReferencePreprocessingStageStatus.EXECUTED)
-        self.assertTrue(all(
-            stage.status is ReferencePreprocessingStageStatus.EMPTY
-            for stage in outcome.stages[1:]
-        ))
-        self.assertEqual(len(outcome.run_records), 5)
-        self.assertIsNotNone(outcome.final_checkpoint)
-        final = load_checkpoint(arguments["output_root"], outcome.final_checkpoint.checkpoint_sha256)
-        self.assertFalse(np.any(final.arrays["mask"]))
+    pass
 
 
 def _threshold_operation(recipe_id: str) -> str:

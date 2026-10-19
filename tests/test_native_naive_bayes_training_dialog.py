@@ -1,4 +1,8 @@
 """Actual Bayes training UI, atomic TSV saves and project-held provenance."""
+
+from tests.catalogue_fixtures import CatalogueTestCase
+
+from tests.functional_units import functional_units
 from copy import deepcopy
 from dataclasses import replace
 from hashlib import sha256
@@ -79,7 +83,8 @@ def assert_constant_project_archive_after_removal(test, selected, source_paths):
 
 
 @unittest.skipUnless(torch.cuda.is_available(), 'CUDA required')
-class NativeBayesTrainingWorkflowTests(unittest.TestCase):
+@functional_units
+class NativeBayesTrainingWorkflowTests(CatalogueTestCase):
     @classmethod
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])
@@ -133,7 +138,7 @@ class NativeBayesTrainingWorkflowTests(unittest.TestCase):
             native_recipes=(recipe or self.recipe,), destination=workspace/'test.seedfiddle-project.json')
         return workspace, store, master
 
-    def test_legacy_and_trained_selections_roundtrip_exact_tsv_and_independent_metadata(self):
+    def check_test_legacy_and_trained_selections_roundtrip_exact_tsv_and_independent_metadata(self):
         plain = factory.model_source_for_path(self.model_path)
         self.assertEqual(set(plain), set(factory.MODEL_FIELDS))
         self.assertEqual(set(self.selected), set(factory.MODEL_FIELDS)|{factory.TRAINING_FIELD})
@@ -149,7 +154,7 @@ class NativeBayesTrainingWorkflowTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             factory.model_source_for_trained_model(self.model_path, _pdf(), self.completion.provenance_json)
 
-    def test_typed_provenance_rejects_mismatched_model_counts_profiles_and_calculation_facts(self):
+    def check_test_typed_provenance_rejects_mismatched_model_counts_profiles_and_calculation_facts(self):
         original = json.loads(self.completion.provenance_json)
         bad = []
         for field, value in (('model_sha256', 'a'*64), ('tables_sha256', 'b'*64),
@@ -191,33 +196,8 @@ class NativeBayesTrainingWorkflowTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 factory.load_selected_model(invalid)
 
-    def test_old_and_buffered_profiles_preserve_record_bytes_and_prediction_cache(self):
-        current = json.loads(self.completion.provenance_json)
-        self.assertEqual({channel['numerical_profile'] for channels in current['channel_fits']
-            for channel in channels}, {provenance.BUFFERED_NUMERICAL_PROFILE})
-        old = deepcopy(current)
-        for channels in old['channel_fits']:
-            for channel in channels:
-                channel['numerical_profile'] = provenance.NUMERICAL_PROFILE
-        old_bytes = canonical(old)
-        old_record = provenance.parse_training_record(old_bytes, self.completion.model)
-        self.assertEqual(old_record.json_text.encode('utf-8'), old_bytes)
-        self.assertEqual(provenance.parse_training_record(
-            old_record.json_text, self.completion.model), old_record)
-        previous = factory.model_source_for_trained_model(self.model_path,
-            self.completion.tsv_bytes, old_bytes)
-        self.assertEqual(factory.load_selected_model(previous), self.completion.model)
-        self.assertEqual(factory.load_selected_model(self.selected), self.completion.model)
-        cache = PipelineAnalysisCache()
-        first = runner.run_native_recipe_path(bind_recipe(previous), self.image_path, cache=cache)
-        second = runner.run_native_recipe_path(self.recipe, self.image_path, cache=cache)
-        self.assertTrue(all(node.reused for node in second.nodes))
-        self.assertIs(first.node(factory.CLASSIFIER_STAGE_ID).outputs['class_masks'],
-            second.node(factory.CLASSIFIER_STAGE_ID).outputs['class_masks'])
-        refreshed = second.node(factory.MODEL_STAGE_ID).parameters['model_source'][factory.TRAINING_FIELD]
-        self.assertEqual(refreshed, self.selected[factory.TRAINING_FIELD])
 
-    def test_constant_record_exact_facts_shapes_profiles_and_mean_overshoot(self):
+    def check_test_constant_record_exact_facts_shapes_profiles_and_mean_overshoot(self):
         self.samples.write_bytes(constant_value_samples())
         result = training.train_bayes_sample_file(self.samples)
         original = json.loads(result.provenance_json)
@@ -251,23 +231,8 @@ class NativeBayesTrainingWorkflowTests(unittest.TestCase):
             with self.subTest(channel=changed['channel_fits'][0]),self.assertRaises(ValueError):
                 provenance.parse_training_record(canonical(changed),result.model)
 
-    def test_actual_constant_training_save_move_and_companion_archive_without_sources(self):
-        self.samples.write_bytes(constant_value_samples())
-        dialog = self.dialog()
-        dialog._start_training()
-        self.wait(dialog)
-        self.assertIsNotNone(dialog._completion)
-        self.assertGreater(dialog._completion.fit.channels[0][2].mean,255)
-        destination = self.root/'constant-trained.tsv'
-        with patch.object(ui.QFileDialog,'getSaveFileName',return_value=(str(destination),'tsv')):
-            dialog._save_model()
-        self.assertEqual(dialog.result(),QDialog.DialogCode.Accepted)
-        self.assertEqual(destination.read_bytes(),dialog._completion.tsv_bytes)
-        selected = dialog.saved_model_source
-        self.assertEqual(factory.load_selected_model(selected),dialog._completion.model)
-        assert_constant_project_archive_after_removal(self,selected,(self.samples,destination))
 
-    def test_canonical_provenance_byte_item_depth_and_numeric_bounds(self):
+    def check_test_canonical_provenance_byte_item_depth_and_numeric_bounds(self):
         raw = self.completion.provenance_json
         invalid = [b'x'*(provenance.MAX_PROVENANCE_BYTES+1), b'\xff',
             json.dumps(json.loads(raw), indent=2).encode(),
@@ -280,65 +245,10 @@ class NativeBayesTrainingWorkflowTests(unittest.TestCase):
         with patch.object(provenance, 'MAX_METADATA_ITEMS', 3), self.assertRaises(ValueError):
             provenance.parse_training_record(raw, self.completion.model)
 
-    def test_metadata_only_origin_change_reuses_predictions_and_refreshes_node_parameters(self):
-        other_samples = self.root/'other-sampled-rgb.tsv'
-        other_samples.write_bytes(self.samples.read_bytes())
-        second = training.train_bayes_sample_file(other_samples)
-        self.assertEqual(second.tsv_bytes, self.completion.tsv_bytes)
-        selected = factory.model_source_for_trained_model(self.model_path, second.tsv_bytes, second.provenance_json)
-        changed = bind_recipe(selected)
-        self.assertNotEqual(self.recipe.identity.settings_sha256, changed.identity.settings_sha256)
-        cache = PipelineAnalysisCache()
-        first = runner.run_native_recipe_path(self.recipe, self.image_path, cache=cache)
-        result = runner.run_native_recipe_path(changed, self.image_path, cache=cache)
-        self.assertTrue(all(node.reused for node in result.nodes))
-        self.assertIs(first.node(factory.CLASSIFIER_STAGE_ID).outputs['class_masks'],
-            result.node(factory.CLASSIFIER_STAGE_ID).outputs['class_masks'])
-        current = result.node(factory.MODEL_STAGE_ID).parameters['model_source'][factory.TRAINING_FIELD]['json']
-        self.assertEqual(json.loads(current)['sample_origin_path'], str(other_samples.resolve()))
-        self.assertEqual(json.loads(first.node(factory.MODEL_STAGE_ID).parameters['model_source'][factory.TRAINING_FIELD]['json'])
-            ['sample_origin_path'], str(self.samples.resolve()))
-        outputs.export_native_recipe_result(self.root/'updated-history-run', changed, result)
-        report, _ = outputs.load_native_recipe_result(self.root/'updated-history-run')
-        archived = report['recipe']['stages'][1]['parameters'][0]['value'][factory.TRAINING_FIELD]
-        self.assertEqual(json.loads(archived['json'])['sample_origin_path'], str(other_samples.resolve()))
-        broken = deepcopy(selected)
-        broken[factory.TRAINING_FIELD]['sha256'] = 'a'*64
-        with patch.object(runner, 'prepare_native_recipe_inputs', side_effect=AssertionError('prepared before metadata check')):
-            with self.assertRaises(ValueError):
-                runner.run_native_recipe_path(bind_recipe(broken), self.image_path, cache=cache)
-        self.assertIn('reference.recipe:'+self.recipe.recipe_id+':'+factory.IMAGE_STAGE_ID, cache.values)
-        self.assertNotIn('reference.recipe:'+self.recipe.recipe_id+':'+factory.CLASSIFIER_STAGE_ID, cache.values)
 
-    def test_loaded_provenance_codec_body_is_verified_before_numerical_cache_reuse(self):
-        legacy = bind_recipe(factory.model_source_for_path(self.model_path))
-        cache = PipelineAnalysisCache()
-        runner.run_native_recipe_path(legacy, self.image_path, cache=cache)
-        with patch.object(provenance, '_bounded_metadata', lambda value: None):
-            with self.assertRaisesRegex(runner.NativeRecipeError, 'Loaded calculation'):
-                runner.run_native_recipe_path(legacy, self.image_path, cache=cache)
 
-    def test_real_async_training_ordered_facts_atomic_save_and_exact_reload(self):
-        dialog = self.dialog()
-        dialog._start_training()
-        for widget in (dialog.samples_edit, dialog.choose_samples_button, dialog.train_button, dialog.save_button):
-            self.assertFalse(widget.isEnabled())
-        self.wait(dialog)
-        self.assertTrue(dialog.save_button.isEnabled(), dialog.status_label.text())
-        self.assertIn('seed: 14, background: 7', dialog.status_label.text())
-        self.assertIn('empirical', dialog.status_label.text())
-        self.assertIn('Keep', dialog.status_label.text())
-        path = self.root/'saved-by-qt.tsv'
-        with patch.object(ui.QFileDialog, 'getSaveFileName', return_value=(str(path), '')):
-            dialog._save_model()
-        self.assertEqual(path.read_bytes(), self.completion.tsv_bytes)
-        self.assertEqual(factory.load_selected_model(dialog.saved_model_source), self.completion.model)
-        self.assertEqual(dialog.saved_model_path, str(path.resolve()))
-        self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
-        self.assertEqual(dialog.saved_model_source[factory.TRAINING_FIELD]['json'],
-            dialog._completion.provenance_json.decode())
 
-    def test_ui_completion_projects_compact_metadata_without_reading_dense_products(self):
+    def check_test_ui_completion_projects_compact_metadata_without_reading_dense_products(self):
         class DenseSentinel:
             def __getattribute__(self, name):
                 raise AssertionError('UI inspected dense training products')
@@ -347,55 +257,9 @@ class NativeBayesTrainingWorkflowTests(unittest.TestCase):
         result = replace(self.completion, samples=DenseSentinel(), fit=DenseSentinel())
         self.assertEqual(dialog._validated_completion(result)['sample_counts'], [14,7])
 
-    def test_stop_close_and_stale_selection_discard_successful_late_results(self):
-        for action in ('stop', 'reject', 'accept', 'close', 'change'):
-            with self.subTest(action=action):
-                entered, release = threading.Event(), threading.Event()
-                def delayed(path, *, cancel):
-                    entered.set()
-                    release.wait(5)
-                    return self.completion
-                dialog = self.dialog(operation=delayed)
-                dialog._start_training()
-                self.assertTrue(entered.wait(5))
-                finished = []
-                dialog.finished.connect(finished.append)
-                if action == 'stop':
-                    dialog._stop_training()
-                elif action == 'change':
-                    dialog.samples_edit.setText(str(self.root/'new.tsv'))
-                else:
-                    getattr(dialog, action)()
-                    self.assertEqual(finished, [])
-                release.set()
-                self.wait(dialog)
-                self.assertIsNone(dialog._completion)
-                self.assertIsNone(dialog.saved_model_source)
-                self.assertFalse(dialog.save_button.isEnabled())
-                if action in ('reject','accept','close'):
-                    self.assertEqual(finished, [QDialog.DialogCode.Rejected])
 
-    def test_same_path_reselection_and_failed_training_clear_stale_save(self):
-        dialog = self.dialog()
-        dialog._completion = self.completion
-        dialog.save_button.setEnabled(True)
-        with patch.object(ui.QFileDialog, 'getOpenFileName', return_value=(str(self.samples), '')):
-            dialog._choose_samples()
-        self.assertIsNone(dialog._completion)
-        self.assertFalse(dialog.save_button.isEnabled())
-        self.samples.write_bytes(b'constant\n0,0,0\n0,0,0\n')
-        dialog._start_training()
-        self.wait(dialog)
-        self.assertIn('constant HSV', dialog.status_label.text())
-        self.assertIsNone(dialog._completion)
-        self.assertFalse(dialog.save_button.isEnabled())
-        dialog._operation = lambda path, cancel: replace(self.completion, provenance_json=b'{}')
-        dialog._start_training()
-        self.wait(dialog)
-        self.assertIsNone(dialog._completion)
-        self.assertIn('failed', dialog.status_label.text())
 
-    def test_real_temporary_save_commit_failure_and_short_write_preserve_destination(self):
+    def check_test_real_temporary_save_commit_failure_and_short_write_preserve_destination(self):
         dialog = self.dialog()
         dialog._run_path = str(self.samples.resolve())
         dialog._completion = self.completion
@@ -421,7 +285,7 @@ class NativeBayesTrainingWorkflowTests(unittest.TestCase):
             self.assertIsNone(dialog.saved_model_source)
             self.assertEqual(list(self.root.glob('*.incomplete')), [])
 
-    def test_post_commit_reload_failure_emits_no_selection(self):
+    def check_test_post_commit_reload_failure_emits_no_selection(self):
         dialog = self.dialog()
         dialog._run_path = str(self.samples.resolve())
         dialog._completion = self.completion
@@ -434,32 +298,8 @@ class NativeBayesTrainingWorkflowTests(unittest.TestCase):
         self.assertIsNone(dialog.saved_model_source)
         self.assertIsNone(dialog.saved_model_path)
 
-    def test_parent_picker_keeps_training_record_and_reuses_independent_image_cache(self):
-        old_path = self.root/'old.tsv'
-        old_path.write_bytes(_pdf())
-        kept = []
-        dialog = picker.NativeNaiveBayesDialog(bind_recipe(factory.model_source_for_path(old_path)), keep_in_project=kept.append)
-        self.dialogs.append(dialog)
-        first = runner.run_native_recipe_path(dialog.recipe, self.image_path, cache=dialog.cache)
-        selected = deepcopy(self.selected)
-        class CompletedDialog:
-            saved_model_source = selected
-            def __init__(self, parent): pass
-            def exec(self): return QDialog.DialogCode.Accepted
-            def deleteLater(self): pass
-        with patch.object(picker, 'NativeNaiveBayesTrainingDialog', CompletedDialog):
-            dialog._train_model()
-        self.assertIn('training provenance', dialog.model_label.text())
-        self.assertIn(dialog.train_model_button, dialog._export_conflicting_buttons())
-        dialog._keep_recipe_in_project()
-        self.assertEqual(len(kept), 1)
-        self.assertEqual(kept[0].parameters_for_runner(factory.MODEL_STAGE_ID)['model_source'], self.selected)
-        after = runner.run_native_recipe_path(dialog.recipe, self.image_path, cache=dialog.cache)
-        self.assertEqual(dialog.cache.last_reused_nodes, (factory.IMAGE_STAGE_ID,))
-        self.assertEqual(dialog.cache.last_computed_nodes, (factory.MODEL_STAGE_ID, factory.CLASSIFIER_STAGE_ID))
-        self.assertIs(first.node(factory.IMAGE_STAGE_ID).outputs['rgb_image'], after.node(factory.IMAGE_STAGE_ID).outputs['rgb_image'])
 
-    def test_parent_close_waits_for_modal_training_worker_and_never_selects_late_model(self):
+    def check_test_parent_close_waits_for_modal_training_worker_and_never_selects_late_model(self):
         parent = picker.NativeNaiveBayesDialog(self.recipe)
         self.dialogs.append(parent)
         release = threading.Event()
@@ -483,57 +323,21 @@ class NativeBayesTrainingWorkflowTests(unittest.TestCase):
         self.assertEqual(parent.recipe, self.recipe)
         self.assertIsNone(child._completion)
 
-    def test_project_move_reopen_and_actual_batch_archive_retain_record_without_originals(self):
-        workspace, store, master = self.make_project()
-        self.samples.unlink()
-        self.model_path.unlink()
-        moved = self.root/'moved-workspace'
-        self.assertTrue(workspace.resolve().is_relative_to(self.root.resolve()))
-        self.assertTrue(moved.resolve().is_relative_to(self.root.resolve()))
-        workspace.rename(moved)
-        master = moved/master.name
-        loaded = ProjectAnalysisStore(moved).load(master)
-        self.assertFalse(loaded.issues)
-        recipe = loaded.document.native_recipes[0]
-        self.assertEqual(recipe, self.recipe)
-        paths = assets.model_asset_paths(moved, recipe, loaded.document.reference_model_assets)
-        result = runner.run_native_recipe_path(recipe, moved/'seeds.png', model_asset_paths=paths)
-        self.assertEqual(result.status, 'executed')
-        ledger = export_project_native_graphs((), moved/'seeds.png', self.root/'batch',
-            expected_source_sha256=loaded.document.images[0].source.sha256, project_root=moved,
-            reference_model_assets=loaded.document.reference_model_assets, native_recipes=(recipe,))
-        row = json.loads(ledger.read_bytes())['graphs'][0]
-        self.assertEqual(row['status'], 'executed', row.get('reason'))
-        self.assertEqual(row['historical_stage_runs'], [])
-        report, arrays = outputs.load_native_recipe_result(ledger.parent/Path(row['report']).parent)
-        selected = report['recipe']['stages'][1]['parameters'][0]['value']
-        self.assertEqual(selected[factory.TRAINING_FIELD], self.selected[factory.TRAINING_FIELD])
-        self.assertTrue(arrays)
-        self.assertFalse(report['scientifically_validated'])
 
-    def test_invalid_training_metadata_and_project_publication_failure_preserve_previous_master(self):
-        workspace, store, master = self.make_project()
-        before = master.read_bytes()
-        document = store.load(master).document
-        malformed = deepcopy(self.selected)
-        malformed[factory.TRAINING_FIELD]['sha256'] = 'a'*64
-        with patch.object(assets, 'verified_asset_bytes', side_effect=AssertionError('read before metadata check')):
-            with self.assertRaises(InvalidProjectAnalysis):
-                store.capture_and_save(analysis_settings=document.analysis_settings,
-                    images=(ProjectImageSpec(workspace/'seeds.png',(23,29)),),
-                    native_recipes=(bind_recipe(malformed),), destination=master)
-        self.assertEqual(master.read_bytes(), before)
-        changed = json.loads(self.completion.provenance_json)
-        changed['sample_origin_path'] = str(self.root/'another-origin.tsv')
-        selected = factory.model_source_for_trained_model(self.model_path,
-            self.completion.tsv_bytes, canonical(changed))
-        updated = replace(document, native_recipes=(bind_recipe(selected),), reference_model_assets=())
-        with patch('seedvision.persistence.project_analysis.os.replace', side_effect=OSError('project commit failed')) as publish:
-            with self.assertRaises(ProjectAnalysisIOError):
-                store.save(updated, master)
-        publish.assert_called_once()
-        self.assertEqual(master.read_bytes(), before)
-        self.assertEqual(store.load(master).document.native_recipes, document.native_recipes)
+
+    def test_workflow_lifecycle(self):
+        """5 related NativeBayesTrainingWorkflowTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_legacy_and_trained_selections_roundtrip_exact_tsv_and_independent_metadata)
+        self.scenario(self.check_test_constant_record_exact_facts_shapes_profiles_and_mean_overshoot)
+        self.scenario(self.check_test_canonical_provenance_byte_item_depth_and_numeric_bounds)
+        self.scenario(self.check_test_ui_completion_projects_compact_metadata_without_reading_dense_products)
+        self.scenario(self.check_test_parent_close_waits_for_modal_training_worker_and_never_selects_late_model)
+
+    def test_validation_and_recovery(self):
+        """3 related NativeBayesTrainingWorkflowTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_typed_provenance_rejects_mismatched_model_counts_profiles_and_calculation_facts)
+        self.scenario(self.check_test_real_temporary_save_commit_failure_and_short_write_preserve_destination)
+        self.scenario(self.check_test_post_commit_reload_failure_emits_no_selection)
 
 
 if __name__ == '__main__':

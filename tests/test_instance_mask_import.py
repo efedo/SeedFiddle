@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.functional_units import functional_units
+
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -17,8 +19,9 @@ from seedvision.persistence import (
 )
 
 
+@functional_units
 class InstanceMaskImportTests(unittest.TestCase):
-    def test_corrected_png_tiff_and_npz_preserve_sparse_ids_exactly(self) -> None:
+    def check_test_corrected_png_tiff_and_npz_preserve_sparse_ids_exactly(self) -> None:
         labels = np.zeros((9, 13), dtype=np.uint16)
         labels[1:4, 2:6] = 7
         labels[5:8, 8:12] = 41_003
@@ -46,7 +49,7 @@ class InstanceMaskImportTests(unittest.TestCase):
                     self.assertTrue(np.array_equal(imported.labels, labels))
                     self.assertEqual(set(np.unique(imported.labels)), {0, 7, 41_003})
 
-    def test_corrected_import_rejects_shape_type_range_and_corruption(self) -> None:
+    def check_test_corrected_import_rejects_shape_type_range_and_corruption(self) -> None:
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
             wrong_shape = root / "wrong.npz"
@@ -119,7 +122,7 @@ class InstanceMaskImportTests(unittest.TestCase):
         )
         return image_path, labels, source_image, entry
 
-    def test_bundled_source_mask_is_fingerprint_bound_and_warped_nearest(self) -> None:
+    def check_test_bundled_source_mask_is_fingerprint_bound_and_warped_nearest(self) -> None:
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
             image_path, source_labels, source_image, _entry = self._write_bundle(root)
@@ -150,7 +153,7 @@ class InstanceMaskImportTests(unittest.TestCase):
             self.assertIn("source-sha256=", imported.origin)
             self.assertIn("reviewed=false", imported.origin)
 
-    def test_bundled_mask_rejects_stale_image_mask_and_declared_count(self) -> None:
+    def check_test_bundled_mask_rejects_stale_image_mask_and_declared_count(self) -> None:
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
             image_path, _labels, source_image, entry = self._write_bundle(root)
@@ -217,7 +220,7 @@ class InstanceMaskImportTests(unittest.TestCase):
                     source_to_corrected=identity,
                 )
 
-    def test_bundled_manifest_requires_every_integrity_field(self) -> None:
+    def check_test_bundled_manifest_requires_every_integrity_field(self) -> None:
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
             image_path, _labels, source_image, entry = self._write_bundle(root)
@@ -250,7 +253,7 @@ class InstanceMaskImportTests(unittest.TestCase):
                             source_to_corrected=identity,
                         )
 
-    def test_bundled_manifest_requires_partition_counts_to_sum_to_total(self) -> None:
+    def check_test_bundled_manifest_requires_partition_counts_to_sum_to_total(self) -> None:
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
             image_path, _labels, source_image, entry = self._write_bundle(root)
@@ -273,7 +276,7 @@ class InstanceMaskImportTests(unittest.TestCase):
                     source_to_corrected=np.eye(3, dtype=np.float64),
                 )
 
-    def test_bundled_warp_must_preserve_every_nonzero_identifier(self) -> None:
+    def check_test_bundled_warp_must_preserve_every_nonzero_identifier(self) -> None:
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
             image_path, _labels, source_image, _entry = self._write_bundle(root)
@@ -292,7 +295,7 @@ class InstanceMaskImportTests(unittest.TestCase):
                     source_to_corrected=transform,
                 )
 
-    def test_no_current_image_manifest_entry_returns_none(self) -> None:
+    def check_test_no_current_image_manifest_entry_returns_none(self) -> None:
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
             _image_path, _labels, source_image, _entry = self._write_bundle(root)
@@ -307,6 +310,20 @@ class InstanceMaskImportTests(unittest.TestCase):
                     source_to_corrected=np.eye(3),
                 )
             )
+
+    def test_workflow_lifecycle(self):
+        """6 related InstanceMaskImportTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_corrected_png_tiff_and_npz_preserve_sparse_ids_exactly)
+        self.scenario(self.check_test_bundled_source_mask_is_fingerprint_bound_and_warped_nearest)
+        self.scenario(self.check_test_bundled_manifest_requires_every_integrity_field)
+        self.scenario(self.check_test_bundled_manifest_requires_partition_counts_to_sum_to_total)
+        self.scenario(self.check_test_bundled_warp_must_preserve_every_nonzero_identifier)
+        self.scenario(self.check_test_no_current_image_manifest_entry_returns_none)
+
+    def test_validation_and_recovery(self):
+        """2 related InstanceMaskImportTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_corrected_import_rejects_shape_type_range_and_corruption)
+        self.scenario(self.check_test_bundled_mask_rejects_stale_image_mask_and_declared_count)
 
 
 if __name__ == "__main__":

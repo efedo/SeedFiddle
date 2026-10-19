@@ -29,7 +29,7 @@ LIMIT = 4 * 1024 * 1024
 ACK_LIMIT = 64 * 1024
 ACK_CONTRACT = 'seedfiddle.recipe-qc-acknowledgment-v1'
 _SHA = re.compile(r'[0-9a-f]{64}\Z')
-_NATIVE_STATES = {'provided', 'executed', 'empty', 'partial', 'failed', 'not_run', 'unavailable'}
+_NATIVE_STATES = {'provided', 'executed', 'empty', 'partial', 'failed', 'not_run', 'unavailable', 'bypassed'}
 
 
 def _plain(value, depth=0):
@@ -155,6 +155,10 @@ def _qc_from_verified_native_report(report):
     identity['node_outcomes'] = [{'stage_id': node['stage_id'], 'operation_id': node['operation_id'],
         'state': node['status'], 'reason': node['reason'],
         'output_ports': [item[0] for item in node['outputs']]} for node in report['nodes']]
+    public = [node['stage_id'] for node in report['nodes'] if node.get('backend') == 'plantcv']
+    if public:
+        identity['native_artifact'].update(execution_backend='seedvision.pipeline.backend_execution',
+            execution_mode='plantcv_native', public_stages=public)
     return _finish(recipe, identity)
 
 
@@ -226,13 +230,21 @@ def _validate(payload):
         if value['stage_record'] is not None or value['recorded_inspection'] is not None:
             raise ValueError('Native QC cannot claim a selected-stage inspection.')
         artifact = value['native_artifact']
+        public = artifact.get('public_stages')
         _exact(artifact, 'format version result_revision source_sha256 coordinate_frame runtime preparation '
-                         'status execution_backend execution_mode', 'native QC artifact')
+                         'status execution_backend execution_mode' + (' public_stages' if public is not None else ''), 'native QC artifact')
+        if public is not None:
+            from seedvision.pipeline.backend_execution import backend_capability
+            if (type(public) is not list or not public or len(public) != len(set(public))
+                    or any(type(identifier) is not str or identifier not in {stage.stage_id for stage in recipe.stages}
+                           or 'plantcv' not in backend_capability(recipe, identifier).backends for identifier in public)):
+                raise ValueError('Public QC stages differ from the admitted recipe operations.')
+        expected_executor = 'seedvision.pipeline.backend_execution' if public else _native_executor(recipe)
+        expected_mode = 'plantcv_native' if public else ('paper_reconstruction' if value['recipe_mode'] == 'paper_reconstruction' else 'native_compatible')
         if (artifact['format'] != 'seedfiddle.native-analysis-result'
                 or type(artifact['version']) is not int or artifact['version'] not in range(1, 6)
-                or artifact['execution_backend'] != _native_executor(recipe)
-                or artifact['execution_mode'] != ('paper_reconstruction' if value['recipe_mode'] == 'paper_reconstruction'
-                                                  else 'native_compatible')):
+                or artifact['execution_backend'] != expected_executor
+                or artifact['execution_mode'] != expected_mode):
             raise ValueError('Native QC execution route is inconsistent.')
         _digest(artifact['result_revision']); _digest(artifact['source_sha256'])
         CoordinateFrame.from_dict(artifact['coordinate_frame'])
@@ -312,14 +324,19 @@ def _validate(payload):
                 raise ValueError('A stage record cannot infer its produced output ports.')
         else:
             declared = {port.name for port in stage.ports if port.direction == 'output'}
+            if row['state'] == 'bypassed':
+                from seedvision.pipeline.workflows import bypass_ports
+                if (stage.condition is None or stage.condition.expression != 'workspace.disabled'
+                        or stage.condition.outcome_when_true != 'bypass' or not bypass_ports(stage)):
+                    raise ValueError('Native bypass requires its registered typed working condition.')
             if (row['state'] not in _NATIVE_STATES or type(ports) is not list
                     or any(type(port) is not str for port in ports) or len(set(ports)) != len(ports)
                     or set(ports)-declared
                     or row['state'] in {'failed', 'not_run', 'unavailable'} and ports
-                    or row['state'] in {'provided', 'executed', 'empty'} and set(ports) != declared):
+                    or row['state'] in {'provided', 'executed', 'empty', 'bypassed'} and set(ports) != declared):
                 raise ValueError('Native QC states or output ports contradict the recipe.')
     if value['scope'] == 'whole_native_archive' and value['native_artifact']['status'] != (
-            'executed' if all(row['state'] in {'provided', 'executed', 'empty'} for row in rows) else 'partial'):
+            'executed' if all(row['state'] in {'provided', 'executed', 'empty', 'bypassed'} for row in rows) else 'partial'):
         raise ValueError('Native QC run state contradicts its node outcomes.')
 
 

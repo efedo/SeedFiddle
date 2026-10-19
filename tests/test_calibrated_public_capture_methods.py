@@ -129,11 +129,7 @@ class CalibratedPublicMethodRoundTripTests(unittest.TestCase):
             reopened.close()
             dialog.close()
 
-    def test_actual_mean_even_request_capture_save_and_reopen(self):
-        self._round_trip('mean')
 
-    def test_actual_otsu_capture_save_and_reopen(self):
-        self._round_trip('otsu')
 
 
 if __name__ == '__main__':

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.functional_units import functional_units
+
 import os
 import tempfile
 import unittest
@@ -10,6 +12,7 @@ import cv2
 import numpy as np
 
 
+@functional_units
 class ShapeGuidedImageViewTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -66,7 +69,7 @@ class ShapeGuidedImageViewTests(unittest.TestCase):
             edge_source="ridges",
         )
 
-    def test_preview_shows_prior_refined_boundary_and_commits_cached_mask(self) -> None:
+    def check_test_preview_shows_prior_refined_boundary_and_commits_cached_mask(self) -> None:
         from PySide6.QtCore import QPointF
 
         edits: list[np.ndarray] = []
@@ -90,7 +93,7 @@ class ShapeGuidedImageViewTests(unittest.TestCase):
         self.assertEqual(int(edits[-1][82, 98]), 3)
         self.assertTrue(np.all(edits[-1][77:81, 114:118] == 9))
 
-    def test_empty_evidence_refuses_without_changing_labels(self) -> None:
+    def check_test_empty_evidence_refuses_without_changing_labels(self) -> None:
         from PySide6.QtCore import QPointF
 
         result = self.view._analysis_result
@@ -110,7 +113,7 @@ class ShapeGuidedImageViewTests(unittest.TestCase):
         self.assertFalse(self.view._commit_instance_assisted_preview(point))
         self.assertTrue(np.array_equal(self.view.instance_annotations(), before))
 
-    def test_mouse_wheel_changes_visible_shape_preference_without_zooming(self) -> None:
+    def check_test_mouse_wheel_changes_visible_shape_preference_without_zooming(self) -> None:
         from PySide6.QtCore import QPoint, QPointF, Qt
         from PySide6.QtGui import QWheelEvent
 
@@ -137,10 +140,20 @@ class ShapeGuidedImageViewTests(unittest.TestCase):
         )
         self.assertAlmostEqual(self.view.transform().m11(), before_zoom)
 
-    def test_retired_plain_shape_snap_is_not_an_image_view_tool(self) -> None:
+    def check_test_retired_plain_shape_snap_is_not_an_image_view_tool(self) -> None:
         self.assertFalse(hasattr(self.view, "_shape_snap_options"))
         with self.assertRaisesRegex(ValueError, "Unknown instance annotation tool"):
             self.view.set_instance_annotation_tool("shape_snap")
+
+    def test_validation_and_recovery(self):
+        """1 related ShapeGuidedImageViewTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_preview_shows_prior_refined_boundary_and_commits_cached_mask)
+
+    def test_workflow_lifecycle(self):
+        """3 related ShapeGuidedImageViewTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_empty_evidence_refuses_without_changing_labels)
+        self.scenario(self.check_test_mouse_wheel_changes_visible_shape_preference_without_zooming)
+        self.scenario(self.check_test_retired_plain_shape_snap_is_not_an_image_view_tool)
 
 
 if __name__ == "__main__":

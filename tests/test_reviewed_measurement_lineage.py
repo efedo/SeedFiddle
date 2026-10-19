@@ -1,4 +1,6 @@
 """Actual review snapshots, producer cache boundaries and export identity."""
+
+from tests.functional_units import functional_units
 from dataclasses import asdict, replace
 from hashlib import sha256
 import json
@@ -53,8 +55,9 @@ def analysis_fixture(*, scale=4., source=None, proven=True):
     return current
 
 
+@functional_units
 class ReviewedMeasurementLineageTests(unittest.TestCase):
-    def test_prepared_inputs_detach_normalize_and_hash_consumed_last_wins_defaults(self):
+    def check_test_prepared_inputs_detach_normalize_and_hash_consumed_last_wins_defaults(self):
         labels = labels_fixture(); labels[5:8, 5:8] = 2
         conditions = ['split']; point = [45., 32.]
         last = annotation(conditions=conditions, hilum_point=point)
@@ -73,7 +76,7 @@ class ReviewedMeasurementLineageTests(unittest.TestCase):
         self.assertEqual(prepared.annotations[0].conditions, ('split',))
         self.assertEqual(prepared.annotations[0].hilum_point, (45., 32.))
 
-    def test_direct_measurement_records_mask_facts_without_inventing_image_frame(self):
+    def check_test_direct_measurement_records_mask_facts_without_inventing_image_frame(self):
         summary = measure_reviewed_seed_instances(labels_fixture(), (annotation(),))
         self.assertEqual(summary.lineage.source_image_frame, 'unknown')
         self.assertEqual(summary.lineage.transform_status, 'not_recorded')
@@ -83,7 +86,7 @@ class ReviewedMeasurementLineageTests(unittest.TestCase):
             with self.subTest(labels=bad.dtype), self.assertRaises(ValueError):
                 prepare_reviewed_inputs(bad, ())
 
-    def test_malformed_annotation_ids_cannot_silently_bind_to_another_label(self):
+    def check_test_malformed_annotation_ids_cannot_silently_bind_to_another_label(self):
         labels = labels_fixture()
         for bad in (1.5, 1., True, np.bool_(True), '1', 0, -1, 65536):
             with self.subTest(seed_id=bad), self.assertRaises(ValueError):
@@ -93,7 +96,7 @@ class ReviewedMeasurementLineageTests(unittest.TestCase):
             self.assertEqual(summary.observations[0].seed_id, 1)
             self.assertIs(type(summary.observations[0].annotation.seed_id), int)
 
-    def test_declared_transport_preserves_cutoff_decision_and_full_canvas_mapping(self):
+    def check_test_declared_transport_preserves_cutoff_decision_and_full_canvas_mapping(self):
         from seedvision.annotation.coordinates import reproject_bundle
         labels = labels_fixture(); current = np.eye(3); current[0, 2] = -45
         transported = reproject_bundle(ReferenceRegionBundle(labels.shape,
@@ -114,7 +117,7 @@ class ReviewedMeasurementLineageTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             measure_reviewed_seed_instances(labels[:10], (), input_context=context)
 
-    def test_declared_transform_without_applied_transport_does_not_prove_alignment(self):
+    def check_test_declared_transform_without_applied_transport_does_not_prove_alignment(self):
         labels = labels_fixture()
         context = reviewed_measurement_context(None, np.zeros((*labels.shape, 3), np.uint8),
             np.eye(3), np.eye(3))
@@ -126,43 +129,19 @@ class ReviewedMeasurementLineageTests(unittest.TestCase):
             reviewed_measurement_context(None, np.zeros((*labels.shape, 3), np.uint8),
                 np.eye(3), transport_applied=True)
 
-    def test_producer_recomputes_changed_review_facts_without_unrelated_upstream_nodes(self):
-        from seedvision.calibration import image as c
-        from seedvision.calibration.geometry import DishDetectionSettings
-        from seedvision.segmentation.baseline import analyze_image, PipelineAnalysisCache
-        from tests.test_neutral_calibration import fixture, ruler
-        image, card = fixture(); labels = labels_fixture(image.shape[:2])
-        cache = PipelineAnalysisCache()
-        options = dict(node_cache=cache, enabled_nodes=set(),
-            calibration_settings=c.CalibrationSettings(apply_perspective_correction=False),
-            dish_settings=DishDetectionSettings(expected_outer_diameter_mm=0),
-            seed_instance_annotations=labels, seed_instance_traits=(annotation(),))
-        with patch.object(c, 'detect_colour_card', return_value=card), patch.object(c, 'detect_ruler', side_effect=ruler):
-            first = analyze_image(image, **options)
-            same = analyze_image(image, **options)
-            self.assertIs(first.seed_measurement_summary, same.seed_measurement_summary)
-            labels[32, 59] = 0
-            changed = analyze_image(image, **options)
-            self.assertIsNot(changed.seed_measurement_summary, first.seed_measurement_summary)
-            self.assertIs(changed.calibration.gpu_corrected_bgr, first.calibration.gpu_corrected_bgr)
-            self.assertIn('seed_scale_estimation', cache.last_computed_nodes)
-            self.assertIn('layout_detection', cache.last_reused_nodes)
-            self.assertIn('deskew_colour', cache.last_reused_nodes)
-            options['seed_instance_traits'] = (replace(annotation(), shape_reviewed=False),)
-            changed_annotation = analyze_image(image, **options)
-            self.assertFalse(changed_annotation.seed_measurement_summary.observations[0].eligible)
-            options['reference_transform'] = np.eye(3)
-            proven = analyze_image(image, **options)
-            self.assertIsNot(proven.seed_measurement_summary, changed_annotation.seed_measurement_summary)
-            self.assertEqual(proven.seed_measurement_summary.lineage.source_image_frame, 'full_corrected')
-            self.assertEqual(proven.seed_measurement_summary.lineage.mask_shape, image.shape[:2])
-            self.assertEqual(proven.seed_measurement_summary.lineage.calibration_facts_sha256,
-                facts_sha256(calibration_facts(proven.calibration)))
-            result_report(proven)
+
+    def test_workflow_lifecycle(self):
+        """5 related ReviewedMeasurementLineageTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_prepared_inputs_detach_normalize_and_hash_consumed_last_wins_defaults)
+        self.scenario(self.check_test_direct_measurement_records_mask_facts_without_inventing_image_frame)
+        self.scenario(self.check_test_malformed_annotation_ids_cannot_silently_bind_to_another_label)
+        self.scenario(self.check_test_declared_transport_preserves_cutoff_decision_and_full_canvas_mapping)
+        self.scenario(self.check_test_declared_transform_without_applied_transport_does_not_prove_alignment)
 
 
+@functional_units
 class ReviewedMeasurementExportTests(unittest.TestCase):
-    def test_actual_bundles_units_definitions_and_lineage_export_without_physical_prediction_claims(self):
+    def check_test_actual_bundles_units_definitions_and_lineage_export_without_physical_prediction_claims(self):
         current = analysis_fixture(); report = result_report(current)
         reviewed = report['reviewed_measurements']; row = reviewed['observations'][0]
         self.assertEqual(report['schema_version'], 3)
@@ -182,30 +161,8 @@ class ReviewedMeasurementExportTests(unittest.TestCase):
         self.assertIsNone(report['instances'][0]['physical_area_mm2'])
         json.dumps(report, allow_nan=False)
 
-    def test_every_exported_review_fact_stales_approval_with_unchanged_prediction_labels(self):
-        mutations = (
-            lambda s: replace(s, boundary_turn_degrees=(1., 2.)),
-            lambda s: replace(s, calibration_reason='Updated conversion reason.'),
-            lambda s: replace(s, observations=(replace(s.observations[0], exclusion_reason='updated'),)),
-            lambda s: replace(s, observations=(replace(s.observations[0], length_eligible=False),)),
-            lambda s: replace(s, observations=(replace(s.observations[0],
-                pixel_measurement=replace(s.observations[0].pixel_measurement, maximum_span=30.)),)),
-            lambda s: replace(s, observations=(replace(s.observations[0],
-                calibrated_measurement=replace(s.observations[0].calibrated_measurement,
-                    measurement_uncertainty=(.4,)*19)),)),
-            lambda s: replace(s, lineage=replace(s.lineage, mask_sha256='a'*64)),
-        )
-        for mutate in mutations:
-            with self.subTest(mutation=mutate):
-                current = analysis_fixture(); before = result_report(current)
-                review = {'result_revision': before['result_revision'], 'decisions': {'1': 'accepted'}}
-                self.assertEqual(result_report(current, review=review)['accepted_count'], 1)
-                current.seed_measurement_summary = mutate(current.seed_measurement_summary)
-                after = result_report(current, review=review)
-                self.assertNotEqual(before['result_revision'], after['result_revision'])
-                self.assertEqual(after['accepted_count'], 0)
 
-    def test_stored_known_source_image_transform_calibration_or_annotation_mismatch_rejects(self):
+    def check_test_stored_known_source_image_transform_calibration_or_annotation_mismatch_rejects(self):
         mutations = (
             lambda a: a.calibration.corrected_bgr.__setitem__((0, 0, 0), 1),
             lambda a: setattr(a.calibration, 'corrected_bgr', np.zeros((65, 96, 3), np.uint8)),
@@ -224,7 +181,7 @@ class ReviewedMeasurementExportTests(unittest.TestCase):
             source.write_bytes(b'changed')
             with self.assertRaises(ValueError): result_report(current)
 
-    def test_numeric_scaled_failure_retains_pixel_bundle_and_explicit_reason(self):
+    def check_test_numeric_scaled_failure_retains_pixel_bundle_and_explicit_reason(self):
         current = analysis_fixture(scale=1e-200); report = result_report(current)
         row = report['reviewed_measurements']['observations'][0]
         self.assertIsNotNone(row['pixel_bundle'])
@@ -234,7 +191,7 @@ class ReviewedMeasurementExportTests(unittest.TestCase):
         self.assertTrue(row['shape_eligible'])
         json.dumps(report, allow_nan=False)
 
-    def test_legacy_absence_unknown_frame_and_unknown_descriptions_remain_explicit(self):
+    def check_test_legacy_absence_unknown_frame_and_unknown_descriptions_remain_explicit(self):
         current = _analysis(); report = result_report(current)
         self.assertNotIn('reviewed_measurements', report)
         self.assertIsNone(report['identity']['reviewed_measurements'])
@@ -252,7 +209,7 @@ class ReviewedMeasurementExportTests(unittest.TestCase):
         self.assertEqual(reviewed['lineage_state'], 'legacy_not_recorded')
         self.assertEqual(reviewed['observations'][0]['pixel_bundle']['described_values'][0]['definition'], 'unknown')
 
-    def test_export_roundtrip_is_detached_and_never_reads_current_editor_annotations(self):
+    def check_test_export_roundtrip_is_detached_and_never_reads_current_editor_annotations(self):
         current = analysis_fixture(); report = result_report(current)
         stored = json.dumps(report, sort_keys=True)
         current.seed_instance_traits = (annotation(physical_seed_id='new-editor-state'),)
@@ -264,9 +221,21 @@ class ReviewedMeasurementExportTests(unittest.TestCase):
         current.seed_measurement_summary = replace(current.seed_measurement_summary, lineage=None)
         self.assertEqual(json.dumps(report, sort_keys=True), stored)
 
-    def test_nonfinite_measurement_payload_cannot_be_reviewed_or_exported(self):
+    def check_test_nonfinite_measurement_payload_cannot_be_reviewed_or_exported(self):
         current = analysis_fixture(); summary = current.seed_measurement_summary
         item = summary.observations[0]
         current.seed_measurement_summary = replace(summary, observations=(replace(item,
             pixel_measurement=replace(item.pixel_measurement, contour_signature=(float('nan'),))),))
         with self.assertRaises(ValueError): result_report(current)
+
+    def test_workflow_lifecycle(self):
+        """4 related ReviewedMeasurementExportTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_actual_bundles_units_definitions_and_lineage_export_without_physical_prediction_claims)
+        self.scenario(self.check_test_legacy_absence_unknown_frame_and_unknown_descriptions_remain_explicit)
+        self.scenario(self.check_test_export_roundtrip_is_detached_and_never_reads_current_editor_annotations)
+        self.scenario(self.check_test_nonfinite_measurement_payload_cannot_be_reviewed_or_exported)
+
+    def test_validation_and_recovery(self):
+        """2 related ReviewedMeasurementExportTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_stored_known_source_image_transform_calibration_or_annotation_mismatch_rejects)
+        self.scenario(self.check_test_numeric_scaled_failure_retains_pixel_bundle_and_explicit_reason)

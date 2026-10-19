@@ -1,4 +1,6 @@
 """Actual public/private pinned k-means++ IDs, centres and RNG state on CUDA."""
+
+from tests.functional_units import functional_units
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -63,6 +65,7 @@ def _reference(cases):
 
 
 @unittest.skipUnless(torch.cuda.is_available(), 'CUDA required')
+@functional_units
 class KMeansPlusPlusTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -83,7 +86,7 @@ class KMeansPlusPlusTests(unittest.TestCase):
         self.assertEqual(schedule.identity()['state_sha256'], expected['state_sha256'])
         self.assertEqual(result.potential, expected['potential'])
 
-    def test_actual_public_private_and_estimator_init_match_ids_centres_and_state(self):
+    def check_test_actual_public_private_and_estimator_init_match_ids_centres_and_state(self):
         for (features, k, seed), expected in zip(self.cases, self.reference):
             with self.subTest(shape=features.shape, clusters=k, seed=seed):
                 source = torch.tensor(features, device='cuda')
@@ -95,7 +98,7 @@ class KMeansPlusPlusTests(unittest.TestCase):
                 np.testing.assert_array_equal(source.cpu().numpy(), features)
         self.assertEqual(self.reference[2]['indices'][1:], [0]*4)
 
-    def test_actual_multitile_peak_and_public_checksum_fit_global_plan(self):
+    def check_test_actual_multitile_peak_and_public_checksum_fit_global_plan(self):
         features = ((np.arange(4097)[:, None]*17+np.arange(31)*29)%256).astype(np.uint16)
         expected = _reference([(features, 3, 17)])[0]
         source = torch.tensor(features, device='cuda')
@@ -113,7 +116,7 @@ class KMeansPlusPlusTests(unittest.TestCase):
         self.assertLessEqual(peak, plan.workspace_bytes)
         self.assert_reference(result, schedule, expected)
 
-    def test_custom_stream_and_distance_tile_repartition_preserve_public_state(self):
+    def check_test_custom_stream_and_distance_tile_repartition_preserve_public_state(self):
         features, k, seed = self.cases[1]
         source = torch.tensor(features, device='cuda')
         schedule = random_source.MiniBatchRandomSchedule(seed)
@@ -124,7 +127,7 @@ class KMeansPlusPlusTests(unittest.TestCase):
         stream.synchronize()
         self.assert_reference(result, schedule, self.reference[1])
 
-    def test_early_distance_candidate_and_final_cancellation_withhold_centres(self):
+    def check_test_early_distance_candidate_and_final_cancellation_withhold_centres(self):
         features, k, seed = self.cases[1]
         source = torch.tensor(features, device='cuda')
         version, calls = source._version, 0
@@ -147,7 +150,7 @@ class KMeansPlusPlusTests(unittest.TestCase):
             self.assertEqual(calls, target)
             self.assertEqual(source._version, version)
 
-    def test_rng_and_poll_storage_mutations_stop_before_following_raw_launches(self):
+    def check_test_rng_and_poll_storage_mutations_stop_before_following_raw_launches(self):
         features, k, seed = self.cases[1]
         original_program = _nvrtc.fixed_kernel_program(native._CUDA_SOURCE, torch.device('cuda:0'))
         for mode in ('first_rng', 'local_rng', 'callback'):
@@ -180,7 +183,7 @@ class KMeansPlusPlusTests(unittest.TestCase):
                         native.initialize_kmeans_plusplus(source, k, schedule,
                             tile_rows=17, cancel=mutate_callback)
 
-    def test_invalid_values_geometry_and_global_caps_precede_rng_and_kernel(self):
+    def check_test_invalid_values_geometry_and_global_caps_precede_rng_and_kernel(self):
         features, k, seed = self.cases[1]
         source = torch.tensor(features, device='cuda')
         plan = native.preflight_kmeans_plusplus(source, k)
@@ -210,7 +213,7 @@ class KMeansPlusPlusTests(unittest.TestCase):
                 native.initialize_kmeans_plusplus(source, k, schedule, cancel=42)
         self.assertEqual(schedule.identity(), before)
 
-    def test_loaded_source_binds_kernel_integer_proof_and_tile_limits(self):
+    def check_test_loaded_source_binds_kernel_integer_proof_and_tile_limits(self):
         from seedvision.benchmarking.native_recipe import _module_record
         self.assertTrue(_module_record(native)['loaded_code'])
         for name, value in (('_CUDA_SOURCE', native._CUDA_SOURCE+'\n'), ('EXACT_INTEGER_LIMIT', 1),
@@ -218,3 +221,16 @@ class KMeansPlusPlusTests(unittest.TestCase):
             with self.subTest(constant=name), patch.object(native, name, value):
                 with self.assertRaises(ValueError):
                     _module_record(native)
+
+    def test_workflow_lifecycle(self):
+        """3 related KMeansPlusPlusTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_actual_public_private_and_estimator_init_match_ids_centres_and_state)
+        self.scenario(self.check_test_actual_multitile_peak_and_public_checksum_fit_global_plan)
+        self.scenario(self.check_test_custom_stream_and_distance_tile_repartition_preserve_public_state)
+
+    def test_validation_and_recovery(self):
+        """4 related KMeansPlusPlusTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_early_distance_candidate_and_final_cancellation_withhold_centres)
+        self.scenario(self.check_test_rng_and_poll_storage_mutations_stop_before_following_raw_launches)
+        self.scenario(self.check_test_invalid_values_geometry_and_global_caps_precede_rng_and_kernel)
+        self.scenario(self.check_test_loaded_source_binds_kernel_integer_proof_and_tile_limits)

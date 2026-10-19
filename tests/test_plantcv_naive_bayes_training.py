@@ -1,4 +1,6 @@
 """Ordered CUDA KDE versus the actual pinned SciPy training dependency."""
+
+from tests.functional_units import functional_units
 from dataclasses import replace
 import json
 from pathlib import Path
@@ -113,8 +115,9 @@ def oracle(arrays):
 
 
 @unittest.skipUnless(torch.cuda.is_available(), 'CUDA is required')
+@functional_units
 class BayesKdeTrainingTests(unittest.TestCase):
-    def test_buffered_weighted_moment_bits_at_outer_boundaries_and_constant_outcomes(self):
+    def check_test_buffered_weighted_moment_bits_at_outer_boundaries_and_constant_outcomes(self):
         boundaries = (8191,8192,8193,16383,16384,16385,32767,32768,32769,
             65535,65536,65537,999999,1000000)
         original = (2,3,4,6,7,8,15,16,127,128,129,257,4095,4096,4097,
@@ -155,7 +158,7 @@ extern "C" __global__ void audit_sums(const unsigned char* x, double* out, int n
         self.assertEqual(float.fromhex(by_case[65537,'constant',179]['initial'][3]), 179)
         self.assertNotEqual(float.fromhex(by_case[1000000,'constant',200]['initial'][3]), 200)
 
-    def test_large_buffered_fits_match_actual_pinned_kde_all_pdf_values(self):
+    def check_test_large_buffered_fits_match_actual_pinned_kde_all_pdf_values(self):
         cases = [dict(n=n,kind='pattern',value=117,pdf=True) for n in (8193,65537,1000000)]
         expected = moment_oracle(cases)
         for case, channels in zip(cases, expected):
@@ -173,7 +176,7 @@ extern "C" __global__ void audit_sums(const unsigned char* x, double* out, int n
                     np.testing.assert_allclose(actual[c], source['pdf'], rtol=0, atol=fit.pdf_absolute_budget)
                     np.testing.assert_allclose(actual[c], source['pdf'], rtol=3e-12, atol=2e-15)
 
-    def test_fixed_reference_profile_ignores_installed_numpy_buffer_setting(self):
+    def check_test_fixed_reference_profile_ignores_installed_numpy_buffer_setting(self):
         x = torch.tensor(moment_fixture(8193, 'pattern', 0), device='cuda')
         first = native.fit_naive_bayes_hsv((x,), ('one',))
         saved = np.getbufsize()
@@ -186,7 +189,7 @@ extern "C" __global__ void audit_sums(const unsigned char* x, double* out, int n
         self.assertEqual(first.channels, second.channels)
         torch.testing.assert_close(first.probabilities, second.probabilities, rtol=0, atol=0)
 
-    def test_all_pdf_values_across_pairwise_transitions_source_order_and_tails(self):
+    def check_test_all_pdf_values_across_pairwise_transitions_source_order_and_tails(self):
         rng = np.random.default_rng(171)
         arrays = [rng.integers(0, 256, (n, 3), dtype=np.uint8)
             for n in (2, 3, 4, 7, 8, 15, 127, 128, 129, 257, 4095, 4096, 4097, 4117)]
@@ -216,7 +219,7 @@ extern "C" __global__ void audit_sums(const unsigned char* x, double* out, int n
         for x, saved in zip(xs, before):
             torch.testing.assert_close(x, saved, rtol=0, atol=0)
 
-    def test_ordered_density_chunks_are_bit_identical_and_one_class_is_valid(self):
+    def check_test_ordered_density_chunks_are_bit_identical_and_one_class_is_valid(self):
         array = np.random.default_rng(21).integers(0, 256, (521, 3), dtype=np.uint8)
         x = torch.tensor(array, device='cuda')
         first = native.fit_naive_bayes_hsv((x,), ('one',))
@@ -226,7 +229,7 @@ extern "C" __global__ void audit_sums(const unsigned char* x, double* out, int n
         self.assertEqual(first.channels, second.channels)
         self.assertEqual(first.class_names, ('one',))
 
-    def test_constant_source_success_and_singular_failures_all_pdf_bins_without_variance_floor(self):
+    def check_test_constant_source_success_and_singular_failures_all_pdf_bins_without_variance_floor(self):
         cases = [dict(n=n,kind='constant',value=value,pdf=True)
             for n in (3,6,7) for value in range(256)]
         cases += [dict(n=n,kind='constant',value=value,pdf=True) for n,value in
@@ -268,7 +271,7 @@ extern "C" __global__ void audit_sums(const unsigned char* x, double* out, int n
             self.assertEqual(outcomes[case],'positive')
         self.assertEqual(outcomes[65537,179],'singular')
 
-    def test_all_constant_byte_mean_bits_around_default_buffer_boundaries(self):
+    def check_test_all_constant_byte_mean_bits_around_default_buffer_boundaries(self):
         cases = [dict(n=n,kind='constant',value=value) for n in (8191,8192,8193) for value in range(256)]
         expected = moment_oracle(cases)
         program = native._nvrtc.fixed_kernel_program(native._CUDA_SOURCE,torch.device('cuda'))
@@ -283,7 +286,7 @@ extern "C" __global__ void audit_sums(const unsigned char* x, double* out, int n
                     self.assertEqual([v.hex() for v in actual[c][:5]],source['initial'])
                     self.assertEqual([v.hex() for v in compact],source['initial'])
 
-    def test_mixed_constant_and_varied_channels_and_late_singular_class_withhold_completion(self):
+    def check_test_mixed_constant_and_varied_channels_and_late_singular_class_withhold_completion(self):
         varied = np.stack((np.arange(6),np.arange(10,16),np.full(6,255)),axis=1).astype(np.uint8)
         expected = oracle([varied])[0]
         x = torch.tensor(varied,device='cuda')
@@ -298,7 +301,7 @@ extern "C" __global__ void audit_sums(const unsigned char* x, double* out, int n
         with self.assertRaisesRegex(native.BayesTrainingError,"class 'late'.*value.*singular"):
             native.fit_naive_bayes_hsv((x,singular),('positive','late'))
 
-    def test_invalid_inputs_and_all_caps_fail_before_kernel_compilation(self):
+    def check_test_invalid_inputs_and_all_caps_fail_before_kernel_compilation(self):
         x = torch.arange(9, dtype=torch.uint8, device='cuda').reshape(3, 3)
         cases = [((x.cpu(),), ('a',)), ((x.float(),), ('a',)), ((x[:, :2],), ('a',)),
             ((x[:1],), ('a',)), ((x,), ('',)), ((x, x), ('a', 'a')), ([x], ('a',)),
@@ -312,7 +315,7 @@ extern "C" __global__ void audit_sums(const unsigned char* x, double* out, int n
                     with self.assertRaises(native.BayesTrainingError):
                         native.fit_naive_bayes_hsv((x,), ('a',))
 
-    def test_cancellation_and_mutating_callbacks_publish_no_partial_fit(self):
+    def check_test_cancellation_and_mutating_callbacks_publish_no_partial_fit(self):
         x = torch.arange(27, dtype=torch.uint8, device='cuda').reshape(9, 3)
         calls = 0
         def cancel():
@@ -344,7 +347,7 @@ extern "C" __global__ void audit_sums(const unsigned char* x, double* out, int n
         with self.assertRaisesRegex(native.BayesTrainingError, 'changed'):
             native.fit_naive_bayes_hsv((x,), ('a',), cancel=mutate_later)
 
-    def test_custom_stream_actual_peak_and_full_backing_storage_charge(self):
+    def check_test_custom_stream_actual_peak_and_full_backing_storage_charge(self):
         x = torch.tensor(np.random.default_rng(88).integers(0, 256, (8203, 3), dtype=np.uint8), device='cuda')
         native.fit_naive_bayes_hsv((x[:3].contiguous(),), ('warmup',))
         torch.cuda.synchronize()
@@ -361,7 +364,7 @@ extern "C" __global__ void audit_sums(const unsigned char* x, double* out, int n
             with self.assertRaises(native.BayesTrainingError):
                 native.fit_naive_bayes_hsv((x[:3],), ('a',))
 
-    def test_partial_pdf_is_watched_during_core_density_callbacks(self):
+    def check_test_partial_pdf_is_watched_during_core_density_callbacks(self):
         x = torch.arange(27, dtype=torch.uint8, device='cuda').reshape(9, 3)
         original = torch.zeros
         for kind in ('value', 'storage'):
@@ -387,6 +390,24 @@ extern "C" __global__ void audit_sums(const unsigned char* x, double* out, int n
                 with patch.object(native, 'SAMPLE_TILE', 3), patch.object(torch, 'zeros', side_effect=capture):
                     with self.assertRaisesRegex(native.BayesTrainingError, 'changed'):
                         native.fit_naive_bayes_hsv((x,), ('a',), cancel=mutate_during_density)
+
+    def test_workflow_lifecycle(self):
+        """8 related BayesKdeTrainingTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_buffered_weighted_moment_bits_at_outer_boundaries_and_constant_outcomes)
+        self.scenario(self.check_test_large_buffered_fits_match_actual_pinned_kde_all_pdf_values)
+        self.scenario(self.check_test_fixed_reference_profile_ignores_installed_numpy_buffer_setting)
+        self.scenario(self.check_test_all_pdf_values_across_pairwise_transitions_source_order_and_tails)
+        self.scenario(self.check_test_ordered_density_chunks_are_bit_identical_and_one_class_is_valid)
+        self.scenario(self.check_test_all_constant_byte_mean_bits_around_default_buffer_boundaries)
+        self.scenario(self.check_test_custom_stream_actual_peak_and_full_backing_storage_charge)
+        self.scenario(self.check_test_partial_pdf_is_watched_during_core_density_callbacks)
+
+    def test_validation_and_recovery(self):
+        """4 related BayesKdeTrainingTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_constant_source_success_and_singular_failures_all_pdf_bins_without_variance_floor)
+        self.scenario(self.check_test_mixed_constant_and_varied_channels_and_late_singular_class_withhold_completion)
+        self.scenario(self.check_test_invalid_inputs_and_all_caps_fail_before_kernel_compilation)
+        self.scenario(self.check_test_cancellation_and_mutating_callbacks_publish_no_partial_fit)
 
 
 if __name__ == '__main__':

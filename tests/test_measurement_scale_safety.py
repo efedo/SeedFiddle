@@ -1,4 +1,6 @@
 """Numeric scale availability is separate from biological/physical validity."""
+
+from tests.functional_units import functional_units
 from dataclasses import replace
 import math
 import unittest
@@ -25,8 +27,9 @@ def reviewed(seed_id):
     return SeedInstanceAnnotation(seed_id,shape_reviewed=True,outline_visibility='complete',pose='flat')
 
 
+@functional_units
 class MeasurementScaleSafetyTests(unittest.TestCase):
-    def test_invalid_scales_reject_before_raster_measurement(self):
+    def check_test_invalid_scales_reject_before_raster_measurement(self):
         invalid=(True,False,np.bool_(True),0.,-1.,np.nan,np.inf,-np.inf,'2',[],object(),10**1000)
         for value in invalid:
             with self.subTest(value=type(value).__name__), \
@@ -36,7 +39,7 @@ class MeasurementScaleSafetyTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError,'finite positive real'):
                         measure(mask(),pixels_per_mm=value)
 
-    def test_ordinary_shape_conversion_preserves_exact_dimensional_arithmetic(self):
+    def check_test_ordinary_shape_conversion_preserves_exact_dimensional_arithmetic(self):
         px=g.measure_shape_mask(mask(),calibration_relative_uncertainty=.02)
         mm=g.measure_shape_mask(mask(),pixels_per_mm=2.5,calibration_relative_uncertainty=.02)
         self.assertEqual(mm.maximum_span,px.maximum_span/2.5)
@@ -50,12 +53,12 @@ class MeasurementScaleSafetyTests(unittest.TestCase):
         self.assertEqual(mm.contour_signature,px.contour_signature)
         self.assertEqual(mm.ovality,px.ovality)
 
-    def test_area_intermediate_overflow_or_underflow_uses_representable_sequential_result(self):
+    def check_test_area_intermediate_overflow_or_underflow_uses_representable_sequential_result(self):
         self.assertEqual(g._scaled_dimension(1e308,1e160,area=True),(1e308/1e160)/1e160)
         self.assertEqual(g._scaled_dimension(1e-320,1e-200,area=True),(1e-320/1e-200)/1e-200)
         self.assertEqual(g._scaled_dimension(0.,1e-200,area=True),0.)
 
-    def test_nonfinite_or_underflowed_final_dimensions_and_uncertainties_are_withheld(self):
+    def check_test_nonfinite_or_underflowed_final_dimensions_and_uncertainties_are_withheld(self):
         for value,scale,area in ((1.,1e-308,True),(1.,1e308,True),(1e-300,1e100,False)):
             with self.subTest(scale=scale,area=area),self.assertRaisesRegex(ValueError,'not representable'):
                 g._scaled_dimension(value,scale,area=area)
@@ -67,7 +70,7 @@ class MeasurementScaleSafetyTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'not representable'):
                 measure(mask(),pixels_per_mm=1e308)
 
-    def test_subnormal_area_and_tiny_width_keep_pixel_ovality_and_dimensionless_features(self):
+    def check_test_subnormal_area_and_tiny_width_keep_pixel_ovality_and_dimensionless_features(self):
         px=g.measure_shape_mask(mask(),perturbation_radii=())
         for scale in (1e12,1e160):
             mm=g._scale_shape_measurement(px,scale)
@@ -80,7 +83,7 @@ class MeasurementScaleSafetyTests(unittest.TestCase):
         self.assertGreater(mm.projected_area,0)
         self.assertLess(mm.projected_area,np.finfo(float).tiny)
 
-    def test_invalid_or_missing_scale_preserves_pixel_summaries_even_when_empty(self):
+    def check_test_invalid_or_missing_scale_preserves_pixel_summaries_even_when_empty(self):
         labels=mask().astype(np.uint16)
         expected=measure_reviewed_seed_instances(labels,(reviewed(1),))
         for scale in (None,True,0,np.nan,np.inf,'bad'):
@@ -96,7 +99,7 @@ class MeasurementScaleSafetyTests(unittest.TestCase):
                 self.assertIs(summary.observations[0].measurement,summary.observations[0].pixel_measurement)
                 self.assertTrue(summary.observations[0].calibration_reason)
 
-    def test_all_valid_summary_retains_mm_working_units_and_actual_calibrated_count(self):
+    def check_test_all_valid_summary_retains_mm_working_units_and_actual_calibrated_count(self):
         summary=measure_reviewed_seed_instances(mask().astype(np.uint16),(reviewed(1),),pixels_per_mm=2.5)
         self.assertEqual((summary.length_unit,summary.calibrated_count,summary.calibration_state),('mm',1,'available'))
         item=summary.observations[0]
@@ -104,7 +107,7 @@ class MeasurementScaleSafetyTests(unittest.TestCase):
         self.assertEqual(item.pixel_measurement.length_unit,'px')
         self.assertEqual(item.measurement,g._scale_shape_measurement(item.pixel_measurement,2.5))
 
-    def test_mixed_per_instance_availability_never_mixes_summary_or_model_units(self):
+    def check_test_mixed_per_instance_availability_never_mixes_summary_or_model_units(self):
         labels=np.zeros((96,128),np.uint16)
         cv2.circle(labels,(24,48),5,1,-1)
         cv2.circle(labels,(88,48),25,2,-1)
@@ -122,7 +125,7 @@ class MeasurementScaleSafetyTests(unittest.TestCase):
         self.assertEqual(observations[0].measurement,a.calibrated_measurement.vector())
         self.assertEqual(observations[1].measurement,b.pixel_measurement.vector())
 
-    def test_aggregate_overflow_or_underflow_is_explicitly_unavailable(self):
+    def check_test_aggregate_overflow_or_underflow_is_explicitly_unavailable(self):
         from seedvision.measurement.shape_model import SeedMeasurementSummary,ReviewedSeedShape
         px=g.measure_shape_mask(mask(),perturbation_radii=())
         for large in (1e200,1e-200):
@@ -132,7 +135,7 @@ class MeasurementScaleSafetyTests(unittest.TestCase):
             self.assertIsNone(summary.size_statistics)
             self.assertTrue(summary.size_statistics_unavailable_reason)
 
-    def test_conversion_rejects_double_scaling_or_incomplete_uncertainty_bundles(self):
+    def check_test_conversion_rejects_double_scaling_or_incomplete_uncertainty_bundles(self):
         px=g.measure_shape_mask(mask(),perturbation_radii=())
         mm=g._scale_shape_measurement(px,2.5)
         with self.assertRaisesRegex(ValueError,'pixel measurement bundle'):
@@ -142,7 +145,7 @@ class MeasurementScaleSafetyTests(unittest.TestCase):
             with self.subTest(errors=errors),self.assertRaisesRegex(ValueError,'complete finite'):
                 g._scale_shape_measurement(replace(px,measurement_uncertainty=errors),2.5)
 
-    def test_legacy_default_aspect_and_malformed_overrides_have_explicit_behavior(self):
+    def check_test_legacy_default_aspect_and_malformed_overrides_have_explicit_behavior(self):
         from dataclasses import asdict
         import json
         px=g.measure_shape_mask(mask(),perturbation_radii=())
@@ -162,7 +165,7 @@ class MeasurementScaleSafetyTests(unittest.TestCase):
         mm=g._scale_shape_measurement(px,2.5)
         self.assertEqual(json.loads(json.dumps(asdict(mm),allow_nan=False))['body_aspect_ratio'],px.ovality)
 
-    def test_mixed_summary_population_fit_uses_actual_calibrated_and_dimensionless_groups(self):
+    def check_test_mixed_summary_population_fit_uses_actual_calibrated_and_dimensionless_groups(self):
         from dataclasses import asdict
         import json
         from seedvision.measurement.shape_model import fit_species_dimensions_shape_bank
@@ -190,3 +193,21 @@ class MeasurementScaleSafetyTests(unittest.TestCase):
         self.assertEqual(saved['observations'][0]['calibrated_measurement']['length_unit'],'mm')
         self.assertIsNone(saved['observations'][1]['calibrated_measurement'])
         self.assertTrue(saved['observations'][1]['calibration_reason'])
+
+    def test_validation_and_recovery(self):
+        """4 related MeasurementScaleSafetyTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_invalid_scales_reject_before_raster_measurement)
+        self.scenario(self.check_test_invalid_or_missing_scale_preserves_pixel_summaries_even_when_empty)
+        self.scenario(self.check_test_aggregate_overflow_or_underflow_is_explicitly_unavailable)
+        self.scenario(self.check_test_conversion_rejects_double_scaling_or_incomplete_uncertainty_bundles)
+
+    def test_workflow_lifecycle(self):
+        """8 related MeasurementScaleSafetyTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_ordinary_shape_conversion_preserves_exact_dimensional_arithmetic)
+        self.scenario(self.check_test_area_intermediate_overflow_or_underflow_uses_representable_sequential_result)
+        self.scenario(self.check_test_nonfinite_or_underflowed_final_dimensions_and_uncertainties_are_withheld)
+        self.scenario(self.check_test_subnormal_area_and_tiny_width_keep_pixel_ovality_and_dimensionless_features)
+        self.scenario(self.check_test_all_valid_summary_retains_mm_working_units_and_actual_calibrated_count)
+        self.scenario(self.check_test_mixed_per_instance_availability_never_mixes_summary_or_model_units)
+        self.scenario(self.check_test_legacy_default_aspect_and_malformed_overrides_have_explicit_behavior)
+        self.scenario(self.check_test_mixed_summary_population_fit_uses_actual_calibrated_and_dimensionless_groups)

@@ -1,4 +1,6 @@
 """Conditioned pooling uses the same Gaussian model without dropping directions."""
+
+from tests.functional_units import functional_units
 from dataclasses import replace
 import unittest
 from unittest.mock import patch
@@ -15,8 +17,9 @@ def covariance_component(component, covariance, mean=None):
                    mean=component.mean if mean is None else tuple(mean))
 
 
+@functional_units
 class ConditionedShapePoolingTests(unittest.TestCase):
-    def test_anisotropic_diagonal_pooling_matches_independent_scalar_gaussian_oracle(self):
+    def check_test_anisotropic_diagonal_pooling_matches_independent_scalar_gaussian_oracle(self):
         values, component = fixture()
         vp = np.geomspace(1e-24, 1e24, 19)
         vl = vp * np.linspace(.5, 3, 19)
@@ -34,7 +37,7 @@ class ConditionedShapePoolingTests(unittest.TestCase):
         self.assertEqual(result.component.effective_physical_seed_count, 2 + n)
         self.assertEqual(result.component.calibrated_physical_seed_count, 2 + n)
 
-    def test_correlated_anisotropic_block_matches_small_matrix_oracle_and_stays_psd(self):
+    def check_test_correlated_anisotropic_block_matches_small_matrix_oracle_and_stays_psd(self):
         values, component = fixture()
         scales = np.ones(19); scales[:2] = [1e-12, 1e12]
         cp = np.eye(19); cl = np.eye(19) * 2
@@ -54,7 +57,7 @@ class ConditionedShapePoolingTests(unittest.TestCase):
         np.testing.assert_allclose(normalized, normalized.T, rtol=0, atol=1e-15)
         self.assertGreater(np.linalg.eigvalsh(normalized).min(), 0)
 
-    def test_coordinate_unit_congruence_transforms_mean_covariance_and_conditioning_scales(self):
+    def check_test_coordinate_unit_congruence_transforms_mean_covariance_and_conditioning_scales(self):
         values, component = fixture()
         covariance = np.diag(np.geomspace(1e-18, 1e4, 19))
         prior = covariance_component(component, covariance)
@@ -74,7 +77,7 @@ class ConditionedShapePoolingTests(unittest.TestCase):
         np.testing.assert_allclose(converted.conditioning_scales,
                                    np.asarray(original.conditioning_scales) * units, rtol=2e-14)
 
-    def test_actual_mask_fits_apply_with_shrinkage_and_keep_all_nonzero_shape_coordinates(self):
+    def check_test_actual_mask_fits_apply_with_shrinkage_and_keep_all_nonzero_shape_coordinates(self):
         for scale in (None, 2., 20., 1e-79):
             current = measurements(scale=scale)
             prior = model._local_component(current, 'flat')
@@ -90,7 +93,7 @@ class ConditionedShapePoolingTests(unittest.TestCase):
                 self.assertEqual(result.component.physical_fit_unavailability_reason,
                                  prior.physical_fit_unavailability_reason)
 
-    def test_actual_different_mask_cohorts_use_shrinkage_in_conditioned_mean(self):
+    def check_test_actual_different_mask_cohorts_use_shrinkage_in_conditioned_mean(self):
         prior = model._local_component(measurements((28, 10), 2.), 'flat')
         current = measurements((20, 15), 2.)
         low = model._update_component_result(prior, current, 'flat', shrinkage_seed_count=0, maximum_contour_modes=0)
@@ -99,7 +102,7 @@ class ConditionedShapePoolingTests(unittest.TestCase):
         self.assertLess(abs(high.component.mean[3] - prior.mean[3]), abs(low.component.mean[3] - prior.mean[3]))
         self.assertGreater(low.component.covariance[18][18], 0)
 
-    def test_large_identical_offset_remains_exact_without_scaling_the_offset(self):
+    def check_test_large_identical_offset_remains_exact_without_scaling_the_offset(self):
         values, component = fixture()
         covariance = np.eye(19); covariance[0, 0] = 1e-200
         prior = covariance_component(component, covariance, (1e300,)*19)
@@ -108,7 +111,7 @@ class ConditionedShapePoolingTests(unittest.TestCase):
         np.testing.assert_array_equal(result.component.mean, prior.mean)
         self.assertGreater(result.component.covariance[0][0], 0)
 
-    def test_conditioned_signed_mean_cancellation_is_valid(self):
+    def check_test_conditioned_signed_mean_cancellation_is_valid(self):
         values, component = fixture(False)
         covariance = np.eye(19); covariance[15, 15] = 1e-200
         mp = np.asarray(component.mean).copy(); mp[15] = 1e-100
@@ -120,7 +123,7 @@ class ConditionedShapePoolingTests(unittest.TestCase):
                              4 * np.finfo(np.float64).eps * abs(mp[15]))
         self.assertGreater(result.component.covariance[15][15], 0)
 
-    def test_nearly_singular_correlation_and_zero_variance_disagreement_still_abstain(self):
+    def check_test_nearly_singular_correlation_and_zero_variance_disagreement_still_abstain(self):
         values, component = fixture()
         for correlation in (1., 1-1e-16):
             covariance = np.eye(19); covariance[0, 1] = covariance[1, 0] = correlation
@@ -137,7 +140,7 @@ class ConditionedShapePoolingTests(unittest.TestCase):
         self.assertIs(result.component, prior)
         self.assertEqual(result.state, 'unavailable')
 
-    def test_conditioned_solver_failure_preserves_exact_support_and_unrelated_error_propagates(self):
+    def check_test_conditioned_solver_failure_preserves_exact_support_and_unrelated_error_propagates(self):
         values, component = fixture()
         covariance = np.eye(19); covariance[18, 18] = 1e-30
         prior = covariance_component(component, covariance)
@@ -150,7 +153,7 @@ class ConditionedShapePoolingTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'unrelated solver defect'):
                 update(prior, prior, values)
 
-    def test_conditioning_metadata_is_detached_and_cannot_claim_unapplied_conditioning(self):
+    def check_test_conditioning_metadata_is_detached_and_cannot_claim_unapplied_conditioning(self):
         _, component = fixture(); scales = [1.]*19
         outcome = model.ShapeComponentUpdate(component, 'applied', 'library+local',
             pooling_method='coordinate_conditioned_precision', conditioning_scales=scales)
@@ -164,3 +167,19 @@ class ConditionedShapePoolingTests(unittest.TestCase):
                 model.ShapeComponentUpdate(component, state, 'library+local',
                     'numeric_range' if state == 'unavailable' else None,
                     pooling_method=method, conditioning_scales=values)
+
+    def test_workflow_lifecycle(self):
+        """8 related ConditionedShapePoolingTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_anisotropic_diagonal_pooling_matches_independent_scalar_gaussian_oracle)
+        self.scenario(self.check_test_correlated_anisotropic_block_matches_small_matrix_oracle_and_stays_psd)
+        self.scenario(self.check_test_coordinate_unit_congruence_transforms_mean_covariance_and_conditioning_scales)
+        self.scenario(self.check_test_actual_mask_fits_apply_with_shrinkage_and_keep_all_nonzero_shape_coordinates)
+        self.scenario(self.check_test_actual_different_mask_cohorts_use_shrinkage_in_conditioned_mean)
+        self.scenario(self.check_test_large_identical_offset_remains_exact_without_scaling_the_offset)
+        self.scenario(self.check_test_nearly_singular_correlation_and_zero_variance_disagreement_still_abstain)
+        self.scenario(self.check_test_conditioning_metadata_is_detached_and_cannot_claim_unapplied_conditioning)
+
+    def test_validation_and_recovery(self):
+        """2 related ConditionedShapePoolingTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_conditioned_signed_mean_cancellation_is_valid)
+        self.scenario(self.check_test_conditioned_solver_failure_preserves_exact_support_and_unrelated_error_propagates)

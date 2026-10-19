@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+from tests.catalogue_fixtures import CatalogueTestCase
+
+from tests.functional_units import functional_units
+
 from tests.review_fixtures import reviewed_outlines
 
 import unittest
 
 
-class ReferenceEdgeStripDescriptorTests(unittest.TestCase):
+@functional_units
+class ReferenceEdgeStripDescriptorTests(CatalogueTestCase):
     """Scientific invariants for annotation-derived edge strip features."""
 
     @classmethod
@@ -16,7 +21,7 @@ class ReferenceEdgeStripDescriptorTests(unittest.TestCase):
         except ImportError as error:
             raise unittest.SkipTest(f"Strip descriptor dependencies unavailable: {error}")
 
-    def test_adaptive_edge_shape_resolves_small_seeds_without_exceeding_cap(self) -> None:
+    def check_test_adaptive_edge_shape_resolves_small_seeds_without_exceeding_cap(self) -> None:
         from seedvision.cuda.layers import _adaptive_edge_working_shape
 
         scale, height, width = _adaptive_edge_working_shape(
@@ -46,7 +51,7 @@ class ReferenceEdgeStripDescriptorTests(unittest.TestCase):
         self.assertLess(20.0 * capped_scale, 32.0)
         self.assertEqual(max(capped_height, capped_width), 320)
 
-    def test_physical_edge_direction_uses_polarity_without_mutating_probability(self) -> None:
+    def check_test_physical_edge_direction_uses_polarity_without_mutating_probability(self) -> None:
         import torch
 
         from seedvision.cuda.layers import _physical_edge_interior_direction
@@ -77,7 +82,7 @@ class ReferenceEdgeStripDescriptorTests(unittest.TestCase):
         self.assertEqual(float(confidence[0, 0, 0, 2]), 0.0)
         self.assertEqual(float(confidence[0, 0, 0, 3]), 0.0)
 
-    def test_all_strip_geometry_settings_participate_in_cache_identity(self) -> None:
+    def check_test_all_strip_geometry_settings_participate_in_cache_identity(self) -> None:
         from dataclasses import replace
         from unittest.mock import patch
 
@@ -138,7 +143,7 @@ class ReferenceEdgeStripDescriptorTests(unittest.TestCase):
             calculate(settings)
             self.assertEqual(fit.call_count, 5)
 
-    def test_instance_normals_preserve_both_sides_of_a_seed_contact(self) -> None:
+    def check_test_instance_normals_preserve_both_sides_of_a_seed_contact(self) -> None:
         import numpy as np
 
         from seedvision.cuda.layers import _instance_outward_normals
@@ -157,7 +162,7 @@ class ReferenceEdgeStripDescriptorTests(unittest.TestCase):
         self.assertEqual(float(normal_x[8, 7]), 0.0)
         self.assertEqual(float(normal_y[8, 7]), 0.0)
 
-    def test_physical_training_strip_uses_annotation_axis_not_wrong_image_tangent(self) -> None:
+    def check_test_physical_training_strip_uses_annotation_axis_not_wrong_image_tangent(self) -> None:
         from unittest.mock import patch
 
         import numpy as np
@@ -248,7 +253,7 @@ class ReferenceEdgeStripDescriptorTests(unittest.TestCase):
         self.assertAlmostEqual(float(query_tangent_x[16, 24]), 0.0, places=5)
         self.assertAlmostEqual(abs(float(query_tangent_y[16, 24])), 1.0, places=5)
 
-    def test_strip_polarity_reversal_swaps_only_inside_and_outside(self) -> None:
+    def check_test_strip_polarity_reversal_swaps_only_inside_and_outside(self) -> None:
         import torch
 
         from seedvision.cuda.layers import _edge_strip_feature_maps
@@ -297,7 +302,7 @@ class ReferenceEdgeStripDescriptorTests(unittest.TestCase):
         self.assertTrue(bool(torch.isfinite(forward).all()))
         self.assertTrue(bool(torch.isfinite(reverse).all()))
 
-    def test_strip_descriptor_rotates_with_the_edge_frame(self) -> None:
+    def check_test_strip_descriptor_rotates_with_the_edge_frame(self) -> None:
         import torch
 
         from seedvision.cuda.layers import _edge_strip_feature_maps
@@ -374,7 +379,7 @@ class ReferenceEdgeStripDescriptorTests(unittest.TestCase):
             torch.rot90(strip_valid, 1, (-2, -1)),
         )
 
-    def test_strip_validity_normalizes_partial_support_and_rejects_empty_sides(self) -> None:
+    def check_test_strip_validity_normalizes_partial_support_and_rejects_empty_sides(self) -> None:
         import torch
 
         from seedvision.cuda.layers import _edge_strip_feature_maps
@@ -413,7 +418,7 @@ class ReferenceEdgeStripDescriptorTests(unittest.TestCase):
         self.assertTrue(bool(torch.isfinite(forward).all()))
         self.assertTrue(bool(torch.isfinite(reverse).all()))
 
-    def test_semantic_strip_descriptor_excludes_absolute_edge_strength(self) -> None:
+    def check_test_semantic_strip_descriptor_excludes_absolute_edge_strength(self) -> None:
         import torch
 
         from seedvision.cuda.layers import _edge_strip_feature_maps
@@ -457,7 +462,7 @@ class ReferenceEdgeStripDescriptorTests(unittest.TestCase):
 
         torch.testing.assert_close(weak, strong, rtol=0.0, atol=0.0)
 
-    def test_public_edge_classifier_uses_the_independent_high_resolution_scale(self) -> None:
+    def check_test_public_edge_classifier_uses_the_independent_high_resolution_scale(self) -> None:
         import cv2
         import numpy as np
 
@@ -537,7 +542,7 @@ class ReferenceEdgeStripDescriptorTests(unittest.TestCase):
         self.assertTrue(np.isfinite(non_edge).all())
         self.assertGreater(int(physical.max()), 0)
 
-    def test_strip_classifier_prefers_a_matching_seed_rim_over_internal_pattern(self) -> None:
+    def check_test_strip_classifier_prefers_a_matching_seed_rim_over_internal_pattern(self) -> None:
         import cv2
         import numpy as np
 
@@ -619,7 +624,7 @@ class ReferenceEdgeStripDescriptorTests(unittest.TestCase):
             float(np.median(pattern_margin)) + 20.0,
         )
 
-    def test_material_only_references_skip_both_edge_strip_passes(self) -> None:
+    def check_test_material_only_references_skip_both_edge_strip_passes(self) -> None:
         from unittest.mock import patch
 
         import numpy as np
@@ -671,7 +676,7 @@ class ReferenceEdgeStripDescriptorTests(unittest.TestCase):
         self.assertEqual(int(np.asarray(layers.physical_edge_probability).max()), 0)
         self.assertEqual(int(np.asarray(layers.non_edge_probability).max()), 0)
 
-    def test_instance_boundaries_are_derived_once_at_edge_working_resolution(self) -> None:
+    def check_test_instance_boundaries_are_derived_once_at_edge_working_resolution(self) -> None:
         from unittest.mock import patch
 
         import cv2
@@ -726,7 +731,7 @@ class ReferenceEdgeStripDescriptorTests(unittest.TestCase):
             "edge-working-resolution strip samples",
         )
 
-    def test_profile_reports_the_effective_six_pixel_edge_diameter_floor(self) -> None:
+    def check_test_profile_reports_the_effective_six_pixel_edge_diameter_floor(self) -> None:
         import numpy as np
 
         from seedvision.visualization import AnalysisLayerSettings, build_analysis_layers
@@ -752,6 +757,26 @@ class ReferenceEdgeStripDescriptorTests(unittest.TestCase):
         profile = layers.reference_texture_profile
         self.assertAlmostEqual(profile.edge_working_scale, 0.5)
         self.assertAlmostEqual(profile.edge_working_seed_diameter_px, 6.0)
+
+    def test_workflow_lifecycle(self):
+        """12 related ReferenceEdgeStripDescriptorTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_adaptive_edge_shape_resolves_small_seeds_without_exceeding_cap)
+        self.scenario(self.check_test_physical_edge_direction_uses_polarity_without_mutating_probability)
+        self.scenario(self.check_test_all_strip_geometry_settings_participate_in_cache_identity)
+        self.scenario(self.check_test_instance_normals_preserve_both_sides_of_a_seed_contact)
+        self.scenario(self.check_test_strip_polarity_reversal_swaps_only_inside_and_outside)
+        self.scenario(self.check_test_strip_descriptor_rotates_with_the_edge_frame)
+        self.scenario(self.check_test_semantic_strip_descriptor_excludes_absolute_edge_strength)
+        self.scenario(self.check_test_public_edge_classifier_uses_the_independent_high_resolution_scale)
+        self.scenario(self.check_test_strip_classifier_prefers_a_matching_seed_rim_over_internal_pattern)
+        self.scenario(self.check_test_material_only_references_skip_both_edge_strip_passes)
+        self.scenario(self.check_test_instance_boundaries_are_derived_once_at_edge_working_resolution)
+        self.scenario(self.check_test_profile_reports_the_effective_six_pixel_edge_diameter_floor)
+
+    def test_validation_and_recovery(self):
+        """2 related ReferenceEdgeStripDescriptorTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_physical_training_strip_uses_annotation_axis_not_wrong_image_tangent)
+        self.scenario(self.check_test_strip_validity_normalizes_partial_support_and_rejects_empty_sides)
 
 
 if __name__ == "__main__":

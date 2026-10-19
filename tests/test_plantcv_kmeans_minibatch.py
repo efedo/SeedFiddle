@@ -1,4 +1,6 @@
 """Exact pinned sklearn dense updates and CUDA row-order/resource contracts."""
+
+from tests.functional_units import functional_units
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -60,6 +62,7 @@ def _reference(requests):
 
 
 @unittest.skipUnless(torch.cuda.is_available(), 'CUDA required')
+@functional_units
 class KMeansMiniBatchTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -95,7 +98,7 @@ class KMeansMiniBatchTests(unittest.TestCase):
         self.assertEqual(sha256(result.centres.cpu().numpy().tobytes()).hexdigest(), expected['centres_sha256'])
         self.assertEqual(sha256(result.counts.cpu().numpy().tobytes()).hexdigest(), expected['counts_sha256'])
 
-    def test_actual_public_partial_fit_and_cython_updates_match_binary64_bytes(self):
+    def check_test_actual_public_partial_fit_and_cython_updates_match_binary64_bytes(self):
         for index in range(3):
             with self.subTest(case=index):
                 values = self.tensors(index)
@@ -112,12 +115,12 @@ class KMeansMiniBatchTests(unittest.TestCase):
         result = native.update_unit_weight_centres(*values)
         self.assertTrue(bool(torch.signbit(result.centres[1]).all().item()))
 
-    def test_empty_cluster_preserves_negative_zero_count_bytes_from_actual_cython(self):
+    def check_test_empty_cluster_preserves_negative_zero_count_bytes_from_actual_cython(self):
         result = native.update_unit_weight_centres(*self.tensors(4))
         self.assert_reference(result, 4)
         self.assertTrue(bool(torch.signbit(result.counts[1]).item()))
 
-    def test_maximum_feature_and_cluster_tables_match_public_cython_and_peak_bound(self):
+    def check_test_maximum_feature_and_cluster_tables_match_public_cython_and_peak_bound(self):
         values = self.tensors(3)
         # Warm compiler/context separately so the measured phase is the update.
         probe = self.tensors(2)
@@ -131,7 +134,7 @@ class KMeansMiniBatchTests(unittest.TestCase):
         self.assertLessEqual(peak, native.MAX_SCRATCH_BYTES)
         self.assert_reference(result, 3)
 
-    def test_custom_stream_and_row_tile_repartition_preserve_source_order(self):
+    def check_test_custom_stream_and_row_tile_repartition_preserve_source_order(self):
         values = self.tensors()
         stream = torch.cuda.Stream()
         stream.wait_stream(torch.cuda.current_stream())
@@ -140,7 +143,7 @@ class KMeansMiniBatchTests(unittest.TestCase):
         stream.synchronize()
         self.assert_reference(result, 0)
 
-    def test_initial_mid_tile_and_final_cancel_withhold_outputs_and_preserve_inputs(self):
+    def check_test_initial_mid_tile_and_final_cancel_withhold_outputs_and_preserve_inputs(self):
         values = self.tensors()
         versions = tuple(value._version for value in values)
         calls = 0
@@ -170,7 +173,7 @@ class KMeansMiniBatchTests(unittest.TestCase):
         with self.assertRaisesRegex(native.KMeansMiniBatchError, 'changed'):
             native.update_unit_weight_centres(*values, cancel=mutate_at_final_poll)
 
-    def test_preflight_mutation_is_rejected_before_kernel_or_output_allocation(self):
+    def check_test_preflight_mutation_is_rejected_before_kernel_or_output_allocation(self):
         values = self.tensors(2)
         calls = 0
         def mutate_during_validation():
@@ -183,7 +186,7 @@ class KMeansMiniBatchTests(unittest.TestCase):
             with self.assertRaisesRegex(native.KMeansMiniBatchError, 'during preflight'):
                 native.update_unit_weight_centres(*values, cancel=mutate_during_validation)
 
-    def test_callback_storage_mutations_stop_before_any_subsequent_allocation_or_launch(self):
+    def check_test_callback_storage_mutations_stop_before_any_subsequent_allocation_or_launch(self):
         expected_launches = (
             [], ['init_accum'], ['init_accum', 'count_rows', 'add_rows'],
             ['init_accum', 'count_rows', 'add_rows', 'count_rows', 'add_rows'],
@@ -221,7 +224,7 @@ class KMeansMiniBatchTests(unittest.TestCase):
                     self.assertEqual(calls, target)
                     self.assertEqual(launches, expected)
 
-    def test_shapes_types_values_counts_labels_and_work_limits_reject_before_kernel(self):
+    def check_test_shapes_types_values_counts_labels_and_work_limits_reject_before_kernel(self):
         values = self.tensors(2)
         variants = []
         for index, replacement in ((0, values[0].cpu()), (0, values[0].to(torch.float32)),
@@ -254,7 +257,7 @@ class KMeansMiniBatchTests(unittest.TestCase):
             with self.assertRaises(TypeError):
                 native.update_unit_weight_centres(*values, cancel=1)
 
-    def test_parallel_launcher_covers_multiple_blocks_and_bounds_signed32_arguments(self):
+    def check_test_parallel_launcher_covers_multiple_blocks_and_bounds_signed32_arguments(self):
         source = r'''extern "C" __global__ void write_items(int* out, int count) {
             int index = blockIdx.x*blockDim.x+threadIdx.x;
             if (index<count) out[index]=index;
@@ -271,7 +274,7 @@ class KMeansMiniBatchTests(unittest.TestCase):
             with self.subTest(argument=argument), self.assertRaises(ValueError):
                 program.launch_1d('write_items', (result,), (argument,), 1)
 
-    def test_loaded_source_records_cover_kernel_count_limit_and_parallel_launcher(self):
+    def check_test_loaded_source_records_cover_kernel_count_limit_and_parallel_launcher(self):
         from seedvision.benchmarking.native_recipe import _module_record
         from seedvision.cuda import plantcv_kmeans_training_data as data
         for module in (native, data, _nvrtc):
@@ -281,3 +284,19 @@ class KMeansMiniBatchTests(unittest.TestCase):
             with self.subTest(constant=name), patch.object(native, name, value):
                 with self.assertRaises(ValueError):
                     _module_record(native)
+
+    def test_workflow_lifecycle(self):
+        """5 related KMeansMiniBatchTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_actual_public_partial_fit_and_cython_updates_match_binary64_bytes)
+        self.scenario(self.check_test_empty_cluster_preserves_negative_zero_count_bytes_from_actual_cython)
+        self.scenario(self.check_test_maximum_feature_and_cluster_tables_match_public_cython_and_peak_bound)
+        self.scenario(self.check_test_custom_stream_and_row_tile_repartition_preserve_source_order)
+        self.scenario(self.check_test_parallel_launcher_covers_multiple_blocks_and_bounds_signed32_arguments)
+
+    def test_validation_and_recovery(self):
+        """5 related KMeansMiniBatchTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_initial_mid_tile_and_final_cancel_withhold_outputs_and_preserve_inputs)
+        self.scenario(self.check_test_preflight_mutation_is_rejected_before_kernel_or_output_allocation)
+        self.scenario(self.check_test_callback_storage_mutations_stop_before_any_subsequent_allocation_or_launch)
+        self.scenario(self.check_test_shapes_types_values_counts_labels_and_work_limits_reject_before_kernel)
+        self.scenario(self.check_test_loaded_source_records_cover_kernel_count_limit_and_parallel_launcher)

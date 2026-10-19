@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.functional_units import functional_units
+
 import hashlib
 import json
 from pathlib import Path
@@ -156,8 +158,9 @@ class PlantCVDistanceReferenceTests(unittest.TestCase):
     torch.cuda.is_available() and REFERENCE_READY,
     "CUDA and the pinned PlantCV reference environment are required",
 )
+@functional_units
 class PlantCVDistancePrimitiveTests(unittest.TestCase):
-    def test_pinned_fixed_point_transform_matches_varied_masks_exactly(self) -> None:
+    def check_test_pinned_fixed_point_transform_matches_varied_masks_exactly(self) -> None:
         masks = _varied_masks()
         expected, metadata = _pinned_opencv_distance(masks)
         self.assertEqual(metadata["opencv"], OPENCV_REFERENCE_VERSION)
@@ -184,7 +187,7 @@ class PlantCVDistancePrimitiveTests(unittest.TestCase):
                 np.testing.assert_array_equal(actual.cpu().numpy(), reference)
                 torch.testing.assert_close(source, before, rtol=0, atol=0)
 
-    def test_committed_fixture_mask_matches_reference_with_bounded_cuda_storage(self) -> None:
+    def check_test_committed_fixture_mask_matches_reference_with_bounded_cuda_storage(self) -> None:
         fixture = ROOT / "images" / "IMG_9632c.JPG"
         gray = cv2.imread(str(fixture), cv2.IMREAD_GRAYSCALE)
         self.assertIsNotNone(gray, "committed fixture must decode")
@@ -209,7 +212,7 @@ class PlantCVDistancePrimitiveTests(unittest.TestCase):
         self.assertLess(elapsed, 45.0, f"fixture transform took {elapsed:.2f}s")
         self.assertLess(peak_delta, 512 * 1024 * 1024, f"CUDA workspace was {peak_delta:,} bytes")
 
-    def test_scan_chunks_preserve_both_sweep_carries(self) -> None:
+    def check_test_scan_chunks_preserve_both_sweep_carries(self) -> None:
         masks = _varied_masks()[-3:]
         expected, _ = _pinned_opencv_distance(masks)
         with patch("seedvision.cuda.plantcv_distance.SCAN_CHUNK_PIXELS", 11):
@@ -218,7 +221,7 @@ class PlantCVDistancePrimitiveTests(unittest.TestCase):
                     actual = distance_map(torch.as_tensor(mask.copy(), dtype=torch.uint8, device="cuda"))
                     np.testing.assert_array_equal(actual.cpu().numpy(), reference)
 
-    def test_strided_input_validation_cancellation_and_resource_cap(self) -> None:
+    def check_test_strided_input_validation_cancellation_and_resource_cap(self) -> None:
         base = torch.zeros((10, 18), dtype=torch.uint8, device="cuda")
         base[2:8, 4:14] = 255
         view = base[:, ::2]
@@ -256,6 +259,16 @@ class PlantCVDistancePrimitiveTests(unittest.TestCase):
         with self.assertRaises(DistanceResourceError):
             distance_map(oversized)
         self.assertEqual(MAX_RASTER_PIXELS, 64_000_000)
+
+    def test_workflow_lifecycle(self):
+        """3 related PlantCVDistancePrimitiveTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_pinned_fixed_point_transform_matches_varied_masks_exactly)
+        self.scenario(self.check_test_committed_fixture_mask_matches_reference_with_bounded_cuda_storage)
+        self.scenario(self.check_test_scan_chunks_preserve_both_sweep_carries)
+
+    def test_validation_and_recovery(self):
+        """1 related PlantCVDistancePrimitiveTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_strided_input_validation_cancellation_and_resource_cap)
 
 
 if __name__ == "__main__":

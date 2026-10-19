@@ -1,3 +1,5 @@
+
+from tests.functional_units import functional_units
 import json
 import hashlib
 from pathlib import Path
@@ -28,6 +30,7 @@ print(json.dumps(result))
 '''
 
 
+@functional_units
 class PinnedMinRectTests(unittest.TestCase):
     def oracle(self,fixtures):
         result=subprocess.run([str(REFERENCE),'-c',SCRIPT],
@@ -36,7 +39,7 @@ class PinnedMinRectTests(unittest.TestCase):
         self.assertEqual(result.returncode,0,result.stderr)
         return json.loads(result.stdout)
 
-    def test_exact_pinned_rectangles_hulls_boxes_ties_degeneracy_and_point_clouds(self):
+    def check_test_exact_pinned_rectangles_hulls_boxes_ties_degeneracy_and_point_clouds(self):
         fixtures=[np.empty((0,2),dtype=np.int32),np.array([[7,11]],dtype=np.int32),
             np.array([[2,4],[29,13]],dtype=np.int32),
             np.array([[4,2],[4,9],[4,16]],dtype=np.int32),
@@ -57,19 +60,19 @@ class PinnedMinRectTests(unittest.TestCase):
             hull=cv2.convexHull(points,clockwise=False,returnPoints=True)
             self.assertEqual(None if hull is None else hull.tolist(),original['hull'])
 
-    def test_fixed_grid_box_bits_are_pinned_and_cannot_be_mutated(self):
+    def check_test_fixed_grid_box_bits_are_pinned_and_cannot_be_mutated(self):
         grid=np.array([(i*100,j*100) for j in range(6) for i in range(4)],np.int32)
         original=self.oracle([grid])[0]
         expected=np.asarray(original['box'],dtype=np.float32)
         self.assertEqual(GRID_BOX_411.tobytes(),expected.tobytes())
         with self.assertRaises(ValueError): GRID_BOX_411.setflags(write=True)
 
-    def test_retained_primary_mathematical_source_pins(self):
+    def check_test_retained_primary_mathematical_source_pins(self):
         root=Path(__file__).resolve().parents[1]/'artifacts/reference-sources/opencv-4.11.0-card'
         for name,pin in (('rotcalipers.cpp',rect.ROTCALIPERS_SOURCE_SHA256),('types.cpp',rect.TYPES_SOURCE_SHA256)):
             self.assertEqual(hashlib.sha256((root/name).read_bytes()).hexdigest(),pin)
 
-    def test_bounds_before_hull_and_cancel_before_after_hull_and_long_loops(self):
+    def check_test_bounds_before_hull_and_cancel_before_after_hull_and_long_loops(self):
         for points in (np.zeros((2,3),np.int32),np.array([[float('nan'),0]],np.float32),
                        np.array([[65_000_000,0]],np.int32)):
             with patch.object(rect.cv2,'convexHull') as hull:
@@ -93,6 +96,16 @@ class PinnedMinRectTests(unittest.TestCase):
                 if calls==target: raise RuntimeError('cancelled')
             with self.assertRaisesRegex(RuntimeError,'cancelled'):
                 rect.min_area_rect_411(points,guard=cancel)
+
+    def test_workflow_lifecycle(self):
+        """3 related PinnedMinRectTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_exact_pinned_rectangles_hulls_boxes_ties_degeneracy_and_point_clouds)
+        self.scenario(self.check_test_fixed_grid_box_bits_are_pinned_and_cannot_be_mutated)
+        self.scenario(self.check_test_retained_primary_mathematical_source_pins)
+
+    def test_validation_and_recovery(self):
+        """1 related PinnedMinRectTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_bounds_before_hull_and_cancel_before_after_hull_and_long_loops)
 
 
 if __name__=='__main__':unittest.main()

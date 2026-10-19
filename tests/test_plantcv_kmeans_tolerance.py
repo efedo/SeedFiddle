@@ -1,4 +1,6 @@
 """Pinned NumPy/sklearn tolerance values and bounded CUDA producers."""
+
+from tests.functional_units import functional_units
 import json
 import math
 from pathlib import Path
@@ -37,6 +39,7 @@ print(json.dumps(result))
 
 
 @unittest.skipUnless(torch.cuda.is_available(), 'CUDA required')
+@functional_units
 class KMeansToleranceTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -55,7 +58,7 @@ class KMeansToleranceTests(unittest.TestCase):
             raise AssertionError(completed.stderr)
         cls.cases, cls.shifts, cls.reference = cases, shifts, json.loads(completed.stdout)
 
-    def test_actual_pinned_two_pass_variance_and_shift_values_are_enclosed(self):
+    def check_test_actual_pinned_two_pass_variance_and_shift_values_are_enclosed(self):
         for case, expected in zip(self.cases, self.reference['tolerance']):
             x = torch.tensor(case['features'], dtype=torch.uint16, device='cuda')
             result = native.scaled_kmeans_tolerance(x, case['tol'])
@@ -70,7 +73,7 @@ class KMeansToleranceTests(unittest.TestCase):
             self.assertGreaterEqual(result.hi, expected)
         self.assertEqual(native.centre_shift_interval(old, old).lo, 0.)
 
-    def test_zero_tolerance_bypasses_content_scan_compiler_and_output_allocation(self):
+    def check_test_zero_tolerance_bypasses_content_scan_compiler_and_output_allocation(self):
         x = torch.tensor([[65535]], dtype=torch.uint16, device='cuda')
         with patch.object(_nvrtc, 'fixed_kernel_program', side_effect=AssertionError('compiled tol0')):
             with patch.object(torch, 'empty', side_effect=AssertionError('allocated tol0')):
@@ -78,7 +81,7 @@ class KMeansToleranceTests(unittest.TestCase):
         self.assertTrue(result.is_point)
         self.assertEqual(result.lo, 0.)
 
-    def test_custom_stream_row_tiles_and_actual_scratch_peak(self):
+    def check_test_custom_stream_row_tiles_and_actual_scratch_peak(self):
         case = self.cases[3]
         x = torch.tensor(case['features'], dtype=torch.uint16, device='cuda')
         native.scaled_kmeans_tolerance(x, case['tol'])
@@ -94,7 +97,7 @@ class KMeansToleranceTests(unittest.TestCase):
         self.assertLessEqual(result.lo, self.reference['tolerance'][3])
         self.assertGreaterEqual(result.hi, self.reference['tolerance'][3])
 
-    def test_caps_invalid_values_and_overflow_are_explicit(self):
+    def check_test_caps_invalid_values_and_overflow_are_explicit(self):
         x = torch.tensor([[0], [255]], dtype=torch.uint16, device='cuda')
         old, new = x.double(), (255-x.view(torch.int16)).double()
         for constant in ('MAX_WORK', 'MAX_SCRATCH_BYTES', 'MAX_CUDA_LIVE_BYTES'):
@@ -115,7 +118,7 @@ class KMeansToleranceTests(unittest.TestCase):
             with self.assertRaises(native.KMeansToleranceError):
                 native.centre_shift_interval(old, torch.full_like(new, value))
 
-    def test_cancellation_and_every_callback_mutation_precede_subsequent_work(self):
+    def check_test_cancellation_and_every_callback_mutation_precede_subsequent_work(self):
         x = torch.tensor([[0], [255]], dtype=torch.uint16, device='cuda')
         old, new = x.double(), (255-x.view(torch.int16)).double()
         for operation, inputs in ((lambda values, cancel: native.scaled_kmeans_tolerance(values[0], .1, cancel=cancel), (x,)),
@@ -148,7 +151,7 @@ class KMeansToleranceTests(unittest.TestCase):
                         operation(values, mutate)
                     self.assertEqual(calls, target)
 
-    def test_loaded_source_binds_integer_tiles_and_numeric_limits(self):
+    def check_test_loaded_source_binds_integer_tiles_and_numeric_limits(self):
         from seedvision.benchmarking.native_recipe import _module_record
         self.assertTrue(_module_record(native)['loaded_code'])
         for name, value in (('MOMENT_TILE_ROWS', 1), ('SKLEARN_KMEANS_SHA256', 'changed'),
@@ -156,3 +159,15 @@ class KMeansToleranceTests(unittest.TestCase):
             with patch.object(native, name, value):
                 with self.assertRaises(ValueError):
                     _module_record(native)
+
+    def test_workflow_lifecycle(self):
+        """3 related KMeansToleranceTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_actual_pinned_two_pass_variance_and_shift_values_are_enclosed)
+        self.scenario(self.check_test_zero_tolerance_bypasses_content_scan_compiler_and_output_allocation)
+        self.scenario(self.check_test_custom_stream_row_tiles_and_actual_scratch_peak)
+
+    def test_validation_and_recovery(self):
+        """3 related KMeansToleranceTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_caps_invalid_values_and_overflow_are_explicit)
+        self.scenario(self.check_test_cancellation_and_every_callback_mutation_precede_subsequent_work)
+        self.scenario(self.check_test_loaded_source_binds_integer_tiles_and_numeric_limits)

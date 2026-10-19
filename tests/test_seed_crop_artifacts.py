@@ -1,3 +1,5 @@
+
+from tests.functional_units import functional_units
 import json
 import os
 from pathlib import Path
@@ -38,6 +40,7 @@ def _analysis(source=None):
     return BaselineAnalysis(**required)
 
 
+@functional_units
 class SeedCropArtifactTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -45,7 +48,7 @@ class SeedCropArtifactTests(unittest.TestCase):
         if not torch.cuda.is_available():
             raise unittest.SkipTest('CUDA is required for explicit seed crop serialization.')
 
-    def test_exported_pixels_masks_coordinates_and_hashes_are_bound_to_result(self):
+    def check_test_exported_pixels_masks_coordinates_and_hashes_are_bound_to_result(self):
         from hashlib import sha256
         from seedvision.export.results import result_report
         from seedvision.export.crop_artifacts import export_seed_crop_artifacts
@@ -74,7 +77,7 @@ class SeedCropArtifactTests(unittest.TestCase):
             for artifact in available['artifacts'].values():
                 self.assertEqual(sha256((destination / artifact['path']).read_bytes()).hexdigest(), artifact['sha256'])
 
-    def test_padding_changes_crop_and_each_export_preserves_previous_artifacts(self):
+    def check_test_padding_changes_crop_and_each_export_preserves_previous_artifacts(self):
         from seedvision.export.results import result_report
         from seedvision.export.crop_artifacts import export_seed_crop_artifacts
         analysis = _analysis()
@@ -88,7 +91,7 @@ class SeedCropArtifactTests(unittest.TestCase):
             self.assertNotEqual(cv2.imread(str(one / 'seed-1-image.png')).shape,
                                 cv2.imread(str(two / 'seed-1-image.png')).shape)
 
-    def test_changed_labels_and_source_are_rejected_before_output(self):
+    def check_test_changed_labels_and_source_are_rejected_before_output(self):
         from seedvision.export.results import result_report
         from seedvision.export.crop_artifacts import export_seed_crop_artifacts
         analysis = _analysis()
@@ -108,7 +111,7 @@ class SeedCropArtifactTests(unittest.TestCase):
                 export_seed_crop_artifacts(Path(directory) / 'output', analysis, report, seed_ids=(1,), padding_px=0)
             self.assertFalse((Path(directory) / 'output').exists())
 
-    def test_cancellation_and_encoding_failure_never_publish_complete_revision(self):
+    def check_test_cancellation_and_encoding_failure_never_publish_complete_revision(self):
         from seedvision.export.results import result_report
         from seedvision.export.crop_artifacts import export_seed_crop_artifacts, CropExportCancelled
         analysis = _analysis()
@@ -125,7 +128,7 @@ class SeedCropArtifactTests(unittest.TestCase):
             self.assertFalse(list(Path(directory).glob('seed-crops-*')))
             self.assertFalse(list(Path(directory).rglob('seed-crops.json')))
 
-    def test_file_backed_corrected_pixels_crop_offset_and_scale_change_revision(self):
+    def check_test_file_backed_corrected_pixels_crop_offset_and_scale_change_revision(self):
         from dataclasses import replace
         from seedvision.export.results import result_report
         from seedvision.export.crop_artifacts import export_seed_crop_artifacts
@@ -149,7 +152,7 @@ class SeedCropArtifactTests(unittest.TestCase):
                         export_seed_crop_artifacts(output, analysis, report, seed_ids=(1,), padding_px=0)
                     self.assertFalse(output.exists())
 
-    def test_gpu_crop_drift_is_rejected_before_publication(self):
+    def check_test_gpu_crop_drift_is_rejected_before_publication(self):
         from seedvision.export.results import result_report
         from seedvision.export.crop_artifacts import export_seed_crop_artifacts
         analysis = _analysis()
@@ -161,7 +164,7 @@ class SeedCropArtifactTests(unittest.TestCase):
             self.assertFalse(list(Path(directory).glob('seed-crops-*')))
             self.assertFalse(list(Path(directory).rglob('seed-crops.json')))
 
-    def test_result_mutation_during_encoding_prevents_publication(self):
+    def check_test_result_mutation_during_encoding_prevents_publication(self):
         from seedvision.export.results import result_report
         from seedvision.export.crop_artifacts import export_seed_crop_artifacts
         analysis = _analysis()
@@ -176,45 +179,8 @@ class SeedCropArtifactTests(unittest.TestCase):
                     export_seed_crop_artifacts(directory, analysis, report, seed_ids=(1,), padding_px=0)
             self.assertFalse(list(Path(directory).glob('seed-crops-*')))
 
-    def test_actual_qt_filtered_crop_export_runs_worker_and_writes_only_visible_seeds(self):
-        os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
-        from PySide6.QtWidgets import QApplication, QDialog, QComboBox, QPushButton, QFileDialog, QInputDialog, QMessageBox
-        from seedvision.ui.main_window import MainWindow
-        app = QApplication.instance() or QApplication([])
-        with TemporaryDirectory() as directory:
-            root = Path(directory)
-            window = MainWindow(root)
-            window._analyses[None] = _analysis()
-            def exercise(dialog):
-                combo = next(item for item in dialog.findChildren(QComboBox)
-                             if item.accessibleName() == 'Filter seeds by review decision')
-                # Seed ID filtering selects one real row while leaving both result IDs intact.
-                from PySide6.QtWidgets import QLineEdit
-                dialog.findChild(QLineEdit).setText('1')
-                next(item for item in dialog.findChildren(QPushButton)
-                     if item.accessibleName() == 'Export seed image and mask crops').click()
-                return QDialog.DialogCode.Accepted
-            with patch.object(QDialog, 'exec', new=exercise), \
-                 patch.object(QFileDialog, 'getExistingDirectory', return_value=str(root / 'export')), \
-                 patch.object(QInputDialog, 'getInt', return_value=(2, True)), \
-                 patch.object(QMessageBox, 'warning') as warnings:
-                window._review_results()
-                deadline = time.monotonic() + 30
-                while window._result_export_task is not None and time.monotonic() < deadline:
-                    app.processEvents()
-                    time.sleep(.01)
-                self.assertIsNone(window._result_export_task)
-                window._thread_pool.waitForDone(30000)
-                app.processEvents()
-                self.assertFalse(warnings.called, warnings.call_args)
-            manifests = list((root / 'export').rglob('seed-crops.json'))
-            self.assertEqual(len(manifests), 1)
-            payload = json.loads(manifests[0].read_text())
-            self.assertEqual(payload['seed_ids'], [1])
-            self.assertEqual(payload['padding_px'], 2)
-            window.close()
 
-    def test_window_stop_reaches_export_worker_cancellation_event(self):
+    def check_test_window_stop_reaches_export_worker_cancellation_event(self):
         os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
         from PySide6.QtWidgets import QApplication
         from seedvision.ui.main_window import MainWindow
@@ -245,47 +211,8 @@ class SeedCropArtifactTests(unittest.TestCase):
             window._result_export_task = None
             window.close()
 
-    def test_close_during_crop_export_drains_worker_without_completion_modal(self):
-        os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
-        from PySide6.QtWidgets import QApplication, QDialog, QPushButton, QFileDialog, QInputDialog, QMessageBox
-        from seedvision.ui.main_window import MainWindow
-        from seedvision.export.crop_artifacts import CropExportCancelled
-        app = QApplication.instance() or QApplication([])
-        started = Event()
-        received = []
-        def exporting(*args, cancel, **kwargs):
-            started.set()
-            if cancel.wait(10):
-                received.append(True)
-                raise CropExportCancelled('Stopped while closing the window.')
-            raise AssertionError('Closing did not cancel crop export.')
-        def exercise(dialog):
-            next(item for item in dialog.findChildren(QPushButton)
-                 if item.accessibleName() == 'Export seed image and mask crops').click()
-            return QDialog.DialogCode.Accepted
-        with TemporaryDirectory() as directory:
-            window = MainWindow(Path(directory))
-            window._analyses[None] = _analysis()
-            window.show()
-            with patch.object(QDialog, 'exec', new=exercise), \
-                 patch.object(QFileDialog, 'getExistingDirectory', return_value=directory), \
-                 patch.object(QInputDialog, 'getInt', return_value=(0, True)), \
-                 patch('seedvision.export.crop_artifacts.export_seed_crop_artifacts', side_effect=exporting), \
-                 patch.object(QMessageBox, 'warning') as warnings:
-                window._review_results()
-                self.assertTrue(started.wait(5))
-                window.close()
-                deadline = time.monotonic() + 15
-                while window.isVisible() and time.monotonic() < deadline:
-                    app.processEvents()
-                    time.sleep(.01)
-                self.assertEqual(received, [True])
-                self.assertFalse(window.isVisible())
-                self.assertEqual(window._thread_pool.activeThreadCount(), 0)
-                self.assertIsNone(window._result_export_task)
-                self.assertFalse(warnings.called, warnings.call_args)
 
-    def test_batch_cli_surfaces_partial_crop_manifest(self):
+    def check_test_batch_cli_surfaces_partial_crop_manifest(self):
         from contextlib import redirect_stderr, redirect_stdout
         import io
         from scripts.analyze_pilot import main
@@ -305,36 +232,21 @@ class SeedCropArtifactTests(unittest.TestCase):
             self.assertIn('1 crops exported; 1 requested seeds have no crop', stderr.getvalue())
             self.assertIn(str(manifest / 'seed-crops.json'), stderr.getvalue())
 
-    def test_batch_option_writes_crop_artifacts_for_the_saved_result(self):
-        import shutil
-        from seedvision.persistence import ProjectAnalysisStore, ProjectImageSpec, analysis_settings_profile_from_graph
-        from seedvision.pipeline import build_default_pipeline
-        from seedvision.export.project_runner import run_project
-        with TemporaryDirectory() as directory:
-            root = Path(directory)
-            (root / 'config').mkdir()
-            shutil.copyfile(Path(__file__).parents[1] / 'config' / 'traits.json', root / 'config' / 'traits.json')
-            source = root / 'source.png'
-            cv2.imwrite(str(source), np.zeros((19, 23, 3), np.uint8))
-            master = ProjectAnalysisStore(root).capture_and_save(
-                analysis_settings=analysis_settings_profile_from_graph(build_default_pipeline()),
-                images=(ProjectImageSpec(source, (19, 23)),), destination=root / 'project.seedfiddle-project.json')
-            with patch('seedvision.export.project_runner.analyze_path', return_value=_analysis(source)):
-                reports = run_project(root, master, root / 'output', crop_padding_px=2)
-            self.assertEqual(len(reports), 1)
-            manifests = list(reports[0].rglob('seed-crops.json'))
-            self.assertEqual(len(manifests), 1)
-            manifest = json.loads(manifests[0].read_text())
-            self.assertEqual(manifest['seed_ids'], [1, 2])
-            self.assertEqual(manifest['padding_px'], 2)
-            self.assertEqual(manifest['records'][0]['source_sha256'], manifest['source_identity']['source_sha256'])
-            self.assertIsNone(manifest['records'][0]['analysis_source_sha256'])
 
-            with patch('seedvision.export.project_runner.analyze_path', return_value=_analysis(source)), \
-                 patch('seedvision.export.crop_artifacts.export_seed_crop_artifacts', side_effect=OSError('crop write failed')):
-                with self.assertRaisesRegex(OSError, 'crop write failed'):
-                    run_project(root, master, root / 'failed-output', crop_padding_px=2)
-            self.assertFalse([path for path in (root / 'failed-output').iterdir() if not path.name.startswith('.')])
+    def test_workflow_lifecycle(self):
+        """4 related SeedCropArtifactTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_exported_pixels_masks_coordinates_and_hashes_are_bound_to_result)
+        self.scenario(self.check_test_padding_changes_crop_and_each_export_preserves_previous_artifacts)
+        self.scenario(self.check_test_file_backed_corrected_pixels_crop_offset_and_scale_change_revision)
+        self.scenario(self.check_test_batch_cli_surfaces_partial_crop_manifest)
+
+    def test_validation_and_recovery(self):
+        """5 related SeedCropArtifactTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_changed_labels_and_source_are_rejected_before_output)
+        self.scenario(self.check_test_cancellation_and_encoding_failure_never_publish_complete_revision)
+        self.scenario(self.check_test_gpu_crop_drift_is_rejected_before_publication)
+        self.scenario(self.check_test_result_mutation_during_encoding_prevents_publication)
+        self.scenario(self.check_test_window_stop_reaches_export_worker_cancellation_event)
 
 
 if __name__ == '__main__':

@@ -1,4 +1,6 @@
 """CPU artifact/evidence binding; synthetic facts do not certify study conduct."""
+
+from tests.functional_units import functional_units
 from copy import deepcopy
 from dataclasses import FrozenInstanceError, replace
 from hashlib import sha256
@@ -61,6 +63,7 @@ def _bayes_sample(raw):
         source_pins=dict(provenance.SOURCE_PINS))
 
 
+@functional_units
 class ClassifierEvaluationTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -79,7 +82,7 @@ class ClassifierEvaluationTests(unittest.TestCase):
         binding, receipt = adapter.bind_classifier_evaluation(manifest or _manifest(), **arguments)
         return binding, json.loads(receipt), receipt
 
-    def test_native_membership_binds_actual_full_artifact_and_training_bytes(self):
+    def check_test_native_membership_binds_actual_full_artifact_and_training_bytes(self):
         binding, receipt, text = self.bind()
         self.assertEqual(binding.model_sha256, sha256(self.raw).hexdigest())
         self.assertEqual(binding.training_evidence_sha256,
@@ -94,7 +97,7 @@ class ClassifierEvaluationTests(unittest.TestCase):
         with self.assertRaises(FrozenInstanceError):
             binding.model_sha256 = '0'*64
 
-    def test_relocated_same_bytes_bind_identically_without_opening_training_images(self):
+    def check_test_relocated_same_bytes_bind_identically_without_opening_training_images(self):
         copied = self.root/'copied.json'
         copied.write_bytes(self.raw)
         with patch.object(adapter, '_read', wraps=adapter._read) as reader:
@@ -103,7 +106,7 @@ class ClassifierEvaluationTests(unittest.TestCase):
         self.assertEqual([call.args[0] for call in reader.call_args_list], [self.path, copied])
         self.assertEqual(first, second)
 
-    def test_source_membership_must_belong_to_selected_access_not_any_manifest_sample(self):
+    def check_test_source_membership_must_belong_to_selected_access_not_any_manifest_sample(self):
         manifest = _manifest(source='3'*64)
         extra = _sample('other', source_sha256='2'*64, biological_lot_id='lot_other',
                         specimen_group_id='specimen_other', capture_session_id='capture_other')
@@ -111,7 +114,7 @@ class ClassifierEvaluationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'outside selected training'):
             self.bind(manifest)
 
-    def test_training_access_absent_wrong_purpose_and_empty_reject_before_artifact_read(self):
+    def check_test_training_access_absent_wrong_purpose_and_empty_reject_before_artifact_read(self):
         for manifest, identifiers in ((_manifest(), ('absent',)),
             (_manifest(purpose=AccessPurpose.PARAMETER_DEVELOPMENT), ('train',)),
             (_manifest(), ())):
@@ -120,14 +123,14 @@ class ClassifierEvaluationTests(unittest.TestCase):
                     self.bind(manifest, training_access_ids=identifiers)
                 reader.assert_not_called()
 
-    def test_training_validation_samples_reject_even_when_global_audit_permits_access(self):
+    def check_test_training_validation_samples_reject_even_when_global_audit_permits_access(self):
         manifest = _manifest()
         development = replace(manifest.samples[0], split_role=SplitRole.VALIDATION)
         manifest = replace(manifest, samples=(development, manifest.samples[1]))
         with self.assertRaisesRegex(ValueError, 'development samples only'):
             self.bind(manifest)
 
-    def test_locked_training_and_connected_group_leakage_block_before_read(self):
+    def check_test_locked_training_and_connected_group_leakage_block_before_read(self):
         manifest = _manifest()
         locked_access = replace(manifest.access_records[0], sample_ids=('locked',))
         group_alias = replace(manifest.samples[1], biological_lot_id='lot_dev')
@@ -140,14 +143,14 @@ class ClassifierEvaluationTests(unittest.TestCase):
                     self.bind(bad)
                 reader.assert_not_called()
 
-    def test_conversion_binds_actual_typed_bytes_but_membership_remains_unavailable(self):
+    def check_test_conversion_binds_actual_typed_bytes_but_membership_remains_unavailable(self):
         self.path.write_bytes(codec.encode_kmeans_artifact(self.model, _conversion(self.model)))
         _, receipt, _ = self.bind()
         self.assertFalse(receipt['evaluation_eligible'])
         self.assertIsNone(receipt['source_membership'])
         self.assertEqual(receipt['source_membership_state'], 'unavailable')
 
-    def test_legacy_numeric_model_requires_typed_evidence_and_can_use_matching_external_record(self):
+    def check_test_legacy_numeric_model_requires_typed_evidence_and_can_use_matching_external_record(self):
         self.path.write_bytes(models.encode_kmeans_model(self.model))
         with self.assertRaisesRegex(ValueError, 'requires typed training evidence'):
             self.bind()
@@ -158,13 +161,13 @@ class ClassifierEvaluationTests(unittest.TestCase):
         self.assertTrue(receipt['evaluation_eligible'])
         self.assertEqual(binding.training_evidence_sha256, sha256(raw).hexdigest())
 
-    def test_external_evidence_cannot_replace_embedded_evidence(self):
+    def check_test_external_evidence_cannot_replace_embedded_evidence(self):
         training = self.root/'training.json'
         training.write_bytes(codec._canonical_metadata(_conversion(self.model)))
         with self.assertRaisesRegex(ValueError, 'differs from embedded'):
             self.bind(training_path=training)
 
-    def test_wrong_centres_identity_and_corrupt_numeric_artifacts_reject(self):
+    def check_test_wrong_centres_identity_and_corrupt_numeric_artifacts_reject(self):
         training = self.root/'training.json'
         other = models.model_from_centres(((1.,),), 1, 1)
         training.write_bytes(codec._canonical_metadata(_native(other)))
@@ -174,7 +177,7 @@ class ClassifierEvaluationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.bind()
 
-    def test_duplicate_noncanonical_and_nonfinite_external_json_reject(self):
+    def check_test_duplicate_noncanonical_and_nonfinite_external_json_reject(self):
         training = self.root/'training.json'
         for raw in (b'{"kind":"x","kind":"y"}', b'{"kind":NaN}',
                     json.dumps(self.metadata, indent=2).encode()):
@@ -182,7 +185,7 @@ class ClassifierEvaluationTests(unittest.TestCase):
             with self.subTest(raw=raw[:40]), self.assertRaises(ValueError):
                 self.bind(training_path=training)
 
-    def test_bounded_reader_observes_growth_without_trusting_stat(self):
+    def check_test_bounded_reader_observes_growth_without_trusting_stat(self):
         with patch.object(Path, 'open', return_value=io.BytesIO(b'x'*17)):
             with self.assertRaisesRegex(ValueError, 'byte limit'):
                 adapter._read(self.path, 16)
@@ -190,7 +193,7 @@ class ClassifierEvaluationTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 adapter._read(self.path, 16)
 
-    def test_bayes_sample_record_is_typed_model_bound_and_honestly_unverified(self):
+    def check_test_bayes_sample_record_is_typed_model_bound_and_honestly_unverified(self):
         rows = ['class\tchannel\t'+'\t'.join(map(str, range(256)))]
         rows.extend('\t'.join(('leaf', channel, *(['0.5']*256))) for channel in bayes.CHANNELS)
         raw = ('\n'.join(rows)+'\n').encode()
@@ -210,7 +213,7 @@ class ClassifierEvaluationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'bytes/tables'):
             self.bind(family='naive_bayes', training_path=training)
 
-    def test_bayes_directory_membership_adapter_preserves_repeated_consumed_occurrences(self):
+    def check_test_bayes_directory_membership_adapter_preserves_repeated_consumed_occurrences(self):
         # This isolates membership plumbing; typed parser acceptance has its own
         # production parser checks and the unmocked sample-record test above.
         with patch.object(adapter, '_artifacts', return_value=(
@@ -221,13 +224,13 @@ class ClassifierEvaluationTests(unittest.TestCase):
         self.assertTrue(receipt['evaluation_eligible'])
         self.assertEqual(len(receipt['source_membership']), 2)
 
-    def test_bad_family_and_mutable_or_duplicate_access_ids_reject(self):
+    def check_test_bad_family_and_mutable_or_duplicate_access_ids_reject(self):
         for changes in ({'family':'pickle'}, {'training_access_ids':['train']},
                         {'training_access_ids':('train','train')}):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 self.bind(**changes)
 
-    def test_actual_native_cuda_training_artifact_binds_consumed_source(self):
+    def check_test_actual_native_cuda_training_artifact_binds_consumed_source(self):
         # Actual trainer witness, separate from synthetic codec fixtures above.
         # The supplied study identities are engineering fixtures, not lab truth.
         import cv2
@@ -253,3 +256,27 @@ class ClassifierEvaluationTests(unittest.TestCase):
         self.assertEqual(receipt['source_membership'],
                          [{'source_sha256':source_sha, 'sample_ids':['development']}])
         self.assertFalse(receipt['scientifically_validated'])
+
+    def test_actual_native_cuda_training_artifact_binds_consumed_source(self):
+        self.scenario(self.check_test_actual_native_cuda_training_artifact_binds_consumed_source, labelled=False)
+
+    def test_workflow_lifecycle(self):
+        """9 related ClassifierEvaluationTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_native_membership_binds_actual_full_artifact_and_training_bytes)
+        self.scenario(self.check_test_relocated_same_bytes_bind_identically_without_opening_training_images)
+        self.scenario(self.check_test_source_membership_must_belong_to_selected_access_not_any_manifest_sample)
+        self.scenario(self.check_test_locked_training_and_connected_group_leakage_block_before_read)
+        self.scenario(self.check_test_legacy_numeric_model_requires_typed_evidence_and_can_use_matching_external_record)
+        self.scenario(self.check_test_external_evidence_cannot_replace_embedded_evidence)
+        self.scenario(self.check_test_bounded_reader_observes_growth_without_trusting_stat)
+        self.scenario(self.check_test_bayes_sample_record_is_typed_model_bound_and_honestly_unverified)
+        self.scenario(self.check_test_bayes_directory_membership_adapter_preserves_repeated_consumed_occurrences)
+
+    def test_validation_and_recovery(self):
+        """6 related ClassifierEvaluationTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_training_access_absent_wrong_purpose_and_empty_reject_before_artifact_read)
+        self.scenario(self.check_test_training_validation_samples_reject_even_when_global_audit_permits_access)
+        self.scenario(self.check_test_conversion_binds_actual_typed_bytes_but_membership_remains_unavailable)
+        self.scenario(self.check_test_wrong_centres_identity_and_corrupt_numeric_artifacts_reject)
+        self.scenario(self.check_test_duplicate_noncanonical_and_nonfinite_external_json_reject)
+        self.scenario(self.check_test_bad_family_and_mutable_or_duplicate_access_ids_reject)

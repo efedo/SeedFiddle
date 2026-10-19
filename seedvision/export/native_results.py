@@ -42,8 +42,25 @@ MAX_REPORT_BYTES = 8 * 1024 * 1024
 MAX_METADATA_ITEMS = 1_000_000
 MAX_METADATA_DEPTH = 64
 MAX_RESULT_ARRAYS = 1024
-_SUCCESS = frozenset(('provided', 'executed', 'empty', 'partial'))
+_SUCCESS = frozenset(('provided', 'executed', 'empty', 'partial', 'bypassed'))
 _STATES = _SUCCESS | frozenset(('failed', 'not_run', 'unavailable'))
+
+
+def _public_provenance(stage, value):
+    from seedvision.pipeline.backend_execution import (
+        validate_backend_provenance, WATERSHED_OPERATIONS,
+    )
+    checked = validate_backend_provenance(value)
+    operation = {
+        'color_card.means': 'transform.get_color_matrix',
+        'color_card.standard': 'transform.std_color_matrix',
+        'color_card.affine': 'transform.affine_color_correction',
+    }.get(stage.operation_id, stage.operation_id)
+    if stage.operation_id in WATERSHED_OPERATIONS:
+        operation = 'segmentation.watershed.capture'
+    if checked['operation'] != operation:
+        raise NativeResultExportError('Public provenance belongs to another operation.')
+    return checked
 
 
 class NativeResultExportError(ValueError):
@@ -393,13 +410,27 @@ def _validate_payload(payload):
             'reused', 'product_key', 'input_keys', 'parameters', 'outputs'}
         if payload['version'] == VERSION:
             node_fields.add('calculation')
+            if isinstance(node, dict) and ('backend' in node or 'backend_provenance' in node):
+                node_fields.update(('backend', 'backend_provenance'))
         if (type(node) is not dict or set(node) != node_fields
                 or node['stage_id'] != stage.stage_id or node['operation_id'] != stage.operation_id
                 or node['status'] not in _STATES or type(node['reused']) is not bool
                 or type(node['reason']) is not str or node['reason'] != node['reason'].strip()):
             raise NativeResultExportError('Native report node differs from its exact stage contract.')
+        public = node.get('backend') == 'plantcv'
+        if 'backend' in node:
+            if not public:
+                raise NativeResultExportError('Explicit archived backend must identify a public call.')
+            try:
+                provenance = decode(node['backend_provenance'], permit_arrays=False)
+                if provenance is not None or node['status'] in _SUCCESS:
+                    _public_provenance(stage, provenance)
+            except (ValueError, TypeError) as error:
+                raise NativeResultExportError(str(error)) from error
+        if node['status'] == 'bypassed':
+            _validate_bypass_stage(stage)
         available = node['status'] in _SUCCESS
-        complete &= node['status'] in ('provided', 'executed', 'empty')
+        complete &= node['status'] in ('provided', 'executed', 'empty', 'bypassed')
         if (available and (type(node['product_key']) is not str
                 or re.fullmatch(r'[0-9a-f]{64}', node['product_key']) is None)
                 or not available and node['product_key'] is not None
@@ -407,8 +438,8 @@ def _validate_payload(payload):
                 or any(type(key) is not str or type(value) is not str
                     or re.fullmatch(r'[0-9a-f]{64}', value) is None for key, value in node['input_keys'].items())):
             raise NativeResultExportError('Native node cache lineage is invalid.')
-        if ((node['status'] in ('provided', 'executed', 'empty') and node['reason'])
-                or (node['status'] not in ('provided', 'executed', 'empty') and not node['reason'])):
+        if ((node['status'] in ('provided', 'executed', 'empty', 'bypassed') and node['reason'])
+                or (node['status'] not in ('provided', 'executed', 'empty', 'bypassed') and not node['reason'])):
             raise NativeResultExportError('Native node availability and reason disagree.')
         selected = recipe.parameters_for_runner(stage.stage_id)
         resolved = decode(node['parameters'], permit_arrays=False)
@@ -430,8 +461,9 @@ def _validate_payload(payload):
         if stage.operation_id == 'threshold.otsu' and node['status'] in ('executed', 'empty'):
             if payload['version'] == VERSION:
                 from seedvision.cuda.plantcv_thresholds import validate_otsu_calculation_facts
+                from seedvision.pipeline.backend_execution import validate_public_otsu_calculation
                 try:
-                    validate_otsu_calculation_facts(
+                    (validate_public_otsu_calculation if public else validate_otsu_calculation_facts)(
                         decode(calculation, permit_arrays=False), resolved['object_type'])
                 except (ValueError, TypeError) as error:
                     raise NativeResultExportError(str(error)) from error
@@ -444,7 +476,7 @@ def _validate_payload(payload):
         ports = {item[0] for item in outputs}
         declared = {port.name for port in stage.ports if port.direction == 'output'}
         if (len(ports) != len(outputs) or ports-declared or (not available and ports)
-                or (node['status'] in ('provided', 'executed', 'empty') and ports != declared)):
+                or (node['status'] in ('provided', 'executed', 'empty', 'bypassed') and ports != declared)):
             raise NativeResultExportError('Native archived outputs contradict their port availability.')
         for name, value in outputs:
             model_port = name == 'model' and stage.operation_id in (
@@ -499,13 +531,15 @@ def export_native_recipe_result(directory, recipe, result, *,
     collector = _Collector(result.coordinate_frame, limits, cancel)
     nodes = []
     for stage, node in zip(recipe.stages, result.nodes):
+        if node.status == 'bypassed':
+            _validate_bypass_stage(stage)
         if node.operation_id != stage.operation_id or node.status not in _STATES:
             raise NativeResultExportError('Native node operation or state differs from its recipe.')
         if node.status not in _SUCCESS and node.outputs:
             raise NativeResultExportError('A failed/unavailable node cannot archive output products.')
         declared = {port.name for port in stage.ports if port.direction == 'output'}
         if (set(node.outputs) - declared or
-                (node.status in ('provided', 'executed', 'empty') and set(node.outputs) != declared)):
+                (node.status in ('provided', 'executed', 'empty', 'bypassed') and set(node.outputs) != declared)):
             raise NativeResultExportError('Native node products differ from its declared output ports.')
         outputs = []
         for name, value in node.outputs.items():
@@ -527,7 +561,15 @@ def export_native_recipe_result(directory, recipe, result, *,
             'product_key': node.product_key, 'input_keys': dict(node.input_keys),
             'parameters': collector.encode(node.parameters), 'outputs': outputs,
             'calculation': collector.encode(getattr(node, 'calculation', None))})
-    complete = all(node.status in ('provided', 'executed', 'empty') for node in result.nodes)
+        backend = getattr(node, 'backend', 'native')
+        provenance = getattr(node, 'backend_provenance', None)
+        if backend == 'plantcv':
+            nodes[-1].update(backend=backend,
+                backend_provenance=collector.encode(_public_provenance(stage, provenance)
+                    if provenance is not None or node.status in _SUCCESS else None))
+        elif backend != 'native' or provenance is not None:
+            raise NativeResultExportError('Native results cannot assert public execution provenance.')
+    complete = all(node.status in ('provided', 'executed', 'empty', 'bypassed') for node in result.nodes)
     if result.status != ('executed' if complete else 'partial'):
         raise NativeResultExportError('Native run status contradicts its node availability.')
     identity = _identity(recipe, result)
@@ -762,3 +804,10 @@ def load_native_recipe_result(directory, *, limits=CheckpointLimits(),
         raise NativeRecipeCancelled('Native result loading cancelled before completion.') from error
     except (ValueError, TypeError, KeyError, RecursionError) as error:
         raise NativeResultExportError(f'Native result verification failed: {error}') from error
+
+
+def _validate_bypass_stage(stage):
+    from seedvision.pipeline.workflows import bypass_ports
+    if (stage.condition is None or stage.condition.expression != 'workspace.disabled'
+            or stage.condition.outcome_when_true != 'bypass' or not bypass_ports(stage)):
+        raise NativeResultExportError('Native bypass requires its registered typed working condition.')

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from tests.functional_units import functional_units
+
 import unittest
 
 
+@functional_units
 class OrientedEdgeComponentTests(unittest.TestCase):
     @staticmethod
     def _labels(
@@ -27,7 +30,7 @@ class OrientedEdgeComponentTests(unittest.TestCase):
             curvature_tolerance_degrees=curvature_tolerance,
         )[0, 0]
 
-    def test_gap_four_reconnects_facing_fragments_without_gap_two(self) -> None:
+    def check_test_gap_four_reconnects_facing_fragments_without_gap_two(self) -> None:
         import torch
 
         mask = torch.zeros((10, 14), dtype=torch.bool)
@@ -46,7 +49,7 @@ class OrientedEdgeComponentTests(unittest.TestCase):
         self.assertNotEqual(int(short[4, 2]), int(short[4, 8]))
         self.assertEqual(int(repaired[4, 2]), int(repaired[4, 8]))
 
-    def test_gap_four_does_not_merge_uninterrupted_parallel_edges(self) -> None:
+    def check_test_gap_four_does_not_merge_uninterrupted_parallel_edges(self) -> None:
         """Regress the gap-2-separate/gap-4-merged seed-rim failure."""
 
         import torch
@@ -67,7 +70,7 @@ class OrientedEdgeComponentTests(unittest.TestCase):
         self.assertNotEqual(int(gap_two[3, 4]), int(gap_two[6, 4]))
         self.assertNotEqual(int(gap_four[3, 4]), int(gap_four[6, 4]))
 
-    def test_gap_bridge_cannot_enter_interior_of_very_close_parallel_edge(self) -> None:
+    def check_test_gap_bridge_cannot_enter_interior_of_very_close_parallel_edge(self) -> None:
         import torch
 
         # A four-pixel diagonal displacement between these rows is only
@@ -85,7 +88,7 @@ class OrientedEdgeComponentTests(unittest.TestCase):
 
         self.assertNotEqual(int(labels[4, 4]), int(labels[5, 4]))
 
-    def test_gap_bridge_preserves_directed_gradient_side(self) -> None:
+    def check_test_gap_bridge_preserves_directed_gradient_side(self) -> None:
         import torch
 
         mask = torch.zeros((10, 14), dtype=torch.bool)
@@ -101,7 +104,7 @@ class OrientedEdgeComponentTests(unittest.TestCase):
 
         self.assertNotEqual(int(labels[4, 2]), int(labels[5, 8]))
 
-    def test_gap_bridge_accepts_gently_curved_same_side_fragments(self) -> None:
+    def check_test_gap_bridge_accepts_gently_curved_same_side_fragments(self) -> None:
         import torch
 
         mask = torch.zeros((10, 14), dtype=torch.bool)
@@ -116,7 +119,7 @@ class OrientedEdgeComponentTests(unittest.TestCase):
 
         self.assertEqual(int(labels[4, 2]), int(labels[5, 8]))
 
-    def test_wide_tangent_tolerance_does_not_enable_lateral_bridge(self) -> None:
+    def check_test_wide_tangent_tolerance_does_not_enable_lateral_bridge(self) -> None:
         import torch
 
         mask = torch.zeros((12, 16), dtype=torch.bool)
@@ -135,7 +138,7 @@ class OrientedEdgeComponentTests(unittest.TestCase):
 
         self.assertNotEqual(int(labels[3, 2]), int(labels[6, 8]))
 
-    def test_curvature_policy_rejects_s_bridge_but_off_preserves_it(self) -> None:
+    def check_test_curvature_policy_rejects_s_bridge_but_off_preserves_it(self) -> None:
         import torch
 
         mask = torch.zeros((10, 14), dtype=torch.bool)
@@ -170,7 +173,7 @@ class OrientedEdgeComponentTests(unittest.TestCase):
         self.assertNotEqual(int(preferred[4, 2]), int(preferred[5, 8]))
         self.assertNotEqual(int(required[4, 2]), int(required[5, 8]))
 
-    def test_prefer_allows_ambiguous_bend_that_require_rejects(self) -> None:
+    def check_test_prefer_allows_ambiguous_bend_that_require_rejects(self) -> None:
         import torch
 
         # A one-pixel rise across a five-pixel gap bends about 11.3 degrees
@@ -200,7 +203,7 @@ class OrientedEdgeComponentTests(unittest.TestCase):
         self.assertEqual(int(preferred[5, 1]), int(preferred[4, 8]))
         self.assertNotEqual(int(required[5, 1]), int(required[4, 8]))
 
-    def test_require_accepts_both_convex_windings(self) -> None:
+    def check_test_require_accepts_both_convex_windings(self) -> None:
         import torch
 
         for rise, start_degrees, end_degrees in (
@@ -235,7 +238,7 @@ class OrientedEdgeComponentTests(unittest.TestCase):
                     int(labels[first_y, 2]), int(labels[second_y, 8])
                 )
 
-    def test_curvature_validation_rejects_unknown_policy_and_tolerance(self) -> None:
+    def check_test_curvature_validation_rejects_unknown_policy_and_tolerance(self) -> None:
         import torch
 
         mask = torch.ones((3, 3), dtype=torch.bool)
@@ -257,6 +260,22 @@ class OrientedEdgeComponentTests(unittest.TestCase):
                 maximum_gap=2,
                 curvature_tolerance=46.0,
             )
+
+    def test_workflow_lifecycle(self):
+        """7 related OrientedEdgeComponentTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_gap_four_reconnects_facing_fragments_without_gap_two)
+        self.scenario(self.check_test_gap_four_does_not_merge_uninterrupted_parallel_edges)
+        self.scenario(self.check_test_gap_bridge_cannot_enter_interior_of_very_close_parallel_edge)
+        self.scenario(self.check_test_gap_bridge_preserves_directed_gradient_side)
+        self.scenario(self.check_test_gap_bridge_accepts_gently_curved_same_side_fragments)
+        self.scenario(self.check_test_wide_tangent_tolerance_does_not_enable_lateral_bridge)
+        self.scenario(self.check_test_require_accepts_both_convex_windings)
+
+    def test_validation_and_recovery(self):
+        """3 related OrientedEdgeComponentTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_curvature_policy_rejects_s_bridge_but_off_preserves_it)
+        self.scenario(self.check_test_prefer_allows_ambiguous_bend_that_require_rejects)
+        self.scenario(self.check_test_curvature_validation_rejects_unknown_policy_and_tolerance)
 
 
 if __name__ == "__main__":

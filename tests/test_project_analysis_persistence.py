@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from tests.catalogue_fixtures import CatalogueTestCase
+
+from tests.functional_units import functional_units
+
 import copy
 from hashlib import sha256
 import json
@@ -39,7 +43,8 @@ from seedvision.persistence import (
 from seedvision.pipeline import build_default_pipeline
 
 
-class ProjectAnalysisPersistenceTests(unittest.TestCase):
+@functional_units
+class ProjectAnalysisPersistenceTests(CatalogueTestCase):
     @staticmethod
     def _source(
         path: Path, shape: tuple[int, int], value: int
@@ -84,7 +89,7 @@ class ProjectAnalysisPersistenceTests(unittest.TestCase):
             np.savez_compressed(stream, **payload)
         return destination
 
-    def test_round_trip_is_compact_ordered_and_resolves_relative_and_external_images(self) -> None:
+    def check_test_round_trip_is_compact_ordered_and_resolves_relative_and_external_images(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
             root = base / "workspace"
@@ -175,7 +180,7 @@ class ProjectAnalysisPersistenceTests(unittest.TestCase):
             self.assertNotIn("occupancy_likelihood", encoded)
             self.assertLess(destination.stat().st_size, 512 * 1024)
 
-    def test_project_v1_and_v2_migrate_to_v3_and_v2_rejects_injected_graph_fields(self) -> None:
+    def check_test_project_v1_and_v2_migrate_to_v3_and_v2_rejects_injected_graph_fields(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "workspace"
             image = self._source(root / "images" / "capture.jpg", (8, 11), 75)
@@ -231,7 +236,7 @@ class ProjectAnalysisPersistenceTests(unittest.TestCase):
             with self.assertRaisesRegex(InvalidProjectAnalysis, "unknown field"):
                 store.load(injected_path)
 
-    def test_moving_the_complete_workspace_preserves_relative_images_and_sidecars(self) -> None:
+    def check_test_moving_the_complete_workspace_preserves_relative_images_and_sidecars(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
             original = base / "original"
@@ -261,7 +266,7 @@ class ProjectAnalysisPersistenceTests(unittest.TestCase):
             )
             self.assertIsNotNone(restored)
 
-    def test_explicit_project_sidecars_survive_foreign_host_identity_and_path(self) -> None:
+    def check_test_explicit_project_sidecars_survive_foreign_host_identity_and_path(self) -> None:
         """A master path, source digest, and contents outrank host path casing."""
 
         with tempfile.TemporaryDirectory() as temporary:
@@ -347,8 +352,7 @@ class ProjectAnalysisPersistenceTests(unittest.TestCase):
             self.assertIsNotNone(restored_references)
             self.assertIsNotNone(restored_centres)
 
-    @unittest.skipIf(os.name == "nt", "requires a case-sensitive source filesystem")
-    def test_posix_project_can_store_source_locators_that_differ_only_by_case(self) -> None:
+    def check_test_posix_project_can_store_source_locators_that_differ_only_by_case(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "workspace"
             upper = self._source(root / "images" / "Seed.png", (6, 7), 45)
@@ -370,7 +374,7 @@ class ProjectAnalysisPersistenceTests(unittest.TestCase):
                 ["images/Seed.png", "images/seed.png"],
             )
 
-    def test_explicit_sidecar_override_must_be_included_existing_and_root_bound(self) -> None:
+    def check_test_explicit_sidecar_override_must_be_included_existing_and_root_bound(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
             root = base / "workspace"
@@ -417,7 +421,7 @@ class ProjectAnalysisPersistenceTests(unittest.TestCase):
                     ),
                 )
 
-    def test_missing_and_changed_files_are_structured_issues_not_schema_failures(self) -> None:
+    def check_test_missing_and_changed_files_are_structured_issues_not_schema_failures(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
             root = base / "workspace"
@@ -466,7 +470,7 @@ class ProjectAnalysisPersistenceTests(unittest.TestCase):
                 all(item.status is ProjectFileStatus.UNCHECKED for item in unchecked.images)
             )
 
-    def test_strict_schema_rejects_unknown_fields_traversal_duplicates_and_nan(self) -> None:
+    def check_test_strict_schema_rejects_unknown_fields_traversal_duplicates_and_nan(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "workspace"
             image = self._source(root / "images" / "capture.jpg", (8, 11), 75)
@@ -525,7 +529,7 @@ class ProjectAnalysisPersistenceTests(unittest.TestCase):
             with self.assertRaises(InvalidProjectAnalysis):
                 store.load(nonfinite)
 
-    def test_failed_atomic_replace_preserves_the_previous_master_and_cleans_temp(self) -> None:
+    def check_test_failed_atomic_replace_preserves_the_previous_master_and_cleans_temp(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "workspace"
             image = self._source(root / "images" / "capture.jpg", (8, 11), 75)
@@ -563,7 +567,7 @@ class ProjectAnalysisPersistenceTests(unittest.TestCase):
             with self.assertRaises(InvalidProjectAnalysis):
                 store.save(replacement, root / "projects" / "wrong.json")
 
-    def test_capture_rejects_a_declared_shape_that_does_not_match_the_image(self) -> None:
+    def check_test_capture_rejects_a_declared_shape_that_does_not_match_the_image(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "workspace"
             image = self._source(root / "images" / "capture.jpg", (8, 11), 75)
@@ -574,7 +578,7 @@ class ProjectAnalysisPersistenceTests(unittest.TestCase):
                     images=(ProjectImageSpec(image, (9, 11)),),
                 )
 
-    def test_resolve_rejects_a_tampered_shape_even_when_source_hash_matches(self) -> None:
+    def check_test_resolve_rejects_a_tampered_shape_even_when_source_hash_matches(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "workspace"
             image = self._source(root / "images" / "capture.jpg", (8, 11), 75)
@@ -595,7 +599,7 @@ class ProjectAnalysisPersistenceTests(unittest.TestCase):
             )
             self.assertEqual(loaded.issues[0].role, "source_image")
 
-    def test_capture_refuses_corrupt_and_stale_image_bound_sidecars(self) -> None:
+    def check_test_capture_refuses_corrupt_and_stale_image_bound_sidecars(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "workspace"
             image = self._source(root / "images" / "capture.jpg", (8, 11), 75)
@@ -633,7 +637,7 @@ class ProjectAnalysisPersistenceTests(unittest.TestCase):
                     ),
                 )
 
-    def test_resolve_validates_sidecar_contents_against_the_current_image(self) -> None:
+    def check_test_resolve_validates_sidecar_contents_against_the_current_image(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "workspace"
             image = self._source(root / "images" / "capture.jpg", (8, 11), 75)
@@ -661,7 +665,7 @@ class ProjectAnalysisPersistenceTests(unittest.TestCase):
                 )
             )
 
-    def test_reference_sidecar_uses_its_corrected_shape_not_raw_source_shape(self) -> None:
+    def check_test_reference_sidecar_uses_its_corrected_shape_not_raw_source_shape(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "workspace"
             source_shape = (8, 11)
@@ -703,7 +707,7 @@ class ProjectAnalysisPersistenceTests(unittest.TestCase):
             self.assertEqual(restored.shape, corrected_shape)
             self.assertTrue(references.is_file())
 
-    def test_foreign_absolute_path_is_never_probed_as_a_native_path(self) -> None:
+    def check_test_foreign_absolute_path_is_never_probed_as_a_native_path(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "workspace"
             image = self._source(root / "images" / "capture.jpg", (8, 11), 75)
@@ -736,7 +740,7 @@ class ProjectAnalysisPersistenceTests(unittest.TestCase):
             fingerprint.assert_not_called()
             self.assertIs(loaded.images[0].status, ProjectFileStatus.UNREADABLE)
 
-    def test_cleanup_failures_are_wrapped_without_masking_replace_failure(self) -> None:
+    def check_test_cleanup_failures_are_wrapped_without_masking_replace_failure(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "workspace"
             image = self._source(root / "images" / "capture.jpg", (8, 11), 75)
@@ -761,7 +765,7 @@ class ProjectAnalysisPersistenceTests(unittest.TestCase):
             for leftover in destination.parent.glob(f".{destination.name}.*.tmp"):
                 leftover.unlink()
 
-    def test_deep_json_and_oversized_direct_document_fail_as_schema_errors(self) -> None:
+    def check_test_deep_json_and_oversized_direct_document_fail_as_schema_errors(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "workspace"
             store = ProjectAnalysisStore(root)
@@ -777,6 +781,32 @@ class ProjectAnalysisPersistenceTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(InvalidProjectAnalysis, "at most"):
                 store.save(invalid)
+
+    @unittest.skipIf(os.name == "nt", "requires a case-sensitive source filesystem")
+    def test_posix_project_can_store_source_locators_that_differ_only_by_case(self):
+        self.scenario(self.check_test_posix_project_can_store_source_locators_that_differ_only_by_case, labelled=False)
+
+    def test_workflow_lifecycle(self):
+        """7 related ProjectAnalysisPersistenceTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_round_trip_is_compact_ordered_and_resolves_relative_and_external_images)
+        self.scenario(self.check_test_moving_the_complete_workspace_preserves_relative_images_and_sidecars)
+        self.scenario(self.check_test_explicit_project_sidecars_survive_foreign_host_identity_and_path)
+        self.scenario(self.check_test_explicit_sidecar_override_must_be_included_existing_and_root_bound)
+        self.scenario(self.check_test_resolve_validates_sidecar_contents_against_the_current_image)
+        self.scenario(self.check_test_reference_sidecar_uses_its_corrected_shape_not_raw_source_shape)
+        self.scenario(self.check_test_foreign_absolute_path_is_never_probed_as_a_native_path)
+
+    def test_validation_and_recovery(self):
+        """9 related ProjectAnalysisPersistenceTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_project_v1_and_v2_migrate_to_v3_and_v2_rejects_injected_graph_fields)
+        self.scenario(self.check_test_missing_and_changed_files_are_structured_issues_not_schema_failures)
+        self.scenario(self.check_test_strict_schema_rejects_unknown_fields_traversal_duplicates_and_nan)
+        self.scenario(self.check_test_failed_atomic_replace_preserves_the_previous_master_and_cleans_temp)
+        self.scenario(self.check_test_capture_rejects_a_declared_shape_that_does_not_match_the_image)
+        self.scenario(self.check_test_resolve_rejects_a_tampered_shape_even_when_source_hash_matches)
+        self.scenario(self.check_test_capture_refuses_corrupt_and_stale_image_bound_sidecars)
+        self.scenario(self.check_test_cleanup_failures_are_wrapped_without_masking_replace_failure)
+        self.scenario(self.check_test_deep_json_and_oversized_direct_document_fail_as_schema_errors)
 
 
 if __name__ == "__main__":

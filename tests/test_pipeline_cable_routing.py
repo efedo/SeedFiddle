@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from tests.catalogue_fixtures import CatalogueTestCase
+
+from tests.functional_units import functional_units
+
 import os
 from time import perf_counter
 import unittest
@@ -138,7 +142,8 @@ def _contains_contiguous_points(
     )
 
 
-class PipelineCableRoutingTests(unittest.TestCase):
+@functional_units
+class PipelineCableRoutingTests(CatalogueTestCase):
     @classmethod
     def setUpClass(cls) -> None:
         try:
@@ -201,7 +206,7 @@ class PipelineCableRoutingTests(unittest.TestCase):
             f"{len(collisions)} cable/card collisions: {collisions[:20]}",
         )
 
-    def test_default_mode_preserves_the_established_cubic_paths(self) -> None:
+    def check_test_default_mode_preserves_the_established_cubic_paths(self) -> None:
         from seedvision.ui.pipeline_canvas import PipelineCanvas
 
         canvas = PipelineCanvas(_bundle_graph())
@@ -233,7 +238,7 @@ class PipelineCableRoutingTests(unittest.TestCase):
                 self.assertAlmostEqual(actual_point[1], expected_point[1], places=6)
         canvas.close()
 
-    def test_same_source_and_direction_form_one_deterministic_cable(self) -> None:
+    def check_test_same_source_and_direction_form_one_deterministic_cable(self) -> None:
         from PySide6.QtGui import QPainterPath
 
         from seedvision.ui.pipeline_canvas import PipelineCanvas
@@ -322,7 +327,7 @@ class PipelineCableRoutingTests(unittest.TestCase):
         )
         canvas.close()
 
-    def test_reverse_bundle_exits_the_output_side_before_routing_left(self) -> None:
+    def check_test_reverse_bundle_exits_the_output_side_before_routing_left(self) -> None:
         from seedvision.ui.pipeline_canvas import PipelineCanvas
 
         canvas = PipelineCanvas(_reverse_bundle_graph())
@@ -348,7 +353,7 @@ class PipelineCableRoutingTests(unittest.TestCase):
         self.assert_cables_clear_unrelated_cards(canvas)
         canvas.close()
 
-    def test_obstacle_routes_clear_every_non_endpoint_node_and_round_bends(self) -> None:
+    def check_test_obstacle_routes_clear_every_non_endpoint_node_and_round_bends(self) -> None:
         from PySide6.QtGui import QPainterPath, QPainterPathStroker
 
         from seedvision.ui.pipeline_canvas import PipelineCanvas
@@ -395,7 +400,7 @@ class PipelineCableRoutingTests(unittest.TestCase):
         self.assertIn(QPainterPath.ElementType.CurveToElement, element_types)
         canvas.close()
 
-    def test_moving_an_obstacle_recomputes_the_route(self) -> None:
+    def check_test_moving_an_obstacle_recomputes_the_route(self) -> None:
         from seedvision.ui.pipeline_canvas import PipelineCanvas
 
         canvas = PipelineCanvas(_routing_graph(obstacle_count=1))
@@ -416,7 +421,7 @@ class PipelineCableRoutingTests(unittest.TestCase):
         self.assertEqual(after[-1], before[-1])
         canvas.close()
 
-    def test_combined_bundling_and_obstacle_routing_preserve_clearance(self) -> None:
+    def check_test_combined_bundling_and_obstacle_routing_preserve_clearance(self) -> None:
         from PySide6.QtGui import QPainterPath, QPainterPathStroker
 
         from seedvision.ui.pipeline_canvas import PipelineCanvas
@@ -451,7 +456,7 @@ class PipelineCableRoutingTests(unittest.TestCase):
             self.assertIn(QPainterPath.ElementType.CurveToElement, element_types)
         canvas.close()
 
-    def test_authored_graph_routes_clear_all_cards_with_bounded_refresh_time(self) -> None:
+    def check_test_authored_graph_routes_clear_all_cards_with_bounded_refresh_time(self) -> None:
         from seedvision.pipeline import build_default_pipeline
         from seedvision.ui.pipeline_canvas import PipelineCanvas
 
@@ -471,7 +476,7 @@ class PipelineCableRoutingTests(unittest.TestCase):
         self.assert_cables_clear_unrelated_cards(canvas)
         canvas.close()
 
-    def test_bundled_branches_remain_individually_interactive(self) -> None:
+    def check_test_bundled_branches_remain_individually_interactive(self) -> None:
         from PySide6.QtCore import Qt
 
         from seedvision.ui.pipeline_canvas import PipelineCanvas
@@ -507,6 +512,17 @@ class PipelineCableRoutingTests(unittest.TestCase):
         self.assertEqual(len(canvas.edge_items), 2)
         self.assertEqual(canvas.cable_items, [])
         canvas.close()
+
+    def test_workflow_lifecycle(self):
+        """8 related PipelineCableRoutingTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_default_mode_preserves_the_established_cubic_paths)
+        self.scenario(self.check_test_same_source_and_direction_form_one_deterministic_cable)
+        self.scenario(self.check_test_reverse_bundle_exits_the_output_side_before_routing_left)
+        self.scenario(self.check_test_obstacle_routes_clear_every_non_endpoint_node_and_round_bends)
+        self.scenario(self.check_test_moving_an_obstacle_recomputes_the_route)
+        self.scenario(self.check_test_combined_bundling_and_obstacle_routing_preserve_clearance)
+        self.scenario(self.check_test_authored_graph_routes_clear_all_cards_with_bounded_refresh_time)
+        self.scenario(self.check_test_bundled_branches_remain_individually_interactive)
 
 
 if __name__ == "__main__":

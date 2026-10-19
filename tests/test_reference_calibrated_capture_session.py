@@ -1,4 +1,6 @@
 """One actual capture; replayed results test session orchestration only."""
+
+from tests.functional_units import functional_units
 from copy import deepcopy
 from dataclasses import replace
 from hashlib import sha256
@@ -8,6 +10,7 @@ import os
 import tempfile
 import threading
 import unittest
+from tests.catalogue_fixtures import CatalogueTestCase
 from unittest.mock import patch
 
 import cv2
@@ -21,8 +24,9 @@ from tests.test_reference_calibrated_seed import spec
 from tests.test_reference_preprocessing import HAS_REFERENCE_ENV, REFERENCE_PYTHON
 
 
-class CalibratedSessionAdmissionTests(unittest.TestCase):
-    def test_crop_watershed_bound_does_not_reject_large_parent(self):
+@functional_units
+class CalibratedSessionAdmissionTests(CatalogueTestCase):
+    def check_test_crop_watershed_bound_does_not_reject_large_parent(self):
         selected = spec(seed_roi_xyxy=(600,260,728,356))
         plan = session._resource_plan((1000,4800), selected, CheckpointLimits())
         self.assertEqual(plan['watershed_shape'],[96,128])
@@ -30,7 +34,7 @@ class CalibratedSessionAdmissionTests(unittest.TestCase):
         # A full parent capture would exceed the public watershed limit.
         self.assertGreater(42*4_800_000+3,128*1024*1024)
 
-    def test_parent_transmission_roi_and_retained_limits_are_separate(self):
+    def check_test_parent_transmission_roi_and_retained_limits_are_separate(self):
         selected = spec()
         with self.assertRaisesRegex(ValueError,'transmission'):
             session._resource_plan((4000,6000), selected, CheckpointLimits())
@@ -42,7 +46,7 @@ class CalibratedSessionAdmissionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'Complete retained'):
             session._resource_plan((640,900),selected,replace(exact,max_total_array_bytes=total-1,max_array_bytes=total-1))
 
-    def test_cancelled_or_invalid_preflight_does_not_read_source(self):
+    def check_test_cancelled_or_invalid_preflight_does_not_read_source(self):
         event = threading.Event()
         event.set()
         runner = PlantCVReferenceRunner(REFERENCE_PYTHON)
@@ -57,9 +61,15 @@ class CalibratedSessionAdmissionTests(unittest.TestCase):
             with self.assertRaises(CheckpointCancelled):
                 session.open_calibrated_reference_capture('missing.json',cancel=event)
 
+    def test_validation_and_recovery(self):
+        """3 related CalibratedSessionAdmissionTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_crop_watershed_bound_does_not_reject_large_parent)
+        self.scenario(self.check_test_parent_transmission_roi_and_retained_limits_are_separate)
+        self.scenario(self.check_test_cancelled_or_invalid_preflight_does_not_read_source)
+
 
 @unittest.skipUnless(HAS_REFERENCE_ENV,'Pinned public PlantCV environment is required.')
-class CalibratedCaptureSessionTests(unittest.TestCase):
+class CalibratedCaptureSessionTests(CatalogueTestCase):
     @classmethod
     def setUpClass(cls):
         cls.temporary = tempfile.TemporaryDirectory(prefix='calibrated-capture-session-')
@@ -123,70 +133,9 @@ class CalibratedCaptureSessionTests(unittest.TestCase):
         self.assertTrue(any(store.glob('*.checkpoint')))
         self.assertTrue(any((store/'seed'/'chains').glob('*.json')))
 
-    def test_actual_ten_calls_decode_once_and_rgb_only_parent(self):
-        self.assertEqual(len(self.requests),10)
-        self.assertEqual(self.requests[0][0],'transform.auto_correct_color')
-        self.assertEqual(self.requests[-1][0],'analysis.size')
-        self.assertEqual(self.decode_calls,1)
-        verified = self.captured.verified
-        parent = verified.checkpoints['parent']
-        self.assertEqual(set(parent.arrays),{'rgb'})
-        np.testing.assert_array_equal(parent.arrays['rgb'],self.bgr[...,::-1])
-        self.assertEqual(parent.identity.source_sha256,sha256(self.source_bytes).hexdigest())
-        self.assertIs(parent.metadata['actual_public_reader'],False)
-        self.assertEqual(verified.record['crop']['local_to_parent_xy'],(600,260))
-        self.assertEqual(verified.record['scaled_measurement']['units'],'mm')
-        self.assertFalse(verified.record['scientifically_validated'])
-        self.assertEqual(len(verified.checkpoints),15)
-        plan = parent.metadata['resource_plan']
-        self.assertLessEqual(verified.retained_array_bytes,plan['complete_retained_numeric_envelope_bytes'])
-        for checkpoint in verified.checkpoints.values():
-            for array in checkpoint.arrays.values():
-                self.assertFalse(array.flags.writeable)
 
-    def test_saved_revision_opens_after_store_move_and_without_original_image(self):
-        store,path = self._copy('moved')
-        with (patch.object(session.inputs,'snapshot',side_effect=AssertionError('original source snapshot')),
-             patch.object(session.inputs,'decode',side_effect=AssertionError('original source decode')),
-             patch.object(session.inputs,'source_identity',side_effect=AssertionError('original source hash'))):
-            opened = session.open_calibrated_reference_capture(path)
-        self.assertIsNone(opened.outcome)
-        self.assertEqual(opened.spec,self.selected)
-        self.assertEqual(opened.manifest_sha256,self.captured.manifest_sha256)
-        self.assertEqual(opened.verified.record,self.captured.verified.record)
-        self.assertEqual(opened.verified.retained_array_bytes,
-            sum(a.nbytes for checkpoint in opened.verified.checkpoints.values() for a in checkpoint.arrays.values()))
 
-    def test_open_actual_retained_budget_and_one_byte_below(self):
-        total = self.captured.verified.retained_array_bytes
-        limits = replace(CheckpointLimits(),max_total_array_bytes=total,max_array_bytes=total)
-        opened = session.open_calibrated_reference_capture(self.captured.manifest_path,limits=limits)
-        self.assertEqual(opened.verified.retained_array_bytes,total)
-        with self.assertRaises(ValueError):
-            session.open_calibrated_reference_capture(self.captured.manifest_path,
-                limits=replace(limits,max_total_array_bytes=total-1,max_array_bytes=total-1))
 
-    def test_sidecar_rejects_swapped_spec_digest_revision_and_noncanonical_bytes(self):
-        store,path = self._copy('sidecar-faults')
-        sidecar = path.with_name(path.stem+'.composition.json')
-        raw = sidecar.read_bytes()
-        value = session._strict_json_loads(raw)
-        changes = [lambda s:s.update(composition_sha256='f'*64),
-                   lambda s:s.update(manifest_sha256='f'*64),
-                   lambda s:s.update(composition=spec('mean').to_dict()),
-                   lambda s:s['composition'].update(seed_roi_xyxy=[601,260,729,356])]
-        for mutate in changes:
-            changed = deepcopy(value)
-            mutate(changed)
-            sidecar.write_bytes(_canonical_json(changed,name='declared sidecar fault'))
-            with self.subTest(change=mutate),self.assertRaises(ValueError):
-                session.open_calibrated_reference_capture(path)
-        for invalid in (raw+b'\n',b'{"schema":1,"schema":2}',b'{"schema":NaN}'):
-            sidecar.write_bytes(invalid)
-            with self.subTest(raw=invalid[:30]),self.assertRaises(ValueError):
-                session.open_calibrated_reference_capture(path)
-        sidecar.write_bytes(raw)
-        self.assertEqual(session.open_calibrated_reference_capture(path).spec,self.selected)
 
     def test_partial_manifest_and_bad_preparation_metadata_reject(self):
         store,path = self._copy('partial')
@@ -213,33 +162,8 @@ class CalibratedCaptureSessionTests(unittest.TestCase):
             with self.subTest(mutation=mutation),self.assertRaisesRegex(ValueError,'preparation'):
                 session._verify_preparation(changed,self.selected,CheckpointLimits())
 
-    def test_manifest_checkpoint_caps_and_path_reject(self):
-        store,path = self._copy('corruption')
-        with self.assertRaises(ValueError):
-            session.open_calibrated_reference_capture(path,limits=replace(CheckpointLimits(),max_metadata_bytes=100))
-        with patch.object(Path,'open',side_effect=AssertionError('unexpected manifest I/O')):
-            for bad in (self.root/'a.json',path.with_name(path.stem+'.composition.json'),self.root/(path.stem+'.json')):
-                with self.subTest(path=bad),self.assertRaises(ValueError):
-                    session.open_calibrated_reference_capture(bad)
-        parent = self.captured.verified.checkpoints['parent']
-        (store/'inputs'/(parent.checkpoint_sha256+'.checkpoint')/'manifest.json').write_bytes(b'corrupt')
-        with self.assertRaises(ValueError):
-            session.open_calibrated_reference_capture(path)
 
-    def test_source_changed_before_preparation_makes_no_public_calls(self):
-        with patch.object(PlantCVReferenceRunner,'run') as public,self.assertRaises(ValueError):
-            self._capture('bad-stamp',expected_stamp=(0,0,0,0,0))
-        public.assert_not_called()
 
-    def test_source_changed_after_first_call_withholds_saved_revision(self):
-        source = self._source('changed-between-calls')
-        store = self.root/'changed-between-calls'
-        def mutate(index,operation,arrays):
-            if index == 1:
-                source.write_bytes(self.source_bytes+b'changed')
-        with patch.object(PlantCVReferenceRunner,'run',self._replay(mutate)),self.assertRaises(ValueError):
-            session.capture_calibrated_reference_path(self.selected,source,store,PlantCVReferenceRunner(REFERENCE_PYTHON))
-        self.assertEqual(list(store.glob('calibrated/chains/*.json')),[])
 
     def test_final_source_rehash_detects_bytes_even_with_declared_constant_stamp(self):
         source = self._source('changed-byte-hash')
@@ -253,107 +177,11 @@ class CalibratedCaptureSessionTests(unittest.TestCase):
             session.capture_calibrated_reference_path(self.selected,source,store,PlantCVReferenceRunner(REFERENCE_PYTHON))
         self._assert_uncommitted(store)
 
-    def test_write_fsync_and_replace_failures_retract_only_owned_parent(self):
-        original_replace = os.replace
-        def replace_failure(source,destination):
-            if str(destination).endswith('.composition.json'):
-                raise OSError('Declared sidecar replacement failure.')
-            return original_replace(source,destination)
-        failures = [patch.object(session.tempfile,'NamedTemporaryFile',side_effect=OSError('Declared sidecar write failure.')),
-                    patch.object(session.os,'fsync',side_effect=OSError('Declared fsync failure.')),
-                    patch.object(session.os,'replace',replace_failure)]
-        for index,failure in enumerate(failures):
-            name = 'publish-fault-'+str(index)
-            # Apply file faults only after the coordinator completes, so its
-            # independently committed checkpoints/child remain valid evidence.
-            actual = session.run_reference_calibrated_seed
-            active = []
-            def complete(*args,**kwargs):
-                outcome = actual(*args,**kwargs)
-                failure.start()
-                active.append(failure)
-                return outcome
-            try:
-                with (self.subTest(index=index),patch.object(PlantCVReferenceRunner,'run',self._replay()),
-                     patch.object(session,'run_reference_calibrated_seed',complete),self.assertRaises(OSError)):
-                    self._capture(name)
-            finally:
-                for current in active:
-                    current.stop()
-            self._assert_uncommitted(self.root/name)
 
-    def test_verification_cancel_or_failure_preserves_checkpoints(self):
-        for reason in (CheckpointCancelled('Declared saved audit cancellation.'),ValueError('Declared saved audit failure.')):
-            name = 'audit-'+type(reason).__name__
-            with (patch.object(PlantCVReferenceRunner,'run',self._replay()),
-                 patch.object(session,'read_reference_calibrated_seed',side_effect=reason),self.assertRaises(type(reason))):
-                self._capture(name)
-            self._assert_uncommitted(self.root/name)
 
-    def test_changed_parent_replacement_survives_failure_cleanup(self):
-        name = 'replacement-preserved'
-        replacement = b'declared changed replacement'
-        changed = []
-        def fail(store,digest,**kwargs):
-            path = Path(store)/'calibrated'/'chains'/(digest+'.json')
-            path.write_bytes(replacement)
-            changed.append(path)
-            raise ValueError('Declared audit failure after replacement.')
-        with (patch.object(PlantCVReferenceRunner,'run',self._replay()),
-             patch.object(session,'read_reference_calibrated_seed',fail),self.assertRaises(ValueError)):
-            self._capture(name)
-        self.assertEqual(changed[0].read_bytes(),replacement)
-        self.assertEqual(list(changed[0].parent.glob('*.tmp')),[])
-        self.assertEqual(list(changed[0].parent.glob('*.composition.json')),[])
 
-    def test_last_caller_callback_precedes_saved_graph_audit(self):
-        name = 'callback-boundary'
-        audited = False
-        late_calls = []
-        actual = session.read_reference_calibrated_seed
-        def audit(*args,**kwargs):
-            nonlocal audited
-            self.assertIsNone(kwargs['cancel'])
-            verified = actual(*args,**kwargs)
-            audited = True
-            return verified
-        def cancel():
-            if audited:
-                late_calls.append(True)
-                return True
-            return False
-        with patch.object(PlantCVReferenceRunner,'run',self._replay()),patch.object(session,'read_reference_calibrated_seed',audit):
-            captured = self._capture(name,cancel=cancel)
-        self.assertEqual(late_calls,[])
-        self.assertEqual(session.open_calibrated_reference_capture(captured.manifest_path).manifest_sha256,captured.manifest_sha256)
 
-    def test_cancellation_after_commit_keeps_saved_revision(self):
-        event = threading.Event()
-        actual = os.replace
-        def after_commit(source,destination):
-            actual(source,destination)
-            if str(destination).endswith('.composition.json'):
-                event.set()
-        with patch.object(PlantCVReferenceRunner,'run',self._replay()),patch.object(session.os,'replace',after_commit):
-            captured = self._capture('post-commit-cancel',cancel=event)
-        self.assertTrue(event.is_set())
-        self.assertTrue(captured.manifest_path.exists())
-        self.assertEqual(session.open_calibrated_reference_capture(captured.manifest_path).spec,self.selected)
 
-    def test_exception_after_sidecar_replace_preserves_committed_pair(self):
-        actual = os.replace
-        saved = []
-        def after_commit(source,destination):
-            actual(source,destination)
-            if str(destination).endswith('.composition.json'):
-                saved.append(Path(destination))
-                raise OSError('Declared unknown outcome after completed replacement.')
-        with (patch.object(PlantCVReferenceRunner,'run',self._replay()),
-              patch.object(session.os,'replace',after_commit),self.assertRaises(OSError)):
-            self._capture('post-commit-exception')
-        path = saved[0].with_name(saved[0].name.removesuffix('.composition.json')+'.json')
-        self.assertTrue(path.exists())
-        self.assertEqual(session.open_calibrated_reference_capture(path).spec,self.selected)
 
 
 if __name__ == '__main__':

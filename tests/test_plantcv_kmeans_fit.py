@@ -1,4 +1,6 @@
 """Complete native fitting compared to traced actual public MiniBatchKMeans.fit."""
+
+from tests.functional_units import functional_units
 from dataclasses import replace
 from hashlib import sha256
 import json
@@ -129,6 +131,7 @@ def _tensor_sha(value):
 
 
 @unittest.skipUnless(torch.cuda.is_available(), 'CUDA required')
+@functional_units
 class KMeansFitTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -209,7 +212,7 @@ class KMeansFitTests(unittest.TestCase):
             self.assertLessEqual(interval.lo, value)
             self.assertGreaterEqual(interval.hi, value)
 
-    def test_actual_public_fit_matches_all_rng_draws_initializations_steps_and_final_outputs(self):
+    def check_test_actual_public_fit_matches_all_rng_draws_initializations_steps_and_final_outputs(self):
         for index, expected in enumerate(self.reference):
             with self.subTest(case=index):
                 result, error, observed = self.run_traced(index)
@@ -241,7 +244,7 @@ class KMeansFitTests(unittest.TestCase):
                         (expected['batch'], expected['init_size'], expected['n_init']))
                     self.assertEqual(result.source_n_threads, expected['threads'])
 
-    def test_zero_and_constant_tolerance_skip_centre_shift_calculation(self):
+    def check_test_zero_and_constant_tolerance_skip_centre_shift_calculation(self):
         for index in (0, 8):
             item, expected = self.cases[index], self.reference[index]
             x = torch.tensor(item['features'], dtype=torch.uint16, device='cuda')
@@ -251,7 +254,7 @@ class KMeansFitTests(unittest.TestCase):
             self.assertEqual(result.scaled_tolerance.lo, 0.)
             self.assertTrue(result.scaled_tolerance.is_point)
 
-    def test_all_reduction_profile_matches_actual_public_fits_at_one_two_and_four_threads(self):
+    def check_test_all_reduction_profile_matches_actual_public_fits_at_one_two_and_four_threads(self):
         cases = self.cases[:2]
         completed = subprocess.run([str(REFERENCE), '-c', THREAD_SCRIPT], cwd=ROOT,
             input=json.dumps(cases), text=True, capture_output=True, timeout=90)
@@ -276,7 +279,7 @@ class KMeansFitTests(unittest.TestCase):
             seed=case['seed'], **case['parameters'])
         self.assertEqual(recorded.source_reduction_profile, 'recorded-openmp-threads-v1')
 
-    def test_all_reduction_profile_withholds_fit_when_initialization_comparison_is_ambiguous(self):
+    def check_test_all_reduction_profile_withholds_fit_when_initialization_comparison_is_ambiguous(self):
         case = self.cases[0]
         x = torch.tensor(case['features'], dtype=torch.uint16, device='cuda')
         original = native._score.score_kmeans_training_rows
@@ -290,7 +293,7 @@ class KMeansFitTests(unittest.TestCase):
                 native.fit_kmeans_training_rows(x, case['k'], source_n_threads=None,
                     seed=case['seed'], **case['parameters'])
 
-    def test_whole_job_caps_and_parameters_reject_before_rng_or_output_allocation(self):
+    def check_test_whole_job_caps_and_parameters_reject_before_rng_or_output_allocation(self):
         x = torch.zeros((17, 3), dtype=torch.uint16, device='cuda')
         for constant in ('MAX_TOTAL_WORK', 'MAX_CUDA_LIVE_BYTES', 'MAX_CPU_METADATA_BYTES', 'MAX_STEPS'):
             with patch.object(native, constant, 1):
@@ -310,7 +313,7 @@ class KMeansFitTests(unittest.TestCase):
             with self.assertRaisesRegex(native.KMeansFitError, 'rounded bytes'):
                 native.fit_kmeans_training_rows(bad, 1, source_n_threads=1)
 
-    def test_custom_stream_input_preservation_actual_live_peak_and_cancel_withholding(self):
+    def check_test_custom_stream_input_preservation_actual_live_peak_and_cancel_withholding(self):
         item = self.cases[9]
         x = torch.tensor(item['features'], dtype=torch.uint16, device='cuda')
         parameters = dict(item['parameters'], source_n_threads=self.reference[9]['threads'], seed=item['seed'])
@@ -344,7 +347,7 @@ class KMeansFitTests(unittest.TestCase):
             self.assertEqual(calls, target)
             self.assertEqual(x._version, version)
 
-    def test_input_mutation_during_rng_and_callbacks_stops_before_following_stage(self):
+    def check_test_input_mutation_during_rng_and_callbacks_stops_before_following_stage(self):
         item = self.cases[0]
         parameters = dict(item['parameters'], source_n_threads=self.reference[0]['threads'], seed=item['seed'])
         for target in (1, 5, 25):
@@ -367,7 +370,7 @@ class KMeansFitTests(unittest.TestCase):
             with self.assertRaisesRegex(native.KMeansFitError, 'changed'):
                 native.fit_kmeans_training_rows(x, item['k'], **parameters)
 
-    def test_loaded_source_binds_complete_job_limits_and_pinned_source(self):
+    def check_test_loaded_source_binds_complete_job_limits_and_pinned_source(self):
         from seedvision.benchmarking.native_recipe import _module_record
         self.assertTrue(_module_record(native)['loaded_code'])
         for name, value in (('MAX_TOTAL_WORK', 1), ('SKLEARN_KMEANS_SHA256', 'changed')):
@@ -375,7 +378,7 @@ class KMeansFitTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     _module_record(native)
 
-    def test_metadata_only_preflight_matches_tensor_plan_without_allocation_or_rng(self):
+    def check_test_metadata_only_preflight_matches_tensor_plan_without_allocation_or_rng(self):
         for index, case in enumerate(self.cases):
             x = torch.tensor(case['features'], dtype=torch.uint16, device='cuda')
             parameters = dict(case['parameters'], source_n_threads=self.reference[index]['threads'], seed=case['seed'])
@@ -386,3 +389,18 @@ class KMeansFitTests(unittest.TestCase):
         for rows, width in ((True, 3), (3, True), (0, 3), (3, 0), (3., 3), (1_000_001, 1), (1, 4097)):
             with self.assertRaises(native.KMeansFitError):
                 native.preflight_kmeans_fit_shape(rows, width, 1, source_n_threads=1)
+
+    def test_workflow_lifecycle(self):
+        """4 related KMeansFitTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_actual_public_fit_matches_all_rng_draws_initializations_steps_and_final_outputs)
+        self.scenario(self.check_test_zero_and_constant_tolerance_skip_centre_shift_calculation)
+        self.scenario(self.check_test_all_reduction_profile_matches_actual_public_fits_at_one_two_and_four_threads)
+        self.scenario(self.check_test_metadata_only_preflight_matches_tensor_plan_without_allocation_or_rng)
+
+    def test_validation_and_recovery(self):
+        """5 related KMeansFitTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_all_reduction_profile_withholds_fit_when_initialization_comparison_is_ambiguous)
+        self.scenario(self.check_test_whole_job_caps_and_parameters_reject_before_rng_or_output_allocation)
+        self.scenario(self.check_test_custom_stream_input_preservation_actual_live_peak_and_cancel_withholding)
+        self.scenario(self.check_test_input_mutation_during_rng_and_callbacks_stops_before_following_stage)
+        self.scenario(self.check_test_loaded_source_binds_complete_job_limits_and_pinned_source)

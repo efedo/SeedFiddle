@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.functional_units import functional_units
+
 import hashlib
 import json
 import os
@@ -45,6 +47,7 @@ def _reference_runner():
 
 
 @unittest.skipUnless(torch.cuda.is_available(), "CUDA small-object filtering requires an available CUDA device")
+@functional_units
 class PlantCVFillTests(unittest.TestCase):
     def _assert_matches_reference(self, mask: np.ndarray, size: int) -> torch.Tensor:
         reference = _reference_runner().run(
@@ -70,7 +73,7 @@ class PlantCVFillTests(unittest.TestCase):
         self.assertTrue(bool(torch.all((actual == 0) | (actual == 255)).item()))
         return actual
 
-    def test_source_pin_and_full_runner_pixel_cap(self) -> None:
+    def check_test_source_pin_and_full_runner_pixel_cap(self) -> None:
         self.assertEqual((PLANTCV_VERSION, PLANTCV_COMMIT), (
             "4.11.3",
             "77e3322fd0cd5a9bef18bb99402f20c8f2db87a9",
@@ -87,8 +90,7 @@ class PlantCVFillTests(unittest.TestCase):
         source_record = next(item for item in config["files"] if item["path"] == "plantcv/plantcv/fill.py")
         self.assertEqual(source_record["sha256"], PLANTCV_FILL_SOURCE_SHA256)
 
-    @unittest.skipUnless(REFERENCE_READY, "the pinned isolated PlantCV reference runtime is not present")
-    def test_area_threshold_equality_four_connectivity_and_border_objects(self) -> None:
+    def check_test_area_threshold_equality_four_connectivity_and_border_objects(self) -> None:
         mask = np.zeros((10, 14), dtype=np.uint8)
         mask[0, 1:5] = 255  # Four pixels touching the top border.
         mask[2, 8] = 255
@@ -104,14 +106,12 @@ class PlantCVFillTests(unittest.TestCase):
         expected[7, 7] = 255
         torch.testing.assert_close(actual.cpu(), torch.from_numpy(expected), rtol=0, atol=0)
 
-    @unittest.skipUnless(REFERENCE_READY, "the pinned isolated PlantCV reference runtime is not present")
-    def test_diagonal_contact_does_not_join_foreground_components(self) -> None:
+    def check_test_diagonal_contact_does_not_join_foreground_components(self) -> None:
         mask = np.array(((255, 0), (0, 255)), dtype=np.uint8)
         actual = self._assert_matches_reference(mask, 2)
         self.assertFalse(bool(torch.any(actual).item()))
 
-    @unittest.skipUnless(REFERENCE_READY, "the pinned isolated PlantCV reference runtime is not present")
-    def test_empty_and_full_masks_keep_source_area_boundary_semantics(self) -> None:
+    def check_test_empty_and_full_masks_keep_source_area_boundary_semantics(self) -> None:
         empty = np.zeros((7, 11), dtype=np.uint8)
         self._assert_matches_reference(empty, 4)
 
@@ -121,7 +121,7 @@ class PlantCVFillTests(unittest.TestCase):
         removed = self._assert_matches_reference(full, int(full.size) + 1)
         self.assertFalse(bool(torch.any(removed).item()))
 
-    def test_binary_domain_parameters_cancellation_and_resource_limit_are_strict(self) -> None:
+    def check_test_binary_domain_parameters_cancellation_and_resource_limit_are_strict(self) -> None:
         mask = torch.zeros((4, 5), dtype=torch.uint8, device="cuda")
         mask[1, 1:3] = 255
         before = mask.clone()
@@ -151,7 +151,7 @@ class PlantCVFillTests(unittest.TestCase):
         self.assertFalse(bool(torch.any(huge_area).item()))
         torch.testing.assert_close(mask, before, rtol=0, atol=0)
 
-    def test_noncontiguous_input_retains_shape_device_and_original_values(self) -> None:
+    def check_test_noncontiguous_input_retains_shape_device_and_original_values(self) -> None:
         base = torch.zeros((8, 14), dtype=torch.uint8, device="cuda")
         base[2, 2:6] = 255
         base[4:7, 10] = 255
@@ -166,7 +166,7 @@ class PlantCVFillTests(unittest.TestCase):
         self.assertEqual(actual.dtype, torch.uint8)
         self.assertEqual(tuple(actual.shape), tuple(view.shape))
 
-    def test_cancellation_during_component_work_returns_no_partial_mask(self) -> None:
+    def check_test_cancellation_during_component_work_returns_no_partial_mask(self) -> None:
         mask = torch.full((64, 64), 255, dtype=torch.uint8, device="cuda")
         before = mask.clone()
         checks = 0
@@ -181,12 +181,7 @@ class PlantCVFillTests(unittest.TestCase):
         self.assertGreaterEqual(checks, 8)
         torch.testing.assert_close(mask, before, rtol=0, atol=0)
 
-    @unittest.skipUnless(REFERENCE_READY, "the pinned isolated PlantCV reference runtime is not present")
-    @unittest.skipUnless(
-        os.environ.get("SEEDFIDDLE_RUN_FILL_IMAGE_DIAGNOSTIC") == "1",
-        "run explicitly with SEEDFIDDLE_RUN_FILL_IMAGE_DIAGNOSTIC=1",
-    )
-    def test_committed_real_image_mask_performance_and_memory_diagnostic(self) -> None:
+    def check_test_committed_real_image_mask_performance_and_memory_diagnostic(self) -> None:
         image_path = ROOT / "images" / "IMG_9632c.JPG"
         gray = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
         self.assertIsNotNone(gray, "committed image fixture must decode")
@@ -213,6 +208,36 @@ class PlantCVFillTests(unittest.TestCase):
         self.assertLess(elapsed_seconds, 45.0, f"fixture diagnostic took {elapsed_seconds:.2f}s")
         self.assertLess(peak_increment, 512 * 1024 * 1024, f"peak CUDA allocation was {peak_increment:,} bytes")
         self.assertEqual(tuple(actual.shape), tuple(mask.shape))
+
+    @unittest.skipUnless(REFERENCE_READY, "the pinned isolated PlantCV reference runtime is not present")
+    def test_area_threshold_equality_four_connectivity_and_border_objects(self):
+        self.scenario(self.check_test_area_threshold_equality_four_connectivity_and_border_objects, labelled=False)
+
+    @unittest.skipUnless(REFERENCE_READY, "the pinned isolated PlantCV reference runtime is not present")
+    def test_diagonal_contact_does_not_join_foreground_components(self):
+        self.scenario(self.check_test_diagonal_contact_does_not_join_foreground_components, labelled=False)
+
+    @unittest.skipUnless(REFERENCE_READY, "the pinned isolated PlantCV reference runtime is not present")
+    def test_empty_and_full_masks_keep_source_area_boundary_semantics(self):
+        self.scenario(self.check_test_empty_and_full_masks_keep_source_area_boundary_semantics, labelled=False)
+
+    @unittest.skipUnless(REFERENCE_READY, "the pinned isolated PlantCV reference runtime is not present")
+    @unittest.skipUnless(
+        os.environ.get("SEEDFIDDLE_RUN_FILL_IMAGE_DIAGNOSTIC") == "1",
+        "run explicitly with SEEDFIDDLE_RUN_FILL_IMAGE_DIAGNOSTIC=1",
+    )
+    def test_committed_real_image_mask_performance_and_memory_diagnostic(self):
+        self.scenario(self.check_test_committed_real_image_mask_performance_and_memory_diagnostic, labelled=False)
+
+    def test_workflow_lifecycle(self):
+        """2 related PlantCVFillTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_source_pin_and_full_runner_pixel_cap)
+        self.scenario(self.check_test_noncontiguous_input_retains_shape_device_and_original_values)
+
+    def test_validation_and_recovery(self):
+        """2 related PlantCVFillTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_binary_domain_parameters_cancellation_and_resource_limit_are_strict)
+        self.scenario(self.check_test_cancellation_during_component_work_returns_no_partial_mask)
 
 
 if __name__ == "__main__":

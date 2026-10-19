@@ -89,7 +89,7 @@ class ResultsController:
         self._run_outcome_history = {}
         self._selected_history_outcome = None
         self.results_action = QAction('Review / export results…',self)
-        self.results_action.setShortcut('Ctrl+R')
+        self.results_action.setShortcut('Ctrl+Shift+E')
         self.results_action.triggered.connect(self._review_results)
         self.addAction(self.results_action)
         self.terminal_history_action = QAction('Review terminal run history…', self)
@@ -106,7 +106,8 @@ class ResultsController:
         self.reference_readiness_button.clicked.connect(lambda: self._pipeline_node_selected('background_likelihood'))
         self.baseline_section.layout().addWidget(self.reference_readiness_button)
         self.workflow_toolbar.addAction(self.results_action)
-        self.workflow_toolbar.addAction(self.stop_action)
+        actions = self.workflow_toolbar.actions()
+        self.workflow_toolbar.insertAction(actions[actions.index(self.analyze_action) + 1], self.stop_action)
         self.search_node_action = QAction('Find pipeline node…',self)
         self.search_node_action.setShortcut('Ctrl+K')
         self.search_node_action.triggered.connect(self._find_pipeline_node)

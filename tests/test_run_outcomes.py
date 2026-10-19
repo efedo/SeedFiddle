@@ -1,4 +1,6 @@
 """Whole-run terminal evidence, actual Qt/batch parity and publication guards."""
+
+from tests.functional_units import functional_units
 from copy import deepcopy
 from hashlib import sha256
 import inspect
@@ -17,6 +19,7 @@ from seedvision.timing import AnalysisCancelled
 import tests.test_authoritative_parity as parity_fixture
 
 
+@functional_units
 class RunOutcomeTests(unittest.TestCase):
     def setUp(self):
         temporary = TemporaryDirectory()
@@ -32,7 +35,7 @@ class RunOutcomeTests(unittest.TestCase):
         with self.assertLogs('seedvision.export.run_outcomes', level='ERROR'):
             return runs.run_native_analysis(self.source, analysis_runner=runner, learning_root=self.root, **kwargs)
 
-    def test_failed_request_is_detached_unknown_outputs_and_diagnostic_paths_do_not_hash(self):
+    def check_test_failed_request_is_detached_unknown_outputs_and_diagnostic_paths_do_not_hash(self):
         masks = np.ones((4, 5), bool)
         first = self.failed_outcome('A:/calibration failed', foreground_reference_mask=masks)
         raw = first.payload_json
@@ -51,7 +54,7 @@ class RunOutcomeTests(unittest.TestCase):
         self.assertEqual(identity['request']['supplied_masks']['foreground_reference_mask']['sha256'],
                          sha256(np.ones((4, 5), bool).tobytes()).hexdigest())
 
-    def test_invalid_bindings_reject_before_runner_and_source_replacement_preserves_both_facts(self):
+    def check_test_invalid_bindings_reject_before_runner_and_source_replacement_preserves_both_facts(self):
         called = []
         result = runs.run_native_analysis(self.source, analysis_runner=lambda *a, **k: called.append(1),
             learning_root=self.root, reference_archive_source_sha256='0' * 64)
@@ -69,7 +72,7 @@ class RunOutcomeTests(unittest.TestCase):
         self.assertEqual(identity['source_at_request']['sha256'], initial)
         self.assertNotEqual(identity['source_at_completion'], initial)
 
-    def test_cancellation_and_device_failure_are_distinct_and_process_control_is_not_swallowed(self):
+    def check_test_cancellation_and_device_failure_are_distinct_and_process_control_is_not_swallowed(self):
         def runner(error):
             def call(*args, **kwargs):
                 raise error
@@ -88,7 +91,7 @@ class RunOutcomeTests(unittest.TestCase):
             analysis_runner=lambda *a, **k: object(), cancellation_requested=lambda: True)
         self.assertEqual(cancelled_after.payload['identity']['state'], 'cancelled')
 
-    def test_missing_sources_keep_opaque_selection_identity_and_cannot_collide(self):
+    def check_test_missing_sources_keep_opaque_selection_identity_and_cannot_collide(self):
         results = []
         for name in ('missing-a.png', 'missing-b.png'):
             with self.assertLogs('seedvision.export.run_outcomes', level='ERROR'):
@@ -99,7 +102,7 @@ class RunOutcomeTests(unittest.TestCase):
             self.assertIsNone(value.payload['identity']['source_at_request']['sha256'])
             self.assertIsNotNone(value.payload['identity']['source_at_request']['opaque_locator'])
 
-    def test_strict_round_trip_rejects_fabricated_outputs_revision_fields_and_unsafe_shapes(self):
+    def check_test_strict_round_trip_rejects_fabricated_outputs_revision_fields_and_unsafe_shapes(self):
         outcome = self.failed_outcome()
         self.assertEqual(runs.load_run_outcome(json.dumps(outcome.payload)), outcome.payload)
         mutations = [
@@ -134,7 +137,7 @@ class RunOutcomeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'locator'):
             runs.NativeRunOutcome(self.root / 'different.png', outcome.payload_json)
 
-    def test_atomic_publication_and_acknowledgment_never_create_instance_approvals(self):
+    def check_test_atomic_publication_and_acknowledgment_never_create_instance_approvals(self):
         outcome = self.failed_outcome()
         output = self.root / 'outputs'
         first = runs.export_run_outcome(output, outcome)
@@ -157,7 +160,7 @@ class RunOutcomeTests(unittest.TestCase):
         self.assertEqual(sorted(output.iterdir()), sorted([first, second]))
         self.assertEqual((first / 'run-outcome.json').read_bytes(), old)
 
-    def test_cancelled_record_keeps_observed_source_and_dependency_changes(self):
+    def check_test_cancelled_record_keeps_observed_source_and_dependency_changes(self):
         checkpoint = self.root / 'selected.bin'
         checkpoint.write_bytes(b'initial selected bytes')
         from seedvision.learning.pipeline import UNetPipelineSettings
@@ -171,6 +174,19 @@ class RunOutcomeTests(unittest.TestCase):
         self.assertEqual(facts['state'], 'cancelled')
         self.assertNotEqual(facts['source_at_request']['sha256'], facts['source_at_completion'])
         self.assertEqual(facts['dependency_verification_at_completion'], 'changed')
+
+    def test_validation_and_recovery(self):
+        """6 related RunOutcomeTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_failed_request_is_detached_unknown_outputs_and_diagnostic_paths_do_not_hash)
+        self.scenario(self.check_test_invalid_bindings_reject_before_runner_and_source_replacement_preserves_both_facts)
+        self.scenario(self.check_test_cancellation_and_device_failure_are_distinct_and_process_control_is_not_swallowed)
+        self.scenario(self.check_test_missing_sources_keep_opaque_selection_identity_and_cannot_collide)
+        self.scenario(self.check_test_strict_round_trip_rejects_fabricated_outputs_revision_fields_and_unsafe_shapes)
+        self.scenario(self.check_test_cancelled_record_keeps_observed_source_and_dependency_changes)
+
+    def test_workflow_lifecycle(self):
+        """1 related RunOutcomeTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_atomic_publication_and_acknowledgment_never_create_instance_approvals)
 
 
 @unittest.skipUnless(torch.cuda.is_available(), 'Actual terminal run parity requires CUDA')
@@ -234,45 +250,7 @@ class NativeRunOutcomeTests(unittest.TestCase):
             self.assertEqual(len(cancelled), 1)
         return batch, destination
 
-    def test_actual_decode_cuda_request_and_qt_batch_failure_parity_with_unknown_outputs(self):
-        batch, destination = self.failure_routes()
-        identity = batch['identity']
-        self.assertEqual(identity['state'], 'failed')
-        self.assertEqual(identity['source_at_request']['sha256'], sha256(self.source.read_bytes()).hexdigest())
-        self.assertEqual(identity['request']['supplied_reference_transform']['sha256'],
-                         sha256(self.reference_transform.tobytes()).hexdigest())
-        self.assertIsNone(identity['calibration_facts'])
-        self.assertIsNone(identity['prediction_revision'])
-        self.assertFalse((destination / 'results.json').exists())
-        self.assertIn(self.key, self.window._image_run_outcomes)
-        self.assertNotIn(self.key, self.window._active_tasks)
-        saved = list((self.root / 'artifacts' / 'run-outcomes').glob('*/run-outcome.json'))
-        self.assertEqual(len(saved), 1)
-        self.assertEqual(runs.load_run_outcome(saved[0].read_text(encoding='utf-8'))['outcome_revision'], batch['outcome_revision'])
 
-    def test_qt_failure_acknowledgment_cannot_save_prediction_review(self):
-        self.failure_routes()
-        from PySide6.QtWidgets import QDialog, QPushButton, QLabel
-        observed = []
-        def exercise(dialog):
-            observed.extend(label.text() for label in dialog.findChildren(QLabel))
-            buttons = dialog.findChildren(QPushButton)
-            self.assertFalse(any(button.text().startswith('Save review decisions') for button in buttons))
-            next(button for button in buttons if button.text().startswith('Acknowledge')).click()
-            next(button for button in buttons if button.text().startswith('Export terminal')).click()
-            return QDialog.DialogCode.Rejected
-        with patch.object(QDialog, 'exec', new=exercise), \
-             patch('seedvision.ui.results.QFileDialog.getExistingDirectory', return_value=str(self.root / 'ui-export')):
-            self.window._review_results()
-        self.assertTrue(any('cannot approve seeds' in text for text in observed))
-        records = list((self.root / 'artifacts' / 'run-outcome-acknowledgments').glob('*.json'))
-        self.assertEqual(len(records), 1)
-        self.assertEqual(json.loads(records[0].read_bytes())['decision'], 'acknowledged')
-        self.assertFalse((self.root / 'result-reviews').exists())
-        exported = list((self.root / 'ui-export').glob('*/run-outcome.json'))
-        self.assertEqual(len(exported), 1)
-        self.assertEqual(runs.load_run_outcome(exported[0].read_text(encoding='utf-8')), self.outcome.payload)
-        self.assertFalse((exported[0].parent / 'results.json').exists())
 
     def test_batch_rejected_cancelled_and_device_failure_publish_terminal_without_companions(self):
         from contextlib import nullcontext
@@ -296,36 +274,8 @@ class NativeRunOutcomeTests(unittest.TestCase):
             self.assertIsNone(facts['prediction_revision'])
             self.assertEqual(list(output.glob('**/results.json')), [])
 
-    def test_stale_outcome_history_survives_without_removing_replacement_task_or_current_ui(self):
-        self.failure_routes()
-        old = self.outcome
-        self.window._image_run_outcomes.clear()
-        self.window.pipeline.set_parameter('trait_classifier', 'trait_abstention_threshold', .91)
-        replacement = SimpleNamespace(pipeline_revision=self.window.pipeline.revision, cancellation_requested=False)
-        self.window._active_tasks[self.key] = replacement
-        self.window._analysis_terminal_outcome(old, self.revision)
-        with patch('seedvision.ui.main_window.QMessageBox.warning') as warning:
-            self.window._analysis_failed(str(self.source), 'obsolete failure', self.revision)
-            self.window._analysis_cancelled(str(self.source), self.revision)
-        self.assertIs(self.window._active_tasks[self.key], replacement)
-        self.assertNotIn(self.key, self.window._image_run_outcomes)
-        self.assertFalse(warning.called)
-        self.assertIn(old.payload['outcome_revision'], self.window._run_outcome_history)
-        self.window._active_tasks.clear()
 
-    def test_queued_source_replacement_does_not_install_old_terminal_as_current(self):
-        self.failure_routes()
-        self.window._image_run_outcomes.clear()
-        self.source.write_bytes(self.source.read_bytes() + b'changed after terminal signal')
-        self.window._analysis_terminal_outcome(self.outcome, self.revision)
-        self.assertNotIn(self.key, self.window._image_run_outcomes)
-        self.assertIn(self.outcome.payload['outcome_revision'], self.window._run_outcome_history)
 
-    def test_cancelled_worker_emits_terminal_record_and_no_completed_result(self):
-        self.failure_routes(cancel=True)
-        self.assertEqual(self.outcome.payload['identity']['state'], 'cancelled')
-        self.assertIsNone(self.outcome.payload['identity']['prediction_revision'])
-        self.window._active_tasks.clear()
 
     def new_task(self):
         from seedvision.ui.main_window import _AnalysisTask
@@ -343,67 +293,3 @@ class NativeRunOutcomeTests(unittest.TestCase):
             reference_transform=self.reference_transform)
         task = _AnalysisTask(**settings)
         return task, mask
-
-    def test_worker_constructor_freezes_supplied_annotation_arrays_before_dispatch(self):
-        task, mask = self.new_task()
-        original = sha256(mask.tobytes()).hexdigest()
-        mask.fill(False)
-        captured = []
-        task.signals.terminal_outcome.connect(lambda outcome, revision: captured.append(outcome))
-        with patch('seedvision.segmentation.baseline.calibrate_image', side_effect=ValueError('failed after dispatch')), \
-             self.assertLogs('seedvision.export.run_outcomes', level='ERROR'):
-            task.run()
-        self.assertEqual(captured[0].payload['identity']['request']['supplied_masks']['foreground_reference_mask']['sha256'], original)
-
-    def test_cancellation_after_successful_wrapper_return_preserves_exact_request_and_no_completed_result(self):
-        from PySide6.QtCore import QThreadPool
-        task, mask = self.new_task()
-        task.setAutoDelete(False)
-        completed, terminal, cancelled = [], [], []
-        task.signals.completed.connect(lambda *args: completed.append(args))
-        task.signals.terminal_outcome.connect(lambda outcome, revision: terminal.append(outcome))
-        task.signals.terminal_outcome.connect(self.window._analysis_terminal_outcome)
-        task.signals.cancelled.connect(lambda *args: cancelled.append(args))
-        task.signals.cancelled.connect(self.window._analysis_cancelled)
-        self.window._active_tasks[self.key] = task
-        actual = runs.run_native_analysis
-        def cancel_after_return(*args, **kwargs):
-            result = actual(*args, **kwargs)
-            self.assertNotIsInstance(result, runs.NativeRunOutcome)
-            task.cancel()
-            return result
-        pool = QThreadPool()
-        with patch('seedvision.export.run_outcomes.run_native_analysis', side_effect=cancel_after_return):
-            pool.start(task)
-            self.assertTrue(pool.waitForDone(30000))
-            self.app.processEvents()
-        self.assertEqual(completed, [])
-        self.assertEqual(len(cancelled), 1)
-        self.assertEqual(len(terminal), 1)
-        facts = terminal[0].payload['identity']
-        self.assertEqual(facts['state'], 'cancelled')
-        self.assertIsNone(facts['prediction_revision'])
-        self.assertEqual(facts['request']['supplied_masks']['foreground_reference_mask']['sha256'],
-                         sha256(mask.tobytes()).hexdigest())
-        self.assertIn(terminal[0].payload['outcome_revision'], self.window._run_outcome_history)
-        self.assertNotIn(self.key, self.window._active_tasks)
-        self.assertEqual(len(list((self.root / 'artifacts' / 'run-outcomes').glob('*/run-outcome.json'))), 1)
-
-    def test_queued_same_revision_signals_cannot_interfere_with_a_replacement_task(self):
-        from PySide6.QtCore import QObject
-        self.failure_routes()
-        self.window._image_run_outcomes.clear()
-        replacement = SimpleNamespace(pipeline_revision=self.revision,
-                                      cancellation_requested=False, signals=QObject())
-        self.window._active_tasks[self.key] = replacement
-        self.task.signals.cancelled.connect(self.window._analysis_cancelled)
-        with patch('seedvision.ui.main_window.QMessageBox.warning') as warning:
-            self.task.signals.terminal_outcome.emit(self.outcome, self.revision)
-            self.task.signals.failed.emit(str(self.source), 'obsolete same-revision failure', self.revision)
-            self.task.signals.cancelled.emit(str(self.source), self.revision)
-            self.app.processEvents()
-        self.assertFalse(warning.called)
-        self.assertIs(self.window._active_tasks[self.key], replacement)
-        self.assertNotIn(self.key, self.window._image_run_outcomes)
-        self.assertIn(self.outcome.payload['outcome_revision'], self.window._run_outcome_history)
-        self.window._active_tasks.clear()

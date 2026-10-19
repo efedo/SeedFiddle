@@ -1,4 +1,6 @@
 """Compact fitted-centre export, identity and transfer/cancellation boundaries."""
+
+from tests.functional_units import functional_units
 from dataclasses import replace
 from hashlib import sha256
 import tracemalloc
@@ -13,6 +15,7 @@ from seedvision.cuda import plantcv_kmeans_model as models
 
 
 @unittest.skipUnless(torch.cuda.is_available(), 'CUDA required')
+@functional_units
 class KMeansFitExportTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -20,7 +23,7 @@ class KMeansFitExportTests(unittest.TestCase):
         cls.result = fit.fit_kmeans_training_rows(features, 2, source_n_threads=1,
             batch_size=7, n_init=1)
 
-    def test_early_stopped_fit_and_ordered_fractional_signed_zero_centres_roundtrip(self):
+    def check_test_early_stopped_fit_and_ordered_fractional_signed_zero_centres_roundtrip(self):
         self.assertLess(self.result.n_steps, self.result.plan.n_steps)
         centres = torch.tensor([[-0., 2.125, 255., 17.], [9., 1.5, 100.25, 99.875]], dtype=torch.float64, device='cuda')
         result = replace(self.result, centres=centres)
@@ -33,7 +36,7 @@ class KMeansFitExportTests(unittest.TestCase):
         self.assertIn(b'-0.0', exported.payload)
         native.export_kmeans_fit(self.result, 2, 1)
 
-    def test_only_bounded_centres_transfer_and_source_tensors_remain_unchanged(self):
+    def check_test_only_bounded_centres_transfer_and_source_tensors_remain_unchanged(self):
         original = native._copy_centres_to_cpu
         values = (self.result.centres, self.result.counts, self.result.labels, self.result.row_distances)
         versions = tuple(value._version for value in values)
@@ -44,7 +47,7 @@ class KMeansFitExportTests(unittest.TestCase):
         self.assertTrue(all(value.device.type == 'cuda' for value in values))
         self.assertEqual(versions, tuple(value._version for value in values))
 
-    def test_invalid_result_geometry_and_cpu_budget_reject_before_transfer(self):
+    def check_test_invalid_result_geometry_and_cpu_budget_reject_before_transfer(self):
         invalid = [None, replace(self.result, plan=None), replace(self.result, centres=self.result.centres.cpu()),
             replace(self.result, centres=self.result.centres.float()),
             replace(self.result, centres=self.result.centres.t()),
@@ -60,7 +63,7 @@ class KMeansFitExportTests(unittest.TestCase):
             with patch.object(native, 'MAX_CPU_METADATA_BYTES', 1), self.assertRaises(native.KMeansExportError):
                 native.export_kmeans_fit(self.result, 2, 1)
 
-    def test_actual_largest_model_geometry_cpu_peak_and_incremental_payload_cap(self):
+    def check_test_actual_largest_model_geometry_cpu_peak_and_incremental_payload_cap(self):
         centres = torch.full((256, 2883), .125, dtype=torch.float64, device='cuda')
         result = replace(self.result, centres=centres, plan=replace(self.result.plan, rows=256, clusters=256, features=2883))
         tracemalloc.start()
@@ -78,7 +81,7 @@ class KMeansFitExportTests(unittest.TestCase):
         with self.assertRaisesRegex(native.KMeansExportError, 'byte limit'):
             native.export_kmeans_fit(result, 31, 3)
 
-    def test_nonfinite_values_bad_transfer_and_encoder_failure_publish_no_export(self):
+    def check_test_nonfinite_values_bad_transfer_and_encoder_failure_publish_no_export(self):
         for value in (float('nan'), float('inf'), -1., 256.):
             result = replace(self.result, centres=torch.full_like(self.result.centres, value))
             with self.assertRaises(native.KMeansExportError):
@@ -88,7 +91,7 @@ class KMeansFitExportTests(unittest.TestCase):
         with patch.object(models, 'encode_kmeans_model', side_effect=models.KMeansModelError('bad encoder')), self.assertRaisesRegex(native.KMeansExportError, 'bad encoder'):
             native.export_kmeans_fit(self.result, 2, 1)
 
-    def test_every_callback_mutation_and_cancellation_detected_before_next_stage(self):
+    def check_test_every_callback_mutation_and_cancellation_detected_before_next_stage(self):
         total = 0
         def count():
             nonlocal total
@@ -131,8 +134,21 @@ class KMeansFitExportTests(unittest.TestCase):
             with self.assertRaisesRegex(native.KMeansExportError, 'changed'):
                 native.export_kmeans_fit(result, 2, 1)
 
-    def test_loaded_source_binds_export_budget_and_transfer_implementation(self):
+    def check_test_loaded_source_binds_export_budget_and_transfer_implementation(self):
         from seedvision.benchmarking.native_recipe import _module_record
         self.assertTrue(_module_record(native)['loaded_code'])
         with patch.object(native, 'CPU_BYTES_PER_CENTRE', 1), self.assertRaises(ValueError):
             _module_record(native)
+
+    def test_validation_and_recovery(self):
+        """5 related KMeansFitExportTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_early_stopped_fit_and_ordered_fractional_signed_zero_centres_roundtrip)
+        self.scenario(self.check_test_invalid_result_geometry_and_cpu_budget_reject_before_transfer)
+        self.scenario(self.check_test_nonfinite_values_bad_transfer_and_encoder_failure_publish_no_export)
+        self.scenario(self.check_test_every_callback_mutation_and_cancellation_detected_before_next_stage)
+        self.scenario(self.check_test_loaded_source_binds_export_budget_and_transfer_implementation)
+
+    def test_workflow_lifecycle(self):
+        """2 related KMeansFitExportTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_only_bounded_centres_transfer_and_source_tensors_remain_unchanged)
+        self.scenario(self.check_test_actual_largest_model_geometry_cpu_peak_and_incremental_payload_cap)

@@ -3,6 +3,8 @@
 This engineering corpus is separate from recipe-output and scientific gates.
 The expected record is refreshed explicitly; tests never rewrite its baseline.
 """
+
+from tests.catalogue_fixtures import CatalogueTestCase
 from hashlib import sha256
 from importlib.metadata import version
 import inspect
@@ -37,6 +39,10 @@ REVIEWED_PREPARATION_IDENTITIES = (
     (4, '629f1b436abf9a9a3a981c53b0512c627357c78301a0ebbdf5a3702859b14d55',
         '7d61d4aa056930967984a785e36323d9b4a048f2299930057f507f27ec557d58'),
 )
+WORKSPACE_TRANSITION = ROOT / 'artifacts/pipeline-workspace-reader-provenance-v1.json'
+WORKSPACE_TRANSITION_SHA256 = '60354886d03d57b15a6c22540e1dee43c8edb3492e57daca9e6b9e276bb43d37'
+PREVIOUS_TRANSITION = ROOT / 'artifacts/complete-software-reader-provenance-transition-v1.json'
+PREVIOUS_TRANSITION_SHA256 = '8ab40a88449508459fe168c503ab6e60c27690c2c19d96f23a8235ad7b4b50c6'
 CASE_NAMES = (
     'color.png', 'color.jpg', 'color.bmp', 'color.tif', 'gray.png', 'gray.tif',
     'palette.png', 'palette.tif', 'transparent-palette.png', 'alpha.png',
@@ -65,6 +71,52 @@ def _frozen_record():
     if sha256(raw).hexdigest() != EXPECTED_SHA256:
         raise AssertionError('The frozen reader acceptance baseline bytes changed.')
     return json.loads(raw)
+
+
+def _reviewed_expected():
+    """Apply reviewed code identities while preserving the complete reader matrix."""
+    expected = _frozen_record()
+    identity = expected['pins']['native_preparation_identity']
+    for index, previous, current in REVIEWED_PREPARATION_IDENTITIES:
+        if identity[index] != previous:
+            raise AssertionError('The previous reader code transition no longer applies.')
+        identity[index] = current
+    raw = WORKSPACE_TRANSITION.read_bytes()
+    if sha256(raw).hexdigest() != WORKSPACE_TRANSITION_SHA256:
+        raise AssertionError('The reviewed workspace reader transition bytes changed.')
+    record = json.loads(raw)
+    if (record['schema'] != 'seedfiddle.pipeline-workspace-reader-code-provenance-v1'
+            or record['baseline'] != EXPECTED.relative_to(ROOT).as_posix()
+            or record['baseline_sha256'] != EXPECTED_SHA256
+            or record['previous_transition'] != PREVIOUS_TRANSITION.relative_to(ROOT).as_posix()
+            or record['previous_transition_sha256'] != PREVIOUS_TRANSITION_SHA256
+            or sha256(PREVIOUS_TRANSITION.read_bytes()).hexdigest() != PREVIOUS_TRANSITION_SHA256):
+        raise AssertionError('The workspace reader transition history changed.')
+    source = 'seedvision/benchmarking/native_recipe.py'
+    from tests.acceptance_provenance import verify_previous_source, apply
+    if set(record['source_files']) != {source}:
+        raise AssertionError('The reviewed reader implementation inventory changed.')
+    verify_previous_source(source, record['source_files'][source])
+    transition = {
+        'path': '/pins/native_preparation_identity/1',
+        'old': 'eff2c85ff0275b162287753b9045eb595928518a9f055a4564e58e00dd3c3851',
+        'new': '4d1cfc6307f49ad55f7b4bdd9d63154ed49de52ddb55081a1ae413b115803624',
+    }
+    if (record['transitions'] != [transition]
+            or identity != record['identity_before'] or identity[1] != transition['old']):
+        raise AssertionError('Only the reviewed preparation-code identity may migrate.')
+    identity[1] = transition['new']
+    if identity != record['identity_after']:
+        raise AssertionError('The reviewed reader identity closure changed.')
+    # The consolidated matrix also checks the public reader's returned name.
+    # Only this assertion-only oracle edit migrates; all recorded facts stay fixed.
+    old_oracle = '3747e5c2f1ec5b256ab747e11a6e3beb637fdf3876d4ef9263fe2bef23fdd395'
+    new_oracle = 'd4406e598a6494243776a3ba294c02f9c62cb07dd0e43035049863f9d849778b'
+    if (expected['pins']['public_oracle_sha256'] != old_oracle
+            or sha256(ORACLE.encode('utf-8')).hexdigest() != new_oracle):
+        raise AssertionError('The reviewed filename-assertion oracle transition changed.')
+    expected['pins']['public_oracle_sha256'] = new_oracle
+    return apply(expected, 'reader')
 
 
 def _inventory(paths):
@@ -97,7 +149,8 @@ for i,name in enumerate(json.loads(Path(sys.argv[1]).read_text(encoding='utf-8')
     row={}
     for mode in ('rgb','gray'):
         try:
-            raster,_,_=pcv.readimage(filename=name,mode=mode)
+            raster,_,source_name=pcv.readimage(filename=name,mode=mode)
+            assert source_name==Path(name).name
             assert raster.dtype==np.uint8
             arrays[f'{mode}_{i}']=raster
             row[mode]={'status':'success','shape':list(raster.shape),'dtype':str(raster.dtype),
@@ -219,12 +272,35 @@ def capture_reader_acceptance():
         }
 
 
-class ReaderAcceptanceTests(unittest.TestCase):
+class ReaderAcceptanceTests(CatalogueTestCase):
     def test_frozen_inventory_and_exact_encoded_fixture_bytes(self):
         expected = _frozen_record()
+        _reviewed_expected()
         self.assertEqual(expected['schema'], 'seedfiddle.reader-acceptance.v1')
         with tempfile.TemporaryDirectory() as temporary:
-            inventory = _inventory(fixtures(Path(temporary)))
+            paths = fixtures(Path(temporary))
+            inventory = _inventory(paths)
+            cases = {case['source']['case_id']: case for case in expected['cases']}
+            self.assertEqual(sum(case['public']['rgb']['status'] == 'success'
+                                 for case in cases.values()), 23)
+            for path in paths:
+                with self.subTest(cpu_decode=path.name):
+                    case = cases[path.name]
+                    public = case['public']['rgb']
+                    if path.name == 'seed-色.png':
+                        self.assertEqual(public['status'], 'failure')
+                        self.assertTrue(public['error_type'])
+                        public = cases['color.png']['public']['rgb']
+                    elif public['status'] != 'success':
+                        with self.assertRaises((inputs.ImageInputError, OSError)):
+                            identity = inputs.source_identity(path)
+                            inputs.decode(inputs.snapshot(path, identity))
+                        continue
+                    identity = inputs.source_identity(path)
+                    self.assertEqual(identity.sha256, case['source']['source_sha256'])
+                    bgr = inputs.decode(inputs.snapshot(path, identity))
+                    self.assertEqual(_array(bgr),
+                                     {key: public[key] for key in ('shape', 'dtype', 'pixels_sha256')})
         self.assertEqual([row['source'] for row in expected['cases']], inventory)
         self.assertEqual(expected['inventory_sha256'], _digest_json(inventory))
         self.assertEqual(expected['pins']['pillow'], version('pillow'))
@@ -234,16 +310,18 @@ class ReaderAcceptanceTests(unittest.TestCase):
         self.assertEqual(len(expected['cases']), 28)
 
     def test_actual_public_native_pixels_outcomes_and_cache_match_frozen_matrix(self):
-        expected = _frozen_record()
+        expected = _reviewed_expected()
         actual = capture_reader_acceptance()
-        for index, previous, current in REVIEWED_PREPARATION_IDENTITIES:
-            self.assertEqual(expected['pins']['native_preparation_identity'][index], previous)
-            expected['pins']['native_preparation_identity'][index] = current
         assert_json_equal(self, actual, expected)
+        public_successes = [case for case in actual['cases']
+                            if case['public']['rgb']['status'] == 'success']
+        self.assertEqual(len(public_successes), 23)
         successful = [case for case in actual['cases'] if case['gray_modes_different_pixels'] is not None]
-        self.assertTrue(any(case['gray_modes_different_pixels'] > 0 for case in successful))
+        self.assertTrue(any(case['gray_modes_different_pixels'] > 0 for case in successful),
+                        'A codec fixture must prove the grayscale control affects pixels.')
         unicode = next(case for case in actual['cases'] if case['source']['path_class'] == 'unicode')
         self.assertEqual({value['status'] for value in unicode['public'].values()}, {'failure'})
+        self.assertTrue(all(value['error_type'] for value in unicode['public'].values()))
         self.assertEqual({value['comparison'] for value in unicode['native'].values()}, {'native_path_extension'})
         for name in ('empty.png', 'corrupt.jpg', 'unsupported.png', 'missing.png'):
             case = next(case for case in actual['cases'] if case['source']['case_id'] == name)

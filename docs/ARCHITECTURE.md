@@ -691,17 +691,7 @@ and checkpoints; unavailable or reconstructed stages are explicit. Reuse the exi
 graph model and renderer, not a parallel graph engine. Read-only reference inspection
 is supported by the design; editable controls must affect actual computation. Require
 F22 topology/parameter tests, actual Qt visual inspection, persistence round-trips
-and cache independence for display-only actions. `ReferenceGraphDialog`, opened by
-**View → Reference graphs…**, projects all five catalogue recipes into the existing
-read-only canvas/inspector. Stored historical and unknown identities remain exact;
-stale source/recipe facts are explicit. Wrapped reference titles/ports use separate
-display geometry while native card defaults and analytical caches remain unchanged.
-Selection/layout/routing update bounded schema-3 graph metadata; capacity exhaustion
-keeps the inspected graph transient without replacing saved attachments. The view
-does not infer arrays from historical hashes alone. The reviewed bounded inspector
-loads verified original-operation artifacts only from an explicitly selected session-local
-store, with asynchronous previews and cancellation. Portable array restoration
-and complete recipe execution remain required for full F22 acceptance.
+and cache independence for display-only actions. The separate Reference window is removed. Factory RecipeSpec objects remain immutable; fresh factory loads create working PipelineWorkflow values and apply the edit lock by default. Node parameters, wiring, bypass and model/input mutation routes check that lock; layout and execution/backend selection remain available. PipelineDocumentsController supplies standalone pipeline/layout commands; PipelineDocumentStore validates bounded JSON and saves atomically with distinct factory-derived names. PipelineBackendsController resolves global/per-node execution choices; BackendExecution dispatches only admitted equivalent public calls, uploads returned raster products to CUDA, and binds their checked provenance to node-local cache keys. Watershed locals share one atomic public capture. Existing ReferenceGraphAttachment/checkpoint/QC data and verification services remain compatible; no reference records are generated merely by opening a factory.
 
 Replay checkpoints must retain source/frame/settings identities and bounded storage.
 The original-threshold `run_reference_stage` bridge loads and validates exact

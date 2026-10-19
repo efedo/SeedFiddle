@@ -1,4 +1,6 @@
 """Current-image shape fits must keep calibrated and normalized blocks apart."""
+
+from tests.functional_units import functional_units
 from dataclasses import replace
 import unittest
 
@@ -18,8 +20,9 @@ def measurements(axes=(24, 14), scale=None):
     return values
 
 
+@functional_units
 class LocalShapeUnitTests(unittest.TestCase):
-    def test_local_pixels_are_dimensionless_and_mm_are_physical(self):
+    def check_test_local_pixels_are_dimensionless_and_mm_are_physical(self):
         for scale in (None, 2.5):
             component = model._local_component(measurements(scale=scale), 'flat')
             self.assertEqual(component.physical_dimensions_available, scale is not None)
@@ -28,14 +31,14 @@ class LocalShapeUnitTests(unittest.TestCase):
             if scale is None:
                 self.assertEqual(component.mean[0], 1)
 
-    def test_local_fit_refuses_mixed_or_unsupported_units(self):
+    def check_test_local_fit_refuses_mixed_or_unsupported_units(self):
         pixels = measurements()
         for values in ((pixels[0], g._scale_shape_measurement(pixels[1], 2.5)),
                        (replace(pixels[0], length_unit='cm', area_unit='cm²'),)):
             with self.assertRaisesRegex(ValueError, 'one supported dimensional unit'):
                 model._local_component(values, 'flat')
 
-    def test_pixel_fit_is_invariant_to_rescaling_dimensional_values(self):
+    def check_test_pixel_fit_is_invariant_to_rescaling_dimensional_values(self):
         original = measurements()
         # A raster unit change alters only dimensional values/errors, while
         # the pixel-frame endpoint facts and true shape quantities stay fixed.
@@ -46,7 +49,7 @@ class LocalShapeUnitTests(unittest.TestCase):
         np.testing.assert_allclose(second.mean, first.mean, rtol=2e-14)
         np.testing.assert_allclose(second.covariance, first.covariance, rtol=1e-12, atol=1e-15)
 
-    def test_mixed_updates_keep_exact_physical_blocks_in_both_directions(self):
+    def check_test_mixed_updates_keep_exact_physical_blocks_in_both_directions(self):
         dimensions = model._PHYSICAL_MEASUREMENT_INDICES
         shapes = model._DIMENSIONLESS_MEASUREMENT_INDICES
         for prior_physical in (False, True):
@@ -70,7 +73,7 @@ class LocalShapeUnitTests(unittest.TestCase):
             self.assertNotEqual(updated.mean[3], local.mean[3])
             self.assertNotEqual(updated.mean[3], prior.mean[3])
 
-    def test_mixed_shape_update_uses_shrinkage_without_changing_physical_dimensions(self):
+    def check_test_mixed_shape_update_uses_shrinkage_without_changing_physical_dimensions(self):
         prior = model._local_component(measurements((28, 10)), 'flat')
         current = measurements((20, 15), 3)
         low = model._update_component(prior, current, 'flat', shrinkage_seed_count=0, maximum_contour_modes=0)
@@ -79,7 +82,7 @@ class LocalShapeUnitTests(unittest.TestCase):
         np.testing.assert_array_equal(np.asarray(high.mean)[(0, 1, 2, 4),],
                                        np.asarray(low.mean)[(0, 1, 2, 4),])
 
-    def test_singular_shape_covariance_retains_nonzero_identical_means(self):
+    def check_test_singular_shape_covariance_retains_nonzero_identical_means(self):
         px = model._local_component(measurements(), 'flat')
         mm = model._local_component(measurements(scale=2), 'flat')
         zeros = tuple((0.,) * 19 for _ in range(19))
@@ -91,7 +94,7 @@ class LocalShapeUnitTests(unittest.TestCase):
         self.assertGreater(result.mean[3], 1)
         self.assertTrue(np.isfinite(result.covariance).all())
 
-    def test_matching_dimensionless_updates_do_not_invent_calibrated_support(self):
+    def check_test_matching_dimensionless_updates_do_not_invent_calibrated_support(self):
         current = measurements()
         prior = model._local_component(current, 'flat')
         singular = np.linalg.svd(prior.covariance, compute_uv=False)
@@ -109,7 +112,7 @@ class LocalShapeUnitTests(unittest.TestCase):
         np.testing.assert_allclose(result.covariance, np.asarray(prior.covariance) / (1 + 2/3),
                                    rtol=2e-12, atol=1e-30)
 
-    def test_mixed_shape_pooling_is_independent_of_physical_unit_scale(self):
+    def check_test_mixed_shape_pooling_is_independent_of_physical_unit_scale(self):
         current = measurements((20, 15))
         first = model._local_component(measurements((28, 10), 2), 'flat')
         second = model._local_component(measurements((28, 10), 20), 'flat')
@@ -120,7 +123,7 @@ class LocalShapeUnitTests(unittest.TestCase):
         np.testing.assert_array_equal(np.asarray(updates[0].covariance)[np.ix_(indices, indices)],
                                        np.asarray(updates[1].covariance)[np.ix_(indices, indices)])
 
-    def test_invalid_mixed_shape_covariance_is_rejected_explicitly(self):
+    def check_test_invalid_mixed_shape_covariance_is_rejected_explicitly(self):
         prior = model._local_component(measurements(), 'flat')
         local = model._local_component(measurements(scale=2), 'flat')
         for symmetric in (True, False):
@@ -132,7 +135,7 @@ class LocalShapeUnitTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'symmetric and positive semidefinite'):
                 model._update_mixed_dimension_components(invalid, local, 'flat', 1)
 
-    def test_current_only_model_preserves_processing_diameter_scalar(self):
+    def check_test_current_only_model_preserves_processing_diameter_scalar(self):
         labels = np.zeros((96, 128), np.uint16)
         cv2.ellipse(labels, (64, 48), (24, 14), 0, 0, 360, 1, -1)
         annotation = SeedInstanceAnnotation(1, shape_reviewed=True, outline_visibility='complete', pose='flat')
@@ -143,3 +146,19 @@ class LocalShapeUnitTests(unittest.TestCase):
                 legacy_processing_diameter_px=87)
             self.assertEqual(result.compatibility_seed_diameter_px, 87)
             self.assertEqual(result.family('flat').component.physical_dimensions_available, scale is not None)
+
+    def test_workflow_lifecycle(self):
+        """9 related LocalShapeUnitTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_local_pixels_are_dimensionless_and_mm_are_physical)
+        self.scenario(self.check_test_local_fit_refuses_mixed_or_unsupported_units)
+        self.scenario(self.check_test_pixel_fit_is_invariant_to_rescaling_dimensional_values)
+        self.scenario(self.check_test_mixed_updates_keep_exact_physical_blocks_in_both_directions)
+        self.scenario(self.check_test_mixed_shape_update_uses_shrinkage_without_changing_physical_dimensions)
+        self.scenario(self.check_test_singular_shape_covariance_retains_nonzero_identical_means)
+        self.scenario(self.check_test_matching_dimensionless_updates_do_not_invent_calibrated_support)
+        self.scenario(self.check_test_mixed_shape_pooling_is_independent_of_physical_unit_scale)
+        self.scenario(self.check_test_current_only_model_preserves_processing_diameter_scalar)
+
+    def test_validation_and_recovery(self):
+        """1 related LocalShapeUnitTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_invalid_mixed_shape_covariance_is_rejected_explicitly)

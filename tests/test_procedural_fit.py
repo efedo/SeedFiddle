@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.functional_units import functional_units
+
 import math
 import itertools
 import unittest
@@ -19,6 +21,7 @@ from seedvision.segmentation.procedural_fit import (
 import seedvision.segmentation.procedural_fit as procedural_fit_module
 
 
+@functional_units
 class ProceduralFitScoreTests(unittest.TestCase):
     @staticmethod
     def _single_seed() -> np.ndarray:
@@ -26,7 +29,7 @@ class ProceduralFitScoreTests(unittest.TestCase):
         cv2.rectangle(labels, (14, 14), (33, 33), 1, -1)
         return labels
 
-    def test_perfect_relabelled_prediction_has_zero_loss(self) -> None:
+    def check_test_perfect_relabelled_prediction_has_zero_loss(self) -> None:
         truth = self._single_seed()
         prediction = np.where(truth > 0, 71, 0).astype(np.uint16)
         score = score_procedural_instances(truth, prediction)
@@ -41,7 +44,7 @@ class ProceduralFitScoreTests(unittest.TestCase):
             0.50 * expected_diameter,
         )
 
-    def test_equal_false_positive_area_costs_more_than_false_negative_area(self) -> None:
+    def check_test_equal_false_positive_area_costs_more_than_false_negative_area(self) -> None:
         truth = self._single_seed()
         false_positive = truth.copy()
         false_positive[10:14, 14:24] = 1
@@ -60,7 +63,7 @@ class ProceduralFitScoreTests(unittest.TestCase):
         self.assertEqual(missed_score.false_negative_pixels, 40)
         self.assertGreater(extra_score.loss, missed_score.loss)
 
-    def test_merged_adjacent_seed_is_penalized_as_leak_and_missed_instance(self) -> None:
+    def check_test_merged_adjacent_seed_is_penalized_as_leak_and_missed_instance(self) -> None:
         truth = np.zeros((50, 64), np.uint16)
         cv2.circle(truth, (22, 25), 10, 1, -1)
         cv2.circle(truth, (42, 25), 10, 2, -1)
@@ -72,7 +75,7 @@ class ProceduralFitScoreTests(unittest.TestCase):
         self.assertEqual(merged_score.false_negative_instances, 1)
         self.assertGreater(merged_score.loss, exact.loss)
 
-    def test_disjoint_predictions_are_optional_for_partial_annotation_sets(self) -> None:
+    def check_test_disjoint_predictions_are_optional_for_partial_annotation_sets(self) -> None:
         truth = self._single_seed()
         prediction = truth.copy()
         cv2.circle(prediction, (5, 5), 3, 2, -1)
@@ -88,7 +91,7 @@ class ProceduralFitScoreTests(unittest.TestCase):
         self.assertEqual(complete.false_positive_instances, 1)
         self.assertGreater(complete.loss, partial.loss)
 
-    def test_reference_error_overlay_shows_only_matched_under_and_overreach(self) -> None:
+    def check_test_reference_error_overlay_shows_only_matched_under_and_overreach(self) -> None:
         truth = np.zeros((48, 64), np.uint16)
         truth[15:35, 15:35] = 3
         prediction = np.zeros_like(truth)
@@ -116,7 +119,16 @@ class ProceduralFitScoreTests(unittest.TestCase):
             comparison.rgba[20, 41, 3], comparison.rgba[20, 35, 3]
         )
 
+    def test_workflow_lifecycle(self):
+        """5 related ProceduralFitScoreTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_perfect_relabelled_prediction_has_zero_loss)
+        self.scenario(self.check_test_equal_false_positive_area_costs_more_than_false_negative_area)
+        self.scenario(self.check_test_merged_adjacent_seed_is_penalized_as_leak_and_missed_instance)
+        self.scenario(self.check_test_disjoint_predictions_are_optional_for_partial_annotation_sets)
+        self.scenario(self.check_test_reference_error_overlay_shows_only_matched_under_and_overreach)
 
+
+@functional_units
 class ProceduralFitDistanceWeightedOverreachTests(unittest.TestCase):
     """Lock the exponential, instance-aware overreach objective."""
 
@@ -149,7 +161,7 @@ class ProceduralFitDistanceWeightedOverreachTests(unittest.TestCase):
             overreach_distance_scale_fraction=fraction,
         )
 
-    def test_equal_raw_overreach_costs_more_when_farther_from_target(self) -> None:
+    def check_test_equal_raw_overreach_costs_more_when_farther_from_target(self) -> None:
         adjacent = self._one_extra_pixel_score(1)
         far = self._one_extra_pixel_score(8)
 
@@ -164,7 +176,7 @@ class ProceduralFitDistanceWeightedOverreachTests(unittest.TestCase):
         self.assertAlmostEqual(adjacent.overreach_distance_scale_px, 2.0)
         self.assertAlmostEqual(far.overreach_distance_scale_px, 2.0)
 
-    def test_one_scale_increments_follow_exponential_ratio_and_cap(self) -> None:
+    def check_test_one_scale_increments_follow_exponential_ratio_and_cap(self) -> None:
         weights = [
             self._one_extra_pixel_score(distance).distance_weighted_false_positive_pixels
             for distance in (2, 4, 6)
@@ -186,7 +198,7 @@ class ProceduralFitDistanceWeightedOverreachTests(unittest.TestCase):
             places=4,
         )
 
-    def test_false_negative_objective_and_raw_metrics_ignore_distance_scale(self) -> None:
+    def check_test_false_negative_objective_and_raw_metrics_ignore_distance_scale(self) -> None:
         truth = self._square_truth()
         prediction = truth.copy()
         prediction[40:44, 40:50] = 0
@@ -212,7 +224,7 @@ class ProceduralFitDistanceWeightedOverreachTests(unittest.TestCase):
             long.overreach_distance_scale_px,
         )
 
-    def test_adjacent_seed_leak_uses_its_matched_target_not_target_union(self) -> None:
+    def check_test_adjacent_seed_leak_uses_its_matched_target_not_target_union(self) -> None:
         truth = np.zeros((80, 100), np.uint16)
         truth[30:41, 10:21] = 11
         truth[30:41, 60:71] = 22
@@ -244,7 +256,7 @@ class ProceduralFitDistanceWeightedOverreachTests(unittest.TestCase):
         )
         self.assertGreater(score.distance_weighted_false_positive_pixels, 1.0)
 
-    def test_disjoint_prediction_is_weighted_only_for_complete_annotations(self) -> None:
+    def check_test_disjoint_prediction_is_weighted_only_for_complete_annotations(self) -> None:
         truth = self._square_truth()
         prediction = truth.copy()
         prediction[5, 5] = 2
@@ -265,7 +277,7 @@ class ProceduralFitDistanceWeightedOverreachTests(unittest.TestCase):
         self.assertGreater(complete.distance_weighted_false_positive_pixels, 1.0)
         self.assertGreater(complete.loss, partial.loss)
 
-    def test_empty_prediction_and_wholly_disjoint_partial_prediction(self) -> None:
+    def check_test_empty_prediction_and_wholly_disjoint_partial_prediction(self) -> None:
         truth = self._square_truth()
         empty = np.zeros_like(truth)
         empty_score = score_procedural_instances(
@@ -298,7 +310,7 @@ class ProceduralFitDistanceWeightedOverreachTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "annotated seed"):
             score_procedural_instances(empty, disjoint)
 
-    def test_distance_scale_fraction_is_validated_by_options_and_scorer(self) -> None:
+    def check_test_distance_scale_fraction_is_validated_by_options_and_scorer(self) -> None:
         truth = self._square_truth()
         for invalid in (0.0, -0.1, float("nan"), float("inf")):
             with self.subTest(invalid=invalid):
@@ -321,7 +333,7 @@ class ProceduralFitDistanceWeightedOverreachTests(unittest.TestCase):
                         seed_diameter_px=invalid_diameter,
                     )
 
-    def test_effective_distance_scale_has_a_one_pixel_floor(self) -> None:
+    def check_test_effective_distance_scale_has_a_one_pixel_floor(self) -> None:
         truth = np.zeros((12, 12), np.uint16)
         truth[6, 6] = 1
         prediction = truth.copy()
@@ -337,7 +349,7 @@ class ProceduralFitDistanceWeightedOverreachTests(unittest.TestCase):
             1.0,
         )
 
-    def test_fit_options_propagate_distance_scale_to_every_score(self) -> None:
+    def check_test_fit_options_propagate_distance_scale_to_every_score(self) -> None:
         truth = self._square_truth()
         fraction = 0.25
         options = ProceduralFitOptions(
@@ -361,9 +373,22 @@ class ProceduralFitDistanceWeightedOverreachTests(unittest.TestCase):
             0.0,
         )
 
+    def test_workflow_lifecycle(self):
+        """9 related ProceduralFitDistanceWeightedOverreachTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_equal_raw_overreach_costs_more_when_farther_from_target)
+        self.scenario(self.check_test_one_scale_increments_follow_exponential_ratio_and_cap)
+        self.scenario(self.check_test_false_negative_objective_and_raw_metrics_ignore_distance_scale)
+        self.scenario(self.check_test_adjacent_seed_leak_uses_its_matched_target_not_target_union)
+        self.scenario(self.check_test_disjoint_prediction_is_weighted_only_for_complete_annotations)
+        self.scenario(self.check_test_empty_prediction_and_wholly_disjoint_partial_prediction)
+        self.scenario(self.check_test_distance_scale_fraction_is_validated_by_options_and_scorer)
+        self.scenario(self.check_test_effective_distance_scale_has_a_one_pixel_floor)
+        self.scenario(self.check_test_fit_options_propagate_distance_scale_to_every_score)
 
+
+@functional_units
 class ProceduralSettingsFitTests(unittest.TestCase):
-    def test_annotation_distance_context_is_prepared_once_per_fit(self) -> None:
+    def check_test_annotation_distance_context_is_prepared_once_per_fit(self) -> None:
         truth = np.zeros((64, 64), np.uint16)
         cv2.circle(truth, (32, 32), 12, 1, -1)
         prediction = truth.copy()
@@ -384,7 +409,7 @@ class ProceduralSettingsFitTests(unittest.TestCase):
         self.assertEqual(result.evaluations, 4)
         self.assertEqual(prepare.call_count, 1)
 
-    def test_coordinate_search_improves_without_mutating_initial_settings(self) -> None:
+    def check_test_coordinate_search_improves_without_mutating_initial_settings(self) -> None:
         truth = np.zeros((64, 64), np.uint16)
         cv2.circle(truth, (32, 32), 12, 1, -1)
         initial = ProceduralInstanceSettings(foreground_threshold_scale=0.82)
@@ -425,7 +450,7 @@ class ProceduralSettingsFitTests(unittest.TestCase):
         self.assertLessEqual(result.evaluations, options.maximum_evaluations)
         np.testing.assert_allclose(observed_values, [0.82, 0.66, 0.98])
 
-    def test_fit_is_deterministic_and_honours_evaluation_budget(self) -> None:
+    def check_test_fit_is_deterministic_and_honours_evaluation_budget(self) -> None:
         truth = np.zeros((40, 40), np.uint16)
         cv2.circle(truth, (20, 20), 8, 1, -1)
 
@@ -443,7 +468,7 @@ class ProceduralSettingsFitTests(unittest.TestCase):
         self.assertEqual(first.proposed_score, second.proposed_score)
         self.assertEqual(first.trials, second.trials)
 
-    def test_pixel_weights_are_finite_positive_and_match_overlay_range(self) -> None:
+    def check_test_pixel_weights_are_finite_positive_and_match_overlay_range(self) -> None:
         # Distance weighting already permits nearby FP pixels to cost less than
         # FN pixels. The exposed positive amplitude range is valid for both paths.
         for field in ("false_positive_weight", "false_negative_weight"):
@@ -457,9 +482,20 @@ class ProceduralSettingsFitTests(unittest.TestCase):
         score = score_procedural_instances(truth, prediction, false_positive_weight=0.05)
         self.assertAlmostEqual(float(comparison.pixel_costs.sum()), score.total_pixel_cost)
 
+    def test_workflow_lifecycle(self):
+        """3 related ProceduralSettingsFitTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_annotation_distance_context_is_prepared_once_per_fit)
+        self.scenario(self.check_test_coordinate_search_improves_without_mutating_initial_settings)
+        self.scenario(self.check_test_pixel_weights_are_finite_positive_and_match_overlay_range)
 
+    def test_validation_and_recovery(self):
+        """1 related ProceduralSettingsFitTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_fit_is_deterministic_and_honours_evaluation_budget)
+
+
+@functional_units
 class ProceduralReferenceAssignmentTests(unittest.TestCase):
-    def test_global_assignment_recovers_pair_stolen_by_greedy_overlap(self) -> None:
+    def check_test_global_assignment_recovers_pair_stolen_by_greedy_overlap(self) -> None:
         truth = np.zeros((20, 20), np.uint16)
         truth[:10, :10] = 3
         truth[10:, :10] = 7
@@ -471,7 +507,7 @@ class ProceduralReferenceAssignmentTests(unittest.TestCase):
         self.assertEqual(set(comparison.matched_pairs), {(3, 44), (7, 91)})
         self.assertEqual(comparison.missed_reference_instances, 0)
 
-    def test_hungarian_matches_exhaustive_optimum_with_skip_choices(self) -> None:
+    def check_test_hungarian_matches_exhaustive_optimum_with_skip_choices(self) -> None:
         rng = np.random.default_rng(2819)
         for rows, columns in ((1, 3), (3, 1), (3, 4), (4, 3)):
             for _ in range(12):
@@ -486,7 +522,7 @@ class ProceduralReferenceAssignmentTests(unittest.TestCase):
                 self.assertEqual(len({row for row, _ in result}), len(result))
                 self.assertEqual(len({col for _, col in result}), len(result))
 
-    def test_neighbour_with_incidental_contact_is_not_a_correspondence(self) -> None:
+    def check_test_neighbour_with_incidental_contact_is_not_a_correspondence(self) -> None:
         truth = np.zeros((60, 80), np.uint16)
         truth[20:40, 20:40] = 51
         prediction = np.zeros_like(truth)
@@ -505,7 +541,7 @@ class ProceduralReferenceAssignmentTests(unittest.TestCase):
         complete = score_procedural_instances(truth, prediction, annotations_are_complete=True)
         self.assertGreater(complete.false_positive_pixels, 0)
 
-    def test_missed_seed_cost_is_visible_adjustable_and_less_than_bad_outline(self) -> None:
+    def check_test_missed_seed_cost_is_visible_adjustable_and_less_than_bad_outline(self) -> None:
         truth = ProceduralFitScoreTests._single_seed()
         empty = np.zeros_like(truth)
         low = score_procedural_instances(truth, empty, missed_seed_weight=0.25)
@@ -521,7 +557,7 @@ class ProceduralReferenceAssignmentTests(unittest.TestCase):
         bad_score = score_procedural_instances(truth, bad, overreach_distance_scale_fraction=0.05)
         self.assertGreater(bad_score.loss, score_procedural_instances(truth, empty).loss)
 
-    def test_concavity_surcharge_requires_incorrect_exterior_connected_pixels(self) -> None:
+    def check_test_concavity_surcharge_requires_incorrect_exterior_connected_pixels(self) -> None:
         truth = ProceduralFitScoreTests._single_seed()
         notch = truth.copy()
         notch[14:24, 22:26] = 0
@@ -540,7 +576,7 @@ class ProceduralReferenceAssignmentTests(unittest.TestCase):
         hole[22:26, 22:26] = 0
         self.assertEqual(score_procedural_instances(truth, hole).incorrect_concavity_pixels, 0)
 
-    def test_display_cost_sum_equals_fitting_pixel_cost_including_cross_pair_errors(self) -> None:
+    def check_test_display_cost_sum_equals_fitting_pixel_cost_including_cross_pair_errors(self) -> None:
         truth = np.zeros((64, 80), np.uint16)
         truth[10:30, 10:30] = 9
         truth[10:30, 34:54] = 2
@@ -562,7 +598,7 @@ class ProceduralReferenceAssignmentTests(unittest.TestCase):
             self.assertEqual(comparison.missed_reference_pixels, score.missed_reference_pixels)
             self.assertEqual(comparison.overreach_pixels, score.false_positive_pixels)
 
-    def test_new_fit_cost_options_reach_every_trial_and_do_not_rewrite_prediction(self) -> None:
+    def check_test_new_fit_cost_options_reach_every_trial_and_do_not_rewrite_prediction(self) -> None:
         truth = ProceduralFitScoreTests._single_seed()
         prediction = truth.copy()
         prediction[14:24, 22:26] = 0
@@ -573,6 +609,16 @@ class ProceduralReferenceAssignmentTests(unittest.TestCase):
         for trial in result.trials:
             self.assertEqual(trial.score.incorrect_concavity_cost, 120)
         np.testing.assert_array_equal(prediction, original)
+
+    def test_workflow_lifecycle(self):
+        """7 related ProceduralReferenceAssignmentTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_global_assignment_recovers_pair_stolen_by_greedy_overlap)
+        self.scenario(self.check_test_hungarian_matches_exhaustive_optimum_with_skip_choices)
+        self.scenario(self.check_test_neighbour_with_incidental_contact_is_not_a_correspondence)
+        self.scenario(self.check_test_missed_seed_cost_is_visible_adjustable_and_less_than_bad_outline)
+        self.scenario(self.check_test_concavity_surcharge_requires_incorrect_exterior_connected_pixels)
+        self.scenario(self.check_test_display_cost_sum_equals_fitting_pixel_cost_including_cross_pair_errors)
+        self.scenario(self.check_test_new_fit_cost_options_reach_every_trial_and_do_not_rewrite_prediction)
 
 
 if __name__ == "__main__":

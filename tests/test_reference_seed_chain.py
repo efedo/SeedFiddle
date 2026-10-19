@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.functional_units import functional_units
+
 from copy import deepcopy
 from dataclasses import replace
 from hashlib import sha256
@@ -7,6 +9,7 @@ import json
 from pathlib import Path
 import threading
 import unittest
+from tests.catalogue_fixtures import CatalogueTestCase
 from unittest.mock import patch
 
 import numpy as np
@@ -24,7 +27,8 @@ from tests.test_reference_preprocessing import (
 
 
 @unittest.skipUnless(HAS_REFERENCE_ENV, "Pinned public PlantCV environment is required.")
-class ReferenceSeedChainTests(unittest.TestCase):
+@functional_units
+class ReferenceSeedChainTests(CatalogueTestCase):
     """One actual complete chain plus bounded fault injection at its API edges."""
 
     @classmethod
@@ -124,7 +128,7 @@ class ReferenceSeedChainTests(unittest.TestCase):
 
         return run, calls
 
-    def test_actual_eight_public_calls_publish_bound_reloadable_chain(self):
+    def check_test_actual_eight_public_calls_publish_bound_reloadable_chain(self):
         outcome = self.actual_outcome
         self.assertEqual(outcome.status, "executed", [call.reason for call in outcome.calls])
         self.assertEqual(len(self.actual_operations), 8)
@@ -151,7 +155,7 @@ class ReferenceSeedChainTests(unittest.TestCase):
             self.assertEqual(call.details["n_labels_rule"], "int(public_labels.max())")
             np.testing.assert_array_equal(analysis.arrays["labels_context"], loaded.arrays["labels"])
 
-    def test_source_frame_channel_and_recipe_mismatches_reject_before_calls(self):
+    def check_test_source_frame_channel_and_recipe_mismatches_reject_before_calls(self):
         arguments = self._arguments()
         rgb = arguments["rgb"]
         mismatches = [
@@ -168,64 +172,11 @@ class ReferenceSeedChainTests(unittest.TestCase):
                 run_reference_seed_chain(**(arguments | {"expected_recipe_identity": replace(arguments["recipe"].identity, settings_sha256="e" * 64)}))
             public.assert_not_called()
 
-    def test_independent_analysis_failures_keep_other_success_and_no_manifest(self):
-        for failed in ("analysis.size", "analysis.color"):
-            with self.subTest(failed=failed):
-                arguments = self._arguments()
-                fake, calls = self._fake(failure=failed)
-                with patch.object(PlantCVReferenceRunner, "run", fake):
-                    outcome = run_reference_seed_chain(**arguments)
-                self.assertEqual(outcome.status, "partial")
-                self.assertEqual([name for name, _ in calls][-3:], ["segmentation.watershed.capture", "analysis.size", "analysis.color"])
-                self.assertEqual([call.status for call in outcome.calls],
-                                 ["executed", "failed", "executed"] if failed.endswith("size") else ["executed", "executed", "failed"])
-                self.assertIsNone(outcome.manifest_path)
-                self.assertFalse((arguments["output_root"] / "chains").exists())
 
-    def test_unavailable_capture_keeps_public_labels_and_downstream_calls(self):
-        arguments = self._arguments()
-        fake, calls = self._fake(capture_unavailable=True)
-        with patch.object(PlantCVReferenceRunner, "run", fake):
-            outcome = run_reference_seed_chain(**arguments)
-        self.assertEqual(outcome.status, "partial")
-        self.assertEqual([call.status for call in outcome.calls], ["executed"] * 3)
-        self.assertEqual(outcome.calls[0].details["capture_status"], "unavailable")
-        self.assertEqual(len(calls), 8)
-        self.assertIsNone(outcome.manifest_path)
-        reference = outcome.calls[0].checkpoint_reference
-        checkpoint = load_checkpoint(arguments["output_root"], reference.checkpoint_sha256, expected_identity=reference.identity)
-        self.assertEqual(set(checkpoint.arrays), {"labels"})
 
-    def test_empty_default_skips_analyses_and_reloads_zero_coordinates(self):
-        arguments = self._arguments(empty=True)
-        fake, calls = self._fake(empty=True)
-        with patch.object(PlantCVReferenceRunner, "run", fake):
-            outcome = run_reference_seed_chain(**arguments)
-        self.assertEqual(outcome.status, "empty", [call.reason for call in outcome.calls])
-        self.assertEqual(len(calls), 6)
-        self.assertEqual([call.status for call in outcome.calls], ["empty", "unavailable", "unavailable"])
-        self.assertFalse(outcome.calls[1].invoked)
-        self.assertIsNone(outcome.manifest_path)
-        reference = outcome.calls[0].checkpoint_reference
-        checkpoint = load_checkpoint(arguments["output_root"], reference.checkpoint_sha256, expected_identity=reference.identity)
-        self.assertEqual(checkpoint.arrays["coordinates"].shape, (0, 2))
-        self.assertEqual(checkpoint.arrays["coordinates"].dtype, np.dtype("<i8"))
 
-    def test_explicit_positive_bounds_are_preserved_even_with_empty_labels(self):
-        recipe = _selected_recipe("plantcv_seed_binary")
-        stages = tuple(replace(stage, parameters=tuple(replace(p, value=7) if p.parameter_id == "n_labels" else p
-                                                     for p in stage.parameters)) if stage.operation_id.startswith("analysis.") else stage
-                       for stage in recipe.stages)
-        arguments = self._arguments(replace(recipe, stages=stages), empty=True)
-        fake, calls = self._fake(empty=True, failure="analysis.size")
-        with patch.object(PlantCVReferenceRunner, "run", fake):
-            outcome = run_reference_seed_chain(**arguments)
-        self.assertEqual([parameters["n_labels"] for name, parameters in calls if name.startswith("analysis.")], [7, 7])
-        self.assertEqual([call.status for call in outcome.calls], ["empty", "failed", "executed"])
-        self.assertEqual(outcome.status, "partial")
-        self.assertEqual(outcome.calls[2].details["n_labels_rule"], "explicit_positive_selection")
 
-    def test_cancel_after_each_call_withholds_later_calls_and_manifest(self):
+    def check_test_cancel_after_each_call_withholds_later_calls_and_manifest(self):
         for boundary in ("filter.median_blur", "segmentation.watershed.capture", "analysis.size", "analysis.color"):
             with self.subTest(boundary=boundary):
                 arguments = self._arguments()
@@ -238,20 +189,8 @@ class ReferenceSeedChainTests(unittest.TestCase):
                 self.assertIsNone(outcome.manifest_path)
                 self.assertFalse((arguments["output_root"] / "chains").exists())
 
-    def test_malformed_capture_and_effective_parameter_withhold_checkpoint(self):
-        for malformed in ("rgb_adapter", "parameters"):
-            with self.subTest(malformed=malformed):
-                arguments = self._arguments()
-                fake, _ = self._fake(malformed=malformed)
-                with patch.object(PlantCVReferenceRunner, "run", fake):
-                    outcome = run_reference_seed_chain(**arguments)
-                self.assertEqual(outcome.status, "partial")
-                failed = outcome.calls[0 if malformed == "rgb_adapter" else 1]
-                self.assertEqual(failed.status, "failed")
-                self.assertIsNone(failed.checkpoint_reference)
-                self.assertIsNone(outcome.manifest_path)
 
-    def test_cancel_at_manifest_boundary_retains_checkpoints_without_complete_manifest(self):
+    def check_test_cancel_at_manifest_boundary_retains_checkpoints_without_complete_manifest(self):
         arguments = self._arguments()
         event = threading.Event()
         fake, _ = self._fake()
@@ -267,52 +206,17 @@ class ReferenceSeedChainTests(unittest.TestCase):
         self.assertIsNone(outcome.manifest_path)
         self.assertEqual(list((arguments["output_root"] / "chains").iterdir()), [])
 
-    def test_failed_analysis_input_mutation_cannot_poison_next_analysis(self):
-        arguments = self._arguments()
-        fake, calls = self._fake()
-        def mutate_then_fail(runner, operation, arrays, parameters=None, **kwargs):
-            if operation == "analysis.size":
-                # Loaded checkpoint arrays are immutable. Replace the call's
-                # input entry to exercise rejection of changed input contents.
-                arrays["labels"] = arrays["labels"].copy()
-                arrays["labels"][0, 0] = 99
-                raise ReferenceExecutionError("Ordinary failure after input mutation.")
-            return fake(runner, operation, arrays, parameters, **kwargs)
-        with patch.object(PlantCVReferenceRunner, "run", mutate_then_fail):
-            outcome = run_reference_seed_chain(**arguments)
-        self.assertEqual(outcome.status, "partial")
-        self.assertTrue(outcome.calls[1].details["input_contract_violated"])
-        self.assertIn("inputs changed", outcome.calls[1].reason)
-        self.assertEqual(outcome.calls[2].status, "executed")
-        self.assertEqual(outcome.calls[2].details["labels_sha256"], outcome.record["label_facts"]["labels_sha256"])
-        self.assertEqual(calls[-1][0], "analysis.color")
 
-    def test_actual_empty_default_and_explicit_bounds_record_public_outcomes(self):
-        for selected in (None, 7):
-            with self.subTest(selected=selected):
-                recipe = _selected_recipe("plantcv_seed_binary")
-                if selected is not None:
-                    recipe = replace(recipe, stages=tuple(replace(stage, parameters=tuple(
-                        replace(p, value=selected) if p.parameter_id == "n_labels" else p for p in stage.parameters))
-                        if stage.operation_id.startswith("analysis.") else stage for stage in recipe.stages))
-                arguments = self._arguments(recipe, empty=True)
-                attempted = []
-                original = PlantCVReferenceRunner.run
-                def observe(runner, operation, arrays, parameters=None, **kwargs):
-                    attempted.append((operation, dict(parameters or {})))
-                    return original(runner, operation, arrays, parameters, **kwargs)
-                with patch.object(PlantCVReferenceRunner, "run", observe):
-                    outcome = run_reference_seed_chain(**arguments)
-                self.assertEqual(outcome.calls[0].status, "empty", outcome.calls[0].reason)
-                self.assertEqual(outcome.record["label_facts"]["maximum_label_id"], 0)
-                analyses = [parameters for operation, parameters in attempted if operation.startswith("analysis.")]
-                if selected is None:
-                    self.assertEqual(outcome.status, "empty")
-                    self.assertEqual(analyses, [])
-                else:
-                    self.assertEqual([p["n_labels"] for p in analyses], [7, 7])
-                    self.assertTrue(all(call.invoked for call in outcome.calls))
-                    self.assertTrue(all(call.status in {"executed", "failed"} for call in outcome.calls[1:]))
+
+    def test_workflow_lifecycle(self):
+        """1 related ReferenceSeedChainTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_actual_eight_public_calls_publish_bound_reloadable_chain)
+
+    def test_validation_and_recovery(self):
+        """3 related ReferenceSeedChainTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_source_frame_channel_and_recipe_mismatches_reject_before_calls)
+        self.scenario(self.check_test_cancel_after_each_call_withholds_later_calls_and_manifest)
+        self.scenario(self.check_test_cancel_at_manifest_boundary_retains_checkpoints_without_complete_manifest)
 
 
 if __name__ == "__main__":

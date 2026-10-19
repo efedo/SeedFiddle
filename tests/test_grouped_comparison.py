@@ -1,4 +1,6 @@
 """Compact synthetic engineering witnesses, not biological validation."""
+
+from tests.functional_units import functional_units
 from dataclasses import replace
 from hashlib import sha256
 import json
@@ -58,8 +60,9 @@ def endpoint(report, scope=0):
     return report['strata'][scope]['metrics'][0]
 
 
+@functional_units
 class GroupedComparisonTests(unittest.TestCase):
-    def test_constant_paired_shift_has_exact_bounds_and_never_certifies_science(self):
+    def check_test_constant_paired_shift_has_exact_bounds_and_never_certifies_science(self):
         study = manifest()
         specification = plan(study)
         report = gc.evaluate_grouped_comparison(study, records(study, specification), specification)
@@ -72,7 +75,7 @@ class GroupedComparisonTests(unittest.TestCase):
         self.assertEqual(report['plan_sha256'], specification.plan_sha256)
         self.assertEqual(report['images'][0]['observations']['candidate']['gallery_links'], ['gallery/image0.png'])
 
-    def test_seeded_bounds_match_independent_draw_matrix_oracle_and_rng_is_private(self):
+    def check_test_seeded_bounds_match_independent_draw_matrix_oracle_and_rng_is_private(self):
         study = manifest()
         specification = plan(study)
         values = [(0.6, 0.8), (0.4, 0.3), (0.2, 0.5)]
@@ -95,7 +98,7 @@ class GroupedComparisonTests(unittest.TestCase):
         self.assertAlmostEqual(endpoint(first)['difference_one_sided_bound'], np.quantile(differences, .05), places=12)
         self.assertEqual(first, gc.evaluate_grouped_comparison(study, tuple(reversed(rows)), specification))
 
-    def test_lower_error_uses_upper_bound_and_absolute_failure_is_not_equivalence(self):
+    def check_test_lower_error_uses_upper_bound_and_absolute_failure_is_not_equivalence(self):
         study = manifest()
         specification = replace(plan(study), metrics=(gc.MetricGate('error', 'lower', .15, .2),))
         report = gc.evaluate_grouped_comparison(study, records(study, specification, [(0.1, .2)] * 3), specification)
@@ -105,7 +108,7 @@ class GroupedComparisonTests(unittest.TestCase):
         self.assertFalse(metric['absolute_pass'])
         self.assertEqual(report['state'], 'fail')
 
-    def test_transitive_source_and_acquisition_links_never_resample_repeated_seeds(self):
+    def check_test_transitive_source_and_acquisition_links_never_resample_repeated_seeds(self):
         original = manifest()
         samples = list(original.samples)
         samples[1] = replace(samples[1], source_sha256=samples[0].source_sha256)
@@ -118,7 +121,7 @@ class GroupedComparisonTests(unittest.TestCase):
         self.assertEqual(result['state'], 'inconclusive')
         self.assertIsNone(endpoint(result)['difference_one_sided_bound'])
 
-    def test_group_and_image_aggregation_have_prespecified_distinct_estimands(self):
+    def check_test_group_and_image_aggregation_have_prespecified_distinct_estimands(self):
         original = manifest(5)
         samples = list(original.samples)
         for i in range(4):
@@ -132,7 +135,7 @@ class GroupedComparisonTests(unittest.TestCase):
         self.assertAlmostEqual(image['candidate_estimate'], .2)
         self.assertEqual(grouped['independent_groups'], 2)
 
-    def test_failed_abstained_and_missing_rows_stay_in_coverage_and_gallery(self):
+    def check_test_failed_abstained_and_missing_rows_stay_in_coverage_and_gallery(self):
         study = manifest()
         specification = plan(study)
         rows = list(records(study, specification))
@@ -149,7 +152,7 @@ class GroupedComparisonTests(unittest.TestCase):
         self.assertEqual(result['state'], 'inconclusive')
         self.assertIsNone(endpoint(result)['candidate_estimate'])
 
-    def test_missing_reference_cannot_remove_poor_candidate_from_absolute_fitness(self):
+    def check_test_missing_reference_cannot_remove_poor_candidate_from_absolute_fitness(self):
         study = manifest()
         specification = replace(plan(study, minimum_coverage=.6),
             metrics=(gc.MetricGate('quality', 'higher', .7, .1),))
@@ -167,7 +170,7 @@ class GroupedComparisonTests(unittest.TestCase):
         self.assertFalse(metric['absolute_pass'])
         self.assertEqual(result['state'], 'fail')
 
-    def test_critical_missing_and_unknown_membership_are_inconclusive_not_dropped(self):
+    def check_test_critical_missing_and_unknown_membership_are_inconclusive_not_dropped(self):
         study = manifest()
         absent = gc.CriticalStratum('lupin', (('species', 'lupin'),))
         specification = plan(study, critical_strata=(absent,))
@@ -180,7 +183,7 @@ class GroupedComparisonTests(unittest.TestCase):
         self.assertEqual(result['unknown_stratum_samples'], ['image0', 'image1', 'image2'])
         self.assertIn('stratum_membership_not_recorded', endpoint(result, 1)['blockers'])
 
-    def test_all_prespecified_critical_gates_are_required(self):
+    def check_test_all_prespecified_critical_gates_are_required(self):
         study = manifest(4)
         specification = plan(study, critical_strata=(gc.CriticalStratum('difficult', (('contact', 'touching'),)),))
         rows = []
@@ -192,7 +195,7 @@ class GroupedComparisonTests(unittest.TestCase):
         self.assertEqual(result['state'], 'fail')
         self.assertFalse(endpoint(result, 1)['noninferiority_pass'])
 
-    def test_identity_duplicate_endpoint_and_stratum_mismatches_reject(self):
+    def check_test_identity_duplicate_endpoint_and_stratum_mismatches_reject(self):
         study = manifest()
         specification = plan(study)
         rows = records(study, specification)
@@ -208,7 +211,7 @@ class GroupedComparisonTests(unittest.TestCase):
         with self.assertRaises(gc.GroupedComparisonError):
             gc.evaluate_grouped_comparison(study, rows, replace(specification, manifest_sha256=digest('wrong')))
 
-    def test_unknown_truth_and_missing_access_never_authorize_comparison(self):
+    def check_test_unknown_truth_and_missing_access_never_authorize_comparison(self):
         study = manifest()
         samples = list(study.samples)
         samples[0] = replace(samples[0], truth=TruthIdentity(TruthState.UNAVAILABLE, unavailable_reason='not supplied'))
@@ -224,7 +227,7 @@ class GroupedComparisonTests(unittest.TestCase):
         with self.assertRaisesRegex(gc.GroupedComparisonError, 'access'):
             gc.evaluate_grouped_comparison(study, (), specification)
 
-    def test_work_and_metric_budgets_reject_before_random_draws(self):
+    def check_test_work_and_metric_budgets_reject_before_random_draws(self):
         study = manifest()
         specification = plan(study)
         with patch.object(gc, 'MAX_RESAMPLING_VISITS', 299), self.assertRaisesRegex(gc.GroupedComparisonError, 'work'):
@@ -234,7 +237,7 @@ class GroupedComparisonTests(unittest.TestCase):
         with patch.object(gc, 'MAX_RECORDS', 5), self.assertRaises(gc.GroupedComparisonError):
             gc.evaluate_grouped_comparison(study, records(study, specification), specification)
 
-    def test_strict_input_roundtrip_and_atomic_export_preserve_prior_bytes(self):
+    def check_test_strict_input_roundtrip_and_atomic_export_preserve_prior_bytes(self):
         study = manifest()
         specification = plan(study)
         rows = records(study, specification)
@@ -255,7 +258,7 @@ class GroupedComparisonTests(unittest.TestCase):
             with self.assertRaisesRegex(gc.GroupedComparisonError, 'Duplicate'):
                 gc.load_comparison_inputs(source)
 
-    def test_typed_malformed_nonfinite_and_boolean_inputs_reject(self):
+    def check_test_typed_malformed_nonfinite_and_boolean_inputs_reject(self):
         study = manifest()
         specification = plan(study)
         for replacement in ({'seed': True}, {'repetitions': 99}, {'minimum_coverage': float('nan')},
@@ -271,3 +274,23 @@ class GroupedComparisonTests(unittest.TestCase):
         payload['unknown'] = 1
         with self.assertRaises(gc.GroupedComparisonError):
             gc.ComparisonPlan.from_dict(payload)
+
+    def test_workflow_lifecycle(self):
+        """6 related GroupedComparisonTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_constant_paired_shift_has_exact_bounds_and_never_certifies_science)
+        self.scenario(self.check_test_seeded_bounds_match_independent_draw_matrix_oracle_and_rng_is_private)
+        self.scenario(self.check_test_transitive_source_and_acquisition_links_never_resample_repeated_seeds)
+        self.scenario(self.check_test_group_and_image_aggregation_have_prespecified_distinct_estimands)
+        self.scenario(self.check_test_all_prespecified_critical_gates_are_required)
+        self.scenario(self.check_test_strict_input_roundtrip_and_atomic_export_preserve_prior_bytes)
+
+    def test_validation_and_recovery(self):
+        """8 related GroupedComparisonTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_lower_error_uses_upper_bound_and_absolute_failure_is_not_equivalence)
+        self.scenario(self.check_test_failed_abstained_and_missing_rows_stay_in_coverage_and_gallery)
+        self.scenario(self.check_test_missing_reference_cannot_remove_poor_candidate_from_absolute_fitness)
+        self.scenario(self.check_test_critical_missing_and_unknown_membership_are_inconclusive_not_dropped)
+        self.scenario(self.check_test_identity_duplicate_endpoint_and_stratum_mismatches_reject)
+        self.scenario(self.check_test_unknown_truth_and_missing_access_never_authorize_comparison)
+        self.scenario(self.check_test_work_and_metric_budgets_reject_before_random_draws)
+        self.scenario(self.check_test_typed_malformed_nonfinite_and_boolean_inputs_reject)

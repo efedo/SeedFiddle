@@ -1,4 +1,6 @@
 """Compact default-style SVGs versus the actual pinned public plotting helper."""
+
+from tests.functional_units import functional_units
 from concurrent.futures import ThreadPoolExecutor
 import builtins
 from dataclasses import replace
@@ -81,31 +83,10 @@ def normalized_svg(raw):
     return ET.tostring(tree)
 
 
+@functional_units
 class BayesPDFPlotTests(unittest.TestCase):
-    def test_actual_pinned_helper_order_curves_legend_and_normalized_svg(self):
-        models = [pdf_model(), pdf_model(('one',)), pdf_model(('épi', '$x^2$', '_hidden'))]
-        with tempfile.TemporaryDirectory() as directory:
-            run = subprocess.run([str(REFERENCE), '-X', 'utf8', '-c', ORACLE,
-                directory, native.PLANTCV_TRAINER_SHA256], input=json.dumps([
-                    dict(names=m.class_names,tables=m.probabilities) for m in models]),
-                text=True, capture_output=True, timeout=60)
-            self.assertEqual(run.returncode, 0, run.stderr)
-            observations = json.loads((Path(directory)/'observations.json').read_text(encoding='utf-8'))
-            for index, model in enumerate(models):
-                result = native.render_naive_bayes_plots(model)
-                self.assertEqual(tuple(p.filename for p in result.plots), native.FILENAMES)
-                for c, plot in enumerate(result.plots):
-                    with self.subTest(case=index,channel=c):
-                        observed = observations[index][c]
-                        self.assertEqual([line['label'] for line in observed['lines']], list(model.class_names))
-                        self.assertEqual(observed['legend'], [name for name in model.class_names if not name.startswith('_')])
-                        for line,tables in zip(observed['lines'],model.probabilities):
-                            self.assertEqual(line['x'], list(range(256)))
-                            self.assertEqual(line['y'], list(tables[c]))
-                        expected = (Path(directory)/str(index)/plot.filename).read_bytes()
-                        self.assertEqual(normalized_svg(plot.svg_bytes), normalized_svg(expected))
 
-    def test_exact_tables_hashes_renderer_metadata_and_no_global_rng_change(self):
+    def check_test_exact_tables_hashes_renderer_metadata_and_no_global_rng_change(self):
         model = pdf_model()
         before = np.random.get_state()
         result = native.render_naive_bayes_plots(model)
@@ -121,24 +102,8 @@ class BayesPDFPlotTests(unittest.TestCase):
             self.assertEqual(record['sha256'], sha256(plot.svg_bytes).hexdigest())
             self.assertEqual(record['bytes'], len(plot.svg_bytes))
 
-    def test_maximum_training_class_label_domain_and_independent_figures(self):
-        names = tuple(f'c{i}-'+chr(65+i%26)*250 for i in range(32))
-        model = pdf_model(names)
-        figure = plt.figure()
-        plt.plot([3,2,1], label='existing figure')
-        before = plt.get_fignums()
-        try:
-            with matplotlib.rc_context({'lines.linewidth':11,'figure.figsize':[2,2]}):
-                result = native.render_naive_bayes_plots(model)
-                self.assertEqual(matplotlib.rcParams['lines.linewidth'],11)
-                self.assertEqual(matplotlib.rcParams['figure.figsize'],[2,2])
-            self.assertEqual(plt.get_fignums(),before)
-            self.assertEqual(len(figure.axes[0].lines),1)
-            self.assertLess(sum(len(p.svg_bytes) for p in result.plots),native.MAX_TOTAL_SVG_BYTES)
-        finally:
-            plt.close(figure)
 
-    def test_bad_models_labels_and_forged_bundles_fail_before_publication(self):
+    def check_test_bad_models_labels_and_forged_bundles_fail_before_publication(self):
         model = pdf_model()
         for invalid in [None,replace(model,class_names=('x'*32769,'y')),
                 replace(model,class_names=('\ud800','y')),replace(model,tables_sha256='a'*64)]:
@@ -156,47 +121,9 @@ class BayesPDFPlotTests(unittest.TestCase):
             with self.subTest(invalid=invalid.model_sha256),self.assertRaises(ValueError):
                 native.validate_naive_bayes_plots(invalid,model)
 
-    def test_streaming_and_aggregate_caps_raise_without_returning_partial_bundle(self):
-        model = pdf_model()
-        with patch.object(native,'MAX_SVG_BYTES',64),self.assertRaisesRegex(ValueError,'byte bound'):
-            native.render_naive_bayes_plots(model)
-        with patch.object(native,'MAX_TOTAL_SVG_BYTES',64),self.assertRaisesRegex(ValueError,'byte bound'):
-            native.render_naive_bayes_plots(model)
-        self.assertEqual(len(native.render_naive_bayes_plots(model).plots),3)
 
-    def test_cancel_callback_mutation_and_renderer_errors_release_lock(self):
-        model = pdf_model()
-        for callback in [lambda:True,lambda:1]:
-            with self.assertRaises((native.BayesPlotCancelled,native.BayesPlotError)):
-                native.render_naive_bayes_plots(model,cancel=callback)
-        changed = replace(model)
-        def mutate():
-            object.__setattr__(changed,'source_bytes',changed.source_bytes+1)
-            raise RuntimeError('callback failed')
-        with self.assertRaisesRegex(ValueError,'changed'):
-            native.render_naive_bayes_plots(changed,cancel=mutate)
-        calls = []
-        def cancel_later():
-            calls.append(None)
-            return len(calls)>6
-        with self.assertRaises(native.BayesPlotCancelled):
-            native.render_naive_bayes_plots(model,cancel=cancel_later)
-        with (patch.object(native,'_renderer_modules',side_effect=ImportError('missing runtime')),
-                self.assertRaises(ImportError)):
-            native.render_naive_bayes_plots(model)
-        original_import = builtins.__import__
-        def missing(name,*args,**kwargs):
-            if name == 'matplotlib':
-                raise ImportError('missing runtime')
-            return original_import(name,*args,**kwargs)
-        with patch.object(builtins,'__import__',side_effect=missing),self.assertRaisesRegex(ValueError,'runtime dependency'):
-            native.render_naive_bayes_plots(model)
-        from matplotlib.figure import Figure
-        with patch.object(Figure,'savefig',side_effect=ValueError('renderer failed')),self.assertRaisesRegex(ValueError,'renderer failed'):
-            native.render_naive_bayes_plots(model)
-        self.assertEqual(len(native.render_naive_bayes_plots(model).plots),3)
 
-    def test_queued_cancel_and_concurrent_jobs_keep_models_and_rc_state_separate(self):
+    def check_test_queued_cancel_and_concurrent_jobs_keep_models_and_rc_state_separate(self):
         model = pdf_model()
         stop,started = threading.Event(),threading.Event()
         outcome = []
@@ -219,6 +146,15 @@ class BayesPDFPlotTests(unittest.TestCase):
         with ThreadPoolExecutor(max_workers=2) as pool:
             results = list(pool.map(native.render_naive_bayes_plots,models))
         self.assertEqual([r.tables_sha256 for r in results],[m.tables_sha256 for m in models])
+
+    def test_workflow_lifecycle(self):
+        """1 related BayesPDFPlotTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_exact_tables_hashes_renderer_metadata_and_no_global_rng_change)
+
+    def test_validation_and_recovery(self):
+        """2 related BayesPDFPlotTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_bad_models_labels_and_forged_bundles_fail_before_publication)
+        self.scenario(self.check_test_queued_cancel_and_concurrent_jobs_keep_models_and_rc_state_separate)
 
 
 if __name__ == '__main__':

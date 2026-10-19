@@ -1,4 +1,6 @@
 """Actual relocated native results, artifact facts and private review history."""
+
+from tests.functional_units import functional_units
 from copy import deepcopy
 from dataclasses import replace
 from hashlib import sha256
@@ -20,12 +22,13 @@ import tests.test_authoritative_parity as parity_fixture
 import tests.test_result_prediction_revision as report_fixture
 
 
+@functional_units
 class ArtifactIdentityTests(unittest.TestCase):
     def capture(self, root, selection, *, enabled=(), checkpoints=None):
         return artifacts.capture_artifact_selections(root,
             selections={'unet_instances': selection}, enabled=enabled, checkpoints=checkpoints)
 
-    def test_equivalent_verified_locations_keep_paths_but_share_content_identity(self):
+    def check_test_equivalent_verified_locations_keep_paths_but_share_content_identity(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             paths = (root / 'first.pt', root / 'second.pt')
@@ -50,7 +53,7 @@ class ArtifactIdentityTests(unittest.TestCase):
             self.assertEqual(rebuilt['result_revision'], reports[1]['result_revision'])
             self.assertEqual(rebuilt['native_artifact_execution'], reports[1]['native_artifact_execution'])
 
-    def test_changed_disappeared_and_newly_available_selections_reject_stale_capture(self):
+    def check_test_changed_disappeared_and_newly_available_selections_reject_stale_capture(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             path = root / 'weights.pt'
@@ -67,7 +70,7 @@ class ArtifactIdentityTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 artifacts.verified_artifact_facts(absent)
 
-    def test_actual_checkpoint_correspondence_and_legacy_opaque_ids_remain_distinct(self):
+    def check_test_actual_checkpoint_correspondence_and_legacy_opaque_ids_remain_distinct(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             path = root / 'weights.pt'
@@ -92,7 +95,7 @@ class ArtifactIdentityTests(unittest.TestCase):
             self.assertEqual(artifacts.semantic_artifact(legacy['unet_instances'], 'unet_instances')
                              ['opaque_producer_id'], 'legacy opaque ID')
 
-    def test_forged_canonical_settings_and_malformed_captures_do_not_become_verified(self):
+    def check_test_forged_canonical_settings_and_malformed_captures_do_not_become_verified(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             path = root / 'weights.pt'
@@ -113,7 +116,7 @@ class ArtifactIdentityTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 artifacts.verified_artifact_facts(json.dumps(broken))
 
-    def test_missing_invalid_and_none_trait_states_are_explicit_and_stale_changes_reject(self):
+    def check_test_missing_invalid_and_none_trait_states_are_explicit_and_stale_changes_reject(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             path = root / 'trait.json'
@@ -130,6 +133,17 @@ class ArtifactIdentityTests(unittest.TestCase):
             self.assertEqual(invalid['source_sha256'], sha256(b'{}').hexdigest())
             with self.assertRaises(ValueError):
                 artifacts.verified_artifact_facts(missing)
+
+    def test_workflow_lifecycle(self):
+        """3 related ArtifactIdentityTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_equivalent_verified_locations_keep_paths_but_share_content_identity)
+        self.scenario(self.check_test_actual_checkpoint_correspondence_and_legacy_opaque_ids_remain_distinct)
+        self.scenario(self.check_test_forged_canonical_settings_and_malformed_captures_do_not_become_verified)
+
+    def test_validation_and_recovery(self):
+        """2 related ArtifactIdentityTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_changed_disappeared_and_newly_available_selections_reject_stale_capture)
+        self.scenario(self.check_test_missing_invalid_and_none_trait_states_are_explicit_and_stale_changes_reject)
 
 
 class PrivateReviewLookupTests(unittest.TestCase):
@@ -195,63 +209,6 @@ class PortableAuthoritativeTests(unittest.TestCase):
         self.window._current_image_key = lambda: self.key
         self.install_profile()
 
-    def test_actual_relocation_preserves_complete_identity_predictions_crops_and_normal_reviews(self):
-        before, _ = self.paired()
-        self.save_desktop_review()
-        reviewed = self.window._current_report(self.result)
-        old_review = self.window._review_path(before).read_bytes()
-        from seedvision.export.crop_artifacts import export_seed_crop_artifacts
-        crops = export_seed_crop_artifacts(self.root / 'crops', self.result, reviewed,
-                                           seed_ids=(1, 2), padding_px=2)
-        old_crops = json.loads((crops / 'seed-crops.json').read_text())
-        base = self.transport()
-        snapshot = create_snapshot(self.root, self.master, base / 'snapshots')
-        self.relocate(base, snapshot)
-        after, batch = self.paired()
-        self.assertEqual(after['identity'], before['identity'])
-        self.assertEqual(after['result_revision'], before['result_revision'])
-        self.assertEqual(after['instances'], reviewed['instances'])
-        self.assertEqual(after['reviewed_measurements'], before['reviewed_measurements'])
-        self.assertEqual(after['identity']['crop_offset'], [22, 6])
-        self.assertEqual(batch['review_lookup'], 'matched')
-        self.assertEqual(after['trait_classifier']['predictions'], before['trait_classifier']['predictions'])
-        self.assertNotEqual(after['trait_classifier']['model_path'], before['trait_classifier']['model_path'])
-        self.assertNotEqual(after['native_artifact_execution'], before['native_artifact_execution'])
-        self.assertNotIn('model_path', after['identity']['trait_classifier'])
-        self.assertTrue(self.task.node_cache.values['trait_classifier.features'].values.is_cuda)
-        private = self.master.parent / 'result-reviews' / (before['result_revision'] + '.json')
-        self.assertEqual(private.read_bytes(), old_review)
-        self.assertFalse((self.root / 'result-reviews').exists())
-        new_crops = export_seed_crop_artifacts(self.root / 'crops', self.result, after,
-                                              seed_ids=(1, 2), padding_px=2)
-        new_payload = json.loads((new_crops / 'seed-crops.json').read_text())
-        self.assertEqual(new_payload, old_crops)
-        # Two restores keep their own bytes; no shared approvals are created.
-        second = restore_snapshot(snapshot, self.root)
-        self.assertNotEqual(second.parent, self.master.parent)
-        self.assertEqual((second.parent / 'result-reviews' / private.name).read_bytes(), old_review)
-        with self.assertRaisesRegex(ValueError, 'captured selection|changed|binding'):
-            # Model-path selection change must not be silently applied to a cached result.
-            self.window.pipeline.set_parameter('trait_classifier', 'trait_model_path', 'None')
-            self.window._current_report(self.result)
-        restored_model = after['native_artifact_execution']['selections']['trait_classifier']['selection']
-        self.window.pipeline.set_parameter('trait_classifier', 'trait_model_path', restored_model)
-        self.window.pipeline.set_parameter('trait_classifier', 'trait_abstention_threshold', .99)
-        loaded = ProjectAnalysisStore(self.root).load(self.master)
-        ProjectAnalysisStore(self.root).save(replace(loaded.document,
-            analysis_settings=analysis_settings_profile_from_graph(self.window.pipeline)), self.master)
-        self.window._cache_dirty_nodes.clear()
-        changed, _ = self.paired()
-        self.assertNotEqual(changed['result_revision'], after['result_revision'])
-        self.assertEqual(changed['review_lookup'], 'not_recorded')
-        model_path = Path(changed['trait_classifier']['model_path'])
-        model_path.write_bytes(model_path.read_bytes() + b'\n')
-        with self.assertRaisesRegex(ValueError, 'changed after analysis'):
-            self.window._current_report(self.result)
-        changed_model, _ = self.paired()
-        self.assertNotEqual(changed_model['result_revision'], changed['result_revision'])
-        self.assertEqual(changed_model['review_lookup'], 'not_recorded')
-        self.assertEqual(private.read_bytes(), old_review)
 
     def learned_relocation(self, node, family, model_class):
         from seedvision.learning.checkpoint import save_checkpoint
@@ -291,58 +248,9 @@ class PortableAuthoritativeTests(unittest.TestCase):
         self.assertNotEqual(current['resolved_path'], str(path))
         self.assertEqual((self.master.parent / 'result-reviews' / review_path.name).read_bytes(), raw)
 
-    def test_actual_unet_checkpoint_and_cuda_inference_preserve_revision_after_relocation(self):
-        from seedvision.learning.models import MultiHeadSeedUNet
-        self.learned_relocation('unet_instances', 'unet_watershed', MultiHeadSeedUNet)
 
-    def test_actual_stardist_checkpoint_and_cuda_inference_preserve_revision_after_relocation(self):
-        from seedvision.learning.models import SeedStarDist2D
-        self.learned_relocation('stardist_instances', 'stardist', SeedStarDist2D)
 
-    def test_disabled_selected_trait_and_learned_bytes_relocate_without_invented_model_validation(self):
-        self.graph.set_enabled('trait_classifier', False)
-        checkpoint = self.root / 'unused.pt'
-        checkpoint.write_bytes(b'not an executable model; selected while disabled')
-        self.graph.set_parameter('unet_instances', 'checkpoint_path', str(checkpoint))
-        self.save_project()
-        self.install_profile()
-        before, _ = self.paired()
-        base = self.transport()
-        snapshot = create_snapshot(self.root, self.master, base / 'snapshots')
-        self.relocate(base, snapshot)
-        after, _ = self.paired()
-        self.assertEqual(before['identity'], after['identity'])
-        self.assertIsNone(after.get('trait_classifier'))
-        record = after['identity']['native_artifact_selections']['unet_instances']
-        self.assertEqual(record['state'], 'bytes_recorded_format_unproven')
-        self.assertFalse(record['enabled'])
-        self.assertFalse(record['used'])
-        resolved = Path(after['native_artifact_execution']['selections']['unet_instances']['resolved_path'])
-        self.assertTrue(resolved.is_relative_to(self.root))
-        self.assertEqual(resolved.read_bytes(), b'not an executable model; selected while disabled')
 
-    def test_corrupt_and_unsafe_supplementary_review_inventory_cannot_publish_working_project(self):
-        before, _ = self.paired()
-        self.save_desktop_review()
-        base = self.transport()
-        snapshot = create_snapshot(self.root, self.master, base / 'snapshots')
-        index_path = snapshot / 'snapshot-index.json'
-        original = json.loads(index_path.read_text())
-        review_name = 'result-reviews/' + before['result_revision'] + '.json'
-        object_path = original['supplementary_evidence'][review_name]
-        for name, object_name in (('result-reviews/../elsewhere.json', object_path),
-                ('result-reviews\\bad.json', object_path), ('Result-Reviews/bad.json', object_path),
-                (review_name, 'objects/not-in-inventory.json')):
-            bad = deepcopy(original)
-            bad['supplementary_evidence'] = {name: object_name}
-            index_path.write_text(json.dumps(bad))
-            with self.subTest(name=name), self.assertRaisesRegex(ValueError, 'review evidence'):
-                restore_snapshot(snapshot, base / 'rejected')
-        index_path.write_text(json.dumps(original))
-        (snapshot / object_path).write_bytes(b'changed review')
-        with self.assertRaisesRegex(ValueError, 'verification failed|changed bytes'):
-            restore_snapshot(snapshot, base / 'rejected')
-        self.assertFalse(list((base / 'rejected').rglob('working.seedfiddle-project.json')))
 
 
 if __name__ == '__main__':

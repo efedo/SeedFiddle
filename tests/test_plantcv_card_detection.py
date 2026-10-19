@@ -1,3 +1,5 @@
+
+from tests.functional_units import functional_units
 import json
 from pathlib import Path
 import subprocess
@@ -81,6 +83,7 @@ def fixture(*, varied=False, orientation=0):
 
 
 @unittest.skipUnless(torch.cuda.is_available(), 'CUDA required')
+@functional_units
 class AutomaticCardTests(unittest.TestCase):
     def oracle(self,image,operation='detect',rectangle=False,**kwargs):
         with tempfile.TemporaryDirectory(prefix='card-oracle-',dir=ROOT/'artifacts') as temporary:
@@ -120,7 +123,7 @@ class AutomaticCardTests(unittest.TestCase):
         np.testing.assert_array_equal(source.cpu().numpy(),image)
         return result
 
-    def test_actual_complete_public_detector_and_bbox_both_methods_default_domain(self):
+    def check_test_actual_complete_public_detector_and_bbox_both_methods_default_domain(self):
         image=fixture()
         for method in (0,1):
             self.compare(image,adaptive_method=method)
@@ -128,7 +131,7 @@ class AutomaticCardTests(unittest.TestCase):
         expected,_=self.oracle(image)
         np.testing.assert_array_equal(card.mask_color_card_cuda(source).cpu().numpy(),expected['bbox'])
 
-    def test_card_rotations_white_corner_ties_and_scaling_named_and_custom(self):
+    def check_test_card_rotations_white_corner_ties_and_scaling_named_and_custom(self):
         for orientation,name in enumerate(('nano','passport','cameratrax','classic')):
             self.compare(fixture(orientation=orientation),adaptive_method=0,color_chip_size=name)
         self.compare(fixture(),adaptive_method=0,color_chip_size=(7,11))
@@ -142,7 +145,7 @@ class AutomaticCardTests(unittest.TestCase):
             borderMode=cv2.BORDER_CONSTANT,borderValue=(220,220,220))
         self.compare(rotated,adaptive_method=0)
 
-    def test_roi_half_open_rectangle_mapping_and_full_frame_edges(self):
+    def check_test_roi_half_open_rectangle_mapping_and_full_frame_edges(self):
         image=fixture()
         for bounds in ((40,40,420,580),(40,40,460,580),(40,40,420,620),(40,40,460,620),(0,0,460,620)):
             result=self.compare(image,adaptive_method=0,roi_bounds_xyxy=bounds)
@@ -153,7 +156,7 @@ class AutomaticCardTests(unittest.TestCase):
         np.testing.assert_array_equal(actual.labeled_mask.cpu().numpy(),expected['mask'])
         self.compare(image,adaptive_method=0,radius=100,roi_bounds_xyxy=(40,40,420,580))
 
-    def test_effective_radius_filters_and_block_size_preserve_strict_source_boundaries(self):
+    def check_test_effective_radius_filters_and_block_size_preserve_strict_source_boundaries(self):
         image=fixture();source=torch.as_tensor(image,device='cuda')
         small=self.compare(image,adaptive_method=0,radius=0,block_size=35)
         overlap=self.compare(image,adaptive_method=0,radius=70,block_size=35)
@@ -166,7 +169,7 @@ class AutomaticCardTests(unittest.TestCase):
                 card.detect_color_card_cuda(source,adaptive_method=0,**changed)
         self.compare(image,adaptive_method=0,aspect_ratio=1/1.27)
 
-    def test_actual_public_auto_affine_correction_and_compact_matrices(self):
+    def check_test_actual_public_auto_affine_correction_and_compact_matrices(self):
         image=fixture(varied=True)
         original,metadata=self.oracle(image,operation='auto',adaptive_method=0,color_chip_size='mini')
         source=torch.as_tensor(image,device='cuda');version=source._version
@@ -183,7 +186,7 @@ class AutomaticCardTests(unittest.TestCase):
         self.assertEqual(actual.correction.fit,'affine')
         self.assertEqual(source._version,version)
 
-    def test_no_card_numeric_uncertainty_and_topology_resources_remain_distinct(self):
+    def check_test_no_card_numeric_uncertainty_and_topology_resources_remain_distinct(self):
         source=torch.full((31,37,3),40,dtype=torch.uint8,device='cuda')
         with self.assertRaises(card.AutomaticCardNotFound):card.detect_color_card_cuda(source)
         uncertain=fixture();uncertain[uncertain==40]=60
@@ -193,14 +196,14 @@ class AutomaticCardTests(unittest.TestCase):
         with patch.object(card,'trace_binary_contours_cuda',side_effect=BinaryContourResourceError('bound')):
             with self.assertRaises(BinaryContourResourceError):card.detect_color_card_cuda(source,adaptive_method=0)
 
-    def test_missing_interior_chip_keeps_source_24_grid_labels_and_23_contours(self):
+    def check_test_missing_interior_chip_keeps_source_24_grid_labels_and_23_contours(self):
         image=fixture();image[235:286,155:206]=220
         result=self.compare(image,adaptive_method=0)
         self.assertEqual(len(result.geometry.selected_contour_indices),23)
         self.assertEqual(len(result.geometry.centers_xy),24)
         self.assertEqual(set(result.labeled_mask.unique().cpu().tolist()),set(range(0,241,10)))
 
-    def test_reusable_filter_and_final_mask_mutation_and_grid_metadata_tamper(self):
+    def check_test_reusable_filter_and_final_mask_mutation_and_grid_metadata_tamper(self):
         source=torch.as_tensor(fixture(),device='cuda')
         prepare=card.preprocessing.preprocess_color_card_cuda
         captured=[]
@@ -236,7 +239,7 @@ class AutomaticCardTests(unittest.TestCase):
             with self.assertRaisesRegex(card.AutomaticCardError,'Fixed grid'):
                 card.detect_color_card_cuda(source,adaptive_method=0)
 
-    def test_invalid_roi_storage_work_and_circle_budget_reject_before_filter_allocation(self):
+    def check_test_invalid_roi_storage_work_and_circle_budget_reject_before_filter_allocation(self):
         source=torch.as_tensor(fixture(),device='cuda')
         invalid=[{'roi_bounds_xyxy':bounds} for bounds in
             ((0,0,0,620),(0,0,461,620),(-1,0,400,600),(0,0,400,621),(0,0,False,600),(0,0,2.0,3))]
@@ -255,7 +258,7 @@ class AutomaticCardTests(unittest.TestCase):
         with patch.object(card,'MAX_GEOMETRY_WORK',1):
             with self.assertRaises(card.AutomaticCardResourceError):card.detect_color_card_cuda(source,adaptive_method=0)
 
-    def test_cancel_and_mutation_first_middle_final_callbacks_withhold_whole_result(self):
+    def check_test_cancel_and_mutation_first_middle_final_callbacks_withhold_whole_result(self):
         source=torch.as_tensor(fixture(),device='cuda')
         with self.assertRaises(card.AutomaticCardCancelled):
             card.detect_color_card_cuda(source,cancel=lambda:True)
@@ -278,7 +281,7 @@ class AutomaticCardTests(unittest.TestCase):
                     operation(source,adaptive_method=0,cancel=mutate)
                 source[0,0,0]=220
 
-    def test_actual_multi_tile_custom_stream_retained_and_scratch_memory(self):
+    def check_test_actual_multi_tile_custom_stream_retained_and_scratch_memory(self):
         source=torch.as_tensor(fixture(),device='cuda')
         stream=torch.cuda.Stream(device=source.device);torch.cuda.synchronize()
         baseline=torch.cuda.memory_allocated(source.device);torch.cuda.reset_peak_memory_stats(source.device)
@@ -287,6 +290,23 @@ class AutomaticCardTests(unittest.TestCase):
         self.assertEqual(actual.correction.corrected_bgr.device,source.device)
         self.assertLessEqual(torch.cuda.max_memory_allocated(source.device)-baseline,
                             card.MAX_RETAINED_BYTES+256*1024*1024)
+
+    def test_workflow_lifecycle(self):
+        """7 related AutomaticCardTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_actual_complete_public_detector_and_bbox_both_methods_default_domain)
+        self.scenario(self.check_test_card_rotations_white_corner_ties_and_scaling_named_and_custom)
+        self.scenario(self.check_test_roi_half_open_rectangle_mapping_and_full_frame_edges)
+        self.scenario(self.check_test_effective_radius_filters_and_block_size_preserve_strict_source_boundaries)
+        self.scenario(self.check_test_actual_public_auto_affine_correction_and_compact_matrices)
+        self.scenario(self.check_test_no_card_numeric_uncertainty_and_topology_resources_remain_distinct)
+        self.scenario(self.check_test_actual_multi_tile_custom_stream_retained_and_scratch_memory)
+
+    def test_validation_and_recovery(self):
+        """4 related AutomaticCardTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_missing_interior_chip_keeps_source_24_grid_labels_and_23_contours)
+        self.scenario(self.check_test_reusable_filter_and_final_mask_mutation_and_grid_metadata_tamper)
+        self.scenario(self.check_test_invalid_roi_storage_work_and_circle_budget_reject_before_filter_allocation)
+        self.scenario(self.check_test_cancel_and_mutation_first_middle_final_callbacks_withhold_whole_result)
 
 
 if __name__=='__main__':unittest.main()

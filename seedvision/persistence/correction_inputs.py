@@ -91,12 +91,16 @@ class ProjectCorrectionBinding:
     recipe_version: str
     recipe_sha256: str
     inputs: tuple[CorrectionInputAsset, ...]
+    owner_id: str | None = None
 
     def __post_init__(self):
         _text(self.image_id, 'image identifier')
         _text(self.recipe_id, 'recipe identifier')
         _text(self.recipe_version, 'recipe version')
         _digest(self.recipe_sha256)
+        if self.owner_id is not None and (type(self.owner_id) is not str or
+                re.fullmatch(r'node_[0-9a-f]{32}', self.owner_id) is None):
+            raise ValueError('Correction instance owner is invalid.')
         if self.recipe_id != RECIPE_ID:
             raise ValueError('Correction binding requires the correction recipe.')
         if (type(self.inputs) is not tuple or len(self.inputs) != len(PORTS)
@@ -111,7 +115,8 @@ class ProjectCorrectionBinding:
 
     @property
     def key(self):
-        return self.image_id, self.recipe_id, self.recipe_version, self.recipe_sha256
+        key = self.image_id, self.recipe_id, self.recipe_version, self.recipe_sha256
+        return key if self.owner_id is None else (*key, self.owner_id)
 
     @property
     def input_sources(self):
@@ -123,31 +128,45 @@ class ProjectCorrectionBinding:
                                  ensure_ascii=True, allow_nan=False).encode('utf-8')).hexdigest()
 
     def to_dict(self):
-        return {'image_id': self.image_id, 'recipe_id': self.recipe_id,
+        value = {'image_id': self.image_id, 'recipe_id': self.recipe_id,
                 'recipe_version': self.recipe_version, 'recipe_sha256': self.recipe_sha256,
                 'inputs': [item.to_dict() for item in self.inputs]}
+        if self.owner_id is not None:
+            value['owner_id'] = self.owner_id
+        return value
 
     @classmethod
     def from_dict(cls, value):
-        if type(value) is not dict or set(value) != {
-                'image_id', 'recipe_id', 'recipe_version', 'recipe_sha256', 'inputs'}:
+        required = {'image_id', 'recipe_id', 'recipe_version', 'recipe_sha256', 'inputs'}
+        if type(value) is not dict or not required <= set(value) or set(value) - required - {'owner_id'}:
             raise ValueError('Correction binding has missing or unknown fields.')
         if type(value['inputs']) is not list or len(value['inputs']) != len(PORTS):
             raise ValueError('Correction binding inputs must be a four-item list.')
         return cls(**(value | {'inputs': tuple(CorrectionInputAsset.from_dict(item) for item in value['inputs'])}))
 
 
-def _recipes(attachments, native_recipes):
+def _recipes(attachments, native_recipes, pipeline_workflow=None, node_instances=()):
     from seedvision.persistence.reference_graphs import validate_reference_graphs
     from seedvision.persistence.native_recipes import validate_native_recipes
     from seedvision.benchmarking.native_correction_recipe import _validate_recipe
     result = {}
     recipes = tuple(item.recipe for item in validate_reference_graphs(attachments))
     recipes += validate_native_recipes(native_recipes)
+    if pipeline_workflow is not None:
+        from seedvision.pipeline.workflows import validate_workflow
+        validate_workflow(pipeline_workflow)
+        recipes += (pipeline_workflow.recipe,)
     for recipe in recipes:
         if recipe.recipe_id == RECIPE_ID:
             _validate_recipe(recipe)
             result[(recipe.recipe_id, recipe.recipe_version, recipe.identity.recipe_sha256)] = recipe
+    if node_instances:
+        from seedvision.pipeline.catalogue_nodes import validate_node_instances
+        for instance in validate_node_instances(node_instances):
+            if instance.workflow is not None and instance.workflow.recipe.recipe_id == RECIPE_ID:
+                recipe = instance.workflow.recipe
+                _validate_recipe(recipe)
+                result[(recipe.recipe_id, recipe.recipe_version, recipe.identity.recipe_sha256, instance.instance_id)] = recipe
     return result
 
 
@@ -173,11 +192,11 @@ def validate_correction_binding_records(bindings):
     return bindings
 
 
-def validate_correction_bindings(bindings, images, attachments=(), native_recipes=()):
+def validate_correction_bindings(bindings, images, attachments=(), native_recipes=(), pipeline_workflow=None, node_instances=()):
     bindings = validate_correction_binding_records(bindings)
     if not bindings:
         return bindings
-    selected = _recipes(attachments, native_recipes)
+    selected = _recipes(attachments, native_recipes, pipeline_workflow, node_instances)
     images_by_id = {image.identifier: image for image in images}
     for binding in bindings:
         if binding.key[1:] not in selected:
@@ -190,14 +209,14 @@ def validate_correction_bindings(bindings, images, attachments=(), native_recipe
     return bindings
 
 
-def correction_bindings_from_payload(value, images, attachments=(), native_recipes=()):
+def correction_bindings_from_payload(value, images, attachments=(), native_recipes=(), pipeline_workflow=None, node_instances=()):
     if type(value) is not list or len(value) > MAX_CORRECTION_BINDINGS:
         raise ValueError('Project correction bindings must be a bounded JSON list.')
     return validate_correction_bindings(tuple(ProjectCorrectionBinding.from_dict(row) for row in value),
-                                        images, attachments, native_recipes)
+                                        images, attachments, native_recipes, pipeline_workflow=pipeline_workflow, node_instances=node_instances)
 
 
-def binding_for_result(recipe, image_id, result):
+def binding_for_result(recipe, image_id, result, *, owner_id=None):
     from seedvision.benchmarking.native_correction_recipe import NativeCorrectionResult, _validate_recipe
     _validate_recipe(recipe)
     if (not isinstance(result, NativeCorrectionResult)
@@ -209,7 +228,7 @@ def binding_for_result(recipe, image_id, result):
         CoordinateFrame.from_dict(row['frame']), row['decode'], 'native-correction/'+row['sha256']+'.image')
         for role in PORTS for row in (sources[role],))
     return ProjectCorrectionBinding(image_id, recipe.recipe_id, recipe.recipe_version,
-                                    recipe.identity.recipe_sha256, inputs)
+                                    recipe.identity.recipe_sha256, inputs, owner_id)
 
 
 def resolve_correction_asset_path(root, relative):
@@ -258,7 +277,7 @@ def copy_verified_input(source, asset, destination=None, *, cancel=None):
     return digest.hexdigest()
 
 
-def capture_correction_bindings(root, bindings, images, attachments=(), native_recipes=(), *,
+def capture_correction_bindings(root, bindings, images, attachments=(), native_recipes=(), *, pipeline_workflow=None, node_instances=(),
                                 existing=None, cancel=None):
     """Verify/publish all role copies before a project master can reference them.
 
@@ -268,7 +287,7 @@ def capture_correction_bindings(root, bindings, images, attachments=(), native_r
     Omitting existing preserves every declared pin. Pass the prior tuple
     explicitly (empty for a wholly new selection) to capture new origin bytes.
     """
-    bindings = validate_correction_bindings(bindings, images, attachments, native_recipes)
+    bindings = validate_correction_bindings(bindings, images, attachments, native_recipes, pipeline_workflow=pipeline_workflow, node_instances=node_instances)
     if existing is None:
         existing = bindings
     if type(existing) is not tuple or len(existing) > MAX_CORRECTION_BINDINGS:
@@ -315,15 +334,15 @@ def capture_correction_bindings(root, bindings, images, attachments=(), native_r
                         temporary.unlink(missing_ok=True)
             inputs.append(replace(item, path=relative))
         result.append(replace(binding, inputs=tuple(inputs)))
-    result = validate_correction_bindings(tuple(result), images, attachments, native_recipes)
+    result = validate_correction_bindings(tuple(result), images, attachments, native_recipes, pipeline_workflow=pipeline_workflow, node_instances=node_instances)
     _cancel(cancel)
     # No caller callbacks after the final bounded transport audit.
-    verify_correction_bindings(root, result, images, attachments, native_recipes)
+    verify_correction_bindings(root, result, images, attachments, native_recipes, pipeline_workflow=pipeline_workflow, node_instances=node_instances)
     return result
 
 
-def verify_correction_bindings(root, bindings, images, attachments=(), native_recipes=(), *, cancel=None):
-    bindings = validate_correction_bindings(bindings, images, attachments, native_recipes)
+def verify_correction_bindings(root, bindings, images, attachments=(), native_recipes=(), *, pipeline_workflow=None, node_instances=(), cancel=None):
+    bindings = validate_correction_bindings(bindings, images, attachments, native_recipes, pipeline_workflow=pipeline_workflow, node_instances=node_instances)
     for binding in bindings:
         for asset in binding.inputs:
             copy_verified_input(resolve_correction_asset_path(root, asset.path), asset, cancel=cancel)
@@ -337,8 +356,8 @@ def select_correction_binding(current, selected):
     return tuple(selected if item.key == selected.key else item for item in current) + (() if found else (selected,))
 
 
-def retain_selected_correction_bindings(bindings, attachments=(), native_recipes=()):
-    selected = _recipes(attachments, native_recipes)
+def retain_selected_correction_bindings(bindings, attachments=(), native_recipes=(), pipeline_workflow=None, node_instances=()):
+    selected = _recipes(attachments, native_recipes, pipeline_workflow, node_instances)
     return tuple(binding for binding in bindings if binding.key[1:] in selected)
 
 

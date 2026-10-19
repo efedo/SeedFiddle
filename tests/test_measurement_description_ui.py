@@ -1,4 +1,6 @@
 """Reviewed overlay facts use the same measurement records as their values."""
+
+from tests.functional_units import functional_units
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,6 +18,7 @@ from seedvision.persistence.reference_regions import SeedInstanceAnnotation
 from seedvision.ui.image_view import ImageView
 
 
+@functional_units
 class MeasurementDescriptionUITests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -39,7 +42,7 @@ class MeasurementDescriptionUITests(unittest.TestCase):
         self.view.close()
         self.directory.cleanup()
 
-    def test_body_span_and_point_tooltips_bind_definitions_units_and_frame_without_refitting(self):
+    def check_test_body_span_and_point_tooltips_bind_definitions_units_and_frame_without_refitting(self):
         with patch.object(g, 'measure_shape_mask', side_effect=AssertionError('unexpected refit')):
             self.view._render_reviewed_shape_geometry(self.result, self.summary, uncertainty=True)
             self.view._render_size_ovality_distribution(self.result, self.summary, None)
@@ -62,7 +65,7 @@ class MeasurementDescriptionUITests(unittest.TestCase):
         self.view._render_size_ovality_distribution(self.result, summary, None)
         return sum(isinstance(item, QGraphicsLineItem) for item in self.view._overlay_items)
 
-    def test_unavailable_legacy_and_boundary_errors_omit_bars_but_valid_zero_is_available(self):
+    def check_test_unavailable_legacy_and_boundary_errors_omit_bars_but_valid_zero_is_available(self):
         measurement = self.summary.observations[0].measurement
         legacy = replace(measurement, provenance=None)
         baseline = self.chart_line_count(legacy)
@@ -80,7 +83,7 @@ class MeasurementDescriptionUITests(unittest.TestCase):
                                          calibration_relative_uncertainty=.02)
         self.assertEqual(self.chart_line_count(scale_only), baseline + 1)
 
-    def test_visibility_refresh_changes_metadata_without_changing_measurement_geometry(self):
+    def check_test_visibility_refresh_changes_metadata_without_changing_measurement_geometry(self):
         reviewed = self.summary.observations[0]
         records = {r.key: r for r in reviewed.measurement.described_values}
         initial = self.view._reviewed_shape_tooltip(reviewed, records, ('maximum_span',))
@@ -96,7 +99,7 @@ class MeasurementDescriptionUITests(unittest.TestCase):
         self.assertEqual(changed_measurement.maximum_span_endpoints,
                          reviewed.measurement.maximum_span_endpoints)
 
-    def test_proven_corrected_frame_reaches_native_overlay_from_stored_bundle(self):
+    def check_test_proven_corrected_frame_reaches_native_overlay_from_stored_bundle(self):
         from seedvision.annotation.coordinates import reproject_bundle
         from seedvision.measurement.lineage import reviewed_measurement_context
         from seedvision.persistence.reference_regions import ReferenceRegionBundle
@@ -115,7 +118,7 @@ class MeasurementDescriptionUITests(unittest.TestCase):
         self.assertIn('source image frame: corrected_image', tooltips)
         self.assertIn('coordinates: input_mask', tooltips)
 
-    def test_model_overlay_explains_numeric_unavailability_and_retained_calibrated_evidence(self):
+    def check_test_model_overlay_explains_numeric_unavailability_and_retained_calibrated_evidence(self):
         mask = np.zeros((96, 128), np.uint8)
         cv2.ellipse(mask, (64, 48), (24, 14), 17, 0, 360, 1, -1)
         measurement = g.measure_shape_mask(mask, pixels_per_mm=1e-79)
@@ -126,7 +129,7 @@ class MeasurementDescriptionUITests(unittest.TestCase):
         self.assertIn('physical fit unavailable: numeric range', tooltips)
         self.assertIn('1.0 retained calibrated seed(s)', tooltips)
 
-    def test_actual_model_pooling_failure_reaches_native_tooltip_without_refitting(self):
+    def check_test_actual_model_pooling_failure_reaches_native_tooltip_without_refitting(self):
         from seedvision.reference_library.contracts import BiologicalContext, SpeciesDimensionsShapeBank
         component = model._local_component(
             (self.summary.observations[0].measurement,), 'flat')
@@ -144,7 +147,7 @@ class MeasurementDescriptionUITests(unittest.TestCase):
         self.assertIn('retained library component', tooltips)
         self.assertNotIn('local pooling applied', tooltips)
 
-    def test_actual_conditioned_model_update_reaches_native_view_without_refitting(self):
+    def check_test_actual_conditioned_model_update_reaches_native_view_without_refitting(self):
         from seedvision.reference_library.contracts import BiologicalContext, SpeciesDimensionsShapeBank
         from tests.test_local_shape_units import measurements
         prior = replace(model._local_component(measurements(scale=4.), 'flat'),
@@ -165,3 +168,16 @@ class MeasurementDescriptionUITests(unittest.TestCase):
         tooltips = '\n'.join(item.toolTip() for item in self.view._overlay_items)
         self.assertIn('local pooling applied', tooltips)
         self.assertNotIn('pooling unavailable', tooltips)
+
+    def test_workflow_lifecycle(self):
+        """5 related MeasurementDescriptionUITests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_body_span_and_point_tooltips_bind_definitions_units_and_frame_without_refitting)
+        self.scenario(self.check_test_visibility_refresh_changes_metadata_without_changing_measurement_geometry)
+        self.scenario(self.check_test_proven_corrected_frame_reaches_native_overlay_from_stored_bundle)
+        self.scenario(self.check_test_model_overlay_explains_numeric_unavailability_and_retained_calibrated_evidence)
+        self.scenario(self.check_test_actual_conditioned_model_update_reaches_native_view_without_refitting)
+
+    def test_validation_and_recovery(self):
+        """2 related MeasurementDescriptionUITests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_unavailable_legacy_and_boundary_errors_omit_bars_but_valid_zero_is_available)
+        self.scenario(self.check_test_actual_model_pooling_failure_reaches_native_tooltip_without_refitting)

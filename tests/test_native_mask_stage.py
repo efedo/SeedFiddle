@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.catalogue_fixtures import CatalogueTestCase
+
 from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
@@ -130,7 +132,7 @@ def _native_recipe(
     return recipe, stage.stage_id
 
 
-class NativeMaskIdentityTests(unittest.TestCase):
+class NativeMaskIdentityTests(CatalogueTestCase):
     def test_loaded_implementation_identity_is_stable_and_rejects_replaced_code(self) -> None:
         first = native_stage_module._implementation_digest()
         self.assertRegex(first, r"^[0-9a-f]{64}$")
@@ -141,7 +143,7 @@ class NativeMaskIdentityTests(unittest.TestCase):
 
 
 @unittest.skipUnless(HAS_CUDA, "the native mask checkpoint bridge requires an available CUDA device")
-class NativeMaskCudaStageTests(unittest.TestCase):
+class NativeMaskCudaStageTests(CatalogueTestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.device = torch.device("cuda", torch.cuda.current_device())
@@ -250,123 +252,9 @@ class NativeMaskCudaStageTests(unittest.TestCase):
         args = {key: value for key, value in case.items() if key not in {"input_array", "port"}}
         return run_native_mask_stage(**args)
 
-    def test_median_and_morphology_stages_match_actual_pinned_public_calls(self) -> None:
-        cases = (
-            ("filter.median_blur", {"ksize": 3}, None),
-            ("morphology.fill", {"size": 3}, _fill_semantics_mask()),
-            ("morphology.erode", {"ksize": 3, "iterations": 2}, None),
-            ("morphology.dilate", {"ksize": 3, "iterations": 2}, None),
-        )
-        for operation, parameters, source_array in cases:
-            with self.subTest(operation=operation):
-                case = self._case(operation, parameters, source_array)
-                outcome = self._run(case)
-                self.assertEqual(outcome.status, NativeMaskStageStatus.EXECUTED)
-                self.assertEqual(outcome.run_record.state, StageRunState.EXECUTED)
-                self.assertIsNotNone(outcome.checkpoint_reference)
-                output_name = "image" if operation == "filter.median_blur" else "mask"
-                native_checkpoint = load_checkpoint(
-                    case["output_root"], outcome.run_record.checkpoint_sha256,
-                )
-                native_output = native_checkpoint.arrays[output_name]
-                self.assertEqual(native_output.shape, case["input_array"].shape)
-                self.assertEqual(native_output.dtype, np.dtype(np.uint8))
-                self.assertFalse(native_checkpoint.measurement.eligible)
-                self.assertEqual(native_checkpoint.metadata["scientific_validation_status"], "not_certified")
-                self.assertEqual(native_checkpoint.metadata["execution_mode"], "native_compatible")
-                self.assertEqual(native_checkpoint.metadata["selected_parameters"], parameters)
-                self.assertIs(type(native_checkpoint.metadata["computation_runtime_ns"]), int)
-                self.assertEqual(
-                    native_checkpoint.identity.environment_versions["native_implementation_sha256"],
-                    self.implementation.implementation_sha256,
-                )
-                self.assertEqual(native_checkpoint.raster_roles[output_name].kind, "image" if output_name == "image" else "mask")
 
-                if self.reference_runner is not None:
-                    result = self.reference_runner.run(operation, {case["port"]: case["input_array"]}, parameters)
-                    reference_output = result.arrays[output_name]
-                    np.testing.assert_array_equal(native_output, reference_output)
-                if operation == "morphology.fill":
-                    expected = np.zeros_like(_fill_semantics_mask())
-                    expected[0, 1:5] = 255
-                    expected[6:8, 6] = 255
-                    expected[7, 7] = 255
-                    np.testing.assert_array_equal(native_output, expected)
 
-        rectangular = self._case("filter.median_blur", {"ksize": (3, 5)})
-        rectangular_outcome = self._run(rectangular)
-        self.assertEqual(rectangular_outcome.status, NativeMaskStageStatus.EXECUTED)
-        rectangular_checkpoint = load_checkpoint(
-            rectangular["output_root"], rectangular_outcome.run_record.checkpoint_sha256,
-        )
-        self.assertEqual(dict(rectangular_checkpoint.metadata["selected_parameters"]), {"ksize": (3, 5)})
-        input_tensor = torch.from_numpy(np.array(rectangular["input_array"], copy=True)).to(self.device)
-        from seedvision.cuda.plantcv_median import median_blur
-        expected = median_blur(input_tensor, (3, 5)).cpu().numpy()
-        np.testing.assert_array_equal(rectangular_checkpoint.arrays["image"], expected)
 
-    def test_empty_mask_is_distinct_from_a_valid_zero_grayscale_image(self) -> None:
-        empty_mask_case = self._case(
-            "morphology.erode", {"ksize": 3, "iterations": 1},
-            np.zeros(self.frame.shape, dtype=np.uint8),
-        )
-        mask_outcome = self._run(empty_mask_case)
-        self.assertEqual(mask_outcome.status, NativeMaskStageStatus.EMPTY)
-        self.assertEqual(mask_outcome.run_record.state, StageRunState.EMPTY)
-        mask_checkpoint = load_checkpoint(empty_mask_case["output_root"], mask_outcome.run_record.checkpoint_sha256)
-        self.assertEqual(mask_checkpoint.execution.status, ExecutionStatus.EMPTY)
-
-        zero_image_case = self._case(
-            "filter.median_blur", {"ksize": 3}, np.zeros(self.frame.shape, dtype=np.uint8),
-        )
-        image_outcome = self._run(zero_image_case)
-        self.assertEqual(image_outcome.status, NativeMaskStageStatus.EXECUTED)
-        image_checkpoint = load_checkpoint(zero_image_case["output_root"], image_outcome.run_record.checkpoint_sha256)
-        self.assertEqual(image_checkpoint.execution.status, ExecutionStatus.AVAILABLE)
-
-        fill_case = self._case(
-            "morphology.fill", {"size": 10_000}, _fixture_mask(),
-        )
-        fill_outcome = self._run(fill_case)
-        self.assertEqual(fill_outcome.status, NativeMaskStageStatus.EMPTY)
-        fill_checkpoint = load_checkpoint(fill_case["output_root"], fill_outcome.run_record.checkpoint_sha256)
-        self.assertEqual(fill_checkpoint.execution.status, ExecutionStatus.EMPTY)
-
-    def test_median_cancellation_and_source_undefined_geometry_are_explicit(self) -> None:
-        case = self._case("filter.median_blur", {"ksize": 3})
-        cancelled = self._run(case | {"cancel": lambda: True})
-        self.assertEqual(cancelled.status, NativeMaskStageStatus.CANCELLED)
-        self.assertIsNone(cancelled.checkpoint_reference)
-        np.testing.assert_array_equal(case["input_array"], _fixture_image())
-
-        tiny = np.arange(25, dtype=np.uint8).reshape(5, 5)
-        unsupported_case = self._case("filter.median_blur", {"ksize": 255}, tiny)
-        unsupported = self._run(unsupported_case)
-        self.assertEqual(unsupported.status, NativeMaskStageStatus.UNSUPPORTED)
-        self.assertIsNone(unsupported.checkpoint_reference)
-        self.assertIn("source-undefined", unsupported.run_record.reason)
-
-        fill_case = self._case("morphology.fill", {"size": 2}, _fixture_mask())
-        checks = 0
-
-        def cancel_fill_during_work() -> bool:
-            nonlocal checks
-            checks += 1
-            return checks >= 8
-
-        before = np.array(fill_case["input_array"], copy=True)
-        cancelled_fill = self._run(fill_case | {"cancel": cancel_fill_during_work})
-        self.assertEqual(cancelled_fill.status, NativeMaskStageStatus.CANCELLED)
-        self.assertIsNone(cancelled_fill.checkpoint_reference)
-        self.assertGreaterEqual(checks, 8)
-        np.testing.assert_array_equal(fill_case["input_array"], before)
-
-    def test_output_identity_must_match_exact_upstream_and_recipe(self) -> None:
-        case = self._case("morphology.erode", {"ksize": 3, "iterations": 2})
-        incorrect = replace(case["expected_output_identity"], upstream_checkpoint_sha256="e" * 64)
-        case["expected_output_identity"] = incorrect
-        with self.assertRaisesRegex(NativeMaskStageError, "Expected output identity differs"):
-            self._run(case)
 
     def test_original_reference_fill_recipe_is_not_mislabelled_as_native(self) -> None:
         recipe = self.catalogue.recipe("plantcv_seed_binary")

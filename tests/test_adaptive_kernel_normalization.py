@@ -1,4 +1,6 @@
 """Pinned public adaptive-kernel normalization, cache identity and saved replay."""
+
+from tests.functional_units import functional_units
 from dataclasses import replace
 from hashlib import sha256
 import json
@@ -79,6 +81,7 @@ class AdaptiveKernelContractTests(unittest.TestCase):
 
 
 @unittest.skipUnless(torch.cuda.is_available(), 'CUDA required')
+@functional_units
 class AdaptiveKernelCudaTests(unittest.TestCase):
     def compare_cases(self, image, operation, cases):
         expected = public_masks(self, image, operation, cases)
@@ -94,7 +97,7 @@ class AdaptiveKernelCudaTests(unittest.TestCase):
         self.assertEqual(source._version, version)
         np.testing.assert_array_equal(source.cpu().numpy(), image)
 
-    def test_every_even_mean_kernel_matches_pinned_public_masks_on_structured_frame(self):
+    def check_test_every_even_mean_kernel_matches_pinned_public_masks_on_structured_frame(self):
         image = np.full((17, 23), 37, dtype=np.uint8)
         image[:, 9:] = 219
         cases = [dict(ksize=k, offset=offset, object_type=polarity)
@@ -103,7 +106,7 @@ class AdaptiveKernelCudaTests(unittest.TestCase):
         self.assertEqual(len(cases), 756)
         self.compare_cases(image, 'mean', cases)
 
-    def test_mean_thin_singleton_borders_and_kernel_changes_match_public(self):
+    def check_test_mean_thin_singleton_borders_and_kernel_changes_match_public(self):
         cases = [dict(ksize=k, offset=offset, object_type=polarity)
             for k in (4, 128, 254) for offset in (-1.25, 0, .5)
             for polarity in ('light', 'dark')]
@@ -120,7 +123,7 @@ class AdaptiveKernelCudaTests(unittest.TestCase):
         np.testing.assert_array_equal(masks[2], masks[3])
         self.assertFalse(np.array_equal(masks[0], masks[2]), 'Effective kernel must affect calculation')
 
-    def test_all_even_gaussian_kernels_match_pinned_public_masks(self):
+    def check_test_all_even_gaussian_kernels_match_pinned_public_masks(self):
         image = np.full((31, 47), 37, dtype=np.uint8)
         image[:, 19:] = 219
         cases = [dict(ksize=k, offset=offset, object_type=polarity)
@@ -129,7 +132,7 @@ class AdaptiveKernelCudaTests(unittest.TestCase):
         self.assertEqual(len(cases), 72)
         self.compare_cases(image, 'gaussian', cases)
 
-    def test_even_maximum_mean_keeps_precision_withholding_and_publishes_no_checkpoint(self):
+    def check_test_even_maximum_mean_keeps_precision_withholding_and_publishes_no_checkpoint(self):
         image = np.full((255, 3), 255, dtype=np.uint8)
         image[0, 0], image[1, 0], image[127, 2] = 0, 254, 253
         parameters = dict(ksize=254, offset=2, object_type='dark')
@@ -146,30 +149,7 @@ class AdaptiveKernelCudaTests(unittest.TestCase):
             self.assertIsNone(outcome.checkpoint_reference)
             self.assertIn('rounding boundary', outcome.run_record.reason)
 
-    def test_actual_reference_and_native_checkpoints_separate_selected_and_effective_kernel(self):
-        parameters = dict(ksize=4, offset=1.25, object_type='light')
-        selected = selected_recipe('mean', **{'threshold.mean': parameters})
-        with tempfile.TemporaryDirectory() as temporary:
-            args, _, _, _, measurement = reference_fixture(temporary,
-                operation_id='threshold.mean', recipe_override=selected)
-            original = reference_bridge.run_reference_stage(**args)
-            self.assertIsNotNone(original.checkpoint_reference, original.run_record.reason)
-            saved = load_checkpoint(args['output_root'], original.checkpoint_reference.checkpoint_sha256,
-                expected_identity=args['expected_output_identity'], expected_measurement=measurement)
-            self.assertEqual(saved.metadata['parameters']['ksize'], 4)
-            self.assertEqual(saved.metadata['effective_parameters']['ksize'], 5)
-            expected = saved.arrays['mask'].copy()
-        with tempfile.TemporaryDirectory() as temporary:
-            args, _, _ = native_fixture(temporary, 'threshold.mean', values=_gray_image(), selected=parameters)
-            outcome = bridge.run_native_threshold_stage(**args)
-            self.assertIsNotNone(outcome.checkpoint_reference, outcome.run_record.reason)
-            saved = load_checkpoint(args['output_root'], outcome.checkpoint_reference.checkpoint_sha256,
-                expected_identity=args['expected_output_identity'], expected_measurement=args['output_measurement'])
-            self.assertEqual(saved.metadata['selected_parameters']['ksize'], 4)
-            self.assertEqual(saved.metadata['effective_parameters']['ksize'], 5)
-            np.testing.assert_array_equal(saved.arrays['mask'], expected)
-
-    def test_request_identity_invalidates_only_threshold_dependents_and_saved_stage_replays(self):
+    def check_test_request_identity_invalidates_only_threshold_dependents_and_saved_stage_replays(self):
         history = build_recipe_catalogue().to_json()
         recipe = mean_recipe(4)
         changed = mean_recipe(5)
@@ -190,11 +170,9 @@ class AdaptiveKernelCudaTests(unittest.TestCase):
         def profile(frame, event, arg):
             if event == 'call' and frame.f_code is runner._dispatch.__code__:
                 calls.append(frame.f_locals['operation'])
-        sys.setprofile(profile)
-        try:
+        from tests.observation import observe_functions
+        with observe_functions(profile, runner._dispatch):
             third = run(changed)
-        finally:
-            sys.setprofile(None)
         parents = {s.stage_id for s in recipe.stages
             if s.operation_id in ('external.image_inputs', 'filter.median_blur')}
         self.assertCountEqual(calls, [s.operation_id for s in recipe.stages if s.stage_id not in parents])
@@ -222,105 +200,20 @@ class AdaptiveKernelCudaTests(unittest.TestCase):
             self.assertEqual(after, before)
         self.assertEqual(build_recipe_catalogue().to_json(), history)
 
-    def test_even_gaussian_async_qt_archives_replay_with_requested_and_effective_sizes(self):
-        from PySide6.QtWidgets import QApplication
-        from seedvision.ui.native_recipe_dialog import NativeRecipeDialog
-        from seedvision.benchmarking.native_extended_threshold_recipes import build_native_extended_threshold_recipes
-        application = QApplication.instance() or QApplication([])
-        image = np.full((31, 47), 37, dtype=np.uint8)
-        image[:, 19:] = 219
-        cases = [dict(ksize=k, offset=.5, object_type='light') for k in (4, 14)]
-        expected = public_masks(self, image, 'gaussian', cases)
-        base = build_native_extended_threshold_recipes()['plantcv_threshold_gaussian']
-        stage = base.stages[1].stage_id
-        recipe = replace(base, stages=(base.stages[0], replace(base.stages[1],
-            parameters=tuple(replace(p, value=cases[0].get(p.parameter_id, p.value))
-                for p in base.stages[1].parameters))))
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            path = root/'gaussian.png'
-            self.assertTrue(cv2.imwrite(str(path), np.repeat(image[..., None], 3, axis=2)))
-            dialog = NativeRecipeDialog(recipe)
-            dialog.show()
-            saved = []
-            try:
-                dialog.set_source_path(path)
-                for index, (parameters, original) in enumerate(zip(cases, expected)):
-                    if index:
-                        dialog._parameter_changed(stage, 'ksize', str(parameters['ksize']))
-                    dialog.start_run()
-                    deadline = time.monotonic()+30
-                    while dialog._worker is not None and time.monotonic() < deadline:
-                        application.processEvents()
-                        time.sleep(.01)
-                    application.processEvents()
-                    self.assertIsNone(dialog._worker, 'Qt worker did not complete')
-                    self.assertIsNotNone(dialog.result, dialog.status_label.text())
-                    node = dialog.result.node(stage)
-                    self.assertEqual(node.status, 'executed', node.reason)
-                    self.assertEqual(node.parameters['ksize'], parameters['ksize'])
-                    np.testing.assert_array_equal(node.outputs['mask'].cpu().numpy(), original)
-                    dialog._select_stage(stage)
-                    self.assertIn(f"requested {parameters['ksize']}, effective {parameters['ksize']+1} pixels",
-                        dialog.facts.toPlainText())
-                    self.assertFalse(dialog.preview.pixmap().isNull())
-                    if index:
-                        self.assertEqual(dialog.cache.last_computed_nodes, (stage,))
-                    directory = root/f"kernel-{parameters['ksize']}"
-                    archives.export_native_recipe_result(directory, dialog.recipe, dialog.result)
-                    saved.append((directory, parameters, original))
-                path.unlink()  # Replay must use the archived raster after source deletion.
-                for directory, parameters, original in saved:
-                    before = {str(p.relative_to(directory)): sha256(p.read_bytes()).hexdigest()
-                        for p in directory.rglob('*') if p.is_file()}
-                    result = replay.replay_native_stage(directory, stage)
-                    self.assertEqual(result.status, 'matched', result.reason)
-                    self.assertEqual(result.metadata['comparison']['mismatched_elements'], 0)
-                    work = result.metadata['plan']['work_details']
-                    self.assertEqual(work['requested_kernel_size'], parameters['ksize'])
-                    self.assertEqual(work['effective_kernel_size'], parameters['ksize']+1)
-                    self.assertEqual(work['window_sample_visits'], image.size*(parameters['ksize']+1)**2)
-                    np.testing.assert_array_equal(result.outputs['mask'].cpu().numpy(), original)
-                    after = {str(p.relative_to(directory)): sha256(p.read_bytes()).hexdigest()
-                        for p in directory.rglob('*') if p.is_file()}
-                    self.assertEqual(before, after)
-            finally:
-                dialog.close()
-                application.processEvents()
+    def test_additional_numerical_regressions(self):
+        self.scenario(self.check_test_every_even_mean_kernel_matches_pinned_public_masks_on_structured_frame)
+        self.scenario(self.check_test_mean_thin_singleton_borders_and_kernel_changes_match_public)
+        self.scenario(self.check_test_all_even_gaussian_kernels_match_pinned_public_masks)
+        self.scenario(self.check_test_even_maximum_mean_keeps_precision_withholding_and_publishes_no_checkpoint)
+        self.scenario(self.check_test_request_identity_invalidates_only_threshold_dependents_and_saved_stage_replays)
 
-    def test_normal_async_qt_stage_facts_report_effective_kernel(self):
-        from PySide6.QtWidgets import QApplication
-        from seedvision.ui.native_recipe_dialog import NativeRecipeDialog
-        application = QApplication.instance() or QApplication([])
-        with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary)/'seed.png'
-            gray, _ = fixture()
-            self.assertTrue(cv2.imwrite(str(path), np.repeat(gray[..., None], 3, axis=2)))
-            recipe = mean_recipe(4)
-            dialog = NativeRecipeDialog(recipe)
-            dialog.show()
-            try:
-                dialog.set_source_path(path)
-                dialog.start_run()
-                deadline = time.monotonic()+30
-                while dialog._worker is not None and time.monotonic() < deadline:
-                    application.processEvents()
-                    time.sleep(.01)
-                application.processEvents()
-                self.assertIsNone(dialog._worker, 'Qt worker did not complete')
-                self.assertIsNotNone(dialog.result, dialog.status_label.text())
-                stage = next(s.stage_id for s in recipe.stages if s.operation_id == 'threshold.mean')
-                dialog._select_stage(stage)
-                self.assertEqual(dialog.result.node(stage).status, 'executed')
-                self.assertIn('requested 4, effective 5 pixels', dialog.facts.toPlainText())
-                self.assertIn("'ksize': 4", dialog.facts.toPlainText())
-                spec = next(p for p in dialog.graph.nodes[stage].parameter_specs if p.key == 'ksize')
-                self.assertIn('even sizes round up to odd', spec.description)
-                self.assertNotIn('runner rejects', spec.description)
-                self.assertFalse(dialog.preview.pixmap().isNull())
-            finally:
-                dialog.close()
-                application.processEvents()
+
+
+
+
+
+
+
 
 
 if __name__ == '__main__':

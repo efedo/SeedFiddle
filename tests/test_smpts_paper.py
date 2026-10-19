@@ -1,3 +1,5 @@
+
+from tests.functional_units import functional_units
 from collections.abc import Mapping
 from pathlib import Path
 import subprocess
@@ -68,6 +70,7 @@ class PaperPlanningTests(unittest.TestCase):
 
 
 @unittest.skipUnless(torch.cuda.is_available(), 'CUDA required')
+@functional_units
 class PaperCudaTests(unittest.TestCase):
     def gpu(self, value):
         return torch.as_tensor(value, device='cuda')
@@ -76,7 +79,7 @@ class PaperCudaTests(unittest.TestCase):
         self.assertEqual(actual.device.type, 'cuda')
         np.testing.assert_array_equal(actual.cpu().numpy(), expected)
 
-    def test_components_match_opencv8_on_islands_diagonals_chains_and_random_masks(self):
+    def check_test_components_match_opencv8_on_islands_diagonals_chains_and_random_masks(self):
         rng = np.random.default_rng(3847)
         cases = [np.zeros((1, 1), np.uint8), np.full((1, 4097), 255, np.uint8),
             np.eye(97, dtype=np.uint8)*255, np.full((83, 41), 255, np.uint8)]
@@ -98,7 +101,7 @@ class PaperCudaTests(unittest.TestCase):
                     with self.assertRaises(TypeError):
                         actual['components'][0]['area_pixels'] = 0
 
-    def test_binary_median_and_intersection_exact_with_replicated_borders(self):
+    def check_test_binary_median_and_intersection_exact_with_replicated_borders(self):
         rng = np.random.default_rng(98)
         for shape in ((1, 23), (23, 1), (13, 17)):
             mask = (rng.random(shape) < .5).astype(np.uint8)*255
@@ -113,7 +116,7 @@ class PaperCudaTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 call()
 
-    def test_targeted_erosion_split_disappearance_and_packed_original_rgb(self):
+    def check_test_targeted_erosion_split_disappearance_and_packed_original_rgb(self):
         mask, rgb = contact_fixture()
         source, rows = canonical_components(mask)
         selected = tuple(r['label_id'] for r in rows
@@ -146,7 +149,7 @@ class PaperCudaTests(unittest.TestCase):
         self.assertEqual(actual['packed_mask'].numel(), offset)
         self.assert_gpu(actual['mask'][2:6, :20], mask[2:6, :20])
 
-    def test_replicated_erosion_frame_edges_and_selected_window_controls(self):
+    def check_test_replicated_erosion_frame_edges_and_selected_window_controls(self):
         for shape in ((1, 19), (21, 1), (19, 23)):
             mask = np.full(shape, 255, np.uint8)
             mask[-1, -1] = 0
@@ -157,7 +160,7 @@ class PaperCudaTests(unittest.TestCase):
                 expected = cv2.erode(mask, np.ones((size, size), np.uint8), borderType=cv2.BORDER_REPLICATE)
                 self.assert_gpu(actual['mask'], expected)
 
-    def test_component_limit_and_failed_convergence_publish_nothing(self):
+    def check_test_component_limit_and_failed_convergence_publish_nothing(self):
         mask = np.zeros((127, 127), np.uint8)
         mask[::2, ::2] = 255
         actual = paper.components(self.gpu(mask))
@@ -172,7 +175,7 @@ class PaperCudaTests(unittest.TestCase):
             with self.assertRaises(paper.PaperResourceError):
                 paper.components(self.gpu(np.full((3, 3), 255, np.uint8)))
 
-    def test_stalled_hooks_fail_verification_and_alternate_stream_tiles_are_stable(self):
+    def check_test_stalled_hooks_fail_verification_and_alternate_stream_tiles_are_stable(self):
         mask = self.gpu(np.full((19, 23), 255, np.uint8))
         real = paper._program(mask)
         class Stalled:
@@ -190,7 +193,7 @@ class PaperCudaTests(unittest.TestCase):
         stream.synchronize()
         self.assert_gpu(actual['labels'], np.ones((19, 23), np.int32))
 
-    def test_every_component_workspace_is_guarded_before_callbacks(self):
+    def check_test_every_component_workspace_is_guarded_before_callbacks(self):
         original = paper._Guard.watch
         for target in range(9):
             watched = []
@@ -206,7 +209,7 @@ class PaperCudaTests(unittest.TestCase):
                 with self.assertRaises(paper.PaperMutationError):
                     paper.components(mask, cancel=mutate)
 
-    def test_overlapping_component_boxes_pack_only_their_own_pixels(self):
+    def check_test_overlapping_component_boxes_pack_only_their_own_pixels(self):
         mask = np.zeros((35, 37), np.uint8)
         mask[1:34, 1:36] = 255
         mask[3:32, 3:34] = 0
@@ -222,7 +225,7 @@ class PaperCudaTests(unittest.TestCase):
             expected = (actual['final_labels'][y0:y1, x0:x1] == row['label_id']).to(torch.uint8)*255
             self.assertTrue(torch.equal(actual['packed_mask'][offset:offset+count].reshape(expected.shape), expected))
 
-    def test_empty_extraction_and_compact_crop_limit(self):
+    def check_test_empty_extraction_and_compact_crop_limit(self):
         mask = np.zeros((9, 11), np.uint8)
         rgb = np.full((9, 11, 3), 121, np.uint8)
         actual = paper.extract_from_intersection(self.gpu(mask), self.gpu(rgb))
@@ -234,7 +237,7 @@ class PaperCudaTests(unittest.TestCase):
             with self.assertRaises(paper.PaperResourceError):
                 paper.extract_from_intersection(self.gpu(mask), self.gpu(rgb), 1000)
 
-    def test_cancellation_mutation_and_malformed_partition_withhold_results(self):
+    def check_test_cancellation_mutation_and_malformed_partition_withhold_results(self):
         mask, rgb = contact_fixture()
         gpu, image = self.gpu(mask), self.gpu(rgb)
         calls = 0
@@ -261,8 +264,7 @@ class PaperCudaTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             paper.components(gpu, cancel=lambda: 1)
 
-    @unittest.skipUnless(_REFERENCE.is_file(), 'Pinned OpenCV reference Python required')
-    def test_complete_declared_variant_matches_isolated_pinned_opencv_substeps(self):
+    def check_test_complete_declared_variant_matches_isolated_pinned_opencv_substeps(self):
         mask, rgb = contact_fixture()
         gray = np.where(mask, 220, 10).astype(np.uint8)
         script = r'''
@@ -299,6 +301,26 @@ np.savez(sys.argv[2], adaptive_mask=a, median_mask=m, global_mask=g,
                 labels, rows = canonical_components(values['mask'])
                 self.assert_gpu(actual['final_labels'], labels)
                 self.assertEqual(actual['final_components'], rows)
+
+    @unittest.skipUnless(_REFERENCE.is_file(), 'Pinned OpenCV reference Python required')
+    def test_complete_declared_variant_matches_isolated_pinned_opencv_substeps(self):
+        self.scenario(self.check_test_complete_declared_variant_matches_isolated_pinned_opencv_substeps, labelled=False)
+
+    def test_workflow_lifecycle(self):
+        """6 related PaperCudaTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_components_match_opencv8_on_islands_diagonals_chains_and_random_masks)
+        self.scenario(self.check_test_binary_median_and_intersection_exact_with_replicated_borders)
+        self.scenario(self.check_test_targeted_erosion_split_disappearance_and_packed_original_rgb)
+        self.scenario(self.check_test_replicated_erosion_frame_edges_and_selected_window_controls)
+        self.scenario(self.check_test_every_component_workspace_is_guarded_before_callbacks)
+        self.scenario(self.check_test_overlapping_component_boxes_pack_only_their_own_pixels)
+
+    def test_validation_and_recovery(self):
+        """4 related PaperCudaTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_component_limit_and_failed_convergence_publish_nothing)
+        self.scenario(self.check_test_stalled_hooks_fail_verification_and_alternate_stream_tiles_are_stable)
+        self.scenario(self.check_test_empty_extraction_and_compact_crop_limit)
+        self.scenario(self.check_test_cancellation_mutation_and_malformed_partition_withhold_results)
 
 
 if __name__ == '__main__':

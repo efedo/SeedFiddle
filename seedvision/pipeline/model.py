@@ -138,7 +138,7 @@ class PipelineNode:
             value = str(value)
             if value not in spec.choices:
                 raise ValueError(f"{value!r} is not valid for {spec.label}.")
-        elif spec.kind == "text":
+        elif spec.kind in ("text", "structured"):
             if key == 'neutral_patch_selection':
                 from seedvision.calibration.neutral import normalize_neutral_patch_selection
                 value = normalize_neutral_patch_selection(value)

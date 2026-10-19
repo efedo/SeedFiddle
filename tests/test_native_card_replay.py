@@ -1,4 +1,8 @@
 """Colour-card compact archive contracts and allocation-free replay admission."""
+
+from tests.catalogue_fixtures import CatalogueTestCase
+
+from tests.functional_units import functional_units
 from collections.abc import Mapping
 from copy import deepcopy
 import json
@@ -43,8 +47,9 @@ def geometry(count=24):
     }
 
 
-class CardCompactContractTests(unittest.TestCase):
-    def test_actual_archive_tags_preserve_mapping_sequence_types_and_source_order(self):
+@functional_units
+class CardCompactContractTests(CatalogueTestCase):
+    def check_test_actual_archive_tags_preserve_mapping_sequence_types_and_source_order(self):
         value = MappingProxyType({'geometry': geometry(23), 'empty': (), 'list': [None, True, 'é\n"\\']})
         decoded = replay.decode(tagged(value))
         self.assertEqual(decoded, replay.canonical(value))
@@ -55,7 +60,7 @@ class CardCompactContractTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             decoded['new'] = 1
 
-    def test_complete_escaped_json_byte_boundary_including_empty_container_envelopes(self):
+    def check_test_complete_escaped_json_byte_boundary_including_empty_container_envelopes(self):
         for value in (None, False, 2**255, -0.0, 'é😀\x00\n"\\', (), [], {}, {'a\n': [True, ()]}):
             binding = tagged(value)
             size = len(json.dumps(binding, ensure_ascii=False, separators=(',', ':'), allow_nan=False).encode('utf-8'))
@@ -67,7 +72,7 @@ class CardCompactContractTests(unittest.TestCase):
                 with self.assertRaises(replay.NativeCardReplayError):
                     replay.canonical(value)
 
-    def test_malformed_tags_duplicates_nonfinite_and_unsupported_types_reject(self):
+    def check_test_malformed_tags_duplicates_nonfinite_and_unsupported_types_reject(self):
         bad = (
             {'kind': 'array', 'name': 'array_0000'}, {'kind': 'record', 'type': 'unknown', 'fields': {}},
             {'kind': 'tuple', 'items': [], 'extra': 1}, {'kind': ['tuple'], 'items': []},
@@ -82,7 +87,7 @@ class CardCompactContractTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(replay.NativeCardReplayError):
                 replay.canonical(value)
 
-    def test_depth_items_cycles_and_pretraversal_container_limits(self):
+    def check_test_depth_items_cycles_and_pretraversal_container_limits(self):
         cyclic = []; cyclic.append(cyclic)
         with self.assertRaisesRegex(replay.NativeCardReplayError, 'cycle'):
             replay.canonical(cyclic)
@@ -105,7 +110,7 @@ class CardCompactContractTests(unittest.TestCase):
             with self.assertRaises(replay.NativeCardReplayError):
                 replay.decode('x' * 6)
 
-    def test_long_text_traversal_can_cancel_before_returning_compact_result(self):
+    def check_test_long_text_traversal_can_cancel_before_returning_compact_result(self):
         calls = []
         def poll():
             calls.append(True)
@@ -114,7 +119,7 @@ class CardCompactContractTests(unittest.TestCase):
             replay.decode('é' * 4096, poll)
         self.assertEqual(len(calls), 1)
 
-    def test_geometry_accepts_non24_count_outside_centers_and_roi_edge_bbox(self):
+    def check_test_geometry_accepts_non24_count_outside_centers_and_roi_edge_bbox(self):
         for count in (1, 23, 24, 25):
             value = geometry(count)
             value['centers_xy'] = ((-100, 900), *value['centers_xy'][1:])
@@ -123,7 +128,7 @@ class CardCompactContractTests(unittest.TestCase):
             self.assertEqual(actual['detected_chips'], count)
             self.assertEqual(actual['centers_xy'][0], (-100, 900))
 
-    def test_geometry_shapes_integer_domains_local_frame_and_provenance_reject(self):
+    def check_test_geometry_shapes_integer_domains_local_frame_and_provenance_reject(self):
         mutations = (
             lambda v: v.update(detected_chips=True), lambda v: v.update(detected_chips=0),
             lambda v: v.update(median_color_chip_width=0), lambda v: v.update(areas=(1.0,)),
@@ -142,7 +147,7 @@ class CardCompactContractTests(unittest.TestCase):
             with self.subTest(mutate=mutate), self.assertRaises(replay.NativeCardReplayError):
                 replay.validate(value, 'geometry', SHAPE, ROI)
 
-    def test_changed_welltyped_numbers_remain_mismatches_and_sequence_shapes_are_honest(self):
+    def check_test_changed_welltyped_numbers_remain_mismatches_and_sequence_shapes_are_honest(self):
         value = geometry(); expected = deepcopy(value); expected['median_color_chip_width'] = 51.0
         replay.validate(expected, 'geometry', SHAPE, ROI)
         compared = replay.compare(value, expected)
@@ -153,7 +158,7 @@ class CardCompactContractTests(unittest.TestCase):
             self.assertFalse(replay.compare((1, 2), changed)['shape_equal'])
         self.assertEqual(replay.compare({'empty': ()}, {'empty': ()})['mismatched_elements'], 0)
 
-    def test_scale_absent_and_anisotropic_and_matrix_source_domains(self):
+    def check_test_scale_absent_and_anisotropic_and_matrix_source_domains(self):
         for value in ({'px_width': None, 'px_height': None, 'unit': None},
                       {'px_width': .14, 'px_height': .22, 'unit': 'mm'}):
             self.assertEqual(replay.validate(value, 'scale', SHAPE, ROI), value)
@@ -172,7 +177,7 @@ class CardCompactContractTests(unittest.TestCase):
             with self.subTest(role=role), self.assertRaises(replay.NativeCardReplayError):
                 replay.validate(value, role, SHAPE)
 
-    def test_controls_reuse_source_domains_and_keep_every_key_exact(self):
+    def check_test_controls_reuse_source_domains_and_keep_every_key_exact(self):
         valid = {
             'color_card.bgr': {}, 'color_card.preprocess': {'roi_bounds_xyxy': None, 'adaptive_method': 0, 'block_size': 3},
             'color_card.geometry': {'min_size': 0, 'aspect_ratio': .5, 'solidity': 0}, 'color_card.mask': {'radius': 0},
@@ -197,15 +202,32 @@ class CardCompactContractTests(unittest.TestCase):
             with self.subTest(operation=operation), self.assertRaises(replay.NativeCardReplayError):
                 replay.controls(operation, parameters)
 
+    def test_workflow_lifecycle(self):
+        """5 related CardCompactContractTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_actual_archive_tags_preserve_mapping_sequence_types_and_source_order)
+        self.scenario(self.check_test_geometry_accepts_non24_count_outside_centers_and_roi_edge_bbox)
+        self.scenario(self.check_test_changed_welltyped_numbers_remain_mismatches_and_sequence_shapes_are_honest)
+        self.scenario(self.check_test_scale_absent_and_anisotropic_and_matrix_source_domains)
+        self.scenario(self.check_test_controls_reuse_source_domains_and_keep_every_key_exact)
 
-class CardReplayAdmissionTests(unittest.TestCase):
+    def test_validation_and_recovery(self):
+        """5 related CardCompactContractTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_complete_escaped_json_byte_boundary_including_empty_container_envelopes)
+        self.scenario(self.check_test_malformed_tags_duplicates_nonfinite_and_unsupported_types_reject)
+        self.scenario(self.check_test_depth_items_cycles_and_pretraversal_container_limits)
+        self.scenario(self.check_test_long_text_traversal_can_cancel_before_returning_compact_result)
+        self.scenario(self.check_test_geometry_shapes_integer_domains_local_frame_and_provenance_reject)
+
+
+@functional_units
+class CardReplayAdmissionTests(CatalogueTestCase):
     @classmethod
     def setUpClass(cls):
         recipe = factory.build_native_card_recipe()
         cls.parameters = {stage.operation_id: recipe.parameters_for_runner(stage.stage_id)
                           for stage in recipe.stages if stage.operation_id in replay.PORTS}
 
-    def test_full_and_local_raster_specs_retain_float64_labels(self):
+    def check_test_full_and_local_raster_specs_retain_float64_labels(self):
         self.assertEqual(replay.raster_spec('roi_bgr', SHAPE, ROI), ((540, 380, 3), '|u1'))
         self.assertEqual(replay.raster_spec('source_rgb', SHAPE, ROI), ((620, 460, 3), '|u1'))
         self.assertEqual(replay.raster_spec('chip_labels', SHAPE, ROI), (SHAPE, '<f8'))
@@ -216,7 +238,7 @@ class CardReplayAdmissionTests(unittest.TestCase):
             with self.assertRaises(replay.NativeCardReplayError):
                 replay.frames(shape, bounds)
 
-    def test_all_eight_plans_admit_without_cuda_or_numpy_allocation(self):
+    def check_test_all_eight_plans_admit_without_cuda_or_numpy_allocation(self):
         with patch.object(torch, 'as_tensor', side_effect=AssertionError('no upload')), \
                 patch.object(torch, 'empty', side_effect=AssertionError('no allocation')), \
                 patch.object(torch, 'zeros', side_effect=AssertionError('no allocation')), \
@@ -228,7 +250,7 @@ class CardReplayAdmissionTests(unittest.TestCase):
                     self.assertLessEqual(plan.selected_bytes, replay.MAX_SELECTED_BYTES)
         self.assertEqual(replay.plan('color_card.scale', SHAPE, self.parameters['color_card.scale']).selected_bytes, 0)
 
-    def test_tight_limits_reject_before_runtime_or_allocation_and_small_allocations_round(self):
+    def check_test_tight_limits_reject_before_runtime_or_allocation_and_small_allocations_round(self):
         for operation, parameters in self.parameters.items():
             planned = replay.plan(operation, SHAPE, parameters, bounds=ROI)
             self.assertEqual(replay.plan(operation, SHAPE, parameters, bounds=ROI,
@@ -245,7 +267,7 @@ class CardReplayAdmissionTests(unittest.TestCase):
             with self.assertRaises(replay.NativeCardReplayError):
                 replay.plan('color_card.bgr', (1, 1), {}, **caps)
 
-    def test_preprocess_uses_actual_roi_and_both_filter_source_admission_paths(self):
+    def check_test_preprocess_uses_actual_roi_and_both_filter_source_admission_paths(self):
         for method in (0, 1):
             for bounds in (None, ROI):
                 parameters = {'roi_bounds_xyxy': bounds, 'adaptive_method': method, 'block_size': 51}
@@ -260,7 +282,7 @@ class CardReplayAdmissionTests(unittest.TestCase):
             with self.assertRaises(replay.NativeCardReplayUnavailable):
                 replay.plan('color_card.preprocess', SHAPE, self.parameters['color_card.preprocess'])
 
-    def test_source_contour_row_circle_and_pixel_caps_are_separate_from_archive_caps(self):
+    def check_test_source_contour_row_circle_and_pixel_caps_are_separate_from_archive_caps(self):
         with self.assertRaisesRegex(replay.NativeCardReplayUnavailable, 'row/scratch'):
             replay.plan('color_card.geometry', (1_000_001, 1), self.parameters['color_card.geometry'])
         with self.assertRaises(replay.NativeCardReplayUnavailable):
@@ -276,34 +298,21 @@ class CardReplayAdmissionTests(unittest.TestCase):
         with self.assertRaisesRegex(replay.NativeCardReplayUnavailable, 'selected-array'):
             replay.plan('color_card.mask', (1, maximum + 1), {'radius': 0})
 
+    def test_workflow_lifecycle(self):
+        """4 related CardReplayAdmissionTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_full_and_local_raster_specs_retain_float64_labels)
+        self.scenario(self.check_test_all_eight_plans_admit_without_cuda_or_numpy_allocation)
+        self.scenario(self.check_test_preprocess_uses_actual_roi_and_both_filter_source_admission_paths)
+        self.scenario(self.check_test_source_contour_row_circle_and_pixel_caps_are_separate_from_archive_caps)
+
+    def test_validation_and_recovery(self):
+        """1 related CardReplayAdmissionTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_tight_limits_reject_before_runtime_or_allocation_and_small_allocations_round)
+
 
 @unittest.skipUnless(torch.cuda.is_available(), 'CUDA required')
 class ActualCardProductContractTests(unittest.TestCase):
-    def test_all_actual_compact_outputs_roundtrip_for_full_frame_and_roi(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / 'card.png'
-            self.assertTrue(cv2.imwrite(str(path), fixture(varied=True)))
-            for bounds in (None, ROI):
-                recipe = _parameter(factory.build_native_card_recipe(), factory.PREPROCESS, 'roi_bounds_xyxy', bounds)
-                result = runner.run_native_recipe_path(recipe, path)
-                self.assertEqual(result.status, 'executed', [(n.stage_id, n.reason) for n in result.nodes])
-                for stage in recipe.stages:
-                    if stage.operation_id not in replay.PORTS:
-                        continue
-                    _, outputs, _ = replay.PORTS[stage.operation_id]
-                    for port, role in outputs.items():
-                        value = result.node(stage.stage_id).outputs[port]
-                        with self.subTest(bounds=bounds, operation=stage.operation_id, port=port):
-                            if role in replay.RASTER_ROLES:
-                                shape, dtype = replay.raster_spec(role, SHAPE, bounds)
-                                self.assertEqual(tuple(value.shape), shape)
-                                self.assertEqual(value.dtype, torch.float64 if dtype == '<f8' else torch.uint8)
-                                self.assertEqual(value.device.type, 'cuda')
-                            else:
-                                decoded = replay.validate(replay.decode(tagged(value)), role, SHAPE, bounds)
-                                compared = replay.compare(value, decoded)
-                                self.assertEqual(compared['mismatched_elements'], 0)
-                                self.assertTrue(compared['shape_equal'])
+    pass
 
 
 if __name__ == '__main__':

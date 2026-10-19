@@ -19,7 +19,7 @@ import torch
 from seedvision.benchmarking.checkpoints import CoordinateFrame
 from seedvision.benchmarking.native_recipe import (
     MAX_RETAINED_CUDA_BYTES, NativeRecipeNode, _CacheEntry, _digest,
-    _module_record, _output_signatures, _runtime_records, _tensor_signature,
+    _module_record, _output_signatures, _runtime_records, _tensor_signature, _execution_signature,
 )
 from seedvision.benchmarking.recipe_catalogue import build_recipe_catalogue
 from seedvision.benchmarking.recipes import RecipeIdentity, RecipeSpec, RecipeProvenanceMode
@@ -161,6 +161,10 @@ def _result(recipe, target_sha, source_sha, target_frame, source_frame,
         "target_mask": "caller-supplied CUDA uint8 chip labels in target frame",
         "source_mask": "caller-supplied CUDA uint8 chip labels in source frame",
     }
+    if node.backend == 'plantcv':
+        for name in ('target_rgb', 'source_rgb'):
+            preparation[name] = ('caller-supplied CUDA uint8 RGB; explicit CPU transfer, '
+                'audited worker RGB-to-BGR conversion; corrected raster returned to CUDA')
     return NativeCorrectionResult(recipe.identity, target_sha, source_sha,
         target_frame, source_frame, MappingProxyType(preparation),
         MappingProxyType(dict(runtime)), implementation, (node,), "executed")
@@ -168,7 +172,8 @@ def _result(recipe, target_sha, source_sha, target_frame, source_frame,
 
 def run_native_correction_recipe(recipe, target_rgb, target_mask, source_rgb,
         source_mask, *, target_source_sha256, source_sha256,
-        target_coordinate_frame, coordinate_frame, cache=None, cancel=None):
+        target_coordinate_frame, coordinate_frame, cache=None, cancel=None,
+        working_workflow=None, reference_runner=None):
     """Return every declared correction output with explicit RGB boundaries.
 
     Source and target may have different widths, but pinned correct_color's
@@ -217,18 +222,30 @@ def run_native_correction_recipe(recipe, target_rgb, target_mask, source_rgb,
     records[_correction.__name__] = _digest(_module_record(_correction))
     records[__name__] = _digest(_module_record(sys.modules[__name__]))
     implementation = _digest({"runtime": runtime, "modules": records})
-    key = _digest({"recipe": recipe.identity.analytical_dict(),
-        "inputs": input_keys, "implementation": implementation})
     prefix = f"reference.recipe:{recipe.recipe_id}:"
+    from seedvision.pipeline.backend_execution import BackendExecution
+    if working_workflow is not None and working_workflow.recipe != recipe:
+        raise NativeCorrectionError('Working correction workflow differs from the selected recipe.')
+    backend_execution = BackendExecution(recipe, workflow=working_workflow, runner=reference_runner,
+        cancel=cancel, cache=cache, prefix=prefix)
+    selected_backend = backend_execution.backend_for(stage.stage_id)
+    key_payload = {"recipe": recipe.identity.analytical_dict(),
+        "inputs": input_keys, "implementation": implementation}
+    if working_workflow is not None:
+        key_payload['backend_execution'] = backend_execution.key_for(stage.stage_id, {})
+    key = _digest(key_payload)
     name = prefix+stage.stage_id
     entry = cache.values.get(name)
     if (isinstance(entry, _CacheEntry) and entry.key == key
-            and entry.signatures == _correction_output_signatures(entry.node.outputs)):
+            and entry.signatures == _correction_output_signatures(entry.node.outputs)
+            and entry.execution_signature == _execution_signature(entry.node)):
         _cancel(cancel)
+        backend_execution.audit()
         previous = entry.node
         node = NativeRecipeNode(previous.stage_id, previous.operation_id, previous.status,
             previous.outputs, previous.parameters, previous.input_keys, previous.product_key,
-            reused=True, reason=previous.reason)
+            reused=True, reason=previous.reason, backend=previous.backend,
+            backend_provenance=previous.backend_provenance)
         cache.last_computed_nodes, cache.last_reused_nodes = (), (stage.stage_id,)
         cache.node_timings_seconds = {stage.stage_id: 0.0}
         return _result(recipe, target_source_sha256, source_sha256,
@@ -240,28 +257,35 @@ def run_native_correction_recipe(recipe, target_rgb, target_mask, source_rgb,
     started = time.perf_counter()
     try:
         _cancel(cancel)
-        target_bgr = target_rgb.flip(-1).contiguous()
-        _cancel(cancel)
-        source_bgr = source_rgb.flip(-1).contiguous()
-        correction = _correction.correct_color_cuda(target_bgr, target_mask,
-            source_bgr, source_mask, cancel=cancel)
-        outputs = {
-            "corrected_image": correction.corrected_bgr.flip(-1).contiguous(),
-            "target_matrix": _immutable_array(correction.target_matrix),
-            "source_matrix": _immutable_array(correction.source_matrix),
-            "transformation_matrix": _immutable_array(correction.transformation_matrix),
-        }
+        backend_provenance = None
+        if selected_backend == 'plantcv':
+            outputs, backend_provenance, _ = backend_execution.execute(stage, tensors, {}, {})
+        else:
+            target_bgr = target_rgb.flip(-1).contiguous()
+            _cancel(cancel)
+            source_bgr = source_rgb.flip(-1).contiguous()
+            correction = _correction.correct_color_cuda(target_bgr, target_mask,
+                source_bgr, source_mask, cancel=cancel)
+            outputs = {
+                "corrected_image": correction.corrected_bgr.flip(-1).contiguous(),
+                "target_matrix": _immutable_array(correction.target_matrix),
+                "source_matrix": _immutable_array(correction.source_matrix),
+                "transformation_matrix": _immutable_array(correction.transformation_matrix),
+            }
         if (set(outputs) != {port.name for port in stage.ports if port.direction == "output"}
                 or outputs["transformation_matrix"].shape != (9, 9)):
             raise NativeCorrectionError("Correction did not return all canonical outputs.")
         _cancel(cancel)
+        backend_execution.audit()
         generation_name = prefix+"generation"
         generation = int(cache.values.get(generation_name, 0))+1
         node = NativeRecipeNode(stage.stage_id, stage.operation_id, "executed",
             MappingProxyType(outputs), MappingProxyType({}), MappingProxyType(input_keys),
-            _digest([key, generation]))
+            _digest([key, generation]), backend=selected_backend,
+            backend_provenance=backend_provenance)
         cache.values[generation_name] = generation
-        cache.values[name] = _CacheEntry(key, node, _correction_output_signatures(outputs))
+        cache.values[name] = _CacheEntry(key, node, _correction_output_signatures(outputs),
+            execution_signature=_execution_signature(node))
         cache.last_computed_nodes, cache.last_reused_nodes = (stage.stage_id,), ()
         cache.node_timings_seconds = {stage.stage_id: time.perf_counter()-started}
         return _result(recipe, target_source_sha256, source_sha256,

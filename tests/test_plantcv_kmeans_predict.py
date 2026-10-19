@@ -1,3 +1,5 @@
+
+from tests.functional_units import functional_units
 from dataclasses import replace
 import json
 from pathlib import Path
@@ -82,6 +84,7 @@ def cases():
 
 
 @unittest.skipUnless(torch.cuda.is_available(), 'CUDA required')
+@functional_units
 class KMeansPredictionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -97,7 +100,7 @@ class KMeansPredictionTests(unittest.TestCase):
         channels = 1 if np.asarray(request['image']).ndim == 2 else 3
         return models.model_from_centres(reference['centres'], request['patch_size'], channels)
 
-    def test_full_images_match_public_predict_joblib_path_gray_rgb_odd_even_and_fitted_model(self):
+    def check_test_full_images_match_public_predict_joblib_path_gray_rgb_odd_even_and_fitted_model(self):
         for request, reference in zip(self.requests[:-1], self.references[:-1]):
             with self.subTest(p=request['patch_size'], fitted=request.get('fitted', False),
                               shape=np.asarray(request['image']).shape):
@@ -113,14 +116,14 @@ class KMeansPredictionTests(unittest.TestCase):
                 np.testing.assert_array_equal(source.cpu().numpy(), request['image'])
         self.assertGreater(len(np.unique(self.references[0]['labels'])), 1)
 
-    def test_fractional_public_tie_withholds_complete_prediction(self):
+    def check_test_fractional_public_tie_withholds_complete_prediction(self):
         request, reference = self.requests[-1], self.references[-1]
         self.assertTrue(np.all(np.asarray(reference['labels']) == 0))
         source = torch.tensor(request['image'], dtype=torch.uint8, device='cuda')
         with self.assertRaises(scoring.KMeansDecisionAmbiguous):
             native.predict_kmeans(source, self.model(request, reference), tile_pixels=2)
 
-    def test_custom_stream_and_repartition_preserve_public_labels(self):
+    def check_test_custom_stream_and_repartition_preserve_public_labels(self):
         request, reference = self.requests[12], self.references[12]
         source = torch.tensor(request['image'], dtype=torch.uint8, device='cuda')
         model = self.model(request, reference)
@@ -131,7 +134,7 @@ class KMeansPredictionTests(unittest.TestCase):
         stream.synchronize()
         np.testing.assert_array_equal(actual.cpu().numpy(), reference['labels'])
 
-    def test_global_caps_model_geometry_and_forged_identity_fail_before_gaussian(self):
+    def check_test_global_caps_model_geometry_and_forged_identity_fail_before_gaussian(self):
         source = torch.zeros((7, 9, 3), dtype=torch.uint8, device='cuda')
         model = models.model_from_centres(((0.0,) * 27, (255.0,) * 27), 3, 3)
         for cap in ('MAX_WORK', 'MAX_SCRATCH_BYTES', 'MAX_CUDA_LIVE_BYTES'):
@@ -148,7 +151,7 @@ class KMeansPredictionTests(unittest.TestCase):
                 with self.assertRaises(scoring.KMeansResourceLimit):
                     native.predict_kmeans(source, model)
 
-    def test_actual_maximum_patch_multitile_full_prediction_peak_matches_global_plan(self):
+    def check_test_actual_maximum_patch_multitile_full_prediction_peak_matches_global_plan(self):
         source = torch.zeros((100, 101, 3), dtype=torch.uint8, device='cuda')
         model = models.model_from_centres(((0.0,) * 2883, (255.0,) * 2883), 31, 3)
         plan = native.preflight_kmeans_prediction(source, model)
@@ -179,7 +182,7 @@ class KMeansPredictionTests(unittest.TestCase):
         self.assertLessEqual(peak, plan.gaussian_output_bytes + plan.label_output_bytes + plan.scratch_bytes)
         self.assertTrue(bool((labels == 0).all().item()))
 
-    def test_early_mid_final_cancellation_and_mutated_input_publish_no_prediction(self):
+    def check_test_early_mid_final_cancellation_and_mutated_input_publish_no_prediction(self):
         source = torch.zeros((4, 5), dtype=torch.uint8, device='cuda')
         model = models.model_from_centres(((0.0,), (255.0,)), 1, 1)
         cancel_errors = (native.KMeansPredictionCancelled, preprocess.KMeansPreprocessCancelled,
@@ -211,3 +214,15 @@ class KMeansPredictionTests(unittest.TestCase):
             return False
         with self.assertRaises(native.KMeansPredictionError):
             native.predict_kmeans(source, model, tile_pixels=2, cancel=mutate_last)
+
+    def test_workflow_lifecycle(self):
+        """3 related KMeansPredictionTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_full_images_match_public_predict_joblib_path_gray_rgb_odd_even_and_fitted_model)
+        self.scenario(self.check_test_custom_stream_and_repartition_preserve_public_labels)
+        self.scenario(self.check_test_actual_maximum_patch_multitile_full_prediction_peak_matches_global_plan)
+
+    def test_validation_and_recovery(self):
+        """3 related KMeansPredictionTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_fractional_public_tie_withholds_complete_prediction)
+        self.scenario(self.check_test_global_caps_model_geometry_and_forged_identity_fail_before_gaussian)
+        self.scenario(self.check_test_early_mid_final_cancellation_and_mutated_input_publish_no_prediction)

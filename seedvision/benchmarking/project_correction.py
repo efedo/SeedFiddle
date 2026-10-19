@@ -4,7 +4,7 @@ from pathlib import Path
 import sys
 from types import MappingProxyType
 
-from seedvision.benchmarking.native_recipe import NativeRecipeCancelled, _digest, _module_record
+from seedvision.benchmarking.native_recipe import NativeRecipeCancelled, _digest, _module_record, _execution_signature
 from seedvision.benchmarking.native_correction_inputs import (
     run_native_correction_files, correction_file_implementation_sha256, _signatures,
 )
@@ -65,7 +65,8 @@ def _project_source(root, image_record, image_path):
 
 
 def run_project_correction(recipe, root, binding, image_record, image_path, *,
-                           cache=None, previous=None, cancel=None):
+                           cache=None, previous=None, cancel=None, working_workflow=None,
+                           reference_runner=None):
     """Return correction outputs and one reusable prepared CUDA input bundle.
 
     A caller may retain the prepared bundle across adjacent correction runs for
@@ -100,8 +101,10 @@ def run_project_correction(recipe, root, binding, image_record, image_path, *,
         _bindings.verify_correction_bindings(root, (binding,), (image_record,),
                                              native_recipes=(recipe,), cancel=asset_cancel)
         result, prepared = run_native_correction_files(recipe, paths, cache=cache,
-                                                       previous=previous, cancel=asset_cancel)
-        signatures = _correction_output_signatures(result.node(STAGE_ID).outputs)
+            previous=previous, cancel=asset_cancel, working_workflow=working_workflow,
+            reference_runner=reference_runner)
+        signatures = (_correction_output_signatures(result.node(STAGE_ID).outputs),
+            _execution_signature(result.node(STAGE_ID)))
         _bindings.validate_correction_run_origins(recipe, origins, result.input_sources)
         if (result.source_sha256 != image_record.source.sha256
                 or result.coordinate_frame.shape != tuple(image_record.source_shape)):
@@ -117,7 +120,8 @@ def run_project_correction(recipe, root, binding, image_record, image_path, *,
         _bindings.verify_correction_bindings(root, (binding,), (image_record,), native_recipes=(recipe,))
         if _signatures(prepared.tensors) != dict(prepared.tensor_signatures):
             raise ValueError('A prepared project correction input changed during execution.')
-        if _correction_output_signatures(result.node(STAGE_ID).outputs) != signatures:
+        if (_correction_output_signatures(result.node(STAGE_ID).outputs),
+                _execution_signature(result.node(STAGE_ID))) != signatures:
             raise ValueError('A project correction output changed before publication.')
         runtime = dict(result.runtime) | before
         return replace(result, input_origins=origins, runtime=MappingProxyType(runtime),

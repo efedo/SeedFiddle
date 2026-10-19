@@ -1,4 +1,6 @@
 """Native selection/cache/report witnesses for the frozen trait classifier."""
+
+from tests.functional_units import functional_units
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -20,6 +22,7 @@ import tests.test_trait_classifier as core_fixture
 
 
 @unittest.skipUnless(torch.cuda.is_available(), 'Native classifier inference requires CUDA')
+@functional_units
 class TraitPipelineTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -57,7 +60,7 @@ class TraitPipelineTests(unittest.TestCase):
             layers=SimpleNamespace(foreground_colour_profile=object()),
             procedural_instances=self.instances, trait_classifier=result)
 
-    def test_selected_method_preference_is_shared_and_filters_disabled_branches(self):
+    def check_test_selected_method_preference_is_shared_and_filters_disabled_branches(self):
         values = dict(unet=object(), stardist=object(), procedural=object())
         analysis = SimpleNamespace(unet_instances=values['unet'], stardist_instances=values['stardist'],
             procedural_instances=values['procedural'], layers=SimpleNamespace(foreground_colour_profile=object()))
@@ -66,7 +69,7 @@ class TraitPipelineTests(unittest.TestCase):
         analysis.layers.foreground_colour_profile = None
         self.assertIsNone(select_result(analysis, {'procedural_instances'})[1])
 
-    def test_actual_cuda_resize_colour_features_predict_without_raster_download(self):
+    def check_test_actual_cuda_resize_colour_features_predict_without_raster_download(self):
         with patch.object(torch.Tensor, 'cpu', side_effect=AssertionError('raster downloaded')):
             result, computed = self.run_classifier()
         self.assertTrue(computed)
@@ -78,7 +81,7 @@ class TraitPipelineTests(unittest.TestCase):
         self.assertEqual(result.report['input_binding']['crop_offset'], [0, 0])
         self.assertFalse(result.report['scientifically_validated'])
 
-    def test_threshold_only_reuses_features_and_scores_then_identical_run_reuses_result(self):
+    def check_test_threshold_only_reuses_features_and_scores_then_identical_run_reuses_result(self):
         first, _ = self.run_classifier(threshold=0)
         features = self.cache['trait_classifier.features']
         with patch('seedvision.learning.trait_pipeline.extract_trait_features', side_effect=AssertionError('features ran')), \
@@ -91,7 +94,7 @@ class TraitPipelineTests(unittest.TestCase):
         self.assertIs(features, self.cache['trait_classifier.features'])
         self.assertNotEqual(first.report['abstention_threshold'], second.report['abstention_threshold'])
 
-    def test_model_content_change_rescores_without_reextracting_features(self):
+    def check_test_model_content_change_rescores_without_reextracting_features(self):
         first, _ = self.run_classifier()
         payload = self.model.payload
         payload['weights'][0][0] *= -1
@@ -103,7 +106,7 @@ class TraitPipelineTests(unittest.TestCase):
         self.assertTrue(computed)
         self.assertNotEqual(first.report['model_sha256'], second.report['model_sha256'])
 
-    def test_label_corrected_pixels_and_support_changes_invalidate_features(self):
+    def check_test_label_corrected_pixels_and_support_changes_invalidate_features(self):
         self.run_classifier()
         old = self.cache['trait_classifier.features']
         self.labels[4, 4] = 1
@@ -118,7 +121,7 @@ class TraitPipelineTests(unittest.TestCase):
         result, _ = self.run_classifier()
         self.assertEqual(result.report['predictions'][0]['abstention_reason'], 'outside_valid_crop')
 
-    def test_missing_invalid_models_and_frame_boundary_inputs_abstain(self):
+    def check_test_missing_invalid_models_and_frame_boundary_inputs_abstain(self):
         with patch('seedvision.learning.trait_pipeline.extract_trait_features', side_effect=AssertionError('features ran')):
             absent, _ = self.run_classifier(path='None')
             missing, _ = self.run_classifier(path=self.root / 'missing.json')
@@ -135,7 +138,7 @@ class TraitPipelineTests(unittest.TestCase):
         boundary, _ = self.run_classifier()
         self.assertEqual(boundary.report['predictions'][0]['abstention_reason'], 'crop_boundary_instance')
 
-    def test_report_persists_actual_traits_and_threshold_changes_stale_review(self):
+    def check_test_report_persists_actual_traits_and_threshold_changes_stale_review(self):
         prediction, _ = self.run_classifier(threshold=0)
         analysis = self.analysis(prediction)
         with patch('seedvision.learning.trait_pipeline.run_trait_classifier', side_effect=AssertionError('export recomputed')):
@@ -149,7 +152,7 @@ class TraitPipelineTests(unittest.TestCase):
         analysis.trait_classifier = self.run_classifier(threshold=.99)[0]
         self.assertEqual(result_report(analysis, review=review)['accepted_count'], 0)
 
-    def test_changed_exported_labels_crop_pixels_or_model_reject_before_report(self):
+    def check_test_changed_exported_labels_crop_pixels_or_model_reject_before_report(self):
         result, _ = self.run_classifier()
         analysis = self.analysis(result)
         self.labels[5, 5] = 1
@@ -164,7 +167,7 @@ class TraitPipelineTests(unittest.TestCase):
         self.path.write_text('{}')
         with self.assertRaisesRegex(ValueError, 'model changed'): result_report(analysis)
 
-    def test_graph_settings_roundtrip_and_authored_dependencies(self):
+    def check_test_graph_settings_roundtrip_and_authored_dependencies(self):
         graph = build_default_pipeline()
         self.assertIn('trait_classifier', graph.nodes)
         node = graph.node('trait_classifier')
@@ -184,7 +187,7 @@ class TraitPipelineTests(unittest.TestCase):
         self.assertEqual(set(graph.upstream('trait_classifier')), {'deskew_colour', 'layout_detection',
             'procedural_instances', 'unet_instances', 'stardist_instances'})
 
-    def test_classifier_enables_with_alternative_branches_and_required_inputs_remain_honest(self):
+    def check_test_classifier_enables_with_alternative_branches_and_required_inputs_remain_honest(self):
         graph = build_default_pipeline()
         graph.set_enabled('trait_classifier', True)
         self.assertFalse(graph.node('unet_instances').enabled)
@@ -202,7 +205,7 @@ class TraitPipelineTests(unittest.TestCase):
         graph.set_enabled('layout_detection', False)
         self.assertFalse(graph.node('trait_classifier').enabled)
 
-    def test_native_worker_forwards_classifier_settings(self):
+    def check_test_native_worker_forwards_classifier_settings(self):
         import inspect
         from seedvision.ui.main_window import _AnalysisTask
         arguments = {name: None for name, parameter in inspect.signature(_AnalysisTask).parameters.items()
@@ -224,7 +227,7 @@ class TraitPipelineTests(unittest.TestCase):
         self.assertEqual(completed, [(expected, 1)])
         self.assertIs(analyzer.call_args.kwargs['trait_settings'], settings)
 
-    def test_inference_mode_tensor_mutations_cannot_reuse_unversioned_features(self):
+    def check_test_inference_mode_tensor_mutations_cannot_reuse_unversioned_features(self):
         with torch.inference_mode():
             source = self.source.clone()
         first, _ = self.run_classifier(source=source)
@@ -237,7 +240,7 @@ class TraitPipelineTests(unittest.TestCase):
         self.assertNotEqual(first.report['predictions'][0]['probabilities'],
                             second.report['predictions'][0]['probabilities'])
 
-    def test_gpu_storage_replacement_without_version_increment_invalidates_features(self):
+    def check_test_gpu_storage_replacement_without_version_increment_invalidates_features(self):
         first, _ = self.run_classifier()
         old = self.cache['trait_classifier.features']
         version = self.source._version
@@ -261,7 +264,7 @@ class TraitPipelineTests(unittest.TestCase):
         self.assertIsNot(old, self.cache['trait_classifier.features'])
         self.assertEqual(rejected.report['predictions'][0]['abstention_reason'], 'outside_valid_crop')
 
-    def test_model_growth_after_stat_is_bounded_and_stales_known_export(self):
+    def check_test_model_growth_after_stat_is_bounded_and_stales_known_export(self):
         import io
         from seedvision.learning.trait_pipeline import _MAX_MODEL_BYTES
         prediction, _ = self.run_classifier()
@@ -283,7 +286,7 @@ class TraitPipelineTests(unittest.TestCase):
                 result_report(self.analysis(prediction))
         self.assertEqual(requested, [_MAX_MODEL_BYTES+1, _MAX_MODEL_BYTES+1])
 
-    def test_version_twenty_one_profile_adopts_only_disabled_classifier_defaults(self):
+    def check_test_version_twenty_one_profile_adopts_only_disabled_classifier_defaults(self):
         from seedvision.persistence.analysis_settings import (
             analysis_settings_profile_from_graph, analysis_settings_profile_to_payload,
             analysis_settings_profile_from_payload, apply_analysis_settings_profile,
@@ -307,7 +310,7 @@ class TraitPipelineTests(unittest.TestCase):
         with self.assertRaisesRegex(IncompatibleAnalysisSettingsProfile, 'missing nodes'):
             apply_analysis_settings_profile(build_default_pipeline(), analysis_settings_profile_from_payload(payload))
 
-    def test_missing_model_becoming_available_requires_reanalysis_before_export(self):
+    def check_test_missing_model_becoming_available_requires_reanalysis_before_export(self):
         path = self.root / 'later.json'
         prediction, _ = self.run_classifier(path=path)
         analysis = self.analysis(prediction)
@@ -316,7 +319,7 @@ class TraitPipelineTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'became available'):
             result_report(analysis)
 
-    def test_saved_project_batch_forwards_model_and_threshold_and_persists_traits(self):
+    def check_test_saved_project_batch_forwards_model_and_threshold_and_persists_traits(self):
         import shutil
         import cv2
         from seedvision.persistence import ProjectAnalysisStore, ProjectImageSpec, analysis_settings_profile_from_graph
@@ -345,7 +348,7 @@ class TraitPipelineTests(unittest.TestCase):
         self.assertEqual(stored['trait_classifier']['abstention_threshold'], .61)
         self.assertEqual([row['trait_assignment'] for row in stored['instances']], ['dark', 'light'])
 
-    def test_file_analysis_cache_and_crops_use_stored_classifier_revision(self):
+    def check_test_file_analysis_cache_and_crops_use_stored_classifier_revision(self):
         import cv2
         from seedvision.calibration import image as calibration
         from seedvision.calibration.geometry import DishDetectionSettings
@@ -405,6 +408,30 @@ class TraitPipelineTests(unittest.TestCase):
         with self.assertRaisesRegex(CropArtifactError, 'Result changed'):
             export_seed_crop_artifacts(self.root / 'stale-crops', changed, report, seed_ids=(1,), padding_px=0)
         self.assertFalse((self.root / 'stale-crops').exists())
+
+    def test_workflow_lifecycle(self):
+        """10 related TraitPipelineTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_selected_method_preference_is_shared_and_filters_disabled_branches)
+        self.scenario(self.check_test_actual_cuda_resize_colour_features_predict_without_raster_download)
+        self.scenario(self.check_test_threshold_only_reuses_features_and_scores_then_identical_run_reuses_result)
+        self.scenario(self.check_test_model_content_change_rescores_without_reextracting_features)
+        self.scenario(self.check_test_graph_settings_roundtrip_and_authored_dependencies)
+        self.scenario(self.check_test_classifier_enables_with_alternative_branches_and_required_inputs_remain_honest)
+        self.scenario(self.check_test_native_worker_forwards_classifier_settings)
+        self.scenario(self.check_test_version_twenty_one_profile_adopts_only_disabled_classifier_defaults)
+        self.scenario(self.check_test_saved_project_batch_forwards_model_and_threshold_and_persists_traits)
+        self.scenario(self.check_test_file_analysis_cache_and_crops_use_stored_classifier_revision)
+
+    def test_validation_and_recovery(self):
+        """8 related TraitPipelineTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_label_corrected_pixels_and_support_changes_invalidate_features)
+        self.scenario(self.check_test_missing_invalid_models_and_frame_boundary_inputs_abstain)
+        self.scenario(self.check_test_report_persists_actual_traits_and_threshold_changes_stale_review)
+        self.scenario(self.check_test_changed_exported_labels_crop_pixels_or_model_reject_before_report)
+        self.scenario(self.check_test_inference_mode_tensor_mutations_cannot_reuse_unversioned_features)
+        self.scenario(self.check_test_gpu_storage_replacement_without_version_increment_invalidates_features)
+        self.scenario(self.check_test_model_growth_after_stat_is_bounded_and_stales_known_export)
+        self.scenario(self.check_test_missing_model_becoming_available_requires_reanalysis_before_export)
 
 
 if __name__ == '__main__': unittest.main()

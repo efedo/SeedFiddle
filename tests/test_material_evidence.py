@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.functional_units import functional_units
+
 import unittest
 
 import numpy as np
@@ -7,6 +9,7 @@ import numpy as np
 from seedvision.cuda import CudaContext, hierarchical_material_evidence
 
 
+@functional_units
 class MaterialEvidenceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.context = CudaContext.resolve(requested="cpu")
@@ -31,7 +34,7 @@ class MaterialEvidenceTests(unittest.TestCase):
         arguments.update(overrides)
         return hierarchical_material_evidence(**arguments)
 
-    def test_four_decision_masses_sum_to_one(self) -> None:
+    def check_test_four_decision_masses_sum_to_one(self) -> None:
         result = self._result()
         total = sum(
             np.asarray(raster, dtype=np.int16)
@@ -58,7 +61,7 @@ class MaterialEvidenceTests(unittest.TestCase):
             int(np.asarray(result.nonseed_probability)[4, 4]),
         )
 
-    def test_invalid_pixels_have_no_material_mass(self) -> None:
+    def check_test_invalid_pixels_have_no_material_mass(self) -> None:
         valid = self.valid.copy()
         valid[:3] = 0
         result = self._result(valid_mask=valid)
@@ -70,7 +73,7 @@ class MaterialEvidenceTests(unittest.TestCase):
         ):
             self.assertFalse(np.any(np.asarray(raster)[:3]))
 
-    def test_seed_annotation_does_not_overwrite_raw_material_evidence(self) -> None:
+    def check_test_seed_annotation_does_not_overwrite_raw_material_evidence(self) -> None:
         without_annotation = self._result(
             foreground_colour=self._constant(0.25),
             foreground_noise=self._constant(0.25),
@@ -95,7 +98,7 @@ class MaterialEvidenceTests(unittest.TestCase):
             np.asarray(without_annotation.background_support),
         )
 
-    def test_other_is_positive_nonseed_without_suppressing_background(self) -> None:
+    def check_test_other_is_positive_nonseed_without_suppressing_background(self) -> None:
         result = self._result(
             foreground_colour=self._constant(0.10),
             foreground_noise=self._constant(0.10),
@@ -119,7 +122,7 @@ class MaterialEvidenceTests(unittest.TestCase):
         self.assertLess(abs(background_subtype - other_subtype), 3)
         self.assertGreater(subtype_ambiguity, 220)
 
-    def test_background_annotation_does_not_zero_foreground_evidence(self) -> None:
+    def check_test_background_annotation_does_not_zero_foreground_evidence(self) -> None:
         background_annotation = np.zeros_like(self.valid)
         background_annotation[4, 4] = 255
         result = self._result(
@@ -133,7 +136,7 @@ class MaterialEvidenceTests(unittest.TestCase):
         self.assertGreater(int(np.asarray(result.background_support)[4, 4]), 220)
         self.assertGreater(int(np.asarray(result.ambiguity_probability)[4, 4]), 220)
 
-    def test_conflicting_seed_and_nonseed_is_ambiguous(self) -> None:
+    def check_test_conflicting_seed_and_nonseed_is_ambiguous(self) -> None:
         result = self._result(
             foreground_colour=self._constant(0.95),
             foreground_noise=self._constant(0.95),
@@ -146,7 +149,7 @@ class MaterialEvidenceTests(unittest.TestCase):
         self.assertGreater(ambiguity, seed * 10)
         self.assertGreater(ambiguity, nonseed * 10)
 
-    def test_cross_matching_source_loses_authority_on_reviewed_masks(self) -> None:
+    def check_test_cross_matching_source_loses_authority_on_reviewed_masks(self) -> None:
         seed_reference = np.zeros_like(self.valid)
         seed_reference[:4] = 255
         other_reference = np.zeros_like(self.valid)
@@ -165,7 +168,7 @@ class MaterialEvidenceTests(unittest.TestCase):
         self.assertEqual(reliabilities["other_colour"], 0.0)
         self.assertEqual(int(np.asarray(result.other_support)[4, 4]), 0)
 
-    def test_background_other_overlap_is_not_a_subtype_negative(self) -> None:
+    def check_test_background_other_overlap_is_not_a_subtype_negative(self) -> None:
         seed_reference = np.zeros_like(self.valid)
         seed_reference[:3] = 255
         background_reference = np.zeros_like(self.valid)
@@ -188,6 +191,20 @@ class MaterialEvidenceTests(unittest.TestCase):
         reliabilities = dict(result.source_reliabilities)
         self.assertGreater(reliabilities["background_colour"], 0.95)
         self.assertGreater(reliabilities["other_colour"], 0.95)
+
+    def test_workflow_lifecycle(self):
+        """7 related MaterialEvidenceTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_four_decision_masses_sum_to_one)
+        self.scenario(self.check_test_seed_annotation_does_not_overwrite_raw_material_evidence)
+        self.scenario(self.check_test_other_is_positive_nonseed_without_suppressing_background)
+        self.scenario(self.check_test_background_annotation_does_not_zero_foreground_evidence)
+        self.scenario(self.check_test_conflicting_seed_and_nonseed_is_ambiguous)
+        self.scenario(self.check_test_cross_matching_source_loses_authority_on_reviewed_masks)
+        self.scenario(self.check_test_background_other_overlap_is_not_a_subtype_negative)
+
+    def test_validation_and_recovery(self):
+        """1 related MaterialEvidenceTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_invalid_pixels_have_no_material_mass)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.functional_units import functional_units
+
 from tests.review_fixtures import reviewed_outlines
 
 import unittest
@@ -13,8 +15,9 @@ from seedvision.annotation.instance_references import (
 )
 
 
+@functional_units
 class InstanceReferenceEvidenceTests(unittest.TestCase):
-    def test_distinct_instance_contact_is_physical_and_interiors_are_inset(self) -> None:
+    def check_test_distinct_instance_contact_is_physical_and_interiors_are_inset(self) -> None:
         labels = np.zeros((64, 72), np.uint16)
         labels[12:52, 8:36] = 1
         labels[12:52, 36:64] = 2
@@ -39,7 +42,7 @@ class InstanceReferenceEvidenceTests(unittest.TestCase):
         self.assertFalse(np.any(references.physical_edge & references.non_edge))
         self.assertAlmostEqual(references.interior_buffer_px, 3.0)
 
-    def test_small_or_partial_regions_do_not_invent_non_edge_interiors(self) -> None:
+    def check_test_small_or_partial_regions_do_not_invent_non_edge_interiors(self) -> None:
         labels = np.zeros((28, 28), np.uint16)
         labels[10:15, 10:15] = 7
 
@@ -52,7 +55,7 @@ class InstanceReferenceEvidenceTests(unittest.TestCase):
         self.assertGreater(np.count_nonzero(references.physical_edge), 0)
         self.assertEqual(np.count_nonzero(references.non_edge), 0)
 
-    def test_export_style_edge_evidence_selects_only_sparse_internal_ridges(self) -> None:
+    def check_test_export_style_edge_evidence_selects_only_sparse_internal_ridges(self) -> None:
         labels = np.zeros((80, 80), np.uint16)
         cv2.circle(labels, (40, 40), 28, 1, -1)
         edge = np.zeros(labels.shape, np.uint8)
@@ -75,13 +78,13 @@ class InstanceReferenceEvidenceTests(unittest.TestCase):
             np.count_nonzero(references.safe_interior) // 8,
         )
 
-    def test_rejects_non_integer_and_negative_instance_ids(self) -> None:
+    def check_test_rejects_non_integer_and_negative_instance_ids(self) -> None:
         with self.assertRaises(ValueError):
             instance_boundary_references(np.zeros((4, 4), np.float32), 10.0)
         with self.assertRaises(ValueError):
             instance_boundary_references(-np.ones((4, 4), np.int16), 10.0)
 
-    def test_retired_manual_boundary_arguments_are_not_accepted(self) -> None:
+    def check_test_retired_manual_boundary_arguments_are_not_accepted(self) -> None:
         from seedvision.visualization import AnalysisLayerSettings, build_analysis_layers
 
         image = np.full((96, 96, 3), 220, np.uint8)
@@ -112,7 +115,7 @@ class InstanceReferenceEvidenceTests(unittest.TestCase):
                 settings=AnalysisLayerSettings(),
             )
 
-    def test_generic_edges_do_not_publish_semantic_probabilities(self) -> None:
+    def check_test_generic_edges_do_not_publish_semantic_probabilities(self) -> None:
         from seedvision.visualization import AnalysisLayerSettings, build_analysis_layers
 
         image = np.zeros((96, 96, 3), np.uint8)
@@ -138,7 +141,7 @@ class InstanceReferenceEvidenceTests(unittest.TestCase):
         self.assertEqual(int(np.asarray(layers.physical_edge_probability).max()), 0)
         self.assertEqual(int(np.asarray(layers.non_edge_probability).max()), 0)
 
-    def test_flat_annotated_interiors_do_not_flood_non_edge_training(self) -> None:
+    def check_test_flat_annotated_interiors_do_not_flood_non_edge_training(self) -> None:
         from seedvision.visualization import AnalysisLayerSettings, build_analysis_layers
 
         image = np.full((96, 96, 3), 220, np.uint8)
@@ -163,6 +166,19 @@ class InstanceReferenceEvidenceTests(unittest.TestCase):
         self.assertGreater(counts["physical_edge"], 0)
         self.assertEqual(counts["non_edge"], 0)
         self.assertEqual(int(np.asarray(layers.non_edge_probability).max()), 0)
+
+    def test_workflow_lifecycle(self):
+        """5 related InstanceReferenceEvidenceTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_distinct_instance_contact_is_physical_and_interiors_are_inset)
+        self.scenario(self.check_test_small_or_partial_regions_do_not_invent_non_edge_interiors)
+        self.scenario(self.check_test_export_style_edge_evidence_selects_only_sparse_internal_ridges)
+        self.scenario(self.check_test_generic_edges_do_not_publish_semantic_probabilities)
+        self.scenario(self.check_test_flat_annotated_interiors_do_not_flood_non_edge_training)
+
+    def test_validation_and_recovery(self):
+        """2 related InstanceReferenceEvidenceTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_rejects_non_integer_and_negative_instance_ids)
+        self.scenario(self.check_test_retired_manual_boundary_arguments_are_not_accepted)
 
 
 if __name__ == "__main__":

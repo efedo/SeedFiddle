@@ -1,4 +1,6 @@
 """Whole-call input and retained-matrix integrity for polynomial correction."""
+
+from tests.functional_units import functional_units
 import unittest
 from unittest.mock import patch
 
@@ -9,6 +11,7 @@ from tests.test_native_correction_recipe import _cuda_inputs
 
 
 @unittest.skipUnless(torch.cuda.is_available(), 'CUDA required for polynomial correction')
+@functional_units
 class PolynomialCorrectionIntegrityTests(unittest.TestCase):
     def invoke(self, inputs, callback):
         state = {'phase': 'entry', 'extracted': [], 'copied': [], 'fit': {}}
@@ -43,7 +46,7 @@ class PolynomialCorrectionIntegrityTests(unittest.TestCase):
                 patch.object(correction.np.linalg, 'solve', tracked_solve):
             return correction.correct_color_cuda(*inputs, cancel=lambda: callback(state))
 
-    def test_target_inputs_are_guarded_during_source_extraction(self):
+    def check_test_target_inputs_are_guarded_during_source_extraction(self):
         for index in (0, 1):
             with self.subTest(input_index=index):
                 inputs, changed = _cuda_inputs(), []
@@ -58,7 +61,7 @@ class PolynomialCorrectionIntegrityTests(unittest.TestCase):
                     self.invoke(inputs, callback)
                 self.assertEqual(changed, [index])
 
-    def test_already_consumed_inputs_are_guarded_during_application(self):
+    def check_test_already_consumed_inputs_are_guarded_during_application(self):
         for index in (0, 1, 3):
             with self.subTest(input_index=index):
                 inputs, changed = _cuda_inputs(), []
@@ -73,7 +76,7 @@ class PolynomialCorrectionIntegrityTests(unittest.TestCase):
                     self.invoke(inputs, callback)
                 self.assertEqual(changed, [index])
 
-    def test_retained_chip_matrices_are_guarded_across_phases(self):
+    def check_test_retained_chip_matrices_are_guarded_across_phases(self):
         cases = (('source', 'extracted', 0), ('apply', 'copied', 0), ('apply', 'copied', 1))
         for phase, field, index in cases:
             with self.subTest(phase=phase, field=field, matrix_index=index):
@@ -89,7 +92,7 @@ class PolynomialCorrectionIntegrityTests(unittest.TestCase):
                     self.invoke(_cuda_inputs(), callback)
                 self.assertEqual(changed, [index])
 
-    def test_cross_phase_mutation_takes_precedence_over_callback_exception(self):
+    def check_test_cross_phase_mutation_takes_precedence_over_callback_exception(self):
         inputs, changed = _cuda_inputs(), []
         marker = RuntimeError('caller failure after target mutation')
 
@@ -104,7 +107,7 @@ class PolynomialCorrectionIntegrityTests(unittest.TestCase):
             self.invoke(inputs, callback)
         self.assertTrue(changed)
 
-    def test_unmodified_stop_and_caller_exception_keep_their_meaning(self):
+    def check_test_unmodified_stop_and_caller_exception_keep_their_meaning(self):
         for kind in ('stop', 'exception'):
             with self.subTest(kind=kind):
                 marker = RuntimeError('unchanged caller failure')
@@ -122,7 +125,7 @@ class PolynomialCorrectionIntegrityTests(unittest.TestCase):
                 if kind == 'exception':
                     self.assertIs(caught.exception, marker)
 
-    def test_private_fit_mutation_wins_over_stop_and_caller_exception(self):
+    def check_test_private_fit_mutation_wins_over_stop_and_caller_exception(self):
         for field in ('inverse', 'coefficients'):
             for kind in ('continue', 'stop', 'exception'):
                 with self.subTest(field=field, kind=kind):
@@ -141,7 +144,7 @@ class PolynomialCorrectionIntegrityTests(unittest.TestCase):
                         self.invoke(_cuda_inputs(), callback)
                     self.assertEqual(changed, [True])
 
-    def test_malformed_inputs_keep_the_intended_validation_errors(self):
+    def check_test_malformed_inputs_keep_the_intended_validation_errors(self):
         invalid_images = (None, [], torch.zeros((2, 3, 3), dtype=torch.uint8),
             torch.zeros((2, 3), device='cuda', dtype=torch.uint8),
             torch.sparse_coo_tensor(torch.empty((3, 0), dtype=torch.int64),
@@ -154,6 +157,19 @@ class PolynomialCorrectionIntegrityTests(unittest.TestCase):
                     correction.correct_color_cuda(*inputs)
         with self.assertRaisesRegex(TypeError, 'cancel must be a zero-argument callable or None'):
             correction.correct_color_cuda(*_cuda_inputs(), cancel=0)
+
+    def test_workflow_lifecycle(self):
+        """4 related PolynomialCorrectionIntegrityTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_target_inputs_are_guarded_during_source_extraction)
+        self.scenario(self.check_test_already_consumed_inputs_are_guarded_during_application)
+        self.scenario(self.check_test_retained_chip_matrices_are_guarded_across_phases)
+        self.scenario(self.check_test_malformed_inputs_keep_the_intended_validation_errors)
+
+    def test_validation_and_recovery(self):
+        """3 related PolynomialCorrectionIntegrityTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_cross_phase_mutation_takes_precedence_over_callback_exception)
+        self.scenario(self.check_test_unmodified_stop_and_caller_exception_keep_their_meaning)
+        self.scenario(self.check_test_private_fit_mutation_wins_over_stop_and_caller_exception)
 
 
 if __name__ == '__main__':

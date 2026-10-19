@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.functional_units import functional_units
+
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -43,8 +45,9 @@ class FakeEvaluator:
         return {'image-a': 1., 'image-b': 1.}
 
 
+@functional_units
 class OptimizationContractTests(unittest.TestCase):
-    def test_every_card_and_control_has_a_disposition(self):
+    def check_test_every_card_and_control_has_a_disposition(self):
         graph = build_default_pipeline()
         nodes = {**graph.nodes, **graph.unused_nodes}
         self.assertEqual(set(nodes), set(OBJECTIVES) | set(EXEMPT))
@@ -58,7 +61,7 @@ class OptimizationContractTests(unittest.TestCase):
         self.assertNotIn('reference_error_overreach_weight', proc.searchable)
         self.assertNotIn('reference_texture_weight', proc.searchable)
 
-    def test_integer_boolean_and_categorical_candidates_are_typed(self):
+    def check_test_integer_boolean_and_categorical_candidates_are_typed(self):
         graph = build_default_pipeline()
         for node in graph.nodes.values():
             for spec in node.parameter_specs:
@@ -69,7 +72,7 @@ class OptimizationContractTests(unittest.TestCase):
                     if spec.kind == 'int':
                         self.assertIs(type(value), int)
 
-    def test_frozen_trait_classifier_has_no_image_local_search_objective(self):
+    def check_test_frozen_trait_classifier_has_no_image_local_search_objective(self):
         graph = build_default_pipeline()
         classifier = graph.node('trait_classifier')
         classifier.enabled = True
@@ -97,14 +100,14 @@ class OptimizationContractTests(unittest.TestCase):
         self.assertEqual(classifier.parameters, before)
         self.assertEqual(graph.revision, revision)
 
-    def test_edge_controls_invalidate_true_prototype_owner(self):
+    def check_test_edge_controls_invalidate_true_prototype_owner(self):
         graph = build_default_pipeline()
         affected = affected_nodes(graph, 'reference_edge_probability')
         self.assertIn('reference_texture_prototypes', affected)
         self.assertIn('procedural_instances', affected)
         self.assertNotIn('ruler_detection', affected)
 
-    def test_shared_proposal_optimizes_both_images_not_last_image(self):
+    def check_test_shared_proposal_optimizes_both_images_not_last_image(self):
         graph = build_default_pipeline()
         graph.node('wavelet_decomposition').set_parameter('wavelet_level_count', 4)
         evaluator = FakeEvaluator()
@@ -119,7 +122,7 @@ class OptimizationContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'stale'):
             apply_report(graph, report)
 
-    def test_cancellation_never_installs_partial_changes(self):
+    def check_test_cancellation_never_installs_partial_changes(self):
         graph = build_default_pipeline()
         evaluator = FakeEvaluator()
         report = optimize(graph, evaluator, selected={'wavelet_decomposition'}, cancelled=lambda: len(evaluator.seen) > 1)
@@ -128,7 +131,7 @@ class OptimizationContractTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             apply_report(graph, report)
 
-    def test_candidate_cannot_win_by_dropping_an_image(self):
+    def check_test_candidate_cannot_win_by_dropping_an_image(self):
         graph = build_default_pipeline()
         evaluator = FakeEvaluator()
         original = evaluator.score
@@ -141,7 +144,7 @@ class OptimizationContractTests(unittest.TestCase):
         row = next(row for row in report.nodes if row.node_id == 'wavelet_decomposition')
         self.assertTrue(any('invalid' in trial for trial in row.trials))
 
-    def test_complete_sweep_does_not_spend_budget_on_fixed_values(self):
+    def check_test_complete_sweep_does_not_spend_budget_on_fixed_values(self):
         graph = build_default_pipeline()
         evaluator = FakeEvaluator()
         report = optimize(graph, evaluator, selected={'wavelet_decomposition'}, maximum_evaluations=1)
@@ -149,7 +152,7 @@ class OptimizationContractTests(unittest.TestCase):
         self.assertIn('Budget exhausted', row.reason)
         self.assertEqual(len(row.trials), 1)
 
-    def test_downstream_search_observes_accepted_upstream_values(self):
+    def check_test_downstream_search_observes_accepted_upstream_values(self):
         graph = build_default_pipeline()
         graph.node('wavelet_decomposition').set_parameter('wavelet_level_count', 4)
         evaluator = FakeEvaluator()
@@ -169,7 +172,7 @@ class OptimizationContractTests(unittest.TestCase):
         self.assertEqual(set(downstream_seen), {3})
         self.assertEqual(graph.node('wavelet_decomposition').parameters['wavelet_level_count'], 4)
 
-    def test_settings_match_controller_parameter_owners(self):
+    def check_test_settings_match_controller_parameter_owners(self):
         graph = build_default_pipeline()
         graph.node('procedural_instances').set_parameter('trace_minimum_length_fraction', .72)
         graph.node('edge_traces').set_parameter('trace_minimum_length_fraction', .4)
@@ -177,9 +180,26 @@ class OptimizationContractTests(unittest.TestCase):
         self.assertEqual(settings['procedural_settings'].trace_minimum_length_fraction, .72)
         self.assertEqual(settings['layer_settings'].trace_minimum_length_fraction, .4)
 
+    def test_workflow_lifecycle(self):
+        """7 related OptimizationContractTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_every_card_and_control_has_a_disposition)
+        self.scenario(self.check_test_integer_boolean_and_categorical_candidates_are_typed)
+        self.scenario(self.check_test_frozen_trait_classifier_has_no_image_local_search_objective)
+        self.scenario(self.check_test_shared_proposal_optimizes_both_images_not_last_image)
+        self.scenario(self.check_test_candidate_cannot_win_by_dropping_an_image)
+        self.scenario(self.check_test_downstream_search_observes_accepted_upstream_values)
+        self.scenario(self.check_test_settings_match_controller_parameter_owners)
 
+    def test_validation_and_recovery(self):
+        """3 related OptimizationContractTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_edge_controls_invalidate_true_prototype_owner)
+        self.scenario(self.check_test_cancellation_never_installs_partial_changes)
+        self.scenario(self.check_test_complete_sweep_does_not_spend_budget_on_fixed_values)
+
+
+@functional_units
 class OptimizationReferenceTests(unittest.TestCase):
-    def test_only_complete_reviewed_connected_shapes_are_eligible(self):
+    def check_test_only_complete_reviewed_connected_shapes_are_eligible(self):
         labels = np.zeros((20,20), np.uint16)
         labels[2:6,2:6] = 1
         labels[8:11,8:11] = 2
@@ -192,7 +212,7 @@ class OptimizationReferenceTests(unittest.TestCase):
         self.assertEqual(set(np.unique(result)), {0,1})
         self.assertFalse(result.flags.writeable)
 
-    def test_raster_reduction_does_not_download_gpu_raster(self):
+    def check_test_raster_reduction_does_not_download_gpu_raster(self):
         import torch
         from seedvision.cuda.ops import GpuRaster
         raster = GpuRaster(torch.full((1,1,4,4), 204., dtype=torch.float32))
@@ -203,7 +223,7 @@ class OptimizationReferenceTests(unittest.TestCase):
         self.assertAlmostEqual(value, -np.log(.8), places=5)
         self.assertEqual(raster.download_count, 0)
 
-    def test_target_file_is_source_and_transform_bound(self):
+    def check_test_target_file_is_source_and_transform_bound(self):
         with TemporaryDirectory() as directory:
             source = Path(directory)/'source'
             source.write_bytes(b'fixture')
@@ -217,7 +237,7 @@ class OptimizationReferenceTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'transform'):
                 load_targets(path, sample)
 
-    def test_atomic_journal_refuses_nonfinite_values_without_overwrite(self):
+    def check_test_atomic_journal_refuses_nonfinite_values_without_overwrite(self):
         with TemporaryDirectory() as directory:
             path = Path(directory)/'record.json'
             write_record(path, {'value': 1.})
@@ -226,7 +246,7 @@ class OptimizationReferenceTests(unittest.TestCase):
                 write_record(path, {'value': float('nan')})
             self.assertEqual(path.read_bytes(), before)
 
-    def test_failed_candidate_cache_is_discarded(self):
+    def check_test_failed_candidate_cache_is_discarded(self):
         graph = build_default_pipeline()
         with TemporaryDirectory() as directory:
             source = Path(directory)/'source'
@@ -239,7 +259,7 @@ class OptimizationReferenceTests(unittest.TestCase):
             self.assertNotIn('a', evaluator.caches)
             self.assertNotIn('a', evaluator.snapshots)
 
-    def test_proposal_matching_uses_one_to_one_bounded_matches(self):
+    def check_test_proposal_matching_uses_one_to_one_bounded_matches(self):
         labels = np.zeros((40,40),np.uint16)
         labels[5:10,5:10] = 1
         labels[25:30,25:30] = 2
@@ -252,7 +272,7 @@ class OptimizationReferenceTests(unittest.TestCase):
         result.proposals = result.proposals[:1]
         self.assertGreater(evaluator.proposal_loss(sample,result),0.)
 
-    def test_gradient_ceiling_objective_scores_its_actual_output(self):
+    def check_test_gradient_ceiling_objective_scores_its_actual_output(self):
         evaluator = object.__new__(ProductionEvaluator)
         evaluator.targets = {('a','boundary'): np.ones((4,4),np.float32)}
         sample = SimpleNamespace(key='a',transform=np.eye(3))
@@ -262,7 +282,7 @@ class OptimizationReferenceTests(unittest.TestCase):
             self.assertEqual(evaluator.score_result('lightening_gradient_ceiling',sample,result),.25)
         self.assertIs(loss.call_args.args[0],output)
 
-    def test_scalar_scores_are_json_serializable(self):
+    def check_test_scalar_scores_are_json_serializable(self):
         import json
         graph = build_default_pipeline()
         with TemporaryDirectory() as directory:
@@ -273,7 +293,7 @@ class OptimizationReferenceTests(unittest.TestCase):
             with patch.object(evaluator,'run',return_value=None), patch.object(evaluator,'score_result',return_value=np.float32(.25)):
                 self.assertEqual(json.loads(json.dumps(evaluator.score(graph,'image_quality'))),{'a':.25})
 
-    def test_candidate_cache_repair_keeps_unrelated_nodes_clean(self):
+    def check_test_candidate_cache_repair_keeps_unrelated_nodes_clean(self):
         graph = build_default_pipeline()
         with TemporaryDirectory() as directory:
             source = Path(directory)/'source'
@@ -293,7 +313,7 @@ class OptimizationReferenceTests(unittest.TestCase):
                 evaluator.run(graph, sample)
                 self.assertIn('procedural_instances', analyze.call_args.kwargs['dirty_nodes'])
 
-    def test_inactive_semantic_trials_are_explicitly_excluded(self):
+    def check_test_inactive_semantic_trials_are_explicitly_excluded(self):
         graph = build_default_pipeline()
         with TemporaryDirectory() as directory:
             source = Path(directory)/'source'
@@ -307,6 +327,22 @@ class OptimizationReferenceTests(unittest.TestCase):
             for name in ('boundary_semantic_floor','boundary_nonphysical_discount','boundary_physical_ridge_weight','boundary_trace_weight'):
                 self.assertNotIn(name, included)
                 self.assertIn('No nonzero', excluded[name])
+
+    def test_workflow_lifecycle(self):
+        """9 related OptimizationReferenceTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_only_complete_reviewed_connected_shapes_are_eligible)
+        self.scenario(self.check_test_raster_reduction_does_not_download_gpu_raster)
+        self.scenario(self.check_test_target_file_is_source_and_transform_bound)
+        self.scenario(self.check_test_atomic_journal_refuses_nonfinite_values_without_overwrite)
+        self.scenario(self.check_test_proposal_matching_uses_one_to_one_bounded_matches)
+        self.scenario(self.check_test_gradient_ceiling_objective_scores_its_actual_output)
+        self.scenario(self.check_test_scalar_scores_are_json_serializable)
+        self.scenario(self.check_test_candidate_cache_repair_keeps_unrelated_nodes_clean)
+        self.scenario(self.check_test_inactive_semantic_trials_are_explicitly_excluded)
+
+    def test_validation_and_recovery(self):
+        """1 related OptimizationReferenceTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_failed_candidate_cache_is_discarded)
 
 
 if __name__ == '__main__':

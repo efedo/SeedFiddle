@@ -1,4 +1,6 @@
 """Offline source-model conversion and shared-codec import compatibility."""
+
+from tests.functional_units import functional_units
 from hashlib import sha256
 import importlib
 import json
@@ -122,8 +124,9 @@ print(json.dumps(dict(rejected=len(cases)+1)))
 '''
 
 
+@functional_units
 class KMeansConversionStructureTests(unittest.TestCase):
-    def test_shared_codec_and_help_imports_never_load_desktop_or_ml_dependencies(self):
+    def check_test_shared_codec_and_help_imports_never_load_desktop_or_ml_dependencies(self):
         script = r'''
 import importlib.abc,runpy,sys
 blocked=('torch','cv2','numpy','PySide6','joblib','sklearn','seedvision.cuda','seedvision.benchmarking')
@@ -143,7 +146,7 @@ assert not any(any(key==name or key.startswith(name+'.') for name in blocked) fo
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('destination JSON model artifact', result.stdout)
 
-    def test_old_import_paths_are_identical_modules_with_shared_patchable_globals(self):
+    def check_test_old_import_paths_are_identical_modules_with_shared_patchable_globals(self):
         old_model = importlib.import_module('seedvision.cuda.plantcv_kmeans_model')
         old_artifact = importlib.import_module('seedvision.benchmarking.kmeans_model_artifact')
         self.assertIs(old_model, models)
@@ -155,7 +158,7 @@ assert not any(any(key==name or key.startswith(name+'.') for name in blocked) fo
             models.parse_kmeans_model(b'{}')
         self.assertEqual(models.MAX_MODEL_BYTES, 8*1024*1024)
 
-    def test_historical_producer_labels_remain_stable_and_real_codec_source_is_verified(self):
+    def check_test_historical_producer_labels_remain_stable_and_real_codec_source_is_verified(self):
         from seedvision.benchmarking.native_recipe import _module_record
         from seedvision.benchmarking.native_threshold_stage import NativeThresholdStageError
         self.assertIn('seedvision.benchmarking.kmeans_model_artifact', artifacts.FIT_MODULES)
@@ -168,7 +171,7 @@ assert not any(any(key==name or key.startswith(name+'.') for name in blocked) fo
         with patch.object(artifacts, 'MAX_METADATA_DEPTH', 1), self.assertRaises(NativeThresholdStageError):
             _module_record(artifacts)
 
-    def test_geometry_bounds_exact_integer_shapes_and_unsupported_widths(self):
+    def check_test_geometry_bounds_exact_integer_shapes_and_unsupported_widths(self):
         for p in (1, 2, 10, 31):
             for c in (1, 3):
                 self.assertEqual(conversion._geometry(p*p*c), (p, c))
@@ -176,7 +179,7 @@ assert not any(any(key==name or key.startswith(name+'.') for name in blocked) fo
             with self.subTest(width=width), self.assertRaises(conversion.KMeansConversionError):
                 conversion._geometry(width)
 
-    def test_atomic_replace_failure_and_output_cap_preserve_existing_file(self):
+    def check_test_atomic_replace_failure_and_output_cap_preserve_existing_file(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)/'model.json'
             path.write_bytes(b'existing')
@@ -191,7 +194,7 @@ assert not any(any(key==name or key.startswith(name+'.') for name in blocked) fo
             conversion._atomic_write(path, b'new')
             self.assertEqual(path.read_bytes(), b'new')
 
-    def test_input_cap_and_same_file_aliases_reject_before_loading_model(self):
+    def check_test_input_cap_and_same_file_aliases_reject_before_loading_model(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory)/'model.fit'
             source.write_bytes(b'not a source estimator')
@@ -204,8 +207,21 @@ assert not any(any(key==name or key.startswith(name+'.') for name in blocked) fo
             with self.assertRaisesRegex(conversion.KMeansConversionError, 'must differ'):
                 conversion.convert_plantcv_kmeans(source, alias)
 
+    def test_workflow_lifecycle(self):
+        """4 related KMeansConversionStructureTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_shared_codec_and_help_imports_never_load_desktop_or_ml_dependencies)
+        self.scenario(self.check_test_old_import_paths_are_identical_modules_with_shared_patchable_globals)
+        self.scenario(self.check_test_historical_producer_labels_remain_stable_and_real_codec_source_is_verified)
+        self.scenario(self.check_test_geometry_bounds_exact_integer_shapes_and_unsupported_widths)
+
+    def test_validation_and_recovery(self):
+        """2 related KMeansConversionStructureTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_atomic_replace_failure_and_output_cap_preserve_existing_file)
+        self.scenario(self.check_test_input_cap_and_same_file_aliases_reject_before_loading_model)
+
 
 @unittest.skipUnless(REFERENCE.exists(), 'pinned source training environment required')
+@functional_units
 class KMeansPublicConversionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -217,7 +233,7 @@ class KMeansPublicConversionTests(unittest.TestCase):
             raise AssertionError(result.stderr)
         cls.oracle = json.loads(result.stdout)
 
-    def test_actual_public_training_models_preserve_exact_centres_and_conversion_provenance(self):
+    def check_test_actual_public_training_models_preserve_exact_centres_and_conversion_provenance(self):
         for case in self.oracle['cases']:
             with self.subTest(p=case['p'], c=case['c']):
                 artifact = artifacts.load_kmeans_artifact(case['path'])
@@ -237,8 +253,7 @@ class KMeansPublicConversionTests(unittest.TestCase):
         signed = artifacts.load_kmeans_artifact(self.oracle['signed_path']).model
         self.assertEqual(sha256(np.asarray(signed.centres, dtype='<f8').tobytes()).hexdigest(), self.oracle['signed_sha'])
 
-    @unittest.skipUnless(torch.cuda.is_available(), 'CUDA required')
-    def test_converted_models_match_public_heldout_labels_and_ordered_masks(self):
+    def check_test_converted_models_match_public_heldout_labels_and_ordered_masks(self):
         for case in self.oracle['cases']:
             with self.subTest(p=case['p'], c=case['c']):
                 model = artifacts.load_kmeans_artifact(case['path']).model
@@ -249,21 +264,20 @@ class KMeansPublicConversionTests(unittest.TestCase):
                 self.assertEqual([[key, sha256(value.cpu().numpy().tobytes()).hexdigest()]
                     for key, value in products.items()], case['masks'])
 
-    def test_unfitted_wrong_type_malformed_and_oversized_models_leave_output_untouched(self):
+    def check_test_unfitted_wrong_type_malformed_and_oversized_models_leave_output_untouched(self):
         with tempfile.TemporaryDirectory(dir=ROOT/'artifacts') as directory:
             result = subprocess.run([str(REFERENCE), '-c', INVALID_SCRIPT, directory], cwd=ROOT,
                 capture_output=True, text=True, timeout=120)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertGreaterEqual(json.loads(result.stdout)['rejected'], 19)
 
-    @unittest.skipUnless(torch.cuda.is_available(), 'CUDA required')
-    def test_source_fractional_tie_remains_withheld_after_conversion(self):
+    def check_test_source_fractional_tie_remains_withheld_after_conversion(self):
         model = artifacts.load_kmeans_artifact(self.oracle['ambiguous_path']).model
         image = torch.ones((6, 7), dtype=torch.uint8, device='cuda')
         with self.assertRaises(scoring.KMeansDecisionAmbiguous):
             prediction.predict_kmeans(image, model)
 
-    def test_actual_source_environment_cli_writes_a_loadable_artifact(self):
+    def check_test_actual_source_environment_cli_writes_a_loadable_artifact(self):
         source = Path(self.oracle['signed_path']).with_suffix('.fit')
         target = source.with_name('cli.json')
         result = subprocess.run([str(REFERENCE), '-m', 'seedvision.model_io.convert_plantcv_kmeans',
@@ -271,3 +285,20 @@ class KMeansPublicConversionTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         model = artifacts.load_kmeans_artifact(target).model
         self.assertEqual(sha256(np.asarray(model.centres, dtype='<f8').tobytes()).hexdigest(), self.oracle['signed_sha'])
+
+    @unittest.skipUnless(torch.cuda.is_available(), 'CUDA required')
+    def test_converted_models_match_public_heldout_labels_and_ordered_masks(self):
+        self.scenario(self.check_test_converted_models_match_public_heldout_labels_and_ordered_masks, labelled=False)
+
+    @unittest.skipUnless(torch.cuda.is_available(), 'CUDA required')
+    def test_source_fractional_tie_remains_withheld_after_conversion(self):
+        self.scenario(self.check_test_source_fractional_tie_remains_withheld_after_conversion, labelled=False)
+
+    def test_workflow_lifecycle(self):
+        """2 related KMeansPublicConversionTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_actual_public_training_models_preserve_exact_centres_and_conversion_provenance)
+        self.scenario(self.check_test_actual_source_environment_cli_writes_a_loadable_artifact)
+
+    def test_validation_and_recovery(self):
+        """1 related KMeansPublicConversionTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_unfitted_wrong_type_malformed_and_oversized_models_leave_output_untouched)

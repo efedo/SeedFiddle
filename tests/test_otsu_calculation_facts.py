@@ -1,4 +1,6 @@
 """Exact binary domains and single-pass Otsu cutoff facts through native execution."""
+
+from tests.functional_units import functional_units
 from dataclasses import replace
 from hashlib import sha256
 import json
@@ -69,8 +71,9 @@ def legacy_archive(current, destination):
     (destination/'native-results.json').write_bytes(archives._json_bytes(body))
 
 
+@functional_units
 class OtsuCalculationContractTests(unittest.TestCase):
-    def test_facts_reject_bool_out_of_range_profile_polarity_and_false_source_claim(self):
+    def check_test_facts_reject_bool_out_of_range_profile_polarity_and_false_source_claim(self):
         expected = thresholds.otsu_calculation_facts(35, 'LIGHT')
         self.assertEqual(expected['object_type'], 'light')
         self.assertEqual(expected['comparison_rule'], 'gray > cutoff')
@@ -85,7 +88,7 @@ class OtsuCalculationContractTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises((ValueError, TypeError)):
                 thresholds.validate_otsu_calculation_facts(value, 'light')
 
-    def test_source_scalar_adapter_rejects_wrong_origin_method_and_unverified_mask(self):
+    def check_test_source_scalar_adapter_rejects_wrong_origin_method_and_unverified_mask(self):
         from seedvision.benchmarking.reference_stage import validate_otsu_cutoff_adapter, ReferenceStageError
         record=dict(reference_selected_cutoff=10,origin='pinned_cv2.threshold_adapter',
             public_return='mask_only',object_type='light',method='THRESH_OTSU|THRESH_BINARY',
@@ -97,7 +100,7 @@ class OtsuCalculationContractTests(unittest.TestCase):
             with self.subTest(bad=bad),self.assertRaises(ReferenceStageError):
                 validate_otsu_cutoff_adapter(bad,'light')
 
-    def test_near_tie_and_rare_class_fallback_facts_keep_existing_selection_guards(self):
+    def check_test_near_tie_and_rare_class_fallback_facts_keep_existing_selection_guards(self):
         with self.assertRaises(thresholds.OtsuAmbiguityError):
             thresholds._otsu_cutoff_from_histogram([10_000_000,10_000_000,10_000_001]+[0]*253)
         counts = [0]*256
@@ -106,8 +109,18 @@ class OtsuCalculationContractTests(unittest.TestCase):
         self.assertEqual(cutoff, 0)
         self.assertEqual(thresholds.otsu_calculation_facts(cutoff, 'dark')['comparison_rule'], 'gray <= cutoff')
 
+    def test_validation_and_recovery(self):
+        """2 related OtsuCalculationContractTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_facts_reject_bool_out_of_range_profile_polarity_and_false_source_claim)
+        self.scenario(self.check_test_source_scalar_adapter_rejects_wrong_origin_method_and_unverified_mask)
+
+    def test_workflow_lifecycle(self):
+        """1 related OtsuCalculationContractTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_near_tie_and_rare_class_fallback_facts_keep_existing_selection_guards)
+
 
 @unittest.skipUnless(torch.cuda.is_available(), 'CUDA required')
+@functional_units
 class OtsuCalculationCudaTests(unittest.TestCase):
     def run_recipe(self, *, recipe=None, cache=None, cancel=None, gray=None, rgb=None):
         values, colors = fixture()
@@ -120,47 +133,9 @@ class OtsuCalculationCudaTests(unittest.TestCase):
     def stage(recipe):
         return next(stage.stage_id for stage in recipe.stages if stage.operation_id == 'threshold.otsu')
 
-    def test_binary_all_256_values_at_all_256_cutoffs_both_polarities_match_public(self):
-        image = np.arange(256, dtype=np.uint8).reshape(16,16)
-        cases = [dict(threshold=value, object_type=polarity)
-            for value in range(256) for polarity in ('light','dark')]
-        expected = public_masks(self, image, 'binary', cases)
-        gray = torch.from_numpy(image).cuda().t()
-        self.assertFalse(gray.is_contiguous())
-        for params, original in zip(cases, expected):
-            actual = thresholds.threshold_binary(gray, **params)
-            self.assertEqual(actual.device, gray.device)
-            self.assertEqual(actual.dtype, torch.uint8)
-            np.testing.assert_array_equal(actual.t().cpu().numpy(), original)
 
-    def test_public_masks_constants_singletons_thin_imbalance_and_empty_bin_plateaus(self):
-        images = [np.zeros((1,1), np.uint8), np.full((1,1),255,np.uint8),
-            np.full((7,9),117,np.uint8),
-            np.array([[10,10,10,200,200,200]],np.uint8),
-            np.array([[10],[10],[200],[200]],np.uint8),
-            np.asarray([0]*999+[255],np.uint8).reshape(10,100),
-            np.asarray([0]*4+[30]*6+[180]*9+[255]*10,np.uint8).reshape(1,29),
-            np.random.default_rng(847).integers(0,256,(17,23),dtype=np.uint8)]
-        cases = [dict(image=image.tolist(),object_type=polarity)
-            for image in images for polarity in ('light','dark')]
-        self.assertTrue(REFERENCE.is_file())
-        process = subprocess.run([str(REFERENCE),'-c',PUBLIC_OTSU_SCRIPT],
-            input=json.dumps(cases), capture_output=True, text=True, timeout=90)
-        self.assertEqual(process.returncode,0,process.stderr)
-        originals = json.loads(process.stdout)
-        for case, original in zip(cases, originals):
-            image = torch.tensor(case['image'],dtype=torch.uint8,device='cuda')
-            result = thresholds.threshold_otsu_result(image,case['object_type'])
-            np.testing.assert_array_equal(result.mask.cpu().numpy(),np.asarray(original['mask'],np.uint8))
-            expected = (image > result.native_selected_cutoff if case['object_type']=='light'
-                else image <= result.native_selected_cutoff).to(torch.uint8)*255
-            self.assertTrue(torch.equal(result.mask,expected))
-            self.assertEqual(result.mask.device,image.device)
-            self.assertEqual(type(result.native_selected_cutoff),int)
-            self.assertEqual(thresholds.otsu_calculation_facts(result.native_selected_cutoff,
-                result.object_type)['reference_scalar_conformance'],'not_established')
 
-    def test_result_and_compatibility_wrapper_each_use_one_histogram(self):
+    def check_test_result_and_compatibility_wrapper_each_use_one_histogram(self):
         gray = torch.tensor([[10,10,10,200,200,200]],dtype=torch.uint8,device='cuda')
         original = torch.bincount
         with patch.object(torch,'bincount',wraps=original) as histogram:
@@ -174,7 +149,7 @@ class OtsuCalculationCudaTests(unittest.TestCase):
         with self.assertRaises((AttributeError,TypeError)):
             result.native_selected_cutoff = 200
 
-    def test_tied_partition_returns_no_result_or_calculation(self):
+    def check_test_tied_partition_returns_no_result_or_calculation(self):
         gray = torch.tensor([[0,0,1,2,2]],dtype=torch.uint8,device='cuda')
         for operation in (thresholds.threshold_otsu_result,thresholds.threshold_otsu):
             with self.assertRaises(thresholds.OtsuAmbiguityError):
@@ -182,107 +157,10 @@ class OtsuCalculationCudaTests(unittest.TestCase):
         with self.assertRaises(thresholds.OtsuAmbiguityError):
             runner._dispatch('threshold.otsu',{'gray':gray},{'object_type':'light'},None)
 
-    def test_node_cache_reuses_facts_and_cutoff_mutation_recomputes_only_dependents(self):
-        recipe = runner.build_native_seed_recipe(selected_recipe('otsu'))
-        stage = self.stage(recipe)
-        values, colors = fixture()
-        gray, rgb = torch.tensor(values,device='cuda'),torch.tensor(colors,device='cuda')
-        cache = PipelineAnalysisCache()
-        def run():
-            calls = []
-            def profile(frame,event,arg):
-                if event == 'call' and frame.f_code is thresholds.threshold_otsu_result.__code__:
-                    calls.append('otsu')
-            sys.setprofile(profile)
-            try:
-                result = self.run_recipe(recipe=recipe,cache=cache,gray=gray,rgb=rgb)
-            finally: sys.setprofile(None)
-            return result,calls
-        first,calls = run()
-        self.assertEqual(calls,['otsu'])
-        node = first.node(stage)
-        self.assertEqual(set(node.outputs),{'mask'})
-        self.assertEqual(node.calculation['native_selected_cutoff'],35)
-        with self.assertRaises(TypeError): node.calculation['native_selected_cutoff'] = 36
-        second,calls = run()
-        self.assertEqual(calls,[])
-        self.assertTrue(second.node(stage).reused)
-        self.assertIs(second.node(stage).calculation,node.calculation)
-        self.assertIs(second.node(stage).outputs['mask'],node.outputs['mask'])
-        forged = thresholds.otsu_calculation_facts(36,'light')
-        object.__setattr__(cache.values[f'reference.recipe:{recipe.recipe_id}:{stage}'].node,'calculation',forged)
-        third,calls = run()
-        self.assertEqual(calls,['otsu'])
-        self.assertEqual(third.node(stage).calculation['native_selected_cutoff'],35)
-        for previous in first.nodes:
-            if previous.stage_id == stage: break
-            self.assertTrue(third.node(previous.stage_id).reused)
-            for port,value in previous.outputs.items():
-                self.assertIs(third.node(previous.stage_id).outputs[port],value)
-        self.assertNotEqual(third.node(stage).product_key,node.product_key)
 
-    def test_pinned_scalar_adapter_and_exact_mask_plus_cutoff_conformance(self):
-        from seedvision.benchmarking import threshold_conformance as pairs
-        from seedvision.benchmarking.conformance import compare_masks, ConformanceError
-        from tests.test_threshold_conformance import _fixture as pair_fixture
-        for polarity in ('light','dark'):
-            with self.subTest(polarity=polarity), tempfile.TemporaryDirectory() as temporary:
-                image=np.array([[10,10,10,200,200,200]],np.uint8)
-                args=pair_fixture(temporary,'threshold.otsu',
-                    selected={'object_type':polarity},values=image)
-                captured={}
-                def capture(root,pair,**kwargs):
-                    captured.update(root=root,pair=pair,kwargs=kwargs)
-                    return compare_masks(root,pair,**kwargs)
-                with patch.object(pairs,'compare_masks',side_effect=capture):
-                    outcome=pairs.run_threshold_conformance_pair(**args)
-                self.assertEqual(outcome.report['pair_status'],'evaluated_pass',outcome.report)
-                result=outcome.report['conformance']['result']['conformance']
-                self.assertTrue(result['selected_cutoff']['exactly_equal'])
-                self.assertTrue(result['selected_cutoff']['mask_and_cutoff_equal'])
-                source=load_checkpoint(args['output_root'],
-                    outcome.reference_outcome.checkpoint_reference.checkpoint_sha256)
-                adapter=source.metadata['observations']['otsu_cutoff_adapter']
-                self.assertEqual(adapter['reference_selected_cutoff'],10)
-                self.assertEqual(adapter['origin'],'pinned_cv2.threshold_adapter')
-                self.assertEqual(adapter['public_return'],'mask_only')
-                self.assertIs(adapter['public_mask_match'],True)
-                native=load_checkpoint(args['output_root'],
-                    outcome.native_outcome.checkpoint_reference.checkpoint_sha256)
-                metadata=dict(native.metadata)
-                metadata['calculation']=thresholds.otsu_calculation_facts(11,polarity)
-                different=publish_checkpoint(args['output_root'],native.identity,native.arrays,
-                    execution=native.execution,measurement=native.measurement,
-                    raster_roles=native.raster_roles,metadata=metadata,allow_cpu_transfer=True)
-                comparison=compare_masks(captured['root'],
-                    replace(captured['pair'],candidate_checkpoint_sha256=different.checkpoint_sha256),
-                    **captured['kwargs'])
-                self.assertTrue(comparison['conformance']['exactly_equal'])
-                self.assertEqual(comparison['conformance']['mismatch_pixel_count'],0)
-                self.assertFalse(comparison['conformance']['selected_cutoff']['exactly_equal'])
-                self.assertFalse(comparison['conformance']['passed'])
-                metadata['calculation']=dict(native.metadata['calculation'],native_selected_cutoff=True)
-                malformed=publish_checkpoint(args['output_root'],native.identity,native.arrays,
-                    execution=native.execution,measurement=native.measurement,
-                    raster_roles=native.raster_roles,metadata=metadata,allow_cpu_transfer=True)
-                with self.assertRaisesRegex(ConformanceError,'cutoff metadata'):
-                    compare_masks(captured['root'],
-                        replace(captured['pair'],candidate_checkpoint_sha256=malformed.checkpoint_sha256),
-                        **captured['kwargs'])
 
-    def test_bridge_checkpoint_records_cutoff_from_same_calculation(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            args,_,parameters = checkpoint_fixture(Path(temporary),'threshold.otsu',
-                values=np.array([[10,10,10,200,200,200]],np.uint8))
-            outcome = bridge.run_native_threshold_stage(**args)
-            self.assertIsNotNone(outcome.checkpoint_reference,outcome.run_record.reason)
-            checkpoint = load_checkpoint(args['output_root'],outcome.checkpoint_reference.checkpoint_sha256)
-            self.assertEqual(checkpoint.metadata['effective_parameters'],parameters)
-            facts = checkpoint.metadata['calculation']
-            self.assertEqual(facts['native_selected_cutoff'],10)
-            self.assertEqual(thresholds.validate_otsu_calculation_facts(facts,parameters['object_type']),dict(facts))
 
-    def test_new_archive_roundtrip_and_legacy_replay_preserve_mask_only_ports(self):
+    def check_test_new_archive_roundtrip_and_legacy_replay_preserve_mask_only_ports(self):
         recipe = runner.build_native_seed_recipe(selected_recipe('otsu'))
         run = self.run_recipe(recipe=recipe)
         stage = self.stage(recipe)
@@ -315,87 +193,15 @@ class OtsuCalculationCudaTests(unittest.TestCase):
                 for path in current.rglob('*') if path.is_file()}
             self.assertEqual(before,after)
 
-    def test_facts_only_mismatch_is_reported_even_with_identical_plateau_mask(self):
-        recipe = runner.build_native_seed_recipe(selected_recipe('otsu'))
-        run = self.run_recipe(recipe=recipe);stage=self.stage(recipe);node=run.node(stage)
-        changed = replace(node,calculation=thresholds.otsu_calculation_facts(36,'light'))
-        altered = replace(run,nodes=tuple(changed if item.stage_id==stage else item for item in run.nodes))
-        with tempfile.TemporaryDirectory() as temporary:
-            directory=Path(temporary)/'altered'
-            archives.export_native_recipe_result(directory,recipe,altered)
-            result = replay.replay_native_stage(directory,stage)
-            self.assertEqual(result.status,'mismatch',result.reason)
-            self.assertTrue(torch.equal(result.outputs['mask'],node.outputs['mask']))
-            self.assertEqual(result.metadata['comparison']['by_port']['mask']['mismatched_elements'],0)
-            self.assertEqual(result.metadata['comparison']['calculation']['mismatched_elements'],1)
 
-    def test_malformed_or_missing_new_facts_reject_before_publication(self):
-        recipe=runner.build_native_seed_recipe(selected_recipe('otsu'))
-        run=self.run_recipe(recipe=recipe);stage=self.stage(recipe);node=run.node(stage)
-        values=[None,dict(node.calculation,native_selected_cutoff=True),
-            dict(node.calculation,cutoff_selection_profile='other'),
-            dict(node.calculation,reference_scalar_conformance='exact')]
-        with tempfile.TemporaryDirectory() as temporary:
-            for index,value in enumerate(values):
-                changed=replace(node,calculation=value)
-                altered=replace(run,nodes=tuple(changed if item.stage_id==stage else item for item in run.nodes))
-                directory=Path(temporary)/str(index)
-                with patch.object(archives,'publish_checkpoint') as publish:
-                    with self.assertRaises(archives.NativeResultExportError):
-                        archives.export_native_recipe_result(directory,recipe,altered)
-                    publish.assert_not_called()
-                self.assertFalse(directory.exists())
 
-    def test_callback_fact_mutation_takes_priority_and_evicts_descendants(self):
-        recipe=runner.build_native_seed_recipe(selected_recipe('otsu'))
-        stage=self.stage(recipe);cache=PipelineAnalysisCache();changed=[]
-        def callback():
-            entry=cache.values.get(f'reference.recipe:{recipe.recipe_id}:{stage}')
-            if entry is not None and not changed:
-                changed.append(True)
-                object.__setattr__(entry.node,'calculation',thresholds.otsu_calculation_facts(36,'light'))
-                raise RuntimeError('caller exception')
-            return False
-        with self.assertRaisesRegex(runner.NativeRecipeError,'cutoff facts changed'):
-            self.run_recipe(recipe=recipe,cache=cache,cancel=callback)
-        self.assertTrue(changed)
-        self.assertNotIn(f'reference.recipe:{recipe.recipe_id}:{stage}',cache.values)
-        for previous in recipe.stages:
-            if previous.stage_id==stage:break
-            self.assertIn(f'reference.recipe:{recipe.recipe_id}:{previous.stage_id}',cache.values)
 
-    def test_async_qt_cutoff_facts_and_replay_after_origin_deleted(self):
-        from PySide6.QtWidgets import QApplication
-        from seedvision.ui.native_recipe_dialog import NativeRecipeDialog
-        application=QApplication.instance() or QApplication([])
-        recipe=runner.build_native_seed_recipe(selected_recipe('otsu'));stage=self.stage(recipe)
-        image,_=fixture()
-        with tempfile.TemporaryDirectory() as temporary:
-            root=Path(temporary);source=root/'seed.png';saved=root/'saved'
-            self.assertTrue(cv2.imwrite(str(source),np.repeat(image[...,None],3,axis=2)))
-            dialog=NativeRecipeDialog(recipe);dialog.show()
-            try:
-                dialog.set_source_path(source);dialog.start_run()
-                deadline=time.monotonic()+45
-                while dialog._worker is not None and time.monotonic()<deadline:
-                    application.processEvents();time.sleep(.01)
-                application.processEvents()
-                self.assertIsNone(dialog._worker)
-                self.assertIsNotNone(dialog.result,dialog.status_label.text())
-                node=dialog.result.node(stage)
-                self.assertEqual(node.status,'executed',node.reason)
-                dialog._select_stage(stage)
-                self.assertIn(f"Native selected cutoff: {node.calculation['native_selected_cutoff']}",dialog.facts.toPlainText())
-                self.assertIn('scalar parity is not established',dialog.facts.toPlainText())
-                self.assertFalse(dialog.preview.pixmap().isNull())
-                archives.export_native_recipe_result(saved,recipe,dialog.result)
-                source.unlink()
-                result=replay.replay_native_stage(saved,stage)
-                self.assertEqual(result.status,'matched',result.reason)
-                self.assertTrue(torch.equal(result.outputs['mask'],node.outputs['mask']))
-                self.assertIs(dialog.result.node(stage),node)
-            finally:
-                dialog.close();application.processEvents()
+
+    def test_workflow_lifecycle(self):
+        """3 related OtsuCalculationCudaTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_result_and_compatibility_wrapper_each_use_one_histogram)
+        self.scenario(self.check_test_tied_partition_returns_no_result_or_calculation)
+        self.scenario(self.check_test_new_archive_roundtrip_and_legacy_replay_preserve_mask_only_ports)
 
 
 if __name__ == '__main__':

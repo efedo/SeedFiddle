@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.functional_units import functional_units
+
 import unittest
 from dataclasses import replace
 from unittest.mock import patch
@@ -22,8 +24,9 @@ from seedvision.segmentation.procedural import (
 )
 
 
+@functional_units
 class ProceduralInstanceTests(unittest.TestCase):
-    def test_reference_cost_settings_never_change_automatic_predictions(self) -> None:
+    def check_test_reference_cost_settings_never_change_automatic_predictions(self) -> None:
         valid, _ids, material, background, boundary = self._touching_seed_scene()
         prepared = prepare_procedural_instance_inputs(
             valid, 58.0, foreground_probability=material,
@@ -45,7 +48,7 @@ class ProceduralInstanceTests(unittest.TestCase):
         for field in ("labels", "centre_likelihood", "instance_confidences", "boundary_cost"):
             np.testing.assert_array_equal(getattr(first, field), getattr(second, field))
 
-    def test_alternative_candidate_colour_is_uint8_safe_at_low_scores(self) -> None:
+    def check_test_alternative_candidate_colour_is_uint8_safe_at_low_scores(self) -> None:
         self.assertEqual(
             _alternative_candidate_colour(0.0).tolist(), [255, 30, 55]
         )
@@ -89,7 +92,7 @@ class ProceduralInstanceTests(unittest.TestCase):
         cv2.circle(material, (160, 160), 135, 235, -1)
         return valid, material, 255 - material
 
-    def test_blurred_flattened_grayscale_can_drive_centre_likelihood(self) -> None:
+    def check_test_blurred_flattened_grayscale_can_drive_centre_likelihood(self) -> None:
         shape = (128, 128)
         valid = np.full(shape, 255, np.uint8)
         material = np.zeros(shape, np.uint8)
@@ -125,7 +128,7 @@ class ProceduralInstanceTests(unittest.TestCase):
             float(result.centre_likelihood[64, 64]) + 0.2,
         )
 
-    def test_fit_validated_oval_centres_boost_without_suppressing_fallback(self) -> None:
+    def check_test_fit_validated_oval_centres_boost_without_suppressing_fallback(self) -> None:
         shape = (128, 128)
         valid = np.full(shape, 255, np.uint8)
         material = np.zeros(shape, np.uint8)
@@ -174,7 +177,7 @@ class ProceduralInstanceTests(unittest.TestCase):
             fallback.centre_likelihood, with_oval.centre_likelihood
         ))
 
-    def test_generated_frankenstein_region_is_hard_rejected_by_axis_ratio(self) -> None:
+    def check_test_generated_frankenstein_region_is_hard_rejected_by_axis_ratio(self) -> None:
         shape = (128, 180)
         valid = np.full(shape, 255, np.uint8)
         material = np.zeros(shape, np.uint8)
@@ -207,7 +210,7 @@ class ProceduralInstanceTests(unittest.TestCase):
             ("instance_above_maximum_axis_ratio",),
         )
 
-    def test_multi_hypothesis_candidates_are_scored_and_exposed(self) -> None:
+    def check_test_multi_hypothesis_candidates_are_scored_and_exposed(self) -> None:
         shape = (160, 160)
         valid = np.full(shape, 255, np.uint8)
         material = np.zeros(shape, np.uint8)
@@ -251,7 +254,7 @@ class ProceduralInstanceTests(unittest.TestCase):
         self.assertEqual(result.alternative_candidates_rgba.shape, (*shape, 4))
         self.assertTrue(np.any(result.alternative_candidates_rgba[:, :, 3]))
 
-    def test_candidate_geometry_rejects_concavity_and_thin_protrusions(self) -> None:
+    def check_test_candidate_geometry_rejects_concavity_and_thin_protrusions(self) -> None:
         from seedvision.segmentation.procedural import _candidate_from_component
 
         boundary = np.ones((140, 140), np.float32)
@@ -334,7 +337,7 @@ class ProceduralInstanceTests(unittest.TestCase):
         self.assertIsNone(candidate)
         self.assertEqual(reason, "instance_above_maximum_protrusion")
 
-    def test_soft_width_limit_penalizes_before_the_hard_cutoff(self) -> None:
+    def check_test_soft_width_limit_penalizes_before_the_hard_cutoff(self) -> None:
         from seedvision.segmentation.procedural import _candidate_from_component
 
         component = np.zeros((140, 140), np.uint8)
@@ -392,7 +395,7 @@ class ProceduralInstanceTests(unittest.TestCase):
         )
         return valid, arguments
 
-    def test_no_manual_centre_edits_are_bit_exact_with_legacy_result(self) -> None:
+    def check_test_no_manual_centre_edits_are_bit_exact_with_legacy_result(self) -> None:
         valid, arguments = self._manual_centre_scene_arguments()
         legacy = procedural_seed_instances(valid, 54.0, **arguments)
         explicit_none = procedural_seed_instances(
@@ -427,7 +430,7 @@ class ProceduralInstanceTests(unittest.TestCase):
                 legacy.rejected_manual_centre_reasons,
             )
 
-    def test_augment_adds_and_overrides_without_duplicate_markers(self) -> None:
+    def check_test_augment_adds_and_overrides_without_duplicate_markers(self) -> None:
         valid, arguments = self._manual_centre_scene_arguments()
         baseline = procedural_seed_instances(valid, 54.0, **arguments)
         baseline_automatic = baseline.marker_centres_for_source(
@@ -482,7 +485,7 @@ class ProceduralInstanceTests(unittest.TestCase):
             )
         )
 
-    def test_replace_mode_and_empty_replace_delete_automatic_markers(self) -> None:
+    def check_test_replace_mode_and_empty_replace_delete_automatic_markers(self) -> None:
         valid, arguments = self._manual_centre_scene_arguments()
         replacement = procedural_seed_instances(
             valid,
@@ -515,7 +518,7 @@ class ProceduralInstanceTests(unittest.TestCase):
         self.assertEqual(deleted.marker_sources.shape, (0,))
         self.assertFalse(np.any(deleted.labels))
 
-    def test_annotations_remain_whole_mask_authority_over_manual_centres(self) -> None:
+    def check_test_annotations_remain_whole_mask_authority_over_manual_centres(self) -> None:
         valid, arguments = self._manual_centre_scene_arguments()
         annotations = np.zeros(valid.shape, np.uint16)
         cv2.circle(annotations, (78, 120), 10, 7, -1)
@@ -556,7 +559,7 @@ class ProceduralInstanceTests(unittest.TestCase):
             np.asarray(((80.0, 120.0),), np.float32),
         )
 
-    def test_marker_metadata_is_not_replaced_by_instance_centroids(self) -> None:
+    def check_test_marker_metadata_is_not_replaced_by_instance_centroids(self) -> None:
         valid, arguments = self._manual_centre_scene_arguments()
         marker = np.asarray((60.0, 120.0), np.float32)
         result = procedural_seed_instances(
@@ -577,7 +580,7 @@ class ProceduralInstanceTests(unittest.TestCase):
             float(np.linalg.norm(result.centres_xy[0] - marker)), 8.0
         )
 
-    def test_invalid_outside_duplicate_and_culled_manual_centres_are_reported(self) -> None:
+    def check_test_invalid_outside_duplicate_and_culled_manual_centres_are_reported(self) -> None:
         with self.assertRaises(ValueError):
             ManualSeedCentres(((float("nan"), 4.0),))
         with self.assertRaises(ValueError):
@@ -643,7 +646,7 @@ class ProceduralInstanceTests(unittest.TestCase):
             np.asarray(((78.0, 120.0),), np.float32),
         )
 
-    def test_source_centres_transform_once_to_corrected_coordinates(self) -> None:
+    def check_test_source_centres_transform_once_to_corrected_coordinates(self) -> None:
         from types import SimpleNamespace
 
         from seedvision.segmentation.baseline import (
@@ -684,7 +687,7 @@ class ProceduralInstanceTests(unittest.TestCase):
             ((20.0, 3.0), (50.0, 18.0)),
         )
 
-    def test_redesigned_boundary_settings_are_validated(self) -> None:
+    def check_test_redesigned_boundary_settings_are_validated(self) -> None:
         invalid_settings = (
             {"boundary_edge_weight": 0.0, "boundary_ridge_weight": 0.0},
             {"boundary_semantic_floor": 1.01},
@@ -698,7 +701,7 @@ class ProceduralInstanceTests(unittest.TestCase):
             with self.subTest(parameters=parameters), self.assertRaises(ValueError):
                 ProceduralInstanceSettings(**parameters)
 
-    def test_retired_sensor_and_shadow_boundary_inputs_are_not_accepted(self) -> None:
+    def check_test_retired_sensor_and_shadow_boundary_inputs_are_not_accepted(self) -> None:
         valid, _identities, material, background, boundary = self._touching_seed_scene()
         arguments = dict(
             foreground_probability=material,
@@ -723,7 +726,7 @@ class ProceduralInstanceTests(unittest.TestCase):
                 shadow_likelihood=boundary,
             )
 
-    def test_separates_touching_seed_shapes_and_exposes_diagnostics(self) -> None:
+    def check_test_separates_touching_seed_shapes_and_exposes_diagnostics(self) -> None:
         valid, _identities, material, background, boundary = self._touching_seed_scene()
         settings = ProceduralInstanceSettings(
             centre_minimum_separation_fraction=0.58,
@@ -763,7 +766,7 @@ class ProceduralInstanceTests(unittest.TestCase):
             settings.maximum_protrusion_area_fraction,
         )
 
-    def test_dense_component_supplements_suppressed_regional_maxima(self) -> None:
+    def check_test_dense_component_supplements_suppressed_regional_maxima(self) -> None:
         valid, material, background = self._packed_material_scene()
         empty = np.zeros(valid.shape, np.uint8)
         settings = ProceduralInstanceSettings(minimum_marker_score=0.08)
@@ -791,7 +794,7 @@ class ProceduralInstanceTests(unittest.TestCase):
         self.assertGreaterEqual(result.count, round(expected * 0.90))
         self.assertLessEqual(result.count, target)
 
-    def test_supplemental_markers_do_not_split_a_complete_annotation(self) -> None:
+    def check_test_supplemental_markers_do_not_split_a_complete_annotation(self) -> None:
         valid, material, background = self._packed_material_scene()
         empty = np.zeros(valid.shape, np.uint8)
         annotations = np.zeros(valid.shape, np.uint16)
@@ -814,7 +817,7 @@ class ProceduralInstanceTests(unittest.TestCase):
         self.assertGreater(int(annotation_labels[0]), 0)
         self.assertGreater(result.count, 20)
 
-    def test_internal_edge_texture_cannot_exceed_calibrated_marker_target(self) -> None:
+    def check_test_internal_edge_texture_cannot_exceed_calibrated_marker_target(self) -> None:
         valid, material, background = self._packed_material_scene()
         texture = np.zeros(valid.shape, np.uint8)
         for coordinate in range(50, 281, 13):
@@ -845,7 +848,7 @@ class ProceduralInstanceTests(unittest.TestCase):
         self.assertGreater(result.count, 1)
         self.assertLessEqual(result.count, target)
 
-    def test_distinct_painted_instances_become_authoritative_markers(self) -> None:
+    def check_test_distinct_painted_instances_become_authoritative_markers(self) -> None:
         valid, identities, material, background, boundary = self._touching_seed_scene()
         annotations = np.zeros_like(identities, dtype=np.uint16)
         for identifier, centre in ((1, (78, 120)), (2, (120, 120)), (3, (162, 120))):
@@ -878,7 +881,7 @@ class ProceduralInstanceTests(unittest.TestCase):
             )
             self.assertLess(float(distances.min()), 30.0)
 
-    def test_low_level_prepared_runner_rejects_untransformed_source_coordinates(self) -> None:
+    def check_test_low_level_prepared_runner_rejects_untransformed_source_coordinates(self) -> None:
         valid, arguments = self._manual_centre_scene_arguments()
         settings = arguments.pop("settings")
         prepared = prepare_procedural_instance_inputs(
@@ -897,7 +900,7 @@ class ProceduralInstanceTests(unittest.TestCase):
                 settings=settings,
             )
 
-    def test_gpu_rasters_resize_without_materializing_full_host_caches(self) -> None:
+    def check_test_gpu_rasters_resize_without_materializing_full_host_caches(self) -> None:
         import torch
 
         valid, _identities, material, background, boundary = self._touching_seed_scene()
@@ -940,7 +943,7 @@ class ProceduralInstanceTests(unittest.TestCase):
         self.assertEqual(result.boundary_cost.shape, result.labels.shape)
         self.assertTrue(all(not item.is_materialized for item in inputs))
 
-    def test_prepared_inputs_match_direct_result_and_are_reused(self) -> None:
+    def check_test_prepared_inputs_match_direct_result_and_are_reused(self) -> None:
         import seedvision.segmentation.procedural as procedural_module
 
         valid, _identities, material, background, boundary = self._touching_seed_scene()
@@ -1017,7 +1020,7 @@ class ProceduralInstanceTests(unittest.TestCase):
         self.assertEqual(first.source_shape, direct.source_shape)
         self.assertEqual(first.working_scale, direct.working_scale)
 
-    def test_prepared_annotation_targets_exclude_invalid_pixels(self) -> None:
+    def check_test_prepared_annotation_targets_exclude_invalid_pixels(self) -> None:
         valid, _identities, material, background, boundary = self._touching_seed_scene()
         prepared = prepare_procedural_instance_inputs(
             valid,
@@ -1034,7 +1037,7 @@ class ProceduralInstanceTests(unittest.TestCase):
         self.assertFalse(np.any(targets[~prepared.valid_mask]))
         self.assertTrue(np.all(targets[prepared.valid_mask] == 1))
 
-    def test_annotation_semantics_suppress_internal_coat_stripe_without_split(self) -> None:
+    def check_test_annotation_semantics_suppress_internal_coat_stripe_without_split(self) -> None:
         shape = (220, 220)
         valid = np.zeros(shape, np.uint8)
         cv2.circle(valid, (110, 110), 104, 255, -1)
@@ -1072,7 +1075,7 @@ class ProceduralInstanceTests(unittest.TestCase):
             4.0 * float(np.mean(boundary_cost[stripe > 0])),
         )
 
-    def test_normalized_net_probability_controls_semantic_boundary_strength(self) -> None:
+    def check_test_normalized_net_probability_controls_semantic_boundary_strength(self) -> None:
         shape = (180, 180)
         valid = np.full(shape, 255, np.uint8)
         material = np.zeros(shape, np.uint8)
@@ -1127,7 +1130,7 @@ class ProceduralInstanceTests(unittest.TestCase):
             strong.boundary_cost,
         )
 
-    def test_true_touching_boundary_remains_a_watershed_cut(self) -> None:
+    def check_test_true_touching_boundary_remains_a_watershed_cut(self) -> None:
         shape = (240, 240)
         valid = np.zeros(shape, np.uint8)
         cv2.circle(valid, (120, 120), 112, 255, -1)
@@ -1167,7 +1170,7 @@ class ProceduralInstanceTests(unittest.TestCase):
         self.assertGreater(right_label, 0)
         self.assertNotEqual(left_label, right_label)
 
-    def test_sparse_semantic_training_keeps_unknown_edges_neutral(self) -> None:
+    def check_test_sparse_semantic_training_keeps_unknown_edges_neutral(self) -> None:
         shape = (180, 180)
         valid = np.full(shape, 255, np.uint8)
         material = np.zeros(shape, np.uint8)
@@ -1207,7 +1210,7 @@ class ProceduralInstanceTests(unittest.TestCase):
         )
         self.assertGreater(classified_unknown, 0.85 * neutral_unknown)
 
-    def test_long_continuous_convex_trace_increases_boundary_support(self) -> None:
+    def check_test_long_continuous_convex_trace_increases_boundary_support(self) -> None:
         shape = (220, 220)
         valid = np.zeros(shape, np.uint8)
         cv2.circle(valid, (110, 110), 104, 255, -1)
@@ -1246,6 +1249,43 @@ class ProceduralInstanceTests(unittest.TestCase):
             float(np.mean(with_trace.boundary_cost[trace_pixels])),
             1.35 * float(np.mean(without_trace.boundary_cost[trace_pixels])),
         )
+
+    def test_workflow_lifecycle(self):
+        """20 related ProceduralInstanceTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_reference_cost_settings_never_change_automatic_predictions)
+        self.scenario(self.check_test_alternative_candidate_colour_is_uint8_safe_at_low_scores)
+        self.scenario(self.check_test_blurred_flattened_grayscale_can_drive_centre_likelihood)
+        self.scenario(self.check_test_fit_validated_oval_centres_boost_without_suppressing_fallback)
+        self.scenario(self.check_test_multi_hypothesis_candidates_are_scored_and_exposed)
+        self.scenario(self.check_test_no_manual_centre_edits_are_bit_exact_with_legacy_result)
+        self.scenario(self.check_test_augment_adds_and_overrides_without_duplicate_markers)
+        self.scenario(self.check_test_replace_mode_and_empty_replace_delete_automatic_markers)
+        self.scenario(self.check_test_annotations_remain_whole_mask_authority_over_manual_centres)
+        self.scenario(self.check_test_marker_metadata_is_not_replaced_by_instance_centroids)
+        self.scenario(self.check_test_source_centres_transform_once_to_corrected_coordinates)
+        self.scenario(self.check_test_separates_touching_seed_shapes_and_exposes_diagnostics)
+        self.scenario(self.check_test_dense_component_supplements_suppressed_regional_maxima)
+        self.scenario(self.check_test_supplemental_markers_do_not_split_a_complete_annotation)
+        self.scenario(self.check_test_internal_edge_texture_cannot_exceed_calibrated_marker_target)
+        self.scenario(self.check_test_distinct_painted_instances_become_authoritative_markers)
+        self.scenario(self.check_test_gpu_rasters_resize_without_materializing_full_host_caches)
+        self.scenario(self.check_test_prepared_inputs_match_direct_result_and_are_reused)
+        self.scenario(self.check_test_annotation_semantics_suppress_internal_coat_stripe_without_split)
+        self.scenario(self.check_test_sparse_semantic_training_keeps_unknown_edges_neutral)
+
+    def test_validation_and_recovery(self):
+        """11 related ProceduralInstanceTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_generated_frankenstein_region_is_hard_rejected_by_axis_ratio)
+        self.scenario(self.check_test_candidate_geometry_rejects_concavity_and_thin_protrusions)
+        self.scenario(self.check_test_soft_width_limit_penalizes_before_the_hard_cutoff)
+        self.scenario(self.check_test_invalid_outside_duplicate_and_culled_manual_centres_are_reported)
+        self.scenario(self.check_test_redesigned_boundary_settings_are_validated)
+        self.scenario(self.check_test_retired_sensor_and_shadow_boundary_inputs_are_not_accepted)
+        self.scenario(self.check_test_low_level_prepared_runner_rejects_untransformed_source_coordinates)
+        self.scenario(self.check_test_prepared_annotation_targets_exclude_invalid_pixels)
+        self.scenario(self.check_test_normalized_net_probability_controls_semantic_boundary_strength)
+        self.scenario(self.check_test_true_touching_boundary_remains_a_watershed_cut)
+        self.scenario(self.check_test_long_continuous_convex_trace_increases_boundary_support)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.functional_units import functional_units
+
 import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -13,6 +15,7 @@ from seedvision.optimization.search import optimize
 from tests.test_node_optimization import FakeEvaluator
 
 
+@functional_units
 class NodeOptimizationUITests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -21,11 +24,11 @@ class NodeOptimizationUITests(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication([])
 
     def window(self, directory):
-        from PySide6.QtCore import QSettings
         from seedvision.ui.main_window import MainWindow
-        with patch.object(MainWindow, '_load_workspace_images'), patch('seedvision.ui.main_window.QSettings',
-                return_value=QSettings(str(Path(directory)/'ui.ini'), QSettings.Format.IniFormat)):
-            window = MainWindow(Path(__file__).resolve().parents[1])
+        from tests.review_fixtures import isolated_window
+        with patch.object(MainWindow, '_load_workspace_images'):
+            window = isolated_window(Path(__file__).resolve().parents[1],
+                                     settings_path=Path(directory) / 'ui.ini')
         def dispose():
             window._optimization_task = None
             window._project_tracking_enabled = False
@@ -34,7 +37,7 @@ class NodeOptimizationUITests(unittest.TestCase):
         self.addCleanup(dispose)
         return window
 
-    def test_all_computational_cards_offer_shared_action(self):
+    def check_test_all_computational_cards_offer_shared_action(self):
         from seedvision.ui.pipeline_inspector import PipelineInspector
         from seedvision.optimization.registry import capability
         inspector = PipelineInspector()
@@ -56,7 +59,7 @@ class NodeOptimizationUITests(unittest.TestCase):
         inspector.set_optimization_context(ready=True, busy=True)
         self.assertFalse(inspector.optimization_button.isEnabled())
 
-    def test_project_command_and_dispatch_are_connected(self):
+    def check_test_project_command_and_dispatch_are_connected(self):
         from seedvision.ui.pipeline_inspector import PipelineInspector
         with TemporaryDirectory() as directory:
             window = self.window(directory)
@@ -66,7 +69,7 @@ class NodeOptimizationUITests(unittest.TestCase):
                 window._pipeline_node_action_requested('background_likelihood', PipelineInspector.OPTIMIZE_NODE_ACTION, None)
                 self.assertEqual(start.call_args.args, ('background_likelihood',))
 
-    def test_classifier_manual_controls_remain_editable_without_optimization(self):
+    def check_test_classifier_manual_controls_remain_editable_without_optimization(self):
         from PySide6.QtWidgets import QDoubleSpinBox, QLineEdit
         from seedvision.ui.pipeline_inspector import PipelineInspector
         from seedvision.optimization.registry import EXEMPT
@@ -110,7 +113,7 @@ class NodeOptimizationUITests(unittest.TestCase):
             self.assertTrue(inspector.optimization_button.isHidden())
             self.assertFalse(inspector.optimization_button.isEnabled())
 
-    def test_completed_progress_does_not_cancel_success_and_apply_is_atomic(self):
+    def check_test_completed_progress_does_not_cancel_success_and_apply_is_atomic(self):
         from PySide6.QtWidgets import QDialog, QProgressDialog
         with TemporaryDirectory() as directory:
             window = self.window(directory)
@@ -137,7 +140,7 @@ class NodeOptimizationUITests(unittest.TestCase):
             self.assertEqual(record['disposition'], 'applied')
             self.assertEqual(len(list(Path(directory).glob('*.optimization-*.json'))), 1)
 
-    def test_stale_proposal_never_opens_apply_dialog(self):
+    def check_test_stale_proposal_never_opens_apply_dialog(self):
         from PySide6.QtWidgets import QDialog
         with TemporaryDirectory() as directory:
             window = self.window(directory)
@@ -151,7 +154,7 @@ class NodeOptimizationUITests(unittest.TestCase):
             dialog.assert_not_called()
             self.assertIsNone(window._optimization_task)
 
-    def test_rollback_refuses_later_edits_to_another_control(self):
+    def check_test_rollback_refuses_later_edits_to_another_control(self):
         import json
         from PySide6.QtWidgets import QFileDialog, QMessageBox
         with TemporaryDirectory() as directory:
@@ -175,7 +178,7 @@ class NodeOptimizationUITests(unittest.TestCase):
             information.assert_called_once()
             self.assertEqual(node.parameters, expected)
 
-    def test_save_as_preserves_companions_and_target_location(self):
+    def check_test_save_as_preserves_companions_and_target_location(self):
         import json
         with TemporaryDirectory() as directory:
             window = self.window(directory)
@@ -189,6 +192,19 @@ class NodeOptimizationUITests(unittest.TestCase):
             targets = json.loads(destination.with_suffix('.optimization-targets.json').read_text())
             self.assertEqual(Path(targets['sha']), Path(directory)/'targets.npz')
             self.assertTrue(json.loads(destination.with_suffix('.optimization-policy.json').read_text())['sha']['complete'])
+
+    def test_workflow_lifecycle(self):
+        """5 related NodeOptimizationUITests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_all_computational_cards_offer_shared_action)
+        self.scenario(self.check_test_project_command_and_dispatch_are_connected)
+        self.scenario(self.check_test_classifier_manual_controls_remain_editable_without_optimization)
+        self.scenario(self.check_test_rollback_refuses_later_edits_to_another_control)
+        self.scenario(self.check_test_save_as_preserves_companions_and_target_location)
+
+    def test_validation_and_recovery(self):
+        """2 related NodeOptimizationUITests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_completed_progress_does_not_cancel_success_and_apply_is_atomic)
+        self.scenario(self.check_test_stale_proposal_never_opens_apply_dialog)
 
 
 if __name__ == '__main__':

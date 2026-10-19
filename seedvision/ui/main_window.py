@@ -14,6 +14,7 @@ from time import monotonic
 
 import numpy as np
 from PySide6.QtCore import (
+    QEvent,
     QObject,
     QRunnable,
     QSettings,
@@ -54,6 +55,9 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QSplitter,
     QStackedWidget,
+    QStyle,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
     QToolBar,
     QToolButton,
     QVBoxLayout,
@@ -1202,6 +1206,36 @@ class _ProceduralFitTask(QRunnable):
         self.signals.completed.emit(report)
 
 
+class _ImageListDelegate(QStyledItemDelegate):
+    """Keep native image rows while reserving a small removal target."""
+
+    remove_requested = Signal(object)
+
+    @staticmethod
+    def remove_rect(rect):
+        target = rect.adjusted(rect.width() - 24, 2, -2, -2)
+        return target
+
+    def paint(self, painter, option, index):
+        native = QStyleOptionViewItem(option)
+        native.rect = option.rect.adjusted(0, 0, -26, 0)
+        super().paint(painter, native, index)
+        icon = option.widget.style().standardIcon(QStyle.StandardPixmap.SP_TitleBarCloseButton)
+        icon.paint(painter, self.remove_rect(option.rect), Qt.AlignmentFlag.AlignCenter)
+
+    def editorEvent(self, event, model, option, index):
+        if (
+            event.type() in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonRelease,
+                             QEvent.Type.MouseButtonDblClick)
+            and event.button() == Qt.MouseButton.LeftButton
+            and self.remove_rect(option.rect).contains(event.position().toPoint())
+        ):
+            if event.type() == QEvent.Type.MouseButtonRelease:
+                self.remove_requested.emit(index.data(Qt.ItemDataRole.UserRole))
+            return True
+        return super().editorEvent(event, model, option, index)
+
+
 class MainWindow(ResultsController, WorkController, ReferenceFrameController, OptimizationController, QMainWindow):
     """Main desktop window for visual pipeline control and seed review."""
 
@@ -1408,6 +1442,11 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.image_list = QListWidget(self)
         self.image_list.setAlternatingRowColors(True)
         self.image_list.itemActivated.connect(self._open_list_item)
+        self._image_list_delegate = _ImageListDelegate(self.image_list)
+        self._image_list_delegate.remove_requested.connect(
+            lambda filename: self._remove_image(Path(filename))
+        )
+        self.image_list.setItemDelegate(self._image_list_delegate)
         self.species_combo = QComboBox(self)
         self.species_combo.addItem('Unknown / unassigned')
         self.species_combo.addItems(self._load_species_names())
@@ -1422,8 +1461,9 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._init_optimization()
         self._init_reference_frames()
         self._init_work_control()
+        self.stop_action.triggered.connect(lambda: self.pipeline_workflow.stop() if self.pipeline_workflow.active else None)
         self._init_results()
-        self._show_image_workspace()
+        self._show_split_workspace()
         self.pipeline_inspector.enable_unified_optimization()
         self._analysis_activity_timer = QTimer(self)
         self._analysis_activity_timer.setInterval(1000)
@@ -1669,39 +1709,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         if hasattr(self, "pipeline_canvas"):
             self.pipeline_canvas.refresh(("project",))
 
-    @Slot()
-    def _show_reference_graphs(self) -> None:
-        """Open the read-only reference graph view and retain its metadata edits."""
-
-        from seedvision.ui.reference_graph_dialog import ReferenceGraphDialog
-
-        dialog = ReferenceGraphDialog(
-            self,
-            reference_graphs=self._project_reference_graphs,
-            project_root=self._root,
-            project_path=self._current_project_path,
-            reference_model_assets=self._project_reference_model_assets,
-            native_recipes=self._project_native_recipes,
-            correction_bindings=self._project_correction_bindings,
-            correction_context_factory=self._capture_correction_project_context,
-            keep_correction=self._keep_project_correction,
-        )
-        dialog.reference_graphs_changed.connect(
-            self._set_project_reference_graphs
-        )
-        dialog.native_recipes_changed.connect(self._set_project_native_recipes)
-        try:
-            dialog.exec()
-        finally:
-            # Initial catalogue selection is made in the dialog constructor,
-            # before listeners are connected. Read once on close as well so a
-            # first view becomes part of the next project save, even if the
-            # modal event loop exits through an exception.
-            reference_graphs = dialog.reference_graphs
-            native_recipes = dialog.native_recipes
-            dialog.deleteLater()
-            self._set_project_reference_graphs(reference_graphs)
-            self._set_project_native_recipes(native_recipes)
 
     def _correction_project_state(self):
         selected = self.image_view.image_path
@@ -1710,6 +1717,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         return (self._root.resolve(), None if selected is None else Path(selected).resolve(), paths,
                 self._current_project_path, tuple(self._project_original_image_records.items()),
                 self._project_reference_graphs, self._project_native_recipes, self._project_correction_bindings,
+                self.catalogue_nodes.instances,
                 bool(getattr(self, '_closing_after_work', False)))
 
     def _capture_correction_project_context(self):
@@ -1761,7 +1769,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             raise NativeRecipeCancelled('Correction project selection changed while inputs were being kept.')
         validate_correction_keep_result(request, captured)
         recipes = select_native_recipe(state[6], request.recipe)
-        bindings = retain_selected_correction_bindings(state[7], state[5], recipes)
+        bindings = retain_selected_correction_bindings(state[7], state[5], recipes,
+            pipeline_workflow=self.pipeline_workflow.workflow, node_instances=self.catalogue_nodes.instances)
         bindings = validate_correction_binding_records(select_correction_binding(bindings, captured))
         self._project_native_recipes, self._project_correction_bindings = recipes, bindings
         if context.image.identifier not in self._project_original_image_records:
@@ -1782,6 +1791,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         if updated == self._project_native_recipes:
             return
         self._project_native_recipes = updated
+        self.pipeline_workflow.refresh_saved(updated)
         self._retain_selected_correction_bindings()
         self._project_tracking_enabled = True
         self._set_project_dirty()
@@ -1815,7 +1825,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
     def _retain_selected_correction_bindings(self):
         from seedvision.persistence.correction_inputs import retain_selected_correction_bindings
         self._project_correction_bindings = retain_selected_correction_bindings(
-            self._project_correction_bindings, self._project_reference_graphs, self._project_native_recipes)
+            self._project_correction_bindings, self._project_reference_graphs, self._project_native_recipes,
+            pipeline_workflow=self.pipeline_workflow.workflow, node_instances=self.catalogue_nodes.instances)
 
     def _refresh_recent_projects_menu(self) -> None:
         self.recent_projects_menu.clear()
@@ -1948,8 +1959,10 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             ),
         )
 
-    def _retry_unsaved_project_sidecars(self) -> bool:
+    def _retry_unsaved_project_sidecars(self, keys: set[str] | None = None) -> bool:
         for key in tuple(self._unsaved_reference_sidecars):
+            if keys is not None and key not in keys:
+                continue
             path = self._image_paths.get(key)
             if path is None:
                 QMessageBox.critical(
@@ -1991,6 +2004,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             )
 
         for key in tuple(self._unsaved_manual_centre_sidecars):
+            if keys is not None and key not in keys:
+                continue
             path = self._image_paths.get(key)
             state = self._manual_seed_centre_states.get(key)
             if path is None or state is None:
@@ -2094,6 +2109,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 reference_graphs=self._project_reference_graphs,
                 reference_model_assets=getattr(self, '_project_reference_model_assets', ()),
                 native_recipes=self._project_native_recipes,
+                pipeline_workflow=self.pipeline_workflow.sync_graph(),
+                node_instances=self.catalogue_nodes.snapshot_instances(),
                 correction_bindings=tuple(binding for binding in self._project_correction_bindings
                     if binding.image_id not in self._project_unresolved_image_records),
                 existing_correction_bindings=self._project_correction_bindings,
@@ -2132,6 +2149,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 reference_graphs=self._project_reference_graphs,
                 reference_model_assets=captured.reference_model_assets,
                 native_recipes=captured.native_recipes,
+                pipeline_workflow=captured.pipeline_workflow,
+                node_instances=captured.node_instances,
                 correction_bindings=captured.correction_bindings+tuple(binding
                     for binding in self._project_correction_bindings
                     if binding.image_id in self._project_unresolved_image_records),
@@ -2402,6 +2421,17 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._project_reference_graphs = loaded.document.reference_graphs
         self._project_reference_model_assets = loaded.document.reference_model_assets
         self._project_native_recipes = loaded.document.native_recipes
+        self.pipeline_workflow.refresh_saved(self._project_native_recipes)
+        self.pipeline_workflow.install(loaded.document.pipeline_workflow)
+        self.catalogue_nodes.set_instances(loaded.document.node_instances)
+        if hasattr(self, "pipeline_documents"):
+            self._loaded_pipeline_document = None
+            self._pipeline_held_model_assets = ()
+            self._pipeline_held_correction_bindings = ()
+            loaded_workflow = loaded.document.pipeline_workflow
+            self.pipeline_documents.loaded('Default seed analysis' if loaded_workflow is None else loaded_workflow.source_recipe.title,
+                name=None if loaded_workflow is None else loaded_workflow.display_state.get("pipeline_name"))
+            self.pipeline_backends.refresh()
         self._project_correction_bindings = loaded.document.correction_bindings
         species = loaded.document.species or 'unknown'
         if species:
@@ -2505,6 +2535,10 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         overlay_index = self.overlay_combo.findData(selected_overlay)
         if overlay_index >= 0:
             self.overlay_combo.setCurrentIndex(overlay_index)
+        selected_instance = next((item for item in loaded.document.node_instances if item.selected_node is not None), None)
+        if selected_instance is not None:
+            self._select_added_node(selected_instance.instance_id + '::' + selected_instance.selected_node,
+                                    selected_instance.selected_output)
         self._installing_project = False
 
         if loaded.issues:
@@ -2564,6 +2598,13 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
 
     def _clear_project_session_state(self) -> None:
         """Purge every image-local value before installing another project."""
+        self._loaded_pipeline_document = None
+        self._pipeline_held_model_assets = ()
+        self._pipeline_held_correction_bindings = ()
+        self.catalogue_nodes.set_instances(())
+        self.pipeline_workflow.install(None)
+        self.pipeline_workflow._copies.clear()
+        self.pipeline_workflow.refresh_saved()
         if hasattr(self, '_optimization_targets'):
             self._optimization_targets.clear()
 
@@ -3099,24 +3140,17 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.analyze_action.setEnabled(False)
         self.analyze_action.triggered.connect(self._analyze_current_image)
 
-        self.reference_graphs_action = QAction("Reference graphs…", self)
-        self.reference_graphs_action.setToolTip(
-            "View the read-only PlantCV source-audit and SMPTS paper-reconstruction graphs."
-        )
-        self.reference_graphs_action.triggered.connect(
-            self._show_reference_graphs
-        )
 
         self.image_workspace_action = QAction("Image", self)
         self.image_workspace_action.setShortcut("Ctrl+1")
         self.image_workspace_action.setCheckable(True)
         self.image_workspace_action.setChecked(True)
-        self.image_workspace_action.toggled.connect(self.image_view.setVisible)
+        self.image_workspace_action.toggled.connect(lambda visible: getattr(self, "image_display_stack", self.image_view).setVisible(visible))
 
         self.pipeline_workspace_action = QAction("Pipeline", self)
         self.pipeline_workspace_action.setShortcut("Ctrl+2")
         self.pipeline_workspace_action.setCheckable(True)
-        self.pipeline_workspace_action.setChecked(False)
+        self.pipeline_workspace_action.setChecked(True)
         self.pipeline_workspace_action.toggled.connect(self.pipeline_canvas.setVisible)
 
         self.split_workspace_action = QAction("Show both views", self)
@@ -3255,17 +3289,18 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         learning_menu.addAction(self.train_trait_model_action)
         learning_menu.addAction(self.activate_trait_model_action)
         learning_menu.addSeparator()
+        self.train_native_bayes_action = QAction('Train PlantCV probability model…', self)
+        self.train_native_bayes_action.triggered.connect(lambda checked=False: self.pipeline_workflow.train_model('bayes'))
+        learning_menu.addAction(self.train_native_bayes_action)
+        self.train_native_kmeans_action = QAction('Train frozen K-means centres…', self)
+        self.train_native_kmeans_action.triggered.connect(lambda checked=False: self.pipeline_workflow.train_model('kmeans'))
+        learning_menu.addAction(self.train_native_kmeans_action)
+        learning_menu.addSeparator()
         learning_menu.addAction(self.manage_species_libraries_action)
 
-        view_menu = self.menuBar().addMenu("&View")
-        view_menu.addAction(self.image_workspace_action)
-        view_menu.addAction(self.pipeline_workspace_action)
-        view_menu.addAction(self.split_workspace_action)
-        view_menu.addSeparator()
-        view_menu.addAction(self.reference_graphs_action)
-        view_menu.addSeparator()
-        view_menu.addAction(self.fit_action)
-        view_menu.addAction(self.actual_size_action)
+        # Keep shortcuts available without duplicating the canvas controls in a menu.
+        for action in (self.split_workspace_action, self.fit_action, self.actual_size_action):
+            self.addAction(action)
 
         help_menu = self.menuBar().addMenu("&Help")
         help_menu.addAction(self.diagnostics_action)
@@ -3281,8 +3316,10 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.overlay_button = QToolButton(self)
         self.overlay_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.overlay_button.setMenu(self.overlay_menu)
-        self.overlay_button.setMinimumWidth(220)
-        self.overlay_button.setMaximumWidth(380)
+        self.overlay_button.setMaximumWidth(210)
+        self.overlay_button.setSizePolicy(
+            QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed
+        )
         self.overlay_button.setToolTip(
             "Choose a calculating node, then one of the overlays that node owns."
         )
@@ -3585,7 +3622,18 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 )
                 if mode == selected_mode:
                     selected_label = label
-        self.overlay_button.setText(selected_label)
+        self.overlay_button.setText(
+            self.overlay_button.fontMetrics().elidedText(
+                selected_label,
+                Qt.TextElideMode.ElideRight,
+                self.overlay_button.maximumWidth() - 28,
+            )
+        )
+        self.overlay_button.setAccessibleName(selected_label)
+        self.overlay_button.setToolTip(
+            f"{selected_label}\n"
+            "Choose a calculating node, then one of the overlays that node owns."
+        )
 
     def _select_overlay_mode(self, mode: str) -> None:
         index = self.overlay_combo.findData(mode)
@@ -3602,6 +3650,9 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
 
     def _sync_inspector_overlay_options(self) -> None:
         if not hasattr(self, "pipeline_inspector"):
+            return
+        if getattr(self, 'pipeline_workflow', None) is not None and self.pipeline_workflow.active:
+            self.pipeline_inspector.overlay_combo.hide()
             return
         self.pipeline_inspector.set_overlay_options(
             self._overlay_options_for_node(self._selected_pipeline_node),
@@ -4928,7 +4979,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.workflow_toolbar = QToolBar("Workflow", self)
         self.workflow_toolbar.setIconSize(QSize(18, 18))
         self.workflow_toolbar.setMovable(False)
-        self.workflow_toolbar.addAction(self.open_action)
         self.workflow_toolbar.addAction(self.analyze_action)
         self.workflow_toolbar.addSeparator()
         self.workflow_toolbar.addWidget(QLabel("View:", self.workflow_toolbar))
@@ -4940,10 +4990,19 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         )
         self.workflow_toolbar.addSeparator()
 
-        overlay_label = QLabel("Overlay:", self.workflow_toolbar)
+        overlay_controls = QWidget(self.workflow_toolbar)
+        overlay_controls.setObjectName("overlayToolbarControls")
+        overlay_controls.setSizePolicy(
+            QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred
+        )
+        overlay_layout = QHBoxLayout(overlay_controls)
+        overlay_layout.setContentsMargins(0, 0, 0, 0)
+        overlay_layout.setSpacing(3)
+        overlay_label = QLabel("Overlay:", overlay_controls)
         overlay_label.setObjectName("overlayToolbarLabel")
-        self.workflow_toolbar.addWidget(overlay_label)
-        self.workflow_toolbar.addWidget(self.overlay_button)
+        overlay_layout.addWidget(overlay_label)
+        overlay_layout.addWidget(self.overlay_button)
+        self.workflow_toolbar.addWidget(overlay_controls)
         self.workflow_toolbar.addSeparator()
 
         self.opacity_toolbar_label = QLabel("Opacity:", self.workflow_toolbar)
@@ -5011,7 +5070,13 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
 
     def _build_layout(self) -> None:
         self.workspace_splitter = QSplitter(Qt.Orientation.Vertical, self)
-        self.workspace_splitter.addWidget(self.image_view)
+        from seedvision.ui.pipeline_workflow import PipelineWorkflowController
+        self.pipeline_workflow = PipelineWorkflowController(self)
+        self.pipeline_canvas.set_workflow_controls(self.pipeline_workflow.strip)
+        self.image_display_stack = QStackedWidget(self)
+        self.image_display_stack.addWidget(self.image_view)
+        self.image_display_stack.addWidget(self.pipeline_workflow.preview)
+        self.workspace_splitter.addWidget(self.image_display_stack)
         self.workspace_splitter.addWidget(self.pipeline_canvas)
         self.workspace_splitter.setStretchFactor(0, 3)
         self.workspace_splitter.setStretchFactor(1, 2)
@@ -5032,7 +5097,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         workspace_layout = QVBoxLayout(self.annotation_workspace)
         workspace_layout.setContentsMargins(0, 0, 0, 0)
         workspace_layout.setSpacing(0)
-        workspace_layout.addWidget(splitter)
+        workspace_layout.addWidget(splitter, 1)
         self.setCentralWidget(self.annotation_workspace)
         self.reference_panel.setParent(self.annotation_workspace)
         self.image_view._layout_context_panel()
@@ -5042,20 +5107,74 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.workspace_splitter.splitterMoved.connect(
             lambda _position, _index: self.image_view._layout_context_panel()
         )
+        from seedvision.ui.catalogue_nodes import CatalogueNodesController
+        self.catalogue_nodes = CatalogueNodesController(self)
+        self.catalogue_nodes.graph_changed.connect(self._install_catalogue_canvas)
+        self.catalogue_nodes.selected.connect(self._select_added_node)
+        self.catalogue_nodes.state_changed.connect(self._update_analysis_availability)
+        self.pipeline_canvas.layout_changed.connect(self.catalogue_nodes.layout_changed)
+        self.pipeline_canvas.set_node_catalogue(self.catalogue_nodes.menu_entries, self.catalogue_nodes.add_entry)
+        self.catalogue_nodes.install_primary(self.pipeline)
+        from seedvision.ui.pipeline_workspace import initialize_pipeline_files
+        initialize_pipeline_files(self)
+
+    def _pipeline_editing_allowed(self):
+        documents = getattr(self, "pipeline_documents", None)
+        return documents is None or documents.can_edit()
+
+    def _install_catalogue_canvas(self, graph) -> None:
+        if self.pipeline_canvas.graph is graph:
+            return
+        self.pipeline_canvas.graph = graph
+        preferred = self.catalogue_nodes._selected
+        if preferred not in graph.nodes:
+            preferred = self.pipeline_workflow._selected if self.pipeline_workflow.active else self._selected_pipeline_node
+        self.pipeline_canvas.rebuild_from_graph(preferred)
+
+    def _select_added_node(self, identifier, output=None) -> None:
+        self.pipeline_canvas.select_node(identifier)
+        if output is not None:
+            self.catalogue_nodes.output_requested(identifier, output)
+        item = self.pipeline_canvas.node_items.get(identifier)
+        if item is not None:
+            self.pipeline_canvas.ensureVisible(item)
 
     def _build_image_panel(self) -> QWidget:
         panel = QWidget(self)
         panel.setMinimumWidth(190)
         panel.setMaximumWidth(390)
         layout = QVBoxLayout(panel)
-        heading = QLabel("Images", panel)
+        self.images_panel_splitter = QSplitter(Qt.Orientation.Vertical, panel)
+        self.images_panel_splitter.setObjectName('imagesPanelSplitter')
+        images = QWidget(self.images_panel_splitter)
+        images_layout = QVBoxLayout(images)
+        images_layout.setContentsMargins(0, 0, 0, 0)
+        heading = QLabel("Images", images)
         heading.setStyleSheet("font-size: 16px; font-weight: 600;")
-        layout.addWidget(heading)
-        layout.addWidget(self.image_list, 1)
+        heading_row = QHBoxLayout()
+        heading_row.addWidget(heading, 1)
+        self.open_images_button = QToolButton(images)
+        self.open_images_button.setObjectName("openImagesButton")
+        self.open_images_button.setDefaultAction(self.open_action)
+        self.open_images_button.setText("Open…")
+        heading_row.addWidget(self.open_images_button)
+        images_layout.addLayout(heading_row)
+        images_layout.addWidget(self.image_list, 1)
+        details = QWidget(self.images_panel_splitter)
+        details_layout = QVBoxLayout(details)
+        details_layout.setContentsMargins(0, 0, 0, 0)
+        self.images_panel_splitter.addWidget(images)
+        self.images_panel_splitter.addWidget(details)
+        # Allow for the menu/toolbar and Images heading: the list itself starts
+        # near one third of the whole window, with a draggable divider.
+        self.images_panel_splitter.setStretchFactor(0, 2)
+        self.images_panel_splitter.setStretchFactor(1, 3)
+        self.images_panel_splitter.setSizes((360, 540))
+        layout.addWidget(self.images_panel_splitter, 1)
 
         activity_heading = QLabel("Analysis activity", panel)
         activity_heading.setStyleSheet("font-size: 13px; font-weight: 600;")
-        layout.addWidget(activity_heading)
+        details_layout.addWidget(activity_heading)
         self.analysis_activity_label = QLabel("Idle", panel)
         self.analysis_activity_label.setObjectName("analysisActivityLabel")
         self.analysis_activity_label.setWordWrap(True)
@@ -5066,16 +5185,15 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             "QLabel { background: #eef2f5; border: 1px solid #c5cdd4; "
             "border-radius: 3px; padding: 6px; }"
         )
-        layout.addWidget(self.analysis_activity_label)
+        details_layout.addWidget(self.analysis_activity_label)
 
         association_heading = QLabel("References and annotations", panel)
         association_heading.setStyleSheet("font-size: 13px; font-weight: 600;")
-        layout.addWidget(association_heading)
+        details_layout.addWidget(association_heading)
         self.reference_association_scroll = QScrollArea(panel)
         self.reference_association_scroll.setWidgetResizable(True)
         self.reference_association_scroll.setFrameShape(QFrame.Shape.StyledPanel)
         self.reference_association_scroll.setMinimumHeight(170)
-        self.reference_association_scroll.setMaximumHeight(285)
         self.reference_association_label = QLabel(
             "Select an image to inspect its saved associations.",
             self.reference_association_scroll,
@@ -5091,7 +5209,9 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.reference_association_scroll.setWidget(
             self.reference_association_label
         )
-        layout.addWidget(self.reference_association_scroll)
+        details_layout.addWidget(self.reference_association_scroll, 1)
+        self.default_pipeline_details = (activity_heading, self.analysis_activity_label,
+            association_heading, self.reference_association_scroll, self.overlay_legend_label)
         return panel
 
     def _build_metadata_panel(self) -> QScrollArea:
@@ -5118,6 +5238,10 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         # The node title identifies this section without a second heading.
         layout.addWidget(self._separator())
         layout.addWidget(self.pipeline_inspector)
+        layout.addWidget(self.pipeline_workflow.crop_selector)
+        layout.addWidget(self.pipeline_workflow.node_actions)
+        layout.addWidget(self.pipeline_workflow.facts)
+        layout.addWidget(self.pipeline_workflow.histogram)
         layout.addWidget(self.overlay_legend_label)
 
         self.calibration_section = QWidget(content)
@@ -5484,6 +5608,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
     def _background_work_is_active(self) -> bool:
         return bool(
             getattr(self, '_persistence_job', None) is not None
+            or getattr(getattr(self, 'pipeline_workflow', None), '_job', None) is not None
             or getattr(self, '_result_export_task', None) is not None
             or getattr(self, '_optimization_task', None) is not None
             or self._active_tasks
@@ -5498,6 +5623,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
 
         return bool(
             getattr(self, '_optimization_task', None) is not None
+            or bool(getattr(getattr(self, 'catalogue_nodes', None), 'running', False))
+            or getattr(getattr(self, 'pipeline_workflow', None), '_job', None) is not None
             or self._learning_training_task is not None
             or self._procedural_fit_task is not None
             or self._reference_edge_fit_task is not None
@@ -5605,6 +5732,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             QMessageBox.critical(self, "Incompatible analysis settings", diagnostic)
             return False
         if not result.changed:
+            if hasattr(self, 'pipeline_documents'):
+                self.pipeline_documents.set_frozen(True)
             self.statusBar().showMessage(
                 f"{source.name} already matches the current analysis settings."
             )
@@ -5652,6 +5781,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.statusBar().showMessage(
             f"Loaded analysis settings from {source}; {detail}."
         )
+        if hasattr(self, 'pipeline_documents'):
+            self.pipeline_documents.set_frozen(True)
         return True
 
     def _load_workspace_images(self) -> None:
@@ -5709,6 +5840,153 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._open_path(Path(item.data(Qt.ItemDataRole.UserRole)))
         self.image_workspace_action.setChecked(True)
 
+    def _remove_image(self, path: Path) -> bool:
+        """Forget a workspace image and its live state without deleting files."""
+        key = _path_identity(path)
+        if key not in self._image_paths:
+            return False
+        if (
+            self._background_work_is_active()
+            or self.catalogue_nodes.busy
+            or self._thread_pool.activeThreadCount()
+        ):
+            QMessageBox.information(
+                self, "Analysis is busy",
+                "Wait for the current work to finish before removing an image.",
+            )
+            return False
+        has_drafts = key in self._unapplied_project_draft_keys()
+        has_unsaved = (
+            key in self._unsaved_reference_sidecars
+            or key in self._unsaved_manual_centre_sidecars
+        )
+        if has_drafts or has_unsaved:
+            answer = QMessageBox.warning(
+                self, "Save image edits before removing?",
+                f"{path.name} has edits held only in memory. Save them to its "
+                "sidecars before removing it from the image list? Source and "
+                "sidecar files will remain on disk.",
+                QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard
+                | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if answer == QMessageBox.StandardButton.Save:
+                if has_drafts and not self._apply_and_save_all_project_drafts(
+                    {key}, recompute=False
+                ):
+                    return False
+                if not self._retry_unsaved_project_sidecars({key}):
+                    return False
+            elif answer != QMessageBox.StandardButton.Discard:
+                return False
+
+        selected = self._current_image_key() == key
+        row = next(
+            index for index in range(self.image_list.count())
+            if _path_identity(Path(self.image_list.item(index).data(
+                Qt.ItemDataRole.UserRole))) == key
+        )
+        if selected:
+            self._stop_manual_seed_centre_editing()
+            self._stop_reference_point_editing()
+            self.image_view.invalidate_instance_edit_events()
+            self.image_view.clear_image()
+            self.pipeline_inspector.set_analysis_result(None)
+            self.filename_label.setText("—")
+            self.dimensions_label.setText("—")
+
+        self._discard_analysis_cache(key)
+        for name in (
+            "_draft_background_reference_masks", "_draft_foreground_reference_masks",
+            "_applied_background_reference_masks", "_applied_foreground_reference_masks",
+            "_draft_background_exclusion_masks", "_draft_foreground_exclusion_masks",
+            "_applied_background_exclusion_masks", "_applied_foreground_exclusion_masks",
+            "_draft_physical_edge_reference_masks", "_draft_non_edge_reference_masks",
+            "_applied_physical_edge_reference_masks", "_applied_non_edge_reference_masks",
+            "_draft_instance_annotations", "_applied_instance_annotations",
+            "_draft_instance_annotation_origins", "_applied_instance_annotation_origins",
+            "_draft_seed_annotations", "_applied_seed_annotations",
+            "_draft_seed_annotation_species", "_applied_seed_annotation_species",
+            "_reference_dirty_classes", "_instance_continuity_cache",
+            "_reference_undo_histories", "_instance_undo_histories",
+            "_manual_seed_centre_states", "_manual_seed_centre_histories",
+            "_reference_layer_shapes", "_reference_transforms",
+            "_reference_source_identities", "_draft_instance_generation_sources",
+            "_pending_unbound_reference_bundles", "_reference_region_load_status",
+            "_project_reference_sidecar_paths", "_project_manual_centre_sidecar_paths",
+            "_project_image_biological_contexts", "_source_fingerprints",
+            "_image_review_states", "_image_run_outcomes", "_analysis_activities",
+            "_optimization_targets",
+        ):
+            getattr(self, name).pop(key, None)
+        for values in (
+            self._reference_masks_dirty, self._instance_annotations_dirty,
+            self._reference_region_autoload_attempted,
+            self._manual_seed_centre_autoload_attempted,
+            self._unsaved_reference_sidecars, self._unsaved_manual_centre_sidecars,
+            self._project_unbound_reference_loads, self._project_manual_centre_loads,
+            self._withheld_reference_sidecars, self._withheld_manual_centre_sidecars,
+            self._project_unresolved_reference_sidecars,
+            self._project_unresolved_manual_centre_sidecars,
+        ):
+            values.discard(key)
+        removed_ids = {
+            identifier for identifier, record in self._project_original_image_records.items()
+            if _path_identity(self._project_analysis_store._resolve_source(record.source)) == key
+        }
+        # Correction inputs can be kept before the first master save creates an
+        # original record. Their image ID uses the same canonical source locator.
+        from seedvision.persistence.project_analysis import (
+            EXTERNAL_ABSOLUTE, PROJECT_RELATIVE, _image_identifier,
+        )
+        source = self._image_paths[key]
+        try:
+            locator = source.relative_to(self._project_analysis_store.project_root)
+        except ValueError:
+            removed_ids.add(_image_identifier(EXTERNAL_ABSOLUTE, source.as_posix()))
+        else:
+            removed_ids.add(_image_identifier(PROJECT_RELATIVE, locator.as_posix()))
+        for identifier in removed_ids:
+            self._project_original_image_records.pop(identifier, None)
+            self._project_unresolved_image_records.pop(identifier, None)
+        self._project_original_image_order = tuple(
+            identifier for identifier in self._project_original_image_order
+            if identifier not in removed_ids
+        )
+        self._project_correction_bindings = tuple(
+            binding for binding in self._project_correction_bindings
+            if binding.image_id not in removed_ids
+        )
+        if self._project_unresolved_selected_image_id in removed_ids:
+            self._project_unresolved_selected_image_id = None
+        if self._pending_analysis_key == key:
+            self._pending_analysis_key = None
+            self._pending_analysis_scope = None
+        self._image_paths.pop(key)
+        self.image_list.takeItem(row)
+
+        if selected:
+            self.pipeline_workflow.image_changed()
+            self.catalogue_nodes.image_changed()
+            self.pipeline.invalidate(
+                (*self.pipeline.nodes, *self.pipeline.unused_nodes), preserve_bypassed=True
+            )
+            self._show_pending_result()
+            if self.image_list.count():
+                next_item = self.image_list.item(min(row, self.image_list.count() - 1))
+                self._open_path(
+                    Path(next_item.data(Qt.ItemDataRole.UserRole)), mark_project_dirty=False
+                )
+        self._set_project_dirty()
+        self._refresh_project_node()
+        self._refresh_reference_association_panel()
+        self._refresh_analysis_activity_panel()
+        self._update_analysis_availability()
+        self._sync_background_controls()
+        self._release_unused_cuda_blocks()
+        self.statusBar().showMessage(f"Removed {path.name} from the image list; files kept on disk.")
+        return True
+
     def _open_path(self, path: Path, *, mark_project_dirty: bool = True) -> None:
         try:
             if not self._check_source_revision(path, opening=True):
@@ -5732,10 +6010,14 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             # replacement image so the serialized worker cannot continue an
             # obsolete run merely because the user did not request another run.
             self._cancel_noncurrent_image_work(target_key)
+        if self.pipeline_workflow.active:
+            self.pipeline_workflow.stop()
         succeeded, error = self.image_view.load_image(path)
         if not succeeded:
             QMessageBox.warning(self, "Could not open image", f"{path}\n\n{error}")
             return
+        self.pipeline_workflow.image_changed()
+        self.catalogue_nodes.image_changed()
         self.filename_label.setText(path.name)
         for index in range(self.image_list.count()):
             item = self.image_list.item(index)
@@ -5906,6 +6188,12 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._update_analysis_availability()
 
     def _show_pending_result(self) -> None:
+        if self.catalogue_nodes.handles(self.catalogue_nodes._selected):
+            self.catalogue_nodes.select_node(self.catalogue_nodes._selected)
+            return
+        if self.pipeline_workflow.active:
+            self.pipeline_workflow.select_node(self.pipeline_workflow._selected)
+            return
         self._stop_manual_seed_centre_editing()
         self._stop_reference_point_editing()
         self.image_view.clear_analysis()
@@ -5987,6 +6275,11 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         dirty_nodes: set[str] | frozenset[str] | None = None,
         enabled_node_scope: frozenset[str] | None = None,
     ) -> None:
+        if dirty_nodes is None and enabled_node_scope is None:
+            self.catalogue_nodes.run()
+        if getattr(self, 'pipeline_workflow', None) is not None and self.pipeline_workflow.active:
+            self.pipeline_workflow.run()
+            return
         if getattr(self, '_closing_after_work', False):
             return
         self._stop_requested = False
@@ -6176,6 +6469,12 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
     @Slot(str)
     def _run_pipeline_to_node(self, node_id: str) -> None:
         """Execute the selected active node with only its enabled ancestors."""
+        if self.catalogue_nodes.handles(node_id):
+            self.catalogue_nodes.run(node_id)
+            return
+        if getattr(self, 'pipeline_workflow', None) is not None and self.pipeline_workflow.active:
+            self.pipeline_workflow.run(node_id)
+            return
 
         if node_id not in self.pipeline.nodes:
             return
@@ -6332,7 +6631,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         task = self._active_tasks.get(key)
         current_key = self._current_image_key()
         if (
-            current_key != key
+            self.pipeline_workflow.active
+            or current_key != key
             or (
                 task is not None
                 and bool(getattr(task, "cancellation_requested", False))
@@ -6525,7 +6825,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         activity = self._analysis_activities.get(key)
         task = self._active_tasks.get(key)
         cancelled_or_obsolete = (
-            self._current_image_key() != key
+            self.pipeline_workflow.active
+            or self._current_image_key() != key
             or pipeline_revision != self.pipeline.revision
             or (
                 task is not None
@@ -6634,6 +6935,9 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._start_pending_analysis()
 
     def _show_analysis_result(self, result) -> None:
+        if self.pipeline_workflow.active:
+            self.pipeline_workflow.select_node(self.pipeline_workflow._selected)
+            return
         path = result.image_path
         key = _path_identity(path) if path is not None else ""
         if key and not self._prepare_reference_frame(key, result):
@@ -7494,6 +7798,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         label: str,
         record_undo: bool,
     ) -> None:
+        self._catalogue_context_changed()
         previous = self._manual_seed_centre_state(key)
         if previous.mode == state.mode and np.array_equal(
             previous.centres_source_xy, state.centres_source_xy
@@ -9982,6 +10287,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
 
     @Slot()
     def _apply_instance_annotations(self) -> None:
+        self._catalogue_context_changed()
         key = self._current_image_key()
         if key is None or key not in self._instance_annotations_dirty:
             return
@@ -10478,6 +10784,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
 
     @Slot(object)
     def _pin_species_library(self, pin) -> None:
+        self._catalogue_context_changed()
         if not isinstance(pin, SpeciesLibraryPin):
             return
         if pin.species_id != self._effective_biological_context().species_id:
@@ -10711,6 +11018,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 QMessageBox.warning(self, 'Trait model activation failed', str(error))
 
     def _activate_trait_model(self, path, *, abstention_threshold=None):
+        if not self._pipeline_editing_allowed():
+            raise ValueError('Model saved; activation requires an editable pipeline.')
         from seedvision.learning.trait_training import activate_trait_model
         if self._background_work_is_active():
             raise ValueError('Background work is busy.')
@@ -10824,6 +11133,10 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._finish_learning_training_ui()
         if request is None:
             return
+        if not self._pipeline_editing_allowed():
+            self.statusBar().showMessage(f'Training saved {request.output_path}; pipeline is frozen, so activation was skipped.')
+            self._start_pending_analysis()
+            return
         node_id = (
             "unet_instances"
             if request.configuration.family == "unet_watershed"
@@ -10883,6 +11196,12 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
     def _pipeline_node_action_requested(
         self, node_id: str, action_id: str, payload: object
     ) -> None:
+        if self.catalogue_nodes.handles(node_id):
+            self.catalogue_nodes.select_node(node_id)
+            return
+        if getattr(self, 'pipeline_workflow', None) is not None and self.pipeline_workflow.active:
+            self.pipeline_workflow.select_node(node_id)
+            return
         if action_id == PipelineInspector.OPTIMIZE_NODE_ACTION:
             self._start_node_optimization(node_id)
             return
@@ -11158,6 +11477,9 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         task = self._reference_edge_fit_task
         self._finish_reference_edge_fit_ui()
         if task is None:
+            return
+        if not self._pipeline_editing_allowed():
+            self._start_pending_analysis()
             return
         current_annotations = self._applied_instance_annotations.get(task.image_key)
         image_obsolete = (
@@ -11571,6 +11893,10 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             is not task.annotation_source
         )
         self._finish_procedural_fit_ui()
+        if not self._pipeline_editing_allowed():
+            self.pipeline_inspector.set_procedural_fit_result_summary('Fit completed; pipeline is frozen, so settings were kept.')
+            self._start_pending_analysis()
+            return
         if stale:
             self.pipeline_inspector.set_procedural_fit_result_summary(
                 "Discarded a fit whose image, annotations, or pipeline changed."
@@ -11715,6 +12041,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
 
     @Slot()
     def _apply_reference_masks(self) -> None:
+        self._catalogue_context_changed()
         key = self._current_image_key()
         if key is None or key not in self._reference_masks_dirty:
             return
@@ -11918,6 +12245,13 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
 
     @Slot(str)
     def _inspector_overlay_selected(self, mode: str) -> None:
+        selected = self.catalogue_nodes._selected
+        if self.catalogue_nodes.handles(selected):
+            self.catalogue_nodes.output_requested(selected, mode)
+            return
+        if getattr(self, 'pipeline_workflow', None) is not None and self.pipeline_workflow.active:
+            self.pipeline_workflow.select_node(self.pipeline_workflow._selected)
+            return
         index = self.overlay_combo.findData(mode)
         if index < 0:
             return
@@ -13431,6 +13765,18 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
 
     @Slot(str)
     def _pipeline_node_selected(self, node_id: str) -> None:
+        if self.catalogue_nodes.handles(node_id):
+            self.catalogue_nodes.select_node(node_id)
+            self.pipeline_workflow.sync_buttons()
+            return
+        self.catalogue_nodes.clear_selection()
+        if not self.pipeline_workflow.active:
+            self.image_display_stack.setCurrentWidget(self.image_view)
+            self.pipeline_workflow.facts.hide()
+            self.pipeline_workflow.node_actions.hide()
+        if getattr(self, 'pipeline_workflow', None) is not None and self.pipeline_workflow.active:
+            self.pipeline_workflow.select_node(node_id)
+            return
         selection_changed = node_id != self._selected_pipeline_node
         if node_id != "procedural_instances" and self.image_view.manual_seed_centre_editing:
             self._stop_manual_seed_centre_editing()
@@ -13438,6 +13784,9 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         if selection_changed and not self._installing_project:
             self._set_project_dirty()
         self.pipeline_inspector.set_node(self.pipeline.node(node_id))
+        if hasattr(self, "pipeline_backends"):
+            self.pipeline_backends.refresh()
+        self.pipeline_inspector.enable_unified_optimization()
         # Selected-node controls live at the top of the panel, so reset from
         # whichever summary section the user had previously been viewing.
         self.metadata_scroll.verticalScrollBar().setValue(0)
@@ -13489,6 +13838,10 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
     @Slot(str)
     def _pipeline_unused_node_restored(self, node_id: str) -> None:
         """Expose a toolbox node's viewer layer after explicit restoration."""
+        self.catalogue_nodes.sync_primary()
+        if getattr(self, 'pipeline_workflow', None) is not None and self.pipeline_workflow.active:
+            self.pipeline_workflow.connections_changed()
+            return
 
         mode = VIEWER_NODE_MODES.get(node_id)
         self._rebuild_overlay_combo(mode)
@@ -13506,6 +13859,10 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
     @Slot(str)
     def _pipeline_unused_node_shelved(self, node_id: str) -> None:
         """Remove an optional node's viewer product and stale cached result."""
+        self.catalogue_nodes.sync_primary()
+        if getattr(self, 'pipeline_workflow', None) is not None and self.pipeline_workflow.active:
+            self.pipeline_workflow.connections_changed()
+            return
 
         self._rebuild_overlay_combo("raw_image")
         for image_key in set(self._analysis_caches) | set(self._analyses):
@@ -13525,6 +13882,14 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
 
     @Slot(str, str, object)
     def _pipeline_parameter_changed(self, node_id: str, key: str, value) -> None:
+        if not self._pipeline_editing_allowed():
+            return
+        if self.catalogue_nodes.handles(node_id):
+            self.catalogue_nodes.parameter_changed(node_id, key, value)
+            return
+        if getattr(self, 'pipeline_workflow', None) is not None and self.pipeline_workflow.active:
+            self.pipeline_workflow.parameter_changed(node_id, key, value)
+            return
         parameter_spec = next(
             (
                 spec
@@ -13601,6 +13966,14 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
 
     @Slot(str)
     def _pipeline_parameters_reset(self, node_id: str) -> None:
+        if not self._pipeline_editing_allowed():
+            return
+        if self.catalogue_nodes.handles(node_id):
+            self.catalogue_nodes.reset_parameters(node_id)
+            return
+        if getattr(self, 'pipeline_workflow', None) is not None and self.pipeline_workflow.active:
+            self.pipeline_workflow.reset_parameters(node_id)
+            return
         node = self.pipeline.node(node_id)
         parameter_specs = {spec.key: spec for spec in node.parameter_specs}
         changed_keys = {
@@ -13762,6 +14135,13 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
     @Slot(object)
     def _pipeline_connections_changed(self, affected) -> None:
         """Invalidate calculations after an authored edge edit."""
+        if not self._pipeline_editing_allowed():
+            return
+        if self.catalogue_nodes.connections_changed(affected):
+            return
+        if getattr(self, 'pipeline_workflow', None) is not None and self.pipeline_workflow.active:
+            self.pipeline_workflow.connections_changed(affected)
+            return
 
         affected_set = set(affected)
         if not affected_set:
@@ -13795,6 +14175,14 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
 
     @Slot(str, bool)
     def _pipeline_enabled_changed(self, node_id: str, enabled: bool) -> None:
+        if not self._pipeline_editing_allowed():
+            return
+        if self.catalogue_nodes.handles(node_id):
+            self.catalogue_nodes.enabled_changed(node_id, enabled)
+            return
+        if getattr(self, 'pipeline_workflow', None) is not None and self.pipeline_workflow.active:
+            self.pipeline_workflow.enabled_changed(node_id, enabled)
+            return
         if enabled and node_id in {"unet_instances", "stardist_instances"}:
             configured = Path(
                 str(self.pipeline.node(node_id).parameters["checkpoint_path"])
@@ -13865,6 +14253,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
 
     @Slot(str)
     def _species_changed(self, species: str) -> None:
+        self._catalogue_context_changed()
         species_id = self._current_seed_trait_vocabulary().species_id or "unknown"
         if (
             self._project_biological_context is None
@@ -13928,6 +14317,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         path = self.image_view.image_path
         running = (
             getattr(self, '_optimization_task', None) is not None
+            or bool(getattr(getattr(self, 'catalogue_nodes', None), 'busy', False))
+            or getattr(getattr(self, 'pipeline_workflow', None), '_job', None) is not None
             or bool(self._active_tasks)
             or self._learning_training_task is not None
             or self._procedural_fit_task is not None
@@ -13953,6 +14344,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             )
         if hasattr(self, "train_learning_model_action"):
             self.train_learning_model_action.setEnabled(not running)
+            self.train_native_bayes_action.setEnabled(not running)
+            self.train_native_kmeans_action.setEnabled(not running)
         if hasattr(self, 'train_trait_model_action'):
             self.train_trait_model_action.setEnabled(not running)
             self.activate_trait_model_action.setEnabled(not running)
@@ -13969,26 +14362,39 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             self.save_project_as_action.setEnabled(project_save_available)
         self._sync_procedural_centres_controls()
 
+        if getattr(self, 'pipeline_workflow', None) is not None:
+            self.pipeline_workflow.sync_buttons()
+
     def _show_pipeline_workspace(self) -> None:
         self.pipeline_workspace_action.setChecked(True)
+        self.pipeline_workflow.strip.setVisible(True)
         self.image_workspace_action.setChecked(False)
-        self.pipeline_canvas.select_node(self._selected_pipeline_node)
+        self.pipeline_canvas.select_node(self.pipeline_workflow._selected if self.pipeline_workflow.active else self._selected_pipeline_node)
+
+    def _catalogue_context_changed(self) -> None:
+        catalogue = getattr(self, 'catalogue_nodes', None)
+        if catalogue is not None:
+            catalogue.context_changed()
 
     def _show_image_workspace(self) -> None:
         self.image_workspace_action.setChecked(True)
         self.pipeline_workspace_action.setChecked(False)
-        self.image_view.setVisible(True)
+        self.image_display_stack.setVisible(True)
         self.pipeline_canvas.setVisible(False)
+        self.pipeline_workflow.strip.setVisible(False)
         self.actual_size_action.setEnabled(True)
 
     def _show_split_workspace(self) -> None:
         self.image_workspace_action.setChecked(True)
         self.pipeline_workspace_action.setChecked(True)
+        self.pipeline_workflow.strip.setVisible(True)
         self.workspace_splitter.setSizes((560, 360))
         self.actual_size_action.setEnabled(True)
         self.pipeline_canvas.refresh()
 
     def _fit_active_workspace(self) -> None:
+        if self.pipeline_workflow.active:
+            self.pipeline_workflow.preview.fit_image()
         if self.pipeline_canvas.isVisible():
             self.pipeline_canvas.fit_graph()
         if self.image_view.isVisible():
@@ -14010,9 +14416,22 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             "Run seed_vision.py --diagnostics for package and GPU details.",
         )
 
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt override
+        super().showEvent(event)
+        if not getattr(self, '_initial_pipeline_focus_scheduled', False):
+            self._initial_pipeline_focus_scheduled = True
+            QTimer.singleShot(0, self._focus_initial_pipeline_node)
+
+    def _focus_initial_pipeline_node(self) -> None:
+        selected = self.pipeline_canvas.scene().selectedItems()
+        if selected:
+            self.pipeline_canvas.ensureVisible(selected[0], 30, 30)
+
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt override
         """Finish the sole GPU job and deterministically release owned caches."""
 
+        self.pipeline_workflow.stop()
+        self.catalogue_nodes.stop()
         if self._thread_pool.activeThreadCount() > 0:
             self._closing_after_work = True
             self._stop_current_work()

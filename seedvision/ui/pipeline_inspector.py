@@ -925,6 +925,7 @@ class PipelineInspector(QWidget):
     def __init__(self, parent=None, *, read_only: bool = False) -> None:
         super().__init__(parent)
         self._read_only = bool(read_only)
+        self._editing_locked = False
         self._node: PipelineNode | None = None
         self._unified_optimization = False
         self._optimization_ready = False
@@ -1386,6 +1387,7 @@ class PipelineInspector(QWidget):
 
     def set_node(self, node: PipelineNode) -> None:
         self._node = node
+        self.reset_parameters_button.setEnabled(not self._editing_locked)
         self.title_label.setText(f"Node: {node.title}")
         self.description_label.setText(node.description)
         self.details_label.setText(node.details)
@@ -1503,6 +1505,10 @@ class PipelineInspector(QWidget):
                             key, selected
                         )
                     )
+                elif spec.kind == "structured":
+                    from seedvision.ui.workflow_parameters import WorkflowParameterEditor
+                    editor = WorkflowParameterEditor(spec.key, value, self.parameter_container)
+                    editor.changed.connect(lambda selected, key=spec.key: self._parameter_edited(key, selected))
                 elif spec.kind == "text":
                     editor = QLineEdit(self.parameter_container)
                     editor.setText(str(value))
@@ -1552,6 +1558,28 @@ class PipelineInspector(QWidget):
         self._refresh_procedural_centres_action()
         self._update_colour_summary()
         self._refresh_optimization()
+        self._apply_editing_lock()
+
+    @property
+    def editing_locked(self) -> bool:
+        return self._editing_locked
+
+    def set_editing_locked(self, locked: bool) -> None:
+        self._editing_locked = bool(locked)
+        if self._node is not None:
+            self.set_node(self._node)
+
+    def _apply_editing_lock(self) -> None:
+        if not self._editing_locked:
+            return
+        self.enabled_checkbox.setEnabled(False)
+        self.reset_parameters_button.setEnabled(False)
+        for editor in self._parameter_widgets:
+            editor.setEnabled(False)
+        for name in ('optimization_button', 'procedural_fit_button', 'reference_edge_fit_button'):
+            widget = getattr(self, name, None)
+            if widget is not None:
+                widget.setEnabled(False)
 
     @property
     def read_only(self) -> bool:
@@ -1567,8 +1595,8 @@ class PipelineInspector(QWidget):
             return format(value, ".8g")
         return str(value)
 
-    def enable_unified_optimization(self) -> None:
-        self._unified_optimization = True
+    def enable_unified_optimization(self, enabled: bool = True) -> None:
+        self._unified_optimization = bool(enabled)
         self.procedural_fit_container.hide()
         self.reference_edge_fit_container.hide()
         self._refresh_optimization()
@@ -1589,7 +1617,7 @@ class PipelineInspector(QWidget):
         contract = capability(node)
         self.optimization_button.setVisible(bool(contract.searchable))
         self.optimization_button.setEnabled(bool(contract.searchable and node.enabled
-            and node.implemented and self._optimization_ready and not self._optimization_busy))
+            and node.implemented and self._optimization_ready and not self._optimization_busy and not self._editing_locked))
         text = contract.reason or f'{len(contract.searchable)} searchable controls; objective: {contract.objective}. '
         if contract.searchable:
             text += ('Optimization is running.' if self._optimization_busy else
@@ -1600,7 +1628,7 @@ class PipelineInspector(QWidget):
 
     def _request_optimization(self) -> None:
         if (
-            not self.read_only
+            not self.read_only and not self._editing_locked
             and self._node is not None
             and self.optimization_button.isEnabled()
         ):
@@ -1715,7 +1743,7 @@ class PipelineInspector(QWidget):
     def _reference_edge_fit_requested(self) -> None:
         node = self._node
         if (
-            not self.read_only
+            not self.read_only and not self._editing_locked
             and node is not None
             and node.identifier == "reference_edge_probability"
             and self.reference_edge_fit_button.isEnabled()
@@ -1861,7 +1889,7 @@ class PipelineInspector(QWidget):
 
     @Slot()
     def _procedural_fit_requested(self) -> None:
-        if self.read_only:
+        if self.read_only or self._editing_locked:
             return
         node = self._node
         if (
@@ -2047,11 +2075,11 @@ class PipelineInspector(QWidget):
         )
 
     def _enabled_toggled(self, enabled: bool) -> None:
-        if not self.read_only and self._node is not None:
+        if not self.read_only and not self._editing_locked and self._node is not None:
             self.enabled_changed.emit(self._node.identifier, enabled)
 
     def _parameter_edited(self, key: str, value) -> None:
-        if not self.read_only and self._node is not None:
+        if not self.read_only and not self._editing_locked and self._node is not None:
             if key == 'apply_colour_balance':
                 self._refresh_neutral_controls(bool(value))
             self.parameter_changed.emit(self._node.identifier, key, value)
@@ -2064,10 +2092,10 @@ class PipelineInspector(QWidget):
         for key in ('neutral_patch_selection', 'neutral_sample_frame'):
             editor = self.parameter_container.findChild(QWidget, 'parameter_'+key)
             if editor is not None:
-                editor.setEnabled(bool(enabled and node.enabled and node.implemented and not self.read_only))
+                editor.setEnabled(bool(enabled and node.enabled and node.implemented and not self.read_only and not self._editing_locked))
 
     def _reset_parameters(self) -> None:
-        if not self.read_only and self._node is not None:
+        if not self.read_only and not self._editing_locked and self._node is not None:
             self.parameters_reset.emit(self._node.identifier)
 
 

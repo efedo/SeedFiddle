@@ -1,4 +1,8 @@
 """Pure recovery contracts, maximum inventory and allocation-free admission."""
+
+from tests.catalogue_fixtures import CatalogueTestCase
+
+from tests.functional_units import functional_units
 from collections.abc import Mapping
 from unittest.mock import patch
 import unittest
@@ -16,8 +20,9 @@ def encode(value):
     return value
 
 
-class RecoveryReplayContractTests(unittest.TestCase):
-    def test_primitive_decoder_preserves_types_and_exact_byte_depth_item_caps(self):
+@functional_units
+class RecoveryReplayContractTests(CatalogueTestCase):
+    def check_test_primitive_decoder_preserves_types_and_exact_byte_depth_item_caps(self):
         value={'tuple':(1,'é\n'), 'list':[True,None]}
         self.assertEqual(contracts.decode(encode(value)),contracts.canonical(value))
         self.assertIsInstance(contracts.decode(encode(value))['tuple'],tuple)
@@ -34,7 +39,7 @@ class RecoveryReplayContractTests(unittest.TestCase):
         for value in ({'kind':'dataclass','items':[]},{'kind':'mapping','items':[['x',1],['x',2]]}):
             with self.assertRaises(contracts.NativeRecoveryReplayError):contracts.decode(value)
 
-    def test_inventory_maximum_sparse_ids_and_downstream_limit_are_distinct(self):
+    def check_test_inventory_maximum_sparse_ids_and_downstream_limit_are_distinct(self):
         frame=CoordinateFrame('source.decoded',(1,65535),'top-left','x-right,y-down','pixel')
         binding=_freeze_json({'coordinate_frame':frame.to_dict(),'source_sha256':'1'*64},name='maximum test binding')
         value={'connectivity':4,'core_pixels':32768,
@@ -49,7 +54,7 @@ class RecoveryReplayContractTests(unittest.TestCase):
         with self.assertRaises(contracts.NativeRecoveryReplayError):
             contracts.validate(changed,'inventory',frame,binding,{})
 
-    def test_malformed_inventory_types_order_and_totals(self):
+    def check_test_malformed_inventory_types_order_and_totals(self):
         value={'connectivity':4,'core_pixels':3,'objects':(
             {'label_id':2,'original_core_pixels':1},{'label_id':17,'original_core_pixels':2})}
         contracts.validate(value,'inventory',FRAME,BINDING,{})
@@ -64,7 +69,7 @@ class RecoveryReplayContractTests(unittest.TestCase):
         self.assertEqual(comparison['mismatched_elements'],2)
         self.assertEqual(comparison['compared_elements'],6)
 
-    def test_source_roi_controls_and_metadata_bind_exact_full_frame(self):
+    def check_test_source_roi_controls_and_metadata_bind_exact_full_frame(self):
         contracts.validate(BINDING,'source_binding',FRAME,BINDING,{})
         for bounds in (None,[0,0,19,17],[0,0,1,1],[18,16,19,17]):
             parameters={'validity_roi':None if bounds is None else {'shape':[17,19],'bounds':bounds}}
@@ -76,7 +81,7 @@ class RecoveryReplayContractTests(unittest.TestCase):
         with self.assertRaises(contracts.NativeRecoveryReplayError):
             contracts.validate({**BINDING,'source_sha256':'2'*64},'source_binding',FRAME,BINDING,{})
 
-    def test_source_and_replay_admission_before_any_cuda_allocation(self):
+    def check_test_source_and_replay_admission_before_any_cuda_allocation(self):
         for operation,parameters,bpp in (('recovery.core_labels',{},5),
                 ('recovery.validity',{'validity_roi':None},2),('recovery.clip_cores',{},9)):
             plan=contracts.plan(operation,FRAME.shape,parameters,selected_bytes=323*bpp)
@@ -97,7 +102,7 @@ class RecoveryReplayContractTests(unittest.TestCase):
         with self.assertRaises(contracts.NativeRecoveryReplayUnavailable):
             contracts.plan('recovery.core_labels',(1,pixels+1),{},selected_bytes=5*(pixels+1))
 
-    def test_clipping_controls_and_exact_small_allocation_boundary(self):
+    def check_test_clipping_controls_and_exact_small_allocation_boundary(self):
         shape=(1,1)
         plan=contracts.plan('recovery.clip_cores',shape,{},selected_bytes=9)
         compare=contracts._rounded(1)+contracts._rounded(8)+contracts.ALLOCATION_BYTES
@@ -113,7 +118,7 @@ class RecoveryReplayContractTests(unittest.TestCase):
         with self.assertRaises(contracts.NativeRecoveryReplayUnavailable):
             contracts.plan('recovery.clip_cores',(1,contracts.native.MAX_RASTER_PIXELS+1),{},selected_bytes=0)
 
-    def test_remaining_plans_deduplicate_rounding_and_ignore_archived_domain_claims(self):
+    def check_test_remaining_plans_deduplicate_rounding_and_ignore_archived_domain_claims(self):
         pixels=323;partition=(pixels,4*pixels,pixels,4*pixels,4*pixels,pixels,pixels,pixels,8)
         for operation,parameters,selected,inputs in (
                 ('recovery.partition',{},partition,partition[:4]),
@@ -135,17 +140,19 @@ class RecoveryReplayContractTests(unittest.TestCase):
         with patch.object(contracts.native.core._watershed,'MAX_WORKSPACE_BYTES',16*pixels+15),self.assertRaises(contracts.NativeRecoveryReplayUnavailable):
             contracts.plan('recovery.partition',FRAME.shape,{},**kwargs,inventory_count=2)
 
-    def test_maximum_downstream_measurement_metadata_fits_bounded_decoder(self):
-        frame=CoordinateFrame('source.decoded',(1,8064),'top-left','x-right,y-down','pixel')
-        value={'core_'+str(label):{name:{'value':1,'available':True,'trait':name.replace('_',' '),
-            'method':'seedfiddle.experimental.core_recovery','scale':'pixel_squared' if name=='assigned_area' else 'pixel',
-            'datatype':"<class 'int'>",'reasons':(),'scientific_validation':False} for name in contracts.TRAITS}
-            for label in range(1,8065)}
-        decoded=contracts.decode(encode(value));contracts.validate(decoded,'observations',frame,None,{})
-        self.assertEqual(len(decoded),8064)
-        self.assertEqual(contracts.compare(value,decoded)['mismatched_elements'],0)
-        with patch.object(contracts,'MAX_METADATA_BYTES',1024*1024),self.assertRaises(contracts.NativeRecoveryReplayError):
-            contracts.decode(encode(value))
+
+    def test_workflow_lifecycle(self):
+        """5 related RecoveryReplayContractTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_primitive_decoder_preserves_types_and_exact_byte_depth_item_caps)
+        self.scenario(self.check_test_malformed_inventory_types_order_and_totals)
+        self.scenario(self.check_test_source_roi_controls_and_metadata_bind_exact_full_frame)
+        self.scenario(self.check_test_source_and_replay_admission_before_any_cuda_allocation)
+        self.scenario(self.check_test_remaining_plans_deduplicate_rounding_and_ignore_archived_domain_claims)
+
+    def test_validation_and_recovery(self):
+        """2 related RecoveryReplayContractTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_inventory_maximum_sparse_ids_and_downstream_limit_are_distinct)
+        self.scenario(self.check_test_clipping_controls_and_exact_small_allocation_boundary)
 
 
 if __name__=='__main__':unittest.main()

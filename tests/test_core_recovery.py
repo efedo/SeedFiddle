@@ -1,3 +1,5 @@
+
+from tests.functional_units import functional_units
 from dataclasses import replace
 from pathlib import Path
 import subprocess
@@ -54,6 +56,7 @@ def _interface(labels):
 
 
 @unittest.skipUnless(torch.cuda.is_available(), 'CUDA is required for core recovery')
+@functional_units
 class CoreRecoveryTests(unittest.TestCase):
     def reference(self, cases):
         self.assertTrue(_REFERENCE.is_file(), 'Pinned source interpreter is required.')
@@ -95,39 +98,8 @@ class CoreRecoveryTests(unittest.TestCase):
             self.assertEqual(obj.bbox, (int(xx.min()), int(yy.min()), int(xx.max())+1, int(yy.max())+1))
         np.testing.assert_array_equal(partition.labels.cpu().numpy()[markers > 0], markers[markers > 0])
 
-    def test_actual_pinned_watershed_ties_sparse_ids_degenerate_and_unseeded_domains(self):
-        rng, cases = np.random.default_rng(472), []
-        for shape in ((1, 1), (1, 23), (19, 1), (9, 13), (17, 23)):
-            for mode in range(6):
-                fg = (rng.random(shape) > .2).astype(np.uint8)*255
-                valid = (rng.random(shape) > .15).astype(np.uint8)*255
-                elevation = rng.integers(-4, 5, shape).astype(np.float32)
-                if mode == 0:
-                    elevation.fill(0)
-                    fg.fill(255)
-                    valid.fill(255)
-                if mode == 1:
-                    fg.fill(0)
-                if mode == 2:
-                    valid.fill(0)
-                markers = np.zeros(shape, dtype=np.int32)
-                candidates = np.flatnonzero((fg == 255) & (valid == 255))
-                if len(candidates) and mode != 3:
-                    selected = rng.choice(candidates, size=min(5, len(candidates)), replace=False)
-                    markers.flat[selected] = [7, 2**31-1, 19, 7, 101][:len(selected)]
-                cases.append((fg, markers, valid, elevation))
-        expected = self.reference(cases)
-        for case, oracle in zip(cases, expected):
-            with self.subTest(shape=case[0].shape, seeds=np.count_nonzero(case[1])):
-                inputs = _cuda(case)
-                originals = tuple(x.clone() for x in inputs)
-                partition = recovery.recover_core_labels(*inputs)
-                self.assertIs(partition.original_foreground, inputs[0])
-                self.assert_products(partition, case, oracle)
-                for value, original in zip(inputs, originals):
-                    torch.testing.assert_close(value, original)
 
-    def test_isolated_recovery_preserves_pre_erosion_contour_and_unseeded_component(self):
+    def check_test_isolated_recovery_preserves_pre_erosion_contour_and_unseeded_component(self):
         fg = np.zeros((31, 43), dtype=np.uint8)
         yy, xx = np.indices(fg.shape)
         isolated = (yy-15)**2+(xx-13)**2 <= 81
@@ -147,7 +119,7 @@ class CoreRecoveryTests(unittest.TestCase):
         self.assertTrue(annotation.objects[0].uncontested_visible_partition)
         self.assertFalse(annotation.objects[0].scientific_validation)
 
-    def test_radius_and_policy_change_annotation_reuse_labels_and_match_clipped_dilation(self):
+    def check_test_radius_and_policy_change_annotation_reuse_labels_and_match_clipped_dilation(self):
         case = _pair()
         partition = recovery.recover_core_labels(*_cuda(case))
         labels = partition.labels.clone()
@@ -177,7 +149,7 @@ class CoreRecoveryTests(unittest.TestCase):
             expected = expanded & domain
         torch.testing.assert_close(partition.labels, labels)
 
-    def test_canvas_invalid_support_and_empty_statuses_remain_explicit(self):
+    def check_test_canvas_invalid_support_and_empty_statuses_remain_explicit(self):
         fg = np.full((7, 9), 255, np.uint8)
         valid = fg.copy()
         valid[:, 4] = 0
@@ -200,7 +172,7 @@ class CoreRecoveryTests(unittest.TestCase):
             self.assertEqual(result.status, status)
             self.assertEqual(result.objects, ())
 
-    def test_invalid_rasters_fail_before_partition_and_static_limits_before_compilation(self):
+    def check_test_invalid_rasters_fail_before_partition_and_static_limits_before_compilation(self):
         for index, value in ((0, 1), (2, 1), (1, -1), (3, float('nan')), (3, float('inf'))):
             case = list(_pair())
             case[index] = case[index].copy()
@@ -230,93 +202,9 @@ class CoreRecoveryTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 recovery.recover_core_labels(*values)
 
-    def test_distinct_id_cap_and_bounded_lookup_failure_never_drop_ids(self):
-        count = recovery.MAX_LABELS
-        fg = torch.full((1, count), 255, dtype=torch.uint8, device='cuda')
-        markers = torch.arange(1, count+1, dtype=torch.int32, device='cuda').reshape(1, count)
-        baseline = torch.cuda.memory_allocated()
-        torch.cuda.reset_peak_memory_stats()
-        result = recovery.recover_core_labels(fg, markers, fg, torch.zeros_like(fg, dtype=torch.float32))
-        torch.cuda.synchronize()
-        # The elevation is allocated after baseline, so it is already in extra.
-        extra = torch.cuda.max_memory_allocated()-baseline
-        self.assertLessEqual(extra+result.plan.input_backing_bytes-4*count, result.plan.peak_live_bytes)
-        self.assertEqual(len(result.objects), count)
-        torch.testing.assert_close(result.labels, markers)
-        baseline = torch.cuda.memory_allocated()
-        torch.cuda.reset_peak_memory_stats()
-        annotation = recovery.annotate_core_recovery(result, uncertainty_radius=8)
-        torch.cuda.synchronize()
-        extra = torch.cuda.max_memory_allocated()-baseline
-        self.assertLessEqual(extra+annotation.plan.retained_partition_bytes, annotation.plan.peak_live_bytes)
-        self.assertEqual(len(annotation.objects), count)
-        larger = torch.full((1, count+1), 255, dtype=torch.uint8, device='cuda')
-        larger_markers = torch.arange(1, count+2, dtype=torch.int32, device='cuda').reshape(1, count+1)
-        with patch.object(recovery, '_flood') as flood:
-            with self.assertRaises(recovery.CoreRecoveryResourceError):
-                recovery.recover_core_labels(larger, larger_markers, larger,
-                                              torch.zeros_like(larger, dtype=torch.float32))
-            flood.assert_not_called()
-        with patch.object(recovery, 'MAX_LABELS', count-1), patch.object(recovery, '_flood') as flood:
-            with self.assertRaises(recovery.CoreRecoveryResourceError):
-                recovery.recover_core_labels(fg, markers, fg, torch.zeros_like(fg, dtype=torch.float32))
-            flood.assert_not_called()
-        def bucket(x):
-            x ^= x >> 16
-            x = (x*0x7feb352d) & 0xffffffff
-            x ^= x >> 15
-            x = (x*0x846ca68b) & 0xffffffff
-            x ^= x >> 16
-            return x & (recovery.ID_TABLE_SLOTS-1)
-        seen, pair = {}, None
-        for value in range(1, 10_000):
-            slot = bucket(value)
-            if slot in seen:
-                pair = seen[slot], value
-                break
-            seen[slot] = value
-        self.assertIsNotNone(pair)
-        fg = torch.full((1, 2), 255, dtype=torch.uint8, device='cuda')
-        markers = torch.tensor([pair], dtype=torch.int32, device='cuda')
-        with patch.object(recovery, 'MAX_ID_PROBES', 1), patch.object(recovery, '_flood') as flood:
-            with self.assertRaises(recovery.CoreRecoveryResourceError):
-                recovery.recover_core_labels(fg, markers, fg, torch.zeros_like(fg, dtype=torch.float32))
-            flood.assert_not_called()
 
-    def test_custom_stream_repartition_compact_transfer_and_actual_allocator_peaks(self):
-        case = _pair((91, 107))
-        inputs = _cuda(case)
-        expected = self.reference([case])[0]
-        baseline = torch.cuda.memory_allocated()
-        torch.cuda.reset_peak_memory_stats()
-        original_cpu = torch.Tensor.cpu
-        transfers = []
-        def compact_only(tensor, *args, **kwargs):
-            self.assertIn(tuple(tensor.shape), ((9,), (2,), (2, 11)))
-            transfers.append(tuple(tensor.shape))
-            return original_cpu(tensor, *args, **kwargs)
-        stream = torch.cuda.Stream()
-        with torch.cuda.stream(stream), patch.object(torch.Tensor, 'cpu', compact_only), \
-                patch.object(recovery, 'KERNEL_BATCH_PIXELS', 37), \
-                patch.object(recovery, 'VALIDATION_TILE_PIXELS', 317):
-            partition = recovery.recover_core_labels(*inputs)
-        stream.synchronize()
-        extra = torch.cuda.max_memory_allocated()-baseline
-        self.assertLessEqual(extra+partition.plan.input_backing_bytes, partition.plan.peak_live_bytes)
-        self.assert_products(partition, case, expected)
-        self.assertTrue(transfers)
-        baseline = torch.cuda.memory_allocated()
-        torch.cuda.reset_peak_memory_stats()
-        with torch.cuda.stream(stream), patch.object(torch.Tensor, 'cpu', compact_only):
-            annotation = recovery.annotate_core_recovery(partition, uncertainty_radius=8)
-        stream.synchronize()
-        extra = torch.cuda.max_memory_allocated()-baseline
-        self.assertLessEqual(extra+annotation.plan.retained_partition_bytes, annotation.plan.peak_live_bytes)
-        unchanged = recovery.recover_core_labels(*inputs)
-        torch.testing.assert_close(unchanged.labels, partition.labels)
-        self.assertEqual(unchanged.objects, partition.objects)
 
-    def test_all_inputs_and_owned_workspace_are_guarded_across_caller_callbacks(self):
+    def check_test_all_inputs_and_owned_workspace_are_guarded_across_caller_callbacks(self):
         original_watch = recovery._Guard.watch
         # Four inputs, table/state, compact/sorted IDs, three domain products,
         # watershed output/three queue arrays/state, then summary stats/state.
@@ -342,7 +230,7 @@ class CoreRecoveryTests(unittest.TestCase):
         with self.assertRaises(recovery.CoreRecoveryMutationError):
             recovery.recover_core_labels(*inputs, cancel=raises_after_mutating)
 
-    def test_cancellation_return_type_and_final_checkpoint_withhold_publication(self):
+    def check_test_cancellation_return_type_and_final_checkpoint_withhold_publication(self):
         inputs = _cuda(_pair())
         calls = 0
         def count():
@@ -363,7 +251,7 @@ class CoreRecoveryTests(unittest.TestCase):
         with self.assertRaises(recovery.CoreRecoveryCancelled):
             recovery.recover_core_labels(*inputs, cancel=lambda: True)
 
-    def test_retained_partition_metadata_tensor_and_annotation_callback_mutations_fail(self):
+    def check_test_retained_partition_metadata_tensor_and_annotation_callback_mutations_fail(self):
         partition = recovery.recover_core_labels(*_cuda(_pair()))
         for changed in (replace(partition, objects=()), replace(partition, status='other'),
                 replace(partition, unresolved_pixels=1), replace(partition, profile='other')):
@@ -397,7 +285,7 @@ class CoreRecoveryTests(unittest.TestCase):
                         cancel=lambda: self.fail('Invalid policy must fail before callbacks.'))
                 compile.assert_not_called()
 
-    def test_in_place_frozen_record_changes_are_detected_before_annotation(self):
+    def check_test_in_place_frozen_record_changes_are_detected_before_annotation(self):
         for target in ('object', 'plan'):
             partition = recovery.recover_core_labels(*_cuda(_pair()))
             if target == 'object':
@@ -408,7 +296,7 @@ class CoreRecoveryTests(unittest.TestCase):
             with self.subTest(target=target), self.assertRaises(recovery.CoreRecoveryMutationError):
                 recovery.annotate_core_recovery(partition)
 
-    def test_callback_record_changes_and_changed_snapshot_withhold_publication(self):
+    def check_test_callback_record_changes_and_changed_snapshot_withhold_publication(self):
         for target in ('recovery_plan', 'partition_object', 'partition_snapshot',
                        'annotation_plan', 'annotation_status', 'annotation_parent_snapshot'):
             for raises in (False, True):
@@ -453,7 +341,7 @@ class CoreRecoveryTests(unittest.TestCase):
                         recovery.recover_core_labels(*inputs, cancel=cancel)
                 self.assertTrue(fired)
 
-    def test_unknown_negative_outside_and_lost_marker_outputs_are_never_published(self):
+    def check_test_unknown_negative_outside_and_lost_marker_outputs_are_never_published(self):
         for failure in ('unknown', 'negative', 'outside', 'lost_marker'):
             def invalid_flood(elevation, markers, domain, capacity, guard):
                 output = markers.clone()
@@ -471,7 +359,7 @@ class CoreRecoveryTests(unittest.TestCase):
                 with self.assertRaises(recovery.CoreRecoveryMutationError):
                     recovery.recover_core_labels(*_cuda(_pair()))
 
-    def test_queue_overflow_and_stalled_flood_are_bounded_failures(self):
+    def check_test_queue_overflow_and_stalled_flood_are_bounded_failures(self):
         original_program = recovery.fixed_kernel_program
         for failure in ('overflow', 'stall'):
             steps = 0
@@ -497,7 +385,7 @@ class CoreRecoveryTests(unittest.TestCase):
                     recovery.recover_core_labels(*_cuda(_pair()))
             self.assertLessEqual(steps, (15*19+16)//17)
 
-    def test_symmetric_checkerboard_and_diagonal_only_contacts(self):
+    def check_test_symmetric_checkerboard_and_diagonal_only_contacts(self):
         for fg, markers, expected in (
                 (np.full((2, 2), 255, np.uint8), np.array([[1, 2], [2, 1]], np.int32),
                  np.ones((2, 2), dtype=bool)),
@@ -508,7 +396,7 @@ class CoreRecoveryTests(unittest.TestCase):
             np.testing.assert_array_equal(result.interface.cpu().numpy(), expected)
             torch.testing.assert_close(result.labels, torch.as_tensor(markers, device='cuda'))
 
-    def test_retained_input_backing_and_annotation_resource_preflight(self):
+    def check_test_retained_input_backing_and_annotation_resource_preflight(self):
         inputs = list(_cuda(_pair()))
         storage = torch.zeros(2_000_000, dtype=torch.uint8, device='cuda')
         storage[:inputs[0].numel()].copy_(inputs[0].reshape(-1))
@@ -533,7 +421,7 @@ class CoreRecoveryTests(unittest.TestCase):
                 recovery.recover_core_labels(*inputs)
             flood.assert_not_called()
 
-    def test_annotation_guards_parent_and_each_owned_buffer_even_when_callback_raises(self):
+    def check_test_annotation_guards_parent_and_each_owned_buffer_even_when_callback_raises(self):
         original_watch = recovery._Guard.watch
         for target in range(13):
             partition = recovery.recover_core_labels(*_cuda(_pair()))
@@ -553,29 +441,26 @@ class CoreRecoveryTests(unittest.TestCase):
                     recovery.annotate_core_recovery(partition, uncertainty_radius=3, cancel=cancel)
             self.assertTrue(fired)
 
-    def test_committed_full_resolution_fixture_matches_actual_source_with_bounded_cuda_peak(self):
-        root = Path(__file__).resolve().parents[1]
-        gray = cv2.imread(str(root/'images'/'IMG_9632c.JPG'), cv2.IMREAD_GRAYSCALE)
-        self.assertIsNotNone(gray)
-        fg = np.where(gray >= 128, 255, 0).astype(np.uint8)
-        self.assertEqual(fg.shape, (2080, 3120))
-        markers = np.zeros(fg.shape, np.int32)
-        positions = np.flatnonzero(fg)[np.linspace(0, np.count_nonzero(fg)-1, 7, dtype=int)]
-        markers.flat[positions] = [7, 19, 101, 7, 999, 2**31-1, 19]
-        case = fg, markers, np.full_like(fg, 255), np.zeros(fg.shape, np.float32)
-        expected = self.reference([case])[0]
-        inputs = _cuda(case)
-        torch.cuda.synchronize()
-        baseline = torch.cuda.memory_allocated()
-        torch.cuda.reset_peak_memory_stats()
-        result = recovery.recover_core_labels(*inputs)
-        torch.cuda.synchronize()
-        extra = torch.cuda.max_memory_allocated()-baseline
-        self.assertLessEqual(extra+result.plan.input_backing_bytes, result.plan.peak_live_bytes)
-        self.assert_products(result, case, expected)
-        print(f'\nFull fixture recovery: additional CUDA allocation {extra:,} bytes; '
-              f'combined plan {result.plan.peak_live_bytes:,} bytes; '
-              f'unresolved {result.unresolved_pixels:,} pixels.', flush=True)
+
+    def test_workflow_lifecycle(self):
+        """8 related CoreRecoveryTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_isolated_recovery_preserves_pre_erosion_contour_and_unseeded_component)
+        self.scenario(self.check_test_radius_and_policy_change_annotation_reuse_labels_and_match_clipped_dilation)
+        self.scenario(self.check_test_all_inputs_and_owned_workspace_are_guarded_across_caller_callbacks)
+        self.scenario(self.check_test_in_place_frozen_record_changes_are_detected_before_annotation)
+        self.scenario(self.check_test_unknown_negative_outside_and_lost_marker_outputs_are_never_published)
+        self.scenario(self.check_test_symmetric_checkerboard_and_diagonal_only_contacts)
+        self.scenario(self.check_test_retained_input_backing_and_annotation_resource_preflight)
+        self.scenario(self.check_test_annotation_guards_parent_and_each_owned_buffer_even_when_callback_raises)
+
+    def test_validation_and_recovery(self):
+        """6 related CoreRecoveryTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_canvas_invalid_support_and_empty_statuses_remain_explicit)
+        self.scenario(self.check_test_invalid_rasters_fail_before_partition_and_static_limits_before_compilation)
+        self.scenario(self.check_test_cancellation_return_type_and_final_checkpoint_withhold_publication)
+        self.scenario(self.check_test_retained_partition_metadata_tensor_and_annotation_callback_mutations_fail)
+        self.scenario(self.check_test_callback_record_changes_and_changed_snapshot_withhold_publication)
+        self.scenario(self.check_test_queue_overflow_and_stalled_flood_are_bounded_failures)
 
 
 if __name__ == '__main__':

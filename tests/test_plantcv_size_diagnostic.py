@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.functional_units import functional_units
+
 from dataclasses import replace
 import json
 import subprocess
@@ -89,8 +91,9 @@ def fixtures():
     return shapes
 
 
+@functional_units
 class SizeDiagnosticRasterTests(unittest.TestCase):
-    def test_caliper_fallback_thickness_is_separate_from_requested_drawing(self):
+    def check_test_caliper_fallback_thickness_is_separate_from_requested_drawing(self):
         cases = (
             ([[15,5],[25,35],[24,35],[14,5]], (20,20), 1),
             ([[4,15],[35,25],[35,26],[4,16]], (20,20), 5),
@@ -103,7 +106,7 @@ class SizeDiagnosticRasterTests(unittest.TestCase):
                     width=40, height=40, cmx=center[0], cmy=center[1], line_thickness=1)
                 self.assertEqual(line.call_args.kwargs['thickness'], expected_thickness)
 
-    def test_circle_and_closed_contours_match_isolated_411_pixels(self):
+    def check_test_circle_and_closed_contours_match_isolated_411_pixels(self):
         cases = [{'kind':'circle', 'shape':[41,41], 'center':list(center)}
             for center in ((20,20),(0,0),(0,20),(20,0),(40,20),(20,40))]
         cases += [{'kind':'contour', 'shape':[36,38], 'points':points} for points in (
@@ -122,7 +125,7 @@ class SizeDiagnosticRasterTests(unittest.TestCase):
                     raster.closed_polyline_spans(case['points'], w, h, thickness=case['thickness']))
                 np.testing.assert_array_equal(span_pixels(spans, (h,w)), expected)
 
-    def test_shared_work_cap_rejects_before_polygon_allocation(self):
+    def check_test_shared_work_cap_rejects_before_polygon_allocation(self):
         with patch.object(raster, 'MAX_RASTER_SPAN_WORK', 1), \
                 patch.object(raster, 'fill_convex_poly_spans') as fill:
             with self.assertRaises(raster.RasterSpanLimitError):
@@ -131,7 +134,7 @@ class SizeDiagnosticRasterTests(unittest.TestCase):
         with self.assertRaises(raster.RasterSpanCancelled):
             raster.closed_polyline_spans(((2,2),(30,30)), 40, 40, cancel=lambda: True)
 
-    def test_thin_geometry_caps_and_cancellation_precede_rasterization(self):
+    def check_test_thin_geometry_caps_and_cancellation_precede_rasterization(self):
         with patch.object(raster, 'MAX_RASTER_SPAN_WORK', 1), \
                 patch.object(raster, 'line8_points') as line:
             with self.assertRaises(raster.RasterSpanLimitError):
@@ -143,8 +146,19 @@ class SizeDiagnosticRasterTests(unittest.TestCase):
         with self.assertRaises(raster.RasterSpanCancelled):
             raster.circle_outline_spans(40, 40, (20,20), 10, cancel=lambda: True)
 
+    def test_workflow_lifecycle(self):
+        """2 related SizeDiagnosticRasterTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_caliper_fallback_thickness_is_separate_from_requested_drawing)
+        self.scenario(self.check_test_circle_and_closed_contours_match_isolated_411_pixels)
+
+    def test_validation_and_recovery(self):
+        """2 related SizeDiagnosticRasterTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_shared_work_cap_rejects_before_polygon_allocation)
+        self.scenario(self.check_test_thin_geometry_caps_and_cancellation_precede_rasterization)
+
 
 @unittest.skipUnless(torch.cuda.is_available(), 'CUDA is required')
+@functional_units
 class SizeDiagnosticCudaTests(unittest.TestCase):
     def measurements(self, labels, count, *, line_thickness=5):
         results = tuple(size.premeasure_plantcv_binary_mask(torch.as_tensor(
@@ -154,7 +168,7 @@ class SizeDiagnosticCudaTests(unittest.TestCase):
             [item.plantcv_bundle_unavailable_reason for item in results])
         return results
 
-    def test_actual_rgb_diagnostics_match_public_images_and_preserve_input(self):
+    def check_test_actual_rgb_diagnostics_match_public_images_and_preserve_input(self):
         for name, labels, count in fixtures():
             with self.subTest(kind=name):
                 yy, xx = np.indices(labels.shape)
@@ -172,7 +186,7 @@ class SizeDiagnosticCudaTests(unittest.TestCase):
                 self.assertEqual(actual.dtype, torch.uint8)
                 self.assertNotEqual(actual.data_ptr(), image.data_ptr())
 
-    def test_thickness_one_actual_images_match_pinned_including_frame_and_holes(self):
+    def check_test_thickness_one_actual_images_match_pinned_including_frame_and_holes(self):
         for name, labels, count in fixtures():
             with self.subTest(kind=name):
                 bgr = np.full((*labels.shape, 3), [19,73,121], dtype=np.uint8)
@@ -184,7 +198,7 @@ class SizeDiagnosticCudaTests(unittest.TestCase):
                 np.testing.assert_array_equal(actual.cpu().numpy(), expected[..., ::-1].copy())
                 np.testing.assert_array_equal(image.cpu().numpy(), bgr[..., ::-1])
 
-    def test_thickness_validation_and_mismatched_geometry_reject_before_clone(self):
+    def check_test_thickness_validation_and_mismatched_geometry_reject_before_clone(self):
         _, labels, count = fixtures()[0]
         image = torch.zeros((*labels.shape, 3), dtype=torch.uint8, device='cuda')
         results = self.measurements(labels, count, line_thickness=1)
@@ -198,7 +212,7 @@ class SizeDiagnosticCudaTests(unittest.TestCase):
                 size.render_plantcv_size_diagnostic_rgb(image, results)
             clone.assert_not_called()
 
-    def test_cancellation_and_write_cap_publish_no_partial_image(self):
+    def check_test_cancellation_and_write_cap_publish_no_partial_image(self):
         _, labels, count = fixtures()[0]
         results = self.measurements(labels, count)
         image = torch.zeros((*labels.shape, 3), dtype=torch.uint8, device='cuda')
@@ -221,7 +235,7 @@ class SizeDiagnosticCudaTests(unittest.TestCase):
                 size.render_plantcv_size_diagnostic_rgb(image, results)
         torch.testing.assert_close(image, before)
 
-    def test_aggregate_points_and_hierarchy_shape_preflight_before_cpu_transfer(self):
+    def check_test_aggregate_points_and_hierarchy_shape_preflight_before_cpu_transfer(self):
         _, labels, count = fixtures()[0]
         result = self.measurements(labels, count)[0]
         image = torch.zeros((*labels.shape, 3), dtype=torch.uint8, device='cuda')
@@ -241,7 +255,7 @@ class SizeDiagnosticCudaTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             size.render_plantcv_size_diagnostic_rgb(image, iter((result,)))
 
-    def test_actual_multibatch_allocator_stays_within_declared_scratch(self):
+    def check_test_actual_multibatch_allocator_stays_within_declared_scratch(self):
         device = torch.device('cuda')
         warm = torch.zeros((8,8,3), dtype=torch.uint8, device=device)
         size._paint_rgb_spans_(warm, ((0,0,7),), (255,0,0), [0,0])
@@ -269,6 +283,18 @@ class SizeDiagnosticCudaTests(unittest.TestCase):
                 self.assertTrue(bool(torch.all(flat[:pixels,0:2] == 0)))
                 self.assertTrue(bool(torch.all(flat[:pixels,2] == 255)))
                 self.assertTrue(bool(torch.all(flat[pixels:] == 0)))
+
+    def test_workflow_lifecycle(self):
+        """4 related SizeDiagnosticCudaTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_actual_rgb_diagnostics_match_public_images_and_preserve_input)
+        self.scenario(self.check_test_thickness_one_actual_images_match_pinned_including_frame_and_holes)
+        self.scenario(self.check_test_aggregate_points_and_hierarchy_shape_preflight_before_cpu_transfer)
+        self.scenario(self.check_test_actual_multibatch_allocator_stays_within_declared_scratch)
+
+    def test_validation_and_recovery(self):
+        """2 related SizeDiagnosticCudaTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_thickness_validation_and_mismatched_geometry_reject_before_clone)
+        self.scenario(self.check_test_cancellation_and_write_cap_publish_no_partial_image)
 
 
 if __name__ == '__main__':

@@ -1,3 +1,5 @@
+
+from tests.functional_units import functional_units
 import hashlib
 import json
 from pathlib import Path
@@ -74,6 +76,7 @@ print(json.dumps(result))
 
 
 @unittest.skipUnless(torch.cuda.is_available(), 'CUDA required for card preprocessing')
+@functional_units
 class ColorCardPreprocessTests(unittest.TestCase):
     def oracle(self, operation, **payload):
         self.assertTrue(REFERENCE.is_file(), 'Pinned original reference environment required')
@@ -83,7 +86,7 @@ class ColorCardPreprocessTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
 
-    def test_all_kernel_identities_and_integer_byte_weights_match_pinned_original(self):
+    def check_test_all_kernel_identities_and_integer_byte_weights_match_pinned_original(self):
         expected = self.oracle('kernels')
         self.assertEqual(set(card.GAUSSIAN_KERNEL_SHA256), set(range(3,256,2)))
         for size, digest in card.GAUSSIAN_KERNEL_SHA256.items():
@@ -93,7 +96,7 @@ class ColorCardPreprocessTests(unittest.TestCase):
         self.assertEqual(sum(card.BYTE11_WEIGHTS), 256)
         self.assertLess(255*256**2+32768, 1 << 24)
 
-    def test_byte_blur_reflect101_random_impulses_singleton_and_tile_seams(self):
+    def check_test_byte_blur_reflect101_random_impulses_singleton_and_tile_seams(self):
         rng = np.random.default_rng(411311)
         images = [rng.integers(0,256,shape,dtype=np.uint8)
             for shape in ((1,1),(1,2),(2,1),(2,3),(1,39),(37,1),(31,47))]
@@ -110,7 +113,7 @@ class ColorCardPreprocessTests(unittest.TestCase):
             self.assertEqual(source._version, version)
             np.testing.assert_array_equal(source.cpu().numpy(),image)
 
-    def test_mean_and_exact_dyadic_gaussian_borders_match_pinned_adaptive(self):
+    def check_test_mean_and_exact_dyadic_gaussian_borders_match_pinned_adaptive(self):
         rng = np.random.default_rng(411303)
         cases = [(method,k) for method,kernels in ((0,(3,51,255)),(1,(3,5,7,9))) for k in kernels]
         for shape in ((1,1),(1,29),(23,1),(2,3),(27,31)):
@@ -121,7 +124,7 @@ class ColorCardPreprocessTests(unittest.TestCase):
                 actual = card.adaptive_card_threshold_cuda(source,method,size,tile_side=13)
                 np.testing.assert_array_equal(actual.cpu().numpy(),np.asarray(original,dtype=np.uint8))
 
-    def test_large_gaussian_certified_decisions_match_pinned_default_and_maximum(self):
+    def check_test_large_gaussian_certified_decisions_match_pinned_default_and_maximum(self):
         image = np.full((37,43),37,dtype=np.uint8)
         image[:,21:] = 219
         cases = [(1,k) for k in (11,13,15,51,127,255)]
@@ -132,7 +135,7 @@ class ColorCardPreprocessTests(unittest.TestCase):
             np.testing.assert_array_equal(actual.cpu().numpy(),np.asarray(original,dtype=np.uint8))
         self.assertTrue(any(not np.array_equal(expected[0],other) for other in expected[1:]))
 
-    def test_actual_public_detector_preprocessing_bgr_and_both_methods(self):
+    def check_test_actual_public_detector_preprocessing_bgr_and_both_methods(self):
         image = np.full((41,53,3),(220,200,180),dtype=np.uint8)
         image[9:31,17:39] = (20,30,40)
         source = torch.as_tensor(image,device='cuda')
@@ -146,7 +149,7 @@ class ColorCardPreprocessTests(unittest.TestCase):
                 np.testing.assert_array_equal(actual.cpu().numpy(),np.asarray(original,dtype=np.uint8))
         np.testing.assert_array_equal(source.cpu().numpy(),image)
 
-    def test_interval_certifies_binary_predicate_even_when_mean_bytes_differ(self):
+    def check_test_interval_certifies_binary_predicate_even_when_mean_bytes_differ(self):
         means = torch.tensor([[100.5,101.5,253.5,254.5]],dtype=torch.float64,device='cuda')
         # Both endpoints give false, despite distinct rounded means.
         high = torch.tensor([[101,102,254,255]],dtype=torch.uint8,device='cuda')
@@ -157,13 +160,13 @@ class ColorCardPreprocessTests(unittest.TestCase):
         with self.assertRaises(card.ColorCardPreprocessPrecisionError):
             card._certified_decision(means,ambiguous,1e-5)
 
-    def test_exact_half_ties_equality_and_saturation_use_source_byte_rule(self):
+    def check_test_exact_half_ties_equality_and_saturation_use_source_byte_rule(self):
         means = torch.tensor([[100.5,101.5,253.5,254.5,-1,256]],dtype=torch.float64,device='cuda')
         source = torch.tensor([[98,100,252,252,0,253]],dtype=torch.uint8,device='cuda')
         expected = torch.tensor([[True,True,True,True,False,True]],device='cuda')
         torch.testing.assert_close(card._certified_decision(means,source,0),expected)
 
-    def test_binary_uncertainty_withholds_complete_mask_and_preserves_input(self):
+    def check_test_binary_uncertainty_withholds_complete_mask_and_preserves_input(self):
         # This actual public preprocessing fixture reaches an undecidable binary
         # boundary after the byte blur; the native path must withhold its result.
         image = np.full((41,53,3),(230,190,170),dtype=np.uint8)
@@ -176,14 +179,14 @@ class ColorCardPreprocessTests(unittest.TestCase):
         self.assertEqual(source._version,version)
         np.testing.assert_array_equal(source.cpu().numpy(),image)
 
-    def test_random_binary_certificate_matches_reference_without_requiring_exact_mean(self):
+    def check_test_random_binary_certificate_matches_reference_without_requiring_exact_mean(self):
         image = np.random.default_rng(411051).integers(0,256,(128,128),dtype=np.uint8)
         expected, = self.oracle('adaptive',image=image.tolist(),cases=[(1,51)])
         source = torch.as_tensor(image,device='cuda')
         actual = card.adaptive_card_threshold_cuda(source,1,51,tile_side=37)
         np.testing.assert_array_equal(actual.cpu().numpy(),np.asarray(expected,dtype=np.uint8))
 
-    def test_mean_scalar_tail_counterexample_withholds_incorrect_mask(self):
+    def check_test_mean_scalar_tail_counterexample_withholds_incorrect_mask(self):
         image = np.full((255,3),255,dtype=np.uint8)
         image[0,0],image[1,0],image[127,2] = 0,254,253
         expected, = self.oracle('adaptive',image=image.tolist(),cases=[(0,255)])
@@ -195,7 +198,7 @@ class ColorCardPreprocessTests(unittest.TestCase):
         self.assertEqual(source._version,version)
         torch.testing.assert_close(source,before)
 
-    def test_mean_singleton_full_frame_uses_reduced_kernel_across_tiles(self):
+    def check_test_mean_singleton_full_frame_uses_reduced_kernel_across_tiles(self):
         for shape in ((1,1),(1,255),(255,1)):
             image = np.full(shape,255,dtype=np.uint8)
             image.reshape(-1)[::2] = 254
@@ -209,7 +212,7 @@ class ColorCardPreprocessTests(unittest.TestCase):
                     actual = card.adaptive_card_threshold_cuda(source,0,size,tile_side=tile)
                     np.testing.assert_array_equal(actual.cpu().numpy(),np.asarray(original,dtype=np.uint8))
 
-    def test_work_scratch_retained_storage_preflight_before_output_allocation(self):
+    def check_test_work_scratch_retained_storage_preflight_before_output_allocation(self):
         source = torch.full((17,19,3),80,dtype=torch.uint8,device='cuda')
         for name in ('MAX_FILTER_WORK','MAX_SCRATCH_BYTES','MAX_RETAINED_BYTES','MAX_IMAGE_PIXELS'):
             with patch.object(card,name,1), patch.object(torch,'empty') as allocate:
@@ -223,7 +226,7 @@ class ColorCardPreprocessTests(unittest.TestCase):
             for y in range(0,height,tile) for x in range(0,width,tile))
         self.assertEqual(card._filter_work(height,width,size,tile), expected)
 
-    def test_cancellation_and_callback_mutation_before_allocation_and_mid_pass(self):
+    def check_test_cancellation_and_callback_mutation_before_allocation_and_mid_pass(self):
         source = torch.full((17,19,3),80,dtype=torch.uint8,device='cuda')
         with patch.object(torch,'empty') as allocate:
             with self.assertRaises(card.ColorCardPreprocessCancelled):
@@ -257,7 +260,7 @@ class ColorCardPreprocessTests(unittest.TestCase):
         with self.assertRaisesRegex(card.ColorCardPreprocessError,'changed'):
             card.adaptive_card_threshold_cuda(gray,1,51,cancel=change,tile_side=17)
 
-    def test_custom_stream_and_multitile_actual_allocator_bound(self):
+    def check_test_custom_stream_and_multitile_actual_allocator_bound(self):
         stream = torch.cuda.Stream()
         with torch.cuda.stream(stream):
             for shape,size,method in (((1,519),255,1),((259,263),255,1),((259,263),255,0)):
@@ -274,7 +277,7 @@ class ColorCardPreprocessTests(unittest.TestCase):
                 self.assertEqual(int(torch.count_nonzero(result)),0)
                 del result,source
 
-    def test_validation_and_changed_runtime_kernel_are_explicit_failures(self):
+    def check_test_validation_and_changed_runtime_kernel_are_explicit_failures(self):
         gray = torch.full((5,7),80,dtype=torch.uint8,device='cuda')
         for method,size,tile in ((True,51,256),(2,51,256),(1,2,256),(1,257,256),(1,51,0)):
             with self.assertRaises(card.ColorCardPreprocessError):
@@ -289,6 +292,27 @@ class ColorCardPreprocessTests(unittest.TestCase):
                 allocate.assert_not_called()
         with self.assertRaises(TypeError):
             card.adaptive_card_threshold_cuda(gray,cancel=False)
+
+    def test_workflow_lifecycle(self):
+        """11 related ColorCardPreprocessTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_all_kernel_identities_and_integer_byte_weights_match_pinned_original)
+        self.scenario(self.check_test_byte_blur_reflect101_random_impulses_singleton_and_tile_seams)
+        self.scenario(self.check_test_mean_and_exact_dyadic_gaussian_borders_match_pinned_adaptive)
+        self.scenario(self.check_test_large_gaussian_certified_decisions_match_pinned_default_and_maximum)
+        self.scenario(self.check_test_actual_public_detector_preprocessing_bgr_and_both_methods)
+        self.scenario(self.check_test_interval_certifies_binary_predicate_even_when_mean_bytes_differ)
+        self.scenario(self.check_test_exact_half_ties_equality_and_saturation_use_source_byte_rule)
+        self.scenario(self.check_test_random_binary_certificate_matches_reference_without_requiring_exact_mean)
+        self.scenario(self.check_test_mean_singleton_full_frame_uses_reduced_kernel_across_tiles)
+        self.scenario(self.check_test_work_scratch_retained_storage_preflight_before_output_allocation)
+        self.scenario(self.check_test_custom_stream_and_multitile_actual_allocator_bound)
+
+    def test_validation_and_recovery(self):
+        """4 related ColorCardPreprocessTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_binary_uncertainty_withholds_complete_mask_and_preserves_input)
+        self.scenario(self.check_test_mean_scalar_tail_counterexample_withholds_incorrect_mask)
+        self.scenario(self.check_test_cancellation_and_callback_mutation_before_allocation_and_mid_pass)
+        self.scenario(self.check_test_validation_and_changed_runtime_kernel_are_explicit_failures)
 
 
 if __name__ == '__main__':

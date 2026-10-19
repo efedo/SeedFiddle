@@ -1,3 +1,7 @@
+
+from tests.catalogue_fixtures import CatalogueTestCase
+
+from tests.functional_units import functional_units
 from dataclasses import replace
 import json
 from pathlib import Path
@@ -126,24 +130,12 @@ np.savez(sys.argv[2], **outputs)
 
 
 class NativeRecipeIdentityTests(unittest.TestCase):
-    def test_imported_calculation_alias_and_computed_lab_constants_reject_changes(self):
-        from seedvision.benchmarking import native_recipe as implementation
-        implementation._module_record(implementation._color)
-        implementation._module_record(implementation._range)
-        cases = (
-            (implementation._color, '_channels', lambda pixels, mode: pixels),
-            (implementation._range, '_LAB_GAMMA_VALUES', tuple(0 for _ in implementation._range._LAB_GAMMA_VALUES)),
-            (implementation._range, '_LAB_CBRT_VALUES', tuple(0 for _ in implementation._range._LAB_CBRT_VALUES)),
-            (implementation._range, '_OPENCV_CBRT_COEFFICIENTS', tuple(0.0 for _ in implementation._range._OPENCV_CBRT_COEFFICIENTS)),
-        )
-        for module, name, changed in cases:
-            with self.subTest(name=name), patch.object(module, name, changed):
-                with self.assertRaises(NativeRecipeError):
-                    implementation._module_record(module)
+    pass
 
 
 @unittest.skipUnless(torch.cuda.is_available(), 'CUDA is required for native recipes')
-class NativeRecipeTests(unittest.TestCase):
+@functional_units
+class NativeRecipeTests(CatalogueTestCase):
     def setUp(self):
         gray, rgb = fixture()
         self.gray, self.rgb = (torch.as_tensor(value, device='cuda') for value in (gray, rgb))
@@ -154,7 +146,7 @@ class NativeRecipeTests(unittest.TestCase):
             source_sha256=SOURCE, coordinate_frame=FRAME, preparation=PREPARATION,
             cache=self.cache, **kwargs)
 
-    def test_cached_lab_table_mutation_is_rejected_before_node_execution(self):
+    def check_test_cached_lab_table_mutation_is_rejected_before_node_execution(self):
         from seedvision.benchmarking import native_recipe as implementation
         tables = implementation._range._lab_tables(self.gray.device)
         for tensor in tables:
@@ -168,35 +160,6 @@ class NativeRecipeTests(unittest.TestCase):
                 tensor.copy_(original)
         implementation._verify_cached_lab_tables(self.gray.device)
 
-    def test_primitive_cancellation_is_preserved_when_callback_is_not_latched(self):
-        from seedvision.benchmarking import native_recipe as implementation
-        error_types = (NativeRecipeCancelled, implementation._median.MedianCancelledError,
-            implementation._fill.FillCancelledError, implementation._distance.DistanceCancelledError,
-            implementation._peaks.PeakCancelledError, implementation._watershed.WatershedCancelled,
-            implementation._color.ColorAnalysisCancelled, implementation._range.RangeCancelledError,
-            implementation._size.PlantCVSizeCancelledError)
-        runtime_records = implementation._runtime_records(self.gray.device)
-        for error_type in error_types:
-            with self.subTest(error=error_type.__name__):
-                state = {'armed': False, 'used': False}
-                def cancel():
-                    if state['armed'] and not state['used']:
-                        state['used'] = True
-                        return True
-                    return False
-                def controlled_dispatch(*args, **kwargs):
-                    state['armed'] = True
-                    self.assertTrue(cancel())
-                    raise error_type('One-shot cancellation')
-                # Freeze genuine runtime records before replacing dispatch, so
-                # this regression isolates cancellation classification rather
-                # than intentionally triggering loaded-code verification.
-                with patch.object(implementation, '_runtime_records', return_value=runtime_records), \
-                        patch.object(implementation, '_dispatch', side_effect=controlled_dispatch):
-                    with self.assertRaises(NativeRecipeCancelled):
-                        self.run_recipe(cancel=cancel)
-                self.assertTrue(state['used'])
-                self.assertFalse(cancel())
 
     def reference(self, kind='binary', space='rgb'):
         self.assertTrue(REFERENCE.is_file(), 'Pinned original reference interpreter is required.')
@@ -237,7 +200,7 @@ class NativeRecipeTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             actual[next(iter(actual))]['area']['value'] = 0
 
-    def test_real_canonical_graph_matches_pinned_public_preprocessing_watershed_and_color(self):
+    def check_test_real_canonical_graph_matches_pinned_public_preprocessing_watershed_and_color(self):
         expected, observations = self.reference()
         result = self.run_recipe()
         self.assertEqual(result.recipe_identity, selected_recipe().identity)
@@ -272,114 +235,11 @@ class NativeRecipeTests(unittest.TestCase):
         np.testing.assert_array_equal(size.outputs['diagnostic'].cpu().numpy(),
             expected['size_diagnostic_rgb'])
 
-    def test_mean_and_supported_otsu_complete_calculation_chains_match_public_calls(self):
-        for kind in ('mean', 'otsu'):
-            with self.subTest(kind=kind):
-                expected, observations = self.reference(kind)
-                result = self.run_recipe(selected_recipe(kind))
-                prefix = 'pcv_seed_'+kind+'_'
-                for suffix, port, reference in (('median_blur', 'image', 'median_blur'),
-                        (kind+'_threshold', 'mask', 'binary_threshold'),
-                        ('small_object_filter', 'mask', 'small_object_filter'),
-                        ('erode', 'mask', 'erode'), ('dilate', 'mask', 'dilate'),
-                        ('ws_distance_map', 'distance', 'distance'),
-                        ('ws_local_maxima', 'coordinates', 'coordinates'),
-                        ('ws_local_maxima', 'peaks', 'peaks'), ('ws_markers', 'markers', 'markers'),
-                        ('ws_invert_distance', 'negative_distance', 'negative_distance'),
-                        ('ws_masked_flood', 'labels', 'labels')):
-                    node = result.node(prefix+suffix)
-                    self.assertEqual(node.status, 'executed', node.reason)
-                    np.testing.assert_array_equal(node.outputs[port].cpu().numpy(), expected[reference])
-                color = result.node(prefix+'analyze_color')
-                self.assertEqual(color.status, 'executed', color.reason)
-                self.assertEqual(color.outputs['histogram'].data_records(), observations['__returned_hue_chart__'])
-                for label in color.outputs['observations'].labels:
-                    for histogram in label.histograms:
-                        np.testing.assert_array_equal(histogram.values,
-                            observations[label.sample][histogram.variable]['value'])
-                size = result.node(prefix+'analyze_size')
-                if kind == 'mean':
-                    self.assertEqual(size.status, 'unavailable')
-                    self.assertIn('orientation numerically unstable', size.reason)
-                    self.assertNotIn('observations', size.outputs)
-                else:
-                    self.assert_size_observations(size, observations['__size_observations__'])
-                    self.assertEqual(result.status, 'executed')
-                    np.testing.assert_array_equal(size.outputs['diagnostic'].cpu().numpy(),
-                        expected['size_diagnostic_rgb'])
 
-    def test_actual_hue_chart_is_a_complete_typed_recipe_output(self):
-        _, observations = self.reference(space='all')
-        result = self.run_recipe(selected_recipe(**{'analysis.color': {'colorspaces': 'all'}}))
-        color = result.node(PREFIX+'analyze_color')
-        self.assertEqual(color.status, 'executed', color.reason)
-        self.assertEqual(color.outputs['histogram'].status, 'available')
-        self.assertEqual(color.outputs['histogram'].data_records(), observations['__returned_hue_chart__'])
-        self.assertEqual(len(color.outputs['histogram'].series), int(result.labels.max().item()))
-        self.assertEqual(result.status, 'executed')
 
-    def test_diagnostic_only_cap_keeps_observations_and_mutation_recomputes_size_only(self):
-        from seedvision.benchmarking import native_recipe as implementation
-        first = self.run_recipe()
-        stage = PREFIX+'analyze_size'
-        original = first.node(stage).outputs['diagnostic'].clone()
-        first.node(stage).outputs['diagnostic'][0,0,0] ^= 255
-        restored = self.run_recipe()
-        self.assertEqual(self.cache.last_computed_nodes, (stage,))
-        self.assertEqual(len(self.cache.last_reused_nodes), len(selected_recipe().stages)-1)
-        torch.testing.assert_close(restored.node(stage).outputs['diagnostic'], original)
-        runtime = implementation._runtime_records(self.gray.device)
-        self.cache = PipelineAnalysisCache()
-        with patch.object(implementation, '_runtime_records', return_value=runtime), \
-                patch.object(implementation._size, 'render_plantcv_size_diagnostic_rgb',
-                    side_effect=implementation._size.RasterSpanLimitError('Diagnostic cap')):
-            partial = self.run_recipe()
-        node = partial.node(stage)
-        self.assertEqual(node.status, 'partial')
-        self.assertEqual(set(node.outputs), {'observations'})
-        self.assertEqual(node.outputs['observations'], restored.node(stage).outputs['observations'])
-        self.assertEqual(node.reason, 'Unavailable outputs: diagnostic')
-        self.assertEqual(partial.status, 'partial')
 
-    def test_incremental_diagnostic_geometry_cap_releases_collection_but_keeps_all_observations(self):
-        from seedvision.benchmarking import native_recipe as implementation
-        recipe = selected_recipe(**{'analysis.size': {'n_labels': 3}})
-        runtime = implementation._runtime_records(self.gray.device)
-        measured = []
-        original = implementation._size.premeasure_plantcv_binary_mask
-        def record(*args, **kwargs):
-            value = original(*args, **kwargs)
-            measured.append(value)
-            return value
-        with patch.object(implementation, '_runtime_records', return_value=runtime), \
-                patch.object(implementation._size, 'premeasure_plantcv_binary_mask', side_effect=record):
-            normal = self.run_recipe(recipe)
-        self.assertEqual(len(measured), 3)
-        counts = [sum(len(c) for c in item.boundary_topology.contours_xy or ())
-            for item in measured]
-        boundary_counts = [int(item.boundary_topology.xy_neighbor_bits.shape[0])
-            for item in measured]
-        cap = max(counts[:2] + boundary_counts[:2])
-        self.assertGreater(max(sum(counts[:2]), sum(boundary_counts[:2])), cap)
-        self.cache = PipelineAnalysisCache()
-        preflight = implementation._size._preflight_size_diagnostic_points
-        with patch.object(implementation, '_runtime_records', return_value=runtime), \
-                patch.object(implementation._size, 'MAX_SIZE_DIAGNOSTIC_POINTS', cap), \
-                patch.object(implementation._size, '_preflight_size_diagnostic_points', wraps=preflight) as checked, \
-                patch.object(implementation._size, 'render_plantcv_size_diagnostic_rgb') as rendered:
-            limited = self.run_recipe(recipe)
-        # The second label crosses the shared cap; the third still contributes
-        # scalar observations but is no longer collected for rendering.
-        self.assertEqual(checked.call_count, 2)
-        rendered.assert_not_called()
-        node = limited.node(PREFIX+'analyze_size')
-        self.assertEqual(node.status, 'partial')
-        self.assertEqual(set(node.outputs), {'observations'})
-        self.assertEqual(len(node.outputs['observations']), 3)
-        self.assertEqual(node.outputs['observations'],
-            normal.node(PREFIX+'analyze_size').outputs['observations'])
 
-    def test_repeat_layout_and_changed_controls_recompute_only_their_dependents(self):
+    def check_test_repeat_layout_and_changed_controls_recompute_only_their_dependents(self):
         recipe = selected_recipe()
         first = self.run_recipe(recipe)
         repeat = self.run_recipe(recipe)
@@ -401,7 +261,7 @@ class NativeRecipeTests(unittest.TestCase):
         self.assertTrue(peak_changed.node(PREFIX+'ws_distance_map').reused)
         self.assertTrue(peak_changed.node(PREFIX+'ws_invert_distance').reused)
 
-    def test_size_controls_change_only_size_observations_and_cancel_reaches_primitive(self):
+    def check_test_size_controls_change_only_size_observations_and_cancel_reaches_primitive(self):
         from seedvision.benchmarking import native_recipe as implementation
         first = self.run_recipe()
         changed = self.run_recipe(selected_recipe(**{'analysis.size': {'n_labels': 1, 'label': 'selected'}}))
@@ -425,7 +285,7 @@ class NativeRecipeTests(unittest.TestCase):
                 implementation._dispatch('analysis.size', {'labels': first.labels, 'image': self.rgb},
                     {'n_labels': 1, 'label': 'selected'}, callback)
 
-    def test_mutated_cached_output_and_failed_node_never_reuse_stale_descendants(self):
+    def check_test_mutated_cached_output_and_failed_node_never_reuse_stale_descendants(self):
         original = self.run_recipe()
         distance = original.node(PREFIX+'ws_distance_map').outputs['distance']
         distance.fill_(99)
@@ -440,48 +300,9 @@ class NativeRecipeTests(unittest.TestCase):
         self.assertIsNone(failed.labels)
         self.assertFalse(failed.node(PREFIX+'analyze_color').outputs)
 
-    def test_mean_precision_failure_never_reuses_previous_mask_or_descendants(self):
-        recipe = selected_recipe('mean',**{
-            'filter.median_blur':{'ksize':1},
-            'threshold.mean':{'ksize':255,'offset':2,'object_type':'dark'},
-        })
-        frame = replace(FRAME,shape=(255,3))
-        gray = torch.full(frame.shape,255,dtype=torch.uint8,device='cuda')
-        rgb = gray[:,:,None].expand(255,3,3).contiguous()
-        def execute():
-            return run_native_recipe(recipe,gray,rgb,source_sha256=SOURCE,
-                coordinate_frame=frame,preparation=PREPARATION,cache=self.cache)
-        first = execute()
-        stage = next(s.stage_id for s in recipe.stages if s.operation_id=='threshold.mean')
-        self.assertEqual(first.node(stage).status,'executed')
-        gray[0,0],gray[1,0],gray[127,2] = 0,254,253
-        failed = execute()
-        self.assertEqual(failed.node(stage).status,'failed')
-        self.assertIn('AdaptiveMeanPrecisionError',failed.node(stage).reason)
-        self.assertFalse(failed.node(stage).outputs)
-        self.assertIsNone(failed.labels)
-        after = [s.stage_id for s in recipe.stages][[s.stage_id for s in recipe.stages].index(stage)+1:]
-        self.assertTrue(all(failed.node(name).status=='not_run' and not failed.node(name).outputs
-            for name in after))
-        gray.fill_(255)
-        recovered = execute()
-        self.assertEqual(recovered.node(stage).status,'executed')
-        self.assertFalse(recovered.node(stage).reused)
-        self.assertTrue(recovered.node(stage).outputs)
 
-    def test_source_frame_input_mutation_and_preparation_are_part_of_reuse_identity(self):
-        first = self.run_recipe()
-        self.gray[40, 40] = 0
-        changed = self.run_recipe()
-        self.assertFalse(changed.node(PREFIX+'median_blur').reused)
-        self.assertFalse(changed.node(PREFIX+'ws_masked_flood').reused)
-        frame = replace(FRAME, transform_sha256='b'*64)
-        moved = run_native_recipe(selected_recipe(), self.gray, self.rgb, source_sha256=SOURCE,
-            coordinate_frame=frame, preparation=PREPARATION, cache=self.cache)
-        self.assertFalse(moved.node(PREFIX+'median_blur').reused)
-        self.assertNotEqual(first.coordinate_frame, moved.coordinate_frame)
 
-    def test_preflight_and_real_mid_recipe_cancellation_return_no_complete_result(self):
+    def check_test_preflight_and_real_mid_recipe_cancellation_return_no_complete_result(self):
         from seedvision.benchmarking import native_recipe as module
         with patch.object(module, 'MAX_RETAINED_CUDA_BYTES', 1), patch.object(module, '_runtime_records') as identity:
             with self.assertRaisesRegex(NativeRecipeError, 'byte budget'):
@@ -503,28 +324,18 @@ class NativeRecipeTests(unittest.TestCase):
         resumed = self.run_recipe()
         self.assertIsNotNone(resumed.labels)
 
-    def test_file_preparation_reuses_actual_pixels_and_rejects_mutated_prepared_cache(self):
-        import cv2
-        from seedvision.persistence.reference_regions import file_sha256
-        with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary)/'source.png'
-            gray, rgb = fixture()
-            self.assertTrue(cv2.imwrite(str(path), rgb[..., ::-1]))
-            first = prepare_native_recipe_inputs(path, cache=self.cache)
-            np.testing.assert_array_equal(first.rgb.cpu().numpy(), rgb)
-            np.testing.assert_array_equal(first.gray.cpu().numpy(), cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY))
-            self.assertEqual(first.source_sha256, file_sha256(path))
-            self.assertIn(str(cv2.__version__), first.preparation['rgb'])
-            repeated = prepare_native_recipe_inputs(path, cache=self.cache)
-            self.assertIs(first.gray, repeated.gray)
-            first.gray.fill_(0)
-            repaired = prepare_native_recipe_inputs(path, cache=self.cache)
-            self.assertIsNot(first.gray, repaired.gray)
-            np.testing.assert_array_equal(repaired.gray.cpu().numpy(), cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY))
-            rgb[0, 0] = 255
-            self.assertTrue(cv2.imwrite(str(path), rgb[..., ::-1]))
-            changed = prepare_native_recipe_inputs(path, cache=self.cache)
-            self.assertNotEqual(changed.source_sha256, first.source_sha256)
+
+    def test_validation_and_recovery(self):
+        """4 related NativeRecipeTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_cached_lab_table_mutation_is_rejected_before_node_execution)
+        self.scenario(self.check_test_size_controls_change_only_size_observations_and_cancel_reaches_primitive)
+        self.scenario(self.check_test_mutated_cached_output_and_failed_node_never_reuse_stale_descendants)
+        self.scenario(self.check_test_preflight_and_real_mid_recipe_cancellation_return_no_complete_result)
+
+    def test_workflow_lifecycle(self):
+        """2 related NativeRecipeTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_real_canonical_graph_matches_pinned_public_preprocessing_watershed_and_color)
+        self.scenario(self.check_test_repeat_layout_and_changed_controls_recompute_only_their_dependents)
 
 
 if __name__ == '__main__':

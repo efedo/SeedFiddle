@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from tests.review_fixtures import dispose_window
+from tests.catalogue_fixtures import CatalogueTestCase
+
+from tests.functional_units import functional_units
+
+from tests.review_fixtures import controls_window, dispose_window, isolated_window
 
 import os
 import tempfile
@@ -12,7 +16,8 @@ from types import SimpleNamespace
 ROOT = Path(__file__).resolve().parents[1]
 
 
-class PipelineCanvasTests(unittest.TestCase):
+@functional_units
+class PipelineCanvasTests(CatalogueTestCase):
     @classmethod
     def setUpClass(cls) -> None:
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -22,7 +27,7 @@ class PipelineCanvasTests(unittest.TestCase):
             raise unittest.SkipTest(f"PySide6 unavailable: {error}")
         cls.application = QApplication.instance() or QApplication([])
 
-    def test_canvas_contains_default_nodes_and_live_edges(self) -> None:
+    def check_test_canvas_contains_default_nodes_and_live_edges(self) -> None:
         from seedvision.pipeline import build_default_pipeline
         from seedvision.ui.pipeline_canvas import PipelineCanvas
 
@@ -35,7 +40,7 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertEqual(len(canvas.node_items), 30)
         self.assertEqual(len(canvas.edge_items), 184)
         self.assertNotIn("circle_candidates", canvas.node_items)
-        self.assertEqual(canvas.unused_nodes_button.text(), "Unused nodes (19)")
+        self.assertEqual(canvas.unused_nodes_button.text(), "Add node")
         unused_actions = [
             action.text() for action in canvas.unused_nodes_menu.actions()
         ]
@@ -105,10 +110,11 @@ class PipelineCanvasTests(unittest.TestCase):
         )
         canvas.close()
 
-    def test_current_image_name_is_in_pane_and_list_selection_tracks_it(self) -> None:
+    def check_test_current_image_name_is_in_pane_and_list_selection_tracks_it(self) -> None:
         from seedvision.ui.main_window import MainWindow
 
         window = MainWindow(ROOT)
+        window.pipeline_documents.set_frozen(False)
         path = window.image_view.image_path
         self.assertIsNotNone(path)
         self.assertEqual(window.image_view.current_file_label.text(), path.name)
@@ -120,7 +126,7 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertFalse(hasattr(window, "add_images_button"))
         dispose_window(window)
 
-    def test_approved_reference_edge_fit_updates_live_node_parameters(self) -> None:
+    def check_test_approved_reference_edge_fit_updates_live_node_parameters(self) -> None:
         from dataclasses import replace
         from types import SimpleNamespace
         from unittest.mock import patch
@@ -136,6 +142,7 @@ class PipelineCanvasTests(unittest.TestCase):
         from seedvision.ui.main_window import MainWindow
 
         window = MainWindow(ROOT)
+        window.pipeline_documents.set_frozen(False)
         key = window._current_image_key()
         if key is None:
             dispose_window(window)
@@ -187,7 +194,7 @@ class PipelineCanvasTests(unittest.TestCase):
         analyze.assert_called_once()
         dispose_window(window)
 
-    def test_switching_images_cancels_all_previous_image_work_before_load(self) -> None:
+    def check_test_switching_images_cancels_all_previous_image_work_before_load(self) -> None:
         from time import monotonic
 
         from seedvision.ui.main_window import (
@@ -212,6 +219,7 @@ class PipelineCanvasTests(unittest.TestCase):
                 return self.cancelled
 
         window = MainWindow(ROOT)
+        window.pipeline_documents.set_frozen(False)
         previous_path = window.image_view.image_path
         if previous_path is None:
             dispose_window(window)
@@ -270,11 +278,11 @@ class PipelineCanvasTests(unittest.TestCase):
         window._reference_edge_fit_task = None
         dispose_window(window)
 
-    def test_switching_images_selects_the_lowest_empty_seed_id(self) -> None:
+    def check_test_switching_images_selects_the_lowest_empty_seed_id(self) -> None:
         import numpy as np
         from PySide6.QtGui import QColor, QImage
 
-        from seedvision.ui.main_window import MainWindow, _path_identity
+        from seedvision.ui.main_window import _path_identity
 
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -288,7 +296,7 @@ class PipelineCanvasTests(unittest.TestCase):
             image.fill(QColor("white"))
             self.assertTrue(image.save(str(image_path)))
 
-        window = MainWindow(project_root)
+        window = isolated_window(project_root)
         first_key = _path_identity(first_path)
         second_key = _path_identity(second_path)
         for key in (first_key, second_key):
@@ -312,7 +320,7 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertEqual(window.image_view._active_instance_id, 1)
         dispose_window(window)
 
-    def test_cancelled_previous_image_completion_cannot_install_stale_result(self) -> None:
+    def check_test_cancelled_previous_image_completion_cannot_install_stale_result(self) -> None:
         from unittest.mock import patch
 
         from seedvision.segmentation import PipelineAnalysisCache
@@ -331,6 +339,7 @@ class PipelineCanvasTests(unittest.TestCase):
                 return self.cancelled
 
         window = MainWindow(ROOT)
+        window.pipeline_documents.set_frozen(False)
         previous_path = window.image_view.image_path
         if previous_path is None:
             dispose_window(window)
@@ -373,12 +382,11 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertNotIn(previous_key, window._analyses)
         dispose_window(window)
 
-    def test_run_to_node_scopes_execution_to_enabled_ancestors(self) -> None:
+    def check_test_run_to_node_scopes_execution_to_enabled_ancestors(self) -> None:
         from unittest.mock import patch
 
-        from seedvision.ui.main_window import MainWindow
 
-        window = MainWindow(ROOT)
+        window = controls_window(self)
         with patch.object(window, "_analyze_current_image") as analyze:
             window._run_pipeline_to_node("procedural_instances")
         arguments = analyze.call_args.kwargs
@@ -389,17 +397,15 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertIn("reference_edge_probability", scope)
         self.assertNotIn("review", scope)
         self.assertNotIn("measurements", scope)
-        dispose_window(window)
 
-    def test_analysis_cache_is_lru_bounded_and_gpu_jobs_are_serialized(self) -> None:
+    def check_test_analysis_cache_is_lru_bounded_and_gpu_jobs_are_serialized(self) -> None:
         import numpy as np
         import torch
 
         from seedvision.cuda import GpuRaster
         from seedvision.segmentation import PipelineAnalysisCache
-        from seedvision.ui.main_window import MainWindow
 
-        window = MainWindow(ROOT)
+        window = controls_window(self)
         self.assertEqual(window._thread_pool.maxThreadCount(), 1)
         window._analysis_caches.clear()
         window._analyses.clear()
@@ -429,9 +435,8 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertIn("new", window._analysis_caches)
         self.assertFalse(old_raster.is_materialized)
         self.assertEqual(old_cache.values, {})
-        dispose_window(window)
 
-    def test_failed_analysis_purges_its_partial_cache(self) -> None:
+    def check_test_failed_analysis_purges_its_partial_cache(self) -> None:
         from unittest.mock import patch
 
         import numpy as np
@@ -439,13 +444,11 @@ class PipelineCanvasTests(unittest.TestCase):
 
         from seedvision.cuda import GpuRaster
         from seedvision.segmentation import PipelineAnalysisCache
-        from seedvision.ui.main_window import MainWindow
 
-        window = MainWindow(ROOT)
+        window = controls_window(self)
         key = window._current_image_key()
         path = window.image_view.image_path
         if key is None or path is None:
-            dispose_window(window)
             self.skipTest("No workspace image is present")
         raster = GpuRaster(
             torch.ones((1, 1, 16, 16), dtype=torch.uint8),
@@ -475,13 +478,12 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertFalse(raster.is_materialized)
         self.assertEqual(cache.values, {})
         self.assertEqual(events, ["resume", "warning"])
-        dispose_window(window)
 
-    def test_superseded_analysis_is_cancelled_and_remains_visible(self) -> None:
+    def check_test_superseded_analysis_is_cancelled_and_remains_visible(self) -> None:
         from time import monotonic
 
         from seedvision.pipeline import NodeStatus
-        from seedvision.ui.main_window import MainWindow, _AnalysisActivity
+        from seedvision.ui.main_window import _AnalysisActivity
 
         class FakeTask:
             def __init__(self) -> None:
@@ -490,11 +492,10 @@ class PipelineCanvasTests(unittest.TestCase):
             def cancel(self) -> None:
                 self.cancelled = True
 
-        window = MainWindow(ROOT)
+        window = controls_window(self)
         key = window._current_image_key()
         path = window.image_view.image_path
         if key is None or path is None:
-            dispose_window(window)
             self.skipTest("No workspace image is present")
         task = FakeTask()
         started = monotonic() - 5.0
@@ -529,9 +530,8 @@ class PipelineCanvasTests(unittest.TestCase):
         window._active_tasks.clear()
         window._analysis_activities.clear()
         window._pending_analysis_key = None
-        dispose_window(window)
 
-    def test_node_cards_support_typed_blueprint_controls_and_time_footers(self) -> None:
+    def check_test_node_cards_support_typed_blueprint_controls_and_time_footers(self) -> None:
         from PySide6.QtWidgets import QCheckBox, QComboBox
 
         from seedvision.pipeline import build_default_pipeline
@@ -580,7 +580,7 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertEqual(_format_calculation_time(1.25), "Last calc: 1.25 s")
         canvas.close()
 
-    def test_manual_overlap_is_allowed_and_auto_arrange_removes_it(self) -> None:
+    def check_test_manual_overlap_is_allowed_and_auto_arrange_removes_it(self) -> None:
         from seedvision.pipeline import build_default_pipeline
         from seedvision.ui.pipeline_canvas import PipelineCanvas
 
@@ -610,7 +610,7 @@ class PipelineCanvasTests(unittest.TestCase):
                 )
         canvas.close()
 
-    def test_unused_node_toolbox_can_restore_circle_candidates(self) -> None:
+    def check_test_unused_node_toolbox_can_restore_circle_candidates(self) -> None:
         from seedvision.pipeline import build_default_pipeline
         from seedvision.ui.pipeline_canvas import PipelineCanvas
 
@@ -624,7 +624,7 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertIn("circle_candidates", canvas.node_items)
         self.assertEqual(len(canvas.node_items), 31)
         self.assertEqual(len(canvas.edge_items), 192)
-        self.assertEqual(canvas.unused_nodes_button.text(), "Unused nodes (18)")
+        self.assertEqual(canvas.unused_nodes_button.text(), "Add node")
         self.assertTrue(canvas.unused_nodes_button.isEnabled())
         self.assertTrue(canvas.node_items["circle_candidates"].isSelected())
         self.assertTrue(canvas.move_to_unused_button.isEnabled())
@@ -637,7 +637,7 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertIn("circle_candidates", graph.unused_nodes)
         self.assertFalse(graph.node("circle_candidates").enabled)
         self.assertEqual(len(canvas.edge_items), 184)
-        self.assertEqual(canvas.unused_nodes_button.text(), "Unused nodes (19)")
+        self.assertEqual(canvas.unused_nodes_button.text(), "Add node")
         restore_action = next(
             action
             for action in canvas.unused_nodes_menu.actions()
@@ -648,10 +648,9 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertIn("circle_candidates", canvas.node_items)
         canvas.close()
 
-    def test_main_window_exposes_circle_overlay_only_after_toolbox_restore(self) -> None:
-        from seedvision.ui.main_window import MainWindow
+    def check_test_main_window_exposes_circle_overlay_only_after_toolbox_restore(self) -> None:
 
-        window = MainWindow(ROOT)
+        window = controls_window(self)
         self.assertEqual(window.overlay_combo.findData("circle_candidates"), -1)
         window.pipeline_canvas.unused_nodes_menu.actions()[0].trigger()
         self.application.processEvents()
@@ -672,9 +671,8 @@ class PipelineCanvasTests(unittest.TestCase):
             window.pipeline_inspector.title_label.text(),
             "Node: Grayscale and local lighting",
         )
-        dispose_window(window)
 
-    def test_selected_node_marks_direct_neighbours_purple(self) -> None:
+    def check_test_selected_node_marks_direct_neighbours_purple(self) -> None:
         from seedvision.pipeline import build_default_pipeline
         from seedvision.ui.pipeline_canvas import PipelineCanvas
 
@@ -690,7 +688,7 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertFalse(canvas.node_items["ruler_detection"]._adjacent)
         canvas.close()
 
-    def test_canvas_disconnects_and_reconnects_authored_ports(self) -> None:
+    def check_test_canvas_disconnects_and_reconnects_authored_ports(self) -> None:
         from seedvision.pipeline import build_default_pipeline
         from seedvision.ui.pipeline_canvas import PipelineCanvas
 
@@ -731,7 +729,7 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertEqual(len(changes), 2)
         canvas.close()
 
-    def test_connection_paths_do_not_block_plain_left_drag_panning(self) -> None:
+    def check_test_connection_paths_do_not_block_plain_left_drag_panning(self) -> None:
         from PySide6.QtCore import QPoint, Qt
         from PySide6.QtTest import QTest
 
@@ -812,7 +810,7 @@ class PipelineCanvasTests(unittest.TestCase):
         )
         canvas.close()
 
-    def test_image_and_graph_zoom_controls_report_scale(self) -> None:
+    def check_test_image_and_graph_zoom_controls_report_scale(self) -> None:
         from PySide6.QtGui import QPalette
 
         from seedvision.pipeline import build_default_pipeline
@@ -830,7 +828,7 @@ class PipelineCanvasTests(unittest.TestCase):
         canvas.zoom_in()
         self.assertEqual(canvas.zoom_label.text(), "118%")
         self.assertEqual(canvas.auto_arrange_button.text(), "Auto arrange")
-        self.assertEqual(canvas.unused_nodes_button.text(), "Unused nodes (19)")
+        self.assertEqual(canvas.unused_nodes_button.text(), "Add node")
         self.assertEqual(canvas.bundle_cables_button.text(), "Bundle cables")
         self.assertEqual(
             canvas.route_around_nodes_button.text(), "Route around nodes"
@@ -877,7 +875,7 @@ class PipelineCanvasTests(unittest.TestCase):
         view.close()
         canvas.close()
 
-    def test_image_zoom_buttons_keep_view_center_and_wheel_keeps_pointer(self) -> None:
+    def check_test_image_zoom_buttons_keep_view_center_and_wheel_keeps_pointer(self) -> None:
         from PySide6.QtCore import QPoint, QPointF, Qt
         from PySide6.QtGui import QWheelEvent
         from PySide6.QtTest import QTest
@@ -938,7 +936,7 @@ class PipelineCanvasTests(unittest.TestCase):
         finally:
             view.close()
 
-    def test_worker_progress_turns_only_the_current_revision_node_green(self) -> None:
+    def check_test_worker_progress_turns_only_the_current_revision_node_green(self) -> None:
         from seedvision.pipeline import NodeStatus
         from seedvision.ui.main_window import MainWindow
 
@@ -946,6 +944,7 @@ class PipelineCanvasTests(unittest.TestCase):
         if not path.exists():
             self.skipTest("Pilot image is not present")
         window = MainWindow(ROOT)
+        window.pipeline_documents.set_frozen(False)
         succeeded, error = window.image_view.load_image(path)
         self.assertTrue(succeeded, error)
         node = window.pipeline.node("layout_detection")
@@ -966,10 +965,9 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertEqual(node.status, NodeStatus.RUNNING)
         dispose_window(window)
 
-    def test_selected_overlay_shows_large_red_calculating_banner(self) -> None:
-        from seedvision.ui.main_window import MainWindow
+    def check_test_selected_overlay_shows_large_red_calculating_banner(self) -> None:
 
-        window = MainWindow(ROOT)
+        window = controls_window(self)
         path = window.image_view.image_path
         self.assertIsNotNone(path)
         window._select_overlay_mode("background_likelihood")
@@ -989,12 +987,12 @@ class PipelineCanvasTests(unittest.TestCase):
             window.pipeline.revision,
         )
         self.assertTrue(banner.isHidden())
-        dispose_window(window)
 
-    def test_project_node_displays_live_project_image_and_annotation_information(self) -> None:
+    def check_test_project_node_displays_live_project_image_and_annotation_information(self) -> None:
         from seedvision.ui.main_window import MainWindow
 
         window = MainWindow(ROOT)
+        window.pipeline_documents.set_frozen(False)
         window.pipeline_canvas.select_node("project")
         self.application.processEvents()
 
@@ -1018,7 +1016,7 @@ class PipelineCanvasTests(unittest.TestCase):
         )
         dispose_window(window)
 
-    def test_identification_stages_expose_methods_and_relevant_parameters(self) -> None:
+    def check_test_identification_stages_expose_methods_and_relevant_parameters(self) -> None:
         from seedvision.pipeline import build_default_pipeline
         from seedvision.ui.pipeline_inspector import PipelineInspector
 
@@ -1080,7 +1078,7 @@ class PipelineCanvasTests(unittest.TestCase):
             )
         inspector.close()
 
-    def test_layout_vessel_selector_is_first_pinned_and_non_mutating(self) -> None:
+    def check_test_layout_vessel_selector_is_first_pinned_and_non_mutating(self) -> None:
         from PySide6.QtCore import Qt
         from PySide6.QtTest import QSignalSpy, QTest
         from PySide6.QtWidgets import QComboBox, QFormLayout
@@ -1132,7 +1130,7 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertEqual(node.parameters, initial_parameters)
         self.assertEqual(graph.revision, initial_revision)
 
-    def test_background_colour_gamut_renders_as_full_hsv_value_slice(self) -> None:
+    def check_test_background_colour_gamut_renders_as_full_hsv_value_slice(self) -> None:
         import numpy as np
 
         from seedvision.pipeline import build_default_pipeline
@@ -1180,7 +1178,7 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertGreater(BackgroundColourGamut.dominant_hsv_value(profile), 0.0)
         inspector.close()
 
-    def test_real_exterior_annulus_profile_retains_all_gamut_contours(self) -> None:
+    def check_test_real_exterior_annulus_profile_retains_all_gamut_contours(self) -> None:
         import numpy as np
 
         from seedvision.pipeline import build_default_pipeline
@@ -1233,7 +1231,7 @@ class PipelineCanvasTests(unittest.TestCase):
             )
         self.assertEqual(centre_points.shape, (4, 2))
 
-    def test_foreground_node_shows_its_probability_colour_gamut(self) -> None:
+    def check_test_foreground_node_shows_its_probability_colour_gamut(self) -> None:
         from seedvision.pipeline import build_default_pipeline
         from seedvision.ui.pipeline_inspector import PipelineInspector
         from seedvision.visualization import ForegroundColourProfile
@@ -1293,7 +1291,7 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertIn("1,800", inspector.foreground_start_label.text())
         inspector.close()
 
-    def test_nearly_neutral_dark_mode_does_not_span_every_hsv_hue(self) -> None:
+    def check_test_nearly_neutral_dark_mode_does_not_span_every_hsv_hue(self) -> None:
         from seedvision.pipeline import build_default_pipeline
         from seedvision.ui.pipeline_inspector import BackgroundColourGamut
         from seedvision.visualization import ForegroundColourProfile
@@ -1322,7 +1320,7 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertLess(float(probability.max()), 0.25)
         self.assertEqual(centre_points.shape, (1, 2))
 
-    def test_colour_gamut_does_not_project_neutral_membership_across_hues(self) -> None:
+    def check_test_colour_gamut_does_not_project_neutral_membership_across_hues(self) -> None:
         from seedvision.ui.pipeline_inspector import BackgroundColourGamut
         from seedvision.visualization import ForegroundColourProfile
 
@@ -1352,10 +1350,9 @@ class PipelineCanvasTests(unittest.TestCase):
         )
         self.assertTrue((probability == 0.0).all())
 
-    def test_overlay_node_selection_updates_the_viewer_layer(self) -> None:
-        from seedvision.ui.main_window import MainWindow
+    def check_test_overlay_node_selection_updates_the_viewer_layer(self) -> None:
 
-        window = MainWindow(ROOT)
+        window = controls_window(self)
         window.pipeline_canvas.select_node("edge_gradients")
         self.application.processEvents()
         directed_index = window.pipeline_inspector.overlay_combo.findData(
@@ -1461,12 +1458,10 @@ class PipelineCanvasTests(unittest.TestCase):
         window.pipeline_canvas.select_node("deskew_colour")
         self.application.processEvents()
         self.assertEqual(window.overlay_combo.currentData(), "deskew_colour")
-        dispose_window(window)
 
-    def test_viewer_layer_selection_selects_its_owning_graph_node(self) -> None:
-        from seedvision.ui.main_window import MainWindow
+    def check_test_viewer_layer_selection_selects_its_owning_graph_node(self) -> None:
 
-        window = MainWindow(ROOT)
+        window = controls_window(self)
         index = window.overlay_combo.findData("reference_edge_comparison")
         self.assertGreaterEqual(index, 0)
         window.overlay_combo.setCurrentIndex(index)
@@ -1488,12 +1483,10 @@ class PipelineCanvasTests(unittest.TestCase):
                 for edge in highlighted
             )
         )
-        dispose_window(window)
 
-    def test_node_selection_shows_stage_overlay_sections_and_connections(self) -> None:
-        from seedvision.ui.main_window import MainWindow
+    def check_test_node_selection_shows_stage_overlay_sections_and_connections(self) -> None:
 
-        window = MainWindow(ROOT)
+        window = controls_window(self)
         window.show()
         self.application.processEvents()
         self.assertGreaterEqual(window.metadata_scroll.verticalScrollBar().width(), 16)
@@ -1532,32 +1525,76 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertTrue(window.baseline_section.isVisible())
         self.assertFalse(window.analyze_button.isVisible())
         self.assertTrue(window.warning_label.isVisible())
-        dispose_window(window)
 
-    def test_image_and_pipeline_share_a_split_workspace(self) -> None:
-        from seedvision.ui.main_window import MainWindow
+    def check_test_image_and_pipeline_share_a_split_workspace(self) -> None:
 
-        window = MainWindow(ROOT)
+        window = controls_window(self)
         self.assertEqual(window.windowTitle(), "Seed Fiddle")
         self.assertEqual(window.workspace_splitter.count(), 2)
-        self.assertIs(window.workspace_splitter.widget(0), window.image_view)
+        self.assertIs(window.workspace_splitter.widget(0), window.image_display_stack)
+        self.assertIs(window.image_display_stack.currentWidget(), window.image_view)
+        self.assertEqual(window.image_display_stack.indexOf(window.image_view), 0)
+        self.assertEqual(window.image_display_stack.indexOf(window.pipeline_workflow.preview), 1)
         self.assertIs(window.workspace_splitter.widget(1), window.pipeline_canvas)
         self.assertFalse(window.image_view.isHidden())
-        self.assertTrue(window.pipeline_canvas.isHidden())
+        self.assertFalse(window.pipeline_canvas.isHidden())
         window._show_split_workspace()
         self.assertFalse(window.pipeline_canvas.isHidden())
         self.assertRegex(
             window.pipeline_inspector.details_label.styleSheet(),
             r"#(?:d2d9e1|303b46)",
         )
-        dispose_window(window)
 
-    def test_overlay_selectors_group_layers_and_stay_synchronised(self) -> None:
-        from seedvision.ui.main_window import MainWindow
+    def check_test_overlay_selectors_group_layers_and_stay_synchronised(self) -> None:
+        from PySide6.QtCore import QPoint
+        from PySide6.QtWidgets import QLabel, QWidget
 
-        window = MainWindow(ROOT)
+        window = controls_window(self)
         self.assertTrue(window.overlay_combo.isHidden())
         self.assertIs(window.overlay_button.menu(), window.overlay_menu)
+        overlay_controls = window.workflow_toolbar.findChild(
+            QWidget, "overlayToolbarControls"
+        )
+        self.assertIsNotNone(overlay_controls)
+        overlay_label = overlay_controls.findChild(QLabel, "overlayToolbarLabel")
+        self.assertIs(window.overlay_button.parentWidget(), overlay_controls)
+        window._select_overlay_mode("raw_image")
+        window.show()
+        for width in (1440, 1050):
+            window.resize(width, 650)
+            self.application.processEvents()
+            label_right = overlay_label.mapTo(
+                overlay_controls, QPoint(overlay_label.width(), 0)
+            ).x()
+            button_left = window.overlay_button.mapTo(
+                overlay_controls, QPoint(0, 0)
+            ).x()
+            self.assertGreaterEqual(button_left - label_right, 0)
+            self.assertLessEqual(button_left - label_right, 6)
+            self.assertLessEqual(
+                window.overlay_button.width(),
+                window.overlay_button.sizeHint().width() + 2,
+            )
+            self.assertLess(window.overlay_button.width(), 220)
+        window._select_overlay_mode("reference_edge_comparison")
+        self.application.processEvents()
+        selected_label = window.overlay_combo.currentText().strip()
+        self.assertEqual(
+            selected_label, "Physical / non-physical prototype compatibility"
+        )
+        self.assertIn(selected_label, window.overlay_button.toolTip())
+        self.assertEqual(window.overlay_button.accessibleName(), selected_label)
+        self.assertNotEqual(window.overlay_button.text(), selected_label)
+        self.assertIn("\u2026", window.overlay_button.text())
+        self.assertLessEqual(window.overlay_button.width(), 210)
+        self.assertTrue(any(
+            child.text() == selected_label
+            for action in window.overlay_menu.actions()
+            if action.menu() is not None
+            for child in action.menu().actions()
+        ))
+        window._select_overlay_mode("raw_image")
+        self.assertEqual(window.overlay_button.text(), "Raw image")
         self.assertEqual(
             window.overlay_combo.findData("automatic_foreground_colour_evidence"),
             -1,
@@ -1835,9 +1872,8 @@ class PipelineCanvasTests(unittest.TestCase):
         self.application.processEvents()
         self.assertEqual(node_selector.itemText(0), "No image overlays")
         self.assertFalse(node_selector.isEnabled())
-        dispose_window(window)
 
-    def test_edge_oval_overlay_draws_only_retained_edge_hypotheses(self) -> None:
+    def check_test_edge_oval_overlay_draws_only_retained_edge_hypotheses(self) -> None:
         from types import SimpleNamespace
 
         import numpy as np
@@ -1866,10 +1902,10 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertGreater(item.pen().widthF(), 2.0)
         view.close()
 
-    def test_other_probability_overlays_are_registered_owned_and_synchronised(self) -> None:
-        from seedvision.ui.main_window import MainWindow, _overlay_node_owner
+    def check_test_other_probability_overlays_are_registered_owned_and_synchronised(self) -> None:
+        from seedvision.ui.main_window import _overlay_node_owner
 
-        window = MainWindow(ROOT)
+        window = controls_window(self)
         expectations = (
             (
                 "other_colour_probability",
@@ -1916,12 +1952,10 @@ class PipelineCanvasTests(unittest.TestCase):
                 self.assertNotIn("72%", legend)
                 self.assertIn("Directional", legend)
                 self.assertIn("integration", legend)
-        dispose_window(window)
 
-    def test_probability_legends_state_low_and_high_display_values(self) -> None:
-        from seedvision.ui.main_window import MainWindow
+    def check_test_probability_legends_state_low_and_high_display_values(self) -> None:
 
-        window = MainWindow(ROOT)
+        window = controls_window(self)
         window._update_overlay_legend("background_likelihood")
         self.assertIn(
             "white = low displayed probability/evidence; black = high",
@@ -1935,9 +1969,8 @@ class PipelineCanvasTests(unittest.TestCase):
         reference_legend = window.overlay_legend_label.text()
         self.assertIn("black = low displayed probability/evidence", reference_legend)
         self.assertIn("no-match", reference_legend)
-        dispose_window(window)
 
-    def test_compact_toolbar_and_contextual_paint_panel(self) -> None:
+    def check_test_compact_toolbar_and_contextual_paint_panel(self) -> None:
         from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
         from PySide6.QtGui import QMouseEvent
         from PySide6.QtTest import QTest
@@ -1946,6 +1979,7 @@ class PipelineCanvasTests(unittest.TestCase):
         from seedvision.ui.main_window import MainWindow
 
         window = MainWindow(ROOT)
+        window.pipeline_documents.set_frozen(False)
         window.show()
         self.application.processEvents()
 
@@ -2124,13 +2158,14 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertIsNone(window.image_view._reference_point_mode)
         dispose_window(window)
 
-    def test_cleared_reference_layer_returns_to_paint_and_accepts_dabs(self) -> None:
+    def check_test_cleared_reference_layer_returns_to_paint_and_accepts_dabs(self) -> None:
         import numpy as np
         from PySide6.QtCore import QPointF
 
         from seedvision.ui.main_window import MainWindow
 
         window = MainWindow(ROOT)
+        window.pipeline_documents.set_frozen(False)
         key = window._current_image_key()
         if key is None or window.image_view.image_size is None:
             dispose_window(window)
@@ -2159,10 +2194,8 @@ class PipelineCanvasTests(unittest.TestCase):
         )
         dispose_window(window)
 
-    def test_background_node_can_be_disabled_without_disabling_foreground_noise(self) -> None:
-        from seedvision.ui.main_window import MainWindow
-
-        window = MainWindow(ROOT)
+    def check_test_background_node_can_be_disabled_without_disabling_foreground_noise(self) -> None:
+        window = controls_window(self)
         window._pipeline_parameter_changed(
             "background_likelihood", "background_colour_enabled", False
         )
@@ -2174,12 +2207,9 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertTrue(window.pipeline.node("background_likelihood").enabled)
         self.assertTrue(window.pipeline.node("refined_background_likelihood").enabled)
         self.assertFalse(window.background_enabled_checkbox.isChecked())
-        dispose_window(window)
 
-    def test_combined_noise_node_preserves_independent_enable_switches(self) -> None:
-        from seedvision.ui.main_window import MainWindow
-
-        window = MainWindow(ROOT)
+    def check_test_combined_noise_node_preserves_independent_enable_switches(self) -> None:
+        window = controls_window(self)
         window._pipeline_parameter_changed(
             "refined_background_likelihood", "background_noise_enabled", False
         )
@@ -2190,12 +2220,9 @@ class PipelineCanvasTests(unittest.TestCase):
         settings = window._layer_settings()
         self.assertFalse(settings.background_noise_enabled)
         self.assertTrue(settings.foreground_noise_enabled)
-        dispose_window(window)
 
-    def test_settings_reset_button_restores_node_defaults(self) -> None:
-        from seedvision.ui.main_window import MainWindow
-
-        window = MainWindow(ROOT)
+    def check_test_settings_reset_button_restores_node_defaults(self) -> None:
+        window = controls_window(self)
         node = window.pipeline.node("background_likelihood")
         default = node.default_parameters["foreground_reference_weight"]
         window._pipeline_parameter_changed(
@@ -2206,12 +2233,9 @@ class PipelineCanvasTests(unittest.TestCase):
         window.pipeline_inspector.reset_parameters_button.click()
         self.application.processEvents()
         self.assertEqual(node.parameters["foreground_reference_weight"], default)
-        dispose_window(window)
 
-    def test_expanded_node_settings_feed_runtime_settings_objects(self) -> None:
-        from seedvision.ui.main_window import MainWindow
-
-        window = MainWindow(ROOT)
+    def check_test_expanded_node_settings_feed_runtime_settings_objects(self) -> None:
+        window = controls_window(self)
         self.assertTrue(
             window.pipeline.node("background_likelihood").parameters[
                 "background_keep_perimeter_reference"
@@ -2309,13 +2333,10 @@ class PipelineCanvasTests(unittest.TestCase):
             window._validate_settings_override(
                 "edge_gradients", "ridge_low_threshold", 0.30
             )
-        dispose_window(window)
 
-    def test_setting_change_invalidates_only_node_and_graph_dependents(self) -> None:
+    def check_test_setting_change_invalidates_only_node_and_graph_dependents(self) -> None:
         from seedvision.pipeline import NodeStatus
-        from seedvision.ui.main_window import MainWindow
-
-        window = MainWindow(ROOT)
+        window = controls_window(self)
         for node_id in (
             "edge_gradients",
             "reference_texture_prototypes",
@@ -2331,9 +2352,8 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertEqual(
             window.pipeline.node("edge_traces").status, NodeStatus.IDLE
         )
-        dispose_window(window)
 
-    def test_perimeter_source_checkbox_invalidates_every_background_consumer(self) -> None:
+    def check_test_perimeter_source_checkbox_invalidates_every_background_consumer(self) -> None:
         from unittest.mock import patch
 
         from seedvision.segmentation import PipelineAnalysisCache
@@ -2343,6 +2363,7 @@ class PipelineCanvasTests(unittest.TestCase):
             MainWindow, "_auto_load_reference_regions", return_value=False
         ):
             window = MainWindow(ROOT)
+            window.pipeline_documents.set_frozen(False)
         key = window._current_image_key()
         if key is None:
             dispose_window(window)
@@ -2382,7 +2403,7 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertTrue(dirty.issubset(scheduled[0]))
         dispose_window(window)
 
-    def test_annotated_seed_foreground_checkbox_defaults_on_and_invalidates_consumers(self) -> None:
+    def check_test_annotated_seed_foreground_checkbox_defaults_on_and_invalidates_consumers(self) -> None:
         from unittest.mock import patch
 
         from seedvision.segmentation import PipelineAnalysisCache
@@ -2392,6 +2413,7 @@ class PipelineCanvasTests(unittest.TestCase):
             MainWindow, "_auto_load_reference_regions", return_value=False
         ):
             window = MainWindow(ROOT)
+            window.pipeline_documents.set_frozen(False)
         key = window._current_image_key()
         if key is None:
             dispose_window(window)
@@ -2440,7 +2462,7 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertFalse(checkbox.isChecked())
         dispose_window(window)
 
-    def test_net_edge_subtraction_recomputes_thinned_net_ridge_dependents(self) -> None:
+    def check_test_net_edge_subtraction_recomputes_thinned_net_ridge_dependents(self) -> None:
         from unittest.mock import patch
 
         from PySide6.QtWidgets import QMessageBox
@@ -2456,6 +2478,7 @@ class PipelineCanvasTests(unittest.TestCase):
         warning_patcher.start()
         self.addCleanup(warning_patcher.stop)
         window = MainWindow(ROOT)
+        window.pipeline_documents.set_frozen(False)
         path = ROOT / "images" / "IMG_0002c.JPG"
         key = str(path.resolve()).casefold()
         window.image_view._image_path = path
@@ -2506,7 +2529,7 @@ class PipelineCanvasTests(unittest.TestCase):
 
         dispose_window(window)
 
-    def test_image_view_switches_between_analysis_layers(self) -> None:
+    def check_test_image_view_switches_between_analysis_layers(self) -> None:
         import numpy as np
 
         from seedvision.ui.image_view import ImageView
@@ -2713,11 +2736,10 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertEqual(len(view._overlay_items), 5)
         view.close()
 
-    def test_selected_procedural_instance_reports_geometry_in_node_panel(self) -> None:
+    def check_test_selected_procedural_instance_reports_geometry_in_node_panel(self) -> None:
         import numpy as np
 
         from seedvision.segmentation.procedural import ProceduralInstanceResult
-        from seedvision.ui.main_window import MainWindow
 
         labels = np.ones((6, 7), np.uint16)
         procedural = ProceduralInstanceResult(
@@ -2739,7 +2761,7 @@ class PipelineCanvasTests(unittest.TestCase):
             instance_solidities=np.asarray((0.89,), np.float32),
             instance_axis_ratios=np.asarray((1.44,), np.float32),
         )
-        window = MainWindow(ROOT)
+        window = controls_window(self)
         window.image_view._analysis_result = SimpleNamespace(
             procedural_instances=procedural,
             crop_offset=(0, 0),
@@ -2752,9 +2774,8 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertIn("concavity 12.0%", text)
         self.assertIn("solidity 0.890", text)
         self.assertIn("axis ratio 1.440", text)
-        dispose_window(window)
 
-    def test_image_view_displays_full_size_gamut_without_changing_mask_size(self) -> None:
+    def check_test_image_view_displays_full_size_gamut_without_changing_mask_size(self) -> None:
         import numpy as np
 
         from PySide6.QtGui import QColor, QImage
@@ -2823,7 +2844,7 @@ class PipelineCanvasTests(unittest.TestCase):
             self.assertEqual(view.image_size, (320, 200))
             view.close()
 
-    def test_image_view_displays_every_reference_prototype_in_a_full_pane_collage(self) -> None:
+    def check_test_image_view_displays_every_reference_prototype_in_a_full_pane_collage(self) -> None:
         import numpy as np
 
         from PySide6.QtGui import QColor, QImage
@@ -2903,7 +2924,7 @@ class PipelineCanvasTests(unittest.TestCase):
             self.assertEqual(view.image_size, (320, 200))
             view.close()
 
-    def test_image_view_edits_full_resolution_binary_reference_masks(self) -> None:
+    def check_test_image_view_edits_full_resolution_binary_reference_masks(self) -> None:
         import numpy as np
 
         from PySide6.QtCore import QPointF, Qt
@@ -3079,7 +3100,7 @@ class PipelineCanvasTests(unittest.TestCase):
             self.assertFalse(view.reference_mask("background")[50, 50])
             view.close()
 
-    def test_background_painting_shows_only_exact_perimeter_ring_source(self) -> None:
+    def check_test_background_painting_shows_only_exact_perimeter_ring_source(self) -> None:
         import numpy as np
 
         from PySide6.QtCore import QPointF, Qt
@@ -3214,7 +3235,7 @@ class PipelineCanvasTests(unittest.TestCase):
             )
             view.close()
 
-    def test_sparse_automatic_background_source_survives_large_view_downsampling(self) -> None:
+    def check_test_sparse_automatic_background_source_survives_large_view_downsampling(self) -> None:
         import numpy as np
 
         from PySide6.QtGui import QColor, QImage
@@ -3278,7 +3299,7 @@ class PipelineCanvasTests(unittest.TestCase):
             )
             view.close()
 
-    def test_image_view_edits_distinct_seed_instance_ids(self) -> None:
+    def check_test_image_view_edits_distinct_seed_instance_ids(self) -> None:
         import numpy as np
 
         from PySide6.QtCore import QPointF, Qt
@@ -3328,7 +3349,7 @@ class PipelineCanvasTests(unittest.TestCase):
             self.assertEqual(int(edits[-1][50, 30]), 1)
             view.close()
 
-    def test_instance_brush_uses_live_stroke_without_rebuilding_analysis(self) -> None:
+    def check_test_instance_brush_uses_live_stroke_without_rebuilding_analysis(self) -> None:
         import numpy as np
 
         from PySide6.QtCore import QPointF, Qt
@@ -3372,7 +3393,7 @@ class PipelineCanvasTests(unittest.TestCase):
             self.assertEqual(renders, [])
             view.close()
 
-    def test_reference_brush_uses_live_stroke_and_redraws_once_on_release(self) -> None:
+    def check_test_reference_brush_uses_live_stroke_and_redraws_once_on_release(self) -> None:
         import numpy as np
 
         from PySide6.QtCore import QPointF, Qt
@@ -3415,7 +3436,7 @@ class PipelineCanvasTests(unittest.TestCase):
             self.assertEqual(renders, [True])
             view.close()
 
-    def test_image_view_applies_assisted_instance_annotation_tools(self) -> None:
+    def check_test_image_view_applies_assisted_instance_annotation_tools(self) -> None:
         import numpy as np
 
         from PySide6.QtCore import QPointF
@@ -3497,7 +3518,7 @@ class PipelineCanvasTests(unittest.TestCase):
             self.assertTrue(any("Smart fill" in status for status in statuses))
             view.close()
 
-    def test_assisted_instance_tools_preview_on_hover_and_apply_on_click(self) -> None:
+    def check_test_assisted_instance_tools_preview_on_hover_and_apply_on_click(self) -> None:
         import cv2
         import numpy as np
 
@@ -3634,12 +3655,11 @@ class PipelineCanvasTests(unittest.TestCase):
             self.assertEqual(int(edits[-1][88, 35]), 3)
             view.close()
 
-    def test_instance_annotation_panel_exposes_advanced_tool_options(self) -> None:
+    def check_test_instance_annotation_panel_exposes_advanced_tool_options(self) -> None:
         import numpy as np
         from PySide6.QtCore import QPoint, QPointF, Qt
         from PySide6.QtGui import QColor, QImage, QWheelEvent
 
-        from seedvision.ui.main_window import MainWindow
 
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -3649,7 +3669,7 @@ class PipelineCanvasTests(unittest.TestCase):
         image = QImage(80, 60, QImage.Format.Format_RGB32)
         image.fill(QColor("white"))
         self.assertTrue(image.save(str(image_path)))
-        window = MainWindow(project_root)
+        window = isolated_window(project_root)
         self.assertEqual(window.instance_tool_options_stack.count(), 5)
         self.assertNotIn("shape_snap", window.instance_tool_pages)
         self.assertFalse(hasattr(window, "instance_shape_snap_button"))
@@ -3841,10 +3861,9 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertEqual(window.image_view._smart_fill_options.connectivity, 4)
         dispose_window(window)
 
-    def test_new_seed_preserves_the_selected_instance_tool(self) -> None:
+    def check_test_new_seed_preserves_the_selected_instance_tool(self) -> None:
         from PySide6.QtGui import QColor, QImage
 
-        from seedvision.ui.main_window import MainWindow
 
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -3854,7 +3873,7 @@ class PipelineCanvasTests(unittest.TestCase):
         image = QImage(80, 60, QImage.Format.Format_RGB32)
         image.fill(QColor("white"))
         self.assertTrue(image.save(str(image_path)))
-        window = MainWindow(project_root)
+        window = isolated_window(project_root)
         if window._current_image_key() is None:
             dispose_window(window)
             self.skipTest("No workspace image is present")
@@ -3902,13 +3921,14 @@ class PipelineCanvasTests(unittest.TestCase):
                     )
         dispose_window(window)
 
-    def test_reference_masks_run_analysis_only_after_explicit_apply(self) -> None:
+    def check_test_reference_masks_run_analysis_only_after_explicit_apply(self) -> None:
         import numpy as np
 
         from seedvision.pipeline import NodeStatus
         from seedvision.ui.main_window import MainWindow
 
         window = MainWindow(ROOT)
+        window.pipeline_documents.set_frozen(False)
         # This controller test uses the real repository fixtures. Persistence is
         # covered against an isolated project root in test_reference_persistence.
         window._persist_applied_reference_regions = (
@@ -4010,12 +4030,13 @@ class PipelineCanvasTests(unittest.TestCase):
         )
         dispose_window(window)
 
-    def test_instance_annotations_apply_separately_from_reference_masks(self) -> None:
+    def check_test_instance_annotations_apply_separately_from_reference_masks(self) -> None:
         import numpy as np
 
         from seedvision.ui.main_window import MainWindow
 
         window = MainWindow(ROOT)
+        window.pipeline_documents.set_frozen(False)
         # Do not let this controller test overwrite a developer's local archive.
         window._persist_applied_reference_regions = (
             lambda **_kwargs: ROOT / "test-reference-autosave.npz"
@@ -4069,7 +4090,7 @@ class PipelineCanvasTests(unittest.TestCase):
         )
         dispose_window(window)
 
-    def test_seed_trait_editor_is_species_specific_and_recomputes_in_isolation(
+    def check_test_seed_trait_editor_is_species_specific_and_recomputes_in_isolation(
         self,
     ) -> None:
         import numpy as np
@@ -4077,7 +4098,6 @@ class PipelineCanvasTests(unittest.TestCase):
 
         from seedvision.annotation import load_seed_trait_catalogue
         from seedvision.persistence import SeedInstanceAnnotation
-        from seedvision.ui.main_window import MainWindow
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -4086,7 +4106,7 @@ class PipelineCanvasTests(unittest.TestCase):
             image = QImage(64, 48, QImage.Format.Format_RGB888)
             image.fill(QColor("#d4c9a8"))
             self.assertTrue(image.save(str(image_path)))
-            window = MainWindow(root)
+            window = isolated_window(root)
             window._seed_trait_catalogue = load_seed_trait_catalogue(
                 ROOT / "config" / "traits.json"
             )
@@ -4149,12 +4169,11 @@ class PipelineCanvasTests(unittest.TestCase):
             )
             dispose_window(window)
 
-    def test_shape_review_cannot_enter_unsaveable_unknown_state(self) -> None:
+    def check_test_shape_review_cannot_enter_unsaveable_unknown_state(self) -> None:
         import numpy as np
         from PySide6.QtGui import QColor, QImage
 
         from seedvision.persistence import SeedInstanceAnnotation
-        from seedvision.ui.main_window import MainWindow
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -4163,7 +4182,7 @@ class PipelineCanvasTests(unittest.TestCase):
             image = QImage(64, 48, QImage.Format.Format_RGB888)
             image.fill(QColor("#d4c9a8"))
             self.assertTrue(image.save(str(image_path)))
-            window = MainWindow(root)
+            window = isolated_window(root)
             key = window._current_image_key()
             self.assertIsNotNone(key)
             assert key is not None
@@ -4196,7 +4215,7 @@ class PipelineCanvasTests(unittest.TestCase):
             self.assertIsNone(window._draft_seed_annotations[key][1].shape_exclusion_reason)
             dispose_window(window)
 
-    def test_reference_seed_scale_overlay_boldly_labels_actual_seed_above(self) -> None:
+    def check_test_reference_seed_scale_overlay_boldly_labels_actual_seed_above(self) -> None:
         from PySide6.QtWidgets import (
             QGraphicsEllipseItem,
             QGraphicsRectItem,
@@ -4260,7 +4279,104 @@ class PipelineCanvasTests(unittest.TestCase):
         self.assertIn("80.0 pixels", label.toolTip())
         view.close()
 
-    def test_calibration_nodes_render_references_and_metric_scale(self) -> None:
+
+    def test_approved_reference_edge_fit_updates_live_node_parameters(self):
+        self.scenario(self.check_test_approved_reference_edge_fit_updates_live_node_parameters, labelled=False)
+
+    def test_switching_images_cancels_all_previous_image_work_before_load(self):
+        self.scenario(self.check_test_switching_images_cancels_all_previous_image_work_before_load, labelled=False)
+
+    def test_cancelled_previous_image_completion_cannot_install_stale_result(self):
+        self.scenario(self.check_test_cancelled_previous_image_completion_cannot_install_stale_result, labelled=False)
+
+    def test_failed_analysis_purges_its_partial_cache(self):
+        self.scenario(self.check_test_failed_analysis_purges_its_partial_cache, labelled=False)
+
+    def test_superseded_analysis_is_cancelled_and_remains_visible(self):
+        self.scenario(self.check_test_superseded_analysis_is_cancelled_and_remains_visible, labelled=False)
+
+    def test_worker_progress_turns_only_the_current_revision_node_green(self):
+        self.scenario(self.check_test_worker_progress_turns_only_the_current_revision_node_green, labelled=False)
+
+    def test_cleared_reference_layer_returns_to_paint_and_accepts_dabs(self):
+        self.scenario(self.check_test_cleared_reference_layer_returns_to_paint_and_accepts_dabs, labelled=False)
+
+    def test_perimeter_source_checkbox_invalidates_every_background_consumer(self):
+        self.scenario(self.check_test_perimeter_source_checkbox_invalidates_every_background_consumer, labelled=False)
+
+    def test_annotated_seed_foreground_checkbox_defaults_on_and_invalidates_consumers(self):
+        self.scenario(self.check_test_annotated_seed_foreground_checkbox_defaults_on_and_invalidates_consumers, labelled=False)
+
+    def test_new_seed_preserves_the_selected_instance_tool(self):
+        self.scenario(self.check_test_new_seed_preserves_the_selected_instance_tool, labelled=False)
+
+    def test_reference_masks_run_analysis_only_after_explicit_apply(self):
+        self.scenario(self.check_test_reference_masks_run_analysis_only_after_explicit_apply, labelled=False)
+
+    def test_instance_annotations_apply_separately_from_reference_masks(self):
+        self.scenario(self.check_test_instance_annotations_apply_separately_from_reference_masks, labelled=False)
+
+    def test_workflow_lifecycle(self):
+        """53 related PipelineCanvasTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_canvas_contains_default_nodes_and_live_edges)
+        self.scenario(self.check_test_current_image_name_is_in_pane_and_list_selection_tracks_it)
+        self.scenario(self.check_test_switching_images_selects_the_lowest_empty_seed_id)
+        self.scenario(self.check_test_run_to_node_scopes_execution_to_enabled_ancestors)
+        self.scenario(self.check_test_analysis_cache_is_lru_bounded_and_gpu_jobs_are_serialized)
+        self.scenario(self.check_test_node_cards_support_typed_blueprint_controls_and_time_footers)
+        self.scenario(self.check_test_manual_overlap_is_allowed_and_auto_arrange_removes_it)
+        self.scenario(self.check_test_unused_node_toolbox_can_restore_circle_candidates)
+        self.scenario(self.check_test_main_window_exposes_circle_overlay_only_after_toolbox_restore)
+        self.scenario(self.check_test_selected_node_marks_direct_neighbours_purple)
+        self.scenario(self.check_test_canvas_disconnects_and_reconnects_authored_ports)
+        self.scenario(self.check_test_connection_paths_do_not_block_plain_left_drag_panning)
+        self.scenario(self.check_test_image_and_graph_zoom_controls_report_scale)
+        self.scenario(self.check_test_image_zoom_buttons_keep_view_center_and_wheel_keeps_pointer)
+        self.scenario(self.check_test_selected_overlay_shows_large_red_calculating_banner)
+        self.scenario(self.check_test_project_node_displays_live_project_image_and_annotation_information)
+        self.scenario(self.check_test_identification_stages_expose_methods_and_relevant_parameters)
+        self.scenario(self.check_test_layout_vessel_selector_is_first_pinned_and_non_mutating)
+        self.scenario(self.check_test_background_colour_gamut_renders_as_full_hsv_value_slice)
+        self.scenario(self.check_test_real_exterior_annulus_profile_retains_all_gamut_contours)
+        self.scenario(self.check_test_foreground_node_shows_its_probability_colour_gamut)
+        self.scenario(self.check_test_nearly_neutral_dark_mode_does_not_span_every_hsv_hue)
+        self.scenario(self.check_test_colour_gamut_does_not_project_neutral_membership_across_hues)
+        self.scenario(self.check_test_overlay_node_selection_updates_the_viewer_layer)
+        self.scenario(self.check_test_viewer_layer_selection_selects_its_owning_graph_node)
+        self.scenario(self.check_test_node_selection_shows_stage_overlay_sections_and_connections)
+        self.scenario(self.check_test_image_and_pipeline_share_a_split_workspace)
+        self.scenario(self.check_test_overlay_selectors_group_layers_and_stay_synchronised)
+        self.scenario(self.check_test_edge_oval_overlay_draws_only_retained_edge_hypotheses)
+        self.scenario(self.check_test_other_probability_overlays_are_registered_owned_and_synchronised)
+        self.scenario(self.check_test_probability_legends_state_low_and_high_display_values)
+        self.scenario(self.check_test_compact_toolbar_and_contextual_paint_panel)
+        self.scenario(self.check_test_background_node_can_be_disabled_without_disabling_foreground_noise)
+        self.scenario(self.check_test_combined_noise_node_preserves_independent_enable_switches)
+        self.scenario(self.check_test_settings_reset_button_restores_node_defaults)
+        self.scenario(self.check_test_expanded_node_settings_feed_runtime_settings_objects)
+        self.scenario(self.check_test_net_edge_subtraction_recomputes_thinned_net_ridge_dependents)
+        self.scenario(self.check_test_image_view_switches_between_analysis_layers)
+        self.scenario(self.check_test_selected_procedural_instance_reports_geometry_in_node_panel)
+        self.scenario(self.check_test_image_view_displays_full_size_gamut_without_changing_mask_size)
+        self.scenario(self.check_test_image_view_displays_every_reference_prototype_in_a_full_pane_collage)
+        self.scenario(self.check_test_image_view_edits_full_resolution_binary_reference_masks)
+        self.scenario(self.check_test_background_painting_shows_only_exact_perimeter_ring_source)
+        self.scenario(self.check_test_sparse_automatic_background_source_survives_large_view_downsampling)
+        self.scenario(self.check_test_image_view_edits_distinct_seed_instance_ids)
+        self.scenario(self.check_test_instance_brush_uses_live_stroke_without_rebuilding_analysis)
+        self.scenario(self.check_test_reference_brush_uses_live_stroke_and_redraws_once_on_release)
+        self.scenario(self.check_test_image_view_applies_assisted_instance_annotation_tools)
+        self.scenario(self.check_test_assisted_instance_tools_preview_on_hover_and_apply_on_click)
+        self.scenario(self.check_test_instance_annotation_panel_exposes_advanced_tool_options)
+        self.scenario(self.check_test_seed_trait_editor_is_species_specific_and_recomputes_in_isolation)
+        self.scenario(self.check_test_shape_review_cannot_enter_unsaveable_unknown_state)
+        self.scenario(self.check_test_reference_seed_scale_overlay_boldly_labels_actual_seed_above)
+
+    def test_validation_and_recovery(self):
+        """1 related PipelineCanvasTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_setting_change_invalidates_only_node_and_graph_dependents)
+
+    def check_test_calibration_nodes_render_references_and_metric_scale(self) -> None:
         from PySide6.QtCore import Qt
         from PySide6.QtWidgets import (
             QGraphicsEllipseItem,
@@ -4556,6 +4672,7 @@ class PipelineCanvasTests(unittest.TestCase):
         view.close()
 
         window = MainWindow(ROOT)
+        window.pipeline_documents.set_frozen(False)
         window._mark_analysis_complete(result)
         for node_id in (
             "ruler_detection",
@@ -4605,6 +4722,9 @@ class PipelineCanvasTests(unittest.TestCase):
             "Disabled by default while this branch is under review",
         )
         dispose_window(window)
+
+    def test_calibration_nodes_render_references_and_metric_scale(self):
+        self.scenario(self.check_test_calibration_nodes_render_references_and_metric_scale, labelled=False)
 
 
 if __name__ == "__main__":

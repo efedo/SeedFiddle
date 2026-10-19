@@ -8,9 +8,12 @@ laboratory work and the accepted peer-functionality direction as of 4 October 20
 
 - [Repository README](../README.md): setup, main workflow, compatibility, and checks.
 - [Operator guide](OPERATOR_GUIDE.md): day to day image, annotation, result, project,
-  training, evaluation and native reference-graph inspection workflow.
+  training, evaluation, frozen factory workflows, backend selection and pipeline/layout files.
 - [Architecture and contracts](ARCHITECTURE.md): ownership, caching, persistence,
   evaluation, and extension rules.
+- [Test commands](TESTING.md), [complete test inventory](testing/TEST_INVENTORY.md)
+  and [multi-pass test infrastructure audit](TEST_INFRASTRUCTURE_AUDIT.md): current
+  test functionality, historical costs and recommended consolidation.
 - [Implementation roadmap](../PLAN.md): completed baseline phases, accepted
   peer-functionality work and remaining validation milestones.
 - [Node catalogue](NODE_CATALOGUE.md): generated card, control, default, and

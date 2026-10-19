@@ -1,4 +1,6 @@
 """Compact control decisions checked against actual pinned sklearn methods."""
+
+from tests.functional_units import functional_units
 from dataclasses import asdict, replace
 from functools import lru_cache
 from hashlib import sha256
@@ -136,12 +138,13 @@ def _bits(value):
     return None if value is None else struct.pack('<d', value).hex()
 
 
+@functional_units
 class KMeansControlTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.request, cls.reference = _fixtures()
 
-    def test_preupdate_reassignment_timer_matches_actual_source_at_zero_and_threshold(self):
+    def check_test_preupdate_reassignment_timer_matches_actual_source_at_zero_and_threshold(self):
         for item, expected in zip(self.request['timers'], self.reference['timers']):
             control = native.MiniBatchControl(item['batch'], item['k'], n_since_last_reassign=item['since'])
             trace = []
@@ -150,7 +153,7 @@ class KMeansControlTests(unittest.TestCase):
                     control.n_since_last_reassign])
             self.assertEqual(trace, expected)
 
-    def test_every_convergence_branch_matches_source_binary64_state_and_return(self):
+    def check_test_every_convergence_branch_matches_source_binary64_state_and_return(self):
         for item, expected in zip(self.request['convergence'], self.reference['convergence']):
             control = native.MiniBatchControl(item['batch'], 2, tol=item['tol'],
                 max_no_improvement=item['limit'], ewa_inertia=item.get('ewa'),
@@ -162,12 +165,12 @@ class KMeansControlTests(unittest.TestCase):
                     self.assertEqual([stop, _bits(control.ewa_inertia), _bits(control.ewa_inertia_min),
                         control.no_improvement], state)
 
-    def test_default_numpy_tied_count_order_matches_pinned_source(self):
+    def check_test_default_numpy_tied_count_order_matches_pinned_source(self):
         for values, expected in zip(self.request['orders'], self.reference['orders']):
             with self.subTest(k=len(values), pattern=values[:8]):
                 self.assertEqual(np.argsort(np.asarray(values, dtype=np.float64)).tolist(), expected)
 
-    def test_strict_threshold_empty_selection_and_rng_state_match_actual_source_step(self):
+    def check_test_strict_threshold_empty_selection_and_rng_state_match_actual_source_step(self):
         for item, expected in zip(self.request['steps'], self.reference['steps']):
             counts = np.asarray(expected['post_counts'], dtype=np.float64)
             schedule = MiniBatchRandomSchedule(item['seed'])
@@ -187,7 +190,7 @@ class KMeansControlTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     native.low_count_reset_value(counts, plan)
 
-    def test_empty_selection_still_evaluates_minimum_without_random_draw(self):
+    def check_test_empty_selection_still_evaluates_minimum_without_random_draw(self):
         counts = np.array([10., 10.])
         schedule = MiniBatchRandomSchedule(1)
         identity = schedule.identity()
@@ -200,7 +203,7 @@ class KMeansControlTests(unittest.TestCase):
             self.assertEqual(native.low_count_reset_value(counts, plan), 10.)
             self.assertEqual(minimum.call_count, 1)
 
-    def test_invalid_control_state_and_calls_fail_before_state_changes(self):
+    def check_test_invalid_control_state_and_calls_fail_before_state_changes(self):
         for kwargs in (dict(batch_size=True), dict(batch_size=4097), dict(n_clusters=257),
                 dict(tol=float('nan')), dict(max_no_improvement=True),
                 dict(n_since_last_reassign=-1), dict(ewa_inertia=float('inf'))):
@@ -224,7 +227,7 @@ class KMeansControlTests(unittest.TestCase):
             control.random_reassign_due(np.array([0., 0.]))
         self.assertEqual(asdict(control), before)
 
-    def test_bad_snapshots_and_reassignment_parameters_do_not_advance_rng(self):
+    def check_test_bad_snapshots_and_reassignment_parameters_do_not_advance_rng(self):
         schedule = MiniBatchRandomSchedule(1)
         identity = schedule.identity()
         snapshots = [np.array([], dtype=np.float64), np.zeros(257), np.array([1.5]),
@@ -242,7 +245,7 @@ class KMeansControlTests(unittest.TestCase):
                     batch_rows=batch, reassignment_ratio=ratio, schedule=schedule)
             self.assertEqual(schedule.identity(), identity)
 
-    def test_count_snapshot_binding_rejects_changed_metadata_and_callback_mutation(self):
+    def check_test_count_snapshot_binding_rejects_changed_metadata_and_callback_mutation(self):
         counts = np.array([0., 10.])
         schedule = MiniBatchRandomSchedule(1)
         plan = native.select_low_count_reassignments(counts, batch_rows=7,
@@ -262,13 +265,28 @@ class KMeansControlTests(unittest.TestCase):
                 native.select_low_count_reassignments(counts, batch_rows=7,
                     reassignment_ratio=.01, schedule=schedule)
 
-    def test_loaded_source_binds_control_limits_and_pinned_source_identity(self):
+    def check_test_loaded_source_binds_control_limits_and_pinned_source_identity(self):
         from seedvision.benchmarking.native_recipe import _module_record
         self.assertTrue(_module_record(native)['loaded_code'])
         for name, value in (('MAX_CLUSTERS', 1), ('SKLEARN_KMEANS_SHA256', 'changed')):
             with self.subTest(constant=name), patch.object(native, name, value):
                 with self.assertRaises(ValueError):
                     _module_record(native)
+
+    def test_workflow_lifecycle(self):
+        """6 related KMeansControlTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_preupdate_reassignment_timer_matches_actual_source_at_zero_and_threshold)
+        self.scenario(self.check_test_every_convergence_branch_matches_source_binary64_state_and_return)
+        self.scenario(self.check_test_default_numpy_tied_count_order_matches_pinned_source)
+        self.scenario(self.check_test_strict_threshold_empty_selection_and_rng_state_match_actual_source_step)
+        self.scenario(self.check_test_empty_selection_still_evaluates_minimum_without_random_draw)
+        self.scenario(self.check_test_bad_snapshots_and_reassignment_parameters_do_not_advance_rng)
+
+    def test_validation_and_recovery(self):
+        """3 related KMeansControlTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_invalid_control_state_and_calls_fail_before_state_changes)
+        self.scenario(self.check_test_count_snapshot_binding_rejects_changed_metadata_and_callback_mutation)
+        self.scenario(self.check_test_loaded_source_binds_control_limits_and_pinned_source_identity)
 
 
 @unittest.skipUnless(torch.cuda.is_available(), 'CUDA required')

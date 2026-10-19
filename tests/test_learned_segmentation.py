@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.functional_units import functional_units
+
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -45,8 +47,9 @@ def _logit(values):
     return np.log(values / (1.0 - values)).astype(np.float32)
 
 
+@functional_units
 class LearnedTargetTests(unittest.TestCase):
-    def test_dense_targets_keep_missing_pattern_annotations_unknown(self) -> None:
+    def check_test_dense_targets_keep_missing_pattern_annotations_unknown(self) -> None:
         labels = _scene()
         targets = build_dense_targets(labels)
         self.assertEqual(targets.interior.shape, labels.shape)
@@ -94,7 +97,7 @@ class LearnedTargetTests(unittest.TestCase):
             1.0,
         )
 
-    def test_stardist_targets_have_radial_geometry_at_seed_centres(self) -> None:
+    def check_test_stardist_targets_have_radial_geometry_at_seed_centres(self) -> None:
         labels = np.zeros((65, 65), dtype=np.int32)
         cv2.circle(labels, (32, 32), 15, 1, -1)
         targets = build_stardist_targets(labels, ray_count=16, maximum_distance=32)
@@ -103,10 +106,19 @@ class LearnedTargetTests(unittest.TestCase):
         self.assertLess(float(np.max(np.abs(centre_distances - 15.5))), 1.1)
         self.assertGreater(float(targets.object_probability[32, 32]), 0.99)
 
-    def test_quarter_turn_maps_new_rays_to_correct_old_directions(self) -> None:
+    def check_test_quarter_turn_maps_new_rays_to_correct_old_directions(self) -> None:
         mapping = rotation_ray_mapping(16, 1)
         self.assertEqual(int(mapping[0]), 4)
         self.assertEqual(int(mapping[12]), 0)
+
+    def test_validation_and_recovery(self):
+        """1 related LearnedTargetTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_dense_targets_keep_missing_pattern_annotations_unknown)
+
+    def test_workflow_lifecycle(self):
+        """2 related LearnedTargetTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_stardist_targets_have_radial_geometry_at_seed_centres)
+        self.scenario(self.check_test_quarter_turn_maps_new_rays_to_correct_old_directions)
 
 
 class LearningDataTests(unittest.TestCase):
@@ -227,8 +239,9 @@ class LearnedModelTests(unittest.TestCase):
         star_total.backward()
 
 
+@functional_units
 class LearnedDecoderTests(unittest.TestCase):
-    def test_pattern_aware_watershed_decodes_ideal_touching_instances(self) -> None:
+    def check_test_pattern_aware_watershed_decodes_ideal_touching_instances(self) -> None:
         import torch
 
         labels = _scene()
@@ -262,7 +275,7 @@ class LearnedDecoderTests(unittest.TestCase):
         self.assertEqual(metrics.true_positives, 3)
         self.assertGreater(metrics.f1, 0.99)
 
-    def test_stardist_decodes_ideal_radial_targets(self) -> None:
+    def check_test_stardist_decodes_ideal_radial_targets(self) -> None:
         import torch
 
         labels = _scene()
@@ -287,7 +300,7 @@ class LearnedDecoderTests(unittest.TestCase):
         self.assertEqual(metrics.true_positives, 3)
         self.assertGreater(metrics.mean_matched_iou, 0.85)
 
-    def test_hybrid_rejects_stardist_candidates_outside_unet_interior(self) -> None:
+    def check_test_hybrid_rejects_stardist_candidates_outside_unet_interior(self) -> None:
         import torch
 
         labels = _scene()
@@ -334,7 +347,7 @@ class LearnedDecoderTests(unittest.TestCase):
         self.assertEqual(result.labels[8, 8], 0)
         self.assertGreater(evaluate_instances(labels, result.labels).f1, 0.99)
 
-    def test_instance_metrics_report_perfect_prediction(self) -> None:
+    def check_test_instance_metrics_report_perfect_prediction(self) -> None:
         labels = _scene()
         metrics = evaluate_instances(labels, labels, boundary_tolerance_px=1.0)
         self.assertEqual(metrics.true_instances, 3)
@@ -343,13 +356,24 @@ class LearnedDecoderTests(unittest.TestCase):
         self.assertAlmostEqual(metrics.boundary_f1, 1.0)
         self.assertEqual(metrics.count_error, 0)
 
-    def test_binary_probability_metrics_are_perfect_for_exact_scores(self) -> None:
+    def check_test_binary_probability_metrics_are_perfect_for_exact_scores(self) -> None:
         truth = np.asarray([[0, 0, 1, 1]], dtype=np.uint8)
         probability = np.asarray([[0.01, 0.1, 0.9, 0.99]], dtype=np.float32)
         metrics = evaluate_binary_probability(probability, truth)
         self.assertAlmostEqual(metrics.f1, 1.0)
         self.assertAlmostEqual(metrics.roc_auc, 1.0)
         self.assertAlmostEqual(metrics.average_precision, 1.0)
+
+    def test_workflow_lifecycle(self):
+        """4 related LearnedDecoderTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_pattern_aware_watershed_decodes_ideal_touching_instances)
+        self.scenario(self.check_test_stardist_decodes_ideal_radial_targets)
+        self.scenario(self.check_test_instance_metrics_report_perfect_prediction)
+        self.scenario(self.check_test_binary_probability_metrics_are_perfect_for_exact_scores)
+
+    def test_validation_and_recovery(self):
+        """1 related LearnedDecoderTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_hybrid_rejects_stardist_candidates_outside_unet_interior)
 
 
 if __name__ == "__main__":

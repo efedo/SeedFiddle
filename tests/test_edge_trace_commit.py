@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.functional_units import functional_units
+
 import os
 import tempfile
 import unittest
@@ -8,6 +10,7 @@ from pathlib import Path
 import numpy as np
 
 
+@functional_units
 class EdgeTraceCommitTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -44,7 +47,7 @@ class EdgeTraceCommitTests(unittest.TestCase):
         view._instance_preview_endpoint = QPointF(endpoint)
         view._instance_preview_geometry = np.asarray(geometry, dtype=np.int32)
 
-    def test_open_trace_is_exactly_one_pixel_independent_of_brush_radius(self) -> None:
+    def check_test_open_trace_is_exactly_one_pixel_independent_of_brush_radius(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             view = self._image_view(Path(temporary_directory))
             view.set_active_instance_id(4)
@@ -62,7 +65,7 @@ class EdgeTraceCommitTests(unittest.TestCase):
             self.assertFalse(np.any(labels[:30] == 4))
             self.assertFalse(np.any(labels[31:] == 4))
 
-    def test_closing_trace_fills_only_inward_and_preserves_other_ids(self) -> None:
+    def check_test_closing_trace_fills_only_inward_and_preserves_other_ids(self) -> None:
         from PySide6.QtCore import QPointF
 
         from seedvision.annotation import EdgeTraceOptions
@@ -112,7 +115,7 @@ class EdgeTraceCommitTests(unittest.TestCase):
             self.assertIsNone(view._instance_trace_anchor)
             self.assertIsNone(view._instance_trace_geometry)
 
-    def test_closed_fill_can_be_disabled_and_trace_session_resets(self) -> None:
+    def check_test_closed_fill_can_be_disabled_and_trace_session_resets(self) -> None:
         from PySide6.QtCore import QPointF
 
         from seedvision.annotation import EdgeTraceOptions
@@ -154,7 +157,7 @@ class EdgeTraceCommitTests(unittest.TestCase):
             self.assertIsNone(view._instance_trace_anchor)
             self.assertIsNone(view._instance_trace_geometry)
 
-    def test_fill_closed_loops_checkbox_defaults_on_and_updates_options(self) -> None:
+    def check_test_fill_closed_loops_checkbox_defaults_on_and_updates_options(self) -> None:
         from seedvision.annotation import EdgeTraceOptions
         from seedvision.ui.main_window import MainWindow
 
@@ -170,6 +173,13 @@ class EdgeTraceCommitTests(unittest.TestCase):
             self.assertFalse(window.image_view._edge_trace_options.fill_closed_loops)
             window.edge_trace_fill_closed_checkbox.setChecked(True)
             self.assertTrue(window.image_view._edge_trace_options.fill_closed_loops)
+
+    def test_workflow_lifecycle(self):
+        """4 related EdgeTraceCommitTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_open_trace_is_exactly_one_pixel_independent_of_brush_radius)
+        self.scenario(self.check_test_closing_trace_fills_only_inward_and_preserves_other_ids)
+        self.scenario(self.check_test_closed_fill_can_be_disabled_and_trace_session_resets)
+        self.scenario(self.check_test_fill_closed_loops_checkbox_defaults_on_and_updates_options)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.functional_units import functional_units
+
 import json
 import subprocess
 import unittest
@@ -62,6 +64,7 @@ def cases():
 
 
 @unittest.skipUnless(torch.cuda.is_available(), 'CUDA required')
+@functional_units
 class KMeansGaussianPreprocessTests(unittest.TestCase):
     def reference(self, items):
         requests = [dict(shape=list(image.shape), pixels=image.reshape(-1).tolist(), patch_size=p)
@@ -73,7 +76,7 @@ class KMeansGaussianPreprocessTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return [np.asarray(value, dtype=np.uint16) for value in json.loads(result.stdout)]
 
-    def test_odd_even_gray_rgb_and_degenerate_tile_halos_match_public_patch_extract(self):
+    def check_test_odd_even_gray_rgb_and_degenerate_tile_halos_match_public_patch_extract(self):
         items = cases()
         references = self.reference(items)
         for (image, p, tile), expected in zip(items, references):
@@ -87,7 +90,7 @@ class KMeansGaussianPreprocessTests(unittest.TestCase):
                 self.assertEqual(actual.dtype, torch.uint16)
                 self.assertEqual(actual.device.type, 'cuda')
 
-    def test_custom_stream_tile_repartition_and_half_boundary_withholding(self):
+    def check_test_custom_stream_tile_repartition_and_half_boundary_withholding(self):
         image = np.empty((17, 23, 3), dtype=np.uint8)
         image[:] = (33, 127, 254)
         source = torch.as_tensor(image, device='cuda')
@@ -106,7 +109,7 @@ class KMeansGaussianPreprocessTests(unittest.TestCase):
                 native.gaussian_patch_raster(torch.full((4, 5), 91, dtype=torch.uint8,
                                                         device='cuda'), 1)
 
-    def test_cancel_before_allocation_mid_raster_and_final_poll_returns_no_output(self):
+    def check_test_cancel_before_allocation_mid_raster_and_final_poll_returns_no_output(self):
         source = torch.arange(12 * 13, dtype=torch.uint8, device='cuda').reshape(12, 13)
         before, version = source.clone(), source._version
         with patch.object(native.torch, 'empty', side_effect=AssertionError('allocated before cancel')):
@@ -137,7 +140,7 @@ class KMeansGaussianPreprocessTests(unittest.TestCase):
         self.assertEqual(source._version, version)
         torch.testing.assert_close(source, before)
 
-    def test_image_padded_output_work_and_scratch_caps_precede_allocation(self):
+    def check_test_image_padded_output_work_and_scratch_caps_precede_allocation(self):
         source = torch.zeros((2, 3, 3), dtype=torch.uint8, device='cuda')
         for name in ('MAX_IMAGE_PIXELS', 'MAX_PADDED_PIXELS', 'MAX_OUTPUT_BYTES',
                      'MAX_FILTER_WORK', 'MAX_SCRATCH_BYTES'):
@@ -146,7 +149,7 @@ class KMeansGaussianPreprocessTests(unittest.TestCase):
                 with self.assertRaises(native.KMeansPreprocessError):
                     native.gaussian_patch_raster(source, 3)
 
-    def test_actual_maximum_tile_scratch_stays_bounded_on_a_multitile_raster(self):
+    def check_test_actual_maximum_tile_scratch_stays_bounded_on_a_multitile_raster(self):
         image = torch.arange(520 * 517 * 3, dtype=torch.int64, device='cuda').remainder(256).to(
             torch.uint8).reshape(520, 517, 3)
         base = torch.cuda.memory_allocated(image.device)
@@ -159,7 +162,7 @@ class KMeansGaussianPreprocessTests(unittest.TestCase):
         self.assertLessEqual(native._preflight_scratch_bytes(3, native.MAX_TILE_SIDE),
                              native.MAX_SCRATCH_BYTES)
 
-    def test_tiny_tiles_charge_repeated_vertical_halo_work_before_allocation(self):
+    def check_test_tiny_tiles_charge_repeated_vertical_halo_work_before_allocation(self):
         image = torch.zeros((2, 3), dtype=torch.uint8, device='cuda')
         with patch.object(native, 'MAX_FILTER_WORK', 5000):
             native.gaussian_patch_raster(image, 1, tile_side=256)
@@ -167,7 +170,7 @@ class KMeansGaussianPreprocessTests(unittest.TestCase):
                 with self.assertRaises(native.KMeansPreprocessError):
                     native.gaussian_patch_raster(image, 1, tile_side=1)
 
-    def test_invalid_types_layout_and_parameters_fail_before_work(self):
+    def check_test_invalid_types_layout_and_parameters_fail_before_work(self):
         source = torch.zeros((4, 5), dtype=torch.uint8, device='cuda')
         with self.assertRaises(TypeError):
             native.gaussian_patch_raster(source, 3, cancel=object())
@@ -185,6 +188,19 @@ class KMeansGaussianPreprocessTests(unittest.TestCase):
         for tile in (0, native.MAX_TILE_SIDE + 1, True, 1.5):
             with self.assertRaises(native.KMeansPreprocessError):
                 native.gaussian_patch_raster(source, 3, tile_side=tile)
+
+    def test_workflow_lifecycle(self):
+        """4 related KMeansGaussianPreprocessTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_odd_even_gray_rgb_and_degenerate_tile_halos_match_public_patch_extract)
+        self.scenario(self.check_test_image_padded_output_work_and_scratch_caps_precede_allocation)
+        self.scenario(self.check_test_actual_maximum_tile_scratch_stays_bounded_on_a_multitile_raster)
+        self.scenario(self.check_test_tiny_tiles_charge_repeated_vertical_halo_work_before_allocation)
+
+    def test_validation_and_recovery(self):
+        """3 related KMeansGaussianPreprocessTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_custom_stream_tile_repartition_and_half_boundary_withholding)
+        self.scenario(self.check_test_cancel_before_allocation_mid_raster_and_final_poll_returns_no_output)
+        self.scenario(self.check_test_invalid_types_layout_and_parameters_fail_before_work)
 
 
 if __name__ == '__main__':

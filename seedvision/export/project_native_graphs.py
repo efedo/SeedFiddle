@@ -23,6 +23,98 @@ from seedvision.persistence.method_qc_history import retain_method_qc
 from seedvision.benchmarking.native_correction_recipe import NativeCorrectionCancelled
 
 
+def export_project_node_instances(instances, image_path, directory, *, expected_source_sha256,
+                                 project_root=None, reference_model_assets=(), correction_bindings=(),
+                                 project_image_record=None, default_context=None, cancel=None):
+    """Publish independent catalogue calculations with their own caches/scopes.
+
+    This companion ledger preserves repeated instances even when their canonical
+    recipe identities match. Canonical recipe acceptance and its ledger remain
+    unchanged. A failed calculation gets an explicit row, never a passing archive.
+    """
+    from seedvision.pipeline.catalogue_nodes import validate_node_instances, execute_instance
+    from seedvision.timing import AnalysisCancelled
+    instances = validate_node_instances(instances)
+    if not instances:
+        return None
+    destination = Path(directory).absolute()
+    if destination.exists():
+        raise FileExistsError(f'Node instance destination already exists: {destination}')
+    if file_sha256(image_path) != expected_source_sha256:
+        raise ValueError('Source changed before independent catalogue execution.')
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix='.node-instances-', suffix='.incomplete', dir=destination.parent))
+    rows = []
+    try:
+        for index, instance in enumerate(instances):
+            if cancel is not None and cancel():
+                raise NativeRecipeCancelled('Catalogue instance batch cancelled.')
+            if file_sha256(image_path) != expected_source_sha256:
+                raise ValueError('Source changed during independent catalogue execution.')
+            row = {'instance_id': instance.instance_id, 'catalogue_key': instance.catalogue_key,
+                   'target_node': instance.target_node, 'report': None, 'status': 'not_run', 'reason': ''}
+            cache = PipelineAnalysisCache()
+            result = prepared = None
+            try:
+                if instance.workflow is not None:
+                    recipe = instance.workflow.recipe
+                    if recipe.recipe_id == correction_assets.RECIPE_ID:
+                        key = None if project_image_record is None else (
+                            project_image_record.identifier, recipe.recipe_id, recipe.recipe_version,
+                            recipe.identity.recipe_sha256, instance.instance_id)
+                        binding = next((item for item in correction_bindings if item.key == key), None)
+                        if binding is None or project_root is None:
+                            raise ValueError('No verified per-image correction inputs are saved for this instance.')
+                        from seedvision.pipeline.catalogue_nodes import execute_bound_correction
+                        result, prepared = execute_bound_correction(instance, project_root, binding,
+                            project_image_record, image_path, cache=cache, cancel=cancel)
+                    else:
+                        from seedvision.persistence.reference_models import model_asset_paths
+                        paths = {} if project_root is None else model_asset_paths(project_root, recipe, reference_model_assets)
+                        result = execute_instance(instance, image_path, cache=cache, cancel=cancel, model_assets=paths)
+                    if result.source_sha256 != expected_source_sha256:
+                        raise ValueError('Node instance result source differs from the project image.')
+                    report = export_native_recipe_result(staging / f'instance-{index:03d}', recipe, result, cancel=cancel)
+                    target = result.node(instance.target_node)
+                    row['status'], row['reason'] = target.status, target.reason
+                else:
+                    from seedvision.export.results import result_report, export_report
+                    from seedvision.pipeline.catalogue_nodes import default_graph, instance_nodes
+                    from seedvision.persistence.analysis_settings import analysis_settings_profile_to_payload
+                    result = execute_instance(instance, image_path, cache=cache, cancel=cancel,
+                                              default_context=default_context)
+                    graph = default_graph(instance)
+                    report_data = result_report(result, enabled={identifier for identifier in instance_nodes(instance)
+                                                                if graph.node(identifier).enabled},
+                        settings=analysis_settings_profile_to_payload(instance.default_settings),
+                        execution_provenance={'route': 'catalogue_node_batch', 'instance_id': instance.instance_id,
+                                              'target_node': instance.target_node})
+                    folder = export_report(staging / f'instance-{index:03d}', result, report_data)
+                    report = folder / 'results.json'
+                    row['status'] = report_data['state']
+                row['report'] = report.relative_to(staging).as_posix()
+            except (NativeRecipeCancelled, NativeCorrectionCancelled, AnalysisCancelled):
+                raise
+            except Exception as error:
+                row.update(status='failed', report=None, reason=f'{type(error).__name__}: {error}'[:4096])
+            finally:
+                result = prepared = None
+                cache.values.clear()
+            rows.append(row)
+        if cancel is not None and cancel():
+            raise NativeRecipeCancelled('Catalogue instance batch cancelled before publication.')
+        if file_sha256(image_path) != expected_source_sha256:
+            raise ValueError('Source changed before independent catalogue publication.')
+        payload = {'format': 'seedfiddle.catalogue-node-instances', 'version': 1,
+                   'source_sha256': expected_source_sha256, 'instances': rows, 'scientifically_validated': False}
+        (staging / 'node-instances.json').write_bytes(_json_bytes(payload))
+        staging.rename(destination)
+        return destination / 'node-instances.json'
+    except BaseException:
+        _remove_owned_directory(staging, destination.parent)
+        raise
+
+
 def _record_row_attempt(row, request, *, state, phase, error=None, executor=None, result=None):
     try:
         quality = attempts.recipe_attempt_qc(request, state=state, phase=phase, detail=row['reason'],
@@ -71,7 +163,8 @@ def _selected_inputs(recipe, image_path, model_paths):
 def export_project_native_graphs(attachments, image_path, directory, *,
                                 expected_source_sha256, cache=None, cancel=None,
                                 project_root=None, reference_model_assets=(), native_recipes=(),
-                                correction_bindings=(), project_image_record=None, project_path=None):
+                                correction_bindings=(), project_image_record=None, project_path=None,
+                                pipeline_workflow=None):
     """Run exact saved native recipes and atomically publish their execution log.
 
     Original/reference graphs remain explicitly unavailable here. They require
@@ -80,9 +173,14 @@ def export_project_native_graphs(attachments, image_path, directory, *,
     """
     attachments = validate_reference_graphs(attachments)
     native_recipes = validate_native_recipes(native_recipes)
+    if pipeline_workflow is not None:
+        from seedvision.pipeline.workflows import PipelineWorkflow, validate_workflow
+        if not isinstance(pipeline_workflow, PipelineWorkflow):
+            raise TypeError('pipeline_workflow must be a validated PipelineWorkflow.')
+        validate_workflow(pipeline_workflow)
     correction_bindings = correction_assets.validate_correction_binding_records(correction_bindings)
     bindings_by_key = {binding.key: binding for binding in correction_bindings}
-    if not attachments and not native_recipes:
+    if not attachments and not native_recipes and pipeline_workflow is None:
         return None
     if cache is None:
         cache = PipelineAnalysisCache()
@@ -90,10 +188,12 @@ def export_project_native_graphs(attachments, image_path, directory, *,
         raise TypeError('cache must be a PipelineAnalysisCache.')
     if project_path is not None and project_root is None:
         raise ValueError('Project QC ownership requires the explicitly selected workspace root.')
-    entries = tuple((attachment.recipe, attachment) for attachment in attachments)
-    entries += tuple((recipe, None) for recipe in native_recipes)
+    entries = tuple((attachment.recipe, attachment, None) for attachment in attachments)
+    entries += tuple((recipe, None, None) for recipe in native_recipes)
+    if pipeline_workflow is not None:
+        entries += ((pipeline_workflow.recipe, None, pipeline_workflow),)
     destination = Path(directory).absolute()
-    batch_request = batch_qc.capture_recipe_batch_request(tuple(recipe for recipe,_ in entries),
+    batch_request = batch_qc.capture_recipe_batch_request(tuple(recipe for recipe,_,_ in entries),
         image_path, destination, expected_source_sha256,
         None if project_image_record is None else project_image_record.identifier)
     bounded_source = None
@@ -103,7 +203,8 @@ def export_project_native_graphs(attachments, image_path, directory, *,
                 continue
             try:
                 correction_assets.validate_correction_bindings((binding,), (project_image_record,),
-                                                                attachments, native_recipes)
+                                                                attachments, native_recipes,
+                                                                pipeline_workflow=pipeline_workflow)
                 source = next(asset for asset in binding.inputs if asset.role == 'source_rgb')
                 if source.source_sha256 != expected_source_sha256:
                     continue
@@ -130,14 +231,14 @@ def export_project_native_graphs(attachments, image_path, directory, *,
         check_source()
         destination.parent.mkdir(parents=True, exist_ok=True)
         staging = Path(tempfile.mkdtemp(prefix='.native-graphs-', suffix='.incomplete', dir=destination.parent))
-        for index, (recipe, attachment) in enumerate(entries):
+        for index, (recipe, attachment, workflow) in enumerate(entries):
             phase, current_row_index = 'between_rows', None
             if cancel is not None and cancel():
                 raise NativeRecipeCancelled('Project native graph execution cancelled.')
             phase, current_row_index = 'recipe_row', index
-            row = {'kind': 'historical_graph' if attachment is not None else 'working_recipe',
+            row = {'kind': 'pipeline_workflow' if workflow is not None else 'historical_graph' if attachment is not None else 'working_recipe',
                 'attachment_index': index if attachment is not None else None,
-                'working_recipe_index': index-len(attachments) if attachment is None else None,
+                'working_recipe_index': index-len(attachments) if attachment is None and workflow is None else None,
                 'recipe_identity': recipe.identity.to_dict(),
                 'historical_stage_runs': [record.to_dict() for record in attachment.stage_runs] if attachment else [],
                 'historical_checkpoint_data': attachment.checkpoint_data_status if attachment else 'not_recorded',
@@ -145,9 +246,11 @@ def export_project_native_graphs(attachments, image_path, directory, *,
                 'display': {'bundle_cables': attachment.bundle_cables,
                             'route_around_nodes': attachment.route_around_nodes} if attachment else None,
                 'report': None, 'nodes': [], 'reason': '', 'correction_binding': None, 'method_qc':None}
+            if workflow is not None:
+                row['pipeline_workflow'] = workflow.to_dict()
             request = attempts.capture_recipe_attempt_request(recipe, {'source_image':image_path})
             from seedvision.benchmarking.native_smpts_recipe import is_executable_paper_recipe
-            if recipe.provenance.mode is not RecipeProvenanceMode.NATIVE_COMPATIBLE and not is_executable_paper_recipe(recipe):
+            if workflow is None and recipe.provenance.mode is not RecipeProvenanceMode.NATIVE_COMPATIBLE and not is_executable_paper_recipe(recipe):
                 row.update(status='unavailable', reason='Saved graph requires its declared original/reference executor.')
                 _record_row_attempt(row, request, state='unavailable', phase='batch_selection')
                 rows.append(row)
@@ -182,7 +285,7 @@ def export_project_native_graphs(attachments, image_path, directory, *,
                     from seedvision.benchmarking.project_correction import run_project_correction
                     row_phase, executor = 'correction_path', attempts.PROJECT_CORRECTION_EXECUTOR
                     result, correction_prepared = run_project_correction(recipe, project_root, binding,
-                        project_image_record, image_path, cache=cache, previous=correction_prepared, cancel=cancel)
+                        project_image_record, image_path, cache=cache, previous=correction_prepared, cancel=cancel, working_workflow=workflow)
                 else:
                     # Prepared correction inputs are outside a generic graph's
                     # cache budget. Release them before any other analysis.
@@ -190,7 +293,11 @@ def export_project_native_graphs(attachments, image_path, directory, *,
                     selected_inputs = _selected_inputs(recipe, image_path, options.get('model_asset_paths',{}))
                     request = attempts.capture_recipe_attempt_request(recipe, selected_inputs)
                     row_phase, executor = 'native_path', attempts.NATIVE_PATH_EXECUTOR
-                    result = run_native_recipe_path(recipe, image_path, cache=cache, cancel=cancel, **options)
+                    if workflow is None:
+                        result = run_native_recipe_path(recipe, image_path, cache=cache, cancel=cancel, **options)
+                    else:
+                        from seedvision.pipeline.workflows import run_workflow_path
+                        result = run_workflow_path(workflow, image_path, cache=cache, cancel=cancel, **options)
                 row_phase = 'result_validation'
                 if result.source_sha256 != expected_source_sha256:
                     raise ValueError('Native result source differs from the saved project image.')
@@ -249,7 +356,8 @@ def export_project_native_graphs(attachments, image_path, directory, *,
         # transports without callbacks before the companion transaction commits.
         for binding in executed_corrections:
             correction_assets.verify_correction_bindings(project_root, (binding,), (project_image_record,),
-                                                          attachments, native_recipes)
+                                                          attachments, native_recipes,
+                                                          pipeline_workflow=pipeline_workflow)
         if project_path is not None:
             _retain_rows(rows, project_root, project_path)
         staging.rename(destination)

@@ -1,3 +1,5 @@
+
+from tests.functional_units import functional_units
 import json
 import math
 import os
@@ -71,6 +73,7 @@ class ColorStatisticsTests(unittest.TestCase):
 
 
 @unittest.skipUnless(torch.cuda.is_available(), 'CUDA is required for colour analysis')
+@functional_units
 class PlantCVColorParityTests(unittest.TestCase):
     def reference(self, image, mask, n_labels, colorspaces, label='sample'):
         self.assertTrue(_REFERENCE.is_file(), 'Pinned PlantCV reference is required.')
@@ -106,7 +109,7 @@ class PlantCVColorParityTests(unittest.TestCase):
                     tolerance = 1e-5 if item.variable == 'hue_circular_std' else 1e-10
                     self.assertAlmostEqual(item.value, observed['value'], delta=tolerance, msg=str(key))
 
-    def test_all_histograms_statistics_bins_and_labels_match_public_call(self):
+    def check_test_all_histograms_statistics_bins_and_labels_match_public_call(self):
         rng = np.random.default_rng(1707)
         image = rng.integers(0, 256, (9, 11, 3), dtype=np.uint8)
         image[2, 2], image[3, 3] = (51, 51, 51), (0, 0, 0)
@@ -118,7 +121,7 @@ class PlantCVColorParityTests(unittest.TestCase):
         self.compare(result, reference)
         self.assertEqual([item.pixel_count for item in result.labels], [70, 18])
 
-    def test_binary_remap_and_empty_rgb_lab_hsv_states_match_public_call(self):
+    def check_test_binary_remap_and_empty_rgb_lab_hsv_states_match_public_call(self):
         image = np.zeros((3, 4, 3), dtype=np.uint8)
         image[0, 0] = (4, 80, 190)
         mask = np.zeros((3, 4), dtype=np.uint8)
@@ -141,7 +144,7 @@ class PlantCVColorParityTests(unittest.TestCase):
             self.assertEqual(result.failed_sample, 'empty_1')
             self.assertEqual(result.labels, ())
 
-    def test_missing_label_failure_returns_no_partial_complete_bundle(self):
+    def check_test_missing_label_failure_returns_no_partial_complete_bundle(self):
         image = np.full((3, 4, 3), (12, 90, 160), dtype=np.uint8)
         mask = np.ones((3, 4), dtype=np.uint8)
         reference = self.reference(image, mask, 2, 'all')
@@ -152,7 +155,7 @@ class PlantCVColorParityTests(unittest.TestCase):
         self.assertEqual(result.failed_sample, 'sample_2')
         self.assertEqual(result.labels, ())
 
-    def test_two_unique_nonzero_remap_discards_other_value_and_singleton_255_does_not_remap(self):
+    def check_test_two_unique_nonzero_remap_discards_other_value_and_singleton_255_does_not_remap(self):
         image = np.full((3, 4, 3), (80, 120, 160), dtype=np.uint8)
         for values in ((2, 255), (255, 255)):
             mask = np.full((3, 4), values[0], dtype=np.uint8)
@@ -163,7 +166,7 @@ class PlantCVColorParityTests(unittest.TestCase):
             self.compare(result, reference)
             self.assertEqual([item.pixel_count for item in result.labels], [1, 0] if values[0] == 2 else [0, 0])
 
-    def test_tiling_cancellation_and_input_resource_validation(self):
+    def check_test_tiling_cancellation_and_input_resource_validation(self):
         from seedvision.cuda import plantcv_color as module
         image = torch.arange(300, device='cuda').remainder(256).to(torch.uint8).reshape(10, 10, 3)
         mask = torch.ones((10, 10), dtype=torch.uint8, device='cuda')
@@ -186,7 +189,7 @@ class PlantCVColorParityTests(unittest.TestCase):
         with self.assertRaises(ColorAnalysisError):
             analyze_color_cuda(image, mask, n_labels=2, label=['one'])
 
-    def test_int32_instance_ids_and_negative_binary_remap_match_public_call(self):
+    def check_test_int32_instance_ids_and_negative_binary_remap_match_public_call(self):
         image = np.full((3, 4, 3), (80, 120, 160), dtype=np.uint8)
         mask = np.ones((3, 4), dtype=np.int32)
         mask[0, :3] = [2, 65537, -7]
@@ -200,6 +203,18 @@ class PlantCVColorParityTests(unittest.TestCase):
             n_labels=1, colorspaces='all', label='sample')
         self.compare(result, self.reference(image, mask, 1, 'all'))
         self.assertEqual(result.labels[0].pixel_count, 1)
+
+    def test_workflow_lifecycle(self):
+        """4 related PlantCVColorParityTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_all_histograms_statistics_bins_and_labels_match_public_call)
+        self.scenario(self.check_test_binary_remap_and_empty_rgb_lab_hsv_states_match_public_call)
+        self.scenario(self.check_test_two_unique_nonzero_remap_discards_other_value_and_singleton_255_does_not_remap)
+        self.scenario(self.check_test_int32_instance_ids_and_negative_binary_remap_match_public_call)
+
+    def test_validation_and_recovery(self):
+        """2 related PlantCVColorParityTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_missing_label_failure_returns_no_partial_complete_bundle)
+        self.scenario(self.check_test_tiling_cancellation_and_input_resource_validation)
 
 
 if __name__ == '__main__':

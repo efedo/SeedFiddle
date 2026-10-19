@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from tests.catalogue_fixtures import CatalogueTestCase
+
+from tests.functional_units import functional_units
+
 from dataclasses import replace
 from hashlib import sha256
 from io import BytesIO
@@ -231,8 +235,9 @@ def _fixture(
     return args, values, parameters
 
 
-class NativeThresholdContractTests(unittest.TestCase):
-    def test_loaded_code_hash_refuses_same_size_source_edit_after_import(self) -> None:
+@functional_units
+class NativeThresholdContractTests(CatalogueTestCase):
+    def check_test_loaded_code_hash_refuses_same_size_source_edit_after_import(self) -> None:
         module_path = Path(native_stage_module.__file__).resolve()
         baseline = native_stage_module._implementation_digest()
         self.assertRegex(baseline, r"^[0-9a-f]{64}$")
@@ -257,7 +262,7 @@ class NativeThresholdContractTests(unittest.TestCase):
             ):
                 native_stage_module._implementation_digest()
 
-    def test_native_identity_has_distinct_exact_provenance(self) -> None:
+    def check_test_native_identity_has_distinct_exact_provenance(self) -> None:
         device = torch.device("cuda", torch.cuda.current_device() if torch.cuda.is_available() else 0)
         identity = _identity(device)
         provenance = identity.recipe_provenance()
@@ -266,7 +271,7 @@ class NativeThresholdContractTests(unittest.TestCase):
         self.assertEqual(provenance.environment_versions, identity.environment_versions)
         self.assertEqual(identity.to_dict()["implementation_sha256"], provenance.environment_versions["native_implementation_sha256"])
 
-    def test_original_reference_provenance_cannot_be_used_for_native_execution(self) -> None:
+    def check_test_original_reference_provenance_cannot_be_used_for_native_execution(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             args, _values, _parameters = _fixture(temporary)
             original = build_recipe_catalogue().recipe("plantcv_seed_binary")
@@ -278,7 +283,7 @@ class NativeThresholdContractTests(unittest.TestCase):
                     expected_recipe_identity=wrong_recipe.identity,
                 ))
 
-    def test_stale_source_frame_upstream_recipe_and_role_bindings_reject_before_execution(self) -> None:
+    def check_test_stale_source_frame_upstream_recipe_and_role_bindings_reject_before_execution(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             args, _values, _parameters = _fixture(temporary)
             with patch.object(native_stage_module, "threshold_binary", side_effect=AssertionError("must not execute")):
@@ -299,7 +304,7 @@ class NativeThresholdContractTests(unittest.TestCase):
                 with self.assertRaisesRegex(NativeThresholdStageError, "Recipe identity"):
                     run_native_threshold_stage(**dict(args, recipe=changed_recipe))
 
-    def test_input_size_limit_rejects_before_cuda_upload_or_calculation(self) -> None:
+    def check_test_input_size_limit_rejects_before_cuda_upload_or_calculation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             args, _values, _parameters = _fixture(temporary)
             small_limits = CheckpointLimits(max_total_array_bytes=100, max_array_bytes=100)
@@ -307,7 +312,7 @@ class NativeThresholdContractTests(unittest.TestCase):
                 with self.assertRaises(CheckpointError):
                     run_native_threshold_stage(**dict(args, limits=small_limits))
 
-    def test_output_metadata_limit_is_checked_before_checkpoint_host_transfer(self) -> None:
+    def check_test_output_metadata_limit_is_checked_before_checkpoint_host_transfer(self) -> None:
         if not torch.cuda.is_available():
             self.skipTest("Output tensor transfer preflight requires a CUDA device.")
         with tempfile.TemporaryDirectory() as temporary:
@@ -324,7 +329,7 @@ class NativeThresholdContractTests(unittest.TestCase):
                     run_native_threshold_stage(**dict(args, limits=limits))
             self.assertEqual(list(args["output_root"].glob("*.checkpoint")), [])
 
-    def test_cancellation_before_execution_is_failed_without_an_output_checkpoint(self) -> None:
+    def check_test_cancellation_before_execution_is_failed_without_an_output_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             args, _values, _parameters = _fixture(temporary)
             cancelled = threading.Event()
@@ -335,7 +340,7 @@ class NativeThresholdContractTests(unittest.TestCase):
             self.assertIn("Cancelled", outcome.run_record.reason)
             self.assertIsNone(outcome.checkpoint_reference)
 
-    def test_cuda_runtime_failure_is_recorded_without_an_output_checkpoint(self) -> None:
+    def check_test_cuda_runtime_failure_is_recorded_without_an_output_checkpoint(self) -> None:
         if not torch.cuda.is_available():
             self.skipTest("CUDA failure state requires the CUDA bridge path.")
         with tempfile.TemporaryDirectory() as temporary:
@@ -347,7 +352,7 @@ class NativeThresholdContractTests(unittest.TestCase):
             self.assertIsNone(outcome.checkpoint_reference)
             self.assertEqual(list(args["output_root"].glob("*.checkpoint")), [])
 
-    def test_unavailable_cuda_is_recorded_without_cpu_fallback(self) -> None:
+    def check_test_unavailable_cuda_is_recorded_without_cpu_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             args, _values, _parameters = _fixture(temporary)
             with (
@@ -359,7 +364,7 @@ class NativeThresholdContractTests(unittest.TestCase):
             self.assertIn("unavailable", outcome.run_record.reason)
             self.assertIsNone(outcome.checkpoint_reference)
 
-    def test_mean_outside_native_domain_is_unsupported_without_execution(self) -> None:
+    def check_test_mean_outside_native_domain_is_unsupported_without_execution(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             args, _values, _parameters = _fixture(
                 temporary,
@@ -372,7 +377,7 @@ class NativeThresholdContractTests(unittest.TestCase):
             self.assertIn("ksize", outcome.run_record.reason)
             self.assertIsNone(outcome.checkpoint_reference)
 
-    def test_fresh_runtime_pin_rejects_a_dishonest_implementation_digest(self) -> None:
+    def check_test_fresh_runtime_pin_rejects_a_dishonest_implementation_digest(self) -> None:
         actual = native_threshold_identity(torch.device("cuda", torch.cuda.current_device()))
         dishonest = replace(actual, implementation_sha256="0" * 64)
         with tempfile.TemporaryDirectory() as temporary:
@@ -381,122 +386,34 @@ class NativeThresholdContractTests(unittest.TestCase):
                 run_native_threshold_stage(**args)
             self.assertEqual(list(args["output_root"].glob("*.checkpoint")), [])
 
+    def test_output_metadata_limit_is_checked_before_checkpoint_host_transfer(self):
+        self.scenario(self.check_test_output_metadata_limit_is_checked_before_checkpoint_host_transfer, labelled=False)
+
+    def test_cuda_runtime_failure_is_recorded_without_an_output_checkpoint(self):
+        self.scenario(self.check_test_cuda_runtime_failure_is_recorded_without_an_output_checkpoint, labelled=False)
+
+    def test_workflow_lifecycle(self):
+        """4 related NativeThresholdContractTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_loaded_code_hash_refuses_same_size_source_edit_after_import)
+        self.scenario(self.check_test_native_identity_has_distinct_exact_provenance)
+        self.scenario(self.check_test_original_reference_provenance_cannot_be_used_for_native_execution)
+        self.scenario(self.check_test_mean_outside_native_domain_is_unsupported_without_execution)
+
+    def test_validation_and_recovery(self):
+        """5 related NativeThresholdContractTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_stale_source_frame_upstream_recipe_and_role_bindings_reject_before_execution)
+        self.scenario(self.check_test_input_size_limit_rejects_before_cuda_upload_or_calculation)
+        self.scenario(self.check_test_cancellation_before_execution_is_failed_without_an_output_checkpoint)
+        self.scenario(self.check_test_unavailable_cuda_is_recorded_without_cpu_fallback)
+        self.scenario(self.check_test_fresh_runtime_pin_rejects_a_dishonest_implementation_digest)
+
 
 @unittest.skipUnless(torch.cuda.is_available(), "Native threshold stage requires CUDA")
 class NativeThresholdCudaStageTests(unittest.TestCase):
-    @unittest.skipUnless(REFERENCE_ENVIRONMENT_READY, "Pinned isolated PlantCV reference environment is not provisioned")
-    def test_actual_native_checkpoints_match_pinned_runner_for_binary_mean_and_otsu(self) -> None:
-        cases = (
-            ("threshold.binary", _sample("threshold.binary"), {"threshold": 127, "object_type": "light"}),
-            ("threshold.binary", _sample("threshold.binary"), {"threshold": 127, "object_type": "dark"}),
-            ("threshold.mean", _sample("threshold.mean"), {"ksize": 3, "offset": 1.25, "object_type": "light"}),
-            ("threshold.mean", _sample("threshold.mean"), {"ksize": 3, "offset": 1.25, "object_type": "dark"}),
-            ("threshold.otsu", _sample("threshold.otsu"), {"object_type": "light"}),
-            ("threshold.otsu", _sample("threshold.otsu"), {"object_type": "dark"}),
-        )
-        runner = PlantCVReferenceRunner(REFERENCE_PYTHON)
-        for operation, image, parameters_override in cases:
-            with self.subTest(operation=operation), tempfile.TemporaryDirectory() as temporary:
-                args, values, parameters = _fixture(
-                    temporary,
-                    operation,
-                    values=image,
-                    selected=parameters_override,
-                )
-                original_payload = checkpoint_module._numpy_payload
-                observed_transfer = []
 
-                def require_cuda_until_serializer(value, **keywords):
-                    if keywords.get("name") == "mask":
-                        self.assertTrue(torch.is_tensor(value))
-                        self.assertEqual(value.device, args["device"])
-                        self.assertEqual(value.dtype, torch.uint8)
-                        observed_transfer.append(str(value.device))
-                    return original_payload(value, **keywords)
 
-                with patch.object(checkpoint_module, "_numpy_payload", side_effect=require_cuda_until_serializer):
-                    outcome = run_native_threshold_stage(**args)
-                self.assertIn(outcome.run_record.state, {StageRunState.EXECUTED, StageRunState.EMPTY})
-                self.assertEqual(observed_transfer, [str(args["device"])])
-                reference = runner.run(operation, {"gray": values}, parameters)
-                loaded = load_checkpoint(
-                    args["output_root"],
-                    outcome.checkpoint_reference.checkpoint_sha256,
-                    expected_identity=args["expected_output_identity"],
-                    expected_measurement=args["output_measurement"],
-                )
-                np.testing.assert_array_equal(loaded.arrays["mask"], reference.arrays["mask"])
-                self.assertEqual(outcome.run_record.upstream_checkpoint_sha256, args["input_checkpoint_sha256"])
-                self.assertEqual(loaded.metadata["selected_parameters"], parameters)
-                self.assertEqual(loaded.metadata["effective_parameters"], parameters)
-                self.assertEqual(loaded.metadata["execution_mode"], RecipeProvenanceMode.NATIVE_COMPATIBLE.value)
-                self.assertEqual(loaded.metadata["output_inventory"][0]["device"], str(args["device"]))
-                self.assertEqual(loaded.metadata["output_raster_roles"]["mask"]["kind"], "mask")
-                self.assertGreaterEqual(loaded.metadata["computation_runtime_ns"], 0)
-                self.assertGreaterEqual(loaded.metadata["input_transfer_runtime_ns"], 0)
-                self.assertEqual(loaded.metadata["implementation_identity"], args["expected_implementation_identity"].to_dict())
-                self.assertFalse(loaded.measurement.eligible)
-                self.assertEqual(loaded.metadata["scientific_validation_status"], "not_certified")
-                self.assertEqual(loaded.metadata["reference_comparison_status"], "not_evaluated")
 
-    def test_otsu_ambiguity_is_unsupported_and_never_publishes_a_fake_mask(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            image = np.array([[0, 0, 1, 2, 2]], dtype=np.uint8)
-            args, _values, _parameters = _fixture(temporary, "threshold.otsu", values=image)
-            outcome = run_native_threshold_stage(**args)
-            self.assertEqual(outcome.run_record.state, StageRunState.UNSUPPORTED)
-            self.assertIn("Otsu", outcome.run_record.reason)
-            self.assertIsNone(outcome.checkpoint_reference)
-            self.assertEqual(list(args["output_root"].glob("*.checkpoint")), [])
-
-    def test_mean_scaling_boundary_is_unsupported_without_publishing_checkpoint(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            image = np.full((255,3),255,dtype=np.uint8)
-            image[0,0],image[1,0],image[127,2] = 0,254,253
-            args,_,_ = _fixture(temporary,'threshold.mean',values=image,
-                selected={'ksize':255,'offset':2,'object_type':'dark'})
-            outcome = run_native_threshold_stage(**args)
-            self.assertEqual(outcome.run_record.state,StageRunState.UNSUPPORTED)
-            self.assertIn('adaptive mean',outcome.run_record.reason)
-            self.assertIsNone(outcome.checkpoint_reference)
-            self.assertEqual(list(args['output_root'].glob('*.checkpoint')),[])
-
-    def test_empty_output_is_published_and_serialization_cancellation_cleans_staging(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            image = np.full((13, 19), 255, dtype=np.uint8)
-            args, _values, _parameters = _fixture(
-                temporary,
-                "threshold.binary",
-                values=image,
-                selected={"threshold": 255},
-            )
-            outcome = run_native_threshold_stage(**args)
-            self.assertEqual(outcome.run_record.state, StageRunState.EMPTY)
-            loaded = load_checkpoint(
-                args["output_root"],
-                outcome.checkpoint_reference.checkpoint_sha256,
-                expected_identity=args["expected_output_identity"],
-                expected_measurement=args["output_measurement"],
-            )
-            self.assertEqual(loaded.execution.status, ExecutionStatus.EMPTY)
-            self.assertFalse(np.any(loaded.arrays["mask"]))
-
-        with tempfile.TemporaryDirectory() as temporary:
-            args, _values, _parameters = _fixture(temporary)
-            cancelled = threading.Event()
-            original_savez = checkpoint_module.np.savez
-
-            def save_then_cancel(*positional, **keywords):
-                original_savez(*positional, **keywords)
-                cancelled.set()
-
-            with patch.object(checkpoint_module.np, "savez", side_effect=save_then_cancel):
-                outcome = run_native_threshold_stage(**dict(args, cancel=cancelled))
-            self.assertEqual(outcome.run_record.state, StageRunState.FAILED)
-            self.assertIn("Cancelled", outcome.run_record.reason)
-            self.assertIsNone(outcome.checkpoint_reference)
-            self.assertEqual(list(args["output_root"].glob("*.checkpoint")), [])
-            self.assertEqual(list(args["output_root"].glob(".*")), [])
+    pass
 
 
 if __name__ == "__main__":

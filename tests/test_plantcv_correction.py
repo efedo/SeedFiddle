@@ -1,3 +1,5 @@
+
+from tests.functional_units import functional_units
 import os
 from pathlib import Path
 import subprocess
@@ -48,6 +50,7 @@ np.savez(sys.argv[3], **result)
 
 
 @unittest.skipUnless(torch.cuda.is_available(), 'CUDA is required for native colour correction')
+@functional_units
 class PlantCVCorrectionTests(unittest.TestCase):
     def reference(self, operation, **arrays):
         if not _REFERENCE.is_file():
@@ -61,7 +64,7 @@ class PlantCVCorrectionTests(unittest.TestCase):
             with np.load(path/'output.npz', allow_pickle=False) as result:
                 return {name: result[name].copy() for name in result.files}
 
-    def test_chip_rgb_means_and_headers_match_pinned_public_call(self):
+    def check_test_chip_rgb_means_and_headers_match_pinned_public_call(self):
         rng = np.random.default_rng(307)
         image = rng.integers(0, 256, (17, 23, 3), dtype=np.uint8)
         mask = rng.choice(np.array([0, 10, 70, 255], dtype=np.uint8), (17, 23))
@@ -72,7 +75,7 @@ class PlantCVCorrectionTests(unittest.TestCase):
         np.testing.assert_allclose(matrix, expected['matrix'], rtol=0, atol=2e-15)
         self.assertEqual(matrix[:, 0].tolist(), [10, 70, 255])
 
-    def test_affine_pixels_match_pinned_public_call_with_one_byte_tolerance(self):
+    def check_test_affine_pixels_match_pinned_public_call_with_one_byte_tolerance(self):
         rng = np.random.default_rng(308)
         image = rng.integers(0, 256, (19, 27, 3), dtype=np.uint8)
         image[0, :2] = [(0, 0, 0), (255, 255, 255)]
@@ -88,7 +91,7 @@ class PlantCVCorrectionTests(unittest.TestCase):
         self.assertLessEqual(int(difference.max()), 1)
         np.testing.assert_array_equal(image[0, :2], [(0, 0, 0), (255, 255, 255)])
 
-    def test_polynomial_outputs_match_pinned_public_call(self):
+    def check_test_polynomial_outputs_match_pinned_public_call(self):
         rng = np.random.default_rng(309)
         source = rng.integers(20, 235, (17, 25, 3), dtype=np.uint8)
         target = np.clip(source.astype(np.int16)+[9, -7, 5], 0, 255).astype(np.uint8)
@@ -112,7 +115,7 @@ class PlantCVCorrectionTests(unittest.TestCase):
             - expected['image'].astype(np.int16))
         self.assertLessEqual(int(difference.max()), 1)
 
-    def test_tiled_chip_reduction_and_affine_cancellation_preserve_input(self):
+    def check_test_tiled_chip_reduction_and_affine_cancellation_preserve_input(self):
         from seedvision.cuda import plantcv_correction as module
         image = torch.arange(300, device='cuda').remainder(256).to(torch.uint8).reshape(10, 10, 3)
         mask = torch.zeros((10, 10), dtype=torch.uint8, device='cuda')
@@ -131,7 +134,7 @@ class PlantCVCorrectionTests(unittest.TestCase):
                 affine_color_correction_cuda(image, matrix, matrix, cancel=cancel)
         torch.testing.assert_close(image, original)
 
-    def test_empty_and_missing_background_contracts_are_explicit(self):
+    def check_test_empty_and_missing_background_contracts_are_explicit(self):
         image = torch.zeros((5, 7, 3), dtype=torch.uint8, device='cuda')
         _, matrix = get_color_matrix_cuda(image, torch.zeros((5, 7), dtype=torch.uint8, device='cuda'))
         self.assertEqual(matrix.shape, (0, 4))
@@ -140,7 +143,7 @@ class PlantCVCorrectionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             get_color_matrix_cuda(image.cpu(), torch.zeros((5, 7), dtype=torch.uint8, device='cuda'))
 
-    def test_invalid_matrices_and_preallocation_cancellation_return_no_output(self):
+    def check_test_invalid_matrices_and_preallocation_cancellation_return_no_output(self):
         from seedvision.cuda import plantcv_correction as module
         image = torch.zeros((5, 7, 3), dtype=torch.uint8, device='cuda')
         matrix = np.array([[10, .1, .2, .3], [20, .4, .5, .6]], dtype=np.float64)
@@ -154,6 +157,18 @@ class PlantCVCorrectionTests(unittest.TestCase):
             with self.assertRaises(CorrectionCancelled):
                 affine_color_correction_cuda(image, matrix, matrix, cancel=lambda: True)
             allocate.assert_not_called()
+
+    def test_workflow_lifecycle(self):
+        """3 related PlantCVCorrectionTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_chip_rgb_means_and_headers_match_pinned_public_call)
+        self.scenario(self.check_test_affine_pixels_match_pinned_public_call_with_one_byte_tolerance)
+        self.scenario(self.check_test_polynomial_outputs_match_pinned_public_call)
+
+    def test_validation_and_recovery(self):
+        """3 related PlantCVCorrectionTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_tiled_chip_reduction_and_affine_cancellation_preserve_input)
+        self.scenario(self.check_test_empty_and_missing_background_contracts_are_explicit)
+        self.scenario(self.check_test_invalid_matrices_and_preallocation_cancellation_return_no_output)
 
 
 if __name__ == '__main__':

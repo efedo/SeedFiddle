@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.functional_units import functional_units
+
 import unittest
 
 import cv2
@@ -38,8 +40,9 @@ def _reviewed(seed_id: int, **changes) -> SeedInstanceAnnotation:
     return SeedInstanceAnnotation(**values)
 
 
+@functional_units
 class SeedDimensionsShapeTests(unittest.TestCase):
-    def test_synthetic_ellipse_is_rotation_invariant(self) -> None:
+    def check_test_synthetic_ellipse_is_rotation_invariant(self) -> None:
         first = measure_shape_mask(_ellipse_mask(angle=0), contour_samples=128)
         rotated = measure_shape_mask(_ellipse_mask(angle=43), contour_samples=128)
         self.assertAlmostEqual(first.maximum_span, rotated.maximum_span, delta=2.5)
@@ -47,7 +50,7 @@ class SeedDimensionsShapeTests(unittest.TestCase):
         self.assertAlmostEqual(first.projected_area, rotated.projected_area, delta=80)
         self.assertGreater(first.ovality, 1.35)
 
-    def test_circle_has_uncertain_orientation_and_nub_is_recorded(self) -> None:
+    def check_test_circle_has_uncertain_orientation_and_nub_is_recorded(self) -> None:
         circle = measure_shape_mask(_ellipse_mask(axes=(30, 30)))
         nub = measure_shape_mask(
             _ellipse_mask(axes=(34, 25), nub=True),
@@ -57,7 +60,7 @@ class SeedDimensionsShapeTests(unittest.TestCase):
         self.assertIsNotNone(nub.local_feature)
         self.assertGreater(nub.non_ellipticity, 0.01)
 
-    def test_review_and_visibility_are_explicit_eligibility_gates(self) -> None:
+    def check_test_review_and_visibility_are_explicit_eligibility_gates(self) -> None:
         labels = np.zeros((180, 220), np.uint16)
         labels[20:180, :180][_ellipse_mask()] = 1
         second = np.zeros_like(labels, np.uint8)
@@ -74,7 +77,7 @@ class SeedDimensionsShapeTests(unittest.TestCase):
         rejected = next(item for item in summary.observations if item.seed_id == 2)
         self.assertIn("partly_occluded", rejected.exclusion_reason)
 
-    def test_repeated_views_count_as_one_physical_seed(self) -> None:
+    def check_test_repeated_views_count_as_one_physical_seed(self) -> None:
         observations = []
         context = BiologicalContext("lupinus_mutabilis", accession_id="line_a")
         for source_index, physical_id, angle in (
@@ -104,7 +107,7 @@ class SeedDimensionsShapeTests(unittest.TestCase):
         self.assertEqual(component.calibrated_physical_seed_count, 2.0)
         self.assertEqual(component.source_count, 3)
 
-    def test_uncalibrated_shapes_form_dimensionless_family_only(self) -> None:
+    def check_test_uncalibrated_shapes_form_dimensionless_family_only(self) -> None:
         observations = []
         context = BiologicalContext("lupinus_mutabilis")
         for source_index, axes in enumerate(((38, 25), (42, 27), (34, 22))):
@@ -126,7 +129,7 @@ class SeedDimensionsShapeTests(unittest.TestCase):
         self.assertEqual(component.dimensionless_physical_seed_count, 3.0)
         self.assertAlmostEqual(component.mean[0], 1.0, places=6)
 
-    def test_hierarchy_falls_back_without_confusing_optional_levels(self) -> None:
+    def check_test_hierarchy_falls_back_without_confusing_optional_levels(self) -> None:
         context_a = BiologicalContext(
             "lupinus_mutabilis", accession_id="accession_a"
         )
@@ -158,7 +161,7 @@ class SeedDimensionsShapeTests(unittest.TestCase):
         _fallback, fallback_path = bank.select_component(unseen, "flat")
         self.assertEqual(fallback_path, ("lupinus_mutabilis",))
 
-    def test_uncalibrated_local_shapes_do_not_update_physical_library_prior(self) -> None:
+    def check_test_uncalibrated_local_shapes_do_not_update_physical_library_prior(self) -> None:
         context = BiologicalContext("lupinus_mutabilis")
         calibrated = []
         for index in range(2):
@@ -189,7 +192,7 @@ class SeedDimensionsShapeTests(unittest.TestCase):
         self.assertTrue(any("uncalibrated" in value for value in model.warnings))
         self.assertEqual(model.compatibility_seed_diameter_px, 90.0)
 
-    def test_out_of_family_assessment_abstains(self) -> None:
+    def check_test_out_of_family_assessment_abstains(self) -> None:
         context = BiologicalContext("lupinus_mutabilis")
         observations = []
         for index, axes in enumerate(((38, 25), (39, 25), (37, 24))):
@@ -212,6 +215,17 @@ class SeedDimensionsShapeTests(unittest.TestCase):
         assessment = assess_candidate_shape(extreme, component)
         self.assertTrue(assessment.out_of_family)
         self.assertLess(assessment.compatibility, 0.2)
+
+    def test_workflow_lifecycle(self):
+        """8 related SeedDimensionsShapeTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_synthetic_ellipse_is_rotation_invariant)
+        self.scenario(self.check_test_circle_has_uncertain_orientation_and_nub_is_recorded)
+        self.scenario(self.check_test_review_and_visibility_are_explicit_eligibility_gates)
+        self.scenario(self.check_test_repeated_views_count_as_one_physical_seed)
+        self.scenario(self.check_test_uncalibrated_shapes_form_dimensionless_family_only)
+        self.scenario(self.check_test_hierarchy_falls_back_without_confusing_optional_levels)
+        self.scenario(self.check_test_uncalibrated_local_shapes_do_not_update_physical_library_prior)
+        self.scenario(self.check_test_out_of_family_assessment_abstains)
 
 
 if __name__ == "__main__":

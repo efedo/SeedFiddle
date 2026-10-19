@@ -1,4 +1,6 @@
 """Actual shape-update outcomes persist and bind the authoritative result revision."""
+
+from tests.functional_units import functional_units
 from dataclasses import asdict, replace
 import json
 from pathlib import Path
@@ -40,8 +42,9 @@ def conditioned_analysis():
     return analysis_with_outcome(outcome)
 
 
+@functional_units
 class ShapeModelExportTests(unittest.TestCase):
-    def test_actual_file_analysis_and_cached_model_export_without_cuda_transfer(self):
+    def check_test_actual_file_analysis_and_cached_model_export_without_cuda_transfer(self):
         import torch
         from seedvision.calibration import image as calibration
         from seedvision.calibration.geometry import DishDetectionSettings
@@ -71,12 +74,12 @@ class ShapeModelExportTests(unittest.TestCase):
             self.assertEqual(report['shape_model']['families'][0]['update_state'], 'not_attempted')
             self.assertEqual(analysis.calibration.gpu_corrected_bgr.device.type, 'cuda')
 
-    def test_absent_model_remains_absent_without_invented_diagnostics(self):
+    def check_test_absent_model_remains_absent_without_invented_diagnostics(self):
         report = result_report(analysis_fixture())
         self.assertNotIn('shape_model', report)
         self.assertIsNone(report['identity']['shape_model'])
 
-    def test_actual_local_assembly_serializes_without_refitting_or_writing_library(self):
+    def check_test_actual_local_assembly_serializes_without_refitting_or_writing_library(self):
         analysis = analysis_fixture()
         analysis.seed_dimensions_shape_model = model.assemble_seed_dimensions_shape_model(
             local_summary=analysis.seed_measurement_summary, legacy_processing_diameter_px=24.,
@@ -92,7 +95,7 @@ class ShapeModelExportTests(unittest.TestCase):
         self.assertFalse(snapshot['scientifically_validated'])
         self.assertFalse(snapshot['physical_measurements_eligible'])
 
-    def test_conditioned_actual_mask_outcome_roundtrips_statistics_scales_and_support(self):
+    def check_test_conditioned_actual_mask_outcome_roundtrips_statistics_scales_and_support(self):
         analysis = conditioned_analysis()
         family = analysis.seed_dimensions_shape_model.families[0]
         before = asdict(family.component)
@@ -107,7 +110,7 @@ class ShapeModelExportTests(unittest.TestCase):
         self.assertEqual(saved['component'], json.loads(json.dumps(before)))
         self.assertEqual(asdict(family.component), before)
 
-    def test_ordinary_mixed_local_only_and_unavailable_actual_outcomes_roundtrip(self):
+    def check_test_ordinary_mixed_local_only_and_unavailable_actual_outcomes_roundtrip(self):
         values, prior = fixture()
         _, local = fixture(covariance=2.)
         _, dimensionless = fixture(False)
@@ -124,7 +127,7 @@ class ShapeModelExportTests(unittest.TestCase):
                 self.assertEqual(saved['source'], outcome.source)
                 self.assertEqual(saved['component'], json.loads(json.dumps(asdict(outcome.component))))
 
-    def test_legacy_unknown_update_and_missing_summary_binding_remain_unknown(self):
+    def check_test_legacy_unknown_update_and_missing_summary_binding_remain_unknown(self):
         analysis = conditioned_analysis()
         family = replace(analysis.seed_dimensions_shape_model.families[0], update_state=None,
             pooling_method=None, conditioning_scales=())
@@ -138,7 +141,7 @@ class ShapeModelExportTests(unittest.TestCase):
         self.assertIsNone(saved['families'][0]['pooling_method'])
         self.assertIsNone(saved['families'][0]['update_unavailability_reason'])
 
-    def test_equal_detached_summary_passes_but_changed_measurement_or_eligibility_rejects(self):
+    def check_test_equal_detached_summary_passes_but_changed_measurement_or_eligibility_rejects(self):
         analysis = conditioned_analysis()
         summary = analysis.seed_measurement_summary
         analysis.seed_dimensions_shape_model = replace(analysis.seed_dimensions_shape_model,
@@ -154,7 +157,7 @@ class ShapeModelExportTests(unittest.TestCase):
                 analysis.seed_dimensions_shape_model = replace(analysis.seed_dimensions_shape_model, measurement_summary=other)
                 result_report(analysis)
 
-    def test_changed_known_model_lineage_rejects_before_result_persistence(self):
+    def check_test_changed_known_model_lineage_rejects_before_result_persistence(self):
         analysis = conditioned_analysis()
         summary = analysis.seed_measurement_summary
         stale = replace(summary, lineage=replace(summary.lineage, corrected_image_sha256='a'*64))
@@ -162,7 +165,7 @@ class ShapeModelExportTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'corrected_image_sha256 changed'):
             result_report(analysis)
 
-    def test_only_model_facts_changing_invalidates_previously_saved_instance_review(self):
+    def check_test_only_model_facts_changing_invalidates_previously_saved_instance_review(self):
         analysis = conditioned_analysis()
         original = analysis.seed_dimensions_shape_model
         family = original.families[0]
@@ -184,7 +187,7 @@ class ShapeModelExportTests(unittest.TestCase):
             self.assertNotEqual(changed['result_revision'], baseline['result_revision'])
             self.assertEqual(changed['accepted_count'], 0)
 
-    def test_update_reason_and_physical_fit_reason_are_independent_revision_facts(self):
+    def check_test_update_reason_and_physical_fit_reason_are_independent_revision_facts(self):
         values, prior = fixture(False)
         prior = replace(prior, covariance=tuple(tuple(row) for row in np.zeros((19, 19))),
             physical_fit_unavailability_reason='numeric_range', calibrated_physical_seed_count=7.)
@@ -200,7 +203,7 @@ class ShapeModelExportTests(unittest.TestCase):
             update_unavailability_reason='numeric_range'),))
         self.assertNotEqual(result_report(analysis)['result_revision'], saved['result_revision'])
 
-    def test_conditioned_scale_domains_and_contradictory_diagnostics_reject(self):
+    def check_test_conditioned_scale_domains_and_contradictory_diagnostics_reject(self):
         analysis = conditioned_analysis()
         original = analysis.seed_dimensions_shape_model
         family = original.families[0]
@@ -214,7 +217,7 @@ class ShapeModelExportTests(unittest.TestCase):
                 analysis.seed_dimensions_shape_model = replace(original, families=(other,))
                 result_report(analysis)
 
-    def test_mutable_nested_runtime_data_cannot_change_an_assembled_json_snapshot(self):
+    def check_test_mutable_nested_runtime_data_cannot_change_an_assembled_json_snapshot(self):
         analysis = conditioned_analysis()
         original = analysis.seed_dimensions_shape_model
         family = original.families[0]
@@ -228,7 +231,7 @@ class ShapeModelExportTests(unittest.TestCase):
         self.assertEqual(json.dumps(report, sort_keys=True), before)
         self.assertNotEqual(result_report(analysis)['result_revision'], report['result_revision'])
 
-    def test_nonfinite_counts_diameters_and_mismatched_pose_are_not_persisted(self):
+    def check_test_nonfinite_counts_diameters_and_mismatched_pose_are_not_persisted(self):
         analysis = conditioned_analysis()
         original = analysis.seed_dimensions_shape_model
         family = original.families[0]
@@ -244,7 +247,7 @@ class ShapeModelExportTests(unittest.TestCase):
                 analysis.seed_dimensions_shape_model = other
                 result_report(analysis)
 
-    def test_shape_diagnostic_only_change_rejects_stale_crop_export_before_output(self):
+    def check_test_shape_diagnostic_only_change_rejects_stale_crop_export_before_output(self):
         from seedvision.export.crop_artifacts import export_seed_crop_artifacts
         from tests.test_seed_crop_artifacts import _analysis as crop_analysis
         analysis = crop_analysis()
@@ -259,6 +262,26 @@ class ShapeModelExportTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'Result changed'):
                 export_seed_crop_artifacts(output, analysis, report, seed_ids=(1,), padding_px=0)
             self.assertFalse(output.exists())
+
+    def test_workflow_lifecycle(self):
+        """7 related ShapeModelExportTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_actual_file_analysis_and_cached_model_export_without_cuda_transfer)
+        self.scenario(self.check_test_absent_model_remains_absent_without_invented_diagnostics)
+        self.scenario(self.check_test_actual_local_assembly_serializes_without_refitting_or_writing_library)
+        self.scenario(self.check_test_conditioned_actual_mask_outcome_roundtrips_statistics_scales_and_support)
+        self.scenario(self.check_test_update_reason_and_physical_fit_reason_are_independent_revision_facts)
+        self.scenario(self.check_test_mutable_nested_runtime_data_cannot_change_an_assembled_json_snapshot)
+        self.scenario(self.check_test_nonfinite_counts_diameters_and_mismatched_pose_are_not_persisted)
+
+    def test_validation_and_recovery(self):
+        """7 related ShapeModelExportTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_ordinary_mixed_local_only_and_unavailable_actual_outcomes_roundtrip)
+        self.scenario(self.check_test_legacy_unknown_update_and_missing_summary_binding_remain_unknown)
+        self.scenario(self.check_test_equal_detached_summary_passes_but_changed_measurement_or_eligibility_rejects)
+        self.scenario(self.check_test_changed_known_model_lineage_rejects_before_result_persistence)
+        self.scenario(self.check_test_only_model_facts_changing_invalidates_previously_saved_instance_review)
+        self.scenario(self.check_test_conditioned_scale_domains_and_contradictory_diagnostics_reject)
+        self.scenario(self.check_test_shape_diagnostic_only_change_rejects_stale_crop_export_before_output)
 
 
 if __name__ == '__main__':

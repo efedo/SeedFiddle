@@ -1,4 +1,8 @@
 """Archived model binding and shared native/replay resource admission."""
+
+from tests.catalogue_fixtures import CatalogueTestCase
+
+from tests.functional_units import functional_units
 from copy import deepcopy
 from dataclasses import replace
 from hashlib import sha256
@@ -59,8 +63,9 @@ def _mask_bindings(names=('seed', 'background'), shape=(7, 11)):
     return _tag(names), dict(kind='mapping', items=pairs), specs
 
 
-class ModelReplayContractTests(unittest.TestCase):
-    def test_bayes_archived_bytes_parse_with_all_origin_io_forbidden(self):
+@functional_units
+class ModelReplayContractTests(CatalogueTestCase):
+    def check_test_bayes_archived_bytes_parse_with_all_origin_io_forbidden(self):
         raw = _pdf()
         model, value, selected, binding, specs = _asset(raw, 'bayes')
         with patch.object(Path, 'open', side_effect=AssertionError('origin must not open')), \
@@ -73,13 +78,13 @@ class ModelReplayContractTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             bound.identity['source_bytes'] = 0
 
-    def test_long_source_class_names_keep_the_model_domain(self):
+    def check_test_long_source_class_names_keep_the_model_domain(self):
         raw = _pdf(('seed-' + 'x' * 4096, 'background'))
         model, _, selected, binding, specs = _asset(raw, 'bayes')
         bound = native.asset_binding(binding, 'bayes', specs, selected)
         self.assertEqual(native.parse_asset(bound, np.frombuffer(raw, dtype=np.uint8)), model)
 
-    def test_both_kmeans_formats_bind_outer_bytes_and_numeric_identity(self):
+    def check_test_both_kmeans_formats_bind_outer_bytes_and_numeric_identity(self):
         model = centres.model_from_centres(((0.0,), (127.5,), (255.0,)), 1, 1)
         for raw in (centres.encode_kmeans_model(model), artifact.encode_kmeans_artifact(model, _conversion(model))):
             with self.subTest(format=len(raw)):
@@ -92,7 +97,7 @@ class ModelReplayContractTests(unittest.TestCase):
                 self.assertEqual(actual.centres, model.centres)
                 self.assertEqual(actual.source_sha256, sha256(raw).hexdigest())
 
-    def test_raw_bytes_are_rechecked_after_header_binding(self):
+    def check_test_raw_bytes_are_rechecked_after_header_binding(self):
         raw = _pdf()
         _, _, selected, binding, specs = _asset(raw, 'bayes')
         bound = native.asset_binding(binding, 'bayes', specs, selected)
@@ -104,7 +109,7 @@ class ModelReplayContractTests(unittest.TestCase):
             with self.subTest(dtype=invalid.dtype, shape=invalid.shape), self.assertRaises(native.NativeModelReplayError):
                 native.parse_asset(bound, invalid)
 
-    def test_matching_raw_hash_does_not_allow_a_forged_table_identity(self):
+    def check_test_matching_raw_hash_does_not_allow_a_forged_table_identity(self):
         for kind, raw in (('bayes', _pdf()), ('kmeans', centres.encode_kmeans_model(
                 centres.model_from_centres(((0.0,), (255.0,)), 1, 1)))):
             _, value, selected, binding, specs = _asset(raw, kind)
@@ -115,7 +120,7 @@ class ModelReplayContractTests(unittest.TestCase):
             with self.subTest(kind=kind), self.assertRaisesRegex(native.NativeModelReplayError, 'numerical model'):
                 native.parse_asset(bound, np.frombuffer(raw, dtype=np.uint8))
 
-    def test_identity_selection_header_and_origin_tampering_rejects_before_parse(self):
+    def check_test_identity_selection_header_and_origin_tampering_rejects_before_parse(self):
         _, value, selected, binding, specs = _asset(_pdf(), 'bayes')
         mutations = (
             lambda v, s, b, h: v.update(source_bytes=True),
@@ -137,7 +142,7 @@ class ModelReplayContractTests(unittest.TestCase):
                 with self.subTest(mutate=mutate), self.assertRaises(native.NativeModelReplayError):
                     native.asset_binding(b, 'bayes', h, s)
 
-    def test_primitive_decoder_rejects_types_duplicates_nonfinite_and_traversal(self):
+    def check_test_primitive_decoder_rejects_types_duplicates_nonfinite_and_traversal(self):
         invalid = (
             dict(kind='record', type='Class', fields=[]),
             dict(kind='mapping', items=[['key', 1], ['key', 2]]),
@@ -155,7 +160,7 @@ class ModelReplayContractTests(unittest.TestCase):
         with self.assertRaises(native.NativeModelReplayError):
             native.canonical('\ud800')
 
-    def test_ordered_mask_binding_preserves_well_formed_product_differences(self):
+    def check_test_ordered_mask_binding_preserves_well_formed_product_differences(self):
         # A consistent renamed/reordered output remains a product to compare.
         for names in (('seed', 'background'), ('background', 'seed'), ('changed', 'background')):
             tagged_names, mapping, specs = _mask_bindings(names)
@@ -163,7 +168,7 @@ class ModelReplayContractTests(unittest.TestCase):
             self.assertEqual(actual_names, names)
             self.assertEqual(pairs, tuple((name, f'mask{i}') for i, name in enumerate(names)))
 
-    def test_missing_duplicate_inconsistent_or_malformed_mask_bindings_reject(self):
+    def check_test_missing_duplicate_inconsistent_or_malformed_mask_bindings_reject(self):
         original = _mask_bindings()
         mutations = (
             lambda n, m, s: n.update(kind='list'),
@@ -181,7 +186,7 @@ class ModelReplayContractTests(unittest.TestCase):
             with self.subTest(mutate=mutate), self.assertRaises(native.NativeModelReplayError):
                 native.class_mask_bindings(n, m, s, (7, 11), count=2, maximum=32)
 
-    def test_exact_category_controls_preserve_duplicate_and_absent_ids(self):
+    def check_test_exact_category_controls_preserve_duplicate_and_absent_ids(self):
         self.assertEqual(native.mask_names({'cat_list': None}, 3), (('0', '1', '2'), 3))
         cats = [0, 0, 2, -1, 500, 10 ** 100]
         self.assertEqual(native.mask_names({'cat_list': cats}, 3), (('selected',), len(cats)))
@@ -189,9 +194,26 @@ class ModelReplayContractTests(unittest.TestCase):
             with self.subTest(parameters=parameters), self.assertRaises(native.NativeModelReplayError):
                 native.mask_names(parameters, 3)
 
+    def test_workflow_lifecycle(self):
+        """7 related ModelReplayContractTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_bayes_archived_bytes_parse_with_all_origin_io_forbidden)
+        self.scenario(self.check_test_long_source_class_names_keep_the_model_domain)
+        self.scenario(self.check_test_both_kmeans_formats_bind_outer_bytes_and_numeric_identity)
+        self.scenario(self.check_test_raw_bytes_are_rechecked_after_header_binding)
+        self.scenario(self.check_test_matching_raw_hash_does_not_allow_a_forged_table_identity)
+        self.scenario(self.check_test_ordered_mask_binding_preserves_well_formed_product_differences)
+        self.scenario(self.check_test_exact_category_controls_preserve_duplicate_and_absent_ids)
 
-class ModelReplayPlanTests(unittest.TestCase):
-    def test_bayes_plan_charges_bgr_expected_masks_tables_scratch_comparison_and_audit(self):
+    def test_validation_and_recovery(self):
+        """3 related ModelReplayContractTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_identity_selection_header_and_origin_tampering_rejects_before_parse)
+        self.scenario(self.check_test_primitive_decoder_rejects_types_duplicates_nonfinite_and_traversal)
+        self.scenario(self.check_test_missing_duplicate_inconsistent_or_malformed_mask_bindings_reject)
+
+
+@functional_units
+class ModelReplayPlanTests(CatalogueTestCase):
+    def check_test_bayes_plan_charges_bgr_expected_masks_tables_scratch_comparison_and_audit(self):
         model = native.bayes.parse_plantcv_pdf(_pdf())
         value = _identity(model, 'bayes')
         shape, p, c = (129, 131), 129 * 131, 2
@@ -205,7 +227,7 @@ class ModelReplayPlanTests(unittest.TestCase):
         self.assertIsNone(plan.work)
         self.assertEqual(plan.work_details, (('class_pixel_visits', p * c),))
 
-    def test_mask_plan_loads_no_model_asset_and_counts_all_selection_visits(self):
+    def check_test_mask_plan_loads_no_model_asset_and_counts_all_selection_visits(self):
         model = centres.model_from_centres(((0.0,), (127.0,), (255.0,)), 1, 1)
         value = _identity(model, 'kmeans')
         for cats, count, scans in ((None, 3, 3), ([0, 0, -1, 500], 1, 4)):
@@ -216,7 +238,7 @@ class ModelReplayPlanTests(unittest.TestCase):
             self.assertEqual(plan.cuda_live_bytes, (1+2*count)*rounded(p)+2*rounded(p)+rounded(p)+rounded(8*p)+512+65536)
             self.assertEqual(plan.work_details, (('category_pixel_visits', p * scans),))
 
-    def test_prediction_plan_uses_active_channel_bytes_and_shared_native_plan(self):
+    def check_test_prediction_plan_uses_active_channel_bytes_and_shared_native_plan(self):
         for channels in (1, 3):
             for patch_size in (1, 2, 3):
                 f = patch_size * patch_size * channels
@@ -234,7 +256,7 @@ class ModelReplayPlanTests(unittest.TestCase):
                                      +rounded(expected.gaussian_output_bytes)+2*rounded(p)+expected.scratch_bytes
                                      +rounded(p)+rounded(8*p)+512+65536)
 
-    def test_exact_selected_and_cuda_cap_boundaries_reject_without_allocations(self):
+    def check_test_exact_selected_and_cuda_cap_boundaries_reject_without_allocations(self):
         bayes_model = native.bayes.parse_plantcv_pdf(_pdf())
         model = centres.model_from_centres(((0.0,), (255.0,)), 1, 1)
         requests = (
@@ -251,7 +273,7 @@ class ModelReplayPlanTests(unittest.TestCase):
                     with self.subTest(function=function.__name__, caps=caps), self.assertRaises(native.NativeModelReplayUnavailable):
                         function(*args, **caps)
 
-    def test_resource_and_structural_failures_remain_distinct(self):
+    def check_test_resource_and_structural_failures_remain_distinct(self):
         model = centres.model_from_centres(((0.0,),), 1, 1)
         value = _identity(model, 'kmeans')
         for shape in ((0, 1), (True, 11), (7,), (1.0, 11)):
@@ -268,7 +290,7 @@ class ModelReplayPlanTests(unittest.TestCase):
             native.prediction_plan((7, 11), value, replace(model, centres=((1.0,),)))
         self.assertNotIsInstance(caught.exception, native.NativeModelReplayUnavailable)
 
-    def test_verified_legacy_and_model_operation_contracts_survive_extensions(self):
+    def check_test_verified_legacy_and_model_operation_contracts_survive_extensions(self):
         # Literal compatibility witnesses: later registry additions must not change
         # the previously verified input, output, or preview contracts.
         legacy_contracts = {
@@ -321,8 +343,20 @@ class ModelReplayPlanTests(unittest.TestCase):
             (('corrected_rgb', 'source_frame', 'geometry', 'bounds'),
              ('rgb_image', 'gray_image', 'metadata'), 'rgb_image'))
 
+    def test_workflow_lifecycle(self):
+        """4 related ModelReplayPlanTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_bayes_plan_charges_bgr_expected_masks_tables_scratch_comparison_and_audit)
+        self.scenario(self.check_test_mask_plan_loads_no_model_asset_and_counts_all_selection_visits)
+        self.scenario(self.check_test_prediction_plan_uses_active_channel_bytes_and_shared_native_plan)
+        self.scenario(self.check_test_verified_legacy_and_model_operation_contracts_survive_extensions)
 
-class SharedKMeansShapePlanTests(unittest.TestCase):
+    def test_validation_and_recovery(self):
+        """2 related ModelReplayPlanTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_exact_selected_and_cuda_cap_boundaries_reject_without_allocations)
+        self.scenario(self.check_test_resource_and_structural_failures_remain_distinct)
+
+
+class SharedKMeansShapePlanTests(CatalogueTestCase):
     def test_pure_shape_plan_preserves_unique_centres_and_pass_counts(self):
         for rows, passes in ((((0.0,), (255.0,), (0.0,)), 1), (((0.5,), (254.5,)), 2)):
             model = centres.model_from_centres(rows, 1, 1)
@@ -350,7 +384,7 @@ class SharedKMeansShapePlanTests(unittest.TestCase):
 
 
 @unittest.skipUnless(torch.cuda.is_available(), 'CUDA required')
-class SharedKMeansCudaPlanTests(unittest.TestCase):
+class SharedKMeansCudaPlanTests(CatalogueTestCase):
     def test_shape_and_real_cuda_input_plans_are_identical_for_gray_rgb_odd_even_and_singleton(self):
         for channels in (1, 3):
             for patch_size in (1, 2, 3):

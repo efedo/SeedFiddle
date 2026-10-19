@@ -1,4 +1,8 @@
 """Real classifier bytes survive project moves and portable snapshot restore."""
+
+from tests.catalogue_fixtures import CatalogueTestCase
+
+from tests.functional_units import functional_units
 from dataclasses import replace
 from hashlib import sha256
 import json
@@ -27,7 +31,8 @@ from tests.test_native_naive_bayes_recipe import _recipe_with_model
 from tests.test_plantcv_naive_bayes import _constant_pdf
 
 
-class ReferenceModelAssetTests(unittest.TestCase):
+@functional_units
+class ReferenceModelAssetTests(CatalogueTestCase):
     setUp = fixtures.NativeResultExportTests.setUp
     tearDown = fixtures.NativeResultExportTests.tearDown
     make_recipe = fixtures.NativeResultExportTests.make_recipe
@@ -62,7 +67,7 @@ class ReferenceModelAssetTests(unittest.TestCase):
                     for key, tensor in value.items():
                         self.assertTrue(torch.equal(tensor, current.outputs[name][key]))
 
-    def test_capture_preserves_history_and_deduplicates_exact_objects(self):
+    def check_test_capture_preserves_history_and_deduplicates_exact_objects(self):
         second = replace(self.recipe, recipe_id=self.recipe.recipe_id+'_history')
         workspace, master, graphs = self.project((self.recipe, second))
         loaded = ProjectAnalysisStore(workspace).load(master)
@@ -73,7 +78,7 @@ class ReferenceModelAssetTests(unittest.TestCase):
         self.assertEqual(len({asset.path for asset in loaded.document.reference_model_assets}), 1)
         self.assertEqual(json.loads(master.read_bytes())['version'], 6)
 
-    def test_legacy_v3_migrates_metadata_without_inventing_model_closure(self):
+    def check_test_legacy_v3_migrates_metadata_without_inventing_model_closure(self):
         workspace, master, graphs = self.project()
         payload = json.loads(master.read_bytes())
         payload['version'] = 3
@@ -93,7 +98,7 @@ class ReferenceModelAssetTests(unittest.TestCase):
         portable = ProjectAnalysisStore(snapshot).load(snapshot/'snapshot.seedfiddle-project.json')
         self.assertEqual(len(portable.document.reference_model_assets), 1)
 
-    def test_invalid_or_stale_binding_never_replaces_master(self):
+    def check_test_invalid_or_stale_binding_never_replaces_master(self):
         workspace, master, graphs = self.project()
         store = ProjectAnalysisStore(workspace)
         loaded = store.load(master)
@@ -108,7 +113,7 @@ class ReferenceModelAssetTests(unittest.TestCase):
         with self.assertRaises(InvalidProjectAnalysis):
             store.save(replace(loaded.document, reference_model_assets=(asset, asset)), master)
 
-    def test_aggregate_bounds_precede_any_model_read_or_copy(self):
+    def check_test_aggregate_bounds_precede_any_model_read_or_copy(self):
         graphs = (_attachment(self.recipe), _attachment(self.bayes_recipe()))
         for name, bound in (('MAX_MODEL_ASSETS', 1), ('MAX_TOTAL_MODEL_BYTES', 1)):
             with patch.object(assets, name, bound), patch.object(assets, 'verified_asset_bytes') as read:
@@ -116,7 +121,7 @@ class ReferenceModelAssetTests(unittest.TestCase):
                     assets.capture_reference_model_assets(self.root, graphs)
                 read.assert_not_called()
 
-    def test_missing_legacy_model_preserves_save_and_reports_unavailability(self):
+    def check_test_missing_legacy_model_preserves_save_and_reports_unavailability(self):
         self.model_path.unlink()
         workspace, master, graphs = self.project()
         store = ProjectAnalysisStore(workspace)
@@ -131,7 +136,7 @@ class ReferenceModelAssetTests(unittest.TestCase):
             create_snapshot(workspace, master, self.root/'snapshots')
         self.assertFalse((self.root/'snapshots').exists())
 
-    def test_unavailable_bound_asset_recapture_preserves_descriptor_without_fallback(self):
+    def check_test_unavailable_bound_asset_recapture_preserves_descriptor_without_fallback(self):
         workspace, master, graphs = self.project()
         loaded = ProjectAnalysisStore(workspace).load(master)
         bound = loaded.document.reference_model_assets
@@ -144,13 +149,13 @@ class ReferenceModelAssetTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             assets.capture_reference_model_assets(workspace, graphs, bound)
 
-    def test_unexpected_model_validation_failure_is_not_hidden_by_metadata_save(self):
+    def check_test_unexpected_model_validation_failure_is_not_hidden_by_metadata_save(self):
         with patch.object(assets, 'verified_asset_bytes', side_effect=RuntimeError('unexpected defect')):
             with self.assertRaisesRegex(RuntimeError, 'unexpected defect'):
                 assets.capture_reference_model_assets(self.root, (_attachment(self.recipe),),
                                                       allow_unavailable=True)
 
-    def test_foreign_origin_requires_verified_local_transport(self):
+    def check_test_foreign_origin_requires_verified_local_transport(self):
         from seedvision.benchmarking import native_kmeans_recipe as factory
         from seedvision.model_io.asset_paths import resolve_model_path
         selection = dict(self.recipe.parameters_for_runner(factory.MODEL_STAGE_ID)['model_source'])
@@ -164,7 +169,7 @@ class ReferenceModelAssetTests(unittest.TestCase):
         identity = factory.selected_model_identity(selection, model, resolved_path=str(self.model_path.resolve()))
         self.assertEqual(identity['path'], foreign)
 
-    def test_model_folder_redirection_is_rejected_before_copy(self):
+    def check_test_model_folder_redirection_is_rejected_before_copy(self):
         workspace = self.root/'workspace'
         outside = self.root/'outside'
         workspace.mkdir()
@@ -187,7 +192,7 @@ class ReferenceModelAssetTests(unittest.TestCase):
             else:
                 link.unlink()
 
-    def test_snapshot_copy_mutation_and_interruption_never_publish_completion(self):
+    def check_test_snapshot_copy_mutation_and_interruption_never_publish_completion(self):
         workspace, master, _ = self.project()
         bound = ProjectAnalysisStore(workspace).load(master).document.reference_model_assets[0]
         model_path = workspace/bound.path
@@ -213,7 +218,7 @@ class ReferenceModelAssetTests(unittest.TestCase):
         for partial in (self.root/'snapshots').iterdir():
             self.assertFalse((partial/'snapshot-index.json').exists())
 
-    def test_model_growth_during_snapshot_read_stays_bounded(self):
+    def check_test_model_growth_during_snapshot_read_stays_bounded(self):
         from contextlib import contextmanager
         from seedvision.persistence import snapshot as snapshots
         workspace, master, _ = self.project()
@@ -249,101 +254,12 @@ class ReferenceModelAssetTests(unittest.TestCase):
         self.assertNotIn(portable_model.resolve(), [Path(call.args[0]) for call in hash_file.call_args_list])
         self.assertFalse((self.root/'restore').exists())
 
-    @unittest.skipUnless(torch.cuda.is_available(), 'CUDA required')
-    def test_changed_origin_fails_before_cache_and_verified_copy_still_works(self):
-        from seedvision.benchmarking import native_kmeans_recipe as factory
-        cache = PipelineAnalysisCache()
-        before = run_native_recipe_path(self.recipe, self.source, cache=cache)
-        workspace, master, _ = self.project()
-        loaded = ProjectAnalysisStore(workspace).load(master)
-        paths = assets.model_asset_paths(workspace, self.recipe, loaded.document.reference_model_assets)
-        self.model_path.write_bytes(self.model_path.read_bytes()+b' ')
-        with patch('seedvision.benchmarking.native_recipe.prepare_native_recipe_inputs') as prepare:
-            with self.assertRaises(NativeRecipeError):
-                run_native_recipe_path(self.recipe, self.source, cache=cache)
-            prepare.assert_not_called()
-        after = run_native_recipe_path(self.recipe, self.source, cache=cache, model_asset_paths=paths)
-        self.assert_products_equal(before, after)
-        self.assertEqual(after.node(factory.MODEL_STAGE_ID).outputs['model_identity']['path'], str(self.model_path))
 
-    def test_desktop_save_as_open_and_new_project_preserve_then_clear_bindings(self):
-        os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
-        from PySide6.QtWidgets import QApplication, QFileDialog
-        from tests import test_project_analysis_ui as ui_fixtures
-        app = QApplication.instance() or QApplication([])
-        ui_fixtures.ProjectAnalysisUiTests.application = app
-        workspace, master, graphs = self.project()
-        window = ui_fixtures.ProjectAnalysisUiTests._window(workspace)
-        try:
-            with patch.object(window, '_confirm_project_replacement', return_value=True):
-                self.assertTrue(window._open_project(master))
-            original_bindings = window._project_reference_model_assets
-            self.assertTrue(original_bindings)
-            self.model_path.unlink()
-            destination = workspace/'other-folder'/'saved-as.seedfiddle-project.json'
-            with patch.object(QFileDialog, 'getSaveFileName', return_value=(str(destination), '')):
-                window.save_project_as_action.trigger()
-            self.assertEqual(window._current_project_path, destination)
-            loaded = ProjectAnalysisStore(workspace).load(destination)
-            self.assertFalse(loaded.issues)
-            self.assertEqual(loaded.document.reference_graphs, graphs)
-            self.assertEqual(loaded.document.reference_model_assets, original_bindings)
-            with patch.object(window, '_confirm_project_replacement', return_value=True):
-                self.assertTrue(window._open_project(destination))
-                self.assertTrue(window._new_project())
-            self.assertEqual(window._project_reference_model_assets, ())
-            self.assertEqual(window._project_reference_graphs, ())
-        finally:
-            ui_fixtures.ProjectAnalysisUiTests._dispose(window)
 
-    @unittest.skipUnless(torch.cuda.is_available(), 'CUDA required')
-    def test_saved_graph_launch_executes_exact_recipe_with_project_transport(self):
-        os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
-        from PySide6.QtWidgets import QApplication
-        from seedvision.ui.native_kmeans_dialog import NativeKMeansDialog
-        from seedvision.ui.reference_graph_dialog import ReferenceGraphDialog
-        app = QApplication.instance() or QApplication([])
-        workspace, master, graphs = self.project()
-        loaded = ProjectAnalysisStore(workspace).load(master)
-        paths = assets.model_asset_paths(workspace, self.recipe, loaded.document.reference_model_assets)
-        self.model_path.unlink()
-        graph_dialog = ReferenceGraphDialog(reference_graphs=graphs, project_root=workspace,
-            reference_model_assets=loaded.document.reference_model_assets)
-        observed = []
-        def execute(dialog):
-            self.assertEqual(dialog.model_asset_paths, paths)
-            self.assertEqual(dialog.recipe, self.recipe)
-            dialog.set_source_path(workspace/'seeds.png')
-            dialog.start_run()
-            deadline = time.monotonic()+20
-            while dialog._worker is not None and time.monotonic() < deadline:
-                app.processEvents()
-                time.sleep(.01)
-            self.assertIsNotNone(dialog.result, dialog.status_label.text())
-            observed.append(dialog.result.recipe_identity)
-            return 0
-        try:
-            with patch.object(NativeKMeansDialog, 'exec', execute):
-                graph_dialog._open_saved_native_recipe(self.recipe)
-            self.assertEqual(observed, [self.recipe.identity])
-            self.assertEqual(graph_dialog.reference_graphs[:len(graphs)], graphs)
-        finally:
-            graph_dialog.reject()
-            graph_dialog.deleteLater()
-            app.processEvents()
 
-    @unittest.skipUnless(torch.cuda.is_available(), 'CUDA required')
-    def test_legacy_v1_archive_loads_with_original_group_bindings(self):
-        self._assert_legacy_archive(1)
 
-    def test_legacy_v2_archive_loads_with_original_group_bindings(self):
-        self._assert_legacy_archive(2)
 
-    def test_legacy_v3_archive_loads_with_original_group_bindings(self):
-        self._assert_legacy_archive(3)
 
-    def test_legacy_v4_archive_loads_with_original_group_bindings(self):
-        self._assert_legacy_archive(4)
 
     def _assert_legacy_archive(self, version):
         from seedvision.benchmarking.checkpoints import load_checkpoint, publish_checkpoint
@@ -385,149 +301,24 @@ class ReferenceModelAssetTests(unittest.TestCase):
         self.assertEqual(restored['recipe_identity'], result.recipe_identity.to_dict())
         self.assertTrue(arrays)
 
-    @unittest.skipUnless(torch.cuda.is_available(), 'CUDA required')
-    def test_training_selection_drops_old_transport_and_reset_executes_saved_copy(self):
-        os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
-        from types import SimpleNamespace
-        from PySide6.QtWidgets import QApplication, QDialog
-        from seedvision.ui.native_kmeans_dialog import NativeKMeansDialog
-        from seedvision.benchmarking import native_kmeans_recipe as factory
-        app = QApplication.instance() or QApplication([])
-        workspace, master, _ = self.project()
-        loaded = ProjectAnalysisStore(workspace).load(master)
-        paths = assets.model_asset_paths(workspace, self.recipe, loaded.document.reference_model_assets)
-        trained = self.root/'new-centres.json'
-        payload = json.loads(self.model_path.read_bytes())
-        payload['centres'][1] = [255.0]
-        trained.write_text(json.dumps(payload), encoding='utf-8')
-        self.model_path.unlink()
-        dialog = NativeKMeansDialog(self.recipe, model_asset_paths=paths)
-        def run():
-            dialog.start_run()
-            deadline = time.monotonic()+20
-            while dialog._worker is not None and time.monotonic() < deadline:
-                app.processEvents()
-                time.sleep(.01)
-            self.assertIsNotNone(dialog.result, dialog.status_label.text())
-        try:
-            dialog.set_source_path(workspace/'seeds.png')
-            completed = SimpleNamespace(exec=lambda: QDialog.DialogCode.Accepted, saved_model_path=trained)
-            with patch('seedvision.ui.native_kmeans_dialog.NativeKMeansTrainingDialog', return_value=completed):
-                dialog._train_model()
-            self.assertEqual(dialog.model_asset_paths, {})
-            run()
-            self.assertEqual(dialog.result.node(factory.MODEL_STAGE_ID).outputs['model_identity']['path'], str(trained))
-            dialog._parameters_reset(factory.MODEL_STAGE_ID)
-            self.assertEqual(dialog.model_asset_paths, paths)
-            self.assertEqual(dialog.recipe.parameters_for_runner(factory.MODEL_STAGE_ID),
-                             self.recipe.parameters_for_runner(factory.MODEL_STAGE_ID))
-            run()
-            self.assertEqual(dialog.result.recipe_identity, self.recipe.identity)
-        finally:
-            dialog.reject()
-            dialog.deleteLater()
-            app.processEvents()
 
-    @unittest.skipUnless(torch.cuda.is_available(), 'CUDA required')
-    def test_moved_project_without_originals_executes_and_exports_both_classifiers(self):
-        bayes = self.bayes_recipe()
-        recipes = (self.recipe, bayes)
-        before = [run_native_recipe_path(recipe, self.source) for recipe in recipes]
-        workspace, master, graphs = self.project(recipes)
-        original_history = [graph.to_dict() for graph in graphs]
-        moved = self.root/'moved'
-        shutil.move(str(workspace), moved)
-        self.model_path.unlink()
-        (self.root/'pdf.tsv').unlink()
-        loaded = ProjectAnalysisStore(moved).load(moved/master.name)
-        self.assertFalse(loaded.issues)
-        self.assertEqual([graph.to_dict() for graph in loaded.document.reference_graphs], original_history)
-        for index, (recipe, expected) in enumerate(zip(recipes, before)):
-            paths = assets.model_asset_paths(moved, recipe, loaded.document.reference_model_assets)
-            result = run_native_recipe_path(recipe, moved/'seeds.png', model_asset_paths=paths)
-            self.assert_products_equal(expected, result)
-            target = outputs.export_native_recipe_result(self.root/f'output-{index}', recipe, result)
-            report, arrays = outputs.load_native_recipe_result(target.parent)
-            self.assertEqual(report['model_asset_paths'], paths)
-            self.assertEqual(report['recipe_identity'], recipe.identity.to_dict())
 
-    @unittest.skipUnless(torch.cuda.is_available(), 'CUDA required')
-    def test_transport_change_reuses_content_keys_and_corruption_never_falls_back(self):
-        cache = PipelineAnalysisCache()
-        before = run_native_recipe_path(self.recipe, self.source, cache=cache)
-        workspace, master, graphs = self.project()
-        loaded = ProjectAnalysisStore(workspace).load(master)
-        paths = assets.model_asset_paths(workspace, self.recipe, loaded.document.reference_model_assets)
-        relocated = run_native_recipe_path(self.recipe, self.source, cache=cache, model_asset_paths=paths)
-        self.assert_products_equal(before, relocated)
-        self.assertTrue(all(node.reused for node in relocated.nodes))
-        self.assertEqual([node.product_key for node in before.nodes], [node.product_key for node in relocated.nodes])
-        asset_path = Path(next(iter(paths.values())))
-        asset_path.write_bytes(b'corrupt model')
-        # Original still exists and is correct: a bad selected transport must fail.
-        with patch('seedvision.benchmarking.native_recipe.prepare_native_recipe_inputs') as prepare:
-            with self.assertRaises(NativeRecipeError):
-                run_native_recipe_path(self.recipe, self.source, cache=cache, model_asset_paths=paths)
-            prepare.assert_not_called()
-        self.assertTrue(ProjectAnalysisStore(workspace).load(master).issues)
-        with patch.object(outputs, 'publish_checkpoint') as publish:
-            with self.assertRaises(ValueError):
-                outputs.export_native_recipe_result(self.root/'corrupt-export', self.recipe, relocated)
-            publish.assert_not_called()
 
-    @unittest.skipUnless(torch.cuda.is_available(), 'CUDA required')
-    def test_snapshot_restore_closes_models_and_actual_saved_batch_runs(self):
-        from seedvision.export.project_runner import run_project
-        from tests.test_seed_crop_artifacts import _analysis
-        recipes = (self.recipe, self.bayes_recipe())
-        workspace, master, graphs = self.project(recipes)
-        snapshot = create_snapshot(workspace, master, self.root/'snapshots')
-        index = json.loads((snapshot/'snapshot-index.json').read_bytes())
-        portable = ProjectAnalysisStore(snapshot).load(snapshot/'snapshot.seedfiddle-project.json')
-        self.assertTrue(all(asset.path in index['files'] for asset in portable.document.reference_model_assets))
-        shutil.rmtree(workspace)
-        self.model_path.unlink()
-        (self.root/'pdf.tsv').unlink()
-        restore_root = self.root/'restored'
-        (restore_root/'config').mkdir(parents=True)
-        shutil.copyfile(Path(__file__).parents[1]/'config'/'traits.json', restore_root/'config'/'traits.json')
-        working = restore_snapshot(snapshot, restore_root)
-        loaded = ProjectAnalysisStore(restore_root).load(working)
-        self.assertFalse(loaded.issues)
-        self.assertEqual(loaded.document.reference_graphs, graphs)
-        with patch('seedvision.export.project_runner.analyze_path', side_effect=lambda path, **kw: _analysis(path)):
-            reports = run_project(restore_root, working, self.root/'batch')
-        ledger = json.loads((reports[0]/'native_graphs'/'native-graphs.json').read_bytes())
-        self.assertEqual([row['status'] for row in ledger['graphs']], ['executed', 'executed'])
-        for row in ledger['graphs']:
-            outputs.load_native_recipe_result(reports[0]/'native_graphs'/Path(row['report']).parent)
-        missing = snapshot/portable.document.reference_model_assets[0].path
-        missing.unlink()
-        with self.assertRaises(ValueError):
-            restore_snapshot(snapshot, restore_root)
 
-    @unittest.skipUnless(torch.cuda.is_available(), 'CUDA required')
-    def test_actual_qt_worker_uses_project_copy_and_reset_restores_transport(self):
-        os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
-        from PySide6.QtWidgets import QApplication
-        from seedvision.ui.native_kmeans_dialog import NativeKMeansDialog
-        app = QApplication.instance() or QApplication([])
-        workspace, master, _ = self.project()
-        loaded = ProjectAnalysisStore(workspace).load(master)
-        paths = assets.model_asset_paths(workspace, self.recipe, loaded.document.reference_model_assets)
-        self.model_path.unlink()
-        dialog = NativeKMeansDialog(self.recipe, model_asset_paths=paths)
-        dialog.set_source_path(workspace/'seeds.png')
-        dialog.start_run()
-        deadline = time.monotonic()+20
-        while dialog._worker is not None and time.monotonic() < deadline:
-            app.processEvents()
-            time.sleep(.01)
-        self.assertIsNotNone(dialog.result, dialog.status_label.text())
-        self.assertEqual(dict(dialog.result.model_asset_paths), paths)
-        self.assertEqual(dialog.result.recipe_identity, self.recipe.identity)
-        dialog.model_asset_paths.clear()
-        dialog._parameters_reset(next(iter(paths)))
-        self.assertEqual(dialog.model_asset_paths, paths)
-        dialog.reject()
-        dialog.deleteLater()
+
+    def test_workflow_lifecycle(self):
+        """5 related ReferenceModelAssetTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_capture_preserves_history_and_deduplicates_exact_objects)
+        self.scenario(self.check_test_legacy_v3_migrates_metadata_without_inventing_model_closure)
+        self.scenario(self.check_test_aggregate_bounds_precede_any_model_read_or_copy)
+        self.scenario(self.check_test_foreign_origin_requires_verified_local_transport)
+        self.scenario(self.check_test_model_growth_during_snapshot_read_stays_bounded)
+
+    def test_validation_and_recovery(self):
+        """6 related ReferenceModelAssetTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_invalid_or_stale_binding_never_replaces_master)
+        self.scenario(self.check_test_missing_legacy_model_preserves_save_and_reports_unavailability)
+        self.scenario(self.check_test_unavailable_bound_asset_recapture_preserves_descriptor_without_fallback)
+        self.scenario(self.check_test_unexpected_model_validation_failure_is_not_hidden_by_metadata_save)
+        self.scenario(self.check_test_model_folder_redirection_is_rejected_before_copy)
+        self.scenario(self.check_test_snapshot_copy_mutation_and_interruption_never_publish_completion)

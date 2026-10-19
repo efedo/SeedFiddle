@@ -1,4 +1,6 @@
 """Actual public binary Bayes sampler observations, RNG and CUDA boundaries."""
+
+from tests.functional_units import functional_units
 import json
 from pathlib import Path
 import subprocess
@@ -100,6 +102,7 @@ def coordinate_pair(image_shape=(31,37), mask_shape=(20,19), *, foreground=None,
 
 
 @unittest.skipUnless(torch.cuda.is_available(), 'CUDA required')
+@functional_units
 class BayesImageSamplingTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -115,7 +118,7 @@ class BayesImageSamplingTests(unittest.TestCase):
             dict(seed=43, pairs=[pair(41, 43, 860)], real_fit=True)]
         cls.expected = public(cls.cases)
 
-    def test_actual_public_independent_columns_default_dtype_and_complete_rng_state(self):
+    def check_test_actual_public_independent_columns_default_dtype_and_complete_rng_state(self):
         for case, expected in zip(self.cases[:6], self.expected[:6]):
             image, mask = case['pairs'][0]
             rng = np.random.RandomState(case['seed'])
@@ -143,7 +146,7 @@ class BayesImageSamplingTests(unittest.TestCase):
                 np.testing.assert_array_equal(source.cpu().numpy(), image)
                 np.testing.assert_array_equal(selection.cpu().numpy(), mask)
 
-    def test_source_invalid_background_follows_consumed_foreground_draw(self):
+    def check_test_source_invalid_background_follows_consumed_foreground_draw(self):
         for case, expected in zip(self.cases[6:8], self.expected[6:8]):
             image, mask = case['pairs'][0]
             rng = np.random.RandomState(case['seed'])
@@ -155,7 +158,7 @@ class BayesImageSamplingTests(unittest.TestCase):
                     torch.tensor(mask, device='cuda'), rng=rng)
             self.assertEqual(state_record(native._state(rng)), expected['after'])
 
-    def test_actual_public_coordinate_indexing_smaller_larger_mixed_and_ignored_masks(self):
+    def check_test_actual_public_coordinate_indexing_smaller_larger_mixed_and_ignored_masks(self):
         shapes = (((31,37),(20,19)),((20,19),(31,37)),((31,37),(20,43)),
             ((20,43),(31,37)),((31,37),(41,19)),((31,37),(99,111)),((1,23),(3,27)))
         cases = [dict(seed=17,pairs=[coordinate_pair(a,b)]) for a,b in shapes]
@@ -175,7 +178,7 @@ class BayesImageSamplingTests(unittest.TestCase):
                     for channel in range(3):
                         self.assertEqual(values[:,channel].cpu().tolist(),expected['columns'][channel*2+category])
 
-    def test_categorical_out_of_bounds_priority_and_zero_rows_fail_before_any_draw(self):
+    def check_test_categorical_out_of_bounds_priority_and_zero_rows_fail_before_any_draw(self):
         cases,priorities = [],[]
         for foreground,kind in ((555,'foreground'),(555,'background'),(555,'both'),
                 (0,'foreground'),(0,'background')):
@@ -201,7 +204,7 @@ class BayesImageSamplingTests(unittest.TestCase):
         finally:
             np.random.set_state(saved)
 
-    def test_multiple_occurrences_append_in_source_order_and_fit_actual_public_pdfs(self):
+    def check_test_multiple_occurrences_append_in_source_order_and_fit_actual_public_pdfs(self):
         case, expected = self.cases[8], self.expected[8]
         rng = np.random.RandomState(case['seed'])
         parts = [native.sample_naive_bayes_image(torch.tensor(image, device='cuda'),
@@ -223,7 +226,7 @@ class BayesImageSamplingTests(unittest.TestCase):
                 np.testing.assert_allclose(fitted.probabilities[category, channel].cpu().numpy(),
                     model.probabilities[category][channel], rtol=0, atol=fit.pdf_absolute_budget)
 
-    def test_implicit_global_state_uses_existing_stream_and_retains_gaussian_cache(self):
+    def check_test_implicit_global_state_uses_existing_stream_and_retains_gaussian_cache(self):
         original = np.random.get_state()
         try:
             case, expected = self.cases[0], self.expected[0]
@@ -237,7 +240,7 @@ class BayesImageSamplingTests(unittest.TestCase):
         finally:
             np.random.set_state(original)
 
-    def test_cap_and_layout_failures_precede_compilation_or_random_draws(self):
+    def check_test_cap_and_layout_failures_precede_compilation_or_random_draws(self):
         image, mask = pair()
         source, selection = torch.tensor(image, device='cuda'), torch.tensor(mask, device='cuda')
         rng = np.random.RandomState(17)
@@ -270,7 +273,7 @@ class BayesImageSamplingTests(unittest.TestCase):
         with self.assertRaisesRegex(native.BayesSamplingError, 'input/count'):
             native.sample_naive_bayes_image(backing[:3].reshape(1,1,3), selection[:1,:1].contiguous(), rng=rng)
 
-    def test_cancellation_after_each_actual_public_draw_preserves_partial_rng_state(self):
+    def check_test_cancellation_after_each_actual_public_draw_preserves_partial_rng_state(self):
         case, expected = self.cases[0], self.expected[0]
         image, mask = case['pairs'][0]
         bgr, binary = torch.tensor(image, device='cuda'), torch.tensor(mask, device='cuda')
@@ -282,7 +285,7 @@ class BayesImageSamplingTests(unittest.TestCase):
                     cancel=lambda: state_record(native._state(rng)) == target)
             self.assertEqual(state_record(native._state(rng)), target)
 
-    def test_callback_input_partial_output_and_rng_mutations_are_guarded_even_on_raise(self):
+    def check_test_callback_input_partial_output_and_rng_mutations_are_guarded_even_on_raise(self):
         image, mask = pair()
         for kind in ('image', 'mask_storage', 'output', 'rng', 'image_and_raise'):
             source, selection = torch.tensor(image, device='cuda'), torch.tensor(mask, device='cuda')
@@ -318,7 +321,7 @@ class BayesImageSamplingTests(unittest.TestCase):
             with self.subTest(callback_return=answer), self.assertRaisesRegex(native.BayesSamplingError, 'return bool'):
                 native.sample_naive_bayes_image(source, selection, cancel=lambda: answer)
 
-    def test_custom_stream_actual_peak_and_tile_repartition_preserve_selected_bytes(self):
+    def check_test_custom_stream_actual_peak_and_tile_repartition_preserve_selected_bytes(self):
         image, mask = pair(1000,1000,510_007)
         source, selection = torch.tensor(image, device='cuda'), torch.tensor(mask, device='cuda')
         native.sample_naive_bayes_image(source[:2,:2].contiguous(), selection[:2,:2].contiguous(),
@@ -345,7 +348,7 @@ class BayesImageSamplingTests(unittest.TestCase):
             self.assertTrue(torch.equal(a,b))
         self.assertEqual(first.plan.output_bytes, sum(x.numel() for x in first.samples))
 
-    def test_different_dimensions_actual_peak_stream_repartition_and_compact_only_transfer(self):
+    def check_test_different_dimensions_actual_peak_stream_repartition_and_compact_only_transfer(self):
         image,mask = coordinate_pair((700,900),(800,1000))
         source,selection = torch.tensor(image,device='cuda'),torch.tensor(mask,device='cuda')
         native.sample_naive_bayes_image(source[:1,:1].contiguous(),selection[:1,:1].contiguous(),
@@ -373,7 +376,7 @@ class BayesImageSamplingTests(unittest.TestCase):
         self.assertGreater(second.plan.work,first.plan.work)
         for a,b in zip(first.samples,second.samples): self.assertTrue(torch.equal(a,b))
 
-    def test_independent_mask_cap_and_maximum_ignored_mask_preflight(self):
+    def check_test_independent_mask_cap_and_maximum_ignored_mask_preflight(self):
         source = torch.zeros((1,1,3),dtype=torch.uint8,device='cuda')
         selection = torch.full((4000,4000),128,dtype=torch.uint8,device='cuda')
         rng = np.random.RandomState(17)
@@ -389,7 +392,7 @@ class BayesImageSamplingTests(unittest.TestCase):
         self.assertEqual(result.rng_after,initial)
         self.assertTrue(all(x.shape==(0,3) for x in result.samples))
 
-    def test_final_callback_storage_swap_or_raised_rng_mutation_withholds_samples(self):
+    def check_test_final_callback_storage_swap_or_raised_rng_mutation_withholds_samples(self):
         image, mask = pair()
         source, selection = torch.tensor(image, device='cuda'), torch.tensor(mask, device='cuda')
         calls = 0
@@ -423,7 +426,7 @@ class BayesImageSamplingTests(unittest.TestCase):
                     native.sample_naive_bayes_image(source, selection, rng=rng, cancel=mutate)
             self.assertEqual(calls, final_call)
 
-    def test_rng_change_inside_draw_is_detected_by_predicted_stream(self):
+    def check_test_rng_change_inside_draw_is_detected_by_predicted_stream(self):
         image, mask = pair()
         source, selection = torch.tensor(image, device='cuda'), torch.tensor(mask, device='cuda')
         original = np.random.get_state()
@@ -440,7 +443,7 @@ class BayesImageSamplingTests(unittest.TestCase):
         finally:
             np.random.set_state(original)
 
-    def test_directory_reservations_fail_before_current_draw_and_charge_full_backing(self):
+    def check_test_directory_reservations_fail_before_current_draw_and_charge_full_backing(self):
         image, mask = pair()
         source, selection = torch.tensor(image, device='cuda'), torch.tensor(mask, device='cuda')
         first = native.sample_naive_bayes_image(source, selection, rng=np.random.RandomState(17))
@@ -466,6 +469,27 @@ class BayesImageSamplingTests(unittest.TestCase):
             with self.assertRaisesRegex(native.BayesSamplingError, 'input/count'):
                 native.sample_naive_bayes_image(source, selection, rng=rng, _budget=reserved)
         self.assertEqual(before, native._state(rng))
+
+    def test_workflow_lifecycle(self):
+        """7 related BayesImageSamplingTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_actual_public_independent_columns_default_dtype_and_complete_rng_state)
+        self.scenario(self.check_test_actual_public_coordinate_indexing_smaller_larger_mixed_and_ignored_masks)
+        self.scenario(self.check_test_multiple_occurrences_append_in_source_order_and_fit_actual_public_pdfs)
+        self.scenario(self.check_test_implicit_global_state_uses_existing_stream_and_retains_gaussian_cache)
+        self.scenario(self.check_test_custom_stream_actual_peak_and_tile_repartition_preserve_selected_bytes)
+        self.scenario(self.check_test_different_dimensions_actual_peak_stream_repartition_and_compact_only_transfer)
+        self.scenario(self.check_test_rng_change_inside_draw_is_detected_by_predicted_stream)
+
+    def test_validation_and_recovery(self):
+        """8 related BayesImageSamplingTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_source_invalid_background_follows_consumed_foreground_draw)
+        self.scenario(self.check_test_categorical_out_of_bounds_priority_and_zero_rows_fail_before_any_draw)
+        self.scenario(self.check_test_cap_and_layout_failures_precede_compilation_or_random_draws)
+        self.scenario(self.check_test_cancellation_after_each_actual_public_draw_preserves_partial_rng_state)
+        self.scenario(self.check_test_callback_input_partial_output_and_rng_mutations_are_guarded_even_on_raise)
+        self.scenario(self.check_test_independent_mask_cap_and_maximum_ignored_mask_preflight)
+        self.scenario(self.check_test_final_callback_storage_swap_or_raised_rng_mutation_withholds_samples)
+        self.scenario(self.check_test_directory_reservations_fail_before_current_draw_and_charge_full_backing)
 
 
 if __name__ == '__main__':

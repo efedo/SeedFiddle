@@ -65,7 +65,7 @@ from seedvision.reference_library.contracts import (
 
 
 PROJECT_ANALYSIS_FORMAT = "seedfiddle-project"
-PROJECT_ANALYSIS_VERSION = 6
+PROJECT_ANALYSIS_VERSION = 7
 PROJECT_ANALYSIS_EXTENSION = ".seedfiddle-project.json"
 PROJECT_ANALYSIS_DEFAULT_NAME = "analysis.seedfiddle-project.json"
 PROJECT_ANALYSIS_MAX_BYTES = 16 * 1024 * 1024
@@ -187,6 +187,8 @@ class ProjectAnalysisDocument:
     reference_model_assets: tuple[ReferenceModelAsset, ...] = ()
     native_recipes: tuple[RecipeSpec, ...] = ()
     correction_bindings: tuple[ProjectCorrectionBinding, ...] = ()
+    pipeline_workflow: object | None = None
+    node_instances: tuple = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -259,6 +261,8 @@ class ProjectAnalysisStore:
         reference_graphs: tuple[ReferenceGraphAttachment, ...] = (),
         reference_model_assets: tuple[ReferenceModelAsset, ...] = (),
         native_recipes: tuple[RecipeSpec, ...] = (),
+        pipeline_workflow=None,
+        node_instances=(),
         correction_bindings: tuple[ProjectCorrectionBinding, ...] = (),
         existing_correction_bindings: tuple[ProjectCorrectionBinding, ...] | None = None,
     ) -> ProjectAnalysisDocument:
@@ -277,6 +281,8 @@ class ProjectAnalysisStore:
         try:
             graph_attachments = validate_reference_graphs(reference_graphs)
             working_recipes = validate_native_recipes(native_recipes)
+            _workflow_payload(pipeline_workflow)
+            _instances_payload(node_instances)
         except ReferenceGraphPersistenceError as error:
             raise InvalidProjectAnalysis(f"Invalid embedded reference graph metadata: {error}") from error
         except (TypeError, ValueError, KeyError, OverflowError, RecursionError) as error:
@@ -412,13 +418,13 @@ class ProjectAnalysisStore:
                     "The selected image must be one of the captured project images."
                 )
         try:
-            validate_correction_bindings(correction_bindings, tuple(records), graph_attachments, working_recipes)
+            validate_correction_bindings(correction_bindings, tuple(records), graph_attachments, working_recipes, pipeline_workflow=pipeline_workflow, node_instances=node_instances)
             captured_correction_bindings = capture_correction_bindings(
                 self.project_root, correction_bindings, tuple(records), graph_attachments, working_recipes,
-                existing=existing_correction_bindings)
+                existing=existing_correction_bindings, pipeline_workflow=pipeline_workflow, node_instances=node_instances)
             captured_model_assets = capture_reference_model_assets(
                 self.project_root, graph_attachments, reference_model_assets, allow_unavailable=True,
-                native_recipes=working_recipes)
+                native_recipes=working_recipes, pipeline_workflow=pipeline_workflow, node_instances=node_instances)
         except (ValueError, TypeError, OSError) as error:
             raise InvalidProjectAnalysis(f'Could not bind selected native inputs/models: {error}') from error
         document = ProjectAnalysisDocument(
@@ -437,6 +443,8 @@ class ProjectAnalysisStore:
             reference_graphs=graph_attachments,
             reference_model_assets=captured_model_assets,
             native_recipes=working_recipes,
+            pipeline_workflow=pipeline_workflow,
+            node_instances=node_instances,
             correction_bindings=captured_correction_bindings,
         )
         # The serializer is also the single strict document-level validator.
@@ -475,6 +483,8 @@ class ProjectAnalysisStore:
         reference_graphs: tuple[ReferenceGraphAttachment, ...] = (),
         reference_model_assets: tuple[ReferenceModelAsset, ...] = (),
         native_recipes: tuple[RecipeSpec, ...] = (),
+        pipeline_workflow=None,
+        node_instances=(),
         correction_bindings: tuple[ProjectCorrectionBinding, ...] = (),
         existing_correction_bindings: tuple[ProjectCorrectionBinding, ...] | None = None,
         destination: Path | str | None = None,
@@ -491,6 +501,8 @@ class ProjectAnalysisStore:
             reference_graphs=reference_graphs,
             reference_model_assets=reference_model_assets,
             native_recipes=native_recipes,
+            pipeline_workflow=pipeline_workflow,
+            node_instances=node_instances,
             correction_bindings=correction_bindings,
             existing_correction_bindings=existing_correction_bindings,
         )
@@ -736,7 +748,7 @@ class ProjectAnalysisStore:
                 continue
             try:
                 verify_reference_model_assets(self.project_root, (asset,), document.reference_graphs,
-                                              native_recipes=document.native_recipes)
+                                              native_recipes=document.native_recipes, pipeline_workflow=document.pipeline_workflow, node_instances=document.node_instances)
             except FileNotFoundError:
                 status = ProjectFileStatus.MISSING
             except (ValueError, TypeError, OSError):
@@ -748,7 +760,7 @@ class ProjectAnalysisStore:
         if verify_files:
             for recipe, stage, selection in unbound_model_selections(document.reference_model_assets,
                                                                      document.reference_graphs,
-                                                                     document.native_recipes):
+                                                                     document.native_recipes, document.pipeline_workflow, document.node_instances):
                 try:
                     verify_original_model_selection(stage, selection)
                 except FileNotFoundError:
@@ -825,10 +837,12 @@ def _document_payload(document: ProjectAnalysisDocument) -> dict[str, object]:
             f"Invalid embedded analysis-settings profile: {error}"
         ) from error
     try:
+        _workflow_payload(document.pipeline_workflow)
+        instance_payload = _instances_payload(document.node_instances)
         graph_payload = reference_graphs_to_payload(document.reference_graphs)
         native_payload = native_recipes_to_payload(document.native_recipes)
         model_assets = validate_reference_model_assets(document.reference_model_assets, document.reference_graphs,
-                                                       document.native_recipes)
+                                                       document.native_recipes, document.pipeline_workflow, document.node_instances)
     except ReferenceGraphPersistenceError as error:
         raise InvalidProjectAnalysis(
             f"Invalid embedded reference graph metadata: {error}"
@@ -915,12 +929,12 @@ def _document_payload(document: ProjectAnalysisDocument) -> dict[str, object]:
         )
     try:
         correction_bindings = validate_correction_bindings(document.correction_bindings, document.images,
-                                                          document.reference_graphs, document.native_recipes)
+                                                          document.reference_graphs, document.native_recipes, pipeline_workflow=document.pipeline_workflow, node_instances=document.node_instances)
     except (TypeError, ValueError, KeyError, OverflowError, RecursionError) as error:
         raise InvalidProjectAnalysis(f'Invalid embedded correction bindings: {error}') from error
     payload: dict[str, object] = {
         "format": PROJECT_ANALYSIS_FORMAT,
-        "version": PROJECT_ANALYSIS_VERSION,
+        "version": PROJECT_ANALYSIS_VERSION if document.pipeline_workflow is not None or document.node_instances else 6,
         "reference_graphs": graph_payload,
         "reference_model_assets": [asset.to_dict() for asset in model_assets],
         "native_recipes": native_payload,
@@ -943,6 +957,10 @@ def _document_payload(document: ProjectAnalysisDocument) -> dict[str, object]:
         },
         "images": images,
     }
+    if document.pipeline_workflow is not None or document.node_instances:
+        payload["pipeline_workflow"] = _workflow_payload(document.pipeline_workflow)
+    if document.node_instances:
+        payload["node_instances"] = instance_payload
     if document.ui_state is not None:
         payload["ui"] = _ui_payload(document.ui_state, known_nodes)
     return payload
@@ -954,7 +972,7 @@ def _document_from_payload(payload: object) -> ProjectAnalysisDocument:
         raise InvalidProjectAnalysis(
             f"Unsupported project format {root.get('format')!r}."
         )
-    if not _exact_int(root.get("version")) or root["version"] not in {1, 2, 3, 4, 5, PROJECT_ANALYSIS_VERSION}:
+    if not _exact_int(root.get("version")) or root["version"] not in {1, 2, 3, 4, 5, 6, PROJECT_ANALYSIS_VERSION}:
         raise InvalidProjectAnalysis(
             f"Unsupported project version {root.get('version')!r}."
         )
@@ -968,7 +986,10 @@ def _document_from_payload(payload: object) -> ProjectAnalysisDocument:
         root_required.add("native_recipes")
     if project_version >= 6:
         root_required.add("correction_bindings")
-    _keys(root, required=root_required, optional={"ui"}, name="project master")
+    if project_version >= 7:
+        root_required.add("pipeline_workflow")
+    _keys(root, required=root_required, optional={"ui", "node_instances"} if project_version >= 7 else {"ui"}, name="project master")
+    node_instances = _instances_from_payload(root.get('node_instances', []))
     try:
         settings = analysis_settings_profile_from_payload(root["analysis_settings"])
     except AnalysisSettingsError as error:
@@ -1123,10 +1144,10 @@ def _document_from_payload(payload: object) -> ProjectAnalysisDocument:
         )
         native_recipes = native_recipes_from_payload(root['native_recipes']) if project_version >= 5 else ()
         reference_model_assets = (reference_model_assets_from_payload(root['reference_model_assets'], reference_graphs,
-                                                                     native_recipes)
+                                                                     native_recipes, _workflow_from_payload(root.get("pipeline_workflow")), node_instances)
                                   if project_version >= 4 else ())
         correction_bindings = (correction_bindings_from_payload(root['correction_bindings'], tuple(images),
-                                                               reference_graphs, native_recipes)
+                                                               reference_graphs, native_recipes, pipeline_workflow=_workflow_from_payload(root.get("pipeline_workflow")), node_instances=node_instances)
                                if project_version >= 6 else ())
     except ReferenceGraphPersistenceError as error:
         raise InvalidProjectAnalysis(
@@ -1148,6 +1169,8 @@ def _document_from_payload(payload: object) -> ProjectAnalysisDocument:
         reference_graphs=reference_graphs,
         reference_model_assets=reference_model_assets,
         native_recipes=native_recipes,
+        pipeline_workflow=_workflow_from_payload(root.get("pipeline_workflow")),
+        node_instances=node_instances,
         correction_bindings=correction_bindings,
     )
 
@@ -1605,3 +1628,53 @@ __all__ = [
     "ResolvedProjectImage",
     "ResolvedProjectSidecar",
 ]
+
+
+def _workflow_payload(value):
+    if value is None:
+        return None
+    from seedvision.pipeline.workflows import PipelineWorkflow, validate_workflow
+    if not isinstance(value, PipelineWorkflow):
+        raise InvalidProjectAnalysis('Pipeline workflow must be a supported working workflow.')
+    validate_workflow(value)
+    from seedvision.pipeline.backend_execution import validate_backend_selection
+    try:
+        validate_backend_selection(value)
+    except NotImplementedError as error:
+        raise InvalidProjectAnalysis(f'Invalid pipeline execution choice: {error}') from error
+    return value.to_dict()
+
+
+def _instances_payload(value):
+    if value == ():
+        return []
+    from seedvision.pipeline.catalogue_nodes import node_instances_to_payload
+    payload = node_instances_to_payload(value)
+    for instance in value:
+        if instance.workflow is not None:
+            _workflow_payload(instance.workflow)
+    return payload
+
+
+def _instances_from_payload(value):
+    if type(value) is list and not value:
+        return ()
+    from seedvision.pipeline.catalogue_nodes import node_instances_from_payload
+    try:
+        instances = node_instances_from_payload(value)
+        _instances_payload(instances)
+        return instances
+    except (TypeError, ValueError, KeyError, OverflowError, RecursionError) as error:
+        raise InvalidProjectAnalysis(f'Invalid pipeline node instances: {error}') from error
+
+
+def _workflow_from_payload(value):
+    if value is None:
+        return None
+    from seedvision.pipeline.workflows import PipelineWorkflow
+    try:
+        workflow = PipelineWorkflow.from_dict(value)
+        _workflow_payload(workflow)
+        return workflow
+    except (TypeError, ValueError, KeyError) as error:
+        raise InvalidProjectAnalysis(f'Invalid pipeline workflow: {error}') from error

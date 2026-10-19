@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.functional_units import functional_units
+
 import unittest
 from unittest.mock import patch
 
@@ -9,8 +11,9 @@ from seedvision.learning.metrics import _global_matches, evaluate_instances
 from seedvision.segmentation import procedural_fit
 
 
+@functional_units
 class AssignmentBudgetTests(unittest.TestCase):
-    def test_large_one_column_evaluator_component_is_rejected_before_matrix_allocation(self) -> None:
+    def check_test_large_one_column_evaluator_component_is_rejected_before_matrix_allocation(self) -> None:
         truth = np.arange(1, 10_001, dtype=np.int32).reshape(100, 100)
         prediction = np.ones_like(truth)
         real_zeros = np.zeros
@@ -27,7 +30,7 @@ class AssignmentBudgetTests(unittest.TestCase):
             with self.assertRaisesRegex(MemoryError, "assignment budget"):
                 evaluate_instances(truth, prediction, iou_threshold=0.00005)
 
-    def test_direct_solver_preflights_dummy_columns_before_cost_allocation(self) -> None:
+    def check_test_direct_solver_preflights_dummy_columns_before_cost_allocation(self) -> None:
         weights = np.ones((10_000, 1), dtype=np.float64)
         def reject_cost_allocation(shape, *args, **kwargs):
             raise AssertionError("solver allocated costs before preflight")
@@ -36,7 +39,7 @@ class AssignmentBudgetTests(unittest.TestCase):
             with self.assertRaisesRegex(MemoryError, "assignment budget"):
                 procedural_fit._maximum_weight_assignment(weights)
 
-    def test_small_ambiguous_assignments_preserve_cardinality_then_weight(self) -> None:
+    def check_test_small_ambiguous_assignments_preserve_cardinality_then_weight(self) -> None:
         weights = np.array(
             [
                 [4.0, 3.9],
@@ -57,12 +60,12 @@ class AssignmentBudgetTests(unittest.TestCase):
         self.assertEqual(metrics.false_negatives, 0)
         self.assertEqual(metrics.panoptic_quality, 1.0)
 
-    def test_global_matcher_uses_the_same_workspace_preflight(self) -> None:
+    def check_test_global_matcher_uses_the_same_workspace_preflight(self) -> None:
         pairs = [(0.0001, identifier, 1, 1) for identifier in range(1, 10_001)]
         with self.assertRaisesRegex(MemoryError, "assignment budget"):
             _global_matches(pairs, threshold=0.00005)
 
-    def test_near_budget_evaluator_writes_negative_costs_into_preallocated_matrix(self) -> None:
+    def check_test_near_budget_evaluator_writes_negative_costs_into_preallocated_matrix(self) -> None:
         pairs = [
             (0.75, true_id, predicted_id, 1)
             for true_id in range(1, 9)
@@ -91,6 +94,17 @@ class AssignmentBudgetTests(unittest.TestCase):
 
         self.assertEqual(len(matches), 8)
         self.assertEqual(calls, 1)
+
+    def test_validation_and_recovery(self):
+        """2 related AssignmentBudgetTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_large_one_column_evaluator_component_is_rejected_before_matrix_allocation)
+        self.scenario(self.check_test_near_budget_evaluator_writes_negative_costs_into_preallocated_matrix)
+
+    def test_workflow_lifecycle(self):
+        """3 related AssignmentBudgetTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_direct_solver_preflights_dummy_columns_before_cost_allocation)
+        self.scenario(self.check_test_small_ambiguous_assignments_preserve_cardinality_then_weight)
+        self.scenario(self.check_test_global_matcher_uses_the_same_workspace_preflight)
 
 
 if __name__ == "__main__":

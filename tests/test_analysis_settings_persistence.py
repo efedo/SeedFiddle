@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.functional_units import functional_units
+
 from copy import deepcopy
 import json
 import os
@@ -32,8 +34,9 @@ def _node_payload(payload: dict[str, object], node_id: str) -> dict[str, object]
     return next(item for item in nodes if item["id"] == node_id)
 
 
+@functional_units
 class AnalysisSettingsPersistenceTests(unittest.TestCase):
-    def test_json_round_trip_is_human_readable_and_analysis_only(self) -> None:
+    def check_test_json_round_trip_is_human_readable_and_analysis_only(self) -> None:
         graph = build_default_pipeline()
         graph.set_parameter("ruler_detection", "ruler_length_mm", 175.0)
         node = graph.node("ruler_detection")
@@ -66,7 +69,7 @@ class AnalysisSettingsPersistenceTests(unittest.TestCase):
                 tuple(destination.parent.glob(f".{destination.name}.*.tmp"))
             )
 
-    def test_apply_restores_parameters_topology_enabled_and_suspended_once(self) -> None:
+    def check_test_apply_restores_parameters_topology_enabled_and_suspended_once(self) -> None:
         source = build_default_pipeline()
         source.restore_unused_node("circle_candidates")
         source.set_parameter("ruler_detection", "ruler_length_mm", 183.0)
@@ -119,7 +122,7 @@ class AnalysisSettingsPersistenceTests(unittest.TestCase):
             analysis_settings_profile_to_payload(profile),
         )
 
-    def test_no_op_is_neutral_and_net_ridge_control_is_analytical(self) -> None:
+    def check_test_no_op_is_neutral_and_net_ridge_control_is_analytical(self) -> None:
         graph = build_default_pipeline()
         profile = analysis_settings_profile_from_graph(graph)
         graph.node("reference_edge_probability").status = NodeStatus.COMPLETE
@@ -164,7 +167,7 @@ class AnalysisSettingsPersistenceTests(unittest.TestCase):
         self.assertEqual(graph.node("procedural_instances").status, NodeStatus.IDLE)
         self.assertEqual(graph.node("reference_edge_probability").x, 321.0)
 
-    def test_version_thirteen_profile_adopts_terminal_seed_trait_node(self) -> None:
+    def check_test_version_thirteen_profile_adopts_terminal_seed_trait_node(self) -> None:
         source = build_default_pipeline()
         payload = analysis_settings_profile_to_payload(
             analysis_settings_profile_from_graph(source)
@@ -200,7 +203,7 @@ class AnalysisSettingsPersistenceTests(unittest.TestCase):
             14,
         )
 
-    def test_version_fourteen_profile_adds_authoritative_procedural_edge_input(
+    def check_test_version_fourteen_profile_adds_authoritative_procedural_edge_input(
         self,
     ) -> None:
         payload = analysis_settings_profile_to_payload(
@@ -244,7 +247,7 @@ class AnalysisSettingsPersistenceTests(unittest.TestCase):
         self.assertEqual(ridge_connection.source, "edge_gradients")
         self.assertEqual(ridge_connection.source_port, "magnitude")
 
-    def test_version_nineteen_replaces_prethinned_reference_input(self) -> None:
+    def check_test_version_nineteen_replaces_prethinned_reference_input(self) -> None:
         for connected in (False, True):
             with self.subTest(connected=connected):
                 graph = build_default_pipeline()
@@ -269,7 +272,7 @@ class AnalysisSettingsPersistenceTests(unittest.TestCase):
                 else:
                     self.assertIsNone(migrated)
 
-    def test_version_eighteen_adds_reference_matching_and_cost_defaults(self) -> None:
+    def check_test_version_eighteen_adds_reference_matching_and_cost_defaults(self) -> None:
         source = build_default_pipeline()
         payload = analysis_settings_profile_to_payload(analysis_settings_profile_from_graph(source))
         payload["version"] = 18
@@ -286,7 +289,7 @@ class AnalysisSettingsPersistenceTests(unittest.TestCase):
                              source.node("procedural_instances").parameters[key])
         self.assertEqual(target.node("procedural_instances").parameters["reference_error_overreach_weight"], 3.25)
 
-    def test_version_sixteen_adds_oval_centres_and_diagnostic_defaults(self) -> None:
+    def check_test_version_sixteen_adds_oval_centres_and_diagnostic_defaults(self) -> None:
         source = build_default_pipeline()
         payload = analysis_settings_profile_to_payload(
             analysis_settings_profile_from_graph(source)
@@ -333,7 +336,7 @@ class AnalysisSettingsPersistenceTests(unittest.TestCase):
         self.assertEqual(controls_connection.source, "project")
         self.assertEqual(controls_connection.source_port, "annotations")
 
-    def test_graph_compatibility_is_fully_validated_before_mutation(self) -> None:
+    def check_test_graph_compatibility_is_fully_validated_before_mutation(self) -> None:
         graph = build_default_pipeline()
         graph.node("ruler_detection").status = NodeStatus.COMPLETE
         original_profile = analysis_settings_profile_from_graph(graph)
@@ -366,7 +369,7 @@ class AnalysisSettingsPersistenceTests(unittest.TestCase):
             original_payload,
         )
 
-    def test_version_two_profile_adopts_new_candidate_geometry_defaults(self) -> None:
+    def check_test_version_two_profile_adopts_new_candidate_geometry_defaults(self) -> None:
         graph = build_default_pipeline()
         payload = analysis_settings_profile_to_payload(
             analysis_settings_profile_from_graph(graph)
@@ -398,7 +401,7 @@ class AnalysisSettingsPersistenceTests(unittest.TestCase):
                 graph.node("procedural_instances").parameters[key],
             )
 
-    def test_version_seven_profile_adopts_new_procedural_evidence_defaults(self) -> None:
+    def check_test_version_seven_profile_adopts_new_procedural_evidence_defaults(self) -> None:
         graph = build_default_pipeline()
         payload = analysis_settings_profile_to_payload(
             analysis_settings_profile_from_graph(graph)
@@ -426,7 +429,7 @@ class AnalysisSettingsPersistenceTests(unittest.TestCase):
                 graph.node("procedural_instances").parameters[key],
             )
 
-    def test_version_four_profile_migrates_combined_annotation_and_colour_nodes(self) -> None:
+    def check_test_version_four_profile_migrates_combined_annotation_and_colour_nodes(self) -> None:
         source = build_default_pipeline()
         payload = analysis_settings_profile_to_payload(
             analysis_settings_profile_from_graph(source)
@@ -504,7 +507,7 @@ class AnalysisSettingsPersistenceTests(unittest.TestCase):
             ("project", "annotations"),
         )
 
-    def test_version_eight_profile_migrates_project_image_and_annotations_root(self) -> None:
+    def check_test_version_eight_profile_migrates_project_image_and_annotations_root(self) -> None:
         source = build_default_pipeline()
         payload = analysis_settings_profile_to_payload(
             analysis_settings_profile_from_graph(source)
@@ -586,7 +589,7 @@ class AnalysisSettingsPersistenceTests(unittest.TestCase):
             ("project", "annotations"),
         )
 
-    def test_version_ten_profile_adds_material_class_contrast_default(self) -> None:
+    def check_test_version_ten_profile_adds_material_class_contrast_default(self) -> None:
         payload = analysis_settings_profile_to_payload(
             analysis_settings_profile_from_graph(build_default_pipeline())
         )
@@ -608,7 +611,7 @@ class AnalysisSettingsPersistenceTests(unittest.TestCase):
             4.0,
         )
 
-    def test_version_eleven_profile_adds_edge_class_contrast_default(self) -> None:
+    def check_test_version_eleven_profile_adds_edge_class_contrast_default(self) -> None:
         payload = analysis_settings_profile_to_payload(
             analysis_settings_profile_from_graph(build_default_pipeline())
         )
@@ -630,7 +633,7 @@ class AnalysisSettingsPersistenceTests(unittest.TestCase):
             4.0,
         )
 
-    def test_version_nine_profile_merges_perimeter_reference_into_layout(self) -> None:
+    def check_test_version_nine_profile_merges_perimeter_reference_into_layout(self) -> None:
         source = build_default_pipeline()
         source.set_parameter(
             "layout_detection", "perimeter_background_buffer_cm", 0.45
@@ -721,7 +724,7 @@ class AnalysisSettingsPersistenceTests(unittest.TestCase):
                 ("layout_detection", "perimeter_background"),
             )
 
-    def test_version_five_profile_migrates_combined_noise_node(self) -> None:
+    def check_test_version_five_profile_migrates_combined_noise_node(self) -> None:
         source = build_default_pipeline()
         source.set_parameter(
             "refined_background_likelihood",
@@ -809,7 +812,7 @@ class AnalysisSettingsPersistenceTests(unittest.TestCase):
             ),
         )
 
-    def test_missing_and_unknown_catalogue_members_fail_clearly(self) -> None:
+    def check_test_missing_and_unknown_catalogue_members_fail_clearly(self) -> None:
         cases: list[tuple[str, Callable[[dict[str, object]], None]]] = []
 
         def missing_node(payload: dict[str, object]) -> None:
@@ -880,7 +883,7 @@ class AnalysisSettingsPersistenceTests(unittest.TestCase):
                     before,
                 )
 
-    def test_inconsistent_enabled_and_suspended_states_are_rejected(self) -> None:
+    def check_test_inconsistent_enabled_and_suspended_states_are_rejected(self) -> None:
         graph = build_default_pipeline()
         base = analysis_settings_profile_to_payload(
             analysis_settings_profile_from_graph(graph)
@@ -908,7 +911,7 @@ class AnalysisSettingsPersistenceTests(unittest.TestCase):
                 graph, analysis_settings_profile_from_payload(false_suspension)
             )
 
-    def test_disconnection_behind_toolbox_node_is_not_mistaken_for_shelving(self) -> None:
+    def check_test_disconnection_behind_toolbox_node_is_not_mistaken_for_shelving(self) -> None:
         source = build_default_pipeline()
         source.restore_unused_node("circle_candidates")
         disconnected = next(
@@ -935,7 +938,7 @@ class AnalysisSettingsPersistenceTests(unittest.TestCase):
         self.assertNotIn(disconnected, target.connections)
         self.assertIn(still_connected, target.connections)
 
-    def test_invalid_json_and_failed_replace_preserve_existing_file_and_graph(self) -> None:
+    def check_test_invalid_json_and_failed_replace_preserve_existing_file_and_graph(self) -> None:
         graph = build_default_pipeline()
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -962,7 +965,7 @@ class AnalysisSettingsPersistenceTests(unittest.TestCase):
                 destination.read_text(encoding="utf-8"), "keep this exact file"
             )
 
-    def test_load_and_apply_failure_does_not_mutate_graph(self) -> None:
+    def check_test_load_and_apply_failure_does_not_mutate_graph(self) -> None:
         graph = build_default_pipeline()
         payload = analysis_settings_profile_to_payload(
             analysis_settings_profile_from_graph(graph)
@@ -982,7 +985,7 @@ class AnalysisSettingsPersistenceTests(unittest.TestCase):
                 150.0,
             )
 
-    def test_replace_and_cleanup_failures_preserve_the_primary_error(self) -> None:
+    def check_test_replace_and_cleanup_failures_preserve_the_primary_error(self) -> None:
         graph = build_default_pipeline()
         with tempfile.TemporaryDirectory() as temporary:
             destination = Path(temporary) / "existing.seedfiddle-settings.json"
@@ -1005,7 +1008,7 @@ class AnalysisSettingsPersistenceTests(unittest.TestCase):
             for leftover in destination.parent.glob(f".{destination.name}.*.tmp"):
                 leftover.unlink()
 
-    def test_fdopen_failure_closes_owned_descriptor_and_preserves_destination(self) -> None:
+    def check_test_fdopen_failure_closes_owned_descriptor_and_preserves_destination(self) -> None:
         graph = build_default_pipeline()
         with tempfile.TemporaryDirectory() as temporary:
             destination = Path(temporary) / "existing.seedfiddle-settings.json"
@@ -1032,6 +1035,36 @@ class AnalysisSettingsPersistenceTests(unittest.TestCase):
                 tuple(destination.parent.glob(f".{destination.name}.*.tmp")),
                 (),
             )
+
+    def test_workflow_lifecycle(self):
+        """17 related AnalysisSettingsPersistenceTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_json_round_trip_is_human_readable_and_analysis_only)
+        self.scenario(self.check_test_apply_restores_parameters_topology_enabled_and_suspended_once)
+        self.scenario(self.check_test_no_op_is_neutral_and_net_ridge_control_is_analytical)
+        self.scenario(self.check_test_version_thirteen_profile_adopts_terminal_seed_trait_node)
+        self.scenario(self.check_test_version_fourteen_profile_adds_authoritative_procedural_edge_input)
+        self.scenario(self.check_test_version_nineteen_replaces_prethinned_reference_input)
+        self.scenario(self.check_test_version_eighteen_adds_reference_matching_and_cost_defaults)
+        self.scenario(self.check_test_version_sixteen_adds_oval_centres_and_diagnostic_defaults)
+        self.scenario(self.check_test_version_two_profile_adopts_new_candidate_geometry_defaults)
+        self.scenario(self.check_test_version_seven_profile_adopts_new_procedural_evidence_defaults)
+        self.scenario(self.check_test_version_four_profile_migrates_combined_annotation_and_colour_nodes)
+        self.scenario(self.check_test_version_eight_profile_migrates_project_image_and_annotations_root)
+        self.scenario(self.check_test_version_ten_profile_adds_material_class_contrast_default)
+        self.scenario(self.check_test_version_eleven_profile_adds_edge_class_contrast_default)
+        self.scenario(self.check_test_version_nine_profile_merges_perimeter_reference_into_layout)
+        self.scenario(self.check_test_version_five_profile_migrates_combined_noise_node)
+        self.scenario(self.check_test_disconnection_behind_toolbox_node_is_not_mistaken_for_shelving)
+
+    def test_validation_and_recovery(self):
+        """7 related AnalysisSettingsPersistenceTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_graph_compatibility_is_fully_validated_before_mutation)
+        self.scenario(self.check_test_missing_and_unknown_catalogue_members_fail_clearly)
+        self.scenario(self.check_test_inconsistent_enabled_and_suspended_states_are_rejected)
+        self.scenario(self.check_test_invalid_json_and_failed_replace_preserve_existing_file_and_graph)
+        self.scenario(self.check_test_load_and_apply_failure_does_not_mutate_graph)
+        self.scenario(self.check_test_replace_and_cleanup_failures_preserve_the_primary_error)
+        self.scenario(self.check_test_fdopen_failure_closes_owned_descriptor_and_preserves_destination)
 
 
 if __name__ == "__main__":

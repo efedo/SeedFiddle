@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.functional_units import functional_units
+
 from copy import deepcopy
 from hashlib import sha256
 import json
@@ -102,8 +104,9 @@ def _ready_manifest(
     )
 
 
+@functional_units
 class BenchmarkManifestTests(unittest.TestCase):
-    def test_round_trip_is_immutable_strict_and_does_not_mutate_payload(self) -> None:
+    def check_test_round_trip_is_immutable_strict_and_does_not_mutate_payload(self) -> None:
         manifest = _ready_manifest()
         payload = manifest.to_dict()
         original = deepcopy(payload)
@@ -125,7 +128,7 @@ class BenchmarkManifestTests(unittest.TestCase):
         with self.assertRaises((AttributeError, TypeError)):
             decoded_once.samples[0].sample_id = "changed"
 
-    def test_atomic_file_round_trip_and_audit_are_explicitly_not_science_certification(self) -> None:
+    def check_test_atomic_file_round_trip_and_audit_are_explicitly_not_science_certification(self) -> None:
         manifest = _ready_manifest()
         with tempfile.TemporaryDirectory() as temporary:
             destination = manifest.save(Path(temporary) / "study.json")
@@ -143,7 +146,7 @@ class BenchmarkManifestTests(unittest.TestCase):
         self.assertEqual(audit.scientific_validation_status, "not_certified")
         self.assertEqual(audit.to_dict()["scientific_validation_status"], "not_certified")
 
-    def test_same_group_may_contain_multiple_images_within_one_split(self) -> None:
+    def check_test_same_group_may_contain_multiple_images_within_one_split(self) -> None:
         samples = (
             _sample(
                 "dev_a",
@@ -171,7 +174,7 @@ class BenchmarkManifestTests(unittest.TestCase):
         self.assertEqual(audit.related_group_leakage_count, 0)
         self.assertEqual(audit.findings, ())
 
-    def test_source_duplicates_and_transitive_related_groups_crossing_roles_are_reported(self) -> None:
+    def check_test_source_duplicates_and_transitive_related_groups_crossing_roles_are_reported(self) -> None:
         repeated_source = "a" * 64
         samples = (
             _sample(
@@ -217,7 +220,7 @@ class BenchmarkManifestTests(unittest.TestCase):
             ("capture_group", "specimen_group"),
         )
 
-    def test_each_development_or_reference_access_to_locked_test_blocks_eligibility(self) -> None:
+    def check_test_each_development_or_reference_access_to_locked_test_blocks_eligibility(self) -> None:
         for index, purpose in enumerate(AccessPurpose):
             with self.subTest(purpose=purpose.value):
                 event = AccessRecord(
@@ -236,7 +239,7 @@ class BenchmarkManifestTests(unittest.TestCase):
                 self.assertEqual(finding.access_purpose, purpose)
                 self.assertEqual(finding.locked_test_target_ids, ("test_1",))
 
-    def test_access_through_source_alias_and_every_group_relation_is_resolved(self) -> None:
+    def check_test_access_through_source_alias_and_every_group_relation_is_resolved(self) -> None:
         group_fields = (
             "biological_lot_id",
             "specimen_group_id",
@@ -322,7 +325,7 @@ class BenchmarkManifestTests(unittest.TestCase):
                     self.assertEqual(finding.group_kinds, (group_field.removesuffix("_id"),))
                     self.assertEqual(finding.access_purpose, purpose)
 
-    def test_access_via_transitive_related_group_reports_accessed_and_locked_ids(self) -> None:
+    def check_test_access_via_transitive_related_group_reports_accessed_and_locked_ids(self) -> None:
         samples = (
             _sample(
                 "accessed_dev",
@@ -365,7 +368,7 @@ class BenchmarkManifestTests(unittest.TestCase):
         self.assertEqual(finding.access_ids, ("transitive_access",))
         self.assertEqual(finding.access_purpose, AccessPurpose.LIBRARY_EXTRACTION)
 
-    def test_access_closure_crosses_alternating_source_and_group_edges(self) -> None:
+    def check_test_access_closure_crosses_alternating_source_and_group_edges(self) -> None:
         source_ab = "1" * 64
         source_cd = "2" * 64
         source_ef = "3" * 64
@@ -410,7 +413,7 @@ class BenchmarkManifestTests(unittest.TestCase):
                     self.assertEqual(audit.source_duplicate_group_count, 0 if route_index == 0 else 1)
                     self.assertEqual(audit.related_group_leakage_count, 1 if route_index == 0 else 0)
 
-    def test_audit_report_bounds_findings_and_names_the_omitted_count(self) -> None:
+    def check_test_audit_report_bounds_findings_and_names_the_omitted_count(self) -> None:
         records = tuple(
             AccessRecord(
                 access_id=f"access_{index}",
@@ -428,7 +431,7 @@ class BenchmarkManifestTests(unittest.TestCase):
         self.assertEqual(audit.locked_test_access_count, 6)
         self.assertEqual(audit.to_dict()["omitted_finding_count"], 4)
 
-    def test_missing_groups_truth_or_access_log_blocks_evaluation_without_guessing(self) -> None:
+    def check_test_missing_groups_truth_or_access_log_blocks_evaluation_without_guessing(self) -> None:
         unavailable = TruthIdentity(
             state=TruthState.UNAVAILABLE,
             unavailable_reason="No reviewed truth package is available.",
@@ -452,7 +455,7 @@ class BenchmarkManifestTests(unittest.TestCase):
         }.issubset(audit.eligibility_blockers))
         self.assertEqual(audit.truth_unavailable_count, 1)
 
-    def test_strict_schema_rejects_unknown_duplicate_nonfinite_and_bad_role_values(self) -> None:
+    def check_test_strict_schema_rejects_unknown_duplicate_nonfinite_and_bad_role_values(self) -> None:
         manifest = _ready_manifest()
         payload = manifest.to_dict()
 
@@ -472,7 +475,7 @@ class BenchmarkManifestTests(unittest.TestCase):
             BenchmarkManifest.from_dict(payload | {"version": BENCHMARK_MANIFEST_VERSION + 1})
         self.assertEqual(payload["format"], BENCHMARK_MANIFEST_FORMAT)
 
-    def test_unavailable_truth_cannot_carry_partial_identity_and_available_truth_is_complete(self) -> None:
+    def check_test_unavailable_truth_cannot_carry_partial_identity_and_available_truth_is_complete(self) -> None:
         with self.assertRaisesRegex(BenchmarkManifestError, "cannot claim reviewed"):
             TruthIdentity(
                 state=TruthState.UNAVAILABLE,
@@ -494,7 +497,7 @@ class BenchmarkManifestTests(unittest.TestCase):
                     TruthIdentity.from_dict(payload)
                 self.assertEqual(payload, original)
 
-    def test_count_and_byte_limits_apply_to_direct_construction_and_decode(self) -> None:
+    def check_test_count_and_byte_limits_apply_to_direct_construction_and_decode(self) -> None:
         one = _sample(
             "dev_one", biological_lot_id="lot_a", specimen_group_id="group_a",
             capture_session_id="session_a",
@@ -515,7 +518,7 @@ class BenchmarkManifestTests(unittest.TestCase):
             with self.assertRaisesRegex(BenchmarkManifestError, "byte limit"):
                 BenchmarkManifest.from_json(json.dumps(_ready_manifest(samples=(one,)).to_dict()))
 
-    def test_exact_production_byte_limit_constructs_loads_and_saves_identically(self) -> None:
+    def check_test_exact_production_byte_limit_constructs_loads_and_saves_identically(self) -> None:
         count = 4575
         samples = tuple(
             _sample(
@@ -556,7 +559,7 @@ class BenchmarkManifestTests(unittest.TestCase):
             self.assertEqual(destination.read_bytes(), encoded)
             self.assertEqual(BenchmarkManifest.load(destination), manifest)
 
-    def test_exact_lowered_byte_limit_is_shared_by_constructor_load_and_save(self) -> None:
+    def check_test_exact_lowered_byte_limit_is_shared_by_constructor_load_and_save(self) -> None:
         manifest = _ready_manifest()
         encoded = manifest.to_json().encode("utf-8")
         with tempfile.TemporaryDirectory() as temporary:
@@ -571,6 +574,27 @@ class BenchmarkManifestTests(unittest.TestCase):
                     BenchmarkManifest.from_json(encoded)
                 with self.assertRaisesRegex(BenchmarkManifestError, "byte limit"):
                     manifest.save(destination)
+
+    def test_workflow_lifecycle(self):
+        """9 related BenchmarkManifestTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_round_trip_is_immutable_strict_and_does_not_mutate_payload)
+        self.scenario(self.check_test_atomic_file_round_trip_and_audit_are_explicitly_not_science_certification)
+        self.scenario(self.check_test_same_group_may_contain_multiple_images_within_one_split)
+        self.scenario(self.check_test_source_duplicates_and_transitive_related_groups_crossing_roles_are_reported)
+        self.scenario(self.check_test_each_development_or_reference_access_to_locked_test_blocks_eligibility)
+        self.scenario(self.check_test_access_through_source_alias_and_every_group_relation_is_resolved)
+        self.scenario(self.check_test_access_via_transitive_related_group_reports_accessed_and_locked_ids)
+        self.scenario(self.check_test_access_closure_crosses_alternating_source_and_group_edges)
+        self.scenario(self.check_test_audit_report_bounds_findings_and_names_the_omitted_count)
+
+    def test_validation_and_recovery(self):
+        """6 related BenchmarkManifestTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_missing_groups_truth_or_access_log_blocks_evaluation_without_guessing)
+        self.scenario(self.check_test_strict_schema_rejects_unknown_duplicate_nonfinite_and_bad_role_values)
+        self.scenario(self.check_test_unavailable_truth_cannot_carry_partial_identity_and_available_truth_is_complete)
+        self.scenario(self.check_test_count_and_byte_limits_apply_to_direct_construction_and_decode)
+        self.scenario(self.check_test_exact_production_byte_limit_constructs_loads_and_saves_identically)
+        self.scenario(self.check_test_exact_lowered_byte_limit_is_shared_by_constructor_load_and_save)
 
 
 if __name__ == "__main__":

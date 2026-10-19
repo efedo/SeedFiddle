@@ -19,8 +19,13 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m pip install -r requirements-runtime.txt
-      - run: python -m unittest discover -s tests -v
+      - run: python -m tests --tier cpu-qt -v --report artifacts/ci-cpu-qt.json
       - run: python scripts/generate_node_catalogue.py --check
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cpu-qt-test-results
+          path: artifacts/ci-cpu-qt.json
   cuda:
     if: github.event_name == 'workflow_dispatch' && inputs.run_cuda
     runs-on: [self-hosted, Windows, CUDA]
@@ -28,5 +33,26 @@ jobs:
       QT_QPA_PLATFORM: offscreen
     steps:
       - uses: actions/checkout@v4
+        with:
+          clean: false
+      # Keep the configured local runtimes and reviewed fixture inputs. Clean
+      # source files normally so deleted/untracked tests cannot survive a job.
+      - run: git clean -ffdx -e /.venv/ -e /artifacts/
       - run: .venv\Scripts\python.exe -c "import torch; assert torch.cuda.is_available()"
-      - run: .venv\Scripts\python.exe -m unittest discover -s tests -v
+      # This runner owns the pinned CUDA/PlantCV environment. An optional local
+      # bundle restores reviewed ignored fixtures; missing or changed files fail
+      # preflight before any expensive numerical methods execute.
+      - shell: pwsh
+        env:
+          SEEDFIDDLE_TEST_FIXTURES: ${{ vars.SEEDFIDDLE_TEST_FIXTURES }}
+        run: |
+          $fixtureArgs = @()
+          if ($env:SEEDFIDDLE_TEST_FIXTURES) {
+            $fixtureArgs = @('--fixtures-from', $env:SEEDFIDDLE_TEST_FIXTURES)
+          }
+          .venv\Scripts\python.exe -m tests --full -v --report artifacts/ci-full-${{ github.run_id }}-${{ github.run_attempt }}.json @fixtureArgs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: full-cuda-test-results
+          path: artifacts/ci-full-${{ github.run_id }}-${{ github.run_attempt }}.json

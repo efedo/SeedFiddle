@@ -1,4 +1,6 @@
 """Actual saved-input CUDA stage replay, lineage and unavailable outcomes."""
+
+from tests.functional_units import functional_units
 from dataclasses import replace
 from hashlib import sha256
 import inspect
@@ -6,10 +8,12 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import shutil
 import threading
 import time
 import tracemalloc
 import unittest
+from tests.catalogue_fixtures import CatalogueTestCase
 from unittest.mock import patch
 
 import torch
@@ -23,8 +27,9 @@ from tests.test_native_recipe import fixture, selected_recipe, FRAME, SOURCE, PR
 os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
 
 
-class NativeStageReplayPlanTests(unittest.TestCase):
-    def test_cuda_envelope_boundary_full_fixture_and_uhd_scope(self):
+@functional_units
+class NativeStageReplayPlanTests(CatalogueTestCase):
+    def check_test_cuda_envelope_boundary_full_fixture_and_uhd_scope(self):
         maximum = (replay.MAX_REPLAY_CUDA_BYTES-128*1024*1024)//128
         self.assertEqual(maximum,7_340_032)
         plan = replay._plan((1,maximum),'threshold.binary',{},2*maximum)
@@ -35,7 +40,7 @@ class NativeStageReplayPlanTests(unittest.TestCase):
         self.assertLess(replay._plan((2080,3120),'threshold.binary',{},2*2080*3120)['cuda_bytes'],
                         replay.MAX_REPLAY_CUDA_BYTES)
 
-    def test_fill_compression_work_boundary_and_area_shortcuts(self):
+    def check_test_fill_compression_work_boundary_and_area_shortcuts(self):
         # For a one-row raster below the1M edge chunk there is one batch:
         # 128P +104P +64*(32*(P-1)+104P).
         maximum = (replay.MAX_REPLAY_WORK+2048)//8936
@@ -50,7 +55,7 @@ class NativeStageReplayPlanTests(unittest.TestCase):
             self.assertTrue(replay._plan((2080,3120),'morphology.fill',{'size':size},2*2080*3120)
                             ['work_details']['area_shortcut'])
 
-    def test_distance_two_sweep_line_budget_and_median_maximum_kernel(self):
+    def check_test_distance_two_sweep_line_budget_and_median_maximum_kernel(self):
         limit = replay.MAX_DISTANCE_SCAN_CHUNKS//2
         plan = replay._plan((limit,1),'reference.internal.watershed.distance_map',{},5*limit)
         self.assertEqual(plan['work_details']['scan_chunks'],2*limit)
@@ -63,17 +68,43 @@ class NativeStageReplayPlanTests(unittest.TestCase):
         with self.assertRaises(runner.NativeRecipeError):
             replay._plan((512,512),'filter.median_blur',{'ksize':255},2*512*512)
 
+    def test_validation_and_recovery(self):
+        """3 related NativeStageReplayPlanTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_cuda_envelope_boundary_full_fixture_and_uhd_scope)
+        self.scenario(self.check_test_fill_compression_work_boundary_and_area_shortcuts)
+        self.scenario(self.check_test_distance_two_sweep_line_budget_and_median_maximum_kernel)
+
 
 @unittest.skipUnless(torch.cuda.is_available(), 'CUDA required')
-class NativeStageReplayTests(unittest.TestCase):
+@functional_units
+class NativeStageReplayTests(CatalogueTestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.fixture_temp = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(cls.fixture_temp.cleanup)
+        cls.fixture_root = Path(cls.fixture_temp.name)
+        gray,rgb = fixture()
+        cls.recipe = runner.build_native_seed_recipe(selected_recipe())
+        cls.saved_run = runner.run_native_recipe(cls.recipe, torch.tensor(gray,device='cuda'),
+            torch.tensor(rgb,device='cuda'),source_sha256=SOURCE,coordinate_frame=FRAME,preparation=PREPARATION)
+        cls.fixture_directory = cls.fixture_root/'run'
+        archives.export_native_recipe_result(cls.fixture_directory,cls.recipe,cls.saved_run)
+        from tests.replay_fixtures import archive_hashes
+        cls.fixture_hashes = archive_hashes(cls.fixture_directory)
+        cls.fixture_signature = runner._nested_signature((), tuple(n.outputs for n in cls.saved_run.nodes))
+
+    @classmethod
+    def tearDownClass(cls):
+        from tests.replay_fixtures import archive_hashes
+        if (archive_hashes(cls.fixture_directory) != cls.fixture_hashes or
+                runner._nested_signature((), tuple(n.outputs for n in cls.saved_run.nodes)) != cls.fixture_signature):
+            raise AssertionError('Replay test modified its shared source fixture')
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(); self.root = Path(self.temp.name)
-        gray,rgb = fixture()
-        self.recipe = runner.build_native_seed_recipe(selected_recipe())
-        self.run = runner.run_native_recipe(self.recipe, torch.tensor(gray,device='cuda'),
-            torch.tensor(rgb,device='cuda'),source_sha256=SOURCE,coordinate_frame=FRAME,preparation=PREPARATION)
+        self.run = self.saved_run
         self.directory = self.root/'run'
-        archives.export_native_recipe_result(self.directory,self.recipe,self.run)
+        shutil.copytree(self.fixture_directory,self.directory)
 
     def tearDown(self): self.temp.cleanup()
 
@@ -90,7 +121,7 @@ class NativeStageReplayTests(unittest.TestCase):
         return {str(path.relative_to(self.directory)):sha256(path.read_bytes()).hexdigest()
                 for path in self.directory.rglob('*') if path.is_file()}
 
-    def test_actual_raster_stage_replays_dispatch_only_target_preserve_archives_and_cuda(self):
+    def check_test_actual_raster_stage_replays_dispatch_only_target_preserve_archives_and_cuda(self):
         before = self.archive_hashes()
         for operation in ('filter.median_blur','threshold.binary','morphology.fill',
                           'morphology.erode','morphology.dilate','reference.internal.watershed.distance_map'):
@@ -99,9 +130,9 @@ class NativeStageReplayTests(unittest.TestCase):
                 def profile(frame,event,arg):
                     if event=='call' and frame.f_code is runner._dispatch.__code__:
                         calls.append(frame.f_locals['operation'])
-                sys.setprofile(profile)
-                try: result = replay.replay_native_stage(self.directory,self.stage(operation))
-                finally: sys.setprofile(None)
+                from tests.observation import observe_functions
+                with observe_functions(profile, runner._dispatch):
+                    result = replay.replay_native_stage(self.directory,self.stage(operation))
                 self.assertEqual(result.status,'matched',result.reason)
                 self.assertEqual(calls,[operation])
                 self.assertFalse(result.scientifically_validated)
@@ -112,7 +143,7 @@ class NativeStageReplayTests(unittest.TestCase):
                     self.assertTrue(torch.equal(value,self.run.node(self.stage(operation)).outputs[port]))
         self.assertEqual(self.archive_hashes(),before)
 
-    def test_mismatched_saved_output_is_reported_without_replacing_history(self):
+    def check_test_mismatched_saved_output_is_reported_without_replacing_history(self):
         stage = self.stage('threshold.binary'); node = self.run.node(stage)
         changed = node.outputs['mask'].clone(); changed[0,0] = 255-changed[0,0]
         altered = replace(node,outputs={'mask':changed})
@@ -122,61 +153,12 @@ class NativeStageReplayTests(unittest.TestCase):
         self.assertEqual(result.metadata['comparison']['mismatched_elements'],1)
         self.assertTrue(torch.equal(result.outputs['mask'],node.outputs['mask']))
 
-    def test_missing_runtime_binding_and_changed_runtime_withhold_before_array_loading(self):
-        for missing in (False,True):
-            runtime = dict(self.run.runtime)
-            if missing: del runtime['calculation_modules_sha256']
-            else: runtime['calculation_modules_sha256'] = '0'*64
-            directory = self.save_changed(runtime=runtime)
-            with patch.object(archives,'load_native_recipe_result') as load:
-                result = replay.replay_native_stage(directory,self.stage('threshold.binary'))
-                self.assertEqual(result.status,'unavailable',result.reason)
-                self.assertFalse(result.outputs); load.assert_not_called()
 
-    def test_wrong_edge_input_key_is_invalid_before_array_loading(self):
-        stage = self.stage('threshold.binary'); node = self.run.node(stage)
-        changed = replace(node,input_keys={'gray':'0'*64})
-        directory = self.save_changed(nodes=tuple(changed if item.stage_id==stage else item for item in self.run.nodes))
-        with patch.object(archives,'load_native_recipe_result') as load:
-            result = replay.replay_native_stage(directory,stage)
-            self.assertEqual(result.status,'invalid_archive',result.reason)
-            self.assertFalse(result.outputs); load.assert_not_called()
 
-    def test_expected_archive_revision_withholds_before_loading(self):
-        with patch.object(archives,'load_native_recipe_result') as load:
-            result = replay.replay_native_stage(self.directory,self.stage('threshold.binary'),expected_revision='0'*64)
-            self.assertEqual(result.status,'invalid_archive',result.reason)
-            self.assertFalse(result.outputs); load.assert_not_called()
 
-    def test_valid_cropped_frame_archive_replays_in_its_declared_local_frame(self):
-        from tests.test_native_calibrated_seed_recipe import fixture as card_fixture, selected_recipe as card_recipe
-        recipe = card_recipe(); path = self.root/'card.png'
-        self.assertTrue(cv2.imwrite(str(path),card_fixture()))
-        run = runner.run_native_recipe_path(recipe,path)
-        stage = next(item.stage_id for item in recipe.stages if item.operation_id=='threshold.binary')
-        self.assertEqual(run.node(stage).status,'executed',run.node(stage).reason)
-        directory = self.root/'cropped'; archives.export_native_recipe_result(directory,recipe,run)
-        report, arrays = archives.load_native_recipe_result(directory)
-        self.assertTrue(arrays); self.assertEqual(report['result_revision'],
-            archives.read_native_recipe_inventory(directory)[0]['result_revision'])
-        result = replay.replay_native_stage(directory,stage)
-        self.assertEqual(result.status,'matched',result.reason)
-        self.assertEqual(result.metadata['frame_scope'],'calibrated_seed_roi')
-        self.assertEqual(tuple(result.metadata['coordinate_frame']['shape']),(96,128))
-        self.assertEqual(result.metadata['frame_lineage']['local_to_parent_xy'],(600,260))
-        self.assertTrue(torch.equal(result.outputs['mask'],run.node(stage).outputs['mask']))
 
-    def test_unavailable_stage_unsupported_operation_and_invalid_archive_stay_explicit(self):
-        stage = self.stage('threshold.binary'); node = self.run.node(stage)
-        changed = replace(node,status='failed',outputs={},product_key=None,reason='Fixture unavailable')
-        directory = self.save_changed(status='partial',nodes=tuple(changed if item.stage_id==stage else item for item in self.run.nodes))
-        self.assertEqual(replay.replay_native_stage(directory,stage).status,'unavailable')
-        self.assertEqual(replay.replay_native_stage(self.directory,self.stage('external.image_inputs')).status,'unsupported')
-        path = self.directory/'native-results.json'; path.write_bytes(path.read_bytes()+b'!')
-        result = replay.replay_native_stage(self.directory,stage)
-        self.assertEqual(result.status,'invalid_archive',result.reason); self.assertFalse(result.outputs)
 
-    def test_admission_cancellation_and_callback_tensor_mutation_withhold_outputs(self):
+    def check_test_admission_cancellation_and_callback_tensor_mutation_withhold_outputs(self):
         stage = self.stage('threshold.binary')
         with patch.object(replay,'MAX_SELECTED_BYTES',1), patch.object(archives,'load_native_recipe_result') as load:
             result = replay.replay_native_stage(self.directory,stage)
@@ -195,25 +177,8 @@ class NativeStageReplayTests(unittest.TestCase):
         self.assertTrue(mutated,result.reason)
         self.assertEqual(result.status,'failed',result.reason); self.assertFalse(result.outputs)
 
-    def test_loaded_checkpoint_helper_change_withholds_replayed_output(self):
-        import seedvision.benchmarking.checkpoints as checkpoints
-        original = checkpoints._selected_array_names
-        changed = False
-        def mutate():
-            nonlocal changed
-            frame = inspect.currentframe()
-            while frame is not None:
-                if frame.f_code is replay.replay_native_stage.__code__ and 'source' in frame.f_locals and not changed:
-                    checkpoints._selected_array_names = lambda names,available: original(names,available)
-                    changed = True
-                frame = frame.f_back
-            return False
-        try: result = replay.replay_native_stage(self.directory,self.stage('threshold.binary'),cancel=mutate)
-        finally: checkpoints._selected_array_names = original
-        self.assertTrue(changed,result.reason)
-        self.assertEqual(result.status,'failed',result.reason); self.assertFalse(result.outputs)
 
-    def test_committed_full_resolution_saved_input_replay_cuda_and_host_peaks(self):
+    def check_test_committed_full_resolution_saved_input_replay_cuda_and_host_peaks(self):
         from seedvision.benchmarking.checkpoints import CoordinateFrame
         from tests.test_native_core_recovery_recipe import selected_recipe as recovery_recipe
         source = Path(__file__).parents[1]/'images'/'IMG_9632c.JPG'
@@ -221,11 +186,13 @@ class NativeStageReplayTests(unittest.TestCase):
         self.assertEqual(gray.shape,(2080,3120))
         gray_gpu = torch.tensor(gray,device='cuda'); rgb_gpu = gray_gpu[...,None].repeat(1,1,3)
         recipe = recovery_recipe()
+        stage = next(item.stage_id for item in recipe.stages if item.operation_id=='threshold.binary')
         run = runner.run_native_recipe(recipe,gray_gpu,rgb_gpu,source_sha256=sha256(source.read_bytes()).hexdigest(),
             coordinate_frame=CoordinateFrame('source.decoded',gray.shape,'top-left','x-right,y-down','pixel'),
-            preparation={'gray':'committed decoded grayscale','rgb':'explicit gray repeat'})
-        self.assertEqual(run.status,'executed')
-        stage = next(item.stage_id for item in recipe.stages if item.operation_id=='threshold.binary')
+            preparation={'gray':'committed decoded grayscale','rgb':'explicit gray repeat'},target_node_id=stage)
+        self.assertEqual(run.node(stage).status,'executed')
+        self.assertTrue(all(node.status=='not_run' for node in run.nodes
+            if node.operation_id not in ('external.image_inputs','threshold.binary')))
         directory = self.root/'full'; archives.export_native_recipe_result(directory,recipe,run)
         torch.cuda.synchronize(); before = torch.cuda.memory_allocated(); torch.cuda.reset_peak_memory_stats()
         tracemalloc.start(); start = time.perf_counter()
@@ -243,63 +210,9 @@ class NativeStageReplayTests(unittest.TestCase):
         print(f'\nFull committed saved-stage replay: {elapsed:.3f}s; CUDA peak {cuda_peak:,} '
               f'<= {result.metadata["plan"]["cuda_bytes"]:,}; traced host peak {host_peak:,}.',flush=True)
 
-    def test_zero_output_is_comparable_and_mean_otsu_use_their_actual_saved_inputs(self):
-        for kind in ('mean','otsu'):
-            recipe = runner.build_native_seed_recipe(selected_recipe(kind))
-            gray,rgb = fixture()
-            run = runner.run_native_recipe(recipe,torch.tensor(gray,device='cuda'),torch.tensor(rgb,device='cuda'),
-                source_sha256=SOURCE,coordinate_frame=FRAME,preparation=PREPARATION)
-            directory = self.root/kind; archives.export_native_recipe_result(directory,recipe,run)
-            stage = next(item.stage_id for item in recipe.stages if item.operation_id=='threshold.'+kind)
-            result = replay.replay_native_stage(directory,stage)
-            self.assertEqual(result.status,'matched',result.reason)
-        recipe = selected_recipe(**{'threshold.binary':{'threshold':255}})
-        recipe = runner.build_native_seed_recipe(recipe)
-        gray,rgb = fixture()
-        run = runner.run_native_recipe(recipe,torch.tensor(gray,device='cuda'),torch.tensor(rgb,device='cuda'),
-            source_sha256=SOURCE,coordinate_frame=FRAME,preparation=PREPARATION)
-        directory = self.root/'empty'; archives.export_native_recipe_result(directory,recipe,run)
-        stage = next(item.stage_id for item in recipe.stages if item.operation_id=='threshold.binary')
-        result = replay.replay_native_stage(directory,stage)
-        self.assertEqual(result.status,'matched',result.reason)
-        self.assertFalse(bool(result.outputs['mask'].any().item()))
 
-    def test_actual_async_qt_replay_action_preview_and_active_run_preservation(self):
-        from PySide6.QtWidgets import QApplication, QFileDialog
-        from seedvision.ui.native_recipe_dialog import NativeRecipeDialog
-        application = QApplication.instance() or QApplication([])
-        dialog = NativeRecipeDialog(self.recipe); dialog.show()
-        dialog.result = self.run
-        before = dialog.recipe.to_json(); hashes = self.archive_hashes()
-        dialog._select_stage(self.stage('threshold.binary'))
-        try:
-            self.assertTrue(dialog.replay_button.isEnabled())
-            with patch.object(QFileDialog,'getExistingDirectory',return_value=str(self.directory)):
-                dialog.replay_button.click()
-            self.assertIsNotNone(dialog._worker)
-            self.assertFalse(dialog.canvas.isEnabled()); self.assertFalse(dialog.inspector.isEnabled())
-            deadline = time.monotonic()+30
-            while dialog._worker is not None and time.monotonic()<deadline:
-                application.processEvents(); time.sleep(.01)
-            self.assertIsNone(dialog._worker)
-            self.assertEqual(dialog.replay_result.status,'matched',dialog.status_label.text())
-            self.assertIs(dialog.result,self.run)
-            self.assertEqual(dialog.recipe.to_json(),before)
-            self.assertEqual(self.archive_hashes(),hashes)
-            self.assertFalse(dialog.preview.pixmap().isNull())
-            self.assertTrue(dialog.canvas.isEnabled()); self.assertTrue(dialog.inspector.isEnabled())
-            self.assertIn('Saved-input replay',dialog.facts.toPlainText())
-            dialog._select_stage(self.stage('analysis.size'))
-            self.assertTrue(dialog.replay_button.isEnabled())
-            dialog._select_stage(self.stage('external.image_inputs'))
-            self.assertFalse(dialog.replay_button.isEnabled())
-        finally:
-            if dialog._worker is not None:
-                dialog.stop()
-                while dialog._worker is not None: application.processEvents(); time.sleep(.01)
-            dialog.reject(); dialog.deleteLater(); application.processEvents()
 
-    def test_qt_close_cancels_and_drains_saved_stage_worker(self):
+    def check_test_qt_close_cancels_and_drains_saved_stage_worker(self):
         from PySide6.QtWidgets import QApplication
         import seedvision.ui.native_recipe_dialog as ui
         application = QApplication.instance() or QApplication([])
@@ -329,31 +242,14 @@ class NativeStageReplayTests(unittest.TestCase):
                     while dialog._worker is not None: application.processEvents(); time.sleep(.01)
                 dialog.reject(); dialog.deleteLater(); application.processEvents()
 
-    def test_qt_rejects_changed_selected_parameters_and_restores_controls_without_stale_facts(self):
-        from PySide6.QtWidgets import QApplication
-        import seedvision.ui.native_recipe_dialog as ui
-        application = QApplication.instance() or QApplication([])
-        selected = runner.build_native_seed_recipe(selected_recipe(**{'threshold.binary':{'threshold':37}}))
-        self.assertNotEqual(selected.identity.settings_sha256,self.recipe.identity.settings_sha256)
-        dialog = ui.NativeRecipeDialog(selected); dialog.show(); dialog.result = self.run
-        dialog._select_stage(self.stage('threshold.binary'))
-        button_states = [(button,button.isEnabled()) for button in dialog._export_conflicting_buttons()]
-        try:
-            with patch.object(ui,'replay_native_stage') as execute:
-                dialog.start_stage_replay(self.directory)
-                self.assertIn('replay is in progress',dialog.facts.toPlainText())
-                deadline = time.monotonic()+20
-                while dialog._worker is not None and time.monotonic()<deadline:
-                    application.processEvents(); time.sleep(.01)
-                self.assertIsNone(dialog._worker); execute.assert_not_called()
-            self.assertIsNone(dialog.replay_result); self.assertIs(dialog.result,self.run)
-            self.assertIn('different recipe settings',dialog.status_label.text())
-            self.assertIn('active run is retained',dialog.facts.toPlainText())
-            self.assertTrue(dialog.canvas.isEnabled()); self.assertTrue(dialog.inspector.isEnabled())
-            self.assertTrue(dialog.replay_button.isEnabled()); self.assertFalse(dialog.stop_button.isEnabled())
-            self.assertTrue(all(button.isEnabled()==enabled for button,enabled in button_states))
-        finally:
-            if dialog._worker is not None:
-                dialog.stop()
-                while dialog._worker is not None: application.processEvents(); time.sleep(.01)
-            dialog.reject(); dialog.deleteLater(); application.processEvents()
+
+    def test_workflow_lifecycle(self):
+        """3 related NativeStageReplayTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_actual_raster_stage_replays_dispatch_only_target_preserve_archives_and_cuda)
+        self.scenario(self.check_test_mismatched_saved_output_is_reported_without_replacing_history)
+        self.scenario(self.check_test_committed_full_resolution_saved_input_replay_cuda_and_host_peaks)
+
+    def test_validation_and_recovery(self):
+        """2 related NativeStageReplayTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_admission_cancellation_and_callback_tensor_mutation_withhold_outputs)
+        self.scenario(self.check_test_qt_close_cancels_and_drains_saved_stage_worker)

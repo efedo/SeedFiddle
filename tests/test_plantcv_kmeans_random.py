@@ -1,4 +1,6 @@
 """Exact random-call outputs/state from actual pinned MiniBatchKMeans.fit."""
+
+from tests.functional_units import functional_units
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -71,6 +73,7 @@ def _reference(cases):
     return json.loads(result.stdout)
 
 
+@functional_units
 class KMeansRandomTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -79,7 +82,7 @@ class KMeansRandomTests(unittest.TestCase):
             dict(seed=2**32-1, features=[[17, 42]]*35, k=5)]
         cls.reference = _reference(cls.cases)
 
-    def test_replay_actual_public_fit_call_sequence_matches_outputs_and_every_state(self):
+    def check_test_replay_actual_public_fit_call_sequence_matches_outputs_and_every_state(self):
         observed = set()
         for case, expected in zip(self.cases, self.reference):
             schedule = native.MiniBatchRandomSchedule(case['seed'])
@@ -114,7 +117,7 @@ class KMeansRandomTests(unittest.TestCase):
             self.assertEqual(schedule.identity()['state_sha256'], expected['state_sha256'])
         self.assertEqual(observed, {'validation', 'subset', 'uniform', 'first', 'batch', 'reassignment'})
 
-    def test_full_init_size_skips_draw_but_validation_always_consumes_vector(self):
+    def check_test_full_init_size_skips_draw_but_validation_always_consumes_vector(self):
         schedule = native.MiniBatchRandomSchedule(31)
         before = schedule.identity()
         self.assertIsNone(schedule.init_subset(17, 17))
@@ -124,7 +127,7 @@ class KMeansRandomTests(unittest.TestCase):
         self.assertEqual(schedule.identity()['calls'], 1)
         self.assertNotEqual(schedule.identity()['state_sha256'], before['state_sha256'])
 
-    def test_weighted_choice_is_distinct_from_uniform_integer_draws(self):
+    def check_test_weighted_choice_is_distinct_from_uniform_integer_draws(self):
         schedule = native.MiniBatchRandomSchedule(19)
         values = schedule.minibatch_indices(101, 31)
         self.assertFalse(np.array_equal(values, np.random.RandomState(19).randint(101, size=31)))
@@ -132,7 +135,7 @@ class KMeansRandomTests(unittest.TestCase):
         np.testing.assert_array_equal(same.minibatch_indices(101, 31), values)
         self.assertEqual(same.identity(), schedule.identity())
 
-    def test_maximum_weighted_probability_and_selection_metadata_are_bounded(self):
+    def check_test_maximum_weighted_probability_and_selection_metadata_are_bounded(self):
         schedule = native.MiniBatchRandomSchedule(3)
         result = schedule.minibatch_indices(native.MAX_SAMPLES, native.MAX_BATCH_SIZE)
         self.assertEqual(result.shape, (native.MAX_BATCH_SIZE,))
@@ -151,7 +154,7 @@ class KMeansRandomTests(unittest.TestCase):
                     draw()
                 self.assertEqual(schedule.identity(), before)
 
-    def test_invalid_seed_sizes_and_domains_fail_without_advancing_state(self):
+    def check_test_invalid_seed_sizes_and_domains_fail_without_advancing_state(self):
         for seed in (None, True, -1, 2**32, 1.5, '1'):
             with self.subTest(seed=seed), self.assertRaises(native.KMeansRandomError):
                 native.MiniBatchRandomSchedule(seed)
@@ -170,7 +173,7 @@ class KMeansRandomTests(unittest.TestCase):
                 draw()
             self.assertEqual(schedule.identity(), before)
 
-    def test_recorded_draw_digest_changes_with_method_and_caller_output_is_independent(self):
+    def check_test_recorded_draw_digest_changes_with_method_and_caller_output_is_independent(self):
         validation = native.MiniBatchRandomSchedule(7)
         subset = native.MiniBatchRandomSchedule(7)
         rows = validation.validation_indices(17, 7)
@@ -181,10 +184,23 @@ class KMeansRandomTests(unittest.TestCase):
         rows.fill(0)
         self.assertEqual(validation.identity(), identity)
 
-    def test_loaded_source_binds_random_limits_and_pinned_source_identity(self):
+    def check_test_loaded_source_binds_random_limits_and_pinned_source_identity(self):
         from seedvision.benchmarking.native_recipe import _module_record
         self.assertTrue(_module_record(native)['loaded_code'])
         for name, value in (('MAX_BATCH_SIZE', 1), ('SKLEARN_KMEANS_SHA256', 'changed')):
             with self.subTest(constant=name), patch.object(native, name, value):
                 with self.assertRaises(ValueError):
                     _module_record(native)
+
+    def test_workflow_lifecycle(self):
+        """5 related KMeansRandomTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_replay_actual_public_fit_call_sequence_matches_outputs_and_every_state)
+        self.scenario(self.check_test_full_init_size_skips_draw_but_validation_always_consumes_vector)
+        self.scenario(self.check_test_weighted_choice_is_distinct_from_uniform_integer_draws)
+        self.scenario(self.check_test_maximum_weighted_probability_and_selection_metadata_are_bounded)
+        self.scenario(self.check_test_recorded_draw_digest_changes_with_method_and_caller_output_is_independent)
+
+    def test_validation_and_recovery(self):
+        """2 related KMeansRandomTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_invalid_seed_sizes_and_domains_fail_without_advancing_state)
+        self.scenario(self.check_test_loaded_source_binds_random_limits_and_pinned_source_identity)

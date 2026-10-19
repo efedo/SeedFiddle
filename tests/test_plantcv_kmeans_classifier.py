@@ -1,3 +1,5 @@
+
+from tests.functional_units import functional_units
 import json
 from pathlib import Path
 import subprocess
@@ -37,6 +39,7 @@ print(json.dumps(results))
 
 
 @unittest.skipUnless(torch.cuda.is_available(), 'CUDA required')
+@functional_units
 class KMeansClassifierTests(unittest.TestCase):
     def public(self, cases):
         result = subprocess.run([str(REFERENCE), '-c', SCRIPT], input=json.dumps(cases),
@@ -44,7 +47,7 @@ class KMeansClassifierTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
 
-    def test_integer_ties_duplicates_fractional_separated_and_256th_class_match_public(self):
+    def check_test_integer_ties_duplicates_fractional_separated_and_256th_class_match_public(self):
         cases = [dict(centres=[[0], [2]], features=[[1], [0], [2], [255], [1]]),
                  dict(centres=[[0, 0], [0, 0], [2, 0]], features=[[0, 0], [1, 0], [2, 0]]),
                  dict(centres=[[0.25, 1.5], [100.5, 200.25], [254.5, 8.25]],
@@ -67,7 +70,7 @@ class KMeansClassifierTests(unittest.TestCase):
             torch.testing.assert_close(source, before)
         self.assertEqual(references[0], [0, 127, 255])
 
-    def test_fractional_tie_near_tie_and_late_tile_withhold_complete_vector(self):
+    def check_test_fractional_tie_near_tie_and_late_tile_withhold_complete_vector(self):
         cases = [dict(centres=[[0.5], [1.5]], features=[[0], [1]]),
                  dict(centres=[[0.5], [1.5 + 1e-12]], features=[[1]])]
         for case, references in zip(cases, self.public(cases)):
@@ -81,7 +84,7 @@ class KMeansClassifierTests(unittest.TestCase):
                                                 ((0.5,), (0.5,)))
         self.assertEqual(labels.cpu().tolist(), [0])
 
-    def test_actual_maximum_feature_multitile_scratch_stays_within_full_budget(self):
+    def check_test_actual_maximum_feature_multitile_scratch_stays_within_full_budget(self):
         width = 4096
         centres = tuple((float(i),) * width for i in (0, 85, 170, 255))
         rows = native._kmeans_tile_rows(width, 4 * width) + 5
@@ -95,7 +98,7 @@ class KMeansClassifierTests(unittest.TestCase):
         self.assertLessEqual(peak, native.MAX_SCRATCH_BYTES)
         self.assertTrue(bool((labels == 0).all().item()))
 
-    def test_work_centre_and_scratch_caps_precede_gpu_allocations(self):
+    def check_test_work_centre_and_scratch_caps_precede_gpu_allocations(self):
         source = torch.zeros((4, 2), dtype=torch.uint8, device='cuda')
         for cap in ('MAX_WORK', 'MAX_CENTRE_VALUES', 'MAX_SCRATCH_BYTES'):
             with self.subTest(cap=cap), patch.object(native, cap, 1), patch.object(
@@ -103,7 +106,7 @@ class KMeansClassifierTests(unittest.TestCase):
                 with self.assertRaises(native.KMeansResourceLimit):
                     native.classify_kmeans_features(source, ((0.0, 0.0), (1.5, 2.5)))
 
-    def test_early_mid_and_final_cancellation_never_return_partial_labels(self):
+    def check_test_early_mid_and_final_cancellation_never_return_partial_labels(self):
         source = torch.zeros((4, 2), dtype=torch.uint8, device='cuda')
         centres = ((0.0, 0.0), (255.0, 255.0))
         with patch.object(native.torch, 'tensor', side_effect=AssertionError('allocated before cancel')):
@@ -121,7 +124,7 @@ class KMeansClassifierTests(unittest.TestCase):
             with self.assertRaises(native.KMeansClassificationError):
                 native.classify_kmeans_features(source, centres, cancel=callback)
 
-    def test_zero_rows_and_invalid_tensor_and_metadata_domains(self):
+    def check_test_zero_rows_and_invalid_tensor_and_metadata_domains(self):
         empty = torch.empty((0, 2), dtype=torch.uint8, device='cuda')
         result = native.classify_kmeans_features(empty, ((0.0, 0.0),))
         self.assertEqual((result.shape, result.dtype, result.device), (torch.Size([0]), torch.uint8, empty.device))
@@ -135,3 +138,15 @@ class KMeansClassifierTests(unittest.TestCase):
                 native.classify_kmeans_features(source, centres)
         with self.assertRaises(native.KMeansResourceLimit):
             native.classify_kmeans_features(source, ((0.0, 0.0),), tile_rows=True)
+
+    def test_workflow_lifecycle(self):
+        """2 related KMeansClassifierTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_integer_ties_duplicates_fractional_separated_and_256th_class_match_public)
+        self.scenario(self.check_test_work_centre_and_scratch_caps_precede_gpu_allocations)
+
+    def test_validation_and_recovery(self):
+        """4 related KMeansClassifierTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_fractional_tie_near_tie_and_late_tile_withhold_complete_vector)
+        self.scenario(self.check_test_actual_maximum_feature_multitile_scratch_stays_within_full_budget)
+        self.scenario(self.check_test_early_mid_and_final_cancellation_never_return_partial_labels)
+        self.scenario(self.check_test_zero_rows_and_invalid_tensor_and_metadata_domains)

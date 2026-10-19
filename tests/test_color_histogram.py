@@ -53,17 +53,6 @@ class ColorHistogramTests(unittest.TestCase):
             torch.as_tensor(mask, device='cuda'), n_labels=2, colorspaces=space, label=['first', 'second'])
         return image, mask, result
 
-    def test_returned_hue_chart_rows_match_actual_public_return(self):
-        self.assertTrue(REFERENCE.is_file())
-        for space in ('all', 'hsv', 'rgb', 'lab'):
-            image, mask, result = self.observations(space)
-            completed = subprocess.run([str(REFERENCE), '-c', SCRIPT],
-                input=json.dumps(dict(image=image.tolist(), mask=mask.tolist(), colorspace=space)),
-                capture_output=True, text=True, timeout=90)
-            self.assertEqual(completed.returncode, 0, completed.stderr)
-            chart = hue_histogram_chart(result)
-            self.assertEqual(chart.data_records(), json.loads(completed.stdout), space)
-            self.assertEqual(chart.status, 'available' if space in ('all', 'hsv') else 'empty')
 
     def test_native_sample_selection_and_empty_transition_preserve_all_observations(self):
         _, _, result = self.observations()

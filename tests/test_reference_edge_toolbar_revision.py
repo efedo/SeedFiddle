@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from tests.catalogue_fixtures import CatalogueTestCase
+
+from tests.functional_units import functional_units
+
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,7 +14,8 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 
 
-class ReferenceEdgeToolbarRevisionTests(unittest.TestCase):
+@functional_units
+class ReferenceEdgeToolbarRevisionTests(CatalogueTestCase):
     @classmethod
     def setUpClass(cls):
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -28,7 +33,7 @@ class ReferenceEdgeToolbarRevisionTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.app.setFont(cls.old_font)
 
-    def test_toolbar_toggles_and_opacity_are_display_only(self):
+    def check_test_toolbar_toggles_and_opacity_are_display_only(self):
         from seedvision.ui.main_window import MainWindow
         from seedvision.persistence import analysis_settings_profile_from_graph
 
@@ -54,7 +59,8 @@ class ReferenceEdgeToolbarRevisionTests(unittest.TestCase):
             window.image_workspace_action.setChecked(image)
             window.pipeline_workspace_action.setChecked(pipeline)
             self.app.processEvents()
-            self.assertEqual(not window.image_view.isHidden(), image or not pipeline)
+            self.assertEqual(not window.image_display_stack.isHidden(), image or not pipeline)
+            self.assertEqual(window.image_view.isVisible(), image or not pipeline)
             self.assertEqual(not window.pipeline_canvas.isHidden(), pipeline)
         self.assertEqual(window.image_view.transform(), image_transform)
         self.assertEqual(window.pipeline_canvas.transform(), graph_transform)
@@ -81,9 +87,10 @@ class ReferenceEdgeToolbarRevisionTests(unittest.TestCase):
         with patch.object(window, "_open_path"):
             window._open_list_item(window.image_list.currentItem())
         self.assertTrue(window.image_workspace_action.isChecked())
-        self.assertFalse(window.image_view.isHidden())
+        self.assertFalse(window.image_display_stack.isHidden())
+        self.assertTrue(window.image_view.isVisible())
 
-    def test_pipeline_zoom_controls_fit_narrow_and_wide_panes(self):
+    def check_test_pipeline_zoom_controls_fit_narrow_and_wide_panes(self):
         from seedvision.pipeline import build_default_pipeline
         from seedvision.ui.pipeline_canvas import PipelineCanvas
 
@@ -106,7 +113,7 @@ class ReferenceEdgeToolbarRevisionTests(unittest.TestCase):
         self.assertEqual(canvas.transform().m11(), 1.0)
         self.assertEqual(canvas.zoom_label.text(), "100%")
 
-    def test_annotation_opacity_does_not_touch_analytical_items_or_masks(self):
+    def check_test_annotation_opacity_does_not_touch_analytical_items_or_masks(self):
         from seedvision.ui.image_view import ImageView
 
         view = ImageView()
@@ -140,7 +147,7 @@ class ReferenceEdgeToolbarRevisionTests(unittest.TestCase):
         np.testing.assert_array_equal(view.reference_mask("background"), mask)
         np.testing.assert_array_equal(view._instance_annotations, labels)
 
-    def test_selected_node_has_visible_cosmetic_outline_at_overview_zoom(self):
+    def check_test_selected_node_has_visible_cosmetic_outline_at_overview_zoom(self):
         from PySide6.QtGui import QImage, QPainter
         from PySide6.QtWidgets import QStyleOptionGraphicsItem
         from seedvision.pipeline import build_default_pipeline
@@ -165,7 +172,7 @@ class ReferenceEdgeToolbarRevisionTests(unittest.TestCase):
         self.assertGreater(counts[1], counts[0] + 100)
         self.assertEqual(item.zValue(), 4.0)
 
-    def test_colour_overlay_order_and_other_node_socket(self):
+    def check_test_colour_overlay_order_and_other_node_socket(self):
         from seedvision.ui.main_window import MainWindow, _overlay_node_owner, _overlay_output_port_id
 
         window = MainWindow(ROOT)
@@ -185,7 +192,7 @@ class ReferenceEdgeToolbarRevisionTests(unittest.TestCase):
         self.assertTrue(window.hsv_value_slider_action.isVisible())
         self.assertFalse(window.overlay_opacity_slider_action.isVisible())
 
-    def test_other_hsv_matches_production_frequency_model_without_refitting(self):
+    def check_test_other_hsv_matches_production_frequency_model_without_refitting(self):
         import cv2
         import torch
         from seedvision.cuda.ops import lab_colour_frequency_distribution
@@ -229,3 +236,12 @@ class ReferenceEdgeToolbarRevisionTests(unittest.TestCase):
         self.assertFalse(values.any())
         self.assertFalse(empty.isNull())
         self.assertEqual(empty_centres.shape, (0, 2))
+
+    def test_workflow_lifecycle(self):
+        """6 related ReferenceEdgeToolbarRevisionTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_toolbar_toggles_and_opacity_are_display_only)
+        self.scenario(self.check_test_pipeline_zoom_controls_fit_narrow_and_wide_panes)
+        self.scenario(self.check_test_annotation_opacity_does_not_touch_analytical_items_or_masks)
+        self.scenario(self.check_test_selected_node_has_visible_cosmetic_outline_at_overview_zoom)
+        self.scenario(self.check_test_colour_overlay_order_and_other_node_socket)
+        self.scenario(self.check_test_other_hsv_matches_production_frequency_model_without_refitting)

@@ -1,3 +1,5 @@
+
+from tests.functional_units import functional_units
 import json
 from pathlib import Path
 import subprocess
@@ -37,6 +39,7 @@ print(json.dumps(results))
 
 
 @unittest.skipUnless(torch.cuda.is_available(),'CUDA required')
+@functional_units
 class PlantCVKMeansMaskTests(unittest.TestCase):
     def public(self,labels,k,categories):
         result = subprocess.run([str(REFERENCE),'-c',SCRIPT],input=json.dumps([
@@ -45,7 +48,7 @@ class PlantCVKMeansMaskTests(unittest.TestCase):
         self.assertEqual(result.returncode,0,result.stderr)
         return json.loads(result.stdout)
 
-    def test_separate_mask_order_and_bytes_match_pinned_public_call(self):
+    def check_test_separate_mask_order_and_bytes_match_pinned_public_call(self):
         labels = np.random.default_rng(20261008).choice(
             np.asarray([0,1,2,5,127,255],dtype=np.uint8),size=(23,29))
         expected = self.public(labels,7,[None])[0]['mapping']
@@ -63,7 +66,7 @@ class PlantCVKMeansMaskTests(unittest.TestCase):
         self.assertEqual(source._version,version)
         torch.testing.assert_close(source,before)
 
-    def test_unions_duplicates_absent_and_out_of_byte_ids_match_public(self):
+    def check_test_unions_duplicates_absent_and_out_of_byte_ids_match_public(self):
         labels = np.asarray([[0,1,2,3,4,5,255],[5,5,3,2,1,0,7]],dtype=np.uint8)
         categories = [[5,1,5],[0],[255,99],[256,-1],[4,3,2,1,0]]
         expected = self.public(labels,6,categories)
@@ -74,7 +77,7 @@ class PlantCVKMeansMaskTests(unittest.TestCase):
                     tile_pixels=3).cpu().numpy(),original['array'])
         np.testing.assert_array_equal(source.cpu().numpy(),labels)
 
-    def test_k_zero_and_empty_category_failure_match_public(self):
+    def check_test_k_zero_and_empty_category_failure_match_public(self):
         labels = np.asarray([[0,1],[1,0]],dtype=np.uint8)
         self.assertEqual(self.public(labels,0,[None])[0],{'mapping':{}})
         self.assertEqual(self.public(labels,2,[[]])[0],{'error':'UnboundLocalError'})
@@ -83,7 +86,7 @@ class PlantCVKMeansMaskTests(unittest.TestCase):
         with self.assertRaises(native.NativeKMeansError):
             native.mask_kmeans(source,2,[])
 
-    def test_output_cap_precedes_allocation_and_exact_small_cap_succeeds(self):
+    def check_test_output_cap_precedes_allocation_and_exact_small_cap_succeeds(self):
         labels = torch.tensor([[0,1,2],[1,0,2]],dtype=torch.uint8,device='cuda')
         with patch.object(native,'MAX_OUTPUT_BYTES',11),patch.object(torch,'empty') as allocate:
             with self.assertRaises(native.NativeKMeansError):
@@ -100,7 +103,7 @@ class PlantCVKMeansMaskTests(unittest.TestCase):
         for class_id in actual:
             np.testing.assert_array_equal(actual[class_id].cpu().numpy(),expected[class_id])
 
-    def test_mid_category_and_tile_cancellation_preserve_source(self):
+    def check_test_mid_category_and_tile_cancellation_preserve_source(self):
         source = torch.arange(120,dtype=torch.uint8,device='cuda').reshape(10,12)
         before,version = source.clone(),source._version
         for categories,stop_at,tile in (([0,1,2,3],7,120),(None,5,7)):
@@ -121,7 +124,7 @@ class PlantCVKMeansMaskTests(unittest.TestCase):
         self.assertEqual(source._version,version)
         torch.testing.assert_close(source,before)
 
-    def test_layout_and_resource_controls_reject_before_work(self):
+    def check_test_layout_and_resource_controls_reject_before_work(self):
         source = torch.zeros((2,6),dtype=torch.uint8,device='cuda')
         for image in (source.cpu(),source.to_sparse(),source[:,::2],source.float(),source[:0]):
             with self.subTest(image=str(image.layout)),self.assertRaises(native.NativeKMeansError):
@@ -136,7 +139,7 @@ class PlantCVKMeansMaskTests(unittest.TestCase):
             with self.assertRaises(native.NativeKMeansError):
                 native.mask_kmeans(source,1,tile_pixels=tile)
 
-    def test_actual_largest_output_allocation_stays_within_tiled_scratch(self):
+    def check_test_actual_largest_output_allocation_stays_within_tiled_scratch(self):
         pixels = native.MAX_OUTPUT_BYTES//256
         self.assertLessEqual(pixels,native.MAX_PIXELS)
         source = torch.full((1024,pixels//1024),255,dtype=torch.uint8,device='cuda')
@@ -152,3 +155,16 @@ class PlantCVKMeansMaskTests(unittest.TestCase):
         self.assertLessEqual(peak_scratch,native.MAX_SCRATCH_BYTES)
         self.assertEqual(int(torch.count_nonzero(masks['0'])),0)
         self.assertEqual(int(torch.count_nonzero(masks['255'])),pixels)
+
+    def test_workflow_lifecycle(self):
+        """3 related PlantCVKMeansMaskTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_separate_mask_order_and_bytes_match_pinned_public_call)
+        self.scenario(self.check_test_unions_duplicates_absent_and_out_of_byte_ids_match_public)
+        self.scenario(self.check_test_actual_largest_output_allocation_stays_within_tiled_scratch)
+
+    def test_validation_and_recovery(self):
+        """4 related PlantCVKMeansMaskTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_k_zero_and_empty_category_failure_match_public)
+        self.scenario(self.check_test_output_cap_precedes_allocation_and_exact_small_cap_succeeds)
+        self.scenario(self.check_test_mid_category_and_tile_cancellation_preserve_source)
+        self.scenario(self.check_test_layout_and_resource_controls_reject_before_work)

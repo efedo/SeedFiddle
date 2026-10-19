@@ -1,3 +1,5 @@
+
+from tests.functional_units import functional_units
 import hashlib
 import json
 from pathlib import Path
@@ -50,6 +52,7 @@ print(json.dumps(results))
 
 
 @unittest.skipUnless(torch.cuda.is_available(), 'CUDA required')
+@functional_units
 class PlantCVKMeansFeatureTests(unittest.TestCase):
     def public(self, requests):
         result = subprocess.run([str(REFERENCE), '-c', SCRIPT], input=json.dumps(requests),
@@ -70,7 +73,7 @@ class PlantCVKMeansFeatureTests(unittest.TestCase):
             del features
         return starts, np.vstack(arrays)
 
-    def test_gray_rgb_odd_even_and_split_row_tiles_match_actual_public_patches(self):
+    def check_test_gray_rgb_odd_even_and_split_row_tiles_match_actual_public_patches(self):
         rng = np.random.default_rng(5041)
         requests = []
         for channels in (1, 3):
@@ -88,7 +91,7 @@ class PlantCVKMeansFeatureTests(unittest.TestCase):
                 self.assertEqual(raster._version, version)
                 np.testing.assert_array_equal(raster.cpu().numpy(), before)
 
-    def test_uint16_values_above_byte_range_and_independent_p1_tiles(self):
+    def check_test_uint16_values_above_byte_range_and_independent_p1_tiles(self):
         image = np.asarray([[[0, 256, 1023], [4095, 511, 300]],
                             [[700, 1200, 999], [655, 2048, 3500]]], dtype=np.uint16)
         reference = self.public([dict(kind='raw', values=image.tolist(), shape=list(image.shape), patch_size=1)])[0]
@@ -102,7 +105,7 @@ class PlantCVKMeansFeatureTests(unittest.TestCase):
         tile.zero_()
         np.testing.assert_array_equal(raster.cpu().numpy(), image)
 
-    def test_actual_maximum_patch_rgb_multitile_allocator_and_public_feature_hash(self):
+    def check_test_actual_maximum_patch_rgb_multitile_allocator_and_public_feature_hash(self):
         shape, p = (101, 100, 3), 31
         reference = self.public([dict(kind='raw', shape=list(shape), patch_size=p)])[0]
         raster = (torch.arange(np.prod(shape), dtype=torch.int32, device='cuda')
@@ -123,7 +126,7 @@ class PlantCVKMeansFeatureTests(unittest.TestCase):
         self.assertEqual(digest.hexdigest(), reference['sha256'])
         self.assertLessEqual(torch.cuda.max_memory_allocated() - base, native.MAX_FEATURE_TILE_BYTES)
 
-    def test_custom_stream_and_cancellation_preserve_source(self):
+    def check_test_custom_stream_and_cancellation_preserve_source(self):
         source = torch.arange(11 * 13 * 3, dtype=torch.int32, device='cuda').to(torch.uint16).reshape(11, 13, 3)
         before, version = source.cpu().numpy().copy(), source._version
         expected_starts, expected = self.collect(source, 4, 9)
@@ -144,7 +147,7 @@ class PlantCVKMeansFeatureTests(unittest.TestCase):
         self.assertEqual(source._version, version)
         np.testing.assert_array_equal(source.cpu().numpy(), before)
 
-    def test_cancel_and_caps_precede_tile_allocation(self):
+    def check_test_cancel_and_caps_precede_tile_allocation(self):
         source = torch.zeros((4, 5, 3), dtype=torch.uint16, device='cuda')
         with patch.object(native.torch, 'empty', side_effect=AssertionError('allocated before cancel')):
             with self.assertRaises(native.KMeansFeatureCancelled):
@@ -155,7 +158,7 @@ class PlantCVKMeansFeatureTests(unittest.TestCase):
                 with self.assertRaises(native.KMeansFeatureError):
                     next(native.iter_kmeans_patch_tiles(source, 2))
 
-    def test_invalid_rasters_and_tile_parameters_are_explicit(self):
+    def check_test_invalid_rasters_and_tile_parameters_are_explicit(self):
         source = torch.zeros((4, 5), dtype=torch.uint16, device='cuda')
         for raster in (source.cpu(), source.to(torch.uint8), source[:, ::2], source.reshape(4, 5, 1)):
             with self.assertRaises(native.KMeansFeatureError):
@@ -168,3 +171,15 @@ class PlantCVKMeansFeatureTests(unittest.TestCase):
                 next(native.iter_kmeans_patch_tiles(source, 2, tile_pixels=tile))
         with self.assertRaises(TypeError):
             next(native.iter_kmeans_patch_tiles(source, 2, cancel=object()))
+
+    def test_workflow_lifecycle(self):
+        """3 related PlantCVKMeansFeatureTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_gray_rgb_odd_even_and_split_row_tiles_match_actual_public_patches)
+        self.scenario(self.check_test_uint16_values_above_byte_range_and_independent_p1_tiles)
+        self.scenario(self.check_test_actual_maximum_patch_rgb_multitile_allocator_and_public_feature_hash)
+
+    def test_validation_and_recovery(self):
+        """3 related PlantCVKMeansFeatureTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_custom_stream_and_cancellation_preserve_source)
+        self.scenario(self.check_test_cancel_and_caps_precede_tile_allocation)
+        self.scenario(self.check_test_invalid_rasters_and_tile_parameters_are_explicit)

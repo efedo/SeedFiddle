@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.functional_units import functional_units
+
 import hashlib
 import json
 from pathlib import Path
@@ -243,8 +245,9 @@ class NmsVisitEstimateTests(unittest.TestCase):
 
 
 @unittest.skipUnless(torch.cuda.is_available(), 'CUDA required')
+@functional_units
 class NmsVisitBudgetTests(unittest.TestCase):
-    def test_round_visit_floor_boundary_and_incomplete_output(self):
+    def check_test_round_visit_floor_boundary_and_incomplete_output(self):
         from seedvision.cuda import plantcv_peaks as peaks
         coords = torch.tensor([[0, 0], [0, 2], [0, 4]], dtype=torch.int64, device='cuda')
         one_round = peaks._nms_round_visits((1, 5), 3, 3)
@@ -256,7 +259,7 @@ class NmsVisitBudgetTests(unittest.TestCase):
             selected = peaks._greedy_spacing(coords, 3, (1, 5), None)
         self.assertEqual(selected.tolist(), [[0, 0], [0, 4]])
 
-    def test_zero_affordable_rounds_reject_before_rank_or_canvas_allocation(self):
+    def check_test_zero_affordable_rounds_reject_before_rank_or_canvas_allocation(self):
         from seedvision.cuda import plantcv_peaks as peaks
         coords = torch.tensor([[0, 0], [0, 2], [0, 4]], dtype=torch.int64, device='cuda')
         visits = peaks._nms_round_visits((1, 5), 3, 3)
@@ -270,7 +273,7 @@ class NmsVisitBudgetTests(unittest.TestCase):
             with self.assertRaisesRegex(peaks.PeakResourceError, 'before allocation'):
                 peaks._greedy_spacing(coords, 3, (1, 5), None)
 
-    def test_distance_one_and_empty_shortcuts_bypass_nms_budget(self):
+    def check_test_distance_one_and_empty_shortcuts_bypass_nms_budget(self):
         from seedvision.cuda import plantcv_peaks as peaks
         coords = torch.tensor([[0, 0], [2, 7]], dtype=torch.int64, device='cuda')
         empty = torch.empty((0, 2), dtype=torch.int64, device='cuda')
@@ -278,7 +281,7 @@ class NmsVisitBudgetTests(unittest.TestCase):
             self.assertIs(peaks._greedy_spacing(coords, 1, (3, 8), None), coords)
             self.assertIs(peaks._greedy_spacing(empty, 3, (3, 8), None), empty)
 
-    def test_rectangular_roi_d2_and_d3_match_priority_greedy_oracle(self):
+    def check_test_rectangular_roi_d2_and_d3_match_priority_greedy_oracle(self):
         from seedvision.cuda import plantcv_peaks as peaks
         cases = (
             ((3, 8), 2, [[0, 0], [0, 1], [0, 2], [1, 5], [1, 6], [2, 7]]),
@@ -294,6 +297,16 @@ class NmsVisitBudgetTests(unittest.TestCase):
                            for kept in expected):
                         expected.append(point)
                 self.assertEqual(selected, expected)
+
+    def test_validation_and_recovery(self):
+        """3 related NmsVisitBudgetTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_round_visit_floor_boundary_and_incomplete_output)
+        self.scenario(self.check_test_zero_affordable_rounds_reject_before_rank_or_canvas_allocation)
+        self.scenario(self.check_test_distance_one_and_empty_shortcuts_bypass_nms_budget)
+
+    def test_workflow_lifecycle(self):
+        """1 related NmsVisitBudgetTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_rectangular_roi_d2_and_d3_match_priority_greedy_oracle)
 
 
 class PlantCVPeakContractTests(unittest.TestCase):
@@ -362,6 +375,7 @@ class PlantCVPeakContractTests(unittest.TestCase):
     torch.cuda.is_available() and REFERENCE_READY,
     "CUDA and the pinned scikit-image reference environment are required",
 )
+@functional_units
 class PlantCVPeakCudaTests(unittest.TestCase):
     def _assert_matches_reference(
         self,
@@ -396,10 +410,10 @@ class PlantCVPeakCudaTests(unittest.TestCase):
                 torch.testing.assert_close(device_image, image_before, rtol=0, atol=0)
                 torch.testing.assert_close(device_mask, mask_before, rtol=0, atol=0)
 
-    def test_varied_shapes_match_pinned_ordered_coordinates_and_every_mask_pixel(self) -> None:
+    def check_test_varied_shapes_match_pinned_ordered_coordinates_and_every_mask_pixel(self) -> None:
         self._assert_matches_reference(_small_cases())
 
-    def test_validation_cancellation_and_explicit_resource_limits(self) -> None:
+    def check_test_validation_cancellation_and_explicit_resource_limits(self) -> None:
         image = torch.zeros((15, 19), dtype=torch.float32, device="cuda")
         mask = torch.zeros((15, 19), dtype=torch.uint8, device="cuda")
         mask[7, 4:13] = 255
@@ -446,7 +460,7 @@ class PlantCVPeakCudaTests(unittest.TestCase):
         torch.testing.assert_close(image, before_image, rtol=0, atol=0)
         torch.testing.assert_close(mask, before_mask, rtol=0, atol=0)
 
-    def test_real_full_resolution_fixture_matches_pinned_peak_local_max(self) -> None:
+    def check_test_real_full_resolution_fixture_matches_pinned_peak_local_max(self) -> None:
         fixture = ROOT / "images" / "IMG_9632c.JPG"
         gray = cv2.imread(str(fixture), cv2.IMREAD_GRAYSCALE)
         self.assertIsNotNone(gray, "committed fixture must decode")
@@ -480,6 +494,15 @@ class PlantCVPeakCudaTests(unittest.TestCase):
             1_500 * 1024 * 1024,
             f"fixture CUDA allocation delta was {peak_bytes:,} bytes",
         )
+
+    def test_workflow_lifecycle(self):
+        """2 related PlantCVPeakCudaTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_varied_shapes_match_pinned_ordered_coordinates_and_every_mask_pixel)
+        self.scenario(self.check_test_real_full_resolution_fixture_matches_pinned_peak_local_max)
+
+    def test_validation_and_recovery(self):
+        """1 related PlantCVPeakCudaTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_validation_cancellation_and_explicit_resource_limits)
 
 
 if __name__ == "__main__":

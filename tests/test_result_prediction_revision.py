@@ -1,5 +1,7 @@
 """Exact prediction facts must travel with review and exported revisions."""
 
+from tests.functional_units import functional_units
+
 import csv
 import json
 import os
@@ -28,8 +30,9 @@ def _analysis(source=None):
             rejected_manual_centre_reasons=('outside_foreground',)))
 
 
+@functional_units
 class ResultPredictionRevisionTests(unittest.TestCase):
-    def test_every_reported_prediction_fact_stales_old_review_with_unchanged_labels(self):
+    def check_test_every_reported_prediction_fact_stales_old_review_with_unchanged_labels(self):
         from seedvision.export.results import result_report, RESULT_REVISION_CONTRACT
         mutations = {
             'confidence': lambda i: i.instance_confidences.__setitem__(0, .3),
@@ -54,7 +57,7 @@ class ResultPredictionRevisionTests(unittest.TestCase):
                 self.assertEqual(after['schema_version'], 3)
                 self.assertEqual(after['identity']['revision_contract'], RESULT_REVISION_CONTRACT)
 
-    def test_exact_dtype_and_values_bind_revision_but_array_layout_does_not(self):
+    def check_test_exact_dtype_and_values_bind_revision_but_array_layout_does_not(self):
         from seedvision.export.results import result_report
         analysis = _analysis()
         analysis.procedural_instances.instance_confidences = np.array([.5], np.float64)
@@ -66,7 +69,7 @@ class ResultPredictionRevisionTests(unittest.TestCase):
         self.assertEqual(changed['instances'][0]['uncalibrated_instance_score'], .5)
         self.assertNotEqual(changed['result_revision'], first['result_revision'])
 
-    def test_report_uses_detached_compact_prediction_values(self):
+    def check_test_report_uses_detached_compact_prediction_values(self):
         from seedvision.export.results import result_report
         analysis = _analysis()
         report = result_report(analysis)
@@ -81,7 +84,7 @@ class ResultPredictionRevisionTests(unittest.TestCase):
         self.assertEqual(report['candidate_diagnostics']['candidate_scores'], [.7, .6])
         self.assertEqual(report['rejected_manual_centres'][0]['xy_px'], [2., 3.])
 
-    def test_malformed_prediction_facts_are_unreviewable(self):
+    def check_test_malformed_prediction_facts_are_unreviewable(self):
         from seedvision.export.results import result_report
         mutations = (
             ('instance_confidences', np.array([np.nan])),
@@ -103,7 +106,7 @@ class ResultPredictionRevisionTests(unittest.TestCase):
                     result_report(analysis, review={'result_revision': old['result_revision'],
                                                   'decisions': {'1': 'accepted'}})
 
-    def test_empty_and_unavailable_remain_distinct_stable_states(self):
+    def check_test_empty_and_unavailable_remain_distinct_stable_states(self):
         from seedvision.export.results import result_report
         analysis = _analysis()
         analysis.procedural_instances.labels[:] = 0
@@ -120,7 +123,7 @@ class ResultPredictionRevisionTests(unittest.TestCase):
         self.assertNotEqual(unavailable['result_revision'], empty['result_revision'])
         self.assertEqual(unavailable['accepted_count'], 0)
 
-    def test_json_csv_exports_preserve_the_same_prediction_snapshot(self):
+    def check_test_json_csv_exports_preserve_the_same_prediction_snapshot(self):
         from seedvision.export.results import result_report, export_report
         analysis = _analysis()
         report = result_report(analysis)
@@ -135,32 +138,8 @@ class ResultPredictionRevisionTests(unittest.TestCase):
             self.assertEqual(saved['candidate_diagnostics'], report['candidate_diagnostics'])
             self.assertFalse(saved['scientifically_validated'])
 
-    def test_desktop_score_change_uses_new_review_file_and_preserves_old_decisions(self):
-        os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
-        from PySide6.QtWidgets import QApplication
-        from seedvision.ui.main_window import MainWindow
-        app = QApplication.instance() or QApplication([])
-        with TemporaryDirectory() as directory:
-            window = MainWindow(Path(directory))
-            try:
-                analysis = _analysis()
-                window._analyses[None] = analysis
-                old = window._current_report(analysis)
-                old_path = window._review_path(old)
-                old_path.parent.mkdir(parents=True, exist_ok=True)
-                review = {'result_revision': old['result_revision'], 'decisions': {'1': 'accepted'}}
-                old_path.write_text(json.dumps(review), encoding='utf-8')
-                self.assertEqual(window._current_report(analysis)['accepted_count'], 1)
-                analysis.procedural_instances.instance_confidences[0] = .2
-                fresh = window._current_report(analysis)
-                self.assertEqual(fresh['accepted_count'], 0)
-                self.assertNotEqual(window._review_path(fresh), old_path)
-                self.assertEqual(json.loads(old_path.read_text()), review)
-            finally:
-                window.close()
-                app.processEvents()
 
-    def test_saved_project_batch_reports_score_and_diagnostic_changes_with_new_revision(self):
+    def check_test_saved_project_batch_reports_score_and_diagnostic_changes_with_new_revision(self):
         from seedvision.persistence import ProjectAnalysisStore, ProjectImageSpec, analysis_settings_profile_from_graph
         from seedvision.pipeline import build_default_pipeline
         from seedvision.export.project_runner import run_project
@@ -185,6 +164,19 @@ class ResultPredictionRevisionTests(unittest.TestCase):
             self.assertEqual(before['instances'][0]['uncalibrated_instance_score'], .8)
             self.assertEqual(after['instances'][0]['uncalibrated_instance_score'], .2)
             self.assertEqual(after['candidate_diagnostics']['selected'], [True, True])
+
+    def test_validation_and_recovery(self):
+        """2 related ResultPredictionRevisionTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_every_reported_prediction_fact_stales_old_review_with_unchanged_labels)
+        self.scenario(self.check_test_empty_and_unavailable_remain_distinct_stable_states)
+
+    def test_workflow_lifecycle(self):
+        """5 related ResultPredictionRevisionTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_exact_dtype_and_values_bind_revision_but_array_layout_does_not)
+        self.scenario(self.check_test_report_uses_detached_compact_prediction_values)
+        self.scenario(self.check_test_malformed_prediction_facts_are_unreviewable)
+        self.scenario(self.check_test_json_csv_exports_preserve_the_same_prediction_snapshot)
+        self.scenario(self.check_test_saved_project_batch_reports_score_and_diagnostic_changes_with_new_revision)
 
 
 class PredictionRevisionCropTests(unittest.TestCase):

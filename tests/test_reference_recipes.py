@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.functional_units import functional_units
+
 import copy
 from dataclasses import replace
 import json
@@ -179,8 +181,9 @@ def _checkpoint_identity(recipe: RecipeSpec, stage_id: str, *, upstream: str | N
     )
 
 
+@functional_units
 class ReferenceRecipeTests(unittest.TestCase):
-    def test_strict_json_round_trip_and_deep_immutability(self) -> None:
+    def check_test_strict_json_round_trip_and_deep_immutability(self) -> None:
         recipe = _contract_recipe()
         encoded = recipe.to_json()
         restored = RecipeSpec.from_json(encoded)
@@ -209,7 +212,7 @@ class ReferenceRecipeTests(unittest.TestCase):
         with self.assertRaises(RecipeContractError):
             RecipeProvenance.from_dict(provenance_payload)
 
-    def test_parameter_choices_and_one_sided_bounds_validate_the_parameter_value(self) -> None:
+    def check_test_parameter_choices_and_one_sided_bounds_validate_the_parameter_value(self) -> None:
         valid_choice = ParameterContract(
             "threshold_method", "string", "otsu", True, True,
             choices=("otsu", "mean"),
@@ -238,7 +241,7 @@ class ReferenceRecipeTests(unittest.TestCase):
         with self.assertRaisesRegex(RecipeContractError, "above its maximum"):
             RecipeSpec.from_json(json.dumps(document))
 
-    def test_recipe_rejects_duplicate_missing_mistyped_and_cyclic_dependencies(self) -> None:
+    def check_test_recipe_rejects_duplicate_missing_mistyped_and_cyclic_dependencies(self) -> None:
         recipe = _contract_recipe()
         with self.assertRaisesRegex(RecipeContractError, "unique"):
             replace(recipe, dependencies=recipe.dependencies + (recipe.dependencies[0],))
@@ -277,7 +280,7 @@ class ReferenceRecipeTests(unittest.TestCase):
                 ),
             )
 
-    def test_editing_layout_or_display_only_values_does_not_change_analytic_identity(self) -> None:
+    def check_test_editing_layout_or_display_only_values_does_not_change_analytic_identity(self) -> None:
         recipe = _contract_recipe()
         original = recipe.identity
         moved = replace(recipe, layout=(LayoutPosition("source", 1000, -40),))
@@ -302,7 +305,7 @@ class ReferenceRecipeTests(unittest.TestCase):
         self.assertEqual(calc_recipe.identity.graph_sha256, original.graph_sha256)
         self.assertEqual(recipe.parameters_for_runner("threshold"), {"cutoff": 127})
 
-    def test_existing_pipeline_graph_projection_is_read_only_exact_and_auditable(self) -> None:
+    def check_test_existing_pipeline_graph_projection_is_read_only_exact_and_auditable(self) -> None:
         recipe = _contract_recipe()
         graph = to_pipeline_graph(recipe)
         self.assertEqual(graph.topological_order(), ("source", "threshold", "split"))
@@ -344,7 +347,37 @@ class ReferenceRecipeTests(unittest.TestCase):
         with self.assertRaisesRegex(RecipeGraphMismatch, "read-only"):
             validate_pipeline_graph(recipe, graph)
 
-    def test_graph_run_mapping_must_match_each_stage_id(self) -> None:
+    def check_test_projection_consumes_record_iterator_before_snapshotting_identity(self) -> None:
+        recipe = _pinned_contract_recipe()
+
+        def records():
+            # An external iterator can run code before yielding any records.
+            object.__setattr__(recipe, "recipe_version", "2")
+            yield from ()
+
+        graph = to_pipeline_graph(recipe, records())
+        self.assertEqual(graph.reference_recipe_identity, recipe.identity)
+        for record in graph.reference_recipe_runs.values():
+            self.assertEqual(record.recipe_identity, recipe.identity)
+        validate_pipeline_graph(recipe, graph)
+
+    def check_test_run_mapping_callback_cannot_leave_a_changed_recipe_validated(self) -> None:
+        recipe = _pinned_contract_recipe()
+        graph = to_pipeline_graph(recipe)
+        last_stage = recipe.stages[-1].stage_id
+
+        class ChangingRuns(dict):
+            def __getitem__(self, key):
+                record = super().__getitem__(key)
+                if key == last_stage:
+                    object.__setattr__(recipe, "recipe_version", "2")
+                return record
+
+        graph.reference_recipe_runs = ChangingRuns(graph.reference_recipe_runs)
+        with self.assertRaisesRegex(RecipeGraphMismatch, "Stale run state"):
+            validate_pipeline_graph(recipe, graph)
+
+    def check_test_graph_run_mapping_must_match_each_stage_id(self) -> None:
         recipe = _contract_recipe()
         graph = to_pipeline_graph(recipe)
         runs = dict(graph.reference_recipe_runs)
@@ -353,7 +386,7 @@ class ReferenceRecipeTests(unittest.TestCase):
         with self.assertRaisesRegex(RecipeGraphMismatch, "bound to stage"):
             validate_pipeline_graph(recipe, graph)
 
-    def test_reference_projection_rejects_all_unused_nodes_even_with_id_collisions(self) -> None:
+    def check_test_reference_projection_rejects_all_unused_nodes_even_with_id_collisions(self) -> None:
         recipe = _contract_recipe()
         cases = (
             # An inactive duplicate uses an active ID and used to disappear in
@@ -382,7 +415,7 @@ class ReferenceRecipeTests(unittest.TestCase):
                 with self.assertRaisesRegex(RecipeGraphMismatch, "unused nodes"):
                     validate_pipeline_graph(recipe, graph)
 
-    def test_downstream_run_upstream_bindings_are_optional_or_explicitly_checked(self) -> None:
+    def check_test_downstream_run_upstream_bindings_are_optional_or_explicitly_checked(self) -> None:
         recipe = _pinned_contract_recipe()
         upstream_sha = "c" * 64
         output_sha = "d" * 64
@@ -428,7 +461,7 @@ class ReferenceRecipeTests(unittest.TestCase):
             expected_upstream_checkpoint_sha256=upstream_sha,
         )
 
-    def test_stage_execution_states_and_stale_identities_are_explicit(self) -> None:
+    def check_test_stage_execution_states_and_stale_identities_are_explicit(self) -> None:
         recipe = _contract_recipe()
         unresolved = initial_stage_run(recipe, "threshold")
         self.assertEqual(unresolved.state, StageRunState.UNRESOLVED)
@@ -489,7 +522,7 @@ class ReferenceRecipeTests(unittest.TestCase):
         with self.assertRaises(StaleRecipeIdentity):
             validate_stage_run(pinned_recipe, record, expected_upstream_checkpoint_sha256=_SHA)
 
-    def test_unresolved_and_unavailable_sources_cannot_be_recorded_as_completed_or_bypassed(self) -> None:
+    def check_test_unresolved_and_unavailable_sources_cannot_be_recorded_as_completed_or_bypassed(self) -> None:
         unresolved_recipe = _contract_recipe()
         unavailable_recipe = _unavailable_contract_recipe()
         for recipe, resolution, expected_status in (
@@ -517,7 +550,7 @@ class ReferenceRecipeTests(unittest.TestCase):
                     with self.assertRaisesRegex(RecipeContractError, "source-.*completed or bypassed"):
                         to_pipeline_graph(recipe, (decoded,))
 
-    def test_original_reference_pinned_provenance_requires_complete_source_and_environment_pins(self) -> None:
+    def check_test_original_reference_pinned_provenance_requires_complete_source_and_environment_pins(self) -> None:
         with self.assertRaisesRegex(RecipeContractError, "requires source ID/version/commit"):
             RecipeProvenance(
                 mode=RecipeProvenanceMode.ORIGINAL_REFERENCE,
@@ -547,7 +580,7 @@ class ReferenceRecipeTests(unittest.TestCase):
         with self.assertRaisesRegex(RecipeContractError, "full Git commit"):
             replace(pinned, reference_commit="main")
 
-    def test_pipeline_view_carries_explicit_not_run_checkpoint_identity(self) -> None:
+    def check_test_pipeline_view_carries_explicit_not_run_checkpoint_identity(self) -> None:
         recipe = _contract_recipe()
         record = StageRunRecord("threshold", recipe.identity, StageRunState.NOT_RUN)
         graph = to_pipeline_graph(recipe, (record,))
@@ -555,6 +588,26 @@ class ReferenceRecipeTests(unittest.TestCase):
         self.assertEqual(graph.node("threshold").status_detail, "Not run")
         self.assertEqual(graph.reference_recipe_runs["threshold"], record)
         validate_pipeline_graph(recipe, graph)
+
+    def test_workflow_lifecycle(self):
+        """10 related ReferenceRecipeTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_strict_json_round_trip_and_deep_immutability)
+        self.scenario(self.check_test_parameter_choices_and_one_sided_bounds_validate_the_parameter_value)
+        self.scenario(self.check_test_editing_layout_or_display_only_values_does_not_change_analytic_identity)
+        self.scenario(self.check_test_existing_pipeline_graph_projection_is_read_only_exact_and_auditable)
+        self.scenario(self.check_test_projection_consumes_record_iterator_before_snapshotting_identity)
+        self.scenario(self.check_test_run_mapping_callback_cannot_leave_a_changed_recipe_validated)
+        self.scenario(self.check_test_graph_run_mapping_must_match_each_stage_id)
+        self.scenario(self.check_test_downstream_run_upstream_bindings_are_optional_or_explicitly_checked)
+        self.scenario(self.check_test_original_reference_pinned_provenance_requires_complete_source_and_environment_pins)
+        self.scenario(self.check_test_pipeline_view_carries_explicit_not_run_checkpoint_identity)
+
+    def test_validation_and_recovery(self):
+        """4 related ReferenceRecipeTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_recipe_rejects_duplicate_missing_mistyped_and_cyclic_dependencies)
+        self.scenario(self.check_test_reference_projection_rejects_all_unused_nodes_even_with_id_collisions)
+        self.scenario(self.check_test_stage_execution_states_and_stale_identities_are_explicit)
+        self.scenario(self.check_test_unresolved_and_unavailable_sources_cannot_be_recorded_as_completed_or_bypassed)
 
 
 if __name__ == "__main__":

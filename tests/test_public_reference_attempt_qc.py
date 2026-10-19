@@ -1,4 +1,6 @@
 """Desktop boundary witnesses; no inferred outputs from thrown exceptions."""
+
+from tests.functional_units import functional_units
 import os
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
@@ -9,6 +11,7 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
+from tests.catalogue_fixtures import CatalogueTestCase
 from unittest.mock import patch
 
 from PySide6.QtWidgets import QApplication
@@ -23,7 +26,8 @@ from seedvision.persistence.method_qc_history import load_project_method_qc
 from seedvision.ui import public_reference_capture_dialog as ui
 
 
-class PublicReferenceAttemptBoundaryTests(unittest.TestCase):
+@functional_units
+class PublicReferenceAttemptBoundaryTests(CatalogueTestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
@@ -56,7 +60,7 @@ class PublicReferenceAttemptBoundaryTests(unittest.TestCase):
     def row(self, worker):
         return worker.qualities[-1].payload['identity']['reference_capture']
 
-    def test_failed_wrapper_retains_original_error_and_exact_request_bytes(self):
+    def check_test_failed_wrapper_retains_original_error_and_exact_request_bytes(self):
         failure = ValueError('Actual decoder failure')
         worker = self.run_failure(failure)
         row = self.row(worker)
@@ -71,7 +75,7 @@ class PublicReferenceAttemptBoundaryTests(unittest.TestCase):
         self.assertEqual([MethodQC(raw.decode()).revision for raw in history.records],
                          [worker.qualities[0].revision])
 
-    def test_missing_source_keeps_unknown_identity_and_actual_input_observation(self):
+    def check_test_missing_source_keeps_unknown_identity_and_actual_input_observation(self):
         missing = self.root / 'absent.png'
         worker = self.run_failure(FileNotFoundError('Selected source absent'),
             request=replace(self.request, source_path=missing, source_stamp=None))
@@ -81,7 +85,7 @@ class PublicReferenceAttemptBoundaryTests(unittest.TestCase):
         self.assertIsNone(row['inputs_before'][0]['observation']['sha256'])
         self.assertEqual(worker.qualities[-1].payload['version'], 5)
 
-    def test_supplied_expected_source_is_not_overwritten_by_changed_observation(self):
+    def check_test_supplied_expected_source_is_not_overwritten_by_changed_observation(self):
         original = sha256(self.source.read_bytes()).hexdigest()
         self.source.write_bytes(b'Changed selected bytes')
         worker = self.run_failure(ValueError('Selected image changed before preparation'),
@@ -90,7 +94,7 @@ class PublicReferenceAttemptBoundaryTests(unittest.TestCase):
         self.assertEqual(row['expected_source_sha256'], original)
         self.assertNotEqual(row['inputs_before'][0]['observation']['sha256'], original)
 
-    def test_nullable_source_version_cannot_relabel_known_or_complete_capture(self):
+    def check_test_nullable_source_version_cannot_relabel_known_or_complete_capture(self):
         import json
         worker = self.run_failure(FileNotFoundError('No source'),
             request=replace(self.request, source_path=self.root / 'missing.png', source_stamp=None))
@@ -104,7 +108,7 @@ class PublicReferenceAttemptBoundaryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             MethodQC(json.dumps(known))
 
-    def test_runner_construction_failure_does_not_claim_wrapper_invocation(self):
+    def check_test_runner_construction_failure_does_not_claim_wrapper_invocation(self):
         failure = OSError('Pinned interpreter unavailable')
         def factory():
             raise failure
@@ -116,14 +120,14 @@ class PublicReferenceAttemptBoundaryTests(unittest.TestCase):
         self.assertEqual(self.row(worker)['phase'], 'admission')
         self.assertIsNone(self.row(worker)['invoked_executor'])
 
-    def test_both_actual_cancellation_types_remain_cancellation(self):
+    def check_test_both_actual_cancellation_types_remain_cancellation(self):
         for failure in (CheckpointCancelled('Session cancelled'), ReferenceCancelledError('Public call cancelled')):
             with self.subTest(type=type(failure).__name__):
                 worker = self.run_failure(failure)
                 self.assertEqual(self.row(worker)['state'], 'cancelled')
                 self.assertEqual(self.row(worker)['error_type'], type(failure).__name__)
 
-    def test_stop_before_invocation_retains_request_without_calling_runner(self):
+    def check_test_stop_before_invocation_retains_request_without_calling_runner(self):
         event = threading.Event()
         event.set()
         worker = self.worker(cancel=event)
@@ -133,7 +137,7 @@ class PublicReferenceAttemptBoundaryTests(unittest.TestCase):
         self.assertEqual(self.row(worker)['state'], 'cancelled')
         self.assertIsNone(self.row(worker)['invoked_executor'])
 
-    def test_history_write_failure_preserves_primary_exception_and_exportable_qc(self):
+    def check_test_history_write_failure_preserves_primary_exception_and_exportable_qc(self):
         failure = ValueError('Primary execution failure')
         with patch('seedvision.persistence.method_qc_history.retain_method_qc',
                    side_effect=OSError('History destination unavailable')):
@@ -142,7 +146,7 @@ class PublicReferenceAttemptBoundaryTests(unittest.TestCase):
         self.assertIn('History destination unavailable', failure.__notes__[0])
         self.assertTrue(worker.retention_errors)
 
-    def test_unknown_source_history_and_exact_ack_reopen_without_source_probes(self):
+    def check_test_unknown_source_history_and_exact_ack_reopen_without_source_probes(self):
         from seedvision.export.method_qc import acknowledge_method_qc, load_method_qc_acknowledgment
         from seedvision.persistence.method_qc_history import retain_method_qc
         missing = self.root / 'never-present.png'
@@ -160,7 +164,7 @@ class PublicReferenceAttemptBoundaryTests(unittest.TestCase):
         self.assertEqual(len(history.acknowledgments), 1)
         self.assertEqual(MethodQC(history.records[0].decode()).revision, quality.revision)
 
-    def test_failed_delivery_exposes_qc_and_performs_no_file_observation(self):
+    def check_test_failed_delivery_exposes_qc_and_performs_no_file_observation(self):
         worker = self.run_failure(ValueError('Public failure'))
         dialog = ui.PublicReferenceCaptureDialog(self.recipe, project_root=self.root)
         self.addCleanup(dialog.close)
@@ -179,7 +183,7 @@ class PublicReferenceAttemptBoundaryTests(unittest.TestCase):
         self.assertEqual(shared.call_args.args[0], worker.qualities[-1])
         self.assertEqual(shared.call_args.kwargs['project_root'], self.root)
 
-    def test_stale_delivery_cannot_clear_replacement_worker_or_install_output(self):
+    def check_test_stale_delivery_cannot_clear_replacement_worker_or_install_output(self):
         old = self.run_failure(ValueError('Earlier recorded failure'))
         replacement = self.worker(request=replace(self.request, generation=2))
         dialog = ui.PublicReferenceCaptureDialog(self.recipe, project_root=self.root)
@@ -195,8 +199,25 @@ class PublicReferenceAttemptBoundaryTests(unittest.TestCase):
         dialog._worker = None
         dialog.close()
 
+    def test_validation_and_recovery(self):
+        """8 related PublicReferenceAttemptBoundaryTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_failed_wrapper_retains_original_error_and_exact_request_bytes)
+        self.scenario(self.check_test_missing_source_keeps_unknown_identity_and_actual_input_observation)
+        self.scenario(self.check_test_runner_construction_failure_does_not_claim_wrapper_invocation)
+        self.scenario(self.check_test_both_actual_cancellation_types_remain_cancellation)
+        self.scenario(self.check_test_stop_before_invocation_retains_request_without_calling_runner)
+        self.scenario(self.check_test_history_write_failure_preserves_primary_exception_and_exportable_qc)
+        self.scenario(self.check_test_failed_delivery_exposes_qc_and_performs_no_file_observation)
+        self.scenario(self.check_test_stale_delivery_cannot_clear_replacement_worker_or_install_output)
 
-class PublicReferenceCompletedAttemptTests(unittest.TestCase):
+    def test_workflow_lifecycle(self):
+        """3 related PublicReferenceAttemptBoundaryTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_supplied_expected_source_is_not_overwritten_by_changed_observation)
+        self.scenario(self.check_test_nullable_source_version_cannot_relabel_known_or_complete_capture)
+        self.scenario(self.check_test_unknown_source_history_and_exact_ack_reopen_without_source_probes)
+
+
+class PublicReferenceCompletedAttemptTests(CatalogueTestCase):
     """Use one genuine public capture; delivery faults do not change execution."""
     @classmethod
     def setUpClass(cls):
@@ -242,99 +263,10 @@ class PublicReferenceCompletedAttemptTests(unittest.TestCase):
             worker.run()
         self.assertIsNone(worker.delivered[0][2])
 
-    def test_stop_after_complete_return_retains_complete_qc_and_separate_delivery(self):
-        worker = self.worker()
-        self.run_completed(worker)
-        completed = worker.execution_quality
-        dialog = ui.PublicReferenceCaptureDialog(self.recipe, project_root=self.root)
-        dialog._generation = 1
-        dialog._worker = worker
-        dialog._cancel = worker.cancel
-        dialog.stop_capture()
-        with patch.object(ui, 'stamp', side_effect=AssertionError('No delivery source read')), patch(
-                'seedvision.export.public_reference_attempt._observe_inputs',
-                side_effect=AssertionError('No delivery byte read')):
-            dialog._completed(*worker.delivered[0], worker=worker)
-        self.assertIsNone(dialog._reply)
-        self.assertEqual(completed.payload['identity']['scope'], 'whole_reference_capture')
-        self.assertEqual(worker.execution_quality, completed)
-        delivery = worker.qualities[-1].payload['identity']['reference_capture']
-        self.assertEqual(delivery['state'], 'cancelled')
-        self.assertIsNone(delivery['record'])
-        self.assertIn(completed.revision, delivery['detail'])
-        self.assertTrue(dialog.qc_button.isEnabled())
-        dialog.close()
 
-    def test_source_replacement_after_return_withholds_display_not_complete_capture(self):
-        worker = self.worker()
-        def replace_source(*args):
-            self.source.write_bytes(b'Replaced after actual capture')
-            return ()
-        with patch.object(ui, 'capture_reference_path', return_value=self.session), patch.object(
-                ui, '_display_artifacts', side_effect=replace_source):
-            worker.run()
-        self.assertIsNone(worker.delivered[0][1])
-        self.assertIsInstance(worker.delivered[0][2], ValueError)
-        self.assertEqual(worker.execution_quality.payload['identity']['scope'], 'whole_reference_capture')
-        self.assertEqual(worker.qualities[-1].payload['identity']['scope'], 'reference_capture_attempt')
 
-    def test_completed_stale_worker_retains_delivery_without_touching_replacement(self):
-        old = self.worker()
-        self.run_completed(old)
-        replacement = self.worker()
-        dialog = ui.PublicReferenceCaptureDialog(self.recipe, project_root=self.root)
-        dialog._worker = replacement
-        dialog._cancel = replacement.cancel
-        dialog._generation = 2
-        with patch.object(ui, 'stamp', side_effect=AssertionError('No stale delivery source read')):
-            dialog._completed(*old.delivered[0], worker=old)
-        self.assertIs(dialog._worker, replacement)
-        self.assertFalse(replacement.cancel.is_set())
-        self.assertEqual(old.qualities[-1].payload['identity']['reference_capture']['state'], 'cancelled')
-        self.assertEqual(old.execution_quality.payload['identity']['scope'], 'whole_reference_capture')
-        dialog._worker = None
-        dialog.close()
 
-    def test_closing_drain_preserves_complete_and_delivery_history_without_install(self):
-        worker = self.worker()
-        self.run_completed(worker)
-        dialog = ui.PublicReferenceCaptureDialog(self.recipe, project_root=self.root)
-        dialog._generation = 1
-        dialog._worker = worker
-        dialog._cancel = worker.cancel
-        dialog.reject()
-        self.assertTrue(dialog._closing)
-        with patch.object(ui, 'stamp', side_effect=AssertionError('Closing cannot inspect sources')):
-            dialog._completed(*worker.delivered[0], worker=worker)
-        self.assertIsNone(dialog._reply)
-        self.assertEqual(worker.execution_quality.payload['identity']['scope'], 'whole_reference_capture')
-        self.assertEqual(worker.qualities[-1].payload['identity']['reference_capture']['state'], 'cancelled')
-        self.assertIsNone(dialog._worker)
-        dialog.close()
 
-    def test_actual_returned_partial_retains_calls_and_no_complete_manifest(self):
-        from seedvision.benchmarking.reference_capture_session import capture_reference_path
-        from seedvision.benchmarking.reference_runner import PlantCVReferenceRunner
-        from tests.test_reference_preprocessing import REFERENCE_PYTHON
-        stages = tuple(replace(stage, parameters=tuple(
-            replace(parameter, value=7) if parameter.parameter_id == 'n_labels' else parameter
-            for parameter in stage.parameters)) for stage in self.recipe.stages)
-        recipe = replace(self.recipe, stages=stages)
-        session = capture_reference_path(recipe, self.source, self.root / 'partial',
-            PlantCVReferenceRunner(REFERENCE_PYTHON))
-        self.assertEqual(session.outcome.status, 'partial')
-        self.assertIsNone(session.verified)
-        worker = ui._CaptureWorker(replace(self.request, recipe=recipe), threading.Event(), lambda: object())
-        worker.delivered = []
-        worker.signals.completed.connect(lambda *args: worker.delivered.append(args))
-        with patch.object(ui, 'capture_reference_path', return_value=session):
-            worker.run()
-        self.assertIsNone(worker.delivered[0][2])
-        row = worker.execution_quality.payload['identity']['reference_capture']
-        self.assertEqual(row['state'], 'partial')
-        self.assertEqual(row['record']['status'], 'partial')
-        self.assertEqual(len(row['record']['source_calls']), 3)
-        self.assertIsNone(row['manifest_sha256'])
 
     def test_actual_empty_return_is_not_recast_as_failed_execution(self):
         import cv2

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.functional_units import functional_units
+
 import importlib.metadata
 import json
 import tempfile
@@ -30,24 +32,35 @@ def dependency() -> Dependency:
     )
 
 
+@functional_units
 class VersionTests(unittest.TestCase):
-    def test_version_key_accepts_common_suffixes(self) -> None:
+    def check_test_version_key_accepts_common_suffixes(self) -> None:
         self.assertEqual(version_key("2.13.0+cu130"), (2, 13, 0))
         self.assertEqual(version_key("6.11"), (6, 11, 0))
 
-    def test_compatibility_uses_inclusive_minimum_and_exclusive_maximum(self) -> None:
+    def check_test_compatibility_uses_inclusive_minimum_and_exclusive_maximum(self) -> None:
         self.assertTrue(version_is_compatible("2.0.0", "2.0.0", "3.0.0"))
         self.assertTrue(version_is_compatible("2.99.1", "2.0.0", "3.0.0"))
         self.assertFalse(version_is_compatible("1.99.9", "2.0.0", "3.0.0"))
         self.assertFalse(version_is_compatible("3.0.0", "2.0.0", "3.0.0"))
 
-    def test_invalid_version_is_rejected(self) -> None:
+    def check_test_invalid_version_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
             version_key("unknown")
 
+    def test_workflow_lifecycle(self):
+        """2 related VersionTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_version_key_accepts_common_suffixes)
+        self.scenario(self.check_test_compatibility_uses_inclusive_minimum_and_exclusive_maximum)
 
+    def test_validation_and_recovery(self):
+        """1 related VersionTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_invalid_version_is_rejected)
+
+
+@functional_units
 class DependencyInspectionTests(unittest.TestCase):
-    def test_missing_import_requires_installation(self) -> None:
+    def check_test_missing_import_requires_installation(self) -> None:
         check = inspect_dependency(
             dependency(),
             module_finder=lambda _: None,
@@ -56,7 +69,7 @@ class DependencyInspectionTests(unittest.TestCase):
         self.assertFalse(check.installed)
         self.assertFalse(check.compatible)
 
-    def test_compatible_supplied_package_is_kept(self) -> None:
+    def check_test_compatible_supplied_package_is_kept(self) -> None:
         check = inspect_dependency(
             dependency(),
             module_finder=lambda _: object(),
@@ -65,7 +78,7 @@ class DependencyInspectionTests(unittest.TestCase):
         self.assertTrue(check.installed)
         self.assertTrue(check.compatible)
 
-    def test_old_package_requires_installation(self) -> None:
+    def check_test_old_package_requires_installation(self) -> None:
         check = inspect_dependency(
             dependency(),
             module_finder=lambda _: object(),
@@ -74,7 +87,7 @@ class DependencyInspectionTests(unittest.TestCase):
         self.assertTrue(check.installed)
         self.assertFalse(check.compatible)
 
-    def test_centrally_supplied_import_without_pip_metadata_is_accepted(self) -> None:
+    def check_test_centrally_supplied_import_without_pip_metadata_is_accepted(self) -> None:
         def no_metadata(_: str) -> str:
             raise importlib.metadata.PackageNotFoundError("Example")
 
@@ -87,9 +100,20 @@ class DependencyInspectionTests(unittest.TestCase):
         self.assertTrue(check.compatible)
         self.assertIsNone(check.version)
 
+    def test_validation_and_recovery(self):
+        """1 related DependencyInspectionTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_missing_import_requires_installation)
 
+    def test_workflow_lifecycle(self):
+        """3 related DependencyInspectionTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_compatible_supplied_package_is_kept)
+        self.scenario(self.check_test_old_package_requires_installation)
+        self.scenario(self.check_test_centrally_supplied_import_without_pip_metadata_is_accepted)
+
+
+@functional_units
 class PipCommandTests(unittest.TestCase):
-    def test_online_command_can_prefer_local_wheels(self) -> None:
+    def check_test_online_command_can_prefer_local_wheels(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             wheelhouse = Path(temporary_directory)
             (wheelhouse / "example-2.4.0-py3-none-any.whl").touch()
@@ -103,7 +127,7 @@ class PipCommandTests(unittest.TestCase):
         self.assertNotIn("--no-index", command)
         self.assertEqual(command[-1], "Example==2.4.0")
 
-    def test_offline_command_disables_package_indexes(self) -> None:
+    def check_test_offline_command_disables_package_indexes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             wheelhouse = Path(temporary_directory)
             (wheelhouse / "example-2.4.0-py3-none-any.whl").touch()
@@ -116,7 +140,7 @@ class PipCommandTests(unittest.TestCase):
         self.assertIn("--no-index", command)
         self.assertIn("--find-links", command)
 
-    def test_online_command_can_select_the_cuda_wheel_index(self) -> None:
+    def check_test_online_command_can_select_the_cuda_wheel_index(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             command = build_pip_command(
                 "python.exe",
@@ -131,7 +155,7 @@ class PipCommandTests(unittest.TestCase):
             "https://download.pytorch.org/whl/cu126",
         )
 
-    def test_offline_command_rejects_an_empty_wheelhouse(self) -> None:
+    def check_test_offline_command_rejects_an_empty_wheelhouse(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             with self.assertRaises(BootstrapError):
                 build_pip_command(
@@ -141,7 +165,7 @@ class PipCommandTests(unittest.TestCase):
                     offline=True,
                 )
 
-    def test_online_install_separates_default_and_cuda_indexes(self) -> None:
+    def check_test_online_install_separates_default_and_cuda_indexes(self) -> None:
         standard = dependency()
         torch = Dependency(
             distribution="torch",
@@ -167,6 +191,17 @@ class PipCommandTests(unittest.TestCase):
         self.assertIn("Example==2.4.0", first_command)
         self.assertIn("--index-url", second_command)
         self.assertIn("torch==2.13.0", second_command)
+
+    def test_workflow_lifecycle(self):
+        """4 related PipCommandTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_online_command_can_prefer_local_wheels)
+        self.scenario(self.check_test_offline_command_disables_package_indexes)
+        self.scenario(self.check_test_online_command_can_select_the_cuda_wheel_index)
+        self.scenario(self.check_test_online_install_separates_default_and_cuda_indexes)
+
+    def test_validation_and_recovery(self):
+        """1 related PipCommandTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_offline_command_rejects_an_empty_wheelhouse)
 
 
 class ManifestTests(unittest.TestCase):

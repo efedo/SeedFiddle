@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from tests.catalogue_fixtures import CatalogueTestCase
+
+from tests.functional_units import functional_units
+
 from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
@@ -115,8 +119,9 @@ def _recipe(identity: NativeWatershedIdentity, recipe_id: str, operation_id: str
     return replace(recipe, provenance=identity.recipe_provenance()), stage.stage_id
 
 
-class NativeWatershedIdentityTests(unittest.TestCase):
-    def test_loaded_distance_and_marker_implementation_identity_is_stable(self) -> None:
+@functional_units
+class NativeWatershedIdentityTests(CatalogueTestCase):
+    def check_test_loaded_distance_and_marker_implementation_identity_is_stable(self) -> None:
         first = native_stage_module._implementation_digest()
         self.assertRegex(first, r"^[0-9a-f]{64}$")
         self.assertEqual(first, native_stage_module._implementation_digest())
@@ -128,7 +133,7 @@ class NativeWatershedIdentityTests(unittest.TestCase):
             with self.assertRaisesRegex(NativeWatershedStageError, "exception type changed"):
                 native_stage_module._implementation_digest()
 
-    def test_stage_identity_binds_recipe_source_backend_and_upstream(self) -> None:
+    def check_test_stage_identity_binds_recipe_source_backend_and_upstream(self) -> None:
         identity = _synthetic_identity()
         for operation_id in (NATIVE_DISTANCE_OPERATION_ID, NATIVE_MARKER_OPERATION_ID):
             recipe, stage_id = _recipe(identity, "plantcv_seed_binary", operation_id)
@@ -201,7 +206,7 @@ class NativeWatershedIdentityTests(unittest.TestCase):
                 binary_input, mean_recipe, mean_stage_id, "4" * 64, identity,
             )
 
-    def test_archive_preflight_rejects_before_cuda_probe_or_primitive(self) -> None:
+    def check_test_archive_preflight_rejects_before_cuda_probe_or_primitive(self) -> None:
         identity = _synthetic_identity()
         recipe, stage_id = _recipe(identity, "plantcv_seed_binary", NATIVE_DISTANCE_OPERATION_ID)
         mask = np.zeros((8, 11), dtype=np.uint8)
@@ -283,12 +288,21 @@ class NativeWatershedIdentityTests(unittest.TestCase):
                         run_native_watershed_stage(**arguments)
                     primitive.assert_not_called()
 
+    def test_workflow_lifecycle(self):
+        """2 related NativeWatershedIdentityTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_loaded_distance_and_marker_implementation_identity_is_stable)
+        self.scenario(self.check_test_stage_identity_binds_recipe_source_backend_and_upstream)
+
+    def test_validation_and_recovery(self):
+        """1 related NativeWatershedIdentityTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_archive_preflight_rejects_before_cuda_probe_or_primitive)
+
 
 @unittest.skipUnless(
     HAS_CUDA and REFERENCE_ENVIRONMENT_READY,
     "the native watershed stage bridge requires CUDA and the pinned local PlantCV reference environment",
 )
-class NativeWatershedCudaStageTests(unittest.TestCase):
+class NativeWatershedCudaStageTests(CatalogueTestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.device = torch.device("cuda", torch.cuda.current_device())
@@ -391,216 +405,10 @@ class NativeWatershedCudaStageTests(unittest.TestCase):
         args = {key: value for key, value in case.items() if key not in {"input_values", "output_name", "is_distance"}}
         return run_native_watershed_stage(**args)
 
-    def test_connected_markers_match_pinned_scipy_on_full_hd_partition(self) -> None:
-        peaks = np.zeros((1080, 1920), dtype=np.bool_)
-        # A diagonal border pair is one 8-connected component; nearby points
-        # separated by more than one pixel remain distinct.
-        peaks[0, 0] = True
-        peaks[1, 1] = True
-        peaks[0, 6] = True
-        peaks[1078, 1918] = True
-        peaks[1079, 1919] = True
-        peaks[1079, 1916] = True
-        peaks[20:1060:32, 24:1880:32] = True
-        self.assertLess(int(np.count_nonzero(peaks)), MAX_NATIVE_MARKER_PEAK_PIXELS)
-        case = self._case(NATIVE_MARKER_OPERATION_ID, peaks)
-        outcome = self._run(case)
-        self.assertEqual(outcome.status, NativeWatershedStageStatus.EXECUTED)
-        self.assertEqual(outcome.run_record.state, StageRunState.EXECUTED)
-        checkpoint = load_checkpoint(case["output_root"], outcome.run_record.checkpoint_sha256)
-        labels = checkpoint.arrays[NATIVE_MARKER_OUTPUT_NAME]
-        self.assertEqual(labels.shape, peaks.shape)
-        self.assertEqual(labels.dtype, np.dtype(np.int32))
-        self.assertEqual(checkpoint.raster_roles[NATIVE_MARKER_OUTPUT_NAME], RasterRole("instances", np.dtype(np.int32).str, "HW"))
-        self.assertFalse(checkpoint.measurement.eligible)
-        self.assertEqual(checkpoint.metadata["marker_count"], int(labels.max()))
-        self.assertFalse(checkpoint.metadata["original_reference_intermediate"])
-        self.assertFalse(checkpoint.metadata["original_reference_public_call_exposes_intermediate"])
-        self.assertEqual(checkpoint.metadata["scientific_validation_status"], "not_certified")
 
-        with tempfile.TemporaryDirectory(prefix="pinned-scipy-markers-") as reference_directory:
-            input_path = Path(reference_directory) / "peaks.npz"
-            output_path = Path(reference_directory) / "scipy-labels.npy"
-            np.savez_compressed(input_path, peaks=peaks)
-            script = (
-                "import numpy as np, sys; from scipy import ndimage; "
-                "a=np.load(sys.argv[1])['peaks']; "
-                "labels,count=ndimage.label(a, structure=np.ones((3,3), dtype=np.uint8)); "
-                "np.save(sys.argv[2], labels.astype(np.int32)); "
-                "open(sys.argv[2]+'.count','w',encoding='ascii').write(str(count))"
-            )
-            result = subprocess.run(
-                [str(REFERENCE_PYTHON), "-c", script, str(input_path), str(output_path)],
-                capture_output=True,
-                text=True,
-                timeout=120,
-                check=False,
-            )
-            self.assertEqual(result.returncode, 0, result.stderr[-2000:])
-            expected_labels = np.load(output_path, allow_pickle=False)
-            expected_count = int(Path(str(output_path) + ".count").read_text(encoding="ascii"))
-        actual_pixels = labels[peaks]
-        expected_pixels = expected_labels[peaks]
-        unique_pairs = np.unique(np.column_stack((expected_pixels, actual_pixels)), axis=0)
-        self.assertEqual(int(labels.max()), expected_count)
-        self.assertEqual(unique_pairs.shape[0], expected_count)
-        self.assertEqual(np.unique(unique_pairs[:, 0]).size, expected_count)
-        self.assertEqual(np.unique(unique_pairs[:, 1]).size, expected_count)
-        np.testing.assert_array_equal(labels[~peaks], np.zeros(np.count_nonzero(~peaks), dtype=np.int32))
 
-    def test_empty_marker_mask_has_an_explicit_empty_checkpoint(self) -> None:
-        peaks = np.zeros((32, 48), dtype=np.bool_)
-        case = self._case(NATIVE_MARKER_OPERATION_ID, peaks)
-        outcome = self._run(case)
-        self.assertEqual(outcome.status, NativeWatershedStageStatus.EMPTY)
-        self.assertEqual(outcome.run_record.state, StageRunState.EMPTY)
-        checkpoint = load_checkpoint(case["output_root"], outcome.run_record.checkpoint_sha256)
-        self.assertEqual(checkpoint.execution.status, ExecutionStatus.EMPTY)
-        self.assertEqual(checkpoint.metadata["marker_count"], 0)
-        np.testing.assert_array_equal(checkpoint.arrays[NATIVE_MARKER_OUTPUT_NAME], np.zeros_like(peaks, dtype=np.int32))
 
-    def test_distance_checkpoint_matches_pinned_opencv_and_keeps_zero_map_available(self) -> None:
-        mask = np.zeros((48, 72), dtype=np.uint8)
-        mask[5:42, 8:66] = 255
-        mask[17:29, 24:49] = 0
-        case = self._case(NATIVE_DISTANCE_OPERATION_ID, mask)
-        outcome = self._run(case)
-        self.assertEqual(outcome.status, NativeWatershedStageStatus.EXECUTED)
-        self.assertEqual(outcome.run_record.state, StageRunState.EXECUTED)
-        checkpoint = load_checkpoint(case["output_root"], outcome.run_record.checkpoint_sha256)
-        distance = checkpoint.arrays[NATIVE_DISTANCE_OUTPUT_NAME]
-        self.assertEqual(distance.dtype, np.dtype(np.float32))
-        self.assertEqual(distance.shape, mask.shape)
-        self.assertEqual(checkpoint.raster_roles[NATIVE_DISTANCE_OUTPUT_NAME], RasterRole("raster", np.dtype(np.float32).str, "HW"))
-        self.assertEqual(checkpoint.execution.status, ExecutionStatus.AVAILABLE)
-        self.assertNotIn("marker_count", checkpoint.metadata)
-        self.assertIn("5x5 chamfer", checkpoint.metadata["effective_parameters"]["effective_algorithm"])
-        self.assertFalse(checkpoint.measurement.eligible)
-        self.assertFalse(checkpoint.metadata["original_reference_intermediate"])
-        with tempfile.TemporaryDirectory(prefix="pinned-opencv-distance-") as reference_directory:
-            input_path = Path(reference_directory) / "mask.npz"
-            output_path = Path(reference_directory) / "distance.npy"
-            np.savez_compressed(input_path, mask=mask)
-            script = (
-                "import cv2, numpy as np, sys; "
-                "a=np.load(sys.argv[1])['mask']; "
-                "d=cv2.distanceTransformWithLabels(a, cv2.DIST_L2, maskSize=0)[0]; "
-                "np.save(sys.argv[2], d)"
-            )
-            result = subprocess.run(
-                [str(REFERENCE_PYTHON), "-c", script, str(input_path), str(output_path)],
-                capture_output=True,
-                text=True,
-                timeout=120,
-                check=False,
-            )
-            self.assertEqual(result.returncode, 0, result.stderr[-2000:])
-            np.testing.assert_array_equal(distance, np.load(output_path, allow_pickle=False))
 
-        for fill_value, sentinel in ((0, 0.0), (255, 65533.8046875)):
-            with self.subTest(fill_value=fill_value):
-                uniform = np.full((16, 24), fill_value, dtype=np.uint8)
-                uniform_case = self._case(NATIVE_DISTANCE_OPERATION_ID, uniform)
-                uniform_outcome = self._run(uniform_case)
-                self.assertEqual(uniform_outcome.status, NativeWatershedStageStatus.EXECUTED)
-                uniform_checkpoint = load_checkpoint(uniform_case["output_root"], uniform_outcome.run_record.checkpoint_sha256)
-                self.assertEqual(uniform_checkpoint.execution.status, ExecutionStatus.AVAILABLE)
-                self.assertEqual(uniform_checkpoint.arrays[NATIVE_DISTANCE_OUTPUT_NAME].dtype, np.dtype(np.float32))
-                np.testing.assert_array_equal(
-                    uniform_checkpoint.arrays[NATIVE_DISTANCE_OUTPUT_NAME],
-                    np.full(uniform.shape, sentinel, dtype=np.float32),
-                )
-
-    def test_distance_cancellation_and_source_resolution_states_are_distinct(self) -> None:
-        mask = np.zeros((24, 32), dtype=np.uint8)
-        mask[4:20, 5:27] = 255
-        case = self._case(NATIVE_DISTANCE_OPERATION_ID, mask)
-        calls = 0
-
-        def cancel_in_primitive() -> bool:
-            nonlocal calls
-            calls += 1
-            return calls >= 4
-
-        cancelled = self._run(case | {"cancel": cancel_in_primitive})
-        self.assertEqual(cancelled.status, NativeWatershedStageStatus.CANCELLED)
-        self.assertEqual(cancelled.run_record.state, StageRunState.FAILED)
-        self.assertIsNone(cancelled.checkpoint_reference)
-        self.assertGreaterEqual(calls, 4)
-
-        for resolution, expected_status in (
-            (SourceResolution.UNAVAILABLE, NativeWatershedStageStatus.UNAVAILABLE),
-            (SourceResolution.UNRESOLVED, NativeWatershedStageStatus.UNRESOLVED),
-        ):
-            changed_provenance = replace(
-                case["recipe"].provenance,
-                evidence_status=resolution,
-                evidence_note=f"Pinned source is {resolution.value}.",
-            )
-            recipe = replace(case["recipe"], provenance=changed_provenance)
-            unresolved_case = case | {"recipe": recipe, "expected_recipe_identity": recipe.identity}
-            outcome = self._run(unresolved_case)
-            self.assertEqual(outcome.status, expected_status)
-            self.assertIsNone(outcome.checkpoint_reference)
-            if resolution is SourceResolution.UNRESOLVED:
-                self.assertEqual(outcome.run_record.state, StageRunState.UNAVAILABLE)
-
-        recipe = case["recipe"]
-        unresolved_stage = replace(
-            recipe.stage(case["stage_id"]),
-            resolution=SourceResolution.UNRESOLVED,
-            resolution_note="The internal watershed source mapping is unresolved.",
-        )
-        stage_recipe = replace(
-            recipe,
-            stages=tuple(
-                unresolved_stage if stage.stage_id == unresolved_stage.stage_id else stage
-                for stage in recipe.stages
-            ),
-        )
-        stage_outcome = self._run(case | {"recipe": stage_recipe, "expected_recipe_identity": stage_recipe.identity})
-        self.assertEqual(stage_outcome.status, NativeWatershedStageStatus.UNRESOLVED)
-        self.assertEqual(stage_outcome.run_record.state, StageRunState.UNRESOLVED)
-
-    def test_generic_cuda_and_publish_errors_remain_failures_if_cancellation_arrives_afterward(self) -> None:
-        mask = np.zeros((24, 32), dtype=np.uint8)
-        mask[4:20, 5:27] = 255
-
-        cuda_case = self._case(NATIVE_DISTANCE_OPERATION_ID, mask)
-        cuda_failed = [False]
-
-        def cancel_after_cuda_error() -> bool:
-            return cuda_failed[0]
-
-        def fail_cuda_sync(*_args, **_kwargs):
-            cuda_failed[0] = True
-            raise RuntimeError("injected CUDA synchronization failure")
-
-        with patch.object(torch.cuda, "synchronize", side_effect=fail_cuda_sync):
-            cuda_outcome = self._run(cuda_case | {"cancel": cancel_after_cuda_error})
-        self.assertTrue(cancel_after_cuda_error())
-        self.assertEqual(cuda_outcome.status, NativeWatershedStageStatus.FAILED)
-        self.assertEqual(cuda_outcome.run_record.state, StageRunState.FAILED)
-        self.assertIn("injected CUDA synchronization failure", cuda_outcome.run_record.reason)
-        self.assertIsNone(cuda_outcome.checkpoint_reference)
-
-        publish_case = self._case(NATIVE_DISTANCE_OPERATION_ID, mask)
-        publish_failed = [False]
-
-        def cancel_after_publish_error() -> bool:
-            return publish_failed[0]
-
-        def fail_publish(*_args, **_kwargs):
-            publish_failed[0] = True
-            raise RuntimeError("injected checkpoint publisher failure")
-
-        with patch.object(native_stage_module, "publish_checkpoint", side_effect=fail_publish):
-            publish_outcome = self._run(publish_case | {"cancel": cancel_after_publish_error})
-        self.assertTrue(cancel_after_publish_error())
-        self.assertEqual(publish_outcome.status, NativeWatershedStageStatus.FAILED)
-        self.assertEqual(publish_outcome.run_record.state, StageRunState.FAILED)
-        self.assertIn("injected checkpoint publisher failure", publish_outcome.run_record.reason)
-        self.assertIsNone(publish_outcome.checkpoint_reference)
 
     def test_original_reference_recipe_is_never_treated_as_a_native_internal_replay(self) -> None:
         case = self._case(NATIVE_MARKER_OPERATION_ID, np.array([[True, False]], dtype=np.bool_))

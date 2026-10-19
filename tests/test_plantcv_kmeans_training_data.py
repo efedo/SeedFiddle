@@ -1,4 +1,6 @@
 """Actual pinned public training patches and bounded native CUDA allocation."""
+
+from tests.functional_units import functional_units
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -43,6 +45,7 @@ def _reference(requests):
 
 
 @unittest.skipUnless(torch.cuda.is_available(), 'CUDA required')
+@functional_units
 class KMeansTrainingDataTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -57,7 +60,7 @@ class KMeansTrainingDataTests(unittest.TestCase):
         cls.reference = _reference([dict(image=image.tolist(), patch_size=size)
             for image, size in cls.fixtures])
 
-    def test_unpadded_gray_bgr_odd_even_and_degenerate_patches_match_actual_public(self):
+    def check_test_unpadded_gray_bgr_odd_even_and_degenerate_patches_match_actual_public(self):
         for (image, size), expected in zip(self.fixtures, self.reference):
             with self.subTest(shape=image.shape, patch_size=size):
                 source = torch.tensor(image, dtype=torch.uint8, device='cuda')
@@ -74,7 +77,7 @@ class KMeansTrainingDataTests(unittest.TestCase):
                 self.assertEqual(source._version, version)
                 np.testing.assert_array_equal(source.cpu().numpy(), image)
 
-    def test_actual_p31_bgr_multitile_matrix_peak_and_public_checksum(self):
+    def check_test_actual_p31_bgr_multitile_matrix_peak_and_public_checksum(self):
         y = np.arange(101, dtype=np.uint16)[:, None, None]
         x = np.arange(100, dtype=np.uint16)[None, :, None]
         channel = np.arange(3, dtype=np.uint16)[None, None, :]
@@ -95,7 +98,7 @@ class KMeansTrainingDataTests(unittest.TestCase):
         self.assertLessEqual(peak, plan.peak_live_bytes-source.numel()*source.element_size())
         self.assertEqual(result.numel()*result.element_size(), plan.dataset_bytes)
 
-    def test_custom_stream_and_tile_repartition_preserve_rows(self):
+    def check_test_custom_stream_and_tile_repartition_preserve_rows(self):
         source = torch.arange(13*17*3, dtype=torch.int32, device='cuda').reshape(13, 17, 3)
         source = source.remainder_(256).to(torch.uint8)
         expected = native.extract_full_kmeans_training_patches(source, 4)
@@ -107,7 +110,7 @@ class KMeansTrainingDataTests(unittest.TestCase):
         stream.synchronize()
         self.assertTrue(torch.equal(result, expected))
 
-    def test_early_gaussian_and_final_cancellation_return_no_matrix(self):
+    def check_test_early_gaussian_and_final_cancellation_return_no_matrix(self):
         source = torch.arange(15*17*3, dtype=torch.int32, device='cuda').reshape(15, 17, 3)
         source = source.remainder_(256).to(torch.uint8)
         version = source._version
@@ -142,7 +145,7 @@ class KMeansTrainingDataTests(unittest.TestCase):
             native.extract_full_kmeans_training_patches(source, 3, tile_pixels=16,
                 gaussian_tile_side=7, cancel=mutate_at_final_poll)
 
-    def test_cancellation_and_bad_coverage_inside_feature_iteration_withhold_matrix(self):
+    def check_test_cancellation_and_bad_coverage_inside_feature_iteration_withhold_matrix(self):
         source = torch.zeros((15, 17, 3), dtype=torch.uint8, device='cuda')
         original = features.iter_kmeans_patch_tiles
         cancelled = False
@@ -162,7 +165,7 @@ class KMeansTrainingDataTests(unittest.TestCase):
             with self.assertRaisesRegex(native.KMeansTrainingDataError, 'cover'):
                 native.extract_full_kmeans_training_patches(source, 3, tile_pixels=16)
 
-    def test_global_output_work_live_and_geometry_caps_precede_gaussian_allocation(self):
+    def check_test_global_output_work_live_and_geometry_caps_precede_gaussian_allocation(self):
         source = torch.zeros((1500, 2000, 3), dtype=torch.uint8, device='cuda')
         with patch.object(preprocess, 'gaussian_patch_raster', side_effect=AssertionError('allocated before cap')):
             with self.assertRaisesRegex(native.KMeansTrainingDataError, 'output byte cap'):
@@ -180,7 +183,7 @@ class KMeansTrainingDataTests(unittest.TestCase):
             with self.assertRaises(native.KMeansTrainingDataError):
                 native.extract_full_kmeans_training_patches(small, 10)
 
-    def test_invalid_rasters_callbacks_and_tile_parameters_are_explicit(self):
+    def check_test_invalid_rasters_callbacks_and_tile_parameters_are_explicit(self):
         source = torch.zeros((7, 9, 3), dtype=torch.uint8, device='cuda')
         for invalid in (source.cpu(), source.to(torch.float32), source.transpose(0, 1),
                         source[:, :, :1].contiguous(), source[:0], None):
@@ -197,7 +200,7 @@ class KMeansTrainingDataTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             native.preflight_kmeans_training_data(source, 3, cancel=42)
 
-    def test_mutation_during_preflight_is_rejected_before_gaussian_allocation(self):
+    def check_test_mutation_during_preflight_is_rejected_before_gaussian_allocation(self):
         source = torch.zeros((7, 9, 3), dtype=torch.uint8, device='cuda')
         calls = 0
         def mutate_after_value_checks():
@@ -209,3 +212,17 @@ class KMeansTrainingDataTests(unittest.TestCase):
         with patch.object(preprocess, 'gaussian_patch_raster', side_effect=AssertionError('allocated changed input')):
             with self.assertRaisesRegex(native.KMeansTrainingDataError, 'during preflight'):
                 native.extract_full_kmeans_training_patches(source, 3, cancel=mutate_after_value_checks)
+
+    def test_workflow_lifecycle(self):
+        """4 related KMeansTrainingDataTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_unpadded_gray_bgr_odd_even_and_degenerate_patches_match_actual_public)
+        self.scenario(self.check_test_actual_p31_bgr_multitile_matrix_peak_and_public_checksum)
+        self.scenario(self.check_test_custom_stream_and_tile_repartition_preserve_rows)
+        self.scenario(self.check_test_global_output_work_live_and_geometry_caps_precede_gaussian_allocation)
+
+    def test_validation_and_recovery(self):
+        """4 related KMeansTrainingDataTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_early_gaussian_and_final_cancellation_return_no_matrix)
+        self.scenario(self.check_test_cancellation_and_bad_coverage_inside_feature_iteration_withhold_matrix)
+        self.scenario(self.check_test_invalid_rasters_callbacks_and_tile_parameters_are_explicit)
+        self.scenario(self.check_test_mutation_during_preflight_is_rejected_before_gaussian_allocation)

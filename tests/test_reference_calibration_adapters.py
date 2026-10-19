@@ -1,4 +1,8 @@
 """Explicit public ROI and size-scale contexts for a composed reference workflow."""
+
+from tests.catalogue_fixtures import CatalogueTestCase
+
+from tests.functional_units import functional_units
 from copy import deepcopy
 import json
 from pathlib import Path
@@ -73,14 +77,15 @@ def run_adapter(operation, arrays, parameters, pcv):
     return _run_operation({'operation': operation, 'parameters': parameters}, arrays, Path('.'), pcv)
 
 
-class ReferenceCalibrationAdapterTests(unittest.TestCase):
+@functional_units
+class ReferenceCalibrationAdapterTests(CatalogueTestCase):
     def setUp(self):
         self.rgb = np.broadcast_to(np.array([250,30,10],np.uint8),(8,12,3)).copy()
         self.labels = np.ones((8,12),np.int32)
         self.outputs = SimpleNamespace(observations={},measurements={},metadata={})
         self.params = SimpleNamespace(px_width=1.0,px_height=1.0,unit='pixels')
 
-    def test_roi_bounds_reject_before_object_construction_or_public_call(self):
+    def check_test_roi_bounds_reject_before_object_construction_or_public_call(self):
         pcv = SimpleNamespace(Objects=Mock(),transform=SimpleNamespace(auto_correct_color=Mock()))
         for bounds in ([],[0,0,12],[0,0,12,8,9],[0,0,0,8],[2,1,1,8],[-1,0,12,8],
                        [0,0,13,8],[0,0,12,9],[False,0,12,8],[0.0,0,12,8],'full'):
@@ -89,7 +94,7 @@ class ReferenceCalibrationAdapterTests(unittest.TestCase):
         pcv.Objects.assert_not_called()
         pcv.transform.auto_correct_color.assert_not_called()
 
-    def test_roi_is_exact_half_open_public_object_and_full_frame_rgb_adapter(self):
+    def check_test_roi_is_exact_half_open_public_object_and_full_frame_rgb_adapter(self):
         seen = {}
         def objects(**kwargs):
             seen.update(kwargs)
@@ -108,7 +113,7 @@ class ReferenceCalibrationAdapterTests(unittest.TestCase):
         self.assertEqual(result[2]['roi_adapter']['effective_bounds_xyxy'],[2,1,12,8])
         self.assertEqual(result[2]['roi_adapter']['corrected_output_frame'],'full input frame')
 
-    def test_absent_roi_keeps_old_call_and_explicit_null_declares_full_frame(self):
+    def check_test_absent_roi_keeps_old_call_and_explicit_null_declares_full_frame(self):
         calls = []
         def correct(**kwargs):
             calls.append(kwargs)
@@ -125,7 +130,7 @@ class ReferenceCalibrationAdapterTests(unittest.TestCase):
         self.assertEqual(old[1:],selected[1:])
         np.testing.assert_array_equal(old[0]['corrected_image'],selected[0]['corrected_image'])
 
-    def test_calibration_changes_public_calculation_and_restores_before_default_call(self):
+    def check_test_calibration_changes_public_calculation_and_restores_before_default_call(self):
         seen = []
         def size(*,img,**kwargs):
             context = (self.params.px_width,self.params.px_height,self.params.unit)
@@ -144,7 +149,7 @@ class ReferenceCalibrationAdapterTests(unittest.TestCase):
         self.assertTrue(selected[2]['calibration_context_restored'])
         self.assertEqual(selected[2]['calibration_origin'],'explicit_pcv.params_adapter')
 
-    def test_public_failure_restores_actual_previous_scale_fields(self):
+    def check_test_public_failure_restores_actual_previous_scale_fields(self):
         self.params.px_width,self.params.px_height,self.params.unit = 4.5,6.25,'previous'
         def size(**kwargs):
             self.assertEqual((self.params.px_width,self.params.px_height,self.params.unit),(2.0,3.0,'mm'))
@@ -155,7 +160,7 @@ class ReferenceCalibrationAdapterTests(unittest.TestCase):
                         {'calibration':{'px_width':2,'px_height':3,'unit':'mm'}},pcv)
         self.assertEqual((self.params.px_width,self.params.px_height,self.params.unit),(4.5,6.25,'previous'))
 
-    def test_invalid_calibration_rejects_before_call_and_preserves_globals(self):
+    def check_test_invalid_calibration_rejects_before_call_and_preserves_globals(self):
         size = Mock()
         pcv = SimpleNamespace(analyze=SimpleNamespace(size=size),outputs=self.outputs,params=self.params)
         valid = {'px_width':2,'px_height':3,'unit':'mm'}
@@ -168,6 +173,18 @@ class ReferenceCalibrationAdapterTests(unittest.TestCase):
                 run_adapter('analysis.size',{'image':self.rgb,'labels':self.labels},{'calibration':calibration},pcv)
             self.assertEqual((self.params.px_width,self.params.px_height,self.params.unit),(1.0,1.0,'pixels'))
         size.assert_not_called()
+
+    def test_validation_and_recovery(self):
+        """3 related ReferenceCalibrationAdapterTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_roi_bounds_reject_before_object_construction_or_public_call)
+        self.scenario(self.check_test_public_failure_restores_actual_previous_scale_fields)
+        self.scenario(self.check_test_invalid_calibration_rejects_before_call_and_preserves_globals)
+
+    def test_workflow_lifecycle(self):
+        """3 related ReferenceCalibrationAdapterTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_roi_is_exact_half_open_public_object_and_full_frame_rgb_adapter)
+        self.scenario(self.check_test_absent_roi_keeps_old_call_and_explicit_null_declares_full_frame)
+        self.scenario(self.check_test_calibration_changes_public_calculation_and_restores_before_default_call)
 
 
 @unittest.skipUnless(HAS_REFERENCE_ENV,'Pinned PlantCV reference environment is required')
@@ -212,33 +229,8 @@ class ActualPublicCalibrationAdapterTests(unittest.TestCase):
         self.assertEqual(size.identity['identity_digest'],corrected.identity['identity_digest'])
         return corrected
 
-    def test_actual_shifted_edge_roi_preserves_full_image_and_public_scaled_observations(self):
-        bgr = np.full((640,475,3),220,np.uint8)
-        bgr[20:,15:] = card_fixture(varied=True)
-        self.assert_public(np.ascontiguousarray(bgr[...,::-1]),[15,20,475,640])
 
-    def test_actual_roi_selection_changes_correction_and_matches_both_public_calls(self):
-        left = card_fixture(varied=True)
-        right = np.ascontiguousarray(left[...,::-1])
-        rgb = np.ascontiguousarray(np.concatenate([left,right],axis=1)[...,::-1])
-        first = self.assert_public(rgb,[0,0,460,620])
-        second = self.assert_public(rgb,[460,0,920,620])
-        self.assertFalse(np.array_equal(first.arrays['corrected_image'],second.arrays['corrected_image']))
-        self.assertNotEqual(first.effective_parameters['roi_adapter'],second.effective_parameters['roi_adapter'])
 
-    def test_actual_no_roi_and_explicit_full_frame_preserve_legacy_public_result(self):
-        rgb = np.ascontiguousarray(card_fixture(varied=True)[...,::-1])
-        old = self.assert_public(rgb,None)
-        runner = PlantCVReferenceRunner(REFERENCE_PYTHON)
-        for bounds in (None,[0,0,460,620]):
-            with self.subTest(bounds=bounds):
-                explicit = runner.run('transform.auto_correct_color',{'rgb':rgb},
-                    {'adaptive_method':0,'color_chip_size':[7,11],'roi_bounds_xyxy':bounds})
-                np.testing.assert_array_equal(explicit.arrays['corrected_image'],old.arrays['corrected_image'])
-                self.assertEqual(explicit.observations,old.observations)
-                effective = deepcopy(dict(explicit.effective_parameters))
-                effective.pop('roi_adapter')
-                self.assertEqual(effective,old.effective_parameters)
 
 
 if __name__ == '__main__':

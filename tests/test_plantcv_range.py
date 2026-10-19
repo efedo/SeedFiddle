@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.functional_units import functional_units
+
 import hashlib
 import json
 from pathlib import Path
@@ -149,8 +151,9 @@ class PlantCVRangeConversionTests(unittest.TestCase):
 
 
 @unittest.skipUnless(torch.cuda.is_available(), "custom-range CUDA primitive requires an available CUDA device")
+@functional_units
 class PlantCVRangeCudaTests(unittest.TestCase):
-    def test_cmyk_cuda_true_division_matches_every_pinned_channel_byte(self) -> None:
+    def check_test_cmyk_cuda_true_division_matches_every_pinned_channel_byte(self) -> None:
         # The original CPU conversion test cannot detect CUDA's scalar-divisor
         # reciprocal path. This pattern also reproduces a dual-channel mask
         # disagreement at a truncating byte boundary.
@@ -167,7 +170,7 @@ class PlantCVRangeCudaTests(unittest.TestCase):
         np.testing.assert_array_equal(actual.cpu().numpy(), expected)
         np.testing.assert_array_equal(source.cpu().numpy(), image.reshape(-1, 3))
 
-    def test_raw_bgr_slots_inclusive_bounds_gray_alias_and_masked_pixels_match_reference(self) -> None:
+    def check_test_raw_bgr_slots_inclusive_bounds_gray_alias_and_masked_pixels_match_reference(self) -> None:
         image = np.array(
             [
                 [[0, 0, 0], [10, 20, 30], [11, 20, 30], [255, 255, 255]],
@@ -191,8 +194,7 @@ class PlantCVRangeCudaTests(unittest.TestCase):
                 self.assertEqual(masked.device.type, "cuda")
                 self.assertEqual(mask.dtype, torch.uint8)
 
-    @unittest.skipUnless(REFERENCE_ENV_READY, "isolated pinned PlantCV environment is unavailable")
-    def test_rgb_hsv_cmyk_and_gray_match_actual_pinned_public_chain(self) -> None:
+    def check_test_rgb_hsv_cmyk_and_gray_match_actual_pinned_public_chain(self) -> None:
         rng = np.random.default_rng(0xF044)
         image = rng.integers(0, 256, size=(31, 43, 3), dtype=np.uint8)
         # Include the color axes, achromatics, byte extrema and gray formula ties.
@@ -221,8 +223,7 @@ class PlantCVRangeCudaTests(unittest.TestCase):
                 self.assertEqual(masked.device, gpu.device)
         torch.testing.assert_close(gpu, original)
 
-    @unittest.skipUnless(REFERENCE_ENV_READY, "isolated pinned PlantCV environment is unavailable")
-    def test_lab_custom_range_and_masked_output_match_pinned_public_chain(self) -> None:
+    def check_test_lab_custom_range_and_masked_output_match_pinned_public_chain(self) -> None:
         rng = np.random.default_rng(0x1AB4)
         image = rng.integers(0, 256, size=(19, 23, 3), dtype=np.uint8)
         special = np.array(
@@ -241,7 +242,7 @@ class PlantCVRangeCudaTests(unittest.TestCase):
         self.assertGreater(int((mask != 0).sum().item()), 0)
         self.assertLess(int((mask != 0).sum().item()), image.shape[0] * image.shape[1])
 
-    def test_bounds_are_exact_integer_byte_sequences_and_reversed_bounds_are_valid(self) -> None:
+    def check_test_bounds_are_exact_integer_byte_sequences_and_reversed_bounds_are_valid(self) -> None:
         valid = torch.zeros((1, 3, 1, 1), dtype=torch.uint8, device="cuda")
         for bad in ((1.5, 255, 255), (True, 255, 255), (-1, 0, 0), (0, 0, 256)):
             with self.subTest(bound=bad), self.assertRaises((TypeError, ValueError)):
@@ -251,7 +252,7 @@ class PlantCVRangeCudaTests(unittest.TestCase):
         torch.testing.assert_close(mask, torch.zeros((1, 1), dtype=torch.uint8, device="cuda"))
         torch.testing.assert_close(masked, torch.zeros_like(one))
 
-    def test_float32_byte_preparation_noncontiguous_input_and_cancellation(self) -> None:
+    def check_test_float32_byte_preparation_noncontiguous_input_and_cancellation(self) -> None:
         values = torch.tensor(
             [[[[10.49, 10.5, 11.5, 255.4]], [[20.0, 20.0, 20.0, 20.0]], [[30.0, 30.0, 30.0, 30.0]]]],
             dtype=torch.float32,
@@ -303,7 +304,7 @@ class PlantCVRangeCudaTests(unittest.TestCase):
             bad[0, 0, 0, 0] = float("nan")
             threshold_custom_range(bad, "RGB", (0, 0, 0), (255, 255, 255))
 
-    def test_invalid_shape_mode_and_resource_requests_fail_before_outputs(self) -> None:
+    def check_test_invalid_shape_mode_and_resource_requests_fail_before_outputs(self) -> None:
         valid = torch.zeros((1, 3, 2, 2), dtype=torch.uint8, device="cuda")
         with self.assertRaisesRegex(ValueError, "1x3xHxW"):
             threshold_custom_range(valid[0], "RGB", (0, 0, 0), (255, 255, 255))
@@ -319,3 +320,22 @@ class PlantCVRangeCudaTests(unittest.TestCase):
                 with self.assertRaises(RangeResourceError):
                     threshold_custom_range(image, "RGB", (0, 0, 0), (255, 255, 255))
                 allocate_output.assert_not_called()
+
+    @unittest.skipUnless(REFERENCE_ENV_READY, "isolated pinned PlantCV environment is unavailable")
+    def test_rgb_hsv_cmyk_and_gray_match_actual_pinned_public_chain(self):
+        self.scenario(self.check_test_rgb_hsv_cmyk_and_gray_match_actual_pinned_public_chain, labelled=False)
+
+    @unittest.skipUnless(REFERENCE_ENV_READY, "isolated pinned PlantCV environment is unavailable")
+    def test_lab_custom_range_and_masked_output_match_pinned_public_chain(self):
+        self.scenario(self.check_test_lab_custom_range_and_masked_output_match_pinned_public_chain, labelled=False)
+
+    def test_workflow_lifecycle(self):
+        """3 related PlantCVRangeCudaTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_cmyk_cuda_true_division_matches_every_pinned_channel_byte)
+        self.scenario(self.check_test_raw_bgr_slots_inclusive_bounds_gray_alias_and_masked_pixels_match_reference)
+        self.scenario(self.check_test_bounds_are_exact_integer_byte_sequences_and_reversed_bounds_are_valid)
+
+    def test_validation_and_recovery(self):
+        """2 related PlantCVRangeCudaTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_float32_byte_preparation_noncontiguous_input_and_cancellation)
+        self.scenario(self.check_test_invalid_shape_mode_and_resource_requests_fail_before_outputs)

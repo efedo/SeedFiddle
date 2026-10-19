@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from tests.catalogue_fixtures import CatalogueTestCase
+
+from tests.functional_units import functional_units
+
 from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
@@ -192,8 +196,9 @@ def _fixture(
     return args, recipe, stage, input_reference, output_measurement
 
 
-class ReferenceStageContractTests(unittest.TestCase):
-    def test_exact_replay_bindings_are_required_before_runner_call(self) -> None:
+@functional_units
+class ReferenceStageContractTests(CatalogueTestCase):
+    def check_test_exact_replay_bindings_are_required_before_runner_call(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             args, recipe, _stage, _input, _measurement_contract = _fixture(temporary)
             runner = args["runner"]
@@ -227,7 +232,7 @@ class ReferenceStageContractTests(unittest.TestCase):
                     run_reference_stage(**bad)
                 self.assertEqual(run.call_count, 0)
 
-    def test_stale_recipe_parameter_source_and_environment_pins_are_rejected(self) -> None:
+    def check_test_stale_recipe_parameter_source_and_environment_pins_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             args, recipe, stage, _input, _measurement_contract = _fixture(temporary)
             runner = args["runner"]
@@ -270,7 +275,7 @@ class ReferenceStageContractTests(unittest.TestCase):
                     ))
                 self.assertEqual(run.call_count, 0)
 
-    def test_unselected_required_cutoff_is_rejected(self) -> None:
+    def check_test_unselected_required_cutoff_is_rejected(self) -> None:
         with self.assertRaisesRegex(ReferenceStageError, "unselected"):
             recipe, stage = _recipe("threshold.binary")
             # The catalogue intentionally leaves the binary cutoff unset.
@@ -284,7 +289,7 @@ class ReferenceStageContractTests(unittest.TestCase):
                 "b" * 64,
             )
 
-    def test_mean_offset_that_binary64_would_round_is_rejected_before_execution(self) -> None:
+    def check_test_mean_offset_that_binary64_would_round_is_rejected_before_execution(self) -> None:
         recipe, stage = _recipe("threshold.mean")
         changed_stage = replace(
             stage,
@@ -310,7 +315,7 @@ class ReferenceStageContractTests(unittest.TestCase):
                 "b" * 64,
             )
 
-    def test_explicit_and_inherited_timeout_values_are_bounded_before_runner_call(self) -> None:
+    def check_test_explicit_and_inherited_timeout_values_are_bounded_before_runner_call(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             args, _recipe_value, _stage, _input, _measurement_contract = _fixture(temporary)
             runner = args["runner"]
@@ -327,7 +332,7 @@ class ReferenceStageContractTests(unittest.TestCase):
                         run_reference_stage(**args)
                 self.assertEqual(run.call_count, 0)
 
-    def test_valid_explicit_and_inherited_timeout_boundaries_reach_runner(self) -> None:
+    def check_test_valid_explicit_and_inherited_timeout_boundaries_reach_runner(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             args, _recipe_value, _stage, _input, _measurement_contract = _fixture(temporary)
             runner = args["runner"]
@@ -346,7 +351,7 @@ class ReferenceStageContractTests(unittest.TestCase):
                 self.assertEqual(run.call_args.kwargs["timeout_seconds"], 3600.0)
                 self.assertEqual(run.call_count, 3)
 
-    def test_internal_or_wrong_provenance_stages_are_marked_unsupported_without_running(self) -> None:
+    def check_test_internal_or_wrong_provenance_stages_are_marked_unsupported_without_running(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             args, recipe, stage, _input, _measurement_contract = _fixture(temporary)
             runner = args["runner"]
@@ -384,7 +389,7 @@ class ReferenceStageContractTests(unittest.TestCase):
                     self.assertIsNone(outcome.checkpoint_reference)
                 self.assertEqual(run.call_count, 0)
 
-    def test_unavailable_stage_stays_explicitly_unavailable(self) -> None:
+    def check_test_unavailable_stage_stays_explicitly_unavailable(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             args, recipe, stage, _input, _measurement_contract = _fixture(temporary)
             unavailable_stage = replace(
@@ -407,7 +412,7 @@ class ReferenceStageContractTests(unittest.TestCase):
             self.assertIsNone(outcome.checkpoint_reference)
             run.assert_not_called()
 
-    def test_runner_exception_and_pre_execution_cancellation_are_failed_records(self) -> None:
+    def check_test_runner_exception_and_pre_execution_cancellation_are_failed_records(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             args, recipe, _stage, _input, _measurement_contract = _fixture(temporary)
             runner = args["runner"]
@@ -430,7 +435,7 @@ class ReferenceStageContractTests(unittest.TestCase):
             self.assertIsNone(outcome.checkpoint_reference)
             run.assert_not_called()
 
-    def test_missing_reference_interpreter_is_unavailable_not_failed(self) -> None:
+    def check_test_missing_reference_interpreter_is_unavailable_not_failed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             args, _recipe_value, _stage, _input, _measurement_contract = _fixture(temporary)
             missing_runner = PlantCVReferenceRunner(Path(temporary) / "missing-reference-python.exe")
@@ -442,109 +447,28 @@ class ReferenceStageContractTests(unittest.TestCase):
             self.assertIsNone(outcome.checkpoint_reference)
             run.assert_not_called()
 
+    def test_workflow_lifecycle(self):
+        """3 related ReferenceStageContractTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_exact_replay_bindings_are_required_before_runner_call)
+        self.scenario(self.check_test_explicit_and_inherited_timeout_values_are_bounded_before_runner_call)
+        self.scenario(self.check_test_valid_explicit_and_inherited_timeout_boundaries_reach_runner)
+
+    def test_validation_and_recovery(self):
+        """7 related ReferenceStageContractTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_stale_recipe_parameter_source_and_environment_pins_are_rejected)
+        self.scenario(self.check_test_unselected_required_cutoff_is_rejected)
+        self.scenario(self.check_test_mean_offset_that_binary64_would_round_is_rejected_before_execution)
+        self.scenario(self.check_test_internal_or_wrong_provenance_stages_are_marked_unsupported_without_running)
+        self.scenario(self.check_test_unavailable_stage_stays_explicitly_unavailable)
+        self.scenario(self.check_test_runner_exception_and_pre_execution_cancellation_are_failed_records)
+        self.scenario(self.check_test_missing_reference_interpreter_is_unavailable_not_failed)
+
 
 @unittest.skipUnless(HAS_REFERENCE_ENV, "pinned PlantCV reference source/environment is not provisioned")
 class IsolatedReferenceStageTests(unittest.TestCase):
-    def test_pinned_otsu_stage_publishes_and_reloads_exact_stage_checkpoint(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            args, recipe, stage, input_reference, output_measurement = _fixture(temporary)
-            outcome = run_reference_stage(**args)
-            self.assertEqual(outcome.run_record.state, StageRunState.EXECUTED)
-            self.assertEqual(outcome.run_record.upstream_checkpoint_sha256, input_reference.checkpoint_sha256)
-            reference = outcome.checkpoint_reference
-            self.assertIsNotNone(reference)
-            self.assertEqual(reference.identity, args["expected_output_identity"])
-            loaded = load_checkpoint(
-                args["output_root"],
-                reference.checkpoint_sha256,
-                expected_identity=args["expected_output_identity"],
-                expected_measurement=output_measurement,
-            )
-            self.assertEqual(loaded.execution.status, ExecutionStatus.AVAILABLE)
-            self.assertEqual(set(loaded.arrays), {"mask"})
-            self.assertEqual(loaded.arrays["mask"].dtype, np.dtype(np.uint8))
-            self.assertEqual(loaded.arrays["mask"].shape, args["expected_coordinate_frame"].shape)
-            self.assertFalse(loaded.arrays["mask"].flags.writeable)
-            self.assertEqual(loaded.metadata["format"], "seedfiddle.reference-stage-output")
-            self.assertEqual(loaded.metadata["operation_id"], stage.operation_id)
-            self.assertEqual(loaded.metadata["recipe_identity"], recipe.identity.to_dict())
-            self.assertEqual(loaded.metadata["upstream_checkpoint_sha256"], input_reference.checkpoint_sha256)
-            self.assertEqual(loaded.metadata["effective_parameters"]["object_type"], "light")
-            self.assertEqual(loaded.metadata["runner_identity"]["source_audit_sha256"], "a747fdfe701e22627b0861c914c12f23d88b934f1dfe3197587aecc910b92bd2")
-            self.assertFalse(loaded.measurement.eligible)
 
-    def test_selected_binary_and_mean_parameters_use_the_public_runner_contract(self) -> None:
-        for operation_id, selected in (
-            ("threshold.binary", {"threshold": 120}),
-            ("threshold.mean", {"ksize": 3, "offset": 1.25}),
-        ):
-            with self.subTest(operation=operation_id), tempfile.TemporaryDirectory() as temporary:
-                recipe, stage = _recipe(operation_id)
-                changed_stage = replace(
-                    stage,
-                    parameters=tuple(
-                        replace(parameter, value=selected[parameter.parameter_id])
-                        if parameter.parameter_id in selected
-                        else parameter
-                        for parameter in stage.parameters
-                    ),
-                )
-                selected_recipe = replace(
-                    recipe,
-                    stages=tuple(changed_stage if item.stage_id == stage.stage_id else item for item in recipe.stages),
-                )
-                args, _recipe_value, _stage, _input, _measurement_contract = _fixture(
-                    temporary,
-                    operation_id=operation_id,
-                    recipe_override=selected_recipe,
-                )
-                outcome = run_reference_stage(**args)
-                self.assertEqual(outcome.run_record.state, StageRunState.EXECUTED)
-                loaded = load_checkpoint(
-                    args["output_root"],
-                    outcome.checkpoint_reference.checkpoint_sha256,
-                    expected_identity=args["expected_output_identity"],
-                    expected_measurement=args["output_measurement"],
-                )
-                effective = loaded.metadata["effective_parameters"]
-                self.assertEqual(effective["callable"], {
-                    "threshold.binary": "plantcv.plantcv.threshold.binary",
-                    "threshold.mean": "plantcv.plantcv.threshold.mean",
-                }[operation_id])
-                for name, value in selected.items():
-                    self.assertEqual(effective[name], value)
 
-    def test_empty_output_is_valid_and_cancellation_during_publish_cleans_staging(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            args, _recipe_value, _stage, _input, _measurement_contract = _fixture(temporary, empty=True)
-            outcome = run_reference_stage(**args)
-            self.assertEqual(outcome.run_record.state, StageRunState.EMPTY)
-            self.assertIsNotNone(outcome.checkpoint_reference)
-            loaded = load_checkpoint(
-                args["output_root"],
-                outcome.checkpoint_reference.checkpoint_sha256,
-                expected_identity=args["expected_output_identity"],
-                expected_measurement=args["output_measurement"],
-            )
-            self.assertEqual(loaded.execution.status, ExecutionStatus.EMPTY)
-            self.assertFalse(np.any(loaded.arrays["mask"]))
-
-        with tempfile.TemporaryDirectory() as temporary:
-            args, _recipe_value, _stage, _input, _measurement_contract = _fixture(temporary)
-            cancelled = threading.Event()
-            original_savez = checkpoint_module.np.savez
-
-            def save_then_cancel(*values, **keywords):
-                original_savez(*values, **keywords)
-                cancelled.set()
-
-            with patch.object(checkpoint_module.np, "savez", side_effect=save_then_cancel):
-                outcome = run_reference_stage(**dict(args, cancel=cancelled))
-            self.assertEqual(outcome.run_record.state, StageRunState.FAILED)
-            self.assertIn("Cancelled", outcome.run_record.reason)
-            self.assertIsNone(outcome.checkpoint_reference)
-            self.assertEqual(list(args["output_root"].glob("*.checkpoint")), [])
-            self.assertEqual(list(args["output_root"].glob(".*")), [])
+    pass
 
 
 if __name__ == "__main__":

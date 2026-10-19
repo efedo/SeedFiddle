@@ -103,13 +103,16 @@ def create_snapshot(root, project_path, output_directory, *, library_store=None,
     if loaded.issues:
         raise ValueError('Resolve missing, changed or invalid project files before creating a snapshot.')
     trait_model = capture_trait_model(root, loaded.document.analysis_settings)
+    instance_traits = {instance.instance_id: capture_trait_model(root, instance.default_settings)
+                       for instance in loaded.document.node_instances if instance.default_settings is not None}
+    instance_traits = {key: value for key, value in instance_traits.items() if value is not None}
     model_assets = capture_reference_model_assets(root, loaded.document.reference_graphs,
                                                  loaded.document.reference_model_assets,
-                                                 native_recipes=loaded.document.native_recipes)
+                                                 native_recipes=loaded.document.native_recipes, pipeline_workflow=loaded.document.pipeline_workflow, node_instances=loaded.document.node_instances)
     verify_reference_model_assets(root, model_assets, loaded.document.reference_graphs, require_complete=True,
-                                  native_recipes=loaded.document.native_recipes)
+                                  native_recipes=loaded.document.native_recipes, pipeline_workflow=loaded.document.pipeline_workflow, node_instances=loaded.document.node_instances)
     verify_correction_bindings(root, loaded.document.correction_bindings, loaded.document.images,
-                               loaded.document.reference_graphs, loaded.document.native_recipes)
+                               loaded.document.reference_graphs, loaded.document.native_recipes, pipeline_workflow=loaded.document.pipeline_workflow, node_instances=loaded.document.node_instances)
     terminal_evidence = capture_terminal_evidence(root, project_path)
     method_qc_evidence = capture_method_qc_evidence(root, project_path)
     destination = Path(output_directory)/('seedfiddle-snapshot-'+uuid4().hex)
@@ -134,6 +137,11 @@ def create_snapshot(root, project_path, output_directory, *, library_store=None,
         trait_target.parent.mkdir(parents=True, exist_ok=True)
         copy_trait_model(trait_source, trait_target, trait_asset, trait_raw)
         inventory[trait_asset.path] = trait_asset.source_sha256
+    for trait_source_item, trait_asset_item, trait_raw_item in instance_traits.values():
+        target = destination / trait_asset_item.path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        copy_trait_model(trait_source_item, target, trait_asset_item, trait_raw_item)
+        inventory[trait_asset_item.path] = trait_asset_item.source_sha256
     def copy(source, expected=None, model_asset=None, correction_asset=None, image_id=None):
         source = Path(source)
         if correction_asset is not None:
@@ -169,16 +177,22 @@ def create_snapshot(root, project_path, output_directory, *, library_store=None,
                          path=copy(image.path,image.record.source.sha256,image_id=image.record.identifier))
         sidecars = tuple(replace(item.reference,path=copy(item.path,item.reference.sha256)) for item in image.sidecars)
         images.append(replace(image.record,source=source,sidecars=sidecars,identifier=_image_identifier(source.location,source.path)))
-    nodes = []
-    for node in loaded.document.analysis_settings.nodes:
-        parameters = dict(node.parameters)
-        if 'checkpoint_path' in parameters and (node.enabled or
-                (root / Path(parameters['checkpoint_path']).expanduser()).is_file()):
-            path = Path(parameters['checkpoint_path'])
-            parameters['checkpoint_path'] = copy(path if path.is_absolute() else root/path)
-        if node.identifier == 'trait_classifier' and trait_model is not None:
-            parameters['trait_model_path'] = trait_asset.path
-        nodes.append(replace(node,parameters=tuple(parameters.items())))
+    def portable_settings(profile, trait=None):
+        nodes = []
+        for node in profile.nodes:
+            parameters = dict(node.parameters)
+            if 'checkpoint_path' in parameters and (node.enabled or
+                    (root / Path(parameters['checkpoint_path']).expanduser()).is_file()):
+                path = Path(parameters['checkpoint_path'])
+                parameters['checkpoint_path'] = copy(path if path.is_absolute() else root/path)
+            if node.identifier == 'trait_classifier' and trait is not None:
+                parameters['trait_model_path'] = trait[1].path
+            nodes.append(replace(node,parameters=tuple(parameters.items())))
+        return replace(profile, nodes=tuple(nodes))
+    portable_profile = portable_settings(loaded.document.analysis_settings, trait_model)
+    portable_instances = tuple(replace(instance,
+        default_settings=portable_settings(instance.default_settings, instance_traits.get(instance.instance_id)))
+        if instance.default_settings is not None else instance for instance in loaded.document.node_instances)
     if loaded.document.species_library is not None:
         if library_store is None:
             raise ValueError('The pinned library store is required to make a complete portable snapshot.')
@@ -196,7 +210,7 @@ def create_snapshot(root, project_path, output_directory, *, library_store=None,
     document = replace(loaded.document,images=tuple(images),selected_image_id=selected,
         reference_model_assets=model_assets,
         correction_bindings=correction_bindings,
-        analysis_settings=replace(loaded.document.analysis_settings,nodes=tuple(nodes)))
+        analysis_settings=portable_profile, node_instances=portable_instances)
     master = ProjectAnalysisStore(destination).save(document,destination/'snapshot.seedfiddle-project.json')
     inventory[master.name] = file_sha256(master)
     # Context stays supplementary; exact-revision review history is restored
@@ -234,6 +248,11 @@ def create_snapshot(root, project_path, output_directory, *, library_store=None,
         trait_model_bytes(trait_source, trait_asset)
         trait_model_bytes(trait_target, trait_asset)
         index['trait_model_assets'] = [trait_asset.payload()]
+    if instance_traits:
+        index['node_instance_trait_model_assets'] = {key: value[1].payload() for key, value in instance_traits.items()}
+        for selected_source, selected_asset, _ in instance_traits.values():
+            trait_model_bytes(selected_source, selected_asset)
+            trait_model_bytes(destination / selected_asset.path, selected_asset)
     if reference_bundle is not None:
         index['reference_checkpoint_bundle'] = reference_bundle
     verify_terminal_evidence(destination, index)
@@ -263,6 +282,14 @@ def restore_snapshot(snapshot, workspace, *, library_store=None):
     # Files and dependencies are still verified before any restore publication.
     preliminary = ProjectAnalysisStore(source).load(source/index['master'], verify_files=False)
     trait_assets_by_path = snapshot_trait_assets(preliminary.document.analysis_settings, index)
+    instance_trait_rows = index.get('node_instance_trait_model_assets', {})
+    defaults = {instance.instance_id: instance for instance in preliminary.document.node_instances
+                if instance.default_settings is not None}
+    if type(instance_trait_rows) is not dict or set(instance_trait_rows) - set(defaults):
+        raise ValueError('Portable node instance trait-model selection is invalid.')
+    for identifier, instance in defaults.items():
+        trait_assets_by_path.update(snapshot_trait_assets(instance.default_settings,
+            {'files': files, 'trait_model_assets': ([instance_trait_rows[identifier]] if identifier in instance_trait_rows else [])}))
     model_assets_by_path = {asset.path: asset for asset in preliminary.document.reference_model_assets}
     correction_assets_by_path = {asset.path: asset for binding in preliminary.document.correction_bindings
                                 for asset in binding.inputs}
@@ -303,16 +330,18 @@ def restore_snapshot(snapshot, workspace, *, library_store=None):
             raise ValueError('Portable snapshot sidecar is not in its verified inventory.')
     verify_reference_model_assets(source, loaded.document.reference_model_assets,
                                   loaded.document.reference_graphs, require_complete=True,
-                                  native_recipes=loaded.document.native_recipes)
+                                  native_recipes=loaded.document.native_recipes, pipeline_workflow=loaded.document.pipeline_workflow, node_instances=loaded.document.node_instances)
     if any(asset.path not in files or files[asset.path] != asset.source_sha256
            for asset in loaded.document.reference_model_assets):
         raise ValueError('Portable snapshot model asset is not in its verified inventory.')
     verify_correction_bindings(source, loaded.document.correction_bindings, loaded.document.images,
-                               loaded.document.reference_graphs, loaded.document.native_recipes)
+                               loaded.document.reference_graphs, loaded.document.native_recipes, pipeline_workflow=loaded.document.pipeline_workflow, node_instances=loaded.document.node_instances)
     if any(asset.path not in files or files[asset.path] != asset.source_sha256
            for binding in loaded.document.correction_bindings for asset in binding.inputs):
         raise ValueError('Portable snapshot correction asset is not in its verified inventory.')
-    for node in loaded.document.analysis_settings.nodes:
+    profiles = (loaded.document.analysis_settings,) + tuple(instance.default_settings
+        for instance in loaded.document.node_instances if instance.default_settings is not None)
+    for node in (node for profile in profiles for node in profile.nodes):
         if ((checkpoint := dict(node.parameters).get('checkpoint_path')) and
                 (node.enabled or checkpoint.startswith('objects/')) and checkpoint not in files):
             raise ValueError('Portable snapshot checkpoint is not in its verified inventory.')
@@ -383,14 +412,19 @@ def restore_snapshot(snapshot, workspace, *, library_store=None):
     images = tuple(replace(image,source=replace(image.source,path=prefix+image.source.path),
         identifier=_image_identifier(PROJECT_RELATIVE,prefix+image.source.path),
         sidecars=tuple(replace(sidecar,path=prefix+sidecar.path) for sidecar in image.sidecars)) for image in loaded.document.images)
-    nodes = []
-    for node in loaded.document.analysis_settings.nodes:
-        parameters = dict(node.parameters)
-        if 'checkpoint_path' in parameters and parameters['checkpoint_path'] in files:
-            parameters['checkpoint_path'] = prefix+parameters['checkpoint_path']
-        if node.identifier == 'trait_classifier' and trait_assets_by_path:
-            parameters['trait_model_path'] = prefix+parameters['trait_model_path']
-        nodes.append(replace(node,parameters=tuple(parameters.items())))
+    def rebased_settings(profile):
+        nodes = []
+        for node in profile.nodes:
+            parameters = dict(node.parameters)
+            if 'checkpoint_path' in parameters and parameters['checkpoint_path'] in files:
+                parameters['checkpoint_path'] = prefix+parameters['checkpoint_path']
+            if node.identifier == 'trait_classifier' and parameters.get('trait_model_path') in trait_assets_by_path:
+                parameters['trait_model_path'] = prefix+parameters['trait_model_path']
+            nodes.append(replace(node,parameters=tuple(parameters.items())))
+        return replace(profile, nodes=tuple(nodes))
+    rebased_profile = rebased_settings(loaded.document.analysis_settings)
+    rebased_instances = tuple(replace(instance, default_settings=rebased_settings(instance.default_settings))
+        if instance.default_settings is not None else instance for instance in loaded.document.node_instances)
     if loaded.document.species_library:
         if library_store is None:
             raise ValueError('Provide a library store to restore the pinned library.')
@@ -406,7 +440,7 @@ def restore_snapshot(snapshot, workspace, *, library_store=None):
         for binding in loaded.document.correction_bindings)
     document = replace(loaded.document,images=images,selected_image_id=selected,
         reference_model_assets=model_assets,correction_bindings=correction_bindings,
-        analysis_settings=replace(loaded.document.analysis_settings,nodes=tuple(nodes)))
+        analysis_settings=rebased_profile, node_instances=rebased_instances)
     working = ProjectAnalysisStore(workspace).save(document,destination/'working.seedfiddle-project.json')
     (destination/'snapshot-index.json').write_text(json.dumps(index,indent=2)+'\n',encoding='utf-8')
     return working

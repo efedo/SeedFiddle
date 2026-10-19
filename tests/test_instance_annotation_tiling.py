@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.functional_units import functional_units
+
 import os
 import tempfile
 import unittest
@@ -8,6 +10,7 @@ from pathlib import Path
 import numpy as np
 
 
+@functional_units
 class InstanceAnnotationTilingTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -45,7 +48,7 @@ class InstanceAnnotationTilingTests(unittest.TestCase):
                 f"{(x, y)}, got {actual.getRgb()[:3]}."
             )
 
-    def test_6240_by_4160_tiles_preserve_exact_one_pixel_marks_and_ridges(self) -> None:
+    def check_test_6240_by_4160_tiles_preserve_exact_one_pixel_marks_and_ridges(self) -> None:
         labels = np.zeros((4160, 6240), dtype=np.uint16)
         isolated = (
             (0, 0, 1),
@@ -100,7 +103,7 @@ class InstanceAnnotationTilingTests(unittest.TestCase):
         edge_tile = item.render_tile(12, 8)
         self.assertEqual((edge_tile.width(), edge_tile.height()), (96, 64))
 
-    def test_cache_is_lru_bounded_independently_of_image_extent(self) -> None:
+    def check_test_cache_is_lru_bounded_independently_of_image_extent(self) -> None:
         from PySide6.QtGui import QImage
 
         height, width = 4160, 6240
@@ -144,7 +147,7 @@ class InstanceAnnotationTilingTests(unittest.TestCase):
             )
         )
 
-    def test_item_paint_keeps_one_source_pixel_as_a_hard_four_by_four_zoom_block(self) -> None:
+    def check_test_item_paint_keeps_one_source_pixel_as_a_hard_four_by_four_zoom_block(self) -> None:
         from PySide6.QtCore import QRectF
         from PySide6.QtGui import QImage, QPainter
         from PySide6.QtWidgets import QStyleOptionGraphicsItem
@@ -167,7 +170,7 @@ class InstanceAnnotationTilingTests(unittest.TestCase):
                 alpha = canvas.pixelColor(x, y).alpha()
                 self.assertEqual(alpha, 156 if expected_opaque else 0)
 
-    def test_selected_filter_and_in_place_edit_invalidate_cached_pixels(self) -> None:
+    def check_test_selected_filter_and_in_place_edit_invalidate_cached_pixels(self) -> None:
         from seedvision.ui.image_view import ImageView, _InstanceAnnotationTileItem
 
         labels = np.zeros((96, 128), dtype=np.uint16)
@@ -208,7 +211,7 @@ class InstanceAnnotationTilingTests(unittest.TestCase):
         erased = item.render_tile(0, 0)
         self.assertEqual(erased.pixelColor(31, 20).alpha(), 0)
 
-    def test_repeated_refresh_visibility_and_clear_leave_no_stale_scene_items(self) -> None:
+    def check_test_repeated_refresh_visibility_and_clear_leave_no_stale_scene_items(self) -> None:
         from seedvision.ui.image_view import ImageView, _InstanceAnnotationTileItem
 
         view = ImageView()
@@ -251,7 +254,7 @@ class InstanceAnnotationTilingTests(unittest.TestCase):
         assert replacement is not None
         self.assertIsNone(replacement.scene())
 
-    def test_new_tile_item_honours_current_annotation_opacity(self) -> None:
+    def check_test_new_tile_item_honours_current_annotation_opacity(self) -> None:
         from seedvision.ui.image_view import ImageView
 
         view = ImageView()
@@ -268,7 +271,7 @@ class InstanceAnnotationTilingTests(unittest.TestCase):
         assert item is not None
         self.assertAlmostEqual(item.opacity(), 0.37)
 
-    def test_actual_size_pan_and_high_zoom_materialize_exposed_tiles(self) -> None:
+    def check_test_actual_size_pan_and_high_zoom_materialize_exposed_tiles(self) -> None:
         from PySide6.QtGui import QColor, QImage
 
         from seedvision.ui.image_view import ImageView
@@ -320,6 +323,19 @@ class InstanceAnnotationTilingTests(unittest.TestCase):
             self.application.processEvents()
             self.assertIn((2, 1), {key[-2:] for key in item.cache_keys})
             self.assertLessEqual(item.cache_size, item.cache_capacity)
+
+    def test_workflow_lifecycle(self):
+        """5 related InstanceAnnotationTilingTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_6240_by_4160_tiles_preserve_exact_one_pixel_marks_and_ridges)
+        self.scenario(self.check_test_cache_is_lru_bounded_independently_of_image_extent)
+        self.scenario(self.check_test_item_paint_keeps_one_source_pixel_as_a_hard_four_by_four_zoom_block)
+        self.scenario(self.check_test_new_tile_item_honours_current_annotation_opacity)
+        self.scenario(self.check_test_actual_size_pan_and_high_zoom_materialize_exposed_tiles)
+
+    def test_validation_and_recovery(self):
+        """2 related InstanceAnnotationTilingTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_selected_filter_and_in_place_edit_invalidate_cached_pixels)
+        self.scenario(self.check_test_repeated_refresh_visibility_and_clear_leave_no_stale_scene_items)
 
 
 if __name__ == "__main__":

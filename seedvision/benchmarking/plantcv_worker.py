@@ -19,6 +19,7 @@ from pathlib import Path
 import platform
 import re
 import sys
+import struct
 import tempfile
 import time
 from typing import Any, Mapping
@@ -55,6 +56,15 @@ _OPERATION_INPUTS: dict[str, tuple[str, ...]] = {
     "threshold.binary": ("gray",),
     "threshold.mean": ("gray",),
     "threshold.otsu": ("gray",),
+    "threshold.gaussian": ("gray",),
+    "threshold.triangle": ("gray",),
+    "threshold.texture": ("gray",),
+    "threshold.dual_channels": ("rgb",),
+    "threshold.custom_range": ("rgb",),
+    "analysis.naive_bayes_classifier": ("rgb", "pdf_tables"),
+    "transform.get_color_matrix": ("rgb", "mask"),
+    "transform.std_color_matrix": ("context",),
+    "transform.affine_color_correction": ("rgb", "source_matrix", "target_matrix"),
     "morphology.erode": ("gray",),
     "morphology.dilate": ("gray",),
     "morphology.fill": ("mask",),
@@ -80,6 +90,15 @@ _CALLABLE_SOURCES: dict[str, tuple[str, str, str]] = {
     "threshold.binary": ("threshold.binary", "plantcv.plantcv.threshold.threshold_methods", "plantcv/plantcv/threshold/threshold_methods.py"),
     "threshold.mean": ("threshold.mean", "plantcv.plantcv.threshold.threshold_methods", "plantcv/plantcv/threshold/threshold_methods.py"),
     "threshold.otsu": ("threshold.otsu", "plantcv.plantcv.threshold.threshold_methods", "plantcv/plantcv/threshold/threshold_methods.py"),
+    "threshold.gaussian": ("threshold.gaussian", "plantcv.plantcv.threshold.threshold_methods", "plantcv/plantcv/threshold/threshold_methods.py"),
+    "threshold.triangle": ("threshold.triangle", "plantcv.plantcv.threshold.threshold_methods", "plantcv/plantcv/threshold/threshold_methods.py"),
+    "threshold.texture": ("threshold.texture", "plantcv.plantcv.threshold.threshold_methods", "plantcv/plantcv/threshold/threshold_methods.py"),
+    "threshold.dual_channels": ("threshold.dual_channels", "plantcv.plantcv.threshold.threshold_methods", "plantcv/plantcv/threshold/threshold_methods.py"),
+    "threshold.custom_range": ("threshold.custom_range", "plantcv.plantcv.threshold.threshold_methods", "plantcv/plantcv/threshold/threshold_methods.py"),
+    "analysis.naive_bayes_classifier": ("naive_bayes_classifier", "plantcv.plantcv.naive_bayes_classifier", "plantcv/plantcv/naive_bayes_classifier.py"),
+    "transform.get_color_matrix": ("transform.get_color_matrix", "plantcv.plantcv.transform.color_correction", "plantcv/plantcv/transform/color_correction.py"),
+    "transform.std_color_matrix": ("transform.std_color_matrix", "plantcv.plantcv.transform.color_correction", "plantcv/plantcv/transform/color_correction.py"),
+    "transform.affine_color_correction": ("transform.affine_color_correction", "plantcv.plantcv.transform.color_correction", "plantcv/plantcv/transform/color_correction.py"),
     "morphology.erode": ("erode", "plantcv.plantcv.erode", "plantcv/plantcv/erode.py"),
     "morphology.dilate": ("dilate", "plantcv.plantcv.dilate", "plantcv/plantcv/dilate.py"),
     "morphology.fill": ("fill", "plantcv.plantcv.fill", "plantcv/plantcv/fill.py"),
@@ -604,7 +623,74 @@ def _run_operation(
     def params_only(allowed: set[str]) -> None:
         _only_parameters(parameters, allowed)
 
-    if operation.startswith("threshold."):
+    if operation in {"threshold.gaussian", "threshold.triangle", "threshold.texture"}:
+        _validate_image(arrays["gray"], "gray")
+        if operation == "threshold.gaussian":
+            params_only({"ksize", "offset", "object_type"})
+            ksize = _integer(parameters.get("ksize"), "ksize", minimum=3, maximum=MAX_KERNEL_SIDE)
+            offset = _number(parameters.get("offset"), "offset")
+            object_type = _object_type(parameters, effective)
+            effective.update({"callable": "plantcv.plantcv.threshold.gaussian", "ksize": ksize + int(ksize % 2 == 0), "offset": offset})
+            result = pcv.threshold.gaussian(arrays["gray"], ksize=ksize, offset=offset, object_type=object_type)
+        elif operation == "threshold.triangle":
+            params_only({"object_type"})
+            object_type = _object_type(parameters, effective)
+            effective.update({"callable": "plantcv.plantcv.threshold.triangle", "xstep": 1})
+            result = pcv.threshold.triangle(arrays["gray"], object_type=object_type)
+        else:
+            params_only({"ksize", "threshold", "offset", "texture_method", "borders"})
+            ksize = _integer(parameters.get("ksize"), "ksize", minimum=3, maximum=9)
+            if ksize % 2 != 1:
+                raise WorkerError("Texture kernel must be odd")
+            offset = _integer(parameters.get("offset", 3), "offset", minimum=1, maximum=ksize - 1)
+            threshold = _integer(parameters.get("threshold"), "threshold", minimum=0, maximum=255)
+            method = parameters.get("texture_method", "dissimilarity")
+            borders = parameters.get("borders", "nearest")
+            if method not in {"contrast", "dissimilarity", "homogeneity", "ASM", "energy", "correlation"}:
+                raise WorkerError("Unsupported GLCM property")
+            if borders not in {"reflect", "constant", "nearest", "mirror", "wrap"}:
+                raise WorkerError("Unsupported texture border mode")
+            effective.update({"callable": "plantcv.plantcv.threshold.texture", "ksize": ksize,
+                "offset": offset, "threshold": threshold, "texture_method": method, "borders": borders})
+            result = pcv.threshold.texture(arrays["gray"], ksize=ksize, threshold=threshold,
+                offset=offset, texture_method=method, borders=borders)
+        outputs["mask"] = np.asarray(result)
+
+    elif operation in {"threshold.dual_channels", "threshold.custom_range"}:
+        _validate_image(arrays["rgb"], "rgb", channels=3)
+        bgr = _rgb_to_plantcv_bgr(arrays["rgb"])
+        if operation == "threshold.dual_channels":
+            params_only({"x_channel", "y_channel", "points", "above"})
+            selected = {name: parameters[name] for name in ("x_channel", "y_channel", "points", "above")}
+            channels = {"R", "G", "B", "h", "s", "v", "l", "a", "b", "c", "m", "y", "k", "gray", "index"}
+            if selected["x_channel"] not in channels or selected["y_channel"] not in channels:
+                raise WorkerError("Unsupported dual-channel name")
+            if (type(selected["above"]) is not bool or not isinstance(selected["points"], list)
+                    or not 2 <= len(selected["points"]) <= 16
+                    or any(not isinstance(row, list) or len(row) != 2 for row in selected["points"])):
+                raise WorkerError("Dual channels requires boolean above and two or more x/y points")
+            selected["points"] = [[_number(value, "point") for value in row] for row in selected["points"]]
+            effective.update({"callable": "plantcv.plantcv.threshold.dual_channels", **selected})
+            outputs["mask"] = np.asarray(pcv.threshold.dual_channels(bgr, **selected))
+        else:
+            params_only({"channel", "lower_thresh", "upper_thresh"})
+            channel = parameters.get("channel", "gray")
+            count = {"RGB": 3, "HSV": 3, "LAB": 3, "CMYK": 4, "GRAY": 1}.get(str(channel).upper())
+            if count is None:
+                raise WorkerError("Unsupported custom-range colour space")
+            selected = {}
+            for name in ("lower_thresh", "upper_thresh"):
+                values = parameters.get(name)
+                if not isinstance(values, list) or len(values) != count:
+                    raise WorkerError("Range bounds require exactly one byte per selected channel")
+                selected[name] = [_integer(value, name, minimum=0, maximum=255) for value in values]
+            effective.update({"callable": "plantcv.plantcv.threshold.custom_range", "channel": channel, **selected})
+            mask, masked = pcv.threshold.custom_range(bgr, channel=channel, **selected)
+            outputs.update({"mask": np.asarray(mask), "masked_rgb": _plantcv_bgr_to_rgb(np.asarray(masked))})
+        channel_semantics = {"input_boundary": "RGB uint8 HWC", "plantcv_input": "BGR uint8 HWC (explicit RGB channel reversal)",
+            "raster_output": "binary uint8 mask; masked_rgb retains original RGB channels when present"}
+
+    elif operation.startswith("threshold."):
         _validate_image(arrays["gray"], "gray")
         object_type = _object_type(parameters, effective)
         if operation == "threshold.binary":
@@ -739,12 +825,53 @@ def _run_operation(
             })
         observations = _observations(pcv)
 
+    elif operation == "analysis.naive_bayes_classifier":
+        _validate_image(arrays['rgb'], 'rgb', channels=3)
+        params_only({'class_names', 'model_source_sha256', 'tables_sha256'})
+        names, tables = parameters.get('class_names'), arrays['pdf_tables']
+        if (not isinstance(names, list) or not 1 <= len(names) <= 32
+                or len(set(names)) != len(names)
+                or any(not isinstance(name, str) or not name or len(name) > 256
+                    or any(char in name for char in '\t\r\n') for name in names)
+                or tables.dtype != np.float64 or tables.shape != (len(names), 3, 256)
+                or not np.isfinite(tables).all() or np.any(tables < 0)):
+            raise WorkerError('The frozen Bayes model requires bounded ordered names and finite probability tables')
+        for name in ('model_source_sha256', 'tables_sha256'):
+            if not isinstance(parameters.get(name), str) or not re.fullmatch('[0-9a-f]{64}', parameters[name]):
+                raise WorkerError('The frozen Bayes model must retain its byte and table identities')
+        table_bytes = b''.join(struct.pack('>I', len(name.encode('utf-8'))) + name.encode('utf-8')
+            + np.asarray(values, dtype='>f8').tobytes() for name, values in zip(names, tables))
+        if _sha256(table_bytes) != parameters['tables_sha256']:
+            raise WorkerError('Transported public Bayes tables differ from their bound model digest')
+        rows = ['class\tchannel\t' + '\t'.join(map(str, range(256)))]
+        for name, channels in zip(names, tables):
+            for channel, values in zip(('hue', 'saturation', 'value'), channels):
+                rows.append(name + '\t' + channel + '\t' + '\t'.join(repr(float(value)) for value in values))
+        raw = ('\n'.join(rows) + '\n').encode('utf-8')
+        path = scratch / 'frozen-probabilities.tsv'
+        path.write_bytes(raw)
+        masks = pcv.naive_bayes_classifier(_rgb_to_plantcv_bgr(arrays['rgb']), str(path))
+        if tuple(masks) != tuple(names):
+            raise WorkerError('Public Bayes class insertion order differs from the selected model')
+        outputs = {f'class_{index}': np.asarray(masks[name]) for index, name in enumerate(names)}
+        effective.update({'callable': 'plantcv.plantcv.naive_bayes_classifier', 'class_names': names,
+            'model_source_sha256': parameters['model_source_sha256'], 'tables_sha256': parameters['tables_sha256'],
+            'pdf_transport': 'exact binary64 table values serialized using round-trip decimal repr',
+            'transport_file_sha256': _sha256(raw)})
+        channel_semantics = {'input_boundary': 'RGB uint8 HWC',
+            'plantcv_input': 'BGR uint8 HWC (explicit RGB channel reversal)',
+            'raster_output': 'ordered uint8 0/255 public class masks'}
+
     elif operation == "analysis.size":
         image = arrays["image"]
         if image.dtype != np.uint8 or image.ndim not in (2, 3) or (image.ndim == 3 and image.shape[2] != 3):
             raise WorkerError("image must be a uint8 grayscale or three-channel image")
         _validate_mask(arrays["labels"], "labels", image.shape[:2])
-        params_only({"n_labels", "label", "calibration"})
+        params_only({"n_labels", "label", "calibration", "line_thickness"})
+        if "line_thickness" in parameters:
+            line_thickness = _integer(parameters["line_thickness"], "line_thickness", minimum=1, maximum=32767)
+            pcv.params.line_thickness = line_thickness
+            effective.update({"line_thickness": line_thickness, "line_thickness_origin": "explicit_pcv.params_adapter"})
         n_labels = _integer(parameters.get("n_labels", 1), "n_labels", minimum=1)
         label = parameters.get("label", "SeedFiddle")
         if not isinstance(label, str) or not label or len(label) > 128:
@@ -828,6 +955,56 @@ def _run_operation(
         observations = _observations(pcv)
         if hasattr(chart, "to_dict"):
             visualizations["color_histogram"] = _to_primitive(chart.to_dict())
+
+    elif operation in {'transform.get_color_matrix', 'transform.std_color_matrix', 'transform.affine_color_correction'}:
+        if operation == 'transform.std_color_matrix':
+            params_only({'pos'})
+            pos = _integer(parameters.get('pos', 0), 'pos', minimum=0, maximum=3)
+            outputs['target_matrix'] = np.asarray(pcv.transform.std_color_matrix(pos=pos))
+            effective.update({'callable': 'plantcv.plantcv.transform.std_color_matrix', 'pos': pos})
+        else:
+            _validate_image(arrays['rgb'], 'rgb', channels=3)
+            params_only(set())
+            bgr = _rgb_to_plantcv_bgr(arrays['rgb'])
+            if operation == 'transform.get_color_matrix':
+                _validate_mask(arrays['mask'], 'mask', arrays['rgb'].shape[:2])
+                _, matrix = pcv.transform.get_color_matrix(rgb_img=bgr, mask=arrays['mask'])
+                outputs['source_matrix'] = np.asarray(matrix)
+                effective['callable'] = 'plantcv.plantcv.transform.get_color_matrix'
+            else:
+                source, target = arrays['source_matrix'], arrays['target_matrix']
+                if (source.dtype != np.float64 or target.dtype != np.float64
+                        or source.shape != target.shape or source.ndim != 2
+                        or source.shape[1] != 4 or not 1 <= source.shape[0] <= 255
+                        or not np.isfinite(source).all() or not np.isfinite(target).all()):
+                    raise WorkerError('Affine correction requires matching finite compact n-by-4 matrices')
+                function = pcv.transform.affine_color_correction
+                code, captured = function.__code__, {}
+                def observe(frame, event, arg):
+                    if frame.f_code is code and event == 'return':
+                        for name in ('ar', 'ag', 'ab'):
+                            value = frame.f_locals.get(name)
+                            if type(value) is not np.ndarray or value.shape != (4,) or value.dtype != np.float64:
+                                raise WorkerError('Public affine coefficients were unavailable')
+                            captured[name] = value.copy()
+                        captured['returned'] = frame.f_locals.get('corrected_img') is arg
+                    return observe
+                if sys.gettrace() is not None:
+                    raise WorkerError('Public affine coefficient capture requires an unoccupied trace boundary')
+                try:
+                    sys.settrace(observe)
+                    corrected = function(rgb_img=bgr, source_matrix=source, target_matrix=target)
+                finally:
+                    sys.settrace(None)
+                if function.__code__ is not code or captured.get('returned') is not True:
+                    raise WorkerError('Public affine capture lost its actual return identity')
+                outputs['corrected_rgb'] = _plantcv_bgr_to_rgb(np.asarray(corrected))
+                outputs['transformation_matrix'] = np.column_stack([captured[name] for name in ('ar', 'ag', 'ab')])
+                effective.update({'callable': 'plantcv.plantcv.transform.affine_color_correction',
+                    'coefficient_origin': 'actual ar/ag/ab locals of this one public call'})
+        channel_semantics = {'input_boundary': 'RGB uint8 HWC when present',
+            'plantcv_input': 'BGR uint8 HWC after explicit channel reversal when present',
+            'color_matrices': 'compact chip ID and normalized R/G/B rows; affine coefficients from actual public locals'}
 
     elif operation == "transform.correct_color":
         target, source = arrays["target_rgb"], arrays["source_rgb"]

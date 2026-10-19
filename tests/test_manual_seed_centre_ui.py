@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.functional_units import functional_units
+
 import os
 import tempfile
 import unittest
@@ -10,6 +12,7 @@ from unittest.mock import patch
 import numpy as np
 
 
+@functional_units
 class ManualSeedCentreUiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -61,7 +64,7 @@ class ManualSeedCentreUiTests(unittest.TestCase):
             ),
         )
 
-    def test_qt_add_manual_drag_auto_drag_and_right_delete_use_marker_semantics(self) -> None:
+    def check_test_qt_add_manual_drag_auto_drag_and_right_delete_use_marker_semantics(self) -> None:
         from PySide6.QtCore import QPointF, Qt
         from PySide6.QtTest import QTest
 
@@ -156,7 +159,7 @@ class ManualSeedCentreUiTests(unittest.TestCase):
 
             view.close()
 
-    def test_completed_edit_inverse_projects_autosaves_and_invalidates_only_dependents(self) -> None:
+    def check_test_completed_edit_inverse_projects_autosaves_and_invalidates_only_dependents(self) -> None:
         from seedvision.persistence import ManualSeedCentreStore
         from seedvision.ui.main_window import MainWindow
 
@@ -219,7 +222,7 @@ class ManualSeedCentreUiTests(unittest.TestCase):
             self.assertEqual(stored.mode, "augment")
             window.close()
 
-    def test_qt_mode_switch_undo_and_reset_are_autosaved_per_image(self) -> None:
+    def check_test_qt_mode_switch_undo_and_reset_are_autosaved_per_image(self) -> None:
         from PySide6.QtCore import Qt
         from PySide6.QtTest import QTest
 
@@ -295,7 +298,7 @@ class ManualSeedCentreUiTests(unittest.TestCase):
             self.assertEqual(loaded.centres_xy.shape, (0, 2))
             window.close()
 
-    def test_autosave_failure_keeps_the_edit_and_still_recomputes(self) -> None:
+    def check_test_autosave_failure_keeps_the_edit_and_still_recomputes(self) -> None:
         from seedvision.ui.main_window import MainWindow, QMessageBox
 
         with tempfile.TemporaryDirectory() as temporary:
@@ -336,7 +339,7 @@ class ManualSeedCentreUiTests(unittest.TestCase):
             self.assertIn("save failed", window.statusBar().currentMessage())
             window.close()
 
-    def test_running_node_switch_and_image_switch_stop_qt_edit_mode(self) -> None:
+    def check_test_running_node_switch_and_image_switch_stop_qt_edit_mode(self) -> None:
         from seedvision.ui.main_window import MainWindow
 
         with tempfile.TemporaryDirectory() as temporary:
@@ -381,6 +384,17 @@ class ManualSeedCentreUiTests(unittest.TestCase):
                 self.assertFalse(window.image_view.manual_seed_centre_editing)
 
             window.close()
+
+    def test_workflow_lifecycle(self):
+        """2 related ManualSeedCentreUiTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_qt_add_manual_drag_auto_drag_and_right_delete_use_marker_semantics)
+        self.scenario(self.check_test_qt_mode_switch_undo_and_reset_are_autosaved_per_image)
+
+    def test_validation_and_recovery(self):
+        """3 related ManualSeedCentreUiTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_completed_edit_inverse_projects_autosaves_and_invalidates_only_dependents)
+        self.scenario(self.check_test_autosave_failure_keeps_the_edit_and_still_recomputes)
+        self.scenario(self.check_test_running_node_switch_and_image_switch_stop_qt_edit_mode)
 
 
 if __name__ == "__main__":

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.functional_units import functional_units
+
 from dataclasses import fields, replace
 from types import SimpleNamespace
 import unittest
@@ -118,8 +120,9 @@ def _analysis(labels, source_shape, *, crop_offset=(2, 1), frame_shape=(8, 12),
     return BaselineAnalysis(**kwargs), result, tensor
 
 
+@functional_units
 class SeedCropTests(unittest.TestCase):
-    def test_actual_cuda_crop_is_aligned_isolated_and_transformable(self):
+    def check_test_actual_cuda_crop_is_aligned_isolated_and_transformable(self):
         if not torch.cuda.is_available():
             self.skipTest("CUDA is required to verify resident crop tensors.")
         labels = np.zeros((5, 6), np.int32)
@@ -168,7 +171,7 @@ class SeedCropTests(unittest.TestCase):
         self.assertTrue(torch.equal(source, source_before))
         np.testing.assert_array_equal(result.labels, labels_before)
 
-    def test_procedural_scale_uses_actual_per_axis_rounding(self):
+    def check_test_procedural_scale_uses_actual_per_axis_rounding(self):
         if not torch.cuda.is_available():
             self.skipTest("CUDA is required to verify resident crop tensors.")
         labels = np.zeros((3, 5), np.int32)
@@ -199,7 +202,7 @@ class SeedCropTests(unittest.TestCase):
         self.assertEqual(int(crop.mask_crop.sum().item()), 6)
         self.assertTrue(torch.all(crop.mask_crop))
 
-    def test_padding_identity_clipping_and_missing_ids_are_explicit(self):
+    def check_test_padding_identity_clipping_and_missing_ids_are_explicit(self):
         if not torch.cuda.is_available():
             self.skipTest("CUDA is required to verify resident crop tensors.")
         labels = np.zeros((5, 6), np.int32)
@@ -243,7 +246,7 @@ class SeedCropTests(unittest.TestCase):
         self.assertTrue(torch.equal(source, original_source))
         np.testing.assert_array_equal(result.labels, original_labels)
 
-    def test_cuda_absence_is_unavailable_without_cpu_fallback(self):
+    def check_test_cuda_absence_is_unavailable_without_cpu_fallback(self):
         labels = np.zeros((5, 6), np.int32)
         labels[1, 1] = 1
         analysis, _, _ = _analysis(labels, labels.shape, device="cpu")
@@ -261,7 +264,7 @@ class SeedCropTests(unittest.TestCase):
         self.assertTrue(all(record.image_crop is None and record.mask_crop is None for record in batch.records))
         self.assertIn("CUDA", batch.records[0].reason)
 
-    def test_cuda_tensor_must_match_corrected_cpu_frame_dimensions(self):
+    def check_test_cuda_tensor_must_match_corrected_cpu_frame_dimensions(self):
         if not torch.cuda.is_available():
             self.skipTest("CUDA is required to verify corrected-frame consistency.")
         labels = np.zeros((5, 6), np.int32)
@@ -289,7 +292,7 @@ class SeedCropTests(unittest.TestCase):
         self.assertIn("do not match", batch.records[0].reason)
         self.assertTrue(torch.equal(source, original_source))
 
-    def test_cancellation_marks_unfinished_ids_and_never_mutates_inputs(self):
+    def check_test_cancellation_marks_unfinished_ids_and_never_mutates_inputs(self):
         if not torch.cuda.is_available():
             self.skipTest("CUDA is required to verify resident crop tensors.")
         labels = np.zeros((5, 6), np.int32)
@@ -320,7 +323,7 @@ class SeedCropTests(unittest.TestCase):
         self.assertTrue(torch.equal(source, source_before))
         np.testing.assert_array_equal(result.labels, labels_before)
 
-    def test_large_padding_is_rejected_before_any_cuda_crop_allocation(self):
+    def check_test_large_padding_is_rejected_before_any_cuda_crop_allocation(self):
         if not torch.cuda.is_available():
             self.skipTest("CUDA is required to verify crop allocation budgets.")
         height = width = 2048
@@ -357,7 +360,7 @@ class SeedCropTests(unittest.TestCase):
         self.assertTrue(torch.equal(source, original_source))
         np.testing.assert_array_equal(result.labels, original_labels)
 
-    def test_result_revision_and_integer_geometry_inputs_are_strict(self):
+    def check_test_result_revision_and_integer_geometry_inputs_are_strict(self):
         labels = np.zeros((5, 6), np.int32)
         labels[1, 1] = 1
         analysis, _, _ = _analysis(
@@ -388,7 +391,7 @@ class SeedCropTests(unittest.TestCase):
                 result_revision=_revision("9"),
             )
 
-    def test_procedural_source_shape_rejects_fractional_and_boolean_dimensions(self):
+    def check_test_procedural_source_shape_rejects_fractional_and_boolean_dimensions(self):
         labels = np.zeros((3, 5), np.int32)
         labels[1, 2] = 1
         analysis, result, _ = _analysis(
@@ -409,7 +412,7 @@ class SeedCropTests(unittest.TestCase):
                 self.assertEqual(batch.records[0].status, "unavailable")
                 self.assertIn("positive integers", batch.records[0].reason)
 
-    def test_record_contract_exposes_serializable_metadata_and_crop_tensors(self):
+    def check_test_record_contract_exposes_serializable_metadata_and_crop_tensors(self):
         from seedvision.export.crops import SeedCropRecord
 
         names = {field.name for field in fields(SeedCropRecord)}
@@ -419,6 +422,34 @@ class SeedCropTests(unittest.TestCase):
         self.assertIn("label_family", names)
         self.assertIn("source_to_crop", names)
         self.assertIn("source_validity", names)
+
+    def test_actual_cuda_crop_is_aligned_isolated_and_transformable(self):
+        self.scenario(self.check_test_actual_cuda_crop_is_aligned_isolated_and_transformable, labelled=False)
+
+    def test_procedural_scale_uses_actual_per_axis_rounding(self):
+        self.scenario(self.check_test_procedural_scale_uses_actual_per_axis_rounding, labelled=False)
+
+    def test_padding_identity_clipping_and_missing_ids_are_explicit(self):
+        self.scenario(self.check_test_padding_identity_clipping_and_missing_ids_are_explicit, labelled=False)
+
+    def test_cuda_tensor_must_match_corrected_cpu_frame_dimensions(self):
+        self.scenario(self.check_test_cuda_tensor_must_match_corrected_cpu_frame_dimensions, labelled=False)
+
+    def test_cancellation_marks_unfinished_ids_and_never_mutates_inputs(self):
+        self.scenario(self.check_test_cancellation_marks_unfinished_ids_and_never_mutates_inputs, labelled=False)
+
+    def test_large_padding_is_rejected_before_any_cuda_crop_allocation(self):
+        self.scenario(self.check_test_large_padding_is_rejected_before_any_cuda_crop_allocation, labelled=False)
+
+    def test_validation_and_recovery(self):
+        """2 related SeedCropTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_cuda_absence_is_unavailable_without_cpu_fallback)
+        self.scenario(self.check_test_procedural_source_shape_rejects_fractional_and_boolean_dimensions)
+
+    def test_workflow_lifecycle(self):
+        """2 related SeedCropTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_result_revision_and_integer_geometry_inputs_are_strict)
+        self.scenario(self.check_test_record_contract_exposes_serializable_metadata_and_crop_tensors)
 
 
 if __name__ == "__main__":

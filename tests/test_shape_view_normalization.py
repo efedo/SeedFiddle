@@ -1,4 +1,6 @@
 """Repeated biological views must be normalized before their units are mixed."""
+
+from tests.functional_units import functional_units
 from dataclasses import replace
 import unittest
 
@@ -25,8 +27,9 @@ def rescale(item, factor):
                    measurement_uncertainty=scaled(item.measurement_uncertainty))
 
 
+@functional_units
 class ShapeViewNormalizationTests(unittest.TestCase):
-    def test_differing_views_are_normalized_before_biological_mean_and_rms(self):
+    def check_test_differing_views_are_normalized_before_biological_mean_and_rms(self):
         a = observation(0, 'one', (10, 5, 2, 20))
         b = observation(1, 'one', (20, 16, 6, 160))
         vectors, _, errors, sources = model._physical_seed_groups(
@@ -36,7 +39,7 @@ class ShapeViewNormalizationTests(unittest.TestCase):
         self.assertEqual(errors[0, 0], 0)
         self.assertEqual(sources, 2)
 
-    def test_unit_changes_preserve_groups_and_one_row_per_physical_seed(self):
+    def check_test_unit_changes_preserve_groups_and_one_row_per_physical_seed(self):
         a = observation(0, 'one', (10, 5, 2, 20))
         b = observation(1, 'one', (20, 16, 6, 160))
         c = observation(2, 'two', (14, 8, 4, 50))
@@ -49,7 +52,7 @@ class ShapeViewNormalizationTests(unittest.TestCase):
             self.assertEqual(actual[0].shape, (2, 19))
             self.assertEqual(actual[3], 3)
 
-    def test_calibrated_group_filters_uncalibrated_views_without_normalizing(self):
+    def check_test_calibrated_group_filters_uncalibrated_views_without_normalizing(self):
         a = observation(0, 'one', (10, 5, 2, 20), calibrated=True)
         b = observation(1, 'one', (20, 16, 6, 160))
         c = observation(2, 'one', (14, 8, 4, 50), calibrated=True)
@@ -60,7 +63,7 @@ class ShapeViewNormalizationTests(unittest.TestCase):
             np.square((a.measurement_uncertainty, c.measurement_uncertainty)), axis=0)))
         self.assertEqual(sources, 2)
 
-    def test_population_fallback_and_calibrated_augmentation_are_unit_invariant(self):
+    def check_test_population_fallback_and_calibrated_augmentation_are_unit_invariant(self):
         for calibrated in (False, True):
             a = observation(0, 'one', (10, 5, 2, 20), calibrated=calibrated)
             b = observation(1, 'one', (20, 16, 6, 160))
@@ -75,7 +78,7 @@ class ShapeViewNormalizationTests(unittest.TestCase):
             self.assertEqual(actual.dimensionless_physical_seed_count, 2)
             self.assertEqual(actual.source_count, 2 if calibrated else 3)
 
-    def test_extreme_squared_span_intermediate_can_normalize_finite_area(self):
+    def check_test_extreme_squared_span_intermediate_can_normalize_finite_area(self):
         for span, area, expected in ((1e160, 1e308, 1e-12), (1e-200, 1e-320, 1e80)):
             values = np.ones((1, 19)); values[0, (0, 1, 2, 4)] = (span, span, span, area)
             actual, errors = model._dimensionless_vectors(values, np.zeros_like(values))
@@ -83,7 +86,7 @@ class ShapeViewNormalizationTests(unittest.TestCase):
             np.testing.assert_array_equal(actual[0, :3], (1, 1, 1))
             self.assertTrue(np.isfinite(errors).all())
 
-    def test_invalid_span_or_unrepresentable_normalized_value_is_withheld(self):
+    def check_test_invalid_span_or_unrepresentable_normalized_value_is_withheld(self):
         for span in (0, -1, np.inf, np.nan):
             values = np.ones((1, 19)); values[0, 0] = span
             with self.assertRaisesRegex(ValueError, 'positive spans'):
@@ -93,7 +96,7 @@ class ShapeViewNormalizationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'not representable'):
                 model._dimensionless_vectors(values, np.zeros_like(values))
 
-    def test_group_rms_retains_finite_errors_when_their_squares_are_unrepresentable(self):
+    def check_test_group_rms_retains_finite_errors_when_their_squares_are_unrepresentable(self):
         for error in (1e200, 1e-200):
             a = observation(0, 'one', (10, 5, 2, 20))
             errors = list(a.measurement_uncertainty)
@@ -104,10 +107,24 @@ class ShapeViewNormalizationTests(unittest.TestCase):
                 (a, b), normalize_per_view=True)
             self.assertEqual(grouped_errors[0, 3], error)
             self.assertTrue(np.isfinite(vectors).all())
-    def test_group_mean_retains_finite_values_when_the_sum_overflows(self):
+    def check_test_group_mean_retains_finite_values_when_the_sum_overflows(self):
         a = observation(0, 'one', (10, 5, 2, 20))
         values = list(a.measurement); values[3] = 1e308
         a = replace(a, measurement=tuple(values))
         b = replace(a, source_index=1, seed_id=2)
         vectors, _, _, _ = model._physical_seed_groups((a, b), normalize_per_view=True)
         self.assertEqual(vectors[0, 3], 1e308)
+
+    def test_workflow_lifecycle(self):
+        """7 related ShapeViewNormalizationTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_differing_views_are_normalized_before_biological_mean_and_rms)
+        self.scenario(self.check_test_unit_changes_preserve_groups_and_one_row_per_physical_seed)
+        self.scenario(self.check_test_calibrated_group_filters_uncalibrated_views_without_normalizing)
+        self.scenario(self.check_test_population_fallback_and_calibrated_augmentation_are_unit_invariant)
+        self.scenario(self.check_test_extreme_squared_span_intermediate_can_normalize_finite_area)
+        self.scenario(self.check_test_group_rms_retains_finite_errors_when_their_squares_are_unrepresentable)
+        self.scenario(self.check_test_group_mean_retains_finite_values_when_the_sum_overflows)
+
+    def test_validation_and_recovery(self):
+        """1 related ShapeViewNormalizationTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_invalid_span_or_unrepresentable_normalized_value_is_withheld)

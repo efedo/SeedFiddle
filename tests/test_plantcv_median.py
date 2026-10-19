@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.functional_units import functional_units
+
 import hashlib
 import json
 from pathlib import Path
@@ -156,8 +158,9 @@ class PlantCVMedianSourceTests(unittest.TestCase):
 
 
 @unittest.skipUnless(torch.cuda.is_available(), "CUDA median primitive requires an available CUDA device")
+@functional_units
 class PlantCVMedianPrimitiveTests(unittest.TestCase):
-    def test_cancellation_before_during_and_after_tiles_preserves_input(self) -> None:
+    def check_test_cancellation_before_during_and_after_tiles_preserves_input(self) -> None:
         gray = torch.arange(64, dtype=torch.uint8, device="cuda").reshape(8, 8)
         original = gray.clone()
         with patch("seedvision.cuda.plantcv_median._median_validated") as worker:
@@ -186,7 +189,7 @@ class PlantCVMedianPrimitiveTests(unittest.TestCase):
             median_blur(gray, 3, cancel=lambda: False), median_blur(gray, 3)
         )
 
-    def test_scalar_and_tuple_kernels_preserve_shape_dtype_device_and_input(self) -> None:
+    def check_test_scalar_and_tuple_kernels_preserve_shape_dtype_device_and_input(self) -> None:
         gray = torch.tensor(
             [[0, 255, 20, 180, 1, 120],
              [255, 10, 160, 40, 240, 70],
@@ -205,7 +208,7 @@ class PlantCVMedianPrimitiveTests(unittest.TestCase):
                 self.assertTrue(bool(torch.all(result <= 255)))
         torch.testing.assert_close(gray, before)
 
-    def test_binary_inputs_remain_binary_and_parameters_change_selected_results(self) -> None:
+    def check_test_binary_inputs_remain_binary_and_parameters_change_selected_results(self) -> None:
         binary_np = np.random.default_rng(52).integers(0, 2, size=(15, 15), dtype=np.uint8) * 255
         binary = torch.from_numpy(binary_np).cuda()
         for kernel in (1, 2, 3, (3, 5), (4, 2)):
@@ -214,7 +217,7 @@ class PlantCVMedianPrimitiveTests(unittest.TestCase):
         self.assertFalse(torch.equal(median_blur(binary, 1), median_blur(binary, 3)))
         self.assertFalse(torch.equal(median_blur(binary, (3, 5)), median_blur(binary, (5, 3))))
 
-    def test_noncontiguous_nonoverlapping_views_are_supported(self) -> None:
+    def check_test_noncontiguous_nonoverlapping_views_are_supported(self) -> None:
         base = torch.arange(0, 256, dtype=torch.uint8, device="cuda").reshape(8, 32)
         view = base[:, ::3]
         self.assertFalse(view.is_contiguous())
@@ -222,7 +225,7 @@ class PlantCVMedianPrimitiveTests(unittest.TestCase):
         expected = median_blur(view.contiguous(), (4, 3))
         torch.testing.assert_close(actual, expected)
 
-    def test_roi_is_half_open_reflects_at_crop_and_preserves_exterior(self) -> None:
+    def check_test_roi_is_half_open_reflects_at_crop_and_preserves_exterior(self) -> None:
         image = torch.arange(0, 15 * 17, dtype=torch.int32, device="cuda").remainder(256).to(torch.uint8).reshape(15, 17)
         bounds = (3, 2, 14, 12)
         result = median_blur(image, (4, 3), roi=bounds)
@@ -235,7 +238,7 @@ class PlantCVMedianPrimitiveTests(unittest.TestCase):
         self.assertEqual(result.dtype, image.dtype)
         self.assertFalse(torch.equal(result, median_blur(image, (4, 3))))
 
-    def test_argument_checks_precede_work_and_reject_invalid_domains(self) -> None:
+    def check_test_argument_checks_precede_work_and_reject_invalid_domains(self) -> None:
         valid = torch.arange(20, dtype=torch.uint8, device="cuda").reshape(4, 5)
         with self.assertRaisesRegex(ValueError, "CUDA"):
             median_blur(valid.cpu(), 3)
@@ -277,8 +280,21 @@ class PlantCVMedianPrimitiveTests(unittest.TestCase):
         self.assertEqual(MAX_RASTER_PIXELS, 64_000_000)
         self.assertEqual(MAX_KERNEL_AXIS, 255)
 
+    def test_validation_and_recovery(self):
+        """2 related PlantCVMedianPrimitiveTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_cancellation_before_during_and_after_tiles_preserves_input)
+        self.scenario(self.check_test_argument_checks_precede_work_and_reject_invalid_domains)
+
+    def test_workflow_lifecycle(self):
+        """4 related PlantCVMedianPrimitiveTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_scalar_and_tuple_kernels_preserve_shape_dtype_device_and_input)
+        self.scenario(self.check_test_binary_inputs_remain_binary_and_parameters_change_selected_results)
+        self.scenario(self.check_test_noncontiguous_nonoverlapping_views_are_supported)
+        self.scenario(self.check_test_roi_is_half_open_reflects_at_crop_and_preserves_exterior)
+
 
 @unittest.skipUnless(torch.cuda.is_available() and REFERENCE_ENV_READY, "CUDA and pinned PlantCV environment are required")
+@functional_units
 class PlantCVMedianReferenceTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -286,7 +302,7 @@ class PlantCVMedianReferenceTests(unittest.TestCase):
 
         cls.runner = PlantCVReferenceRunner(REFERENCE_PYTHON)
 
-    def test_odd_scalar_no_roi_matches_the_actual_reference_runner(self) -> None:
+    def check_test_odd_scalar_no_roi_matches_the_actual_reference_runner(self) -> None:
         rng = np.random.default_rng(0x5EED)
         image = rng.integers(0, 256, size=(17, 23), dtype=np.uint8)
         cases = ((image, 1), (image, 3), (image, 5))
@@ -296,7 +312,7 @@ class PlantCVMedianReferenceTests(unittest.TestCase):
                 actual = median_blur(torch.from_numpy(gray).cuda(), kernel)
                 np.testing.assert_array_equal(actual.cpu().numpy(), reference.arrays["image"])
 
-    def test_even_tuple_narrow_axis_roi_and_maximum_kernels_match_public_plantcv(self) -> None:
+    def check_test_even_tuple_narrow_axis_roi_and_maximum_kernels_match_public_plantcv(self) -> None:
         rng = np.random.default_rng(0xC0FFEE)
         small = rng.integers(0, 256, size=(4, 7), dtype=np.uint8)
         roi_image = rng.integers(0, 256, size=(11, 14), dtype=np.uint8)
@@ -339,7 +355,7 @@ class PlantCVMedianReferenceTests(unittest.TestCase):
         )
         np.testing.assert_array_equal(max_roi_actual.cpu().numpy(), max_roi_expected[0])
 
-    def test_source_undefined_large_reflect_geometry_is_rejected_before_work(self) -> None:
+    def check_test_source_undefined_large_reflect_geometry_is_rejected_before_work(self) -> None:
         from unittest import mock
 
         small = torch.arange(28, dtype=torch.uint8, device="cuda").reshape(4, 7)
@@ -359,7 +375,7 @@ class PlantCVMedianReferenceTests(unittest.TestCase):
         safe_thin = torch.arange(33, dtype=torch.uint8, device="cuda").reshape(1, 33)
         self.assertEqual(tuple(median_blur(safe_thin, 255).shape), (1, 33))
 
-    def test_full_fixture_and_max_kernel_memory_are_bounded(self) -> None:
+    def check_test_full_fixture_and_max_kernel_memory_are_bounded(self) -> None:
         import cv2
 
         fixture = ROOT / "images" / "IMG_9632c.JPG"
@@ -395,6 +411,16 @@ class PlantCVMedianReferenceTests(unittest.TestCase):
         self.assertLess(maximum_peak, 64 * 1024 * 1024, f"maximum-kernel workspace: {maximum_peak:,} bytes")
         np.testing.assert_array_equal(maximum.cpu().numpy(), expected[0])
         self.assertGreaterEqual(MAX_TEMPORARY_WINDOW_VALUES, 255 * 255)
+
+    def test_workflow_lifecycle(self):
+        """3 related PlantCVMedianReferenceTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_odd_scalar_no_roi_matches_the_actual_reference_runner)
+        self.scenario(self.check_test_even_tuple_narrow_axis_roi_and_maximum_kernels_match_public_plantcv)
+        self.scenario(self.check_test_full_fixture_and_max_kernel_memory_are_bounded)
+
+    def test_validation_and_recovery(self):
+        """1 related PlantCVMedianReferenceTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_source_undefined_large_reflect_geometry_is_rejected_before_work)
 
 
 if __name__ == "__main__":

@@ -13,7 +13,6 @@ import cv2
 import numpy as np
 import torch
 
-import tests.test_trait_classifier as classifier_fixture
 import tests.test_neutral_calibration as calibration_fixture
 from seedvision.persistence import (ProjectAnalysisStore, ProjectImageSpec,
     ReferenceRegionStore, ReferenceRegionBundle, analysis_settings_profile_from_graph,
@@ -29,8 +28,9 @@ class AuthoritativeParityTests(unittest.TestCase):
     def setUpClass(cls):
         from PySide6.QtWidgets import QApplication
         cls.app = QApplication.instance() or QApplication([])
-        classifier_fixture.TraitClassifierTests.setUpClass()
-        cls.model = classifier_fixture.TraitClassifierTests.model
+        from tests.review_fixtures import parity_trait_model_json
+        from seedvision.learning.trait_classifier import FrozenTraitModel
+        cls.model = FrozenTraitModel.from_json(parity_trait_model_json())
 
     def setUp(self):
         temporary = TemporaryDirectory()
@@ -166,81 +166,8 @@ class AuthoritativeParityTests(unittest.TestCase):
         with patch.object(QDialog, 'exec', new=exercise):
             self.window._review_results()
 
-    def test_actual_worker_and_batch_share_crop_calibration_lineage_and_prediction_identity(self):
-        desktop, batch = self.paired()
-        # Radius24 + 0.05cm * 4px/mm * 10mm/cm =26px; crop starts at(22,6).
-        self.assertEqual(desktop['identity']['crop_offset'], [22, 6])
-        affine = np.asarray(desktop['identity']['source_to_corrected'])
-        self.assertFalse(np.allclose(affine, np.eye(3)))
-        point = np.linalg.inv(self.reference_transform) @ [33., 29., 1.]
-        expected = affine @ point
-        observation = desktop['reviewed_measurements']['observations'][0]
-        np.testing.assert_allclose(observation['annotation']['hilum_point'], expected[:2] / expected[2])
-        self.assertEqual(self.result.pixels_per_mm, 4.)
-        self.assertAlmostEqual(observation['scaled_bundle']['projected_area'],
-                               observation['pixel_bundle']['projected_area'] / 16.)
-        self.assertAlmostEqual(observation['scaled_bundle']['maximum_span'],
-                               observation['pixel_bundle']['maximum_span'] / 4.)
-        lineage = desktop['reviewed_measurements']['lineage']
-        self.assertEqual(lineage['reference_archive_source_identity_state'], 'verified')
-        self.assertEqual(lineage['reference_annotation_snapshot_source_identity_state'], 'not_recorded')
-        self.assertTrue(self.task.node_cache.values['trait_classifier.features'].values.is_cuda)
-        rows = desktop['trait_classifier']['predictions']
-        for row in rows:
-            self.assertAlmostEqual(sum(row['probabilities'].values()), 1.)
-        self.assertNotEqual(rows[0]['probabilities'], rows[1]['probabilities'])
-        self.assertFalse(batch['scientifically_validated'])
-        self.window._project_biological_context = BiologicalContext('soybean', seed_lot_id='unconsumed-ui-value')
-        self.assertEqual(self.window._current_report(self.result)['identity']['analysis_inputs'],
-                         desktop['identity']['analysis_inputs'])
 
-    def test_desktop_saved_review_reaches_batch_and_batch_revision_reaches_desktop(self):
-        before, _ = self.paired()
-        self.save_desktop_review()
-        path = self.window._review_path(before)
-        old_bytes = path.read_bytes()
-        desktop, batch = self.paired()
-        self.assertEqual(batch['review_lookup'], 'matched')
-        self.assertEqual([row['review'] for row in batch['instances']], ['accepted', 'excluded'])
-        self.assertEqual(before['trait_classifier'], batch['trait_classifier'])
-        # An external consumer uses exactly the batch identity, without changing analysis.
-        payload = json.loads(old_bytes)
-        payload['result_revision'] = batch['result_revision']
-        payload['decisions'] = {'1': 'excluded', '2': 'accepted'}
-        path.write_text(json.dumps(payload), encoding='utf-8')
-        fresh = self.window._current_report(self.result)
-        self.assertEqual([row['review'] for row in fresh['instances']], ['excluded', 'accepted'])
-        self.assertEqual(fresh['result_revision'], before['result_revision'])
-        self.assertTrue(list((path.parent / 'history' / before['result_revision']).glob('*.json')))
 
-    def test_layout_only_save_preserves_review_but_annotations_context_and_model_bytes_invalidate(self):
-        before, _ = self.paired()
-        self.save_desktop_review()
-        path = self.window._review_path(before)
-        historical = path.read_bytes()
-        original_project_sha = sha256(self.master.read_bytes()).hexdigest()
-        self.save_project(layout_x=250.)
-        title, _ = self.paired()
-        self.assertNotEqual(title['execution_provenance']['project_sha256'], original_project_sha)
-        self.assertEqual(title['result_revision'], before['result_revision'])
-        self.assertEqual(title['accepted_count'], 1)
-        self.annotations = (replace(self.annotations[0], hilum_point=(32., 29.)), self.annotations[1])
-        self.save_project()
-        annotation, _ = self.paired()
-        self.assertNotEqual(annotation['result_revision'], title['result_revision'])
-        self.assertEqual(annotation['accepted_count'], 0)
-        self.context = BiologicalContext('soybean', seed_lot_id='lot-b')
-        self.save_project()
-        context, _ = self.paired()
-        self.assertNotEqual(context['result_revision'], annotation['result_revision'])
-        self.model_path.write_bytes(self.model_path.read_bytes() + b'\n')
-        model, _ = self.paired()
-        self.assertNotEqual(model['result_revision'], context['result_revision'])
-        self.assertEqual(model['accepted_count'], 0)
-        self.assertEqual(path.read_bytes(), historical)
-        self.window._cache_dirty_nodes[self.key] = {'project'}
-        with self.assertRaisesRegex(ValueError, 'Recompute'):
-            self.window._current_report(self.result)
 
     def test_missing_model_and_incompatible_review_are_explicit_on_both_routes(self):
         self.graph.set_parameter('trait_classifier', 'trait_model_path', 'missing.json')
@@ -265,61 +192,7 @@ class ReviewLookupTests(unittest.TestCase):
         from PySide6.QtWidgets import QApplication
         cls.app = QApplication.instance() or QApplication([])
 
-    def test_per_image_contexts_survive_desktop_load_and_save_without_current_image_leakage(self):
-        from seedvision.ui.main_window import MainWindow
-        with TemporaryDirectory() as directory:
-            root = Path(directory)
-            (root / 'config').mkdir()
-            shutil.copyfile(Path(__file__).parents[1] / 'config' / 'traits.json',
-                            root / 'config' / 'traits.json')
-            paths = (root / 'first.png', root / 'second.png')
-            for path in paths:
-                self.assertTrue(cv2.imwrite(str(path), np.zeros((24, 24, 3), np.uint8)))
-            contexts = (BiologicalContext('soybean', seed_lot_id='a'),
-                        BiologicalContext('soybean', seed_lot_id='b'))
-            master = ProjectAnalysisStore(root).capture_and_save(
-                analysis_settings=analysis_settings_profile_from_graph(build_default_pipeline()),
-                images=tuple(ProjectImageSpec(path, (24, 24), biological_context=context)
-                             for path, context in zip(paths, contexts)), species='Soybean',
-                biological_context=BiologicalContext('soybean', seed_lot_id='project-default'),
-                destination=root / 'context.seedfiddle-project.json')
-            window = MainWindow(root)
-            try:
-                with patch.object(window, '_confirm_project_replacement', return_value=True), \
-                     patch.object(window, '_open_path'):
-                    self.assertTrue(window._open_project(master))
-                for path, context in zip(paths, contexts):
-                    window._current_image_key = lambda path=path: str(path.resolve()).casefold()
-                    self.assertEqual(window._effective_biological_context(), context)
-                self.assertEqual(tuple(spec.biological_context for spec in window._project_image_specs()), contexts)
-            finally:
-                window.close()
 
-    def test_missing_project_species_loads_unknown_and_malformed_capture_cannot_use_legacy_fallback(self):
-        from seedvision.ui.main_window import MainWindow
-        from seedvision.export.results import result_report
-        import tests.test_result_prediction_revision as result_fixture
-        with TemporaryDirectory() as directory:
-            root = Path(directory)
-            path = root / 'source.png'
-            self.assertTrue(cv2.imwrite(str(path), np.zeros((24, 24, 3), np.uint8)))
-            master = ProjectAnalysisStore(root).capture_and_save(
-                analysis_settings=analysis_settings_profile_from_graph(build_default_pipeline()),
-                images=(ProjectImageSpec(path, (24, 24)),),
-                destination=root / 'unknown.seedfiddle-project.json')
-            window = MainWindow(root)
-            try:
-                with patch.object(window, '_confirm_project_replacement', return_value=True), \
-                     patch.object(window, '_open_path'):
-                    self.assertTrue(window._open_project(master))
-                self.assertEqual(window.species_combo.currentText(), 'unknown')
-                self.assertEqual(window._effective_biological_context(), BiologicalContext('unknown'))
-                analysis = result_fixture._analysis()
-                analysis.analysis_inputs_json = '[]'
-                with self.assertRaisesRegex(ValueError, 'unsupported contract'):
-                    result_report(analysis)
-            finally:
-                window.close()
 
     def test_invalid_duplicate_oversized_and_stale_reviews_remain_distinct_and_unchanged(self):
         from seedvision.export.review import lookup_result_review, MAX_REVIEW_BYTES

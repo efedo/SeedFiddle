@@ -1,3 +1,5 @@
+
+from tests.functional_units import functional_units
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -12,8 +14,9 @@ from seedvision.learning.contracts import FeatureStackSpec
 from seedvision.learning.data import export_learning_sample, LearningManifest, file_sha256, audit_manifest, SeedTileDataset
 
 
+@functional_units
 class CriticalIntegrityTests(unittest.TestCase):
-    def test_checkpoint_cache_uses_content_and_result_rejects_replaced_weights(self):
+    def check_test_checkpoint_cache_uses_content_and_result_rejects_replaced_weights(self):
         import os
         from seedvision.learning.pipeline import cached_checkpoint
         from seedvision.export.results import result_report
@@ -33,7 +36,7 @@ class CriticalIntegrityTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'Checkpoint changed'):
                 result_report(analysis,enabled={'unet_instances'})
 
-    def test_streamed_evaluation_both_families_and_hybrid(self):
+    def check_test_streamed_evaluation_both_families_and_hybrid(self):
         import json
         from seedvision.learning.models import MultiHeadSeedUNet, SeedStarDist2D
         from seedvision.learning.checkpoint import save_checkpoint
@@ -57,7 +60,7 @@ class CriticalIntegrityTests(unittest.TestCase):
             self.assertFalse(report['scientifically_validated'])
             json.dumps(report,allow_nan=False)
 
-    def test_inference_cancellation_and_spool_budget(self):
+    def check_test_inference_cancellation_and_spool_budget(self):
         import torch
         from seedvision.learning.inference import tiled_predict
         from seedvision.learning.resources import PredictionSpool
@@ -73,7 +76,7 @@ class CriticalIntegrityTests(unittest.TestCase):
             spool.close()
         self.assertFalse(root.exists())
 
-    def test_clipped_reprojection_withholds_complete_shape_and_landmark(self):
+    def check_test_clipped_reprojection_withholds_complete_shape_and_landmark(self):
         from seedvision.annotation.coordinates import reproject_bundle
         from seedvision.persistence.reference_regions import ReferenceRegionBundle, SeedInstanceAnnotation
         labels = np.zeros((8,8),np.uint16)
@@ -86,7 +89,7 @@ class CriticalIntegrityTests(unittest.TestCase):
         self.assertEqual(shifted.seed_annotations[0].outline_visibility,'image_cutoff')
         self.assertIsNone(shifted.seed_annotations[0].hilum_point)
 
-    def test_custom_pickle_checkpoint_is_rejected_without_execution(self):
+    def check_test_custom_pickle_checkpoint_is_rejected_without_execution(self):
         import torch
         import pickle
         from seedvision.learning.checkpoint import load_checkpoint
@@ -99,7 +102,7 @@ class CriticalIntegrityTests(unittest.TestCase):
             with self.assertRaisesRegex(pickle.UnpicklingError,'Weights only load failed'):
                 load_checkpoint(path)
 
-    def test_decoder_selection_rejects_held_out_group_overlap(self):
+    def check_test_decoder_selection_rejects_held_out_group_overlap(self):
         import json
         from dataclasses import asdict
         from seedvision.learning.evaluation_protocol import audit_decoder_source
@@ -112,7 +115,7 @@ class CriticalIntegrityTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'overlaps'):
                 audit_decoder_source(path,settings,identity,independent=True)
 
-    def test_reference_transport_same_canvas_translation_and_rotation(self):
+    def check_test_reference_transport_same_canvas_translation_and_rotation(self):
         from seedvision.annotation.coordinates import reproject_raster
         labels = np.zeros((8,8),np.uint16)
         labels[2,3] = 37
@@ -124,13 +127,13 @@ class CriticalIntegrityTests(unittest.TestCase):
         self.assertEqual(rotated[3,5],37)
         np.testing.assert_array_equal(reproject_raster(shifted,shift,np.eye(3),labels.shape),labels)
 
-    def test_legacy_reference_bundle_requires_alignment_review(self):
+    def check_test_legacy_reference_bundle_requires_alignment_review(self):
         from seedvision.annotation.coordinates import reproject_bundle
         from seedvision.persistence.reference_regions import ReferenceRegionBundle
         with self.assertRaisesRegex(ValueError,'Legacy'):
             reproject_bundle(ReferenceRegionBundle(shape=(8,8)),np.eye(3),(8,8))
 
-    def test_saved_reference_transform_round_trip(self):
+    def check_test_saved_reference_transform_round_trip(self):
         from seedvision.persistence.reference_regions import ReferenceRegionStore, ReferenceRegionBundle
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -141,7 +144,7 @@ class CriticalIntegrityTests(unittest.TestCase):
             store.save(source,ReferenceRegionBundle(shape=(8,8),source_to_corrected=transform))
             np.testing.assert_array_equal(store.load_if_present(source,None).source_to_corrected,transform)
 
-    def test_results_distinguish_missing_evidence_from_empty_region(self):
+    def check_test_results_distinguish_missing_evidence_from_empty_region(self):
         from seedvision.export.results import result_report
         instances = SimpleNamespace(labels=np.zeros((8,8),np.int32),instance_confidences=np.empty(0))
         analysis = SimpleNamespace(image_path=None,calibration=SimpleNamespace(affine_matrix=np.eye(3),corrected_bgr=np.zeros((8,8,3),np.uint8)),
@@ -152,7 +155,7 @@ class CriticalIntegrityTests(unittest.TestCase):
         analysis.layers.foreground_colour_profile = object()
         self.assertEqual(result_report(analysis)['proposed_count'],0)
 
-    def test_legacy_ambiguous_foreground_recipe_is_rejected(self):
+    def check_test_legacy_ambiguous_foreground_recipe_is_rejected(self):
         with self.assertRaisesRegex(ValueError,'Re-export'):
             FeatureStackSpec(version=1)
         self.assertEqual(FeatureStackSpec(version=1,channels=('lab_l',)).version,1)
@@ -168,7 +171,7 @@ class CriticalIntegrityTests(unittest.TestCase):
         arguments.update(overrides)
         return export_learning_sample(path,**arguments)
 
-    def test_failed_component_replacement_preserves_complete_old_revision(self):
+    def check_test_failed_component_replacement_preserves_complete_old_revision(self):
         with TemporaryDirectory() as directory:
             path = Path(directory)/'manifest.json'
             original = self.sample(path)
@@ -181,7 +184,7 @@ class CriticalIntegrityTests(unittest.TestCase):
             self.assertEqual(file_sha256(Path(directory)/original.features),digest)
             self.assertTrue(audit_manifest(path)['valid'])
 
-    def test_failed_manifest_switch_preserves_old_revision(self):
+    def check_test_failed_manifest_switch_preserves_old_revision(self):
         with TemporaryDirectory() as directory:
             path = Path(directory)/'manifest.json'
             self.sample(path)
@@ -197,7 +200,7 @@ class CriticalIntegrityTests(unittest.TestCase):
             self.assertEqual(path.read_bytes(),before)
             self.assertTrue(audit_manifest(path)['valid'])
 
-    def test_duplicate_content_rejected_before_model_load(self):
+    def check_test_duplicate_content_rejected_before_model_load(self):
         from seedvision.learning.evaluation import evaluate_checkpoint
         with TemporaryDirectory() as directory:
             path = Path(directory)/'manifest.json'
@@ -209,7 +212,7 @@ class CriticalIntegrityTests(unittest.TestCase):
                     evaluate_checkpoint(Path(directory)/'model.pt',path,Path(directory)/'evaluation',device='cpu')
             load.assert_not_called()
 
-    def test_component_edit_is_detected(self):
+    def check_test_component_edit_is_detected(self):
         with TemporaryDirectory() as directory:
             path = Path(directory)/'manifest.json'
             sample = self.sample(path)
@@ -218,7 +221,7 @@ class CriticalIntegrityTests(unittest.TestCase):
             self.assertFalse(audit['valid'])
             self.assertTrue(any('fingerprinted' in value for value in audit['errors']))
 
-    def test_dataset_cache_does_not_retain_an_oversized_sample(self):
+    def check_test_dataset_cache_does_not_retain_an_oversized_sample(self):
         with TemporaryDirectory() as directory:
             path = Path(directory)/'manifest.json'
             self.sample(path)
@@ -226,7 +229,7 @@ class CriticalIntegrityTests(unittest.TestCase):
             self.assertEqual(dataset[0]['features'].shape[-2:],(32,32))
             self.assertEqual(len(dataset._cache),0)
 
-    def test_raw_cache_detects_equal_size_source_replacement(self):
+    def check_test_raw_cache_detects_equal_size_source_replacement(self):
         from seedvision.segmentation.baseline import analyze_path, PipelineAnalysisCache
         with TemporaryDirectory() as directory:
             path = Path(directory)/'source.bmp'
@@ -237,7 +240,7 @@ class CriticalIntegrityTests(unittest.TestCase):
                 cv2.imwrite(str(path),np.full((16,16,3),240,np.uint8))
                 self.assertEqual(analyze_path(path,node_cache=cache),240.)
 
-    def test_export_and_inference_share_raw_foreground_semantics(self):
+    def check_test_export_and_inference_share_raw_foreground_semantics(self):
         from seedvision.learning.features import pipeline_evidence
         from seedvision.learning.export import analysis_evidence
         raw,resolved = object(),object()
@@ -248,7 +251,7 @@ class CriticalIntegrityTests(unittest.TestCase):
         self.assertEqual(analysis_evidence(result),pipeline_evidence(raw,layers,advanced))
         self.assertIs(analysis_evidence(result)['foreground_colour'],raw)
 
-    def test_global_matching_maximizes_cardinality_at_low_threshold(self):
+    def check_test_global_matching_maximizes_cardinality_at_low_threshold(self):
         from seedvision.learning.metrics import evaluate_instances
         # Contingency [[intersection 40, 30], [30, 0]]: greedy selects .4
         # and misses the second match; global matching selects both .3 pairs.
@@ -257,7 +260,7 @@ class CriticalIntegrityTests(unittest.TestCase):
         metrics = evaluate_instances(truth,predicted,iou_threshold=.29)
         self.assertEqual(metrics.true_positives,2)
 
-    def test_restricted_checkpoints_round_trip_both_families(self):
+    def check_test_restricted_checkpoints_round_trip_both_families(self):
         from seedvision.learning.models import MultiHeadSeedUNet, SeedStarDist2D
         from seedvision.learning.checkpoint import save_checkpoint,load_checkpoint
         spec = FeatureStackSpec(include_species_planes=False)
@@ -270,6 +273,32 @@ class CriticalIntegrityTests(unittest.TestCase):
                 self.assertEqual(returned,spec)
                 self.assertEqual(payload['training_metadata'],{'seed':4})
                 self.assertEqual(set(restored.state_dict()),set(model.state_dict()))
+
+    def test_validation_and_recovery(self):
+        """10 related CriticalIntegrityTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_checkpoint_cache_uses_content_and_result_rejects_replaced_weights)
+        self.scenario(self.check_test_inference_cancellation_and_spool_budget)
+        self.scenario(self.check_test_clipped_reprojection_withholds_complete_shape_and_landmark)
+        self.scenario(self.check_test_custom_pickle_checkpoint_is_rejected_without_execution)
+        self.scenario(self.check_test_decoder_selection_rejects_held_out_group_overlap)
+        self.scenario(self.check_test_results_distinguish_missing_evidence_from_empty_region)
+        self.scenario(self.check_test_legacy_ambiguous_foreground_recipe_is_rejected)
+        self.scenario(self.check_test_failed_component_replacement_preserves_complete_old_revision)
+        self.scenario(self.check_test_failed_manifest_switch_preserves_old_revision)
+        self.scenario(self.check_test_duplicate_content_rejected_before_model_load)
+
+    def test_workflow_lifecycle(self):
+        """10 related CriticalIntegrityTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_streamed_evaluation_both_families_and_hybrid)
+        self.scenario(self.check_test_reference_transport_same_canvas_translation_and_rotation)
+        self.scenario(self.check_test_legacy_reference_bundle_requires_alignment_review)
+        self.scenario(self.check_test_saved_reference_transform_round_trip)
+        self.scenario(self.check_test_component_edit_is_detected)
+        self.scenario(self.check_test_dataset_cache_does_not_retain_an_oversized_sample)
+        self.scenario(self.check_test_raw_cache_detects_equal_size_source_replacement)
+        self.scenario(self.check_test_export_and_inference_share_raw_foreground_semantics)
+        self.scenario(self.check_test_global_matching_maximizes_cardinality_at_low_threshold)
+        self.scenario(self.check_test_restricted_checkpoints_round_trip_both_families)
 
 
 if __name__ == '__main__':

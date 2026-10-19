@@ -1,4 +1,6 @@
 """Persistent model metadata, legacy compatibility and full-file identity."""
+
+from tests.functional_units import functional_units
 from copy import deepcopy
 from hashlib import sha256
 import json
@@ -52,11 +54,12 @@ def _native(model, sampling=None):
             sklearn_kmeans_sha256='0cf335b8b9b4abe67259ccdcbaf07f02bd7feee31e63a06a1cce32a87fcd375d'))
 
 
+@functional_units
 class KMeansModelArtifactTests(unittest.TestCase):
     def setUp(self):
         self.model = models.model_from_centres(((-0.0,), (2.5,), (-0.0,)), 1, 1)
 
-    def test_legacy_codec_bytes_and_identity_remain_unchanged(self):
+    def check_test_legacy_codec_bytes_and_identity_remain_unchanged(self):
         raw = models.encode_kmeans_model(self.model)
         artifact = native.parse_kmeans_artifact(raw)
         self.assertEqual(artifact.model, models.parse_kmeans_model(raw))
@@ -64,7 +67,7 @@ class KMeansModelArtifactTests(unittest.TestCase):
         self.assertIsNone(artifact.provenance_sha256)
         self.assertEqual(models.encode_kmeans_model(artifact.model), raw)
 
-    def test_roundtrip_keeps_centres_signed_zero_and_outer_file_identity(self):
+    def check_test_roundtrip_keeps_centres_signed_zero_and_outer_file_identity(self):
         provenance = _conversion(self.model)
         raw = native.encode_kmeans_artifact(self.model, provenance)
         artifact = native.parse_kmeans_artifact(raw)
@@ -80,7 +83,7 @@ class KMeansModelArtifactTests(unittest.TestCase):
         with self.assertRaises(models.KMeansModelError):
             models.parse_kmeans_model(raw)
 
-    def test_native_manifest_sampling_defaults_rng_and_none_profile_roundtrip(self):
+    def check_test_native_manifest_sampling_defaults_rng_and_none_profile_roundtrip(self):
         model = models.model_from_centres(((0.0,),), 1, 1)
         for sample in (None, 1, .5):
             with self.subTest(sample=sample):
@@ -90,7 +93,7 @@ class KMeansModelArtifactTests(unittest.TestCase):
                 self.assertIs(type(loaded.provenance['request']['sampling']), type(sample))
                 self.assertIsNone(loaded.provenance['fit_result']['source_n_threads'])
 
-    def test_checksum_and_numeric_tampering_rejects(self):
+    def check_test_checksum_and_numeric_tampering_rejects(self):
         value = json.loads(native.encode_kmeans_artifact(self.model, _conversion(self.model)))
         for change in ('checksum', 'centres', 'identity', 'geometry'):
             bad = deepcopy(value)
@@ -107,7 +110,7 @@ class KMeansModelArtifactTests(unittest.TestCase):
             with self.subTest(change=change), self.assertRaises(models.KMeansModelError):
                 native.parse_kmeans_artifact(json.dumps(bad))
 
-    def test_inconsistent_native_facts_reject_even_with_recomputed_checksum(self):
+    def check_test_inconsistent_native_facts_reject_even_with_recomputed_checksum(self):
         model = models.model_from_centres(((0.0,),), 1, 1)
         mutations = (
             lambda p: p['request'].update(sampling=1., sampling_kind='fraction'),
@@ -133,7 +136,7 @@ class KMeansModelArtifactTests(unittest.TestCase):
             with self.subTest(provenance=provenance), self.assertRaises(models.KMeansModelError):
                 native.encode_kmeans_artifact(model, provenance)
 
-    def test_duplicate_nonfinite_unknown_deep_and_oversized_metadata_rejects(self):
+    def check_test_duplicate_nonfinite_unknown_deep_and_oversized_metadata_rejects(self):
         raw = native.encode_kmeans_artifact(self.model, _conversion(self.model))
         for bad in (raw.replace(b'{"schema":', b'{"schema":"duplicate","schema":', 1),
                 raw.replace(b'2.5', b'NaN'), b'['*1100+b'0'+b']'*1100,
@@ -155,7 +158,7 @@ class KMeansModelArtifactTests(unittest.TestCase):
         with patch.object(models, 'MAX_MODEL_BYTES', len(raw)-1), self.assertRaises(models.KMeansModelError):
             native.encode_kmeans_artifact(self.model, _conversion(self.model))
 
-    def test_recipe_selection_binds_entire_artifact_and_detects_provenance_edits(self):
+    def check_test_recipe_selection_binds_entire_artifact_and_detects_provenance_edits(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)/'model.json'
             provenance = _conversion(self.model)
@@ -170,7 +173,7 @@ class KMeansModelArtifactTests(unittest.TestCase):
                 recipes.load_selected_model(selected)
             self.assertEqual(recipes.model_source_for_path(path)['centres_sha256'], selected['centres_sha256'])
 
-    def test_load_bounds_actual_read(self):
+    def check_test_load_bounds_actual_read(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)/'model.json'
             path.write_bytes(b'x'*100)
@@ -178,3 +181,17 @@ class KMeansModelArtifactTests(unittest.TestCase):
                 native.load_kmeans_artifact(path)
         with self.assertRaises(models.KMeansModelError):
             native.load_kmeans_artifact(path)
+
+    def test_workflow_lifecycle(self):
+        """5 related KMeansModelArtifactTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_legacy_codec_bytes_and_identity_remain_unchanged)
+        self.scenario(self.check_test_roundtrip_keeps_centres_signed_zero_and_outer_file_identity)
+        self.scenario(self.check_test_native_manifest_sampling_defaults_rng_and_none_profile_roundtrip)
+        self.scenario(self.check_test_recipe_selection_binds_entire_artifact_and_detects_provenance_edits)
+        self.scenario(self.check_test_load_bounds_actual_read)
+
+    def test_validation_and_recovery(self):
+        """3 related KMeansModelArtifactTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_checksum_and_numeric_tampering_rejects)
+        self.scenario(self.check_test_inconsistent_native_facts_reject_even_with_recomputed_checksum)
+        self.scenario(self.check_test_duplicate_nonfinite_unknown_deep_and_oversized_metadata_rejects)

@@ -1605,6 +1605,10 @@ def replay_native_stage(directory, stage_id, *, device='cuda', cancel=None,
             'coordinate_frame':report['coordinate_frame'],'operation_id':stage.operation_id,
             'recorded_runtime':report['runtime'],'scientifically_validated':False,
             'reference_conformance':'not_evaluated_by_replay'}
+        if node.get('backend') == 'plantcv':
+            return _result('unavailable',stage_id,
+                'This stage was executed by PlantCV. Native replay cannot verify the public call.',
+                metadata=facts | {'recorded_backend': 'plantcv', 'backend_provenance': node['backend_provenance']})
         if node['status'] not in ('executed','empty','partial'):
             return _result('unavailable',stage_id,'Selected historical products are unavailable.',metadata=facts)
         input_ports,output_ports,preview = SUPPORTED_REPLAY_OPERATIONS[stage.operation_id]

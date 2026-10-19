@@ -1,3 +1,5 @@
+
+from tests.functional_units import functional_units
 import os
 from pathlib import Path
 import subprocess
@@ -65,6 +67,7 @@ np.savez(sys.argv[2], distance=distance, coordinates=coordinates, peaks=peaks,
 
 
 @unittest.skipUnless(torch.cuda.is_available(), 'CUDA is required for native watershed')
+@functional_units
 class PlantCVWatershedTests(unittest.TestCase):
     def reference(self, cases):
         self.assertTrue(_REFERENCE.is_file(), 'Pinned reference interpreter is required.')
@@ -79,7 +82,7 @@ class PlantCVWatershedTests(unittest.TestCase):
             with np.load(directory/'output.npz', allow_pickle=False) as loaded:
                 return [loaded[f'labels{i}'].copy() for i in range(len(cases))]
 
-    def test_exact_pinned_heap_ties_plateaus_borders_and_random_partitions(self):
+    def check_test_exact_pinned_heap_ties_plateaus_borders_and_random_partitions(self):
         rng = np.random.default_rng(111)
         cases = []
         for shape in ((1, 1), (1, 13), (11, 1), (9, 13), (15, 17)):
@@ -108,7 +111,7 @@ class PlantCVWatershedTests(unittest.TestCase):
             for tensor, original in zip(inputs, originals):
                 torch.testing.assert_close(tensor, original)
 
-    def test_kernel_batches_and_custom_pytorch_stream_preserve_exact_labels(self):
+    def check_test_kernel_batches_and_custom_pytorch_stream_preserve_exact_labels(self):
         from seedvision.cuda import plantcv_watershed as module
         elevation = np.zeros((17, 23), dtype=np.float32)
         markers = np.zeros((17, 23), dtype=np.int32)
@@ -121,7 +124,7 @@ class PlantCVWatershedTests(unittest.TestCase):
         stream.synchronize()
         np.testing.assert_array_equal(actual.cpu().numpy(), expected)
 
-    def test_full_fixture_distance_peaks_markers_and_partition_match_pinned_chain(self):
+    def check_test_full_fixture_distance_peaks_markers_and_partition_match_pinned_chain(self):
         from seedvision.cuda.plantcv_distance import distance_map
         from seedvision.cuda.plantcv_peaks import local_maxima
         from seedvision.cuda.ops import connected_components
@@ -167,7 +170,7 @@ class PlantCVWatershedTests(unittest.TestCase):
         self.assertEqual(labels.device, mask.device)
         np.testing.assert_array_equal(labels.cpu().numpy(), expected['labels'])
 
-    def test_cancellation_and_resource_preflight_do_not_return_or_modify_inputs(self):
+    def check_test_cancellation_and_resource_preflight_do_not_return_or_modify_inputs(self):
         from seedvision.cuda import plantcv_watershed as module
         elevation = torch.zeros((9, 11), dtype=torch.float32, device='cuda')
         markers = torch.zeros((9, 11), dtype=torch.int32, device='cuda')
@@ -191,7 +194,7 @@ class PlantCVWatershedTests(unittest.TestCase):
         for value, original in zip((elevation, markers, mask), originals):
             torch.testing.assert_close(value, original)
 
-    def test_invalid_cpu_nonfinite_and_mismatched_inputs_are_rejected(self):
+    def check_test_invalid_cpu_nonfinite_and_mismatched_inputs_are_rejected(self):
         elevation = torch.zeros((7, 9), dtype=torch.float32, device='cuda')
         markers = torch.zeros((7, 9), dtype=torch.int32, device='cuda')
         mask = torch.ones((7, 9), dtype=torch.bool, device='cuda')
@@ -202,6 +205,17 @@ class PlantCVWatershedTests(unittest.TestCase):
         elevation[0, 0] = float('nan')
         with self.assertRaisesRegex(ValueError, 'finite'):
             masked_watershed(elevation, markers, mask)
+
+    def test_workflow_lifecycle(self):
+        """3 related PlantCVWatershedTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_exact_pinned_heap_ties_plateaus_borders_and_random_partitions)
+        self.scenario(self.check_test_kernel_batches_and_custom_pytorch_stream_preserve_exact_labels)
+        self.scenario(self.check_test_full_fixture_distance_peaks_markers_and_partition_match_pinned_chain)
+
+    def test_validation_and_recovery(self):
+        """2 related PlantCVWatershedTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_cancellation_and_resource_preflight_do_not_return_or_modify_inputs)
+        self.scenario(self.check_test_invalid_cpu_nonfinite_and_mismatched_inputs_are_rejected)
 
 
 if __name__ == '__main__':

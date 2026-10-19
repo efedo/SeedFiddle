@@ -1,4 +1,6 @@
 """Synthetic native evidence, CUDA extraction, stop and publication witnesses."""
+
+from tests.functional_units import functional_units
 from dataclasses import replace
 import json
 from pathlib import Path
@@ -41,6 +43,7 @@ def compact_manifest():
 
 
 @unittest.skipUnless(torch.cuda.is_available(), 'CUDA required for native trait training')
+@functional_units
 class TraitTrainingTests(unittest.TestCase):
     def setUp(self):
         self.temporary = TemporaryDirectory()
@@ -79,7 +82,7 @@ class TraitTrainingTests(unittest.TestCase):
             archive_path=str(archive_path), archive_sha256=file_sha256(archive_path), seed_id=9)
         return image_path, archive_path
 
-    def test_compact_training_atomic_reload_and_actual_prediction(self):
+    def check_test_compact_training_atomic_reload_and_actual_prediction(self):
         progress = []
         report = train_trait_manifest(self.request(), progress_callback=lambda *values: progress.append(values))
         model = load_frozen_trait_model(self.output)
@@ -95,7 +98,7 @@ class TraitTrainingTests(unittest.TestCase):
         self.assertIn('not verified', audit[0]['representation'])
         self.assertEqual(list(self.root.glob('.trait-model-*')), [])
 
-    def test_real_reference_cuda_extraction_matches_independent_pixel_oracle(self):
+    def check_test_real_reference_cuda_extraction_matches_independent_pixel_oracle(self):
         for item in self.payload['examples']:
             self.reference(item, generation=item['split'] == 'train')
         with patch.object(torch.Tensor, 'cpu', side_effect=AssertionError('CUDA raster downloaded')):
@@ -123,7 +126,7 @@ class TraitTrainingTests(unittest.TestCase):
         self.assertEqual(prediction.report['predictions'][0]['predicted_trait_id'], 'light')
         self.assertEqual(prediction.report['model_sha256'], report['model_sha256'])
 
-    def test_denied_unusable_input_is_not_resolved_or_opened(self):
+    def check_test_denied_unusable_input_is_not_resolved_or_opened(self):
         denied = dict(self.payload['examples'][0], example_id='denied', physical_id='denied-physical',
                       group_id='denied-group', permitted_use=False, input={'kind': 'nonsense', 'image_path': None,
                       'values': {'unusable': 'intentionally'}})
@@ -134,7 +137,7 @@ class TraitTrainingTests(unittest.TestCase):
         self.assertFalse(model.payload['native_training_evidence']['input_audit'][-1]['included'])
         self.assertEqual(model.payload['split_audit']['training']['excluded'][0]['example_id'], 'denied')
 
-    def test_manifest_and_controls_reject_before_any_raster_or_optimizer(self):
+    def check_test_manifest_and_controls_reject_before_any_raster_or_optimizer(self):
         for config in ({'iterations': True}, {'learning_rate': float('nan')}, {'l2': -1},
                        {'temperature_bounds': (2, 1)}, {'calibration_iterations': 1}, {'abstention_threshold': True}):
             with self.subTest(config=config), self.assertRaises(ValueError):
@@ -149,7 +152,7 @@ class TraitTrainingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Duplicate'):
             read_trait_manifest(self.path)
 
-    def test_file_hash_and_missing_transform_reject_before_cuda_extraction(self):
+    def check_test_file_hash_and_missing_transform_reject_before_cuda_extraction(self):
         item = self.payload['examples'][0]
         _, archive = self.reference(item, transform=None)
         with patch('seedvision.learning.trait_training.extract_trait_features', side_effect=AssertionError('extraction ran')):
@@ -162,7 +165,7 @@ class TraitTrainingTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'recorded.*transform'):
                 materialize_trait_evidence(self.manifest())
 
-    def test_actual_duplicate_mask_aliases_cannot_cross_splits(self):
+    def check_test_actual_duplicate_mask_aliases_cannot_cross_splits(self):
         first, last = self.payload['examples'][0], self.payload['examples'][-1]
         image, archive = self.reference(first)
         # Unknown physical annotation is preserved so declared aliases cannot conceal identical pixels.
@@ -174,7 +177,7 @@ class TraitTrainingTests(unittest.TestCase):
         with patch('torch.optim.Adam', side_effect=AssertionError('fitting ran')), self.assertRaisesRegex(ValueError, 'Actual source/selected-mask.*overlaps'):
             train_trait_manifest(self.request())
 
-    def test_known_generation_mismatch_rejects_before_raster_decode(self):
+    def check_test_known_generation_mismatch_rejects_before_raster_decode(self):
         item = self.payload['examples'][0]
         _, archive_path = self.reference(item)
         with np.load(archive_path, allow_pickle=False) as archive:
@@ -185,7 +188,7 @@ class TraitTrainingTests(unittest.TestCase):
         with patch('cv2.imdecode', side_effect=AssertionError('Source decoded')), self.assertRaisesRegex(ValueError, 'require image SHA'):
             materialize_trait_evidence(self.manifest())
 
-    def test_consumed_snapshots_survive_path_replacement_and_enforce_bounded_reads(self):
+    def check_test_consumed_snapshots_survive_path_replacement_and_enforce_bounded_reads(self):
         item = self.payload['examples'][0]
         image, archive = self.reference(item)
         original_image, original_archive = image.read_bytes(), archive.read_bytes()
@@ -217,7 +220,7 @@ class TraitTrainingTests(unittest.TestCase):
              self.assertRaisesRegex(ValueError, 'exceeds.*byte limit'):
             materialize_trait_evidence(self.manifest())
 
-    def test_review_boundary_and_source_support_are_actual_eligibility_guards(self):
+    def check_test_review_boundary_and_source_support_are_actual_eligibility_guards(self):
         self.reference(self.payload['examples'][0], boundary=True)
         with self.assertRaisesRegex(ValueError, 'canvas boundary'):
             materialize_trait_evidence(self.manifest())
@@ -225,7 +228,7 @@ class TraitTrainingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'outside decoded source support'):
             materialize_trait_evidence(self.manifest())
 
-    def test_manifest_snapshot_and_evidence_output_paths_preserve_inputs(self):
+    def check_test_manifest_snapshot_and_evidence_output_paths_preserve_inputs(self):
         request = self.request()
         self.path.write_text(self.path.read_text() + ' ')
         with self.assertRaisesRegex(ValueError, 'changed after'):
@@ -238,7 +241,7 @@ class TraitTrainingTests(unittest.TestCase):
             train_trait_manifest(self.request(output_path=image))
         self.assertEqual(before, image.read_bytes())
 
-    def test_each_training_control_changes_actual_fit_or_decision_diagnostics(self):
+    def check_test_each_training_control_changes_actual_fit_or_decision_diagnostics(self):
         training, calibration, vocabulary, _ = materialize_trait_evidence(self.manifest())
         baseline = train_trait_model(training, calibration, vocabulary, iterations=30, calibration_iterations=9).payload
         for controls in ({'iterations': 2}, {'learning_rate': .001}, {'l2': 2.}):
@@ -254,7 +257,7 @@ class TraitTrainingTests(unittest.TestCase):
         self.assertEqual(strict['weights'], baseline['weights'])
         self.assertEqual(strict['development_diagnostics']['coverage'], 0)
 
-    def test_cancellation_during_evidence_training_calibration_preserves_old_output(self):
+    def check_test_cancellation_during_evidence_training_calibration_preserves_old_output(self):
         for stop_stage in ('evidence', 'training', 'calibration'):
             stopped = [False]
             self.output.write_bytes(b'previous model bytes')
@@ -266,7 +269,7 @@ class TraitTrainingTests(unittest.TestCase):
             self.assertEqual(self.output.read_bytes(), b'previous model bytes')
             self.assertEqual(list(self.root.glob('.trait-model-*')), [])
 
-    def test_atomic_precommit_stop_write_failure_and_late_stop(self):
+    def check_test_atomic_precommit_stop_write_failure_and_late_stop(self):
         report = train_trait_manifest(self.request())
         model = load_frozen_trait_model(self.output)
         self.output.write_bytes(b'old')
@@ -292,7 +295,7 @@ class TraitTrainingTests(unittest.TestCase):
         self.assertTrue(report['cancellation_after_save'])
         self.assertEqual(load_frozen_trait_model(self.output).model_sha256, report['model_sha256'])
 
-    def test_activation_is_transactional_and_invalidates_only_classifier_dependents(self):
+    def check_test_activation_is_transactional_and_invalidates_only_classifier_dependents(self):
         train_trait_manifest(self.request())
         graph = build_default_pipeline()
         affected, model = activate_trait_model(graph, self.output, abstention_threshold=.67)
@@ -316,7 +319,28 @@ class TraitTrainingTests(unittest.TestCase):
             activate_trait_model(graph, self.output, abstention_threshold=.5)
         self.assertEqual(graph.to_dict(), before)
 
+    def test_workflow_lifecycle(self):
+        """7 related TraitTrainingTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_compact_training_atomic_reload_and_actual_prediction)
+        self.scenario(self.check_test_real_reference_cuda_extraction_matches_independent_pixel_oracle)
+        self.scenario(self.check_test_denied_unusable_input_is_not_resolved_or_opened)
+        self.scenario(self.check_test_actual_duplicate_mask_aliases_cannot_cross_splits)
+        self.scenario(self.check_test_consumed_snapshots_survive_path_replacement_and_enforce_bounded_reads)
+        self.scenario(self.check_test_manifest_snapshot_and_evidence_output_paths_preserve_inputs)
+        self.scenario(self.check_test_each_training_control_changes_actual_fit_or_decision_diagnostics)
 
+    def test_validation_and_recovery(self):
+        """7 related TraitTrainingTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_manifest_and_controls_reject_before_any_raster_or_optimizer)
+        self.scenario(self.check_test_file_hash_and_missing_transform_reject_before_cuda_extraction)
+        self.scenario(self.check_test_known_generation_mismatch_rejects_before_raster_decode)
+        self.scenario(self.check_test_review_boundary_and_source_support_are_actual_eligibility_guards)
+        self.scenario(self.check_test_cancellation_during_evidence_training_calibration_preserves_old_output)
+        self.scenario(self.check_test_atomic_precommit_stop_write_failure_and_late_stop)
+        self.scenario(self.check_test_activation_is_transactional_and_invalidates_only_classifier_dependents)
+
+
+@functional_units
 class TraitTrainingUITests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -340,7 +364,7 @@ class TraitTrainingUITests(unittest.TestCase):
         self.addCleanup(lambda: dispose_window(window))
         return window
 
-    def test_dialog_snapshots_manifest_controls_and_activation_choice(self):
+    def check_test_dialog_snapshots_manifest_controls_and_activation_choice(self):
         from seedvision.ui.trait_training_workflow import TraitTrainingDialog
         dialog = TraitTrainingDialog(project_root=self.root)
         dialog.manifest_row.edit.setText(str(self.path))
@@ -361,7 +385,7 @@ class TraitTrainingUITests(unittest.TestCase):
         self.assertEqual(request.manifest_sha256, file_sha256(self.path))
         dialog.close()
 
-    def test_trait_worker_forwards_real_controls_task_identity_and_terminal_outcomes(self):
+    def check_test_trait_worker_forwards_real_controls_task_identity_and_terminal_outcomes(self):
         from seedvision.ui.trait_training_workflow import TraitTrainingTask
         request = TraitTrainingRequest(self.path, self.root / 'model.json', TraitTrainingConfiguration(iterations=3))
         task = TraitTrainingTask(request)
@@ -385,7 +409,7 @@ class TraitTrainingUITests(unittest.TestCase):
             task.run()
         self.assertEqual(failed, [(task, 'bad evidence')])
 
-    def test_serial_busy_stop_and_stale_terminal_signals_preserve_current_job(self):
+    def check_test_serial_busy_stop_and_stale_terminal_signals_preserve_current_job(self):
         window = self.window()
         request = TraitTrainingRequest(self.path, self.root / 'model.json')
         with patch.object(window._thread_pool, 'start') as started:
@@ -405,7 +429,7 @@ class TraitTrainingUITests(unittest.TestCase):
         self.assertIsNone(window._learning_training_task)
         self.assertTrue(window.train_trait_model_action.isEnabled())
 
-    def test_saved_only_late_stop_and_changed_graph_never_activate(self):
+    def check_test_saved_only_late_stop_and_changed_graph_never_activate(self):
         window = self.window()
         report = dict(output_path='saved.json', cancellation_after_save=False)
         for activate, late_stop, changed in ((False, False, False), (True, True, False), (True, False, True)):
@@ -421,7 +445,7 @@ class TraitTrainingUITests(unittest.TestCase):
             activation.assert_not_called()
             self.assertIsNone(window._learning_training_task)
 
-    def test_completion_activation_failure_keeps_saved_result_and_clears_busy(self):
+    def check_test_completion_activation_failure_keeps_saved_result_and_clears_busy(self):
         window = self.window()
         request = TraitTrainingRequest(self.path, self.root / 'model.json', activate_after_training=True)
         with patch.object(window._thread_pool, 'start'):
@@ -432,7 +456,7 @@ class TraitTrainingUITests(unittest.TestCase):
         self.assertIn('Model saved; activation failed', window.statusBar().currentMessage())
         self.assertIsNone(window._learning_training_task)
 
-    def test_serial_worker_terminal_slot_runs_on_gui_thread(self):
+    def check_test_serial_worker_terminal_slot_runs_on_gui_thread(self):
         from PySide6.QtCore import QThread
         from threading import Event
         from time import monotonic, sleep
@@ -462,7 +486,7 @@ class TraitTrainingUITests(unittest.TestCase):
         self.assertEqual(gui_threads, [self.application.thread()])
         self.assertNotEqual(worker_threads[0], self.application.thread())
 
-    def test_active_model_output_is_preserved_and_close_cancels_current_task(self):
+    def check_test_active_model_output_is_preserved_and_close_cancels_current_task(self):
         from tests.review_fixtures import dispose_window
         window = self.window()
         current = self.root / 'active.json'
@@ -478,6 +502,19 @@ class TraitTrainingUITests(unittest.TestCase):
         self.assertIsNone(window._learning_training_task)
         window._trait_training_completed(task, dict(output_path='new.json', cancellation_after_save=False))
         self.assertIsNone(window._learning_training_task)
+
+    def test_workflow_lifecycle(self):
+        """3 related TraitTrainingUITests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_dialog_snapshots_manifest_controls_and_activation_choice)
+        self.scenario(self.check_test_trait_worker_forwards_real_controls_task_identity_and_terminal_outcomes)
+        self.scenario(self.check_test_serial_worker_terminal_slot_runs_on_gui_thread)
+
+    def test_validation_and_recovery(self):
+        """4 related TraitTrainingUITests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_serial_busy_stop_and_stale_terminal_signals_preserve_current_job)
+        self.scenario(self.check_test_saved_only_late_stop_and_changed_graph_never_activate)
+        self.scenario(self.check_test_completion_activation_failure_keeps_saved_result_and_clears_busy)
+        self.scenario(self.check_test_active_model_output_is_preserved_and_close_cancels_current_task)
 
 
 if __name__ == '__main__':

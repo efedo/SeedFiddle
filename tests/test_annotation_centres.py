@@ -1,4 +1,6 @@
 """Annotation centroids and radial hilum metadata must never become predictions."""
+
+from tests.functional_units import functional_units
 import os
 from pathlib import Path
 import tempfile
@@ -11,8 +13,9 @@ import numpy as np
 from seedvision.annotation.geometry import annotation_centres, outward_hilum_direction
 
 
+@functional_units
 class AnnotationGeometryTests(unittest.TestCase):
-    def test_all_ids_use_area_centroids_including_disconnected_and_partial_masks(self):
+    def check_test_all_ids_use_area_centroids_including_disconnected_and_partial_masks(self):
         labels = np.zeros((260, 35), np.uint16)
         labels[120:140, 3:7] = 1  # Spans a row chunk.
         labels[1:4, 20:24] = 2
@@ -27,7 +30,7 @@ class AnnotationGeometryTests(unittest.TestCase):
         np.testing.assert_array_equal(labels, before)
         self.assertEqual(annotation_centres(labels.astype(np.uint64)), centres)
 
-    def test_empty_invalid_and_degenerate_geometry(self):
+    def check_test_empty_invalid_and_degenerate_geometry(self):
         for labels in (None, np.zeros((0, 3), np.uint16), np.zeros((5, 7), np.uint16)):
             self.assertEqual(annotation_centres(labels), {})
         for labels in (np.zeros((2, 3, 1), np.uint16), np.zeros((3, 3)),
@@ -38,12 +41,22 @@ class AnnotationGeometryTests(unittest.TestCase):
                               ((2, 3), (np.nan, 3))):
             self.assertIsNone(outward_hilum_direction(centre, point))
 
-    def test_hilum_direction_is_outward_radial_unit_vector(self):
+    def check_test_hilum_direction_is_outward_radial_unit_vector(self):
         for delta in ((3, 4), (-3, 4), (-3, -4), (3, -4)):
             point = (20 + delta[0], 30 + delta[1])
             np.testing.assert_allclose(outward_hilum_direction((20, 30), point), np.asarray(delta) / 5)
 
+    def test_workflow_lifecycle(self):
+        """2 related AnnotationGeometryTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_all_ids_use_area_centroids_including_disconnected_and_partial_masks)
+        self.scenario(self.check_test_hilum_direction_is_outward_radial_unit_vector)
 
+    def test_validation_and_recovery(self):
+        """1 related AnnotationGeometryTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_empty_invalid_and_degenerate_geometry)
+
+
+@functional_units
 class AnnotationCentresUiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -66,7 +79,7 @@ class AnnotationCentresUiTests(unittest.TestCase):
         self.addCleanup(window.close)
         return window, path
 
-    def test_compact_seed_selector_and_no_routine_explanatory_labels(self):
+    def check_test_compact_seed_selector_and_no_routine_explanatory_labels(self):
         from PySide6.QtWidgets import QCheckBox, QLabel, QSizePolicy
         window, _ = self.make_window()
         spin = window.instance_id_spin
@@ -90,7 +103,7 @@ class AnnotationCentresUiTests(unittest.TestCase):
                 self.assertNotIn("No coat-pattern vocabulary", label.text())
                 self.assertNotIn("Applied complete seed masks", label.text())
 
-    def test_crosshairs_follow_masks_selection_visibility_opacity_and_image_switch(self):
+    def check_test_crosshairs_follow_masks_selection_visibility_opacity_and_image_switch(self):
         window, _ = self.make_window()
         view = window.image_view
         labels = np.zeros((120, 160), np.uint16)
@@ -128,7 +141,7 @@ class AnnotationCentresUiTests(unittest.TestCase):
         self.assertEqual(markers(), [])
         self.assertEqual(view.instance_centres(), {})
 
-    def test_annotation_palette_can_extend_beyond_image_view(self):
+    def check_test_annotation_palette_can_extend_beyond_image_view(self):
         from PySide6.QtCore import QPoint
 
         window, _ = self.make_window()
@@ -164,7 +177,7 @@ class AnnotationCentresUiTests(unittest.TestCase):
         window._show_image_workspace()
         self.assertFalse(panel.isHidden())
 
-    def test_annotations_only_appear_on_deskewed_image(self):
+    def check_test_annotations_only_appear_on_deskewed_image(self):
         from PySide6.QtCore import QPointF, Qt
         from PySide6.QtTest import QTest
 
@@ -219,7 +232,7 @@ class AnnotationCentresUiTests(unittest.TestCase):
         view.render_reference_annotations_without_analysis()
         self.assertEqual(view._overlay_items, [])
 
-    def test_next_unannotated_cycles_painted_seeds_missing_condition_or_shape(self):
+    def check_test_next_unannotated_cycles_painted_seeds_missing_condition_or_shape(self):
         from seedvision.persistence.reference_regions import SeedInstanceAnnotation
         from tests.review_fixtures import dispose_window
 
@@ -259,7 +272,7 @@ class AnnotationCentresUiTests(unittest.TestCase):
         self.assertEqual(window.instance_id_spin.value(), 2)
         self.assertIn("Every painted seed", window.statusBar().currentMessage())
 
-    def test_hilum_tracks_outline_edits_undo_and_persistence(self):
+    def check_test_hilum_tracks_outline_edits_undo_and_persistence(self):
         from seedvision.persistence.reference_regions import ReferenceRegionStore
         window, image_path = self.make_window()
         key = window._current_image_key()
@@ -304,7 +317,7 @@ class AnnotationCentresUiTests(unittest.TestCase):
         finally:
             window._revert_instance_annotations()
 
-    def test_direction_is_unknown_at_centroid_and_removed_without_landmark(self):
+    def check_test_direction_is_unknown_at_centroid_and_removed_without_landmark(self):
         from seedvision.persistence.reference_regions import SeedInstanceAnnotation
         from seedvision.ui.main_window import MainWindow
         labels = np.ones((3, 3), np.uint16)
@@ -313,7 +326,7 @@ class AnnotationCentresUiTests(unittest.TestCase):
                 1: SeedInstanceAnnotation(1, hilum_point=point, hilum_direction=(1., 0.))})
             self.assertIsNone(derived[1].hilum_direction)
 
-    def test_brush_publishes_fresh_centroids_before_edit_listeners_run(self):
+    def check_test_brush_publishes_fresh_centroids_before_edit_listeners_run(self):
         from PySide6.QtCore import Qt
         from PySide6.QtTest import QTest
         from seedvision.ui.image_view import ImageView
@@ -340,7 +353,7 @@ class AnnotationCentresUiTests(unittest.TestCase):
         self.assertEqual(received[0][0], received[0][1])
         self.assertNotEqual(received[0][0][1], (50., 30.))
 
-    def test_next_empty_does_not_reuse_an_occupied_seed_at_capacity(self):
+    def check_test_next_empty_does_not_reuse_an_occupied_seed_at_capacity(self):
         window, _ = self.make_window()
         key = window._current_image_key()
         window._draft_instance_annotations[key] = np.arange(10000, dtype=np.uint16).reshape(100, 100)
@@ -348,3 +361,18 @@ class AnnotationCentresUiTests(unittest.TestCase):
         window._new_instance_annotation()
         self.assertEqual(window.instance_id_spin.value(), 5)
         self.assertIn("9,999", window.statusBar().currentMessage())
+
+    def test_workflow_lifecycle(self):
+        """8 related AnnotationCentresUiTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_compact_seed_selector_and_no_routine_explanatory_labels)
+        self.scenario(self.check_test_crosshairs_follow_masks_selection_visibility_opacity_and_image_switch)
+        self.scenario(self.check_test_annotation_palette_can_extend_beyond_image_view)
+        self.scenario(self.check_test_annotations_only_appear_on_deskewed_image)
+        self.scenario(self.check_test_hilum_tracks_outline_edits_undo_and_persistence)
+        self.scenario(self.check_test_direction_is_unknown_at_centroid_and_removed_without_landmark)
+        self.scenario(self.check_test_brush_publishes_fresh_centroids_before_edit_listeners_run)
+        self.scenario(self.check_test_next_empty_does_not_reuse_an_occupied_seed_at_capacity)
+
+    def test_validation_and_recovery(self):
+        """1 related AnnotationCentresUiTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_next_unannotated_cycles_painted_seeds_missing_condition_or_shape)

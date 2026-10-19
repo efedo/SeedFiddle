@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from tests.catalogue_fixtures import CatalogueTestCase
+
+from tests.functional_units import functional_units
+
 import os
 import tempfile
 import unittest
@@ -9,7 +13,8 @@ from types import SimpleNamespace
 import numpy as np
 
 
-class ReferenceTextureCollageTests(unittest.TestCase):
+@functional_units
+class ReferenceTextureCollageTests(CatalogueTestCase):
     @classmethod
     def setUpClass(cls) -> None:
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -19,7 +24,7 @@ class ReferenceTextureCollageTests(unittest.TestCase):
             raise unittest.SkipTest(f"PySide6 unavailable: {error}")
         cls.application = QApplication.instance() or QApplication([])
 
-    def test_edge_strip_markers_use_source_pixel_offsets_and_lengths(self) -> None:
+    def check_test_edge_strip_markers_use_source_pixel_offsets_and_lengths(self) -> None:
         from PySide6.QtCore import QRectF
 
         from seedvision.ui.image_view import _edge_strip_annotation_lines
@@ -49,7 +54,7 @@ class ReferenceTextureCollageTests(unittest.TestCase):
         self.assertEqual(clipped_sides, ())
         self.assertEqual((_centre.x1(), _centre.x2()), (0.0, 40.0))
 
-    def test_tangent_aligned_prototype_patch_rotates_edge_horizontal(self) -> None:
+    def check_test_tangent_aligned_prototype_patch_rotates_edge_horizontal(self) -> None:
         import cv2
 
         from seedvision.cuda.layers import _reference_patch
@@ -63,7 +68,7 @@ class ReferenceTextureCollageTests(unittest.TestCase):
         self.assertGreater(float(np.std(xs)), float(np.std(ys)) * 4.0)
         self.assertAlmostEqual(float(np.mean(ys)), 19.5, delta=1.5)
 
-    def test_edge_collage_marks_descriptor_lines_and_explains_context(self) -> None:
+    def check_test_edge_collage_marks_descriptor_lines_and_explains_context(self) -> None:
         from PySide6.QtGui import QColor, QImage
 
         from seedvision.ui.image_view import ImageView
@@ -149,6 +154,12 @@ class ReferenceTextureCollageTests(unittest.TestCase):
             self.application.processEvents()
             self.assertEqual(view._image_item.toolTip(), "")
             view.close()
+
+    def test_workflow_lifecycle(self):
+        """3 related ReferenceTextureCollageTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_edge_strip_markers_use_source_pixel_offsets_and_lengths)
+        self.scenario(self.check_test_tangent_aligned_prototype_patch_rotates_edge_horizontal)
+        self.scenario(self.check_test_edge_collage_marks_descriptor_lines_and_explains_context)
 
 
 if __name__ == "__main__":

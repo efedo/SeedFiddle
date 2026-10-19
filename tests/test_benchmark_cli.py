@@ -1,4 +1,6 @@
 """Single-entry CLI routing and bounded adapters; GPU producers tested separately."""
+
+from tests.functional_units import functional_units
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import replace
 from io import StringIO
@@ -16,6 +18,7 @@ from seedvision.bootstrap import BootstrapError
 from tests import test_grouped_comparison as fixtures
 
 
+@functional_units
 class BenchmarkCLITests(unittest.TestCase):
     def comparison(self, root, *, classifier=False):
         study = fixtures.manifest()
@@ -35,13 +38,13 @@ class BenchmarkCLITests(unittest.TestCase):
             'model_path': 'model.txt', 'training_path': 'training.json'}]}), encoding='utf-8')
         return path
 
-    def test_benchmark_actions_are_exclusive_with_each_other_and_learning(self):
+    def check_test_benchmark_actions_are_exclusive_with_each_other_and_learning(self):
         for args in (['--benchmark-comparison', 'x', '--benchmark-resources', 'y'],
                      ['--benchmark-resources', 'x', '--learning-audit', 'y']):
             with self.subTest(args=args), redirect_stderr(StringIO()), self.assertRaises(SystemExit):
                 launch.build_parser().parse_args(args)
 
-    def test_output_and_evidence_arguments_fail_before_runtime_bootstrap(self):
+    def check_test_output_and_evidence_arguments_fail_before_runtime_bootstrap(self):
         for args in (['--benchmark-comparison', 'x'], ['--benchmark-output', 'out'],
                      ['--benchmark-resources', 'x', '--benchmark-output', 'out', '--classifier-evidence', 'e']):
             with (self.subTest(args=args), patch.object(launch, 'load_configuration') as configuration,
@@ -49,7 +52,7 @@ class BenchmarkCLITests(unittest.TestCase):
                 self.assertEqual(launch.main(args), 2)
                 configuration.assert_not_called()
 
-    def test_bootstrap_forwarding_preserves_paths_and_benchmark_arguments(self):
+    def check_test_bootstrap_forwarding_preserves_paths_and_benchmark_arguments(self):
         original = ['--benchmark-comparison', 'inputs with space.json', '--benchmark-output', 'out with space.json',
                     '--classifier-evidence', 'evidence.json']
         args = launch.build_parser().parse_args(original)
@@ -61,7 +64,7 @@ class BenchmarkCLITests(unittest.TestCase):
         self.assertEqual(command[-len(original):], original)
         self.assertEqual(command.count(str(launch.ROOT / 'seed_vision.py')), 1)
 
-    def test_ready_runtime_dispatches_real_comparison_without_launching_desktop(self):
+    def check_test_ready_runtime_dispatches_real_comparison_without_launching_desktop(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source, plan = self.comparison(root)
@@ -76,14 +79,14 @@ class BenchmarkCLITests(unittest.TestCase):
             self.assertEqual(report['plan_sha256'], plan.plan_sha256)
             self.assertFalse(report['scientifically_validated'])
 
-    def test_adapter_errors_preserve_bootstrap_error_cause(self):
+    def check_test_adapter_errors_preserve_bootstrap_error_cause(self):
         args = launch.build_parser().parse_args(['--benchmark-resources', 'bad.json', '--benchmark-output', 'out.json'])
         original = ValueError('invalid recipe')
         with patch.object(cli, 'run_resources', side_effect=original), self.assertRaises(BootstrapError) as caught:
             launch._run_learning_action(args)
         self.assertIs(caught.exception.__cause__, original)
 
-    def test_classifier_claims_require_typed_evidence_before_publication(self):
+    def check_test_classifier_claims_require_typed_evidence_before_publication(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source, _ = self.comparison(root, classifier=True)
@@ -93,7 +96,7 @@ class BenchmarkCLITests(unittest.TestCase):
                 cli.run_comparison(source, destination)
             self.assertEqual(destination.read_bytes(), b'previous report')
 
-    def test_exact_eligible_binding_attaches_receipt_without_rewriting_plan(self):
+    def check_test_exact_eligible_binding_attaches_receipt_without_rewriting_plan(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source, plan = self.comparison(root, classifier=True)
@@ -109,7 +112,7 @@ class BenchmarkCLITests(unittest.TestCase):
             self.assertEqual(binder.call_args.kwargs['training_path'], root / 'training.json')
             self.assertEqual(binder.call_args.kwargs['training_access_ids'], plan.candidate.training_access_ids)
 
-    def test_unknown_training_or_binding_mismatch_preserves_prior_report(self):
+    def check_test_unknown_training_or_binding_mismatch_preserves_prior_report(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source, plan = self.comparison(root, classifier=True)
@@ -124,7 +127,7 @@ class BenchmarkCLITests(unittest.TestCase):
                     cli.run_comparison(source, destination, classifier_evidence=evidence)
                 self.assertEqual(destination.read_bytes(), b'old')
 
-    def test_evidence_missing_second_classifier_or_duplicate_method_rejects(self):
+    def check_test_evidence_missing_second_classifier_or_duplicate_method_rejects(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source, plan = self.comparison(root, classifier=True)
@@ -143,7 +146,7 @@ class BenchmarkCLITests(unittest.TestCase):
             with patch.dict(sys.modules, {'seedvision.benchmarking.classifier_evaluation': SimpleNamespace(bind_classifier_evaluation=binder)}), self.assertRaisesRegex(ValueError, 'duplicate'):
                 cli.run_comparison(source, root / 'out.json', classifier_evidence=evidence)
 
-    def test_resource_controls_and_relative_assets_reach_existing_producer(self):
+    def check_test_resource_controls_and_relative_assets_reach_existing_producer(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source = root / 'resource.json'
@@ -163,7 +166,7 @@ class BenchmarkCLITests(unittest.TestCase):
                 'model_asset_paths': {'asset': root / 'model.dat'}, 'correction_records': ()})
             exporter.assert_called_once_with(result, root / 'out.json')
 
-    def test_original_reference_resource_recipe_has_no_native_substitution(self):
+    def check_test_original_reference_resource_recipe_has_no_native_substitution(self):
         from seedvision.benchmarking.recipe_catalogue import build_recipe_catalogue
         recipe = next(i for i in build_recipe_catalogue().recipes if i.recipe_id == 'plantcv_seed_binary')
         with tempfile.TemporaryDirectory() as temporary:
@@ -174,7 +177,7 @@ class BenchmarkCLITests(unittest.TestCase):
                 cli.run_resources(source, root / 'out.json')
             self.assertFalse((root / 'out.json').exists())
 
-    def test_resource_malformed_controls_and_duplicate_nonfinite_config_reject(self):
+    def check_test_resource_malformed_controls_and_duplicate_nonfinite_config_reject(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source = root / 'resource.json'
@@ -190,7 +193,7 @@ class BenchmarkCLITests(unittest.TestCase):
             with patch.object(cli, 'MAX_CONFIG_BYTES', 1), self.assertRaisesRegex(ValueError, 'byte limit'):
                 cli.run_resources(source, root / 'out.json')
 
-    def test_comparison_receipt_publication_failure_is_atomic(self):
+    def check_test_comparison_receipt_publication_failure_is_atomic(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source, plan = self.comparison(root, classifier=True)
@@ -203,3 +206,22 @@ class BenchmarkCLITests(unittest.TestCase):
                 cli.run_comparison(source, destination, classifier_evidence=evidence)
             self.assertEqual(destination.read_bytes(), b'old')
             self.assertEqual(list(root.glob('*.tmp')), [])
+
+    def test_workflow_lifecycle(self):
+        """9 related BenchmarkCLITests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_benchmark_actions_are_exclusive_with_each_other_and_learning)
+        self.scenario(self.check_test_bootstrap_forwarding_preserves_paths_and_benchmark_arguments)
+        self.scenario(self.check_test_ready_runtime_dispatches_real_comparison_without_launching_desktop)
+        self.scenario(self.check_test_adapter_errors_preserve_bootstrap_error_cause)
+        self.scenario(self.check_test_classifier_claims_require_typed_evidence_before_publication)
+        self.scenario(self.check_test_exact_eligible_binding_attaches_receipt_without_rewriting_plan)
+        self.scenario(self.check_test_unknown_training_or_binding_mismatch_preserves_prior_report)
+        self.scenario(self.check_test_resource_controls_and_relative_assets_reach_existing_producer)
+        self.scenario(self.check_test_original_reference_resource_recipe_has_no_native_substitution)
+
+    def test_validation_and_recovery(self):
+        """4 related BenchmarkCLITests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_output_and_evidence_arguments_fail_before_runtime_bootstrap)
+        self.scenario(self.check_test_evidence_missing_second_classifier_or_duplicate_method_rejects)
+        self.scenario(self.check_test_resource_malformed_controls_and_duplicate_nonfinite_config_reject)
+        self.scenario(self.check_test_comparison_receipt_publication_failure_is_atomic)

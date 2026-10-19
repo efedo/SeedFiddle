@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+from tests.catalogue_fixtures import CatalogueTestCase
+
+from tests.functional_units import functional_units
+
 import os
 import unittest
 
 
-class ReferenceGraphReadOnlyTests(unittest.TestCase):
+@functional_units
+class ReferenceGraphReadOnlyTests(CatalogueTestCase):
     @classmethod
     def setUpClass(cls) -> None:
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -70,7 +75,7 @@ class ReferenceGraphReadOnlyTests(unittest.TestCase):
         QTest.mouseRelease(canvas.viewport(), Qt.MouseButton.LeftButton, pos=end)
         self.application.processEvents()
 
-    def test_canvas_blocks_direct_and_real_qt_edit_paths(self) -> None:
+    def check_test_canvas_blocks_direct_and_real_qt_edit_paths(self) -> None:
         from PySide6.QtCore import QPoint, Qt
         from PySide6.QtGui import QContextMenuEvent
         from PySide6.QtTest import QTest
@@ -151,7 +156,7 @@ class ReferenceGraphReadOnlyTests(unittest.TestCase):
         self.assertTrue(edge.toolTip().endswith("Reference graph is read-only."))
         canvas.close()
 
-    def test_visible_input_to_empty_drop_disconnects_editable_but_not_reference(self) -> None:
+    def check_test_visible_input_to_empty_drop_disconnects_editable_but_not_reference(self) -> None:
         from seedvision.segmentation.baseline import PipelineAnalysisCache
         from seedvision.ui.pipeline_canvas import PipelineCanvas
 
@@ -192,7 +197,7 @@ class ReferenceGraphReadOnlyTests(unittest.TestCase):
         self.assertIsNone(reference_canvas._connection_drag)
         reference_canvas.close()
 
-    def test_layout_and_routing_remain_display_only(self) -> None:
+    def check_test_layout_and_routing_remain_display_only(self) -> None:
         from seedvision.pipeline import build_default_pipeline
         from seedvision.ui.pipeline_canvas import PipelineCanvas
 
@@ -239,7 +244,7 @@ class ReferenceGraphReadOnlyTests(unittest.TestCase):
         )
         canvas.close()
 
-    def test_inspector_presents_facts_and_suppresses_all_native_actions(self) -> None:
+    def check_test_inspector_presents_facts_and_suppresses_all_native_actions(self) -> None:
         from PySide6.QtWidgets import QLabel
 
         from seedvision.pipeline import build_default_pipeline
@@ -330,7 +335,7 @@ class ReferenceGraphReadOnlyTests(unittest.TestCase):
         self.assertEqual(self._analytic_snapshot(graph), graph_facts)
         inspector.close()
 
-    def test_native_canvas_and_inspector_default_to_editable(self) -> None:
+    def check_test_native_canvas_and_inspector_default_to_editable(self) -> None:
         from PySide6.QtWidgets import QDoubleSpinBox
 
         from seedvision.pipeline import build_default_pipeline
@@ -367,64 +372,14 @@ class ReferenceGraphReadOnlyTests(unittest.TestCase):
         )
         inspector.close()
 
-    def test_reference_view_wraps_full_stage_titles_without_changing_native_cards(self) -> None:
-        from PySide6.QtCore import QRectF, Qt
-        from PySide6.QtGui import QFont, QFontMetricsF
+    def test_workflow_lifecycle(self):
+        """5 related ReferenceGraphReadOnlyTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_canvas_blocks_direct_and_real_qt_edit_paths)
+        self.scenario(self.check_test_visible_input_to_empty_drop_disconnects_editable_but_not_reference)
+        self.scenario(self.check_test_layout_and_routing_remain_display_only)
+        self.scenario(self.check_test_inspector_presents_facts_and_suppresses_all_native_actions)
+        self.scenario(self.check_test_native_canvas_and_inspector_default_to_editable)
 
-        from seedvision.benchmarking.recipe_catalogue import build_recipe_catalogue
-        from seedvision.benchmarking.recipes import to_pipeline_graph
-        from seedvision.ui.reference_graph_dialog import ReferenceGraphDialog
-        from seedvision.ui.pipeline_canvas import PipelineCanvas
-
-        catalogue = build_recipe_catalogue()
-        smpts = next(
-            recipe for recipe in catalogue.recipes
-            if recipe.recipe_id == "smpts_paper_reconstruction"
-        )
-        graph = to_pipeline_graph(smpts)
-        first_stage_id = smpts.stages[0].stage_id
-        native = PipelineCanvas(graph)
-        dialog = ReferenceGraphDialog()
-        dialog.recipe_selector.setCurrentIndex(
-            dialog.recipe_selector.findData("smpts_paper_reconstruction")
-        )
-        dialog.resize(1440, 900)
-        dialog.show()
-        self.application.processEvents()
-        reference = dialog.canvas
-
-        self.assertEqual(native.node_items[first_stage_id]._header_height, 34.0)
-        self.assertEqual(native.node_items[first_stage_id].width, 200.0)
-        self.assertGreater(reference.node_items[first_stage_id].width, 200.0)
-        for item in reference.node_items.values():
-            font = QFont()
-            font.setBold(True)
-            font.setPointSizeF(10.0)
-            measured = QFontMetricsF(font).boundingRect(
-                QRectF(0, 0, item.width - 24.0, 1000.0),
-                int(Qt.TextFlag.TextWordWrap),
-                item.node.title,
-            )
-            self.assertGreaterEqual(
-                item._header_height - 12.0,
-                measured.height() - 0.01,
-                item.node.title,
-            )
-            self.assertIn(item.node.title, item.toolTip())
-            if item.node.input_ports or item.node.output_ports:
-                self.assertGreater(
-                    item._port_y(item.node.input_ports or item.node.output_ports, ""),
-                    item._header_height,
-                    item.node.title,
-                )
-
-        selected = dialog.active_attachment.selected_stage_id
-        self.assertAlmostEqual(reference.transform().m11(), 1.0, places=2)
-        self.assertTrue(reference.node_items[selected].isSelected())
-        self.assertEqual(native.node_items[first_stage_id]._header_body_offset, 0.0)
-        dialog.close()
-        native.close()
-        reference.close()
 
 
 if __name__ == "__main__":

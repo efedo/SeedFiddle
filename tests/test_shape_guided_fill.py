@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.functional_units import functional_units
+
 import unittest
 from dataclasses import fields
 from inspect import signature
@@ -41,8 +43,9 @@ def _ellipse_fixture(
     return image, edge, seed_mask.astype(bool)
 
 
+@functional_units
 class ShapeGuidedFillTests(unittest.TestCase):
-    def test_shape_options_expose_only_shape_specific_growth_controls(self) -> None:
+    def check_test_shape_options_expose_only_shape_specific_growth_controls(self) -> None:
         options = ShapeGuidedFillOptions()
         field_names = {field.name for field in fields(options)}
 
@@ -73,7 +76,7 @@ class ShapeGuidedFillTests(unittest.TestCase):
             "tangent_hue", signature(shape_guided_fill_instance).parameters
         )
 
-    def test_shape_fill_delegates_growth_to_smart_fill_with_shared_options(self) -> None:
+    def check_test_shape_fill_delegates_growth_to_smart_fill_with_shared_options(self) -> None:
         image, edge, _seed = _ellipse_fixture(
             (170, 200), (98, 84), (40, 25), 23.0
         )
@@ -112,7 +115,7 @@ class ShapeGuidedFillTests(unittest.TestCase):
                 delegated_call.kwargs["extension_pressure_mask"]
             )
 
-    def test_shape_pressure_starts_inside_and_is_cut_off_outward(self) -> None:
+    def check_test_shape_pressure_starts_inside_and_is_cut_off_outward(self) -> None:
         pressure = shape_outward_extension_pressure(
             np.asarray((-40.0, 0.0, 5.0, 10.0, 10.01), np.float32),
             100.0,
@@ -124,7 +127,7 @@ class ShapeGuidedFillTests(unittest.TestCase):
             atol=1.0e-5,
         )
 
-    def test_tiny_shape_half_life_produces_a_genuinely_narrow_allowance(self) -> None:
+    def check_test_tiny_shape_half_life_produces_a_genuinely_narrow_allowance(self) -> None:
         pressure = shape_outward_extension_pressure(
             np.asarray((-1.0, -0.5, 0.0, 0.5, 1.0), np.float32),
             100.0,
@@ -141,7 +144,7 @@ class ShapeGuidedFillTests(unittest.TestCase):
             atol=1.0e-5,
         )
 
-    def test_boundary_search_can_reach_a_real_edge_deep_inside_the_prior(self) -> None:
+    def check_test_boundary_search_can_reach_a_real_edge_deep_inside_the_prior(self) -> None:
         height = width = 140
         centre = (70, 70)
         image, edge, _seed = _ellipse_fixture(
@@ -192,7 +195,7 @@ class ShapeGuidedFillTests(unittest.TestCase):
         # miss it, while the one-sided design must retain the whole interior.
         self.assertAlmostEqual(float(np.median(radii)), 14.0, delta=2.5)
 
-    def test_final_shape_mask_matches_canonical_smart_fill_at_supported_edge(self) -> None:
+    def check_test_final_shape_mask_matches_canonical_smart_fill_at_supported_edge(self) -> None:
         image, edge, _seed = _ellipse_fixture(
             (170, 200), (98, 84), (40, 25), 23.0
         )
@@ -222,7 +225,7 @@ class ShapeGuidedFillTests(unittest.TestCase):
 
         self.assertTrue(np.array_equal(guided_full, canonical_full))
 
-    def test_preferred_scale_selects_the_matching_concentric_edge(self) -> None:
+    def check_test_preferred_scale_selects_the_matching_concentric_edge(self) -> None:
         edge = np.zeros((170, 170), np.uint8)
         cv2.circle(edge, (85, 85), 30, 255, 2)
         cv2.circle(edge, (85, 85), 45, 255, 2)
@@ -248,7 +251,7 @@ class ShapeGuidedFillTests(unittest.TestCase):
         self.assertAlmostEqual(normal.axes_xy[0], 30.0, delta=3.0)
         self.assertAlmostEqual(larger.axes_xy[0], 45.0, delta=3.0)
 
-    def test_auto_search_recovers_a_rotated_ellipse(self) -> None:
+    def check_test_auto_search_recovers_a_rotated_ellipse(self) -> None:
         image, edge, _seed = _ellipse_fixture(
             (170, 190), (98, 82), (39, 21), 37.0
         )
@@ -267,7 +270,7 @@ class ShapeGuidedFillTests(unittest.TestCase):
         self.assertGreater(hypothesis.edge_coverage, 0.45)
         self.assertEqual(image.shape[:2], edge.shape)
 
-    def test_refined_boundary_follows_non_elliptical_real_edge(self) -> None:
+    def check_test_refined_boundary_follows_non_elliptical_real_edge(self) -> None:
         height, width = 190, 220
         centre = np.asarray((111.0, 92.0), np.float32)
         angles = np.linspace(0.0, 2.0 * np.pi, 160, endpoint=False)
@@ -324,7 +327,7 @@ class ShapeGuidedFillTests(unittest.TestCase):
         )
         self.assertGreater(region.edge_coverage, 0.55)
 
-    def test_empty_or_spatially_unrelated_evidence_refuses_to_paint(self) -> None:
+    def check_test_empty_or_spatially_unrelated_evidence_refuses_to_paint(self) -> None:
         image = np.full((150, 190, 3), 120, np.uint8)
         labels = np.zeros((150, 190), np.uint16)
         empty = np.zeros((150, 190), np.uint8)
@@ -350,7 +353,7 @@ class ShapeGuidedFillTests(unittest.TestCase):
         self.assertEqual(unrelated_result.added_count, 0)
         self.assertFalse(np.any(unrelated_result.mask))
 
-    def test_apply_preserves_pixels_owned_by_another_seed(self) -> None:
+    def check_test_apply_preserves_pixels_owned_by_another_seed(self) -> None:
         image, edge, _seed = _ellipse_fixture(
             (170, 200), (98, 84), (40, 25), 23.0
         )
@@ -385,7 +388,7 @@ class ShapeGuidedFillTests(unittest.TestCase):
         ] == 9
         self.assertFalse(np.any(region.mask & local_other))
 
-    def test_large_image_cost_depends_on_bounded_seed_region(self) -> None:
+    def check_test_large_image_cost_depends_on_bounded_seed_region(self) -> None:
         image, edge, _seed = _ellipse_fixture(
             (1000, 1200), (604, 497), (118, 68), 61.0
         )
@@ -405,6 +408,24 @@ class ShapeGuidedFillTests(unittest.TestCase):
         self.assertTrue(region.accepted, region.reason)
         self.assertLessEqual(max(region.mask.shape), 400)
         self.assertLess(elapsed, 1.25)
+
+    def test_workflow_lifecycle(self):
+        """10 related ShapeGuidedFillTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_shape_options_expose_only_shape_specific_growth_controls)
+        self.scenario(self.check_test_shape_fill_delegates_growth_to_smart_fill_with_shared_options)
+        self.scenario(self.check_test_shape_pressure_starts_inside_and_is_cut_off_outward)
+        self.scenario(self.check_test_tiny_shape_half_life_produces_a_genuinely_narrow_allowance)
+        self.scenario(self.check_test_final_shape_mask_matches_canonical_smart_fill_at_supported_edge)
+        self.scenario(self.check_test_preferred_scale_selects_the_matching_concentric_edge)
+        self.scenario(self.check_test_auto_search_recovers_a_rotated_ellipse)
+        self.scenario(self.check_test_empty_or_spatially_unrelated_evidence_refuses_to_paint)
+        self.scenario(self.check_test_apply_preserves_pixels_owned_by_another_seed)
+        self.scenario(self.check_test_large_image_cost_depends_on_bounded_seed_region)
+
+    def test_validation_and_recovery(self):
+        """2 related ShapeGuidedFillTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_boundary_search_can_reach_a_real_edge_deep_inside_the_prior)
+        self.scenario(self.check_test_refined_boundary_follows_non_elliptical_real_edge)
 
 
 if __name__ == "__main__":

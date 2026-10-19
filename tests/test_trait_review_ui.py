@@ -1,4 +1,6 @@
 """Actual frozen CUDA trait predictions must reach the native review widgets."""
+
+from tests.functional_units import functional_units
 import json
 import os
 from pathlib import Path
@@ -16,6 +18,7 @@ from seedvision.learning.trait_pipeline import TraitClassifierSettings, run_trai
 
 
 @unittest.skipUnless(torch.cuda.is_available(), 'Trait review integration requires CUDA')
+@functional_units
 class TraitReviewUiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -86,7 +89,7 @@ class TraitReviewUiTests(unittest.TestCase):
             self.window._review_results()
         return observed
 
-    def test_actual_mixed_predictions_definitions_and_scores_reach_review_without_refitting(self):
+    def check_test_actual_mixed_predictions_definitions_and_scores_reach_review_without_refitting(self):
         baseline = self.classify()
         confidences = [row['trait_prediction']['confidence'] for row in baseline['instances']]
         self.assertNotEqual(*confidences)
@@ -120,7 +123,7 @@ class TraitReviewUiTests(unittest.TestCase):
         self.assertEqual(stored['instances'], report['instances'])
         self.assertFalse(stored['scientifically_validated'])
 
-    def test_actual_absent_invalid_and_outside_support_abstentions_stay_explanatory(self):
+    def check_test_actual_absent_invalid_and_outside_support_abstentions_stay_explanatory(self):
         invalid = self.root / 'invalid.json'
         invalid.write_text('{}', encoding='utf-8')
         cases = [('None', 'no_frozen_model'),
@@ -142,7 +145,7 @@ class TraitReviewUiTests(unittest.TestCase):
                     self.assertIn('0 assigned, 2 abstained', observed['summary'])
                 self.assertFalse(report['scientifically_validated'])
 
-    def test_threshold_change_stales_review_preserves_probabilities_and_historical_bytes(self):
+    def check_test_threshold_change_stales_review_preserves_probabilities_and_historical_bytes(self):
         first = self.classify()
         self.assertTrue(all(not row['trait_prediction']['abstained'] for row in first['instances']))
         self.observe_dialog(lambda dialog, table: table.cellWidget(0, 1).setCurrentText('accepted'))
@@ -163,6 +166,15 @@ class TraitReviewUiTests(unittest.TestCase):
         self.assertIn(f'{2-sum(expected)} assigned, {sum(expected)} abstained', observed['summary'])
         self.assertEqual(review_path.read_bytes(), old_bytes)
         self.assertFalse(self.window._review_path(second).exists())
+
+    def test_workflow_lifecycle(self):
+        """1 related TraitReviewUiTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_actual_mixed_predictions_definitions_and_scores_reach_review_without_refitting)
+
+    def test_validation_and_recovery(self):
+        """2 related TraitReviewUiTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_actual_absent_invalid_and_outside_support_abstentions_stay_explanatory)
+        self.scenario(self.check_test_threshold_change_stales_review_preserves_probabilities_and_historical_bytes)
 
 
 if __name__ == '__main__':

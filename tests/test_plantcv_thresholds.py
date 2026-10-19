@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.functional_units import functional_units
+
 import hashlib
 import json
 from pathlib import Path
@@ -41,8 +43,9 @@ REFERENCE_ENV_READY = all(
 
 
 @unittest.skipUnless(torch.cuda.is_available(), "CUDA threshold primitives require an available CUDA device")
+@functional_units
 class PlantCVThresholdPrimitiveTests(unittest.TestCase):
-    def test_mean_certificate_covers_both_polarities_fractional_offsets_and_safe_disagreement(self):
+    def check_test_mean_certificate_covers_both_polarities_fractional_offsets_and_safe_disagreement(self):
         # One exact sum has f32 mean216 and rational/double mean217.
         sums = torch.tensor([[14_077_913]],dtype=torch.int64,device='cuda')
         for polarity,offset,source_value in (('light',1.5,215),('dark',1.5,216),
@@ -56,7 +59,7 @@ class PlantCVThresholdPrimitiveTests(unittest.TestCase):
             actual = _adaptive_mean_condition(sums,source,255,2,polarity,frame_shape=(255,255))
             self.assertEqual(bool(actual.item()),polarity=='dark')
 
-    def test_source_pin_matches_committed_registry_and_available_source_bytes(self) -> None:
+    def check_test_source_pin_matches_committed_registry_and_available_source_bytes(self) -> None:
         config = json.loads(SOURCE_CONFIG.read_text(encoding="utf-8"))
         source_record = next(
             item for item in config["files"]
@@ -70,7 +73,7 @@ class PlantCVThresholdPrimitiveTests(unittest.TestCase):
         if SOURCE_PATH.is_file():
             self.assertEqual(hashlib.sha256(SOURCE_PATH.read_bytes()).hexdigest(), PLANTCV_THRESHOLD_SOURCE_SHA256)
 
-    def test_binary_threshold_is_strict_at_the_cutoff_and_preserves_cuda_output(self) -> None:
+    def check_test_binary_threshold_is_strict_at_the_cutoff_and_preserves_cuda_output(self) -> None:
         gray = torch.tensor([[0, 127, 128, 255]], dtype=torch.uint8, device="cuda")
         light = threshold_binary(gray, 127, "light")
         dark = threshold_binary(gray, 127, "dark")
@@ -83,7 +86,7 @@ class PlantCVThresholdPrimitiveTests(unittest.TestCase):
         torch.testing.assert_close(threshold_binary(gray, 0), torch.tensor([[0, 255, 255, 255]], dtype=torch.uint8, device="cuda"))
         torch.testing.assert_close(threshold_binary(gray, 255), torch.zeros_like(gray))
 
-    def test_otsu_accepts_plateaus_and_rejects_tied_or_near_partition_scores(self) -> None:
+    def check_test_otsu_accepts_plateaus_and_rejects_tied_or_near_partition_scores(self) -> None:
         tied = [0] * 256
         tied[10] = tied[200] = 9
         self.assertEqual(_otsu_cutoff_from_histogram(tied), 10)
@@ -137,7 +140,7 @@ class PlantCVThresholdPrimitiveTests(unittest.TestCase):
         torch.testing.assert_close(threshold_otsu(zero, "light"), torch.zeros_like(zero))
         torch.testing.assert_close(threshold_otsu(zero, "dark"), torch.full_like(zero, 255))
 
-    def test_adaptive_mean_polarity_rounding_offset_and_kernel_affect_results(self) -> None:
+    def check_test_adaptive_mean_polarity_rounding_offset_and_kernel_affect_results(self) -> None:
         constant = torch.full((5, 7), 100, dtype=torch.uint8, device="cuda")
         torch.testing.assert_close(threshold_mean(constant, 3, 0.1, "light"), torch.full_like(constant, 255))
         torch.testing.assert_close(threshold_mean(constant, 3, 0.1, "dark"), torch.full_like(constant, 255))
@@ -154,7 +157,7 @@ class PlantCVThresholdPrimitiveTests(unittest.TestCase):
         self.assertEqual(small_kernel.dtype, torch.uint8)
         self.assertEqual(set(small_kernel.unique().cpu().tolist()), {0, 255})
 
-    def test_noncontiguous_and_small_edge_inputs_remain_supported(self) -> None:
+    def check_test_noncontiguous_and_small_edge_inputs_remain_supported(self) -> None:
         base = torch.tensor(
             [[0, 12, 40, 80, 120, 160, 200, 255],
              [255, 200, 160, 120, 80, 40, 12, 0],
@@ -176,7 +179,7 @@ class PlantCVThresholdPrimitiveTests(unittest.TestCase):
             self.assertEqual(actual.shape, view.shape)
             self.assertEqual(actual.device, view.device)
 
-    def test_invalid_inputs_and_unsupported_parameters_fail_explicitly(self) -> None:
+    def check_test_invalid_inputs_and_unsupported_parameters_fail_explicitly(self) -> None:
         cpu = torch.zeros((3, 4), dtype=torch.uint8)
         valid = cpu.cuda()
         with self.assertRaisesRegex(ValueError, "CUDA"):
@@ -201,8 +204,22 @@ class PlantCVThresholdPrimitiveTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "non-empty"):
             threshold_otsu(torch.empty((0, 4), dtype=torch.uint8, device="cuda"))
 
+    def test_workflow_lifecycle(self):
+        """5 related PlantCVThresholdPrimitiveTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_mean_certificate_covers_both_polarities_fractional_offsets_and_safe_disagreement)
+        self.scenario(self.check_test_source_pin_matches_committed_registry_and_available_source_bytes)
+        self.scenario(self.check_test_binary_threshold_is_strict_at_the_cutoff_and_preserves_cuda_output)
+        self.scenario(self.check_test_adaptive_mean_polarity_rounding_offset_and_kernel_affect_results)
+        self.scenario(self.check_test_noncontiguous_and_small_edge_inputs_remain_supported)
+
+    def test_validation_and_recovery(self):
+        """2 related PlantCVThresholdPrimitiveTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_otsu_accepts_plateaus_and_rejects_tied_or_near_partition_scores)
+        self.scenario(self.check_test_invalid_inputs_and_unsupported_parameters_fail_explicitly)
+
 
 @unittest.skipUnless(torch.cuda.is_available() and REFERENCE_ENV_READY, "CUDA and isolated pinned PlantCV environment are required")
+@functional_units
 class PlantCVOriginalRunnerComparisonTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -218,7 +235,7 @@ class PlantCVOriginalRunnerComparisonTests(unittest.TestCase):
         np.testing.assert_array_equal(actual.detach().cpu().numpy(), result.arrays["mask"])
         return result
 
-    def test_binary_supported_otsu_and_mean_match_the_pinned_isolated_runner(self) -> None:
+    def check_test_binary_supported_otsu_and_mean_match_the_pinned_isolated_runner(self) -> None:
         rng = np.random.default_rng(0x51EED)
         random_image = rng.integers(0, 256, size=(13, 19), dtype=np.uint8)
         edge_image = np.array(
@@ -286,7 +303,7 @@ class PlantCVOriginalRunnerComparisonTests(unittest.TestCase):
                 ),
             )
 
-    def test_original_runner_comparison_includes_noncontiguous_cuda_view(self) -> None:
+    def check_test_original_runner_comparison_includes_noncontiguous_cuda_view(self) -> None:
         image = np.array(
             [[0, 22, 44, 66, 88, 110, 132, 154, 176, 198, 220, 242],
              [255, 233, 211, 189, 167, 145, 123, 101, 79, 57, 35, 13],
@@ -304,7 +321,7 @@ class PlantCVOriginalRunnerComparisonTests(unittest.TestCase):
             lambda tensor: threshold_mean(tensor, 5, 0.25, "dark"),
         )
 
-    def test_maximum_mean_kernel_certifies_edges_and_withholds_float32_half_case(self) -> None:
+    def check_test_maximum_mean_kernel_certifies_edges_and_withholds_float32_half_case(self) -> None:
         rng = np.random.default_rng(0x255)
         image = rng.integers(0, 256, size=(768, 1024), dtype=np.uint8)
         # Place one exact 255x255 window whose integer mean is 216.500007689...
@@ -334,7 +351,7 @@ class PlantCVOriginalRunnerComparisonTests(unittest.TestCase):
         with self.assertRaises(AdaptiveMeanPrecisionError):
             threshold_mean(tensor,255,0.5,'light')
 
-    def test_scalar_mean_tail_counterexample_is_not_silently_miscomputed(self) -> None:
+    def check_test_scalar_mean_tail_counterexample_is_not_silently_miscomputed(self) -> None:
         image = np.full((255,3),255,dtype=np.uint8)
         image[0,0],image[1,0],image[127,2] = 0,254,253
         original = self.runner.run('threshold.mean',{'gray':image},
@@ -345,7 +362,7 @@ class PlantCVOriginalRunnerComparisonTests(unittest.TestCase):
             threshold_mean(tensor,255,2,'dark')
         np.testing.assert_array_equal(tensor.cpu().numpy(),image)
 
-    def test_otsu_extreme_class_imbalance_matches_default_ipp_runner(self) -> None:
+    def check_test_otsu_extreme_class_imbalance_matches_default_ipp_runner(self) -> None:
         bins = (127, 128)
         counts = (20_000_000, 1)
         image = np.concatenate(
@@ -357,6 +374,17 @@ class PlantCVOriginalRunnerComparisonTests(unittest.TestCase):
             torch.from_numpy(image).cuda(), lambda tensor: threshold_otsu(tensor, "light"),
         )
         self.assertEqual(int(np.count_nonzero(result.arrays["mask"] == 255)), image.size)
+
+    def test_workflow_lifecycle(self):
+        """4 related PlantCVOriginalRunnerComparisonTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_binary_supported_otsu_and_mean_match_the_pinned_isolated_runner)
+        self.scenario(self.check_test_original_runner_comparison_includes_noncontiguous_cuda_view)
+        self.scenario(self.check_test_scalar_mean_tail_counterexample_is_not_silently_miscomputed)
+        self.scenario(self.check_test_otsu_extreme_class_imbalance_matches_default_ipp_runner)
+
+    def test_validation_and_recovery(self):
+        """1 related PlantCVOriginalRunnerComparisonTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_maximum_mean_kernel_certifies_edges_and_withholds_float32_half_case)
 
 
 if __name__ == "__main__":

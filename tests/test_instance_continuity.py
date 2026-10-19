@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.functional_units import functional_units
+
 import unittest
 
 import numpy as np
@@ -7,8 +9,9 @@ import numpy as np
 from seedvision.annotation import summarize_instance_continuity
 
 
+@functional_units
 class InstanceContinuityTests(unittest.TestCase):
-    def test_empty_raster_has_an_empty_summary(self) -> None:
+    def check_test_empty_raster_has_an_empty_summary(self) -> None:
         summary = summarize_instance_continuity(
             np.zeros((0, 12), dtype=np.uint16)
         )
@@ -20,7 +23,7 @@ class InstanceContinuityTests(unittest.TestCase):
         self.assertEqual(summary.disconnected_identifiers, ())
         self.assertEqual(summary.component_count(9), 0)
 
-    def test_reports_exact_component_counts_for_multiple_ids(self) -> None:
+    def check_test_reports_exact_component_counts_for_multiple_ids(self) -> None:
         labels = np.zeros((14, 18), dtype=np.uint16)
         labels[1:4, 1:5] = 1
         labels[8:11, 11:15] = 1
@@ -38,7 +41,7 @@ class InstanceContinuityTests(unittest.TestCase):
         self.assertEqual(summary.disconnected, ((1, 2), (12, 3)))
         self.assertEqual(summary.disconnected_identifiers, (1, 12))
 
-    def test_diagonal_pixels_connect_only_when_their_ids_match(self) -> None:
+    def check_test_diagonal_pixels_connect_only_when_their_ids_match(self) -> None:
         # The two categorical components cross diagonally.  A single binary
         # foreground pass would merge all four pixels, while independent
         # 8-connectivity correctly gives one component for each ID.
@@ -50,7 +53,7 @@ class InstanceContinuityTests(unittest.TestCase):
         self.assertEqual(summary.component_counts, (1, 1))
         self.assertEqual(summary.disconnected, ())
 
-    def test_later_row_can_join_two_active_runs(self) -> None:
+    def check_test_later_row_can_join_two_active_runs(self) -> None:
         labels = np.array(
             [
                 [4, 4, 0, 4, 4],
@@ -63,7 +66,7 @@ class InstanceContinuityTests(unittest.TestCase):
 
         self.assertEqual(summary.component_count(4), 1)
 
-    def test_empty_row_finalizes_separate_areas(self) -> None:
+    def check_test_empty_row_finalizes_separate_areas(self) -> None:
         labels = np.array(
             [
                 [0, 9, 9, 0],
@@ -78,7 +81,7 @@ class InstanceContinuityTests(unittest.TestCase):
         self.assertEqual(summary.component_count(9), 2)
         self.assertEqual(summary.disconnected, ((9, 2),))
 
-    def test_non_contiguous_uint16_view_and_largest_id_are_supported(self) -> None:
+    def check_test_non_contiguous_uint16_view_and_largest_id_are_supported(self) -> None:
         storage = np.zeros((6, 12), dtype=np.uint16)
         labels = storage[:, ::2]
         self.assertFalse(labels.flags.c_contiguous)
@@ -91,7 +94,7 @@ class InstanceContinuityTests(unittest.TestCase):
         self.assertEqual(summary.pixel_count, 2)
         self.assertEqual(summary.component_counts, (1,))
 
-    def test_matches_independent_opencv_components_on_random_small_maps(self) -> None:
+    def check_test_matches_independent_opencv_components_on_random_small_maps(self) -> None:
         import cv2
 
         generator = np.random.default_rng(20260817)
@@ -114,7 +117,7 @@ class InstanceContinuityTests(unittest.TestCase):
                 expected,
             )
 
-    def test_rejects_non_integer_or_out_of_range_labels(self) -> None:
+    def check_test_rejects_non_integer_or_out_of_range_labels(self) -> None:
         with self.assertRaisesRegex(ValueError, "two-dimensional"):
             summarize_instance_continuity(np.zeros((2, 3, 1), dtype=np.uint16))
         with self.assertRaisesRegex(TypeError, "integer"):
@@ -123,6 +126,20 @@ class InstanceContinuityTests(unittest.TestCase):
             summarize_instance_continuity(np.array([[0, -1]], dtype=np.int32))
         with self.assertRaisesRegex(ValueError, "between 0 and 65,535"):
             summarize_instance_continuity(np.array([[65_536]], dtype=np.int32))
+
+    def test_workflow_lifecycle(self):
+        """7 related InstanceContinuityTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_empty_raster_has_an_empty_summary)
+        self.scenario(self.check_test_reports_exact_component_counts_for_multiple_ids)
+        self.scenario(self.check_test_diagonal_pixels_connect_only_when_their_ids_match)
+        self.scenario(self.check_test_later_row_can_join_two_active_runs)
+        self.scenario(self.check_test_empty_row_finalizes_separate_areas)
+        self.scenario(self.check_test_non_contiguous_uint16_view_and_largest_id_are_supported)
+        self.scenario(self.check_test_matches_independent_opencv_components_on_random_small_maps)
+
+    def test_validation_and_recovery(self):
+        """1 related InstanceContinuityTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_rejects_non_integer_or_out_of_range_labels)
 
 
 if __name__ == "__main__":

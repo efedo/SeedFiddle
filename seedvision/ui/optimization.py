@@ -249,6 +249,8 @@ class OptimizationController:
         return samples
 
     def _start_node_optimization(self, node_id=None):
+        if not self._pipeline_editing_allowed():
+            return
         if self._background_work_is_active():
             return
         if not self._project_tracking_enabled or self._current_project_path is None:
@@ -342,7 +344,7 @@ class OptimizationController:
         try:
             write_record(journal, record)
             write_record(archive, record)
-            if stale or report.cancelled or task.stop.is_set():
+            if stale or report.cancelled or task.stop.is_set() or not self._pipeline_editing_allowed():
                 self.statusBar().showMessage('Optimization discarded: cancelled or project inputs changed. History was saved.')
                 return
             rows = sorted(report.nodes, key=lambda row: row.status == 'skipped')
@@ -381,6 +383,11 @@ class OptimizationController:
                 write_record(archive, record)
                 return
             # Recheck after review: a modal dialog can still process queued events.
+            if not self._pipeline_editing_allowed():
+                record['disposition'] = 'kept original (frozen)'
+                write_record(journal, record)
+                write_record(archive, record)
+                return
             if task.annotation_snapshot != self._optimization_annotation_snapshot():
                 raise ValueError('References changed while reviewing the proposal.')
             from seedvision.optimization.runtime import verify_record_sources
@@ -467,6 +474,8 @@ class OptimizationController:
             dialog.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
             dialog.setDefaultButton(QMessageBox.StandardButton.No)
             if dialog.exec() != QMessageBox.StandardButton.Yes or record['disposition'] != 'applied':
+                return
+            if not self._pipeline_editing_allowed():
                 return
             from seedvision.optimization.registry import affected_nodes
             proposed = deepcopy(self.pipeline)

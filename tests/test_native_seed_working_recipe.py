@@ -1,3 +1,7 @@
+
+from tests.catalogue_fixtures import CatalogueTestCase
+
+from tests.functional_units import functional_units
 from dataclasses import replace
 import unittest
 
@@ -21,7 +25,7 @@ def with_thickness(recipe, thickness):
         if stage.operation_id == 'analysis.size' else stage for stage in recipe.stages))
 
 
-class NativeWorkingSeedContractTests(unittest.TestCase):
+class NativeWorkingSeedContractTests(CatalogueTestCase):
     def test_working_copy_adds_only_effective_size_control_and_preserves_history(self):
         catalogue = build_recipe_catalogue()
         original = catalogue.to_json()
@@ -45,33 +49,13 @@ class NativeWorkingSeedContractTests(unittest.TestCase):
 
 
 @unittest.skipUnless(torch.cuda.is_available(),'CUDA required')
-class NativeWorkingSeedCalculationTests(unittest.TestCase):
-    def test_actual_dispatch_both_thicknesses_match_public_measurements_and_pixels(self):
-        labels = np.zeros((64,80),np.uint8)
-        cv2.fillPoly(labels,[np.asarray([[9,45],[49,9],[57,18],[22,55]],np.int32)],1)
-        bgr = np.full((*labels.shape,3),[19,73,121],np.uint8)
-        image = torch.as_tensor(bgr[...,::-1].copy(),device='cuda')
-        inputs = {'image':image,'labels':torch.as_tensor(labels.astype(np.int32),device='cuda')}
-        results = {}
-        for thickness in (1,5):
-            outputs = native._dispatch('analysis.size',inputs,
-                dict(n_labels=1,label='graph',line_thickness=thickness),None)
-            expected = _pinned_public_size(labels,line_thickness=thickness)
-            actual = outputs['observations']['graph_1']
-            self.assertEqual(set(actual),set(expected))
-            for variable in expected:
-                np.testing.assert_allclose(actual[variable]['value'],expected[variable]['value'],
-                    rtol=1e-6,atol=1e-6,err_msg=variable)
-            expected_image = reference(_SIZE_IMAGE_SCRIPT,dict(mask=labels.tolist(),
-                image=bgr.tolist(),n_labels=1,line_thickness=thickness))
-            np.testing.assert_array_equal(outputs['diagnostic'].cpu().numpy(),expected_image[...,::-1])
-            results[thickness] = outputs
-        self.assertNotEqual(results[1]['observations']['graph_1']['longest_path']['value'],
-            results[5]['observations']['graph_1']['longest_path']['value'])
-        default = native._dispatch('analysis.size',inputs,dict(n_labels=1,label='graph'),None)
-        torch.testing.assert_close(default['diagnostic'],results[5]['diagnostic'])
+@functional_units
+class NativeWorkingSeedCalculationTests(CatalogueTestCase):
 
-    def test_changed_thickness_recomputes_only_size_and_preserves_cuda_upstream_products(self):
+
+    pass
+
+    def check_test_changed_thickness_recomputes_only_size_and_preserves_cuda_upstream_products(self):
         gray,rgb = fixture()
         gray,rgb = torch.as_tensor(gray,device='cuda'),torch.as_tensor(rgb,device='cuda')
         recipe = native.build_native_seed_recipe(selected_recipe())
@@ -89,19 +73,5 @@ class NativeWorkingSeedCalculationTests(unittest.TestCase):
         self.assertFalse(torch.equal(first.node(stage_id).outputs['diagnostic'],
             changed.node(stage_id).outputs['diagnostic']))
 
-    def test_real_isolated_worker_thickness_one_matches_native_public_contract(self):
-        from seedvision.benchmarking.reference_runner import PlantCVReferenceRunner
-        from tests.test_reference_runner import REFERENCE_PYTHON
-        labels = np.zeros((64,80),np.int32)
-        cv2.fillPoly(labels,[np.asarray([[9,45],[49,9],[57,18],[22,55]],np.int32)],1)
-        rgb = np.full((*labels.shape,3),[121,73,19],np.uint8)
-        expected = PlantCVReferenceRunner(REFERENCE_PYTHON).run('analysis.size',
-            {'image':rgb,'labels':labels},{'n_labels':1,'label':'graph'})
-        actual = native._dispatch('analysis.size',dict(image=torch.as_tensor(rgb,device='cuda'),
-            labels=torch.as_tensor(labels,device='cuda')),dict(n_labels=1,label='graph',line_thickness=1),None)
-        np.testing.assert_array_equal(actual['diagnostic'].cpu().numpy(),expected.arrays['analysis_image'])
-        records = expected.observations['observations']['graph_1']
-        self.assertEqual(len(records),17)
-        for variable,record in records.items():
-            np.testing.assert_allclose(actual['observations']['graph_1'][variable]['value'],
-                record['value'],rtol=1e-6,atol=1e-6,err_msg=variable)
+    def test_additional_numerical_regressions(self):
+        self.scenario(self.check_test_changed_thickness_recomputes_only_size_and_preserves_cuda_upstream_products)

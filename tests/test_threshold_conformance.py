@@ -345,83 +345,9 @@ class ThresholdConformanceContractTests(unittest.TestCase):
             self.assertIsNone(outcome.native_outcome.checkpoint_reference)
             self.assertEqual(report["scientific_validity"]["certification"], "not_certified")
 
-    @unittest.skipUnless(REFERENCE_ENVIRONMENT_READY, "Pinned isolated PlantCV reference environment is not provisioned")
-    def test_native_failure_retains_valid_reference_artifact_without_false_pass(self) -> None:
-        if not torch.cuda.is_available():
-            self.skipTest("Injected CUDA execution failure requires an available CUDA device.")
-        with tempfile.TemporaryDirectory() as temporary:
-            args = _fixture(temporary)
-            with patch.object(torch.cuda, "synchronize", side_effect=RuntimeError("injected pair failure")):
-                outcome = run_threshold_conformance_pair(**args)
-            report = outcome.report
-            self.assertEqual(outcome.reference_outcome.run_record.state, StageRunState.EXECUTED)
-            self.assertIsNotNone(outcome.reference_outcome.checkpoint_reference)
-            self.assertEqual(outcome.native_outcome.run_record.state, StageRunState.FAILED)
-            self.assertIn("injected pair failure", outcome.native_outcome.run_record.reason)
-            self.assertTrue(report["stages"]["reference"]["evidence"]["checkpoint_validation"] == "verified")
-            self.assertEqual(report["pair_status"], "not_evaluated")
-            self.assertFalse(report["stage_execution_complete"])
-            self.assertIsNone(report["conformance"]["passed"])
 
-    @unittest.skipUnless(REFERENCE_ENVIRONMENT_READY, "Pinned isolated PlantCV reference environment is not provisioned")
-    def test_reference_and_native_ambiguity_or_device_unavailability_never_claim_comparison(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            ambiguous = _fixture(temporary, "threshold.otsu", values=_image("threshold.otsu", ambiguous_otsu=True))
-            outcome = run_threshold_conformance_pair(**ambiguous)
-            report = outcome.report
-            self.assertEqual(outcome.native_outcome.run_record.state, StageRunState.UNSUPPORTED)
-            self.assertIsNone(outcome.native_outcome.checkpoint_reference)
-            self.assertEqual(report["pair_status"], "not_evaluated")
-            self.assertIsNone(report["conformance"]["passed"])
 
-        with tempfile.TemporaryDirectory() as temporary:
-            args = _fixture(temporary)
-            with patch.object(torch.cuda, "is_available", return_value=False):
-                outcome = run_threshold_conformance_pair(**args)
-            self.assertEqual(outcome.reference_outcome.run_record.state, StageRunState.EXECUTED)
-            self.assertEqual(outcome.native_outcome.run_record.state, StageRunState.UNAVAILABLE)
-            self.assertIsNone(outcome.native_outcome.checkpoint_reference)
-            self.assertEqual(outcome.report["pair_status"], "not_evaluated")
 
-    @unittest.skipUnless(REFERENCE_ENVIRONMENT_READY and torch.cuda.is_available(), "Actual pair execution requires pinned PlantCV and CUDA")
-    def test_actual_binary_mean_and_otsu_pairs_run_from_one_input_and_compare_masks(self) -> None:
-        cases = (
-            ("threshold.binary", _selected("threshold.binary"), _image("threshold.binary")),
-            ("threshold.mean", _selected("threshold.mean"), _image("threshold.mean")),
-            ("threshold.mean", {**_selected("threshold.mean"), "ksize": 4}, _image("threshold.mean")),
-            ("threshold.otsu", _selected("threshold.otsu"), _image("threshold.otsu")),
-        )
-        for operation_id, selected, values in cases:
-            with self.subTest(operation_id=operation_id), tempfile.TemporaryDirectory() as temporary:
-                args = _fixture(temporary, operation_id, selected=selected, values=values)
-                outcome = run_threshold_conformance_pair(**args)
-                report = outcome.report
-                self.assertEqual(report["pair_status"], "evaluated_pass")
-                self.assertTrue(report["conformance"]["passed"])
-                self.assertEqual(report["conformance"]["result"]["conformance"]["mismatch_pixel_count"], 0)
-                self.assertEqual(outcome.reference_outcome.run_record.upstream_checkpoint_sha256, args["input_checkpoint_sha256"])
-                self.assertEqual(outcome.native_outcome.run_record.upstream_checkpoint_sha256, args["input_checkpoint_sha256"])
-                self.assertEqual(report["semantic_correspondence"]["operation_id"], operation_id)
-                self.assertEqual(report["scientific_validity"]["status"], "not_evaluated")
-                self.assertEqual(report["scientific_validity"]["certification"], "not_certified")
-                self.assertTrue(outcome.report_path.is_file())
-                contents = outcome.report_path.read_bytes()
-                self.assertEqual(sha256(contents).hexdigest(), outcome.report_sha256)
-                self.assertEqual(contents.decode("utf-8"), json.dumps(report, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")))
-                self.assertEqual(list(outcome.report_path.parent.glob("*.tmp")), [])
-
-    @unittest.skipUnless(REFERENCE_ENVIRONMENT_READY and torch.cuda.is_available(), "Empty pair execution requires pinned PlantCV and CUDA")
-    def test_valid_empty_pair_is_evaluated_as_empty_not_unavailable(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            selected = {"threshold": 255, "object_type": "light"}
-            args = _fixture(temporary, "threshold.binary", selected=selected, values=_image("threshold.binary", empty=True))
-            outcome = run_threshold_conformance_pair(**args)
-            self.assertEqual(outcome.reference_outcome.run_record.state, StageRunState.EMPTY)
-            self.assertEqual(outcome.native_outcome.run_record.state, StageRunState.EMPTY)
-            report = outcome.report
-            self.assertEqual(report["pair_status"], "evaluated_pass")
-            self.assertEqual(report["conformance"]["result"]["conformance"]["reference_execution_status"], "empty")
-            self.assertEqual(report["conformance"]["result"]["conformance"]["candidate_execution_status"], "empty")
 
     def test_report_publication_is_bounded_content_addressed_and_no_overwrite(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

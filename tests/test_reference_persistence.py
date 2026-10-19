@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from tests.catalogue_fixtures import CatalogueTestCase
+
+from tests.functional_units import functional_units
+
 from tests.review_fixtures import dispose_window, install_test_frame
 
 import os
@@ -21,8 +25,9 @@ from seedvision.persistence import (
 )
 
 
-class ReferenceRegionStoreTests(unittest.TestCase):
-    def test_invalid_shape_review_names_seed_and_required_repair(self) -> None:
+@functional_units
+class ReferenceRegionStoreTests(CatalogueTestCase):
+    def check_test_invalid_shape_review_names_seed_and_required_repair(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             image_path = root / "images" / "sample.jpg"
@@ -47,7 +52,7 @@ class ReferenceRegionStoreTests(unittest.TestCase):
             self.assertIn("Pose", message)
         self.assertIn("choose explicit Outline and Pose values", message)
 
-    def test_round_trip_preserves_material_and_instance_outputs_only(self) -> None:
+    def check_test_round_trip_preserves_material_and_instance_outputs_only(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             image_path = root / "images" / "sample.jpg"
@@ -132,7 +137,7 @@ class ReferenceRegionStoreTests(unittest.TestCase):
                 self.assertIn("annotation_species", archive.files)
             self.assertEqual(tuple(destination.parent.glob("*.tmp")), ())
 
-    def test_version_two_archive_loads_with_no_semantic_seed_labels(self) -> None:
+    def check_test_version_two_archive_loads_with_no_semantic_seed_labels(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             image_path = root / "capture.png"
@@ -169,7 +174,7 @@ class ReferenceRegionStoreTests(unittest.TestCase):
             self.assertEqual(loaded.seed_annotations, ())
             self.assertEqual(loaded.annotation_species, "")
 
-    def test_semantic_labels_must_reference_extant_seed_ids(self) -> None:
+    def check_test_semantic_labels_must_reference_extant_seed_ids(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             image_path = root / "capture.png"
@@ -188,7 +193,7 @@ class ReferenceRegionStoreTests(unittest.TestCase):
                     ),
                 )
 
-    def test_selected_condition_requires_explicit_review(self) -> None:
+    def check_test_selected_condition_requires_explicit_review(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             image_path = root / "capture.png"
@@ -214,7 +219,7 @@ class ReferenceRegionStoreTests(unittest.TestCase):
                     ),
                 )
 
-    def test_version_one_boundary_layer_is_validated_but_retired(self) -> None:
+    def check_test_version_one_boundary_layer_is_validated_but_retired(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             image_path = root / "capture.png"
@@ -242,7 +247,7 @@ class ReferenceRegionStoreTests(unittest.TestCase):
             self.assertIsNone(loaded.physical_edge)
             self.assertIsNone(loaded.non_edge)
 
-    def test_changed_image_is_rejected_before_reference_rasters_are_used(self) -> None:
+    def check_test_changed_image_is_rejected_before_reference_rasters_are_used(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             image_path = root / "capture.png"
@@ -262,7 +267,7 @@ class ReferenceRegionStoreTests(unittest.TestCase):
                 raised.exception.actual_sha256,
             )
 
-    def test_invalid_categorical_archive_is_rejected(self) -> None:
+    def check_test_invalid_categorical_archive_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             image_path = root / "capture.png"
@@ -281,7 +286,7 @@ class ReferenceRegionStoreTests(unittest.TestCase):
             with self.assertRaises(InvalidReferenceArchive):
                 store.load_if_present(image_path, (4, 5))
 
-    def test_corrupt_archive_is_rejected(self) -> None:
+    def check_test_corrupt_archive_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             image_path = root / "capture.png"
@@ -294,7 +299,7 @@ class ReferenceRegionStoreTests(unittest.TestCase):
             with self.assertRaises(InvalidReferenceArchive):
                 store.load_if_present(image_path, (4, 5))
 
-    def test_invalid_archive_can_be_backed_up_and_replaced_with_empty_current_shape(self) -> None:
+    def check_test_invalid_archive_can_be_backed_up_and_replaced_with_empty_current_shape(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             image_path = root / "capture.png"
@@ -327,7 +332,7 @@ class ReferenceRegionStoreTests(unittest.TestCase):
             self.assertIsNone(loaded.other)
             self.assertIsNone(loaded.annotated_seeds)
 
-    def test_same_named_external_images_receive_distinct_paths(self) -> None:
+    def check_test_same_named_external_images_receive_distinct_paths(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "project"
             first = Path(temporary) / "one" / "capture.png"
@@ -339,8 +344,26 @@ class ReferenceRegionStoreTests(unittest.TestCase):
             store = ReferenceRegionStore(root)
             self.assertNotEqual(store.path_for(first), store.path_for(second))
 
+    def test_validation_and_recovery(self):
+        """6 related ReferenceRegionStoreTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_invalid_shape_review_names_seed_and_required_repair)
+        self.scenario(self.check_test_version_one_boundary_layer_is_validated_but_retired)
+        self.scenario(self.check_test_changed_image_is_rejected_before_reference_rasters_are_used)
+        self.scenario(self.check_test_invalid_categorical_archive_is_rejected)
+        self.scenario(self.check_test_corrupt_archive_is_rejected)
+        self.scenario(self.check_test_invalid_archive_can_be_backed_up_and_replaced_with_empty_current_shape)
 
-class ReferenceRegionMainWindowTests(unittest.TestCase):
+    def test_workflow_lifecycle(self):
+        """5 related ReferenceRegionStoreTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_round_trip_preserves_material_and_instance_outputs_only)
+        self.scenario(self.check_test_version_two_archive_loads_with_no_semantic_seed_labels)
+        self.scenario(self.check_test_semantic_labels_must_reference_extant_seed_ids)
+        self.scenario(self.check_test_selected_condition_requires_explicit_review)
+        self.scenario(self.check_test_same_named_external_images_receive_distinct_paths)
+
+
+@functional_units
+class ReferenceRegionMainWindowTests(CatalogueTestCase):
     @classmethod
     def setUpClass(cls) -> None:
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -396,7 +419,7 @@ class ReferenceRegionMainWindowTests(unittest.TestCase):
         self.assertTrue(window._reference_region_store.path_for(image_path).is_file())
         dispose_window(window)
 
-    def test_saved_snapshot_automatically_loads_as_immutable_applied_state(self) -> None:
+    def check_test_saved_snapshot_automatically_loads_as_immutable_applied_state(self) -> None:
         from seedvision.ui.main_window import MainWindow
 
         with tempfile.TemporaryDirectory() as temporary:
@@ -452,7 +475,7 @@ class ReferenceRegionMainWindowTests(unittest.TestCase):
             self.assertNotIn(key, restored._instance_annotations_dirty)
             dispose_window(restored)
 
-    def test_loose_corrected_shape_is_deferred_instead_of_rejected_against_raw_image(self) -> None:
+    def check_test_loose_corrected_shape_is_deferred_instead_of_rejected_against_raw_image(self) -> None:
         from types import SimpleNamespace
 
         from seedvision.ui.main_window import MainWindow, _path_identity
@@ -493,7 +516,7 @@ class ReferenceRegionMainWindowTests(unittest.TestCase):
             self.assertNotIn(key, window._withheld_reference_sidecars)
             dispose_window(window)
 
-    def test_genuine_loose_shape_mismatch_offers_backup_and_empty_replacement(self) -> None:
+    def check_test_genuine_loose_shape_mismatch_offers_backup_and_empty_replacement(self) -> None:
         from types import SimpleNamespace
 
         from seedvision.ui.main_window import MainWindow, _path_identity
@@ -542,7 +565,7 @@ class ReferenceRegionMainWindowTests(unittest.TestCase):
             self.assertNotIn(key, window._applied_foreground_reference_masks)
             dispose_window(window)
 
-    def test_switching_images_keeps_newer_unsaved_in_memory_applied_state(self) -> None:
+    def check_test_switching_images_keeps_newer_unsaved_in_memory_applied_state(self) -> None:
         from seedvision.ui.main_window import MainWindow
 
         with tempfile.TemporaryDirectory() as temporary:
@@ -580,7 +603,7 @@ class ReferenceRegionMainWindowTests(unittest.TestCase):
             )
             dispose_window(window)
 
-    def test_association_panel_explains_pending_corrected_seed_annotations(self) -> None:
+    def check_test_association_panel_explains_pending_corrected_seed_annotations(self) -> None:
         from seedvision.ui.main_window import MainWindow
 
         with tempfile.TemporaryDirectory() as temporary:
@@ -650,7 +673,7 @@ class ReferenceRegionMainWindowTests(unittest.TestCase):
             )
             dispose_window(window)
 
-    def test_empty_applied_snapshot_overwrites_an_older_nonempty_archive(self) -> None:
+    def check_test_empty_applied_snapshot_overwrites_an_older_nonempty_archive(self) -> None:
         from seedvision.ui.main_window import MainWindow
 
         with tempfile.TemporaryDirectory() as temporary:
@@ -692,7 +715,7 @@ class ReferenceRegionMainWindowTests(unittest.TestCase):
             self.assertIsNone(loaded.annotated_seeds)
             dispose_window(window)
 
-    def test_modified_image_warns_and_loads_no_saved_regions(self) -> None:
+    def check_test_modified_image_warns_and_loads_no_saved_regions(self) -> None:
         from seedvision.ui.main_window import MainWindow
 
         with tempfile.TemporaryDirectory() as temporary:
@@ -714,7 +737,7 @@ class ReferenceRegionMainWindowTests(unittest.TestCase):
             self.assertNotIn(key, rejected._applied_instance_annotations)
             dispose_window(rejected)
 
-    def test_dirty_draft_blocks_save_without_replacing_archive(self) -> None:
+    def check_test_dirty_draft_blocks_save_without_replacing_archive(self) -> None:
         from seedvision.ui.main_window import MainWindow
 
         with tempfile.TemporaryDirectory() as temporary:
@@ -733,7 +756,7 @@ class ReferenceRegionMainWindowTests(unittest.TestCase):
             self.assertFalse(window._reference_region_store.path_for(image_path).exists())
             dispose_window(window)
 
-    def test_applying_seed_instances_automatically_saves_and_reloads_them(self) -> None:
+    def check_test_applying_seed_instances_automatically_saves_and_reloads_them(self) -> None:
         from seedvision.ui.main_window import MainWindow
 
         with tempfile.TemporaryDirectory() as temporary:
@@ -782,7 +805,7 @@ class ReferenceRegionMainWindowTests(unittest.TestCase):
             )
             dispose_window(restored)
 
-    def test_seed_instance_autosave_failure_warns_but_keeps_applied_state(self) -> None:
+    def check_test_seed_instance_autosave_failure_warns_but_keeps_applied_state(self) -> None:
         from seedvision.ui.main_window import MainWindow
 
         with tempfile.TemporaryDirectory() as temporary:
@@ -826,6 +849,22 @@ class ReferenceRegionMainWindowTests(unittest.TestCase):
                 window._reference_region_store.path_for(image_path).exists()
             )
             dispose_window(window)
+
+    def test_workflow_lifecycle(self):
+        """8 related ReferenceRegionMainWindowTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_saved_snapshot_automatically_loads_as_immutable_applied_state)
+        self.scenario(self.check_test_genuine_loose_shape_mismatch_offers_backup_and_empty_replacement)
+        self.scenario(self.check_test_switching_images_keeps_newer_unsaved_in_memory_applied_state)
+        self.scenario(self.check_test_association_panel_explains_pending_corrected_seed_annotations)
+        self.scenario(self.check_test_empty_applied_snapshot_overwrites_an_older_nonempty_archive)
+        self.scenario(self.check_test_modified_image_warns_and_loads_no_saved_regions)
+        self.scenario(self.check_test_dirty_draft_blocks_save_without_replacing_archive)
+        self.scenario(self.check_test_applying_seed_instances_automatically_saves_and_reloads_them)
+
+    def test_validation_and_recovery(self):
+        """2 related ReferenceRegionMainWindowTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_loose_corrected_shape_is_deferred_instead_of_rejected_against_raw_image)
+        self.scenario(self.check_test_seed_instance_autosave_failure_warns_but_keeps_applied_state)
 
 
 if __name__ == "__main__":

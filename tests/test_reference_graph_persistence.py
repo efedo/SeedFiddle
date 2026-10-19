@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from tests.catalogue_fixtures import CatalogueTestCase
+
+from tests.functional_units import functional_units
+
 from dataclasses import replace
 import json
 from pathlib import Path
@@ -119,8 +123,9 @@ def _attachment(*, recipe: RecipeSpec | None = None) -> ReferenceGraphAttachment
     )
 
 
-class ReferenceGraphPersistenceTests(unittest.TestCase):
-    def test_attachment_round_trip_retains_recipe_run_and_display_state(self) -> None:
+@functional_units
+class ReferenceGraphPersistenceTests(CatalogueTestCase):
+    def check_test_attachment_round_trip_retains_recipe_run_and_display_state(self) -> None:
         attachment = _attachment()
         restored = ReferenceGraphAttachment.from_dict(attachment.to_dict())
 
@@ -139,7 +144,7 @@ class ReferenceGraphPersistenceTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             restored.recipe.provenance.environment_versions["python"] = "altered"
 
-    def test_attachment_rejects_missing_extra_duplicate_and_stale_stage_runs(self) -> None:
+    def check_test_attachment_rejects_missing_extra_duplicate_and_stale_stage_runs(self) -> None:
         attachment = _attachment()
         run = attachment.stage_runs[0]
         with self.assertRaisesRegex(ReferenceGraphPersistenceError, "exactly one"):
@@ -157,7 +162,7 @@ class ReferenceGraphPersistenceTests(unittest.TestCase):
         with self.assertRaisesRegex(ReferenceGraphPersistenceError, "must be Boolean"):
             replace(attachment, bundle_cables=1)
 
-    def test_payload_rejects_unknown_fields_false_availability_and_duplicate_graphs(self) -> None:
+    def check_test_payload_rejects_unknown_fields_false_availability_and_duplicate_graphs(self) -> None:
         payload = _attachment().to_dict()
         original_payload = json.loads(json.dumps(payload))
         self.assertEqual(ReferenceGraphAttachment.from_dict(payload), _attachment())
@@ -184,7 +189,7 @@ class ReferenceGraphPersistenceTests(unittest.TestCase):
         with self.assertRaisesRegex(ReferenceGraphPersistenceError, "supports at most"):
             ReferenceGraphAttachment.from_dict(excessive_stages)
 
-    def test_constructor_save_and_load_share_the_same_count_and_byte_limits(self) -> None:
+    def check_test_constructor_save_and_load_share_the_same_count_and_byte_limits(self) -> None:
         attachment = _attachment()
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "workspace"
@@ -232,7 +237,7 @@ class ReferenceGraphPersistenceTests(unittest.TestCase):
                     store.load(existing_project)
             self.assertFalse(never_written.exists())
 
-    def test_malformed_recipe_enum_is_normalized_at_project_boundary(self) -> None:
+    def check_test_malformed_recipe_enum_is_normalized_at_project_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "workspace"
             store = ProjectAnalysisStore(root)
@@ -249,7 +254,7 @@ class ReferenceGraphPersistenceTests(unittest.TestCase):
             with self.assertRaisesRegex(InvalidProjectAnalysis, "reference graph metadata"):
                 store.load(project)
 
-    def test_aggregate_graph_metadata_size_is_bounded(self) -> None:
+    def check_test_aggregate_graph_metadata_size_is_bounded(self) -> None:
         description = "x" * 1_700_000
         attachments = tuple(
             _attachment(recipe=_recipe(recipe_id=f"graph_{index}", description=description))
@@ -258,7 +263,7 @@ class ReferenceGraphPersistenceTests(unittest.TestCase):
         with self.assertRaisesRegex(ReferenceGraphPersistenceError, "aggregate limit"):
             validate_reference_graphs(attachments)
 
-    def test_project_and_snapshot_round_trip_graph_metadata_without_checkpoint_arrays(self) -> None:
+    def check_test_project_and_snapshot_round_trip_graph_metadata_without_checkpoint_arrays(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "workspace"
             image = root / "images" / "capture.png"
@@ -296,6 +301,19 @@ class ReferenceGraphPersistenceTests(unittest.TestCase):
             master.write_bytes(master.read_bytes() + b" ")
             with self.assertRaisesRegex(ValueError, "Snapshot verification failed"):
                 restore_snapshot(snapshot, root)
+
+    def test_workflow_lifecycle(self):
+        """3 related ReferenceGraphPersistenceTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_attachment_round_trip_retains_recipe_run_and_display_state)
+        self.scenario(self.check_test_aggregate_graph_metadata_size_is_bounded)
+        self.scenario(self.check_test_project_and_snapshot_round_trip_graph_metadata_without_checkpoint_arrays)
+
+    def test_validation_and_recovery(self):
+        """4 related ReferenceGraphPersistenceTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_attachment_rejects_missing_extra_duplicate_and_stale_stage_runs)
+        self.scenario(self.check_test_payload_rejects_unknown_fields_false_availability_and_duplicate_graphs)
+        self.scenario(self.check_test_constructor_save_and_load_share_the_same_count_and_byte_limits)
+        self.scenario(self.check_test_malformed_recipe_enum_is_normalized_at_project_boundary)
 
 
 if __name__ == "__main__":

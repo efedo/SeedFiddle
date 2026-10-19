@@ -1,4 +1,6 @@
 """Finite actual public-chain acceptance; expected artifacts are never refreshed."""
+
+from tests.catalogue_fixtures import CatalogueTestCase
 from dataclasses import dataclass, replace
 from hashlib import sha256
 import inspect
@@ -248,7 +250,7 @@ def read_baseline(path=BASELINE):
     return record
 
 
-class PublicSeedAcceptanceInventoryTests(unittest.TestCase):
+class PublicSeedAcceptanceInventoryTests(CatalogueTestCase):
     def test_frozen_case_inventory_source_recipe_and_outcome_claims(self):
         record = read_baseline()
         self.assertEqual(record["case_count"], 8)

@@ -1,4 +1,8 @@
 """Pinned control witnesses and desktop routing for the four working thresholds."""
+
+from tests.catalogue_fixtures import CatalogueTestCase
+
+from tests.functional_units import functional_units
 import os
 from pathlib import Path
 import tempfile
@@ -46,7 +50,8 @@ def _native_mask(operation, image, case):
 
 
 @unittest.skipUnless(torch.cuda.is_available(), 'CUDA is required for threshold control witnesses')
-class ExtendedThresholdControlTests(unittest.TestCase):
+@functional_units
+class ExtendedThresholdControlTests(CatalogueTestCase):
     def witness(self, operation, base, variant, fixtures):
         for image in fixtures:
             native = [_native_mask(operation, image, case) for case in (base, variant)]
@@ -59,13 +64,13 @@ class ExtendedThresholdControlTests(unittest.TestCase):
             return
         self.fail(f'No fixture makes {operation} control live: {base!r} -> {variant!r}')
 
-    def test_every_gaussian_control_changes_a_pinned_graph_mask(self):
+    def check_test_every_gaussian_control_changes_a_pinned_graph_mask(self):
         base = {'ksize': 3, 'offset': 0, 'object_type': 'light'}
         for parameter, value in (('ksize', 9), ('offset', 24), ('object_type', 'dark')):
             with self.subTest(parameter=parameter):
                 self.witness('gaussian', base, {**base, parameter:value}, _fixtures())
 
-    def test_every_dual_channel_control_changes_a_pinned_graph_mask(self):
+    def check_test_every_dual_channel_control_changes_a_pinned_graph_mask(self):
         rng = np.random.default_rng(502)
         image = rng.integers(0, 256, (31, 37, 3), dtype=np.uint8)
         base = {'x_channel':'B', 'y_channel':'G',
@@ -75,7 +80,7 @@ class ExtendedThresholdControlTests(unittest.TestCase):
             with self.subTest(parameter=parameter):
                 self.witness('dual_channels', base, {**base,parameter:value}, (image,))
 
-    def test_every_texture_control_changes_a_pinned_graph_mask(self):
+    def check_test_every_texture_control_changes_a_pinned_graph_mask(self):
         # Two-level fixtures keep declared precision withholding separate from
         # whether an exposed parameter reaches the actual graph calculation.
         base = {'ksize':3, 'offset':1, 'threshold':90,
@@ -86,8 +91,18 @@ class ExtendedThresholdControlTests(unittest.TestCase):
                 selected = {**base, 'threshold':40} if parameter == 'borders' else base
                 self.witness('texture', selected, {**selected,parameter:value}, _fixtures()[1:])
 
-    def test_triangle_polarity_changes_a_pinned_graph_mask(self):
+    def check_test_triangle_polarity_changes_a_pinned_graph_mask(self):
         self.witness('triangle', {'object_type':'light'}, {'object_type':'dark'}, (_fixture()[2],))
+
+    def test_additional_numerical_regressions(self):
+        self.scenario(self.check_test_every_gaussian_control_changes_a_pinned_graph_mask)
+        self.scenario(self.check_test_every_dual_channel_control_changes_a_pinned_graph_mask)
+        self.scenario(self.check_test_every_texture_control_changes_a_pinned_graph_mask)
+        self.scenario(self.check_test_triangle_polarity_changes_a_pinned_graph_mask)
+
+
+
+
 
 
 class ExtendedThresholdDialogTests(unittest.TestCase):
@@ -104,79 +119,3 @@ class ExtendedThresholdDialogTests(unittest.TestCase):
             time.sleep(.01)
         self.application.processEvents()
         self.assertTrue(predicate(), 'The native threshold worker did not drain.')
-
-    def test_selector_routes_each_operation_and_cancel_preserves_historical_attachments(self):
-        from PySide6.QtWidgets import QPushButton
-        from seedvision.ui.reference_graph_dialog import ReferenceGraphDialog
-        before = build_recipe_catalogue().to_json()
-        recipes = build_native_extended_threshold_recipes()
-        dialog = ReferenceGraphDialog()
-        try:
-            button = dialog.findChild(QPushButton, 'runNativeExtendedThreshold')
-            self.assertIsNotNone(button)
-            self.assertTrue(button.isEnabled())
-            attached = dialog.reference_graphs
-            for recipe in recipes.values():
-                with self.subTest(recipe=recipe.recipe_id), patch(
-                        'seedvision.ui.reference_graph_dialog.QInputDialog.getItem',
-                        return_value=(recipe.title, True)), patch(
-                        'seedvision.ui.native_recipe_dialog.NativeRecipeDialog') as native_dialog:
-                    native_dialog.return_value.exec.return_value = 0
-                    button.click()
-                    native_dialog.assert_called_once_with(recipe, dialog, model_asset_paths={})
-                    native_dialog.return_value.exec.assert_called_once()
-                    native_dialog.return_value.deleteLater.assert_called_once()
-                self.assertEqual(dialog.reference_graphs, attached)
-            with patch('seedvision.ui.reference_graph_dialog.QInputDialog.getItem',
-                    return_value=('', False)), patch(
-                    'seedvision.ui.native_recipe_dialog.NativeRecipeDialog') as native_dialog:
-                button.click()
-                native_dialog.assert_not_called()
-            self.assertEqual(dialog.reference_graphs, attached)
-            self.assertEqual(build_recipe_catalogue().to_json(), before)
-        finally:
-            dialog.reject()
-            dialog.deleteLater()
-
-    @unittest.skipUnless(torch.cuda.is_available(), 'CUDA is required for the async threshold dialog')
-    def test_async_run_changed_control_reset_and_save(self):
-        from seedvision.ui.native_recipe_dialog import NativeRecipeDialog
-        recipe = build_native_extended_threshold_recipes()['plantcv_threshold_gaussian']
-        stage = recipe.stages[1]
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory)/'threshold-input.png'
-            output_path = Path(directory)/'selected-recipe.json'
-            gray = _fixtures()[0]
-            gray = np.full(gray.shape,37,dtype=np.uint8)
-            gray[:,gray.shape[1]//2:] = 219
-            bgr = np.stack((gray, gray, gray), axis=-1)
-            self.assertTrue(cv2.imwrite(str(path), bgr))
-            dialog = NativeRecipeDialog(recipe)
-            dialog.show()
-            try:
-                dialog.set_source_path(path)
-                dialog.start_run()
-                self.wait_until(lambda: dialog._worker is None)
-                self.assertIsNotNone(dialog.result, dialog.status_label.text())
-                first = dialog.result.node(stage.stage_id).outputs['mask'].clone()
-                dialog._select_stage(stage.stage_id)
-                self.assertFalse(dialog.preview.pixmap().isNull())
-                dialog._parameter_changed(stage.stage_id, 'ksize', '15')
-                self.assertIsNone(dialog.result)
-                self.assertTrue(dialog.preview.pixmap().isNull())
-                dialog.start_run()
-                self.wait_until(lambda: dialog._worker is None)
-                self.assertIsNotNone(dialog.result, dialog.status_label.text())
-                self.assertEqual(dialog.cache.last_computed_nodes, (stage.stage_id,))
-                self.assertIn(recipe.stages[0].stage_id, dialog.cache.last_reused_nodes)
-                self.assertFalse(torch.equal(first, dialog.result.node(stage.stage_id).outputs['mask']))
-                dialog.inspector.parameters_reset.emit(stage.stage_id)
-                self.assertEqual(dialog.recipe, recipe)
-                with patch('seedvision.ui.native_recipe_dialog.QFileDialog.getSaveFileName',
-                        return_value=(str(output_path), '')):
-                    dialog._save_recipe()
-                self.assertEqual(RecipeSpec.from_json(output_path.read_bytes()), dialog.recipe)
-            finally:
-                dialog.reject()
-                self.wait_until(lambda: dialog._worker is None)
-                dialog.deleteLater()

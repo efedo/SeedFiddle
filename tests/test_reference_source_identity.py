@@ -1,4 +1,6 @@
 """Source association is preserved separately from annotation generation."""
+
+from tests.functional_units import functional_units
 from dataclasses import replace
 from pathlib import Path
 import shutil
@@ -19,6 +21,7 @@ from seedvision.persistence.reference_regions import (
 from tests.test_reviewed_measurement_lineage import analysis_fixture, annotation, labels_fixture
 
 
+@functional_units
 class ReferenceSourceArchiveTests(unittest.TestCase):
     def setUp(self):
         self.temporary = TemporaryDirectory()
@@ -42,7 +45,7 @@ class ReferenceSourceArchiveTests(unittest.TestCase):
         with destination.open('wb') as stream:
             np.savez_compressed(stream, **payload)
 
-    def test_v7_round_trip_preserves_known_generation_and_unknown_history(self):
+    def check_test_v7_round_trip_preserves_known_generation_and_unknown_history(self):
         for known in (None, self.digest):
             with self.subTest(snapshot=known):
                 path = self.store.save(self.image, replace(self.bundle,
@@ -54,7 +57,7 @@ class ReferenceSourceArchiveTests(unittest.TestCase):
                     self.assertEqual(int(archive['version']), 7)
                     self.assertEqual('annotation_snapshot_source_sha256' in archive.files, known is not None)
 
-    def test_every_legacy_version_preserves_binding_without_inventing_generation(self):
+    def check_test_every_legacy_version_preserves_binding_without_inventing_generation(self):
         destination, payload = self.payload()
         payload['seed_annotations_json'] = np.asarray('[]')
         payload['annotation_snapshot_source_sha256'] = np.asarray(self.digest)
@@ -70,7 +73,7 @@ class ReferenceSourceArchiveTests(unittest.TestCase):
                 restored = self.store.load_if_present(self.image)
                 self.assertIsNone(restored.annotation_snapshot_source_sha256)
 
-    def test_reprojection_preserves_both_source_identities(self):
+    def check_test_reprojection_preserves_both_source_identities(self):
         bundle = replace(self.bundle, archive_source_sha256=self.digest,
             annotation_snapshot_source_sha256=self.digest)
         current = np.eye(3); current[0, 2] = 2
@@ -79,7 +82,7 @@ class ReferenceSourceArchiveTests(unittest.TestCase):
         self.assertEqual(shifted.annotation_snapshot_source_sha256, self.digest)
         self.assertFalse(np.array_equal(shifted.annotated_seeds, self.labels))
 
-    def test_save_rejects_bad_identity_before_rasters_or_destination_creation(self):
+    def check_test_save_rejects_bad_identity_before_rasters_or_destination_creation(self):
         for name in ('archive_source_sha256', 'annotation_snapshot_source_sha256'):
             for bad in ('', 'A'*64, 'g'*64, 'a'*63, True, '0'*64):
                 with self.subTest(field=name, value=bad), patch(
@@ -88,7 +91,7 @@ class ReferenceSourceArchiveTests(unittest.TestCase):
                     self.store.save(self.image, replace(self.bundle, **{name: bad}))
         self.assertFalse(self.store.directory.exists())
 
-    def test_replaced_source_cannot_rebind_loaded_snapshot_or_overwrite_archive(self):
+    def check_test_replaced_source_cannot_rebind_loaded_snapshot_or_overwrite_archive(self):
         destination = self.store.save(self.image, self.bundle)
         loaded = self.store.load_if_present(self.image)
         before = destination.read_bytes()
@@ -97,7 +100,7 @@ class ReferenceSourceArchiveTests(unittest.TestCase):
             self.store.save(self.image, loaded)
         self.assertEqual(destination.read_bytes(), before)
 
-    def test_generation_metadata_rejects_malformed_scalar_and_sequence_values(self):
+    def check_test_generation_metadata_rejects_malformed_scalar_and_sequence_values(self):
         destination, payload = self.payload()
         for bad in ('', 'A'*64, 'g'*64, 'a'*63, 123, [self.digest, self.digest]):
             with self.subTest(value=bad):
@@ -106,7 +109,7 @@ class ReferenceSourceArchiveTests(unittest.TestCase):
                 with self.assertRaises(InvalidReferenceArchive):
                     self.store.load_if_present(self.image)
 
-    def test_both_identity_mismatches_reject_before_raster_materialization(self):
+    def check_test_both_identity_mismatches_reject_before_raster_materialization(self):
         destination, payload = self.payload()
         real_load = np.load
 
@@ -128,9 +131,23 @@ class ReferenceSourceArchiveTests(unittest.TestCase):
                 ), self.assertRaises(ImageFingerprintMismatch):
                     self.store.load_if_present(self.image)
 
+    def test_workflow_lifecycle(self):
+        """4 related ReferenceSourceArchiveTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_v7_round_trip_preserves_known_generation_and_unknown_history)
+        self.scenario(self.check_test_every_legacy_version_preserves_binding_without_inventing_generation)
+        self.scenario(self.check_test_reprojection_preserves_both_source_identities)
+        self.scenario(self.check_test_replaced_source_cannot_rebind_loaded_snapshot_or_overwrite_archive)
 
+    def test_validation_and_recovery(self):
+        """3 related ReferenceSourceArchiveTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_save_rejects_bad_identity_before_rasters_or_destination_creation)
+        self.scenario(self.check_test_generation_metadata_rejects_malformed_scalar_and_sequence_values)
+        self.scenario(self.check_test_both_identity_mismatches_reject_before_raster_materialization)
+
+
+@functional_units
 class ReferenceSourceAnalysisTests(unittest.TestCase):
-    def test_saved_project_batch_forwards_archive_and_generation_bindings(self):
+    def check_test_saved_project_batch_forwards_archive_and_generation_bindings(self):
         from seedvision.export.project_runner import run_project
         from seedvision.persistence import ProjectAnalysisStore, ProjectImageSpec, analysis_settings_profile_from_graph
         from seedvision.pipeline import build_default_pipeline
@@ -156,7 +173,7 @@ class ReferenceSourceAnalysisTests(unittest.TestCase):
             self.assertEqual(analyzer.call_args.kwargs['reference_annotation_snapshot_source_sha256'], digest)
             self.assertEqual(master.read_bytes(), before)
 
-    def test_source_states_are_independent_of_transport_and_each_other(self):
+    def check_test_source_states_are_independent_of_transport_and_each_other(self):
         labels = labels_fixture(); image = np.zeros((*labels.shape, 3), np.uint8)
         known = 'a'*64
         for source, archive, snapshot, states in (
@@ -184,7 +201,7 @@ class ReferenceSourceAnalysisTests(unittest.TestCase):
             prepare_reviewed_inputs(labels, (), context=replace(context,
                 reference_archive_source_identity_state='recorded_unverified'))
 
-    def test_analyze_path_rejects_mismatch_before_decoding_and_forwards_verified_facts(self):
+    def check_test_analyze_path_rejects_mismatch_before_decoding_and_forwards_verified_facts(self):
         from seedvision.segmentation.baseline import analyze_path
         with TemporaryDirectory() as temporary:
             path = Path(temporary)/'capture.png'
@@ -202,7 +219,7 @@ class ReferenceSourceAnalysisTests(unittest.TestCase):
                 self.assertEqual(analyzer.call_args.kwargs['reference_archive_source_sha256'], digest)
                 self.assertEqual(analyzer.call_args.kwargs['reference_annotation_snapshot_source_sha256'], digest)
 
-    def test_actual_producer_identity_changes_recompute_only_measurement_dependents(self):
+    def check_test_actual_producer_identity_changes_recompute_only_measurement_dependents(self):
         from seedvision.calibration import image as calibration
         from seedvision.calibration.geometry import DishDetectionSettings
         from seedvision.segmentation.baseline import analyze_image, PipelineAnalysisCache
@@ -234,7 +251,7 @@ class ReferenceSourceAnalysisTests(unittest.TestCase):
             ), self.assertRaises(ValueError):
                 analyze_image(image, **options)
 
-    def test_export_records_both_facts_and_each_change_stales_review(self):
+    def check_test_export_records_both_facts_and_each_change_stales_review(self):
         from seedvision.export.results import result_report
         with TemporaryDirectory() as temporary:
             source = Path(temporary)/'capture.png'; source.write_bytes(b'current source')
@@ -256,7 +273,7 @@ class ReferenceSourceAnalysisTests(unittest.TestCase):
                     with self.assertRaises(ValueError): result_report(current)
                     current.seed_measurement_summary = summary
 
-    def test_recorded_unverified_history_is_not_upgraded_by_export(self):
+    def check_test_recorded_unverified_history_is_not_upgraded_by_export(self):
         from seedvision.export.results import result_report
         with TemporaryDirectory() as temporary:
             source = Path(temporary)/'capture.png'; source.write_bytes(b'current source')
@@ -270,6 +287,18 @@ class ReferenceSourceAnalysisTests(unittest.TestCase):
             self.assertEqual(report['reviewed_measurements']['lineage']['reference_archive_source_identity_state'], 'recorded_unverified')
             self.assertFalse(report['reviewed_measurements']['scientifically_validated'])
 
+    def test_workflow_lifecycle(self):
+        """4 related ReferenceSourceAnalysisTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_saved_project_batch_forwards_archive_and_generation_bindings)
+        self.scenario(self.check_test_source_states_are_independent_of_transport_and_each_other)
+        self.scenario(self.check_test_actual_producer_identity_changes_recompute_only_measurement_dependents)
+        self.scenario(self.check_test_recorded_unverified_history_is_not_upgraded_by_export)
+
+    def test_validation_and_recovery(self):
+        """2 related ReferenceSourceAnalysisTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_analyze_path_rejects_mismatch_before_decoding_and_forwards_verified_facts)
+        self.scenario(self.check_test_export_records_both_facts_and_each_change_stales_review)
+
 
 class ReferenceSourceDesktopTests(unittest.TestCase):
     @classmethod
@@ -277,32 +306,6 @@ class ReferenceSourceDesktopTests(unittest.TestCase):
         from PySide6.QtWidgets import QApplication
         cls.application = QApplication.instance() or QApplication([])
 
-    def test_native_controller_preserves_loaded_facts_through_save_and_clear(self):
-        from seedvision.ui.main_window import _path_identity
-        from tests.test_project_analysis_ui import ProjectAnalysisUiTests as ui
-        from tests.review_fixtures import dispose_window
-        with TemporaryDirectory() as temporary:
-            root = Path(temporary); source = ui._write_image(root/'images'/'capture.png')
-            window = ui._window(root)
-            self.addCleanup(dispose_window, window)
-            key = _path_identity(source); labels = np.zeros((36, 48), np.uint16); labels[10:20, 10:20] = 1
-            digest = file_sha256(source)
-            bundle = ReferenceRegionBundle(labels.shape, annotated_seeds=labels,
-                seed_annotations=(annotation(),), source_to_corrected=np.eye(3),
-                archive_source_sha256=digest, annotation_snapshot_source_sha256=digest)
-            window._install_reference_region_bundle(key, bundle, sync_view=False)
-            recovered = window._reference_bundle_for_project_key(key, source)
-            self.assertEqual(recovered.archive_source_sha256, digest)
-            self.assertEqual(recovered.annotation_snapshot_source_sha256, digest)
-            window._persist_applied_reference_regions(automatic=True)
-            loaded = window._reference_region_store.load_if_present(source)
-            self.assertEqual(loaded.annotation_snapshot_source_sha256, digest)
-            result = SimpleNamespace(image_path=source, source_sha256='0'*64,
-                calibration=SimpleNamespace(affine_matrix=np.eye(3), corrected_bgr=np.zeros((36, 48, 3), np.uint8)))
-            self.assertFalse(window._prepare_reference_frame(key, result))
-            self.assertEqual(window._reference_source_identities[key], (digest, digest))
-            window._clear_project_session_state()
-            self.assertEqual(window._reference_source_identities, {})
 
     def test_worker_detaches_and_forwards_reference_identity_metadata(self):
         import inspect

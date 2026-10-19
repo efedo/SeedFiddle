@@ -1,4 +1,6 @@
 """Value descriptions preserve calculation facts without inventing lineage."""
+
+from tests.functional_units import functional_units
 from dataclasses import FrozenInstanceError, asdict, replace
 import json
 import unittest
@@ -20,8 +22,9 @@ def mask():
     return value
 
 
+@functional_units
 class MeasurementDescriptionTests(unittest.TestCase):
-    def test_vector_descriptions_bind_current_values_definitions_and_uncertainties(self):
+    def check_test_vector_descriptions_bind_current_values_definitions_and_uncertainties(self):
         item = g.measure_shape_mask(mask(), perturbation_radii=(0, 1, -2, 2),
                                     calibration_relative_uncertainty=.02)
         records = item.described_values
@@ -36,7 +39,7 @@ class MeasurementDescriptionTests(unittest.TestCase):
         self.assertTrue(all(r.source_image_frame == 'unknown' and r.visibility == 'unknown' for r in records))
         json.dumps([asdict(r) for r in records], allow_nan=False)
 
-    def test_scaling_preserves_pixel_coordinates_and_dimensionless_units(self):
+    def check_test_scaling_preserves_pixel_coordinates_and_dimensionless_units(self):
         pixels = g.measure_shape_mask(mask())
         scaled = g._scale_shape_measurement(pixels, 2.5)
         self.assertEqual(scaled.provenance.pixels_per_mm, 2.5)
@@ -58,7 +61,7 @@ class MeasurementDescriptionTests(unittest.TestCase):
             self.assertEqual(mm[name].coordinate_frame, 'input_mask_pixel_xy')
             self.assertEqual(mm[name].unit, 'px')
 
-    def test_legacy_bundle_has_unknown_definitions_and_keeps_supplied_errors(self):
+    def check_test_legacy_bundle_has_unknown_definitions_and_keeps_supplied_errors(self):
         current = g.measure_shape_mask(mask())
         legacy = replace(current, provenance=None)
         self.assertEqual(legacy.vector(), current.vector())
@@ -72,7 +75,7 @@ class MeasurementDescriptionTests(unittest.TestCase):
                          legacy.measurement_uncertainty)
         self.assertIsNone(g._scale_shape_measurement(legacy, 2).provenance)
 
-    def test_no_boundary_alternatives_withhold_sensitivity_instead_of_claiming_zero(self):
+    def check_test_no_boundary_alternatives_withhold_sensitivity_instead_of_claiming_zero(self):
         item = g.measure_shape_mask(mask(), perturbation_radii=())
         self.assertEqual(item.provenance.boundary_alternative_count, 0)
         self.assertEqual(item.provenance.perturbation_radii_px, ())
@@ -85,7 +88,7 @@ class MeasurementDescriptionTests(unittest.TestCase):
         self.assertEqual(records['ellipse.orientation_degrees'].uncertainty.semantics,
                          'heuristic_axis_ratio_dependent_degrees')
 
-    def test_no_successful_alternative_is_recorded_without_inventing_a_bound(self):
+    def check_test_no_successful_alternative_is_recorded_without_inventing_a_bound(self):
         original = g._shape_from_contour
         calls = 0
         def fail_alternatives(*args, **kwargs):
@@ -100,7 +103,7 @@ class MeasurementDescriptionTests(unittest.TestCase):
         self.assertEqual(item.provenance.boundary_alternative_count, 0)
         self.assertTrue(all(r.uncertainty.value is None for r in item.described_values[:19]))
 
-    def test_reviewed_visibility_reaches_pixel_and_mm_bundles_without_image_lineage(self):
+    def check_test_reviewed_visibility_reaches_pixel_and_mm_bundles_without_image_lineage(self):
         for visibility in ('complete', 'partly_occluded'):
             annotation = SeedInstanceAnnotation(1, shape_reviewed=True,
                 outline_visibility=visibility, pose='flat', full_length_visible=True)
@@ -117,7 +120,7 @@ class MeasurementDescriptionTests(unittest.TestCase):
                 self.assertNotIn('provenance', asdict(observations[0]))
                 self.assertEqual(observations[0].measurement, item.calibrated_measurement.vector())
 
-    def test_records_and_provenance_are_immutable_compact_metadata(self):
+    def check_test_records_and_provenance_are_immutable_compact_metadata(self):
         item = g.measure_shape_mask(mask())
         with self.assertRaises(FrozenInstanceError):
             item.provenance.visibility = 'complete'
@@ -129,7 +132,7 @@ class MeasurementDescriptionTests(unittest.TestCase):
         with patch.object(g, 'image_to_tensor', side_effect=AssertionError('unexpected upload')):
             self.assertEqual(item.described_values[0], record)
 
-    def test_scale_sensitivity_remains_available_when_boundary_sensitivity_is_missing(self):
+    def check_test_scale_sensitivity_remains_available_when_boundary_sensitivity_is_missing(self):
         item = g.measure_shape_mask(mask(), perturbation_radii=(),
                                     calibration_relative_uncertainty=.02, pixels_per_mm=2)
         for index, record in enumerate(item.described_values[:19]):
@@ -140,7 +143,7 @@ class MeasurementDescriptionTests(unittest.TestCase):
             else:
                 self.assertIsNone(record.uncertainty.value)
 
-    def test_invalid_provenance_cannot_emit_current_calculation_claims(self):
+    def check_test_invalid_provenance_cannot_emit_current_calculation_claims(self):
         valid = ShapeMeasurementProvenance(SHAPE_DEFINITION_REVISION, (1, 2), 8, .02)
         for changes in ({'perturbation_radii_px': [1]}, {'perturbation_radii_px': (True,)},
                         {'boundary_alternative_count': 9}, {'boundary_alternative_count': -1},
@@ -153,9 +156,25 @@ class MeasurementDescriptionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'alternative count'):
             _ = item.described_values
 
-    def test_unknown_revision_does_not_inherit_current_definitions(self):
+    def check_test_unknown_revision_does_not_inherit_current_definitions(self):
         item = g.measure_shape_mask(mask())
         foreign = replace(item, provenance=replace(item.provenance,
                            definition_revision='legacy-or-unknown-revision'))
         self.assertTrue(all(r.definition == 'unknown' and r.uncertainty.semantics == 'unknown'
                             for r in foreign.described_values))
+
+    def test_workflow_lifecycle(self):
+        """7 related MeasurementDescriptionTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_vector_descriptions_bind_current_values_definitions_and_uncertainties)
+        self.scenario(self.check_test_scaling_preserves_pixel_coordinates_and_dimensionless_units)
+        self.scenario(self.check_test_legacy_bundle_has_unknown_definitions_and_keeps_supplied_errors)
+        self.scenario(self.check_test_no_successful_alternative_is_recorded_without_inventing_a_bound)
+        self.scenario(self.check_test_reviewed_visibility_reaches_pixel_and_mm_bundles_without_image_lineage)
+        self.scenario(self.check_test_records_and_provenance_are_immutable_compact_metadata)
+        self.scenario(self.check_test_unknown_revision_does_not_inherit_current_definitions)
+
+    def test_validation_and_recovery(self):
+        """3 related MeasurementDescriptionTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_no_boundary_alternatives_withhold_sensitivity_instead_of_claiming_zero)
+        self.scenario(self.check_test_scale_sensitivity_remains_available_when_boundary_sensitivity_is_missing)
+        self.scenario(self.check_test_invalid_provenance_cannot_emit_current_calculation_claims)

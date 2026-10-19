@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.functional_units import functional_units
+
 import os
 import tempfile
 import unittest
@@ -9,6 +11,7 @@ from types import SimpleNamespace
 import numpy as np
 
 
+@functional_units
 class SelectedInstanceImageViewTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -51,7 +54,7 @@ class SelectedInstanceImageViewTests(unittest.TestCase):
         centre = self.view.mapToScene(self.view.viewport().rect().center())
         return float(centre.x()), float(centre.y())
 
-    def test_selected_only_overlay_is_cropped_and_excludes_other_ids(self) -> None:
+    def check_test_selected_only_overlay_is_cropped_and_excludes_other_ids(self) -> None:
         labels = self._two_seed_labels()
         # A hidden neighbouring-ID pixel lies inside the one-pixel crop margin.
         labels[279, 259] = 2
@@ -74,7 +77,7 @@ class SelectedInstanceImageViewTests(unittest.TestCase):
         self.assertEqual(image.pixelColor(259, 279).alpha(), 0)
         self.assertGreater(image.pixelColor(260, 280).alpha(), 0)
 
-    def test_id_change_centres_selected_seed_without_changing_zoom(self) -> None:
+    def check_test_id_change_centres_selected_seed_without_changing_zoom(self) -> None:
         self.view.set_instance_annotations(self._two_seed_labels(), render=False)
         self.view.set_active_instance_id(1)
         self.view.set_show_selected_instance_only(True)
@@ -95,7 +98,7 @@ class SelectedInstanceImageViewTests(unittest.TestCase):
         assert item is not None
         self.assertGreater(item.sceneBoundingRect().x(), 850.0)
 
-    def test_absent_id_hides_overlay_without_moving_view(self) -> None:
+    def check_test_absent_id_hides_overlay_without_moving_view(self) -> None:
         self.view.set_instance_annotations(self._two_seed_labels(), render=False)
         self.view.set_active_instance_id(1)
         self.view.set_show_selected_instance_only(True)
@@ -111,7 +114,7 @@ class SelectedInstanceImageViewTests(unittest.TestCase):
         self.assertAlmostEqual(float(self.view.transform().m11()), zoom)
         self.assertIsNone(self.view._instance_annotation_overlay_item)
 
-    def test_label_replacement_and_committed_edit_invalidate_bounds_cache(self) -> None:
+    def check_test_label_replacement_and_committed_edit_invalidate_bounds_cache(self) -> None:
         labels = np.zeros((800, 1200), dtype=np.uint16)
         labels[100:110, 120:130] = 1
         self.view.set_instance_annotations(labels, render=False)
@@ -136,7 +139,7 @@ class SelectedInstanceImageViewTests(unittest.TestCase):
 
         self.assertEqual(self.view._instance_bounds(1), (240, 200, 325, 265))
 
-    def test_selected_only_paint_and_erase_preserve_hidden_neighbour(self) -> None:
+    def check_test_selected_only_paint_and_erase_preserve_hidden_neighbour(self) -> None:
         from PySide6.QtCore import QPointF
 
         labels = np.zeros((800, 1200), dtype=np.uint16)
@@ -165,6 +168,17 @@ class SelectedInstanceImageViewTests(unittest.TestCase):
         assert erased is not None
         self.assertTrue(np.all(erased[original_neighbour] == 2))
         self.assertEqual(int(erased[100, 100]), 0)
+
+    def test_workflow_lifecycle(self):
+        """4 related SelectedInstanceImageViewTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_selected_only_overlay_is_cropped_and_excludes_other_ids)
+        self.scenario(self.check_test_id_change_centres_selected_seed_without_changing_zoom)
+        self.scenario(self.check_test_absent_id_hides_overlay_without_moving_view)
+        self.scenario(self.check_test_selected_only_paint_and_erase_preserve_hidden_neighbour)
+
+    def test_validation_and_recovery(self):
+        """1 related SelectedInstanceImageViewTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_label_replacement_and_committed_edit_invalidate_bounds_cache)
 
 
 class SelectedInstanceMainWindowTests(unittest.TestCase):

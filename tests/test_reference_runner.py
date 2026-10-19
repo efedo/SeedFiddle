@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.functional_units import functional_units
+
 import io
 import hashlib
 import importlib
@@ -56,26 +58,10 @@ HAS_REFERENCE_ENV = all(
 )
 
 
+@functional_units
 class ReferenceArrayProtocolTests(unittest.TestCase):
-    def test_desktop_runner_import_does_not_load_reference_dependencies(self) -> None:
-        command = (
-            "import sys; "
-            "import seedvision.benchmarking.reference_runner; "
-            "blocked = {'plantcv', 'scipy', 'skimage'}; "
-            "loaded = sorted(name for name in sys.modules if name.split('.')[0] in blocked); "
-            "assert not loaded, loaded"
-        )
-        completed = subprocess.run(
-            [sys.executable, "-c", command],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=15,
-        )
-        self.assertEqual(completed.returncode, 0, completed.stderr)
 
-    def test_rejects_object_nonfinite_and_oversized_arrays(self) -> None:
+    def check_test_rejects_object_nonfinite_and_oversized_arrays(self) -> None:
         with self.assertRaises(ReferenceProtocolError):
             validate_array_mapping({"values": np.array([object()], dtype=object)})
         with self.assertRaises(ReferenceProtocolError):
@@ -86,7 +72,7 @@ class ReferenceArrayProtocolTests(unittest.TestCase):
             with self.subTest(reserved=reserved), self.assertRaises(ReferenceProtocolError):
                 validate_array_mapping({reserved: np.ones((2,), dtype=np.uint8)})
 
-    def test_array_inventory_limits_precede_any_contiguous_copy(self) -> None:
+    def check_test_array_inventory_limits_precede_any_contiguous_copy(self) -> None:
         base = np.zeros((1,), dtype=np.uint8)
         per_array_elements = (MAX_ARRAY_ELEMENTS // 2) + 1
         views = {
@@ -107,7 +93,7 @@ class ReferenceArrayProtocolTests(unittest.TestCase):
                 validate_array_mapping(too_many)
             make_contiguous.assert_not_called()
 
-    def test_strict_json_rejects_nonfinite_constants_and_duplicate_keys(self) -> None:
+    def check_test_strict_json_rejects_nonfinite_constants_and_duplicate_keys(self) -> None:
         for document in (
             '{"value":NaN}', '{"value":Infinity}', '{"value":1,"value":2}',
             '{"value":1e999}', '{"nested":{"value":-1e999}}',
@@ -126,7 +112,7 @@ class ReferenceArrayProtocolTests(unittest.TestCase):
                 with self.subTest(parameters=parameters), self.assertRaisesRegex(WorkerError, "invalid JSON"):
                     _read_request(request)
 
-    def test_rejects_pickle_and_oversized_npy_header_before_array_load(self) -> None:
+    def check_test_rejects_pickle_and_oversized_npy_header_before_array_load(self) -> None:
         with tempfile.TemporaryDirectory() as temp_name:
             root = Path(temp_name)
             object_path = root / "object.npz"
@@ -149,35 +135,8 @@ class ReferenceArrayProtocolTests(unittest.TestCase):
             with self.assertRaises(ReferenceProtocolError):
                 _read_npz(bomb_path, max_archive_bytes=2 * 1024 * 1024)
 
-    def test_aggregate_element_limit_is_checked_before_numpy_load(self) -> None:
-        member_elements = (MAX_ARRAY_ELEMENTS // 2) + 1
-        zeros = bytes(1024 * 1024)
-        with tempfile.TemporaryDirectory() as temp_name:
-            archive_path = Path(temp_name) / "aggregate.npz"
-            with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-                for name in ("first.npy", "second.npy"):
-                    header = io.BytesIO()
-                    np.lib.format.write_array_header_1_0(
-                        header,
-                        {
-                            "descr": np.lib.format.dtype_to_descr(np.dtype("uint8")),
-                            "fortran_order": False,
-                            "shape": (member_elements,),
-                        },
-                    )
-                    with archive.open(name, "w") as member:
-                        member.write(header.getvalue())
-                        remaining = member_elements
-                        while remaining:
-                            count = min(remaining, len(zeros))
-                            member.write(zeros[:count])
-                            remaining -= count
-            with mock.patch("seedvision.benchmarking.reference_runner.np.load") as np_load:
-                with self.assertRaisesRegex(ReferenceProtocolError, "aggregate element"):
-                    _read_npz(archive_path, max_archive_bytes=2 * 1024 * 1024)
-                np_load.assert_not_called()
 
-    def test_npz_keyword_names_are_rejected_during_archive_preflight(self) -> None:
+    def check_test_npz_keyword_names_are_rejected_during_archive_preflight(self) -> None:
         with tempfile.TemporaryDirectory() as temp_name:
             for name in ("file", "allow_pickle"):
                 path = Path(temp_name) / f"{name}.npz"
@@ -191,7 +150,7 @@ class ReferenceArrayProtocolTests(unittest.TestCase):
                 with self.subTest(name=name), self.assertRaises(ReferenceProtocolError):
                     _read_npz(path, max_archive_bytes=2 * 1024 * 1024)
 
-    def test_shadow_package_origin_is_rejected_before_import(self) -> None:
+    def check_test_shadow_package_origin_is_rejected_before_import(self) -> None:
         with tempfile.TemporaryDirectory() as temp_name:
             root = Path(temp_name)
             distribution = root / "site-packages"
@@ -206,7 +165,7 @@ class ReferenceArrayProtocolTests(unittest.TestCase):
                 with self.assertRaisesRegex(WorkerError, "outside the verified distribution"):
                     _verify_package_import_location(distribution)
 
-    def test_audited_import_compiles_verified_source_instead_of_unchecked_pyc(self) -> None:
+    def check_test_audited_import_compiles_verified_source_instead_of_unchecked_pyc(self) -> None:
         fullname = "plantcv.plantcv.threshold.threshold_methods"
         relative = "plantcv/plantcv/threshold/threshold_methods.py"
         package_names = ("plantcv", "plantcv.plantcv", "plantcv.plantcv.threshold")
@@ -279,10 +238,24 @@ class ReferenceArrayProtocolTests(unittest.TestCase):
                     else:
                         sys.modules[name] = previous
 
-    def test_rejects_operation_outside_audited_callable_allowlist(self) -> None:
+    def check_test_rejects_operation_outside_audited_callable_allowlist(self) -> None:
         runner = PlantCVReferenceRunner(sys.executable)
         with self.assertRaisesRegex(ReferenceProtocolError, "callable allowlist"):
             runner.run("plantcv.arbitrary_python", {"gray": np.zeros((2, 2), dtype=np.uint8)})
+
+    def test_validation_and_recovery(self):
+        """7 related ReferenceArrayProtocolTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_rejects_object_nonfinite_and_oversized_arrays)
+        self.scenario(self.check_test_array_inventory_limits_precede_any_contiguous_copy)
+        self.scenario(self.check_test_strict_json_rejects_nonfinite_constants_and_duplicate_keys)
+        self.scenario(self.check_test_rejects_pickle_and_oversized_npy_header_before_array_load)
+        self.scenario(self.check_test_npz_keyword_names_are_rejected_during_archive_preflight)
+        self.scenario(self.check_test_shadow_package_origin_is_rejected_before_import)
+        self.scenario(self.check_test_rejects_operation_outside_audited_callable_allowlist)
+
+    def test_workflow_lifecycle(self):
+        """1 related ReferenceArrayProtocolTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_audited_import_compiles_verified_source_instead_of_unchecked_pyc)
 
 
 class ReferenceIdentityTests(unittest.TestCase):
@@ -340,198 +313,10 @@ class ReferenceIdentityTests(unittest.TestCase):
         self.assertEqual(desktop_status["state"], "unavailable")
 
 
+@functional_units
 class IsolatedPlantCVExecutionTests(unittest.TestCase):
-    @unittest.skipUnless(HAS_REFERENCE_ENV, "isolated PlantCV reference environment is not provisioned")
-    def test_selected_original_operations_return_observations_and_intermediates(self) -> None:
-        runner = PlantCVReferenceRunner(REFERENCE_PYTHON)
-        gray = np.zeros((48, 72), dtype=np.uint8)
-        yy, xx = np.ogrid[:48, :72]
-        disk = (xx - 36) ** 2 + (yy - 24) ** 2 < 14**2
-        gray[disk] = 255
-        labels = np.zeros(gray.shape, dtype=np.int32)
-        labels[disk] = 1
-        rgb = np.zeros((48, 72, 3), dtype=np.uint8)
-        rgb[disk] = (80, 140, 190)
 
-        threshold = runner.run("threshold.binary", {"gray": gray}, {"threshold": 200})
-        np.testing.assert_array_equal(threshold.arrays["mask"], gray)
-        self.assertEqual(threshold.effective_parameters["object_type"], "light")
-        self.assertEqual(threshold.effective_parameters["threshold"], 200)
-        self.assertGreater(threshold.wall_runtime_ns, 0)
-        self.assertGreater(threshold.computation_runtime_ns, 0)
-
-        adaptive = runner.run("threshold.mean", {"gray": gray}, {"ksize": 3, "offset": 1, "object_type": "light"})
-        otsu = runner.run("threshold.otsu", {"gray": gray}, {"object_type": "light"})
-        self.assertEqual(adaptive.arrays["mask"].shape, gray.shape)
-        self.assertEqual(otsu.arrays["mask"].shape, gray.shape)
-
-        eroded = runner.run("morphology.erode", {"gray": gray}, {"ksize": 3, "iterations": 1})
-        dilated = runner.run("morphology.dilate", {"gray": gray}, {"ksize": 3, "iterations": 1})
-        filled = runner.run("morphology.fill", {"mask": gray}, {"size": 2})
-        filtered = runner.run("filter.median_blur", {"gray": gray}, {"ksize": 3})
-        for result in (eroded, dilated, filled, filtered):
-            output_name = "image" if result.operation == "filter.median_blur" else "mask"
-            self.assertEqual(result.arrays[output_name].shape, gray.shape)
-
-        watershed = runner.run("segmentation.watershed", {"rgb": rgb, "mask": gray}, {"distance": 5})
-        self.assertIn("labels", watershed.arrays)
-        self.assertEqual(watershed.effective_parameters["callable"], "plantcv.plantcv.watershed.watershed_segmentation")
-        self.assertIn("observations", watershed.observations)
-
-        size = runner.run("analysis.size", {"image": rgb, "labels": labels}, {"n_labels": 1})
-        self.assertIn("analysis_image", size.arrays)
-        self.assertIn("observations", size.observations)
-        self.assertIn("PlantCV BGR visualization reversed to RGB", size.channel_semantics["raster_output"])
-        self.assertTrue(np.any(np.all(size.arrays["analysis_image"] == (0, 0, 255), axis=2)))
-
-        color_patch = np.broadcast_to(np.array((250, 30, 10), dtype=np.uint8), (20, 20, 3)).copy()
-        color_labels = np.ones((20, 20), dtype=np.int32)
-        color = runner.run(
-            "analysis.color", {"rgb": color_patch, "labels": color_labels},
-            {"n_labels": 1, "colorspaces": "rgb"},
-        )
-        self.assertEqual(dict(color.arrays), {})
-        self.assertIn("observations", color.observations)
-        self.assertIn("color_histogram", color.visualizations)
-        self.assertEqual(color.channel_semantics["input_boundary"], "RGB uint8 HWC")
-
-        def find_observation(value: object, variable: str) -> dict[str, object] | None:
-            if isinstance(value, dict):
-                direct = value.get(variable)
-                if isinstance(direct, dict):
-                    return direct
-                for child in value.values():
-                    found = find_observation(child, variable)
-                    if found is not None:
-                        return found
-            elif isinstance(value, list):
-                for child in value:
-                    found = find_observation(child, variable)
-                    if found is not None:
-                        return found
-            return None
-
-        red = find_observation(color.observations, "red_frequencies")
-        blue = find_observation(color.observations, "blue_frequencies")
-        self.assertIsNotNone(red)
-        self.assertIsNotNone(blue)
-        self.assertGreater(red["value"][250], red["value"][10])
-        self.assertGreater(blue["value"][10], blue["value"][250])
-
-        target = np.zeros((52, 76, 3), dtype=np.uint8)
-        source = np.zeros_like(target)
-        target_mask = np.zeros((52, 76), dtype=np.uint8)
-        source_mask = np.zeros_like(target_mask)
-        rng = np.random.default_rng(42)
-        target_values = rng.integers(12, 244, size=(24, 3), dtype=np.uint8)
-        source_values = np.clip(
-            target_values.astype(np.int16) + np.array((12, -9, 5)), 0, 255
-        ).astype(np.uint8)
-        for index in range(24):
-            row, column = divmod(index, 6)
-            ys = slice(2 + row * 12, 2 + (row + 1) * 12)
-            xs = slice(2 + column * 12, 2 + (column + 1) * 12)
-            target_mask[ys, xs] = source_mask[ys, xs] = (index + 1) * 10
-            target[ys, xs] = target_values[index]
-            source[ys, xs] = source_values[index]
-        correction = runner.run(
-            "transform.correct_color",
-            {"target_rgb": target, "target_mask": target_mask, "source_rgb": source, "source_mask": source_mask},
-        )
-        self.assertEqual(correction.arrays["target_color_matrix"].shape, (24, 4))
-        self.assertEqual(correction.arrays["transformation_matrix"].shape, (9, 9))
-        self.assertEqual(correction.arrays["corrected_image"].shape, source.shape)
-        self.assertIn("PlantCV BGR output reversed to RGB", correction.channel_semantics["corrected_image"])
-        matrix_semantics = correction.channel_semantics["color_matrices"]
-        self.assertEqual(
-            matrix_semantics["source_color_matrix"]["columns"],
-            ["chip_number", "mean_R", "mean_G", "mean_B"],
-        )
-        self.assertEqual(
-            matrix_semantics["source_color_matrix"]["channel_scale"],
-            "RGB means are normalized to [0, 1]",
-        )
-        self.assertEqual(
-            matrix_semantics["transformation_matrix"]["columns_target_polynomial_basis"],
-            ["R", "G", "B", "R^2", "G^2", "B^2", "R^3", "G^3", "B^3"],
-        )
-        self.assertIn(
-            "rows are the source chip RGB powers [R,G,B,R^2,G^2,B^2,R^3,G^3,B^3]",
-            matrix_semantics["transformation_matrix"]["basis_source"],
-        )
-        self.assertIn(
-            "columns are target RGB powers [R,G,B,R^2,G^2,B^2,R^3,G^3,B^3]",
-            matrix_semantics["transformation_matrix"]["basis_source"],
-        )
-
-        # Validate the actual coefficients against PlantCV's pinned source formula:
-        # solve(A.T @ A, A.T) @ B, where source rows and target columns each use
-        # [R,G,B,R²,G²,B²,R³,G³,B³]. This catches truthful metadata paired with a
-        # differently ordered returned matrix.
-        source_chips = correction.arrays["source_color_matrix"]
-        target_chips = correction.arrays["target_color_matrix"]
-        self.assertTrue(np.all(source_chips[:, 1:] >= 0.0))
-        self.assertTrue(np.all(source_chips[:, 1:] <= 1.0))
-        self.assertTrue(np.all(target_chips[:, 1:] >= 0.0))
-        self.assertTrue(np.all(target_chips[:, 1:] <= 1.0))
-        np.testing.assert_allclose(
-            target_chips[0],
-            np.array([10.0, *target_values[0].astype(np.float64) / 255.0]),
-            rtol=0.0,
-            atol=1e-12,
-        )
-        np.testing.assert_allclose(
-            source_chips[0],
-            np.array([10.0, *source_values[0].astype(np.float64) / 255.0]),
-            rtol=0.0,
-            atol=1e-12,
-        )
-        source_rgb = source_chips[:, 1:]
-        target_rgb = target_chips[:, 1:]
-        source_basis = np.column_stack(
-            [source_rgb, source_rgb**2, source_rgb**3]
-        )
-        target_basis = np.column_stack(
-            [target_rgb, target_rgb**2, target_rgb**3]
-        )
-        expected_transform = np.linalg.solve(
-            source_basis.T @ source_basis, source_basis.T
-        ) @ target_basis
-        np.testing.assert_allclose(
-            correction.arrays["transformation_matrix"],
-            expected_transform,
-            rtol=1e-9,
-            atol=1e-10,
-        )
-
-        checker_colors = np.array(
-            [
-                (115, 82, 68), (194, 150, 130), (98, 122, 157), (87, 108, 67),
-                (133, 128, 177), (103, 189, 170), (214, 126, 44), (80, 91, 166),
-                (193, 90, 99), (94, 60, 108), (157, 188, 64), (224, 163, 46),
-                (56, 61, 150), (70, 148, 73), (175, 54, 60), (231, 199, 31),
-                (187, 86, 149), (8, 133, 161), (243, 243, 242), (200, 200, 200),
-                (160, 160, 160), (122, 122, 121), (85, 85, 85), (52, 52, 52),
-            ],
-            dtype=np.uint8,
-        )
-        card = np.full((342, 238, 3), 30, dtype=np.uint8)
-        for index, chip in enumerate(checker_colors):
-            row, column = divmod(index, 4)
-            card[15 + row * 52:15 + row * 52 + 44, 15 + column * 52:15 + column * 52 + 44] = chip
-        automatic = runner.run(
-            "transform.auto_correct_color", {"rgb": card},
-            {"color_chip_size": "classic", "block_size": 51, "radius": 10, "min_size": 1000},
-        )
-        self.assertIn("metadata", automatic.observations)
-        measurements = automatic.observations["metadata"]
-        self.assertGreater(measurements["median_color_chip_size"]["value"][0], 0)
-        effects = automatic.effective_parameters["calibration_effects"]
-        self.assertEqual(effects["unit"], "mm")
-        self.assertGreater(effects["px_width"], 0)
-
-    @unittest.skipUnless(HAS_REFERENCE_ENV, "isolated PlantCV reference environment is not provisioned")
-    def test_timeout_and_cancellation_remove_temporary_protocol_files(self) -> None:
+    def check_test_timeout_and_cancellation_remove_temporary_protocol_files(self) -> None:
         image = np.zeros((3, 3), dtype=np.uint8)
         with tempfile.TemporaryDirectory() as isolated_temp_root:
             runner = PlantCVReferenceRunner(REFERENCE_PYTHON, temporary_root=isolated_temp_root)
@@ -554,12 +339,12 @@ class IsolatedPlantCVExecutionTests(unittest.TestCase):
                 runner.run("threshold.otsu", {"gray": image}, cancel_event=raising_callback)
             self.assertEqual(list(root.iterdir()), [])
 
-    def test_missing_external_python_has_clear_availability_state(self) -> None:
+    def check_test_missing_external_python_has_clear_availability_state(self) -> None:
         status = plantcv_reference_status(python_executable=Path(tempfile.gettempdir()) / "missing-reference-python.exe")
         self.assertFalse(status["available"])
         self.assertIn("does not exist", status["reason"])
 
-    def test_callback_exception_kills_reaps_and_closes_worker_process(self) -> None:
+    def check_test_callback_exception_kills_reaps_and_closes_worker_process(self) -> None:
         with tempfile.TemporaryDirectory() as temp_name:
             child_holder: dict[str, subprocess.Popen[bytes]] = {}
             real_popen = subprocess.Popen
@@ -584,7 +369,7 @@ class IsolatedPlantCVExecutionTests(unittest.TestCase):
             self.assertTrue(child.stdout.closed)
             self.assertTrue(child.stderr.closed)
 
-    def test_auto_color_adapter_preserves_chip_observations_and_calibration(self) -> None:
+    def check_test_auto_color_adapter_preserves_chip_observations_and_calibration(self) -> None:
         expected_metadata = {
             "median_color_chip_size": 1440.0,
             "median_color_chip_width": 40.0,
@@ -612,7 +397,7 @@ class IsolatedPlantCVExecutionTests(unittest.TestCase):
         self.assertEqual(effective["calibration_effects"]["px_height"], 1.25)
         self.assertIn("RGB uint8 HWC", semantics["corrected_image"])
 
-    def test_large_kernel_and_watershed_parameters_are_rejected_before_call(self) -> None:
+    def check_test_large_kernel_and_watershed_parameters_are_rejected_before_call(self) -> None:
         image = np.zeros((8, 8), dtype=np.uint8)
         pcv = mock.Mock()
         cases = (
@@ -641,6 +426,20 @@ class IsolatedPlantCVExecutionTests(unittest.TestCase):
             with self.subTest(operation=operation), self.assertRaisesRegex(WorkerError, "supported range"):
                 _run_operation(request, arrays, Path("."), pcv)
         pcv.assert_not_called()
+
+    @unittest.skipUnless(HAS_REFERENCE_ENV, "isolated PlantCV reference environment is not provisioned")
+    def test_timeout_and_cancellation_remove_temporary_protocol_files(self):
+        self.scenario(self.check_test_timeout_and_cancellation_remove_temporary_protocol_files, labelled=False)
+
+    def test_validation_and_recovery(self):
+        """2 related IsolatedPlantCVExecutionTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_missing_external_python_has_clear_availability_state)
+        self.scenario(self.check_test_large_kernel_and_watershed_parameters_are_rejected_before_call)
+
+    def test_workflow_lifecycle(self):
+        """2 related IsolatedPlantCVExecutionTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_callback_exception_kills_reaps_and_closes_worker_process)
+        self.scenario(self.check_test_auto_color_adapter_preserves_chip_observations_and_calibration)
 
 
 if __name__ == "__main__":

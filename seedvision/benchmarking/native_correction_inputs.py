@@ -18,7 +18,7 @@ from seedvision.benchmarking.native_correction_recipe import (
     MAX_COMBINED_PIXELS, NativeCorrectionCancelled, NativeCorrectionError,
     RECIPE_ID, STAGE_ID, run_native_correction_recipe, _validate_recipe, _correction_output_signatures,
 )
-from seedvision.benchmarking.native_recipe import _tensor_signature, _module_record, _digest
+from seedvision.benchmarking.native_recipe import _tensor_signature, _module_record, _digest, _execution_signature
 from seedvision.segmentation.baseline import PipelineAnalysisCache
 from seedvision.model_io.asset_paths import validate_model_origin
 
@@ -308,7 +308,8 @@ def validate_correction_input_sources(value):
 
 def run_native_correction_files(recipe, paths, *, previous=None, device='cuda', cache=None,
                                 cancel=None, max_combined_pixels=MAX_COMBINED_PIXELS,
-                                max_prepared_cuda_bytes=MAX_PREPARED_CUDA_BYTES):
+                                max_prepared_cuda_bytes=MAX_PREPARED_CUDA_BYTES,
+                                working_workflow=None, reference_runner=None):
     """Shared four-file execution with byte rechecks before cache reuse and return.
 
     Returns the actual result and reusable CUDA input bundle. Every role retains
@@ -333,8 +334,10 @@ def run_native_correction_files(recipe, paths, *, previous=None, device='cuda', 
             target_source_sha256=prepared.file_sha256s['target_rgb'],
             source_sha256=prepared.file_sha256s['source_rgb'],
             target_coordinate_frame=prepared.coordinate_frames['target_rgb'],
-            coordinate_frame=prepared.coordinate_frames['source_rgb'], cache=cache, cancel=cancel)
-        output_signatures = _correction_output_signatures(result.node(STAGE_ID).outputs)
+            coordinate_frame=prepared.coordinate_frames['source_rgb'], cache=cache, cancel=cancel,
+            working_workflow=working_workflow, reference_runner=reference_runner)
+        output_signatures = (_correction_output_signatures(result.node(STAGE_ID).outputs),
+            _execution_signature(result.node(STAGE_ID)))
         _cancel(cancel)
         sources = {name: {'path': str(prepared.file_paths[name]), 'sha256': prepared.file_sha256s[name],
             'bytes': prepared.file_bytes[name], 'frame': prepared.coordinate_frames[name].to_dict(),
@@ -358,7 +361,8 @@ def run_native_correction_files(recipe, paths, *, previous=None, device='cuda', 
             raise NativeCorrectionError('An input file changed while correction was running.')
         if _signatures(prepared.tensors) != dict(prepared.tensor_signatures):
             raise NativeCorrectionError('A prepared correction tensor changed while correction was running.')
-        if _correction_output_signatures(result.node(STAGE_ID).outputs) != output_signatures:
+        if (_correction_output_signatures(result.node(STAGE_ID).outputs),
+                _execution_signature(result.node(STAGE_ID))) != output_signatures:
             raise NativeCorrectionError('A correction output changed before the four-file result returned.')
         return replace(result, preparation=prepared.preparation, input_sources=sources,
             runtime=MappingProxyType(runtime), implementation_sha256=implementation), prepared

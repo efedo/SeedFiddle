@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.functional_units import functional_units
+
 from dataclasses import replace
 from io import BytesIO
 import json
@@ -124,6 +126,7 @@ class _CountedTensor:
         return np.zeros(self.shape, dtype=np.uint8)
 
 
+@functional_units
 class BenchmarkCheckpointTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -155,7 +158,7 @@ class BenchmarkCheckpointTests(unittest.TestCase):
             **kwargs,
         )
 
-    def test_real_npz_round_trip_preserves_identity_semantics_and_dtype(self) -> None:
+    def check_test_real_npz_round_trip_preserves_identity_semantics_and_dtype(self) -> None:
         reference = self.publish(metadata={"adapter": "audited", "warnings": ["line policy recorded"]})
 
         loaded = load_checkpoint(self.root, reference.checkpoint_sha256, expected_identity=_identity())
@@ -175,7 +178,7 @@ class BenchmarkCheckpointTests(unittest.TestCase):
             loaded.arrays["labels"].setflags(write=True)
         self.assertEqual(loaded.metadata["warnings"], ("line policy recorded",))
 
-    def test_cpu_serialization_requires_explicit_benchmark_opt_in(self) -> None:
+    def check_test_cpu_serialization_requires_explicit_benchmark_opt_in(self) -> None:
         with self.assertRaisesRegex(CheckpointError, "allow_cpu_transfer=True"):
             publish_checkpoint(
                 self.root,
@@ -185,7 +188,7 @@ class BenchmarkCheckpointTests(unittest.TestCase):
                 measurement=_measurement(),
             )
 
-    def test_selected_loading_verifies_all_members_without_numpy_archive_materialization(self):
+    def check_test_selected_loading_verifies_all_members_without_numpy_archive_materialization(self):
         reference = self.publish()
         expected = load_checkpoint(self.root, reference.checkpoint_sha256)
         with patch.object(checkpoint_module.np, 'load', side_effect=AssertionError('full decode')):
@@ -199,7 +202,7 @@ class BenchmarkCheckpointTests(unittest.TestCase):
         self.assertEqual(dict(verified_only.raster_roles), {})
         self.assertEqual(selected.metadata, expected.metadata)
 
-    def test_selected_loading_preserves_compact_scalar_zero_endian_and_complex_domains(self):
+    def check_test_selected_loading_preserves_compact_scalar_zero_endian_and_complex_domains(self):
         values = {'scalar':np.array(12, dtype='>i2'), 'zero':np.empty((0,3), dtype=np.float32),
                   'complex':np.array([1+2j, -3-4j], dtype='>c16')}
         reference = self.publish(arrays=values, raster_roles={})
@@ -211,7 +214,7 @@ class BenchmarkCheckpointTests(unittest.TestCase):
                 self.assertEqual(loaded.arrays[name].shape, values[name].shape)
                 np.testing.assert_array_equal(loaded.arrays[name], values[name])
 
-    def test_selected_loading_rejects_unknown_names_and_keeps_aggregate_admission(self):
+    def check_test_selected_loading_rejects_unknown_names_and_keeps_aggregate_admission(self):
         reference = self.publish()
         for names in (('missing',), ('labels','labels'), ['labels'], (12,)):
             with self.subTest(names=names), self.assertRaises(InvalidCheckpoint):
@@ -222,7 +225,7 @@ class BenchmarkCheckpointTests(unittest.TestCase):
                 load_checkpoint(self.root, reference.checkpoint_sha256, limits=limits, array_names=())
             decode.assert_not_called()
 
-    def test_selected_loading_rejects_changed_unselected_payload_and_header(self):
+    def check_test_selected_loading_rejects_changed_unselected_payload_and_header(self):
         for failure in ('hash','header'):
             with self.subTest(failure=failure):
                 reference = self.publish(metadata={'failure':failure})
@@ -234,7 +237,7 @@ class BenchmarkCheckpointTests(unittest.TestCase):
                 with self.assertRaises(InvalidCheckpoint):
                     load_checkpoint(self.root, reference.checkpoint_sha256, array_names=('mask',))
 
-    def test_selected_loading_checks_unselected_semantics_even_with_rehashed_manifest(self):
+    def check_test_selected_loading_checks_unselected_semantics_even_with_rehashed_manifest(self):
         reference = self.publish()
         labels = np.arange(63, dtype=np.int32).reshape(7,9); labels[1,1] = -1
         with (reference.path/'arrays.npz').open('wb') as stream:
@@ -248,7 +251,7 @@ class BenchmarkCheckpointTests(unittest.TestCase):
         with self.assertRaisesRegex(InvalidCheckpoint, 'declared values'):
             load_checkpoint(self.root, changed, array_names=('mask',))
 
-    def test_selected_loading_cancels_while_streaming_unselected_array(self):
+    def check_test_selected_loading_cancels_while_streaming_unselected_array(self):
         reference = self.publish(arrays={'large':np.zeros(3*1024*1024, dtype=np.uint8),
                                          'small':np.ones(4, dtype=np.uint8)}, raster_roles={})
         polls = 0
@@ -267,7 +270,7 @@ class BenchmarkCheckpointTests(unittest.TestCase):
             load_checkpoint(self.root, reference.checkpoint_sha256, array_names=('small',), cancel=cancel)
         self.assertGreater(polls, 4)
 
-    def test_selected_loading_checks_unselected_tail_hash_values_and_crc(self):
+    def check_test_selected_loading_checks_unselected_tail_hash_values_and_crc(self):
         identity = replace(_identity(), coordinate_frame=replace(_identity().coordinate_frame, shape=(768,1024)))
         for failure in ('hash','values','crc'):
             with self.subTest(failure=failure):
@@ -301,7 +304,7 @@ class BenchmarkCheckpointTests(unittest.TestCase):
                 with self.assertRaisesRegex(InvalidCheckpoint,message):
                     load_checkpoint(self.root,digest,array_names=('a_small',))
 
-    def test_selected_loading_rejects_empty_raster_member_before_payload_decode(self):
+    def check_test_selected_loading_rejects_empty_raster_member_before_payload_decode(self):
         reference = self.publish()
         manifest_path = reference.path/'manifest.json'
         manifest = json.loads(manifest_path.read_text())
@@ -318,7 +321,7 @@ class BenchmarkCheckpointTests(unittest.TestCase):
                 load_checkpoint(self.root,changed,array_names=('mask',))
             decode.assert_not_called()
 
-    def test_selected_loading_streams_incompressible_32mib_member_with_bounded_host_peak(self):
+    def check_test_selected_loading_streams_incompressible_32mib_member_with_bounded_host_peak(self):
         large = np.random.default_rng(23).integers(0,256,32*1024*1024,dtype=np.uint8)
         reference = self.publish(arrays={'large':large,'small':np.arange(4,dtype=np.uint8)},raster_roles={})
         del large
@@ -333,7 +336,7 @@ class BenchmarkCheckpointTests(unittest.TestCase):
         self.assertLessEqual(peak,snapshot_bytes+10*1024*1024)
         print(f'\nSelected archive32MiB stream: traced peak {peak:,}; snapshot {snapshot_bytes:,}.',flush=True)
 
-    def test_stage_replay_requires_exact_source_frame_recipe_and_upstream_identity(self) -> None:
+    def check_test_stage_replay_requires_exact_source_frame_recipe_and_upstream_identity(self) -> None:
         upstream = "f" * 64
         identity = _identity(upstream=upstream)
         reference = self.publish(identity=identity)
@@ -370,7 +373,7 @@ class BenchmarkCheckpointTests(unittest.TestCase):
                 expected_measurement=_measurement(eligible=False),
             )
 
-    def test_content_address_is_immutable_and_different_content_gets_new_identity(self) -> None:
+    def check_test_content_address_is_immutable_and_different_content_gets_new_identity(self) -> None:
         first = self.publish()
         repeated = self.publish()
         changed = self.publish(arrays={"mask": np.zeros((7, 9), dtype=np.bool_), "labels": np.arange(63, dtype=np.int32).reshape(7, 9)})
@@ -380,7 +383,7 @@ class BenchmarkCheckpointTests(unittest.TestCase):
         self.assertTrue(first.path.is_dir())
         self.assertTrue(changed.path.is_dir())
 
-    def test_tampered_recipe_metadata_and_coordinate_metadata_are_rejected(self) -> None:
+    def check_test_tampered_recipe_metadata_and_coordinate_metadata_are_rejected(self) -> None:
         for field, mutate in (
             ("recipe_sha256", lambda identity: identity.__setitem__("recipe_sha256", "9" * 64)),
             ("coordinate_frame", lambda identity: identity["coordinate_frame"].__setitem__("shape", [70, 90])),
@@ -399,7 +402,7 @@ class BenchmarkCheckpointTests(unittest.TestCase):
                     child.unlink()
                 shutil_path.rmdir()
 
-    def test_changed_npz_values_and_dtype_are_rejected(self) -> None:
+    def check_test_changed_npz_values_and_dtype_are_rejected(self) -> None:
         for change_dtype in (False, True):
             with self.subTest(change_dtype=change_dtype):
                 reference = self.publish()
@@ -414,7 +417,7 @@ class BenchmarkCheckpointTests(unittest.TestCase):
                     child.unlink()
                 reference.path.rmdir()
 
-    def test_valid_empty_and_unavailable_execution_states_stay_distinct(self) -> None:
+    def check_test_valid_empty_and_unavailable_execution_states_stay_distinct(self) -> None:
         empty = publish_checkpoint(
             self.root,
             _identity(),
@@ -455,7 +458,7 @@ class BenchmarkCheckpointTests(unittest.TestCase):
                         expected_identity=_identity(upstream="f" * 64),
                     )
 
-    def test_compact_empty_coordinate_table_round_trips_immutably(self) -> None:
+    def check_test_compact_empty_coordinate_table_round_trips_immutably(self) -> None:
         reference = publish_checkpoint(
             self.root,
             _identity(),
@@ -473,7 +476,7 @@ class BenchmarkCheckpointTests(unittest.TestCase):
             loaded.arrays["centres_xy"].setflags(write=True)
         self.assertEqual(dict(loaded.raster_roles), {})
 
-    def test_array_and_metadata_limits_and_cancellation_are_enforced(self) -> None:
+    def check_test_array_and_metadata_limits_and_cancellation_are_enforced(self) -> None:
         limited = CheckpointLimits(max_array_bytes=8, max_total_array_bytes=8)
         with self.assertRaisesRegex(CheckpointError, "Array mask exceeds"):
             self.publish(arrays={"mask": np.ones((3, 3), dtype=np.uint8)}, raster_roles={}, limits=limited)
@@ -484,7 +487,7 @@ class BenchmarkCheckpointTests(unittest.TestCase):
         self.assertEqual(list(self.root.glob("*.checkpoint")), [])
         self.assertEqual(list(self.root.glob(".*")), [])
 
-    def test_aggregate_budget_is_checked_before_any_tensor_cpu_transfer(self) -> None:
+    def check_test_aggregate_budget_is_checked_before_any_tensor_cpu_transfer(self) -> None:
         first = _CountedTensor()
         second = _CountedTensor()
         with self.assertRaisesRegex(CheckpointError, "total limit"):
@@ -500,7 +503,7 @@ class BenchmarkCheckpointTests(unittest.TestCase):
             )
         self.assertEqual((first.transfers, second.transfers), (0, 0))
 
-    def test_npz_container_limit_is_preflighted_before_tensor_transfer(self) -> None:
+    def check_test_npz_container_limit_is_preflighted_before_tensor_transfer(self) -> None:
         expected_archive = BytesIO()
         np.savez(expected_archive, a=np.zeros((2, 3), dtype=np.uint8))
         exact_size = len(expected_archive.getvalue())
@@ -536,7 +539,7 @@ class BenchmarkCheckpointTests(unittest.TestCase):
         self.assertEqual((published.path / "arrays.npz").stat().st_size, exact_size)
         self.assertEqual(load_checkpoint(self.root, published.checkpoint_sha256).arrays["a"].shape, (2, 3))
 
-    def test_npz_keyword_collisions_are_rejected_before_tensor_transfer(self) -> None:
+    def check_test_npz_keyword_collisions_are_rejected_before_tensor_transfer(self) -> None:
         for reserved_name in ("file", "allow_pickle"):
             with self.subTest(name=reserved_name):
                 tensor = _CountedTensor()
@@ -552,7 +555,7 @@ class BenchmarkCheckpointTests(unittest.TestCase):
                     )
                 self.assertEqual(tensor.transfers, 0)
 
-    def test_loader_rejects_npz_keyword_collisions_in_rehashed_manifests(self) -> None:
+    def check_test_loader_rejects_npz_keyword_collisions_in_rehashed_manifests(self) -> None:
         for reserved_name in ("file", "allow_pickle"):
             with self.subTest(name=reserved_name), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
@@ -576,7 +579,7 @@ class BenchmarkCheckpointTests(unittest.TestCase):
                 with self.assertRaisesRegex(InvalidCheckpoint, "invalid array name"):
                     load_checkpoint(root, digest)
 
-    def test_raster_roles_bind_frame_dtype_and_semantic_ranges(self) -> None:
+    def check_test_raster_roles_bind_frame_dtype_and_semantic_ranges(self) -> None:
         with self.assertRaisesRegex(CheckpointError, "differs"):
             self.publish(raster_roles={"mask": RasterRole("mask", np.dtype(np.bool_).str), "labels": RasterRole("instances", np.dtype(np.int16).str)})
         with self.assertRaisesRegex(ValueError, "rasters must use HW"):
@@ -584,7 +587,7 @@ class BenchmarkCheckpointTests(unittest.TestCase):
         with self.assertRaisesRegex(CheckpointError, "representation"):
             self.publish(arrays={"mask": np.full((7, 9), 255, dtype=np.uint8), "labels": np.arange(63, dtype=np.int32).reshape(7, 9)}, raster_roles={"mask": RasterRole("mask", np.dtype(np.uint8).str), "labels": RasterRole("instances", np.dtype(np.int32).str)})
 
-    def test_image_raster_role_binds_channels_dtype_shape_and_value_range(self) -> None:
+    def check_test_image_raster_role_binds_channels_dtype_shape_and_value_range(self) -> None:
         identity = _identity()
         raster_roles = {"image": RasterRole("image", np.dtype(np.uint8).str, layout="HWC")}
         common = {
@@ -611,7 +614,7 @@ class BenchmarkCheckpointTests(unittest.TestCase):
                 **common,
             )
 
-    def test_integer_raster_value_ranges_preserve_bounds_above_float_precision(self) -> None:
+    def check_test_integer_raster_value_ranges_preserve_bounds_above_float_precision(self) -> None:
         maximum = 2**53
         int64 = np.dtype(np.int64)
         pixels = np.zeros((7, 9), dtype=int64)
@@ -649,7 +652,7 @@ class BenchmarkCheckpointTests(unittest.TestCase):
                 raster_roles={"image": image_role},
             )
 
-    def test_loader_rejects_semantically_invalid_raster_role_even_with_rehashed_manifest(self) -> None:
+    def check_test_loader_rejects_semantically_invalid_raster_role_even_with_rehashed_manifest(self) -> None:
         reference = self.publish()
         manifest_path = reference.path / "manifest.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -664,7 +667,7 @@ class BenchmarkCheckpointTests(unittest.TestCase):
         with self.assertRaisesRegex(InvalidCheckpoint, "semantic contract"):
             load_checkpoint(self.root, changed_digest)
 
-    def test_post_staging_cancellation_cleans_temporary_directory(self) -> None:
+    def check_test_post_staging_cancellation_cleans_temporary_directory(self) -> None:
         checks = {"count": 0}
 
         def cancel_after_npz_stage():
@@ -676,7 +679,7 @@ class BenchmarkCheckpointTests(unittest.TestCase):
         self.assertEqual(list(self.root.glob("*.checkpoint")), [])
         self.assertEqual(list(self.root.glob(".*")), [])
 
-    def test_concurrent_same_content_winner_leaves_no_losing_stage(self) -> None:
+    def check_test_concurrent_same_content_winner_leaves_no_losing_stage(self) -> None:
         original_replace = os.replace
         state = {"nested_publish": False}
         identity = _identity()
@@ -701,7 +704,7 @@ class BenchmarkCheckpointTests(unittest.TestCase):
         self.assertTrue(published.path.is_dir())
         self.assertEqual(list(self.root.glob(".*")), [])
 
-    def test_exact_array_size_limit_round_trips_with_bounded_header_slack(self) -> None:
+    def check_test_exact_array_size_limit_round_trips_with_bounded_header_slack(self) -> None:
         limits = CheckpointLimits(
             max_array_bytes=64,
             max_total_array_bytes=64,
@@ -720,7 +723,7 @@ class BenchmarkCheckpointTests(unittest.TestCase):
         loaded = load_checkpoint(self.root, reference.checkpoint_sha256, limits=limits)
         self.assertEqual(loaded.arrays["mask"].nbytes, 64)
 
-    def test_forged_huge_npy_shape_is_rejected_before_np_load(self) -> None:
+    def check_test_forged_huge_npy_shape_is_rejected_before_np_load(self) -> None:
         reference = self.publish()
         archive_path = reference.path / "arrays.npz"
         with zipfile.ZipFile(archive_path, "r") as archive:
@@ -742,7 +745,7 @@ class BenchmarkCheckpointTests(unittest.TestCase):
         with self.assertRaisesRegex(InvalidCheckpoint, "header differs"):
             load_checkpoint(self.root, reference.checkpoint_sha256)
 
-    def test_archive_path_replacement_after_preflight_cannot_change_deserialized_snapshot(self) -> None:
+    def check_test_archive_path_replacement_after_preflight_cannot_change_deserialized_snapshot(self) -> None:
         reference = self.publish()
         original_load = np.load
         replaced = {"done": False}
@@ -758,7 +761,7 @@ class BenchmarkCheckpointTests(unittest.TestCase):
         self.assertTrue(replaced["done"])
         self.assertEqual(loaded.arrays["labels"].shape, (7, 9))
 
-    def test_adversarial_duplicate_unsafe_object_and_high_ratio_archives_are_rejected(self) -> None:
+    def check_test_adversarial_duplicate_unsafe_object_and_high_ratio_archives_are_rejected(self) -> None:
         # Duplicate and traversal-like names are rejected before NumPy opens a member.
         for archive_case in ("duplicate", "unsafe", "object"):
             with self.subTest(archive_case=archive_case):
@@ -806,11 +809,50 @@ class BenchmarkCheckpointTests(unittest.TestCase):
         with self.assertRaisesRegex(InvalidCheckpoint, "compression ratio"):
             load_checkpoint(self.root, reference.checkpoint_sha256)
 
-    def test_checkpoint_metadata_accepts_only_strict_json_primitives(self) -> None:
+    def check_test_checkpoint_metadata_accepts_only_strict_json_primitives(self) -> None:
         with self.assertRaisesRegex(ValueError, "JSON primitive"):
             self.publish(metadata={"bad": object()})
         with self.assertRaisesRegex(ValueError, "NaN"):
             self.publish(metadata={"bad": float("nan")})
+
+    def test_workflow_lifecycle(self):
+        """16 related BenchmarkCheckpointTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_real_npz_round_trip_preserves_identity_semantics_and_dtype)
+        self.scenario(self.check_test_cpu_serialization_requires_explicit_benchmark_opt_in)
+        self.scenario(self.check_test_selected_loading_verifies_all_members_without_numpy_archive_materialization)
+        self.scenario(self.check_test_selected_loading_preserves_compact_scalar_zero_endian_and_complex_domains)
+        self.scenario(self.check_test_selected_loading_checks_unselected_semantics_even_with_rehashed_manifest)
+        self.scenario(self.check_test_selected_loading_checks_unselected_tail_hash_values_and_crc)
+        self.scenario(self.check_test_selected_loading_streams_incompressible_32mib_member_with_bounded_host_peak)
+        self.scenario(self.check_test_stage_replay_requires_exact_source_frame_recipe_and_upstream_identity)
+        self.scenario(self.check_test_content_address_is_immutable_and_different_content_gets_new_identity)
+        self.scenario(self.check_test_compact_empty_coordinate_table_round_trips_immutably)
+        self.scenario(self.check_test_raster_roles_bind_frame_dtype_and_semantic_ranges)
+        self.scenario(self.check_test_image_raster_role_binds_channels_dtype_shape_and_value_range)
+        self.scenario(self.check_test_integer_raster_value_ranges_preserve_bounds_above_float_precision)
+        self.scenario(self.check_test_concurrent_same_content_winner_leaves_no_losing_stage)
+        self.scenario(self.check_test_archive_path_replacement_after_preflight_cannot_change_deserialized_snapshot)
+        self.scenario(self.check_test_checkpoint_metadata_accepts_only_strict_json_primitives)
+
+    def test_validation_and_recovery(self):
+        """17 related BenchmarkCheckpointTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_selected_loading_rejects_unknown_names_and_keeps_aggregate_admission)
+        self.scenario(self.check_test_selected_loading_rejects_changed_unselected_payload_and_header)
+        self.scenario(self.check_test_selected_loading_cancels_while_streaming_unselected_array)
+        self.scenario(self.check_test_selected_loading_rejects_empty_raster_member_before_payload_decode)
+        self.scenario(self.check_test_tampered_recipe_metadata_and_coordinate_metadata_are_rejected)
+        self.scenario(self.check_test_changed_npz_values_and_dtype_are_rejected)
+        self.scenario(self.check_test_valid_empty_and_unavailable_execution_states_stay_distinct)
+        self.scenario(self.check_test_array_and_metadata_limits_and_cancellation_are_enforced)
+        self.scenario(self.check_test_aggregate_budget_is_checked_before_any_tensor_cpu_transfer)
+        self.scenario(self.check_test_npz_container_limit_is_preflighted_before_tensor_transfer)
+        self.scenario(self.check_test_npz_keyword_collisions_are_rejected_before_tensor_transfer)
+        self.scenario(self.check_test_loader_rejects_npz_keyword_collisions_in_rehashed_manifests)
+        self.scenario(self.check_test_loader_rejects_semantically_invalid_raster_role_even_with_rehashed_manifest)
+        self.scenario(self.check_test_post_staging_cancellation_cleans_temporary_directory)
+        self.scenario(self.check_test_exact_array_size_limit_round_trips_with_bounded_header_slack)
+        self.scenario(self.check_test_forged_huge_npy_shape_is_rejected_before_np_load)
+        self.scenario(self.check_test_adversarial_duplicate_unsafe_object_and_high_ratio_archives_are_rejected)
 
 
 if __name__ == "__main__":

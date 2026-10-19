@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from tests.catalogue_fixtures import CatalogueTestCase
+
+from tests.functional_units import functional_units
+
 import unittest
 
 import numpy as np
@@ -7,8 +11,9 @@ import numpy as np
 from seedvision.ui.reference_history import RasterUndoHistory
 
 
-class RasterUndoHistoryTests(unittest.TestCase):
-    def test_grouped_reference_edit_is_restored_atomically(self) -> None:
+@functional_units
+class RasterUndoHistoryTests(CatalogueTestCase):
+    def check_test_grouped_reference_edit_is_restored_atomically(self) -> None:
         shape = (300, 310)
         background = np.zeros(shape, dtype=bool)
         foreground = np.zeros(shape, dtype=bool)
@@ -35,7 +40,7 @@ class RasterUndoHistoryTests(unittest.TestCase):
             self.assertTrue(np.array_equal(actual, expected))
         self.assertEqual(len(history), 0)
 
-    def test_multiple_tiles_and_commands_undo_in_reverse_order(self) -> None:
+    def check_test_multiple_tiles_and_commands_undo_in_reverse_order(self) -> None:
         original = np.zeros((390, 390), dtype=np.uint16)
         first = original.copy()
         first[2:9, 3:11] = 4
@@ -57,7 +62,7 @@ class RasterUndoHistoryTests(unittest.TestCase):
         assert undone_first is not None
         self.assertTrue(np.array_equal(undone_first.rasters[0], original))
 
-    def test_no_op_does_not_consume_history(self) -> None:
+    def check_test_no_op_does_not_consume_history(self) -> None:
         values = np.zeros((16, 18), dtype=bool)
         history = RasterUndoHistory(limit=5)
 
@@ -67,7 +72,7 @@ class RasterUndoHistoryTests(unittest.TestCase):
         self.assertEqual(len(history), 0)
         self.assertIsNone(history.undo((values,)))
 
-    def test_queue_is_bounded_and_preserves_instance_origin(self) -> None:
+    def check_test_queue_is_bounded_and_preserves_instance_origin(self) -> None:
         history = RasterUndoHistory(limit=5)
         states = [np.zeros((12, 20), dtype=np.uint16)]
         for index in range(8):
@@ -102,9 +107,20 @@ class RasterUndoHistoryTests(unittest.TestCase):
         # The three commands evicted by the bounded queue remain applied.
         self.assertTrue(np.array_equal(current[0], states[3]))
 
-    def test_limit_must_retain_at_least_five_commands(self) -> None:
+    def check_test_limit_must_retain_at_least_five_commands(self) -> None:
         with self.assertRaisesRegex(ValueError, "at least five"):
             RasterUndoHistory(limit=4)
+
+    def test_workflow_lifecycle(self):
+        """4 related RasterUndoHistoryTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_grouped_reference_edit_is_restored_atomically)
+        self.scenario(self.check_test_multiple_tiles_and_commands_undo_in_reverse_order)
+        self.scenario(self.check_test_no_op_does_not_consume_history)
+        self.scenario(self.check_test_queue_is_bounded_and_preserves_instance_origin)
+
+    def test_validation_and_recovery(self):
+        """1 related RasterUndoHistoryTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_limit_must_retain_at_least_five_commands)
 
 
 if __name__ == "__main__":

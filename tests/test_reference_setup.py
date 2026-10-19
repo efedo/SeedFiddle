@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.functional_units import functional_units
+
 import hashlib
 import json
 from pathlib import Path
@@ -32,8 +34,9 @@ ARTIFACTS = ROOT / "artifacts" / "reference-sources"
 PINNED_COMMIT = "77e3322fd0cd5a9bef18bb99402f20c8f2db87a9"
 
 
+@functional_units
 class ReferenceSetupTests(unittest.TestCase):
-    def test_reconstructed_manifests_match_runner_hash_pins_and_all_locked_packages(self) -> None:
+    def check_test_reconstructed_manifests_match_runner_hash_pins_and_all_locked_packages(self) -> None:
         config, _ = _load_source_registry(CONFIG)
         records = _validate_source_records(config)
         self.assertEqual(len(records), MAX_SOURCE_FILES)
@@ -60,7 +63,7 @@ class ReferenceSetupTests(unittest.TestCase):
         self.assertEqual(len(inventory), 67)
         self.assertEqual(hashlib.sha256(environment_raw).hexdigest(), "92532d707ee1895e8e3a9c26f218fed9c51d4510b8cbc6a80a545cdbb9b05162")
 
-    def test_materialization_is_idempotent_and_missing_sources_stay_explicit_without_fetch(self) -> None:
+    def check_test_materialization_is_idempotent_and_missing_sources_stay_explicit_without_fetch(self) -> None:
         with tempfile.TemporaryDirectory() as name:
             target = Path(name) / "reference-sources"
             first = materialize_reference_setup(target, repository_root=ROOT)
@@ -80,7 +83,7 @@ class ReferenceSetupTests(unittest.TestCase):
             self.assertEqual(first.unavailable_sources, second.unavailable_sources)
             self.assertTrue(second.metadata_available)
 
-    def test_status_reports_missing_retained_flyr_wheel_for_fresh_project_root(self) -> None:
+    def check_test_status_reports_missing_retained_flyr_wheel_for_fresh_project_root(self) -> None:
         with tempfile.TemporaryDirectory() as name:
             fresh_root = Path(name)
             status = materialize_reference_setup(
@@ -94,7 +97,7 @@ class ReferenceSetupTests(unittest.TestCase):
             self.assertFalse(status.provisioning_prerequisites_available)
             self.assertEqual(len(status.unavailable_sources), 15)
 
-    def test_changed_lock_or_existing_source_is_never_overwritten(self) -> None:
+    def check_test_changed_lock_or_existing_source_is_never_overwritten(self) -> None:
         with tempfile.TemporaryDirectory() as name:
             temp = Path(name)
             altered_lock = temp / "requirements.txt"
@@ -116,7 +119,7 @@ class ReferenceSetupTests(unittest.TestCase):
             self.assertEqual(wrong_source.read_bytes(), b"changed source bytes")
             self.assertFalse((target / "plantcv-source-audit.json").exists())
 
-    def test_source_inventory_rejects_traversal_duplicates_and_unpinned_urls(self) -> None:
+    def check_test_source_inventory_rejects_traversal_duplicates_and_unpinned_urls(self) -> None:
         config, _ = _load_source_registry(CONFIG)
         for mutation, message in (
             (lambda files: files[0].update(path="../outside"), "unsafe path"),
@@ -134,7 +137,7 @@ class ReferenceSetupTests(unittest.TestCase):
             with self.assertRaisesRegex(ReferenceSetupError, "unsafe path"):
                 _safe_child(root, "../outside", label="test target")
 
-    def test_fetch_callback_is_explicit_pinned_bounded_and_hash_verified(self) -> None:
+    def check_test_fetch_callback_is_explicit_pinned_bounded_and_hash_verified(self) -> None:
         content = b"abcdef"
         record = _SourceRecord(
             path="small/fake.py",
@@ -163,7 +166,7 @@ class ReferenceSetupTests(unittest.TestCase):
             self.assertFalse(target.exists())
             self.assertEqual(list(target.parent.iterdir()), [])
 
-    def test_cancelled_fetch_cleans_partial_temporary_output(self) -> None:
+    def check_test_cancelled_fetch_cleans_partial_temporary_output(self) -> None:
         content = b"abcdef"
         record = _SourceRecord(
             path="small/fake.py",
@@ -183,7 +186,7 @@ class ReferenceSetupTests(unittest.TestCase):
             self.assertFalse(target.exists())
             self.assertEqual(list(target.parent.iterdir()), [])
 
-    def test_fetch_chunk_bounds_precede_copy_and_reject_nonprogress(self) -> None:
+    def check_test_fetch_chunk_bounds_precede_copy_and_reject_nonprogress(self) -> None:
         large = bytearray(16 * 1024 * 1024)
         chunk = memoryview(large)
         with mock.patch("seedvision.benchmarking.reference_setup._copy_fetch_chunk") as copy_chunk:
@@ -207,7 +210,7 @@ class ReferenceSetupTests(unittest.TestCase):
             with self.assertRaisesRegex(ReferenceSetupError, "chunk limit"):
                 list(_iter_bounded_chunks((b"a" for _ in range(10)), maximum=10, label="probe"))
 
-    def test_generated_metadata_passes_runner_source_validator_when_committed_bytes_exist(self) -> None:
+    def check_test_generated_metadata_passes_runner_source_validator_when_committed_bytes_exist(self) -> None:
         pinned_source_root = ARTIFACTS / "plantcv-v4.11.3"
         config, _ = _load_source_registry(CONFIG)
         if not all((pinned_source_root / item["path"]).is_file() for item in config["files"]):
@@ -248,6 +251,23 @@ class ReferenceSetupTests(unittest.TestCase):
             )
             self.assertEqual(expected["source_audit_sha256"], reference_runner.PINNED_SOURCE_AUDIT_SHA256)
             self.assertEqual(len(expected["expected_distributions"]), 67)
+
+    def test_generated_metadata_passes_runner_source_validator_when_committed_bytes_exist(self):
+        self.scenario(self.check_test_generated_metadata_passes_runner_source_validator_when_committed_bytes_exist, labelled=False)
+
+    def test_workflow_lifecycle(self):
+        """3 related ReferenceSetupTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_reconstructed_manifests_match_runner_hash_pins_and_all_locked_packages)
+        self.scenario(self.check_test_changed_lock_or_existing_source_is_never_overwritten)
+        self.scenario(self.check_test_fetch_callback_is_explicit_pinned_bounded_and_hash_verified)
+
+    def test_validation_and_recovery(self):
+        """5 related ReferenceSetupTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_materialization_is_idempotent_and_missing_sources_stay_explicit_without_fetch)
+        self.scenario(self.check_test_status_reports_missing_retained_flyr_wheel_for_fresh_project_root)
+        self.scenario(self.check_test_source_inventory_rejects_traversal_duplicates_and_unpinned_urls)
+        self.scenario(self.check_test_cancelled_fetch_cleans_partial_temporary_output)
+        self.scenario(self.check_test_fetch_chunk_bounds_precede_copy_and_reject_nonprogress)
 
 
 if __name__ == "__main__":

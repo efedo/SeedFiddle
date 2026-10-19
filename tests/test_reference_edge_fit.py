@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from tests.catalogue_fixtures import CatalogueTestCase
+
+from tests.functional_units import functional_units
+
 import unittest
 from dataclasses import replace
 from types import SimpleNamespace
@@ -18,8 +22,9 @@ from seedvision.segmentation.reference_edge_fit import (
 from seedvision.visualization import AnalysisLayerSettings
 
 
-class ReferenceEdgeFitTests(unittest.TestCase):
-    def test_internal_prototype_sources_are_prominent_normal_maxima(self) -> None:
+@functional_units
+class ReferenceEdgeFitTests(CatalogueTestCase):
+    def check_test_internal_prototype_sources_are_prominent_normal_maxima(self) -> None:
         import torch
 
         from seedvision.cuda.layers import _candidate_internal_edge_mask
@@ -57,7 +62,7 @@ class ReferenceEdgeFitTests(unittest.TestCase):
         self.assertEqual(int(selected.sum().item()), selected.shape[0])
         self.assertFalse(bool(selected[:, 10].any().item()))
 
-    def test_default_fit_optimizes_edge_class_contrast(self) -> None:
+    def check_test_default_fit_optimizes_edge_class_contrast(self) -> None:
         names = tuple(
             parameter.name for parameter in DEFAULT_REFERENCE_EDGE_FIT_PARAMETERS
         )
@@ -81,7 +86,7 @@ class ReferenceEdgeFitTests(unittest.TestCase):
         self.assertTrue(report.improved)
         self.assertEqual(report.proposed_settings.reference_edge_class_contrast, 5.0)
 
-    def test_evaluation_trains_and_scores_disjoint_instance_ids(self) -> None:
+    def check_test_evaluation_trains_and_scores_disjoint_instance_ids(self) -> None:
         import torch
 
         from seedvision.cuda import CudaContext
@@ -147,7 +152,7 @@ class ReferenceEdgeFitTests(unittest.TestCase):
                 & (captured["holdout"] > 0)
             )
         )
-    def test_training_buffer_cannot_change_fixed_evaluation_targets(self) -> None:
+    def check_test_training_buffer_cannot_change_fixed_evaluation_targets(self) -> None:
         import cv2
         import torch
         from seedvision.cuda import CudaContext
@@ -176,7 +181,7 @@ class ReferenceEdgeFitTests(unittest.TestCase):
         self.assertEqual(scores[0].nonphysical_samples, scores[1].nonphysical_samples)
         self.assertAlmostEqual(scores[0].loss, scores[1].loss, places=8)
 
-    def test_balanced_score_rewards_correct_support_and_rejects_cross_matches(self) -> None:
+    def check_test_balanced_score_rewards_correct_support_and_rejects_cross_matches(self) -> None:
         physical_target = np.asarray(((1, 1), (0, 0)), dtype=bool)
         nonphysical_target = ~physical_target
         good = score_reference_edge_probabilities(
@@ -198,7 +203,7 @@ class ReferenceEdgeFitTests(unittest.TestCase):
         self.assertLess(good.physical_cross_match, 0.15)
         self.assertLess(good.nonphysical_cross_match, 0.15)
 
-    def test_bounded_coordinate_search_proposes_only_improving_edge_settings(self) -> None:
+    def check_test_bounded_coordinate_search_proposes_only_improving_edge_settings(self) -> None:
         initial = AnalysisLayerSettings(reference_edge_similarity_scale=1.0)
 
         def evaluate(settings: AnalysisLayerSettings) -> ReferenceEdgeFitScore:
@@ -232,7 +237,7 @@ class ReferenceEdgeFitTests(unittest.TestCase):
         )
         self.assertLessEqual(report.evaluations, 7)
 
-    def test_fit_refuses_targets_missing_either_edge_class(self) -> None:
+    def check_test_fit_refuses_targets_missing_either_edge_class(self) -> None:
         with self.assertRaisesRegex(ValueError, "both annotated physical"):
             score_reference_edge_probabilities(
                 np.ones((3, 3), np.float32),
@@ -240,6 +245,19 @@ class ReferenceEdgeFitTests(unittest.TestCase):
                 np.ones((3, 3), bool),
                 np.zeros((3, 3), bool),
             )
+
+    def test_workflow_lifecycle(self):
+        """5 related ReferenceEdgeFitTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_internal_prototype_sources_are_prominent_normal_maxima)
+        self.scenario(self.check_test_default_fit_optimizes_edge_class_contrast)
+        self.scenario(self.check_test_evaluation_trains_and_scores_disjoint_instance_ids)
+        self.scenario(self.check_test_training_buffer_cannot_change_fixed_evaluation_targets)
+        self.scenario(self.check_test_bounded_coordinate_search_proposes_only_improving_edge_settings)
+
+    def test_validation_and_recovery(self):
+        """2 related ReferenceEdgeFitTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_balanced_score_rewards_correct_support_and_rejects_cross_matches)
+        self.scenario(self.check_test_fit_refuses_targets_missing_either_edge_class)
 
 
 if __name__ == "__main__":

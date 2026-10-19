@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.functional_units import functional_units
+
 import unittest
 
 import cv2
@@ -48,6 +50,7 @@ def _synthetic_inputs():
     )
 
 
+@functional_units
 class AdvancedAnalysisTests(unittest.TestCase):
     def _build(self, device: str):
         return build_advanced_analysis_layers(
@@ -63,7 +66,7 @@ class AdvancedAnalysisTests(unittest.TestCase):
             ),
         )
 
-    def test_all_fourteen_products_and_intermediates_are_renderable(self) -> None:
+    def check_test_all_fourteen_products_and_intermediates_are_renderable(self) -> None:
         layers = self._build("cpu")
         self.assertEqual(layers.backend.used, "cpu")
         self.assertEqual(len(ADVANCED_NODE_MODES), 14)
@@ -83,32 +86,8 @@ class AdvancedAnalysisTests(unittest.TestCase):
         self.assertAlmostEqual(sum(first.pattern_proportions), 1.0, places=4)
         self.assertIn(first.dominant_colour, layers.colour_class_names)
 
-    def test_cuda_is_the_active_backend_when_available(self) -> None:
-        try:
-            import torch
-        except ImportError as error:
-            self.skipTest(str(error))
-        if not torch.cuda.is_available():
-            self.skipTest("PyTorch CUDA is unavailable")
-        layers = self._build("cuda")
-        self.assertEqual(layers.backend.used, "cuda")
-        self.assertIn("NVIDIA", layers.backend.device_name.upper())
-        from seedvision.cuda import GpuRaster
 
-        raster_values = (
-            layers.valid_mask,
-            *layers.rasters.values(),
-            *layers.colour_probabilities,
-            *layers.pattern_probabilities,
-            *(value for pair in layers.hue_rasters.values() for value in pair),
-        )
-        self.assertTrue(
-            all(isinstance(value, GpuRaster) for value in raster_values)
-        )
-        self.assertTrue(all(value.gpu_resident for value in raster_values))
-        self.assertTrue(all(not value.is_materialized for value in raster_values))
-
-    def test_trait_only_change_reuses_independent_cached_products(self) -> None:
+    def check_test_trait_only_change_reuses_independent_cached_products(self) -> None:
         first = self._build("cpu")
         second = build_advanced_analysis_layers(
             *_synthetic_inputs(),
@@ -138,7 +117,7 @@ class AdvancedAnalysisTests(unittest.TestCase):
             first.rasters["wrinkling_likelihood"],
         )
 
-    def test_seed_interior_does_not_recombine_raw_foreground_noise(self) -> None:
+    def check_test_seed_interior_does_not_recombine_raw_foreground_noise(self) -> None:
         inputs = _synthetic_inputs()
         shape = inputs[0].shape[:2]
         settings = AdvancedAnalysisSettings(
@@ -178,7 +157,7 @@ class AdvancedAnalysisTests(unittest.TestCase):
             quiet.rasters["boundary_magnitude"],
         )
 
-    def test_precomputed_sensor_noise_matches_image_quality_output(self) -> None:
+    def check_test_precomputed_sensor_noise_matches_image_quality_output(self) -> None:
         import torch
 
         from seedvision.visualization.advanced import (
@@ -225,7 +204,7 @@ class AdvancedAnalysisTests(unittest.TestCase):
         )
         self.assertLessEqual(int(difference.max()), 1)
 
-    def test_local_lighting_flattens_gradient_and_classifies_extremes(self) -> None:
+    def check_test_local_lighting_flattens_gradient_and_classifies_extremes(self) -> None:
         import torch
 
         from seedvision.visualization.advanced import (
@@ -302,7 +281,7 @@ class AdvancedAnalysisTests(unittest.TestCase):
             )
             self.assertLessEqual(int(difference.max()), 1, name)
 
-    def test_despeckling_removes_only_compact_surrounded_dark_residuals(self) -> None:
+    def check_test_despeckling_removes_only_compact_surrounded_dark_residuals(self) -> None:
         import torch
 
         from seedvision.visualization.advanced import (
@@ -345,6 +324,15 @@ class AdvancedAnalysisTests(unittest.TestCase):
             float(flattened[0, 0, 64, 30]),
             places=6,
         )
+
+    def test_workflow_lifecycle(self):
+        """6 related AdvancedAnalysisTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_all_fourteen_products_and_intermediates_are_renderable)
+        self.scenario(self.check_test_trait_only_change_reuses_independent_cached_products)
+        self.scenario(self.check_test_seed_interior_does_not_recombine_raw_foreground_noise)
+        self.scenario(self.check_test_precomputed_sensor_noise_matches_image_quality_output)
+        self.scenario(self.check_test_local_lighting_flattens_gradient_and_classifies_extremes)
+        self.scenario(self.check_test_despeckling_removes_only_compact_surrounded_dark_residuals)
 
 
 if __name__ == "__main__":

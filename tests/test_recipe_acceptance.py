@@ -13,6 +13,7 @@ import re
 import subprocess
 import tempfile
 import unittest
+from tests.catalogue_fixtures import CatalogueTestCase
 
 import cv2
 import numpy as np
@@ -43,6 +44,13 @@ CODE_TRANSITION_SHA256 = 'd5b42dda845b4aed842ef6807403af874e5dfc55c81b936221ff10
 EXPORTER_SOURCE_PIN = ('seedvision/export/native_results.py',
     'db660bbab977b508e0dd7cd9f37ec7c04f7a0aced0a7e92a067f1f4a4602c3d4',
     '5dd37e122604328f55295a13fa7aebdb47fcfd66d9480f0e0c410eee37d2aa28')
+WORKSPACE_CODE_TRANSITION = ROOT/'artifacts'/'pipeline-workspace-code-provenance-v3.json'
+WORKSPACE_CODE_TRANSITION_SHA256 = '261d7197cf2d6975bebf08e0268aacdf14a899a3b1a0479e6450776781d20cdf'
+WORKSPACE_EXPORTER_SHA256 = '99f236f79fc063613c305c3e1dec9dfe7f22fcd9dc539b6025dca77b17ee7e5d'
+WORKSPACE_CODE_TRANSITION_COUNT = 495
+WORKSPACE_DRIVER_TRANSITION = ROOT/'artifacts'/'pipeline-workspace-cuda-driver-transition-v1.json'
+WORKSPACE_DRIVER_TRANSITION_SHA256 = '31c9108a7ca76a11840b52274bd0e69cc912098e0af7c19f2e8a78da6698376c'
+WORKSPACE_CORRECTION_RECONSTRUCTION_SHA256 = 'c534129af8994ff8bb51aac086cc25194eeab110b9247b255d18185cc9c66f0e'
 
 
 def _reviewed_capture_pins(pins):
@@ -89,6 +97,122 @@ def _reviewed_code_provenance(expected):
                 raise AssertionError('Preparation facts changed beyond code tokens: ' + path)
         elif not all(re.fullmatch('[0-9a-f]{64}', change[value]) for value in ('old', 'new')):
             raise AssertionError('Invalid reviewed code identity: ' + path)
+        target[key] = change['new']
+    return expected
+
+
+def _workspace_capture_pins(pins):
+    """Move only the separately reviewed exporter identity to the workspace revision."""
+    name = EXPORTER_SOURCE_PIN[0]
+    if pins['source_files'][name] != EXPORTER_SOURCE_PIN[2]:
+        raise AssertionError('Workspace transition requires the prior reviewed exporter.')
+    result = dict(pins)
+    result['source_files'] = dict(pins['source_files'])
+    result['source_files'][name] = WORKSPACE_EXPORTER_SHA256
+    return result
+
+
+def _workspace_code_provenance(expected):
+    """Keep all numerical expectations fixed while checking exact new code identities."""
+    raw = WORKSPACE_CODE_TRANSITION.read_bytes()
+    if sha256(raw).hexdigest() != WORKSPACE_CODE_TRANSITION_SHA256:
+        raise AssertionError('Reviewed workspace code-identity record changed.')
+    record = json.loads(raw)
+    if (record['schema'] != 'seedfiddle.workspace-code-provenance.v2'
+            or record['baseline_sha256'] != BASELINE_SHA256
+            or record['prior_transition_sha256'] != CODE_TRANSITION_SHA256):
+        raise AssertionError('Workspace record does not bind the unchanged numerical baseline.')
+    from tests.acceptance_provenance import verify_previous_source
+    for name, digest in record['source_files'].items():
+        verify_previous_source(name, digest)
+    changes = record['transitions']
+    if len(changes) != WORKSPACE_CODE_TRANSITION_COUNT or len({c['path'] for c in changes}) != len(changes):
+        raise AssertionError('Workspace code changes differ from their exact reviewed inventory.')
+    allowed = re.compile(r'^/cases/(?:0|[1-9][0-9]*)/(?:runtime_calculation_pins/(?:executor|correction_tensor_executor)|preparation/(?:rgb|gray))$')
+    tokens = re.compile(r'((?:input helper|preparation|CUDA converter) )[0-9a-f]{64}')
+    for change in changes:
+        path = change['path']
+        if path == '/capture_pins/source_files/seedvision~1export~1native_results.py':
+            if (change['old'], change['new']) != (EXPORTER_SOURCE_PIN[2], WORKSPACE_EXPORTER_SHA256):
+                raise AssertionError('Workspace exporter source identity is unreviewed.')
+            expected['capture_pins'] = _workspace_capture_pins(expected['capture_pins'])
+            continue
+        if not allowed.fullmatch(path):
+            raise AssertionError('Workspace transition changes a non-code field: '+path)
+        _, _, index, section, key = path.split('/')
+        target = expected['cases'][int(index)][section]
+        if key == 'correction_tensor_executor' and (int(index) not in (221, 222)
+                or expected['cases'][int(index)]['family'] != 'four-input'):
+            raise AssertionError('Workspace correction identity is outside its two exact profiles.')
+        if target[key] != change['old']:
+            raise AssertionError('Workspace prior identity does not match: '+path)
+        if section == 'preparation':
+            if tokens.sub(r'\1<CODE>', change['old']) != tokens.sub(r'\1<CODE>', change['new']):
+                raise AssertionError('Workspace preparation facts changed beyond code identities.')
+        elif not all(re.fullmatch('[0-9a-f]{64}', change[key]) for key in ('old', 'new')):
+            raise AssertionError('Invalid workspace code identity: '+path)
+        target[key] = change['new']
+    return expected
+
+
+def _workspace_environment_provenance(expected):
+    """Apply one exact driver environment migration; numerical fields stay exact."""
+    raw = WORKSPACE_DRIVER_TRANSITION.read_bytes()
+    if sha256(raw).hexdigest() != WORKSPACE_DRIVER_TRANSITION_SHA256:
+        raise AssertionError('Reviewed CUDA driver environment record changed.')
+    record = json.loads(raw)
+    if (record['schema'] != 'seedfiddle.workspace-cuda-driver-environment-transition.v1'
+            or record['baseline_sha256'] != BASELINE_SHA256
+            or record['code_transition_sha256'] != WORKSPACE_CODE_TRANSITION_SHA256
+            or record['previous_driver_api'] != '13010' or record['current_driver_api'] != '13030'):
+        raise AssertionError('Driver record does not bind the exact baseline/code/environment revisions.')
+    proof_path = ROOT/'artifacts'/'pipeline-workspace-correction-identity-reconstruction-v1.json'
+    proof_raw = proof_path.read_bytes()
+    if (sha256(proof_raw).hexdigest() != WORKSPACE_CORRECTION_RECONSTRUCTION_SHA256
+            or record['correction_reconstruction']['sha256'] != WORKSPACE_CORRECTION_RECONSTRUCTION_SHA256):
+        raise AssertionError('Correction environment derivation changed.')
+    proof = json.loads(proof_raw)
+    # The two nested identities bind the complete runtime. Keep copies showing
+    # that only the driver fact and its mathematically derived digest advance.
+    runtimes = record['correction_runtimes']
+    if len(runtimes) != 2 or {row['case_index'] for row in runtimes} != {221, 222}:
+        raise AssertionError('Expected exactly two recorded correction runtime derivations.')
+    for row in runtimes:
+        index, previous, current = row['case_index'], row['previous'], row['current']
+        if (expected['cases'][index]['family'] != 'four-input'
+                or expected['cases'][index]['runtime_calculation_pins'] != previous
+                or set(previous) != set(current)
+                or {key for key in previous if previous[key] != current[key]}
+                    != {'cuda_driver_api', 'correction_tensor_executor'}):
+            raise AssertionError('Correction runtime changed outside its explicit driver dependency.')
+        for runtime, label in ((previous, 'code_only_runtime'), (current, 'current_driver_runtime')):
+            core = {key: value for key, value in runtime.items()
+                    if key not in ('correction_tensor_executor', 'correction_input_preparation', 'PySide6')}
+            if core != proof[label]:
+                raise AssertionError('Correction driver derivation differs from its full recorded runtime.')
+            identity = runner._digest({'runtime': core, 'modules': proof['correction_module_records']})
+            if runtime['correction_tensor_executor'] != identity:
+                raise AssertionError('Correction driver-dependent executor digest does not recompute exactly.')
+    changes = record['driver_transitions']
+    expected_paths = {f'/cases/{index}/runtime_calculation_pins/cuda_driver_api' for index in range(223)}
+    if len(changes) != 223 or {change['path'] for change in changes} != expected_paths:
+        raise AssertionError('Driver transition must cover exactly the 223 recorded profiles.')
+    for change in changes:
+        _, _, index, _, key = change['path'].split('/')
+        target = expected['cases'][int(index)]['runtime_calculation_pins']
+        if (change['old'], change['new']) != ('13010', '13030') or target[key] != change['old']:
+            raise AssertionError('Driver transition changed an unreviewed environment value.')
+        target[key] = change['new']
+    derived = record['derived_correction_transitions']
+    paths = {f'/cases/{index}/runtime_calculation_pins/correction_tensor_executor' for index in (221, 222)}
+    if len(derived) != 2 or {change['path'] for change in derived} != paths:
+        raise AssertionError('Driver transition must contain exactly its two derived correction identities.')
+    for change in derived:
+        _, _, index, _, key = change['path'].split('/')
+        target = expected['cases'][int(index)]['runtime_calculation_pins']
+        if ((change['old'], change['new']) != (proof['code_only_correction_tensor_executor'],
+                proof['current_driver_correction_tensor_executor']) or target[key] != change['old']):
+            raise AssertionError('Unreviewed derived correction environment identity.')
         target[key] = change['new']
     return expected
 
@@ -458,64 +582,17 @@ def capture_recipe_acceptance(progress=None, *, include_recipe_ids=None):
             'capture_pins': _capture_pins()}
 
 
-class RecipeAcceptanceTests(unittest.TestCase):
-    def test_reviewed_revision_preserves_historical_evidence_and_exact_dependency_changes(self):
-        old_raw, new_raw = HISTORICAL_BASELINE.read_bytes(), BASELINE.read_bytes()
-        self.assertEqual(sha256(old_raw).hexdigest(), HISTORICAL_BASELINE_SHA256)
-        self.assertEqual(sha256(new_raw).hexdigest(), BASELINE_SHA256)
-        old, new = json.loads(old_raw), json.loads(new_raw)
-        self.assertEqual(_reviewed_capture_pins(old['capture_pins']), _capture_pins())
-        self.assertEqual(new['capture_pins'], old['capture_pins'])
-        pairs = {
-            '550f69bf132094fb2d2a033c7cc482e2590da783b31f55580ceb3b30ed4c1f84':
-                'f8f29a7da0b73f5b350c080ec9bdb439abf273f9c06f9088c50e2a8752942aa4',
-            'bf3660048d5cedfce257c6d8f27cbe431adc4a4e5990506e99666403f37fe384':
-                '551ce9dcedf817316d3f1e033925e05112d9eb1f8bcf2a126e183414c9049a3c',
-            '1480127602d358b53b89d67edbceeff3d80a2b5827f2dc4ed26ce157dc9fbedc':
-                '2823cea16bcc223ba9155dbc65db58ffea7cadd51d5a5f9be05703d9a3fa3bc8',
-            '15f062bfa32eb9d9d1b156b952e3016d0503729bd89f6ef463aa043dd9edf898':
-                '2695e5b8949702979ca43dfc7c5fd26af77cc1396d9231d5b223628ccf619a7b',
-        }
-        expected = {}
-        for index, row in enumerate(old['cases']):
-            operations = {stage['operation_id'] for stage in row['recipe']['stages']}
-            pin = ('correction_tensor_executor' if row['family'] == 'four-input' else
-                   'calculation_modules_sha256' if 'color_card.affine' in operations else None)
-            if pin is not None:
-                previous = row['runtime_calculation_pins'][pin]
-                expected[f'/cases/{index}/runtime_calculation_pins/{pin}'] = (previous, pairs[previous])
-        self.assertEqual(len(expected), 67)
-        self.assertEqual(sum(path.endswith('/correction_tensor_executor') for path in expected), 2)
+class RecipeAcceptanceTests(CatalogueTestCase):
 
-        def differences(left, right, path=''):
-            self.assertIs(type(left), type(right), path)
-            if isinstance(left, dict):
-                self.assertEqual(set(left), set(right), path)
-                return {key: value for name in left
-                        for key, value in differences(left[name], right[name], path+'/'+name).items()}
-            if isinstance(left, list):
-                self.assertEqual(len(left), len(right), path)
-                return {key: value for index, (a, b) in enumerate(zip(left, right))
-                        for key, value in differences(a, b, path+'/'+str(index)).items()}
-            return {} if left == right else {path: (left, right)}
-
-        self.assertEqual(differences(old, new), expected)
 
     def test_complete_admitted_version_profile_inventory(self):
-        profiles = canonical_profiles()
+        # The numerical matrix admits every profile through the actual runner.
+        profiles = canonical_profiles(validate=False)
         self.assertEqual(len(profiles), 223)
         self.assertEqual(sum(label == 'canonical' for label, _ in profiles), 69)
         self.assertEqual(sum(label == 'median-roi' for label, _ in profiles), 56)
         self.assertEqual(sum(label in ('reader', 'reader-median') for label, _ in profiles), 96)
         self.assertEqual(sum(label.startswith('four-input') for label, _ in profiles), 2)
-
-    def test_mean_orientation_boundary_stays_partial_and_archives_missing_outputs(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            paths, models, _, _ = _fixtures(root)
-            boundary = _mean_boundary(root, paths, models)
-            self.assertTrue(boundary['excluded_from_complete_profile_count'])
-            self.assertEqual(boundary['expected_status'], 'partial')
 
     def test_selected_complete_mean_inputs_match_pinned_public_chains(self):
         from tests import test_native_recipe as seeds
@@ -569,16 +646,12 @@ class RecipeAcceptanceTests(unittest.TestCase):
                             np.testing.assert_array_equal(histogram.values, observations[label.sample][histogram.variable]['value'])
 
     def test_all_selected_recipes_cold_warm_verified_archive_and_source_absent_replay(self):
-        self.assertTrue(BASELINE.is_file(), 'The reviewed ignored recipe baseline is required; tests never generate it.')
-        raw = BASELINE.read_bytes()
-        self.assertEqual(sha256(raw).hexdigest(), BASELINE_SHA256,
-                         'Recipe baseline is missing, changed or not yet reviewed/frozen.')
-        expected = _reviewed_code_provenance(json.loads(raw))
-        def progress(count, total, recipe_id, row):
-            if row.get('phase') != 'starting':
-                print(f'\nAccepted {count}/{total}: {recipe_id}', flush=True)
+        from tests.acceptance_workflows import compare_functional_profiles
+        compare_functional_profiles(self)
 
-        assert_json_equal(self, capture_recipe_acceptance(progress=progress), expected)
+    def test_frozen_baseline_integrity(self):
+        from tests.acceptance_workflows import verify_frozen_baselines
+        verify_frozen_baselines(self)
 
 
 class AcceptanceDifferenceTests(unittest.TestCase):

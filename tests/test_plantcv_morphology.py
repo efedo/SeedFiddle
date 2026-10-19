@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.functional_units import functional_units
+
 import hashlib
 import json
 from pathlib import Path
@@ -87,13 +89,14 @@ class PlantCVMorphologySourceTests(unittest.TestCase):
 
 
 @unittest.skipUnless(torch.cuda.is_available(), "CUDA morphology primitives require an available CUDA device")
+@functional_units
 class PlantCVMorphologyPrimitiveTests(unittest.TestCase):
-    def test_kernel_and_iteration_domain_matches_reference_runner_limits(self) -> None:
+    def check_test_kernel_and_iteration_domain_matches_reference_runner_limits(self) -> None:
         self.assertEqual((MIN_KERNEL_SIZE, MAX_KERNEL_SIZE), (2, 255))
         self.assertEqual((MIN_ITERATIONS, MAX_ITERATIONS), (1, 64))
         self.assertEqual(MAX_RASTER_PIXELS, 64_000_000)
 
-    def test_erode_and_dilate_preserve_gray_values_and_cuda_residency(self) -> None:
+    def check_test_erode_and_dilate_preserve_gray_values_and_cuda_residency(self) -> None:
         gray = torch.tensor(
             [[0, 1, 16, 127, 128, 254, 255],
              [255, 220, 180, 128, 90, 10, 0],
@@ -110,7 +113,7 @@ class PlantCVMorphologyPrimitiveTests(unittest.TestCase):
             self.assertTrue(torch.all(result <= 255))
         torch.testing.assert_close(gray, before)
 
-    def test_noncontiguous_view_matches_contiguous_input_and_retains_shape(self) -> None:
+    def check_test_noncontiguous_view_matches_contiguous_input_and_retains_shape(self) -> None:
         base = torch.arange(0, 120, dtype=torch.uint8, device="cuda").reshape(5, 24)
         view = base[:, ::3]
         self.assertFalse(view.is_contiguous())
@@ -121,13 +124,13 @@ class PlantCVMorphologyPrimitiveTests(unittest.TestCase):
             self.assertEqual(tuple(actual.shape), tuple(view.shape))
             self.assertEqual(actual.device, view.device)
 
-    def test_constants_retain_extremes_at_neutral_full_canvas_borders(self) -> None:
+    def check_test_constants_retain_extremes_at_neutral_full_canvas_borders(self) -> None:
         for value in (0, 255):
             gray = torch.full((3, 5), value, dtype=torch.uint8, device="cuda")
             for primitive in (erode, dilate):
                 torch.testing.assert_close(primitive(gray, 5, 3), gray)
 
-    def test_input_parameters_and_resource_domain_are_strict(self) -> None:
+    def check_test_input_parameters_and_resource_domain_are_strict(self) -> None:
         valid = torch.arange(16, dtype=torch.uint8, device="cuda").reshape(4, 4)
         cpu = valid.cpu()
         with self.assertRaisesRegex(ValueError, "CUDA"):
@@ -170,7 +173,7 @@ class PlantCVMorphologyPrimitiveTests(unittest.TestCase):
         with self.assertRaises(MorphologyResourceError):
             erode(oversized, 3)
 
-    def test_accepted_kernel_and_iteration_values_affect_calculation(self) -> None:
+    def check_test_accepted_kernel_and_iteration_values_affect_calculation(self) -> None:
         generator = torch.Generator(device="cuda").manual_seed(0xE20DE)
         gray = torch.randint(0, 256, (11, 13), dtype=torch.uint8, device="cuda", generator=generator)
         self.assertFalse(torch.equal(erode(gray, 2, 1), erode(gray, 3, 1)))
@@ -182,8 +185,21 @@ class PlantCVMorphologyPrimitiveTests(unittest.TestCase):
         self.assertFalse(torch.equal(dilate(light_spot, 3, 1), dilate(light_spot, 3, 2)))
         self.assertFalse(torch.equal(erode(dark_spot, 3, 1), erode(dark_spot, 3, 2)))
 
+    def test_validation_and_recovery(self):
+        """1 related PlantCVMorphologyPrimitiveTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_kernel_and_iteration_domain_matches_reference_runner_limits)
+
+    def test_workflow_lifecycle(self):
+        """5 related PlantCVMorphologyPrimitiveTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_erode_and_dilate_preserve_gray_values_and_cuda_residency)
+        self.scenario(self.check_test_noncontiguous_view_matches_contiguous_input_and_retains_shape)
+        self.scenario(self.check_test_constants_retain_extremes_at_neutral_full_canvas_borders)
+        self.scenario(self.check_test_input_parameters_and_resource_domain_are_strict)
+        self.scenario(self.check_test_accepted_kernel_and_iteration_values_affect_calculation)
+
 
 @unittest.skipUnless(torch.cuda.is_available() and REFERENCE_ENV_READY, "CUDA and the isolated pinned PlantCV environment are required")
+@functional_units
 class PlantCVMorphologyRunnerComparisonTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -204,7 +220,7 @@ class PlantCVMorphologyRunnerComparisonTests(unittest.TestCase):
         np.testing.assert_array_equal(output, result.arrays["mask"])
         return output
 
-    def test_even_anchor_odd_anchor_small_arrays_and_repeated_passes_match(self) -> None:
+    def check_test_even_anchor_odd_anchor_small_arrays_and_repeated_passes_match(self) -> None:
         edge = np.array(
             [[0, 1, 16, 127, 128],
              [255, 220, 180, 10, 0],
@@ -230,7 +246,7 @@ class PlantCVMorphologyRunnerComparisonTests(unittest.TestCase):
             with self.subTest(operation=operation, ksize=kernel, iterations=iterations, shape=image.shape):
                 self._compare(operation, image, kernel, iterations)
 
-    def test_largest_public_kernel_has_bounded_cuda_memory_and_matches_runner(self) -> None:
+    def check_test_largest_public_kernel_has_bounded_cuda_memory_and_matches_runner(self) -> None:
         rng = np.random.default_rng(0xE20DE)
         image = rng.integers(0, 256, size=(768, 1024), dtype=np.uint8)
         gray = torch.from_numpy(image).cuda()
@@ -250,7 +266,7 @@ class PlantCVMorphologyRunnerComparisonTests(unittest.TestCase):
         peak_delta = torch.cuda.max_memory_allocated(gray.device) - baseline
         self.assertLess(peak_delta, 256 * 1024 * 1024, f"unexpected CUDA workspace: {peak_delta:,} bytes")
 
-    def test_real_fixture_raster_matches_the_pinned_runner(self) -> None:
+    def check_test_real_fixture_raster_matches_the_pinned_runner(self) -> None:
         import cv2
 
         fixture = ROOT / "images" / "IMG_9632c.JPG"
@@ -261,6 +277,12 @@ class PlantCVMorphologyRunnerComparisonTests(unittest.TestCase):
         # it does not assert grayscale decoder parity across OpenCV versions.
         self._compare("erode", image, 3, 2)
         self._compare("dilate", image, 4, 2)
+
+    def test_workflow_lifecycle(self):
+        """3 related PlantCVMorphologyRunnerComparisonTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_even_anchor_odd_anchor_small_arrays_and_repeated_passes_match)
+        self.scenario(self.check_test_largest_public_kernel_has_bounded_cuda_memory_and_matches_runner)
+        self.scenario(self.check_test_real_fixture_raster_matches_the_pinned_runner)
 
 
 if __name__ == "__main__":

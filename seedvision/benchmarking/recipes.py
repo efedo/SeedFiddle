@@ -857,13 +857,17 @@ class StageRunRecord:
 
 def initial_stage_run(recipe: RecipeSpec, stage_id: str) -> StageRunRecord:
     stage = recipe.stage(stage_id)
+    return _initial_stage_run(stage, recipe.identity)
+
+
+def _initial_stage_run(stage: RecipeStage, identity: RecipeIdentity) -> StageRunRecord:
     state = {
         SourceResolution.PINNED: StageRunState.NOT_RUN,
         SourceResolution.UNRESOLVED: StageRunState.UNRESOLVED,
         SourceResolution.UNAVAILABLE: StageRunState.UNAVAILABLE,
     }[stage.resolution]
     reason = stage.resolution_note if state in {StageRunState.UNRESOLVED, StageRunState.UNAVAILABLE} else ""
-    return StageRunRecord(stage_id, recipe.identity, state, reason=reason)
+    return StageRunRecord(stage.stage_id, identity, state, reason=reason)
 
 
 def _upstream_expectations(
@@ -893,6 +897,17 @@ def validate_stage_run(
 ) -> None:
     stage = recipe.stage(record.stage_id)
     current = recipe.identity
+    _validate_stage_run_identity(stage, record, current,
+        expected_upstream_checkpoint_sha256=expected_upstream_checkpoint_sha256)
+
+
+def _validate_stage_run_identity(
+    stage: RecipeStage,
+    record: StageRunRecord,
+    current: RecipeIdentity,
+    *,
+    expected_upstream_checkpoint_sha256: str | None | object = _UNSPECIFIED_UPSTREAM,
+) -> None:
     if record.recipe_identity.analytical_dict() != current.analytical_dict():
         raise StaleRecipeIdentity("Stage run belongs to a stale recipe, graph, settings, or backend identity.")
     if stage.resolution in {SourceResolution.UNRESOLVED, SourceResolution.UNAVAILABLE}:
@@ -1019,13 +1034,20 @@ def to_pipeline_graph(
     unexpected = set(records) - {stage.stage_id for stage in recipe.stages}
     if unexpected:
         raise RecipeContractError(f"Run records refer to extra stages: {sorted(unexpected)}.")
+    # Consume caller iterators before taking a construction-local snapshot. The
+    # immutable identity and initial records need not be serialized per node.
+    identity = recipe.identity
+    stage_runs = {
+        stage.stage_id: records.get(stage.stage_id) or _initial_stage_run(stage, identity)
+        for stage in recipe.stages
+    }
     layout = {item.stage_id: item for item in recipe.layout}
     order = {stage_id: index for index, stage_id in enumerate(_topological_ids(recipe))}
     nodes: list[PipelineNode] = []
     for stage in recipe.stages:
         position = layout.get(stage.stage_id)
         x, y = (position.x, position.y) if position is not None else ((order[stage.stage_id] % 4) * 260.0, (order[stage.stage_id] // 4) * 170.0)
-        record = records.get(stage.stage_id) or initial_stage_run(recipe, stage.stage_id)
+        record = stage_runs[stage.stage_id]
         status, detail = _pipeline_status(record.state)
         if record.reason:
             detail = f"{detail}: {record.reason}"
@@ -1058,16 +1080,13 @@ def to_pipeline_graph(
     # PipelineGraph remains the sole topology/rendering model. These immutable
     # sidecar identities make the projection auditable without changing native
     # graph persistence or cache behavior in this infrastructure-only chunk.
-    graph.reference_recipe_identity = recipe.identity
+    graph.reference_recipe_identity = identity
     graph.reference_recipe_mode = recipe.provenance.mode.value
     graph.reference_recipe_sources = MappingProxyType({
         stage.stage_id: tuple(_freeze_json(source.to_dict(), name="source mapping") for source in stage.source_mappings)
         for stage in recipe.stages
     })
-    graph.reference_recipe_runs = MappingProxyType({
-        stage.stage_id: records.get(stage.stage_id) or initial_stage_run(recipe, stage.stage_id)
-        for stage in recipe.stages
-    })
+    graph.reference_recipe_runs = MappingProxyType(stage_runs)
     validate_pipeline_graph(
         recipe, graph,
         expected_upstream_checkpoint_sha256s=expected_upstream_checkpoint_sha256s,
@@ -1165,7 +1184,8 @@ def validate_pipeline_graph(
         graph.topological_order()
     except ValueError as error:
         raise RecipeGraphMismatch("Recipe graph is not a DAG.") from error
-    if getattr(graph, "reference_recipe_identity", None) is None or graph.reference_recipe_identity.analytical_dict() != recipe.identity.analytical_dict():
+    current_identity = recipe.identity
+    if getattr(graph, "reference_recipe_identity", None) is None or graph.reference_recipe_identity.analytical_dict() != current_identity.analytical_dict():
         raise RecipeGraphMismatch("Recipe graph is missing or has stale recipe identity metadata.")
     if getattr(graph, "reference_recipe_mode", None) != recipe.provenance.mode.value:
         raise RecipeGraphMismatch("Recipe graph backend mode is missing or stale.")
@@ -1188,9 +1208,10 @@ def validate_pipeline_graph(
                 f"Run record for {stage.stage_id!r} is bound to stage {record.stage_id!r}."
             )
         try:
-            validate_stage_run(
-                recipe,
+            _validate_stage_run_identity(
+                stage,
                 record,
+                current_identity,
                 expected_upstream_checkpoint_sha256=upstream_expectations.get(
                     stage.stage_id, _UNSPECIFIED_UPSTREAM,
                 ),
@@ -1203,3 +1224,7 @@ def validate_pipeline_graph(
         node = graph.nodes[stage.stage_id]
         if node.status != expected_status or node.status_detail != expected_detail:
             raise RecipeGraphMismatch(f"Stage run state differs from the declared record for {stage.stage_id!r}.")
+    # Also reject changes triggered by custom mapping callbacks during record
+    # lookup, without reserializing the entire recipe for every stage.
+    if recipe.identity.analytical_dict() != current_identity.analytical_dict():
+        raise RecipeGraphMismatch("Stale run state: recipe changed during validation.")

@@ -1,5 +1,13 @@
 # Current operator guide
 
+Current Pipeline workflow (17 October 2026): choose a factory in the compact Workflow selector or **… → Other pipelines**, or use **… → Load pipeline** for a saved custom pipeline. All loads start with **Freeze** checked. Clear Freeze to edit node parameters, supported connections, bypass state and model/input selections. The original factory stays immutable; **Save** requires a distinct custom name and filename. Re-selecting a factory loads its original values.
+
+Use **Run pipeline** and **Stop** on the application toolbar. The global **Native/PlantCV** selector and selected-node **Backend** selector choose actual execution; **Inherit** follows the global choice. They remain available while frozen. Stages without equivalent public calls show a native-only reason. The six watershed stages share one backend choice because the original is one public call. Explicit PlantCV execution requires the pinned local runtime; unavailable execution is reported without silently switching to native.
+
+The Pipeline **…** menu provides pipeline and layout load/save. On a narrow pane, Save/Export remain available in this menu when their buttons are hidden. A pipeline file preserves calculation settings, independent node IDs, connections, enabled state, backend choices, layout, selection and referenced assets. It does not embed image pixels or run outputs. Missing asset references remain explicit. A layout file changes positions and presentation by stable node ID; applying it preserves calculation caches. Project saving and snapshots retain their existing historical evidence. Native saved-stage replay explicitly reports unavailable for a stage produced by PlantCV; it does not substitute the native implementation.
+
+The separate Reference window is removed. Factory workflows are inspected directly in Pipeline. The dated engineering checkpoints below retain their historical scope; their former Reference-window launcher instructions are superseded by the controls above.
+
 Size and units saved-stage replay checkpoint (9 October). `analysis.size` now replays original RGB/labels and all seventeen observation records in source or verified seed-ROI frames, comparing the optional CUDA diagnostic separately. Exact source descriptors, nominal datatypes and finite local coordinates are preserved. `calibrated_seed.size_units` replays the compact physical conversion with zero selected arrays and binds the saved size/frame and card-scale producers. Its conversion allocates no CUDA tensors; the shared runtime audit has a separately admitted 64 KiB reserve. Upstream label maxima and card measurements are not recomputed by the units stage. There are now 22 declared replay operations.
 
 The shared 15-module gate passes 185 tests in 1155.051s before the final audit-budget refinement. The final affected size/unit and existing planner/contract gate passes 28 tests in 86.761s after that refinement (zero skips; overlapping gates). Nine final source/test files have bounded supplied-projection/root-evidence review approval. Earlier freezes remain historical when shared modules change.
@@ -26,7 +34,7 @@ Calibrated range workflow checkpoint (9 October). The additive `plantcv_calibrat
 
 The final 11-module gate passes 143 tests in 647.331s, including 11 new integration tests, with zero skips. All nine prior calibrated/diagnostic recipe serializations remain exact. Tests cover five spaces plus partial ranges, complete pinned corrected-ROI outputs/physical observations, range/median/ROI/units cache boundaries, empty-result recovery, fresh/cached/debug admission, excess input backing, final callback/runtime mutation, actual Qt replay/Keep/reopen and saved-project/batch/archive round trips.
 
-In Reference graphs choose Calibrated seed analysis, then range. Select card controls, an explicit seed ROI, channel and lower/upper lists (RGB/HSV/LAB three bytes, CMYK four, GRAY one). Endpoints are inclusive; RGB uses pinned B,G,R bound order and CMYK retains the source C/Y swap. The range preview is before median; Smooth range mask changes the segmentation mask. Size and colour use the unmasked corrected crop and resulting working labels. Keep/save/reopen preserves controls; export/batch preserves products and frames; range or mask-median replay verifies the saved local stage. Add watershed debug image for the optional independent diagnostic.
+In **Pipeline → … → Other pipelines**, choose the calibrated range workflow. Select card controls, an explicit seed ROI, channel and lower/upper lists (RGB/HSV/LAB three bytes, CMYK four, GRAY one). Endpoints are inclusive; RGB uses pinned B,G,R bound order and CMYK retains the source C/Y swap. The range preview is before median; Smooth range mask changes the segmentation mask. Size and colour use the unmasked corrected crop and resulting working labels. Keep/save/reopen preserves controls; export/batch preserves products and frames; range or mask-median replay verifies the saved local stage. Add watershed debug image for the optional independent diagnostic.
 
 F01-F22/WP0-WP6 remains active and partial_native. Remaining model/helper/paper/observation replay and the full method/input/domain freeze remain open, alongside original SMPTS source and laboratory gates. Fresh full unittest discovery is required before completed-goal handoff. Earlier source freezes retain historical scope when shared modules change.
 
@@ -36,7 +44,7 @@ Custom-range graph and saved-stage replay checkpoint (9 October). The separate `
 
 The final shared gate passes 133 tests in 220.734s (11 new range tests; zero skipped). Actual 887x887 LAB/CMYK probes select 353,079/214,138 pixels and match both pinned public outputs and isolated saved-input replay. Replay adds 29,599,232/52,102,656 CUDA bytes within 234,924,160 planned; 13,312 preexisting bytes are separate. These are controlled engineering domains, not maximum-domain, corpus or scientific evidence. There are now 19 declared saved-stage replay operations.
 
-In **Reference graphs**, choose **Run extended threshold**, then **PlantCV custom-range threshold**. The channel determines the bound list length: RGB/HSV/LAB three, CMYK four, GRAY one. Use integer bytes 0..255; bounds include both endpoints. RGB bounds follow B,G,R order. Reversed bounds successfully select no pixels. The masked image retains original RGB colours. Changing channel or bounds recomputes the threshold only. Keep the recipe for reopen/batch; Export run for actual products; Replay saved stage compares both outputs and previews masked RGB while preserving the current run.
+In **Pipeline → … → Other pipelines**, choose **PlantCV custom-range threshold**. The channel determines the bound list length: RGB/HSV/LAB three, CMYK four, GRAY one. Use integer bytes 0..255; bounds include both endpoints. RGB bounds follow B,G,R order. Reversed bounds successfully select no pixels. The masked image retains original RGB colours. Changing channel or bounds recomputes the threshold only. Keep the recipe for reopen/batch; Export run for actual products; Replay saved stage compares both outputs and previews masked RGB while preserving the current run.
 
 Earlier checkpoint history follows.
 
@@ -44,7 +52,7 @@ SMPTS executable paper reconstruction checkpoint (8 October). The additive `smpt
 
 The 111-test relevant gate passes in 117.973s (19 new tests;0 skipped). The 2080x3120 committed fixture matches nine pinned OpenCV substep rasters and all 1118 packed crops. This verifies the declared reconstruction, not original SMPTS conformance or scientific accuracy. The full F01-F22/WP0-WP6 goal remains active; full discovery is still required before completed handoff.
 
-In Reference graphs choose **SMPTS paper port…**. The fixed-global variant uses mean 25/offset2/light, median 5, fixed 100/light, strict box-area cutoff 10000 and erosion 13 by default. Offset/polarity/cutoff/contact rule and borders are assumptions, not recovered settings. Run, inspect contact IDs and selected erosion, then choose an individual crop in the extraction node. **Keep recipe in project** preserves settings/layout for reopen and batch; **Export run…** preserves actual products/provenance. Shrunk components/crops are not recovered complete seed outlines. Unsupported work/precision/resource domains are explicit.
+In Pipeline choose the SMPTS paper workflow from Workflow or **… → Other pipelines**. The fixed-global variant uses mean 25/offset2/light, median 5, fixed 100/light, strict box-area cutoff 10000 and erosion 13 by default. Offset/polarity/cutoff/contact rule and borders are assumptions, not recovered settings. Run, inspect contact IDs and selected erosion, then choose an individual crop in the extraction node. **Keep recipe in project** preserves settings/layout for reopen and batch; **Export run…** preserves actual products/provenance. Shrunk components/crops are not recovered complete seed outlines. Unsupported work/precision/resource domains are explicit.
 
 Earlier checkpoint history follows.
 
@@ -687,71 +695,15 @@ also reopens its saved working choice. **New Project** clears those draft choice
 Save As changes the JSON destination while dependencies remain under the workspace
 root. The colour-correction workflow below retains its exact per-image four-file selection.
 
-## Inspect reference implementation graphs
+## Inspect factory pipelines and retained evidence
 
-Open **View → Reference graphs…**; no loaded image or external runner is required.
-Choose an authored PlantCV seed workflow, the colour-correction contract or the
-SMPTS paper reconstruction. The selector also retains exact stored historical
-recipe versions, including recipes absent from the current catalogue.
-
-Click a stage to inspect its pinned source function, typed dependencies, branch
-conditions, parameters and recorded run state. **UNSELECTED** means a per-image
-choice has not been frozen. The SMPTS graph explicitly shows unresolved paper
-choices and unavailable original code. These are source-inspection descriptions;
-opening them does not execute or freeze a benchmark recipe.
-
-Pan, zoom, move cards, use Auto arrange or change cable routing to inspect the
-graph. Analytical controls are read-only. Project Save/Save As and snapshots retain
-the attached recipe/run/layout metadata. If metadata capacity is reached, the
-dialog displays **TRANSIENT — NOT SAVED**; that view remains inspectable but its
-changes are not saved. Existing attachments remain intact. Historical checkpoint
-digests alone are metadata only.
-
-The reviewed bounded checkpoint inspector adds **Select checkpoint
-store…**. Select the local store containing the recorded stage artifacts to inspect
-verified intermediate pixels and metadata for a selected node. The binding lasts
-for this dialog session; **Clear store** removes it. Missing, changed or incompatible
-artifacts remain explicitly unavailable or rejected. The project file contains
-metadata; it does not execute a recipe. Independent review covers the supported
-original-operation inspection paths.
-
-The inspector supports original binary/mean/Otsu threshold,
-median, small-object removal (`fill`), erosion and dilation stage outputs. A saved
-recipe with selected calculation values is inspectable when its source, topology
-and parameter declarations match the catalogue. Selected values retain their own
-exact saved identity; changed source contracts remain unavailable for this verifier.
-
-A native-inspection candidate covers those seven operations plus native distance
-maps and connected markers. It requires the recorded native code/CUDA environment
-to match the current runtime. Distance display scaling and marker colours preserve
-the original artifact values. Native recipe headers check catalogue source/topology/
-control contracts. Independent review approved these bounded inspection paths;
-fresh full verification remains pending for the current source state.
-
-The focused-tested **File → Create snapshot with reference checkpoints…** candidate
-asks for a destination and the checkpoint store containing the saved graph's recorded
-outputs. It copies those archives and their upstream dependencies. Missing, changed or
-over-limit archives prevent a completed snapshot. The ordinary snapshot action retains
-its metadata-only behavior for reference checkpoints.
-
-After **Restore portable snapshot**, open the restored project and use **Select
-checkpoint store…** to select `reference-checkpoints/` beside the restored project
-file. The inspector verifies the selected node against that store and the current
-runtime. Archived failure/empty states and eligibility remain unchanged. Bounded
-independent review approved this portable-checkpoint candidate; fresh full verification
-remains pending.
+Load a fresh factory in Pipeline and keep Freeze checked to inspect its original topology and node controls. Runs show actual outputs in the same workspace. Factory templates cannot be overwritten. Existing project reference attachments, checkpoint files and QC records remain compatible; opening a factory does not manufacture execution history. The retired Reference-window checkpoint-store browser is no longer a user-facing route. Existing checkpoint verification/export services and portable snapshot data remain available.
 
 ## Run a native seed calculation
 
-Open **View → Reference graphs…**, choose one of the PlantCV binary, adaptive-mean
-or Otsu seed workflows, then click **Run native calculation…**. The separate
-working view preserves the historical reference attachment. Choose an image,
-select a node and supply its required calculation values. Non-choice fields accept
-JSON values, such as a number or a two-element kernel array; `null` means an
-unselected required value. An unselected analysis label count is resolved from the
-actual final labels and shown with the result.
+In Pipeline choose the PlantCV binary, adaptive-mean or Otsu seed workflow. Open the current image, clear Freeze to supply required controls, and select Native or PlantCV execution. Required unselected fields remain explicit. An unselected analysis label count is resolved from the actual final labels and shown with the result.
 
-Click **Run** to calculate. Select a computed node to see its bounded preview,
+Click **Run pipeline** to calculate. Select a computed node to see its bounded preview,
 resolved controls and available compact observations. The colour node shows its
 returned hue distribution with a sample selector. RGB/LAB return an empty hue chart;
 the numerical observations for their selected channels remain available. Selecting

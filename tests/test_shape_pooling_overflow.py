@@ -1,4 +1,6 @@
 """High-precision Gaussian oracles for representable intermediate-overflow cases."""
+
+from tests.functional_units import functional_units
 from dataclasses import replace
 from decimal import Decimal, localcontext
 import unittest
@@ -22,8 +24,9 @@ def oracle(prior_variance, local_variance, prior_mean, local_mean, weight):
         return float(mean), float(variance), (float(mean - radius), float(mean + radius))
 
 
+@functional_units
 class ShapePoolingOverflowTests(unittest.TestCase):
-    def test_preventable_overflow_matches_decimal_gaussian_outputs_and_support(self):
+    def check_test_preventable_overflow_matches_decimal_gaussian_outputs_and_support(self):
         values, component = fixture()
         for p, r, a, b in ((1e-308, 1e-308, 1., 1.), (.5, .5, 1e308, 1e308),
                            (1.6e308, 1.6e308, 1., 1.), (1e-306, 2e-306, 1e100, 1e100)):
@@ -43,7 +46,7 @@ class ShapePoolingOverflowTests(unittest.TestCase):
                     self.assertEqual(result.component.physical_fit_unavailability_reason,
                         component.physical_fit_unavailability_reason)
 
-    def test_opposite_huge_means_are_scaled_before_overflowing_subtraction(self):
+    def check_test_opposite_huge_means_are_scaled_before_overflowing_subtraction(self):
         values, component = fixture()
         for shrinkage in (0., 1., 3.):
             prior = covariance_component(component, np.eye(19) * 1.6e308, (-1e308,) * 19)
@@ -58,7 +61,7 @@ class ShapePoolingOverflowTests(unittest.TestCase):
             np.testing.assert_allclose(conditioned.mean, mean, rtol=1e-13, atol=4e292)
             self.assertEqual(len(scales), 19)
 
-    def test_variance_boundary_continuity_and_positive_subnormal_output(self):
+    def check_test_variance_boundary_continuity_and_positive_subnormal_output(self):
         values, component = fixture()
         for variance in (1e-307, 2e-308, 1e-308, 1e-310, 1e-320):
             prior = covariance_component(component, np.eye(19) * variance, (1.,) * 19)
@@ -68,7 +71,7 @@ class ShapePoolingOverflowTests(unittest.TestCase):
             np.testing.assert_allclose(result.component.mean, prior.mean, rtol=4*np.finfo(float).eps, atol=0)
             self.assertGreater(result.component.covariance[0][0], 0)
 
-    def test_unit_congruence_preserves_rescued_gaussian(self):
+    def check_test_unit_congruence_preserves_rescued_gaussian(self):
         values, component = fixture()
         prior = covariance_component(component, np.eye(19) * 1e-308, (1.,) * 19)
         local = covariance_component(component, np.eye(19) * 2e-308, (2.,) * 19)
@@ -84,7 +87,7 @@ class ShapePoolingOverflowTests(unittest.TestCase):
         np.testing.assert_allclose(converted.component.covariance,
             np.asarray(original.component.covariance) * units[:, None] * units[None, :], rtol=1e-12, atol=0)
 
-    def test_unrepresentable_restored_variance_or_support_retains_exact_prior(self):
+    def check_test_unrepresentable_restored_variance_or_support_retains_exact_prior(self):
         values, component = fixture()
         smallest = np.nextafter(0., 1.)
         prior = covariance_component(component, np.eye(19) * smallest, (1.,) * 19)
@@ -97,7 +100,7 @@ class ShapePoolingOverflowTests(unittest.TestCase):
         self.assertEqual(result.state, 'unavailable')
         self.assertIs(result.component, prior)
 
-    def test_native_result_serializes_rescued_update_without_refitting(self):
+    def check_test_native_result_serializes_rescued_update_without_refitting(self):
         import json
         from unittest.mock import patch
         from seedvision.export.results import result_report
@@ -115,7 +118,7 @@ class ShapePoolingOverflowTests(unittest.TestCase):
         self.assertEqual(restored['component']['effective_physical_seed_count'],
             outcome.component.effective_physical_seed_count)
 
-    def test_mixed_unrepresentable_support_retains_exact_physical_shell(self):
+    def check_test_mixed_unrepresentable_support_retains_exact_physical_shell(self):
         for prior_physical in (False, True):
             for field in ('effective_physical_seed_count', 'dimensionless_physical_seed_count',
                           'calibrated_physical_seed_count'):
@@ -138,6 +141,19 @@ class ShapePoolingOverflowTests(unittest.TestCase):
                     self.assertEqual(result.unavailability_reason, 'numeric_range')
                     self.assertIs(result.component, physical)
                     self.assertEqual(result.source, 'library' if prior_physical else 'local')
+
+    def test_workflow_lifecycle(self):
+        """6 related ShapePoolingOverflowTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_preventable_overflow_matches_decimal_gaussian_outputs_and_support)
+        self.scenario(self.check_test_opposite_huge_means_are_scaled_before_overflowing_subtraction)
+        self.scenario(self.check_test_unit_congruence_preserves_rescued_gaussian)
+        self.scenario(self.check_test_unrepresentable_restored_variance_or_support_retains_exact_prior)
+        self.scenario(self.check_test_native_result_serializes_rescued_update_without_refitting)
+        self.scenario(self.check_test_mixed_unrepresentable_support_retains_exact_physical_shell)
+
+    def test_validation_and_recovery(self):
+        """1 related ShapePoolingOverflowTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_variance_boundary_continuity_and_positive_subnormal_output)
 
 
 if __name__ == '__main__':

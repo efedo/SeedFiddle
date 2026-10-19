@@ -58,11 +58,18 @@ class ReferenceModelAsset:
         return asdict(self)
 
 
-def _requirements(attachments, native_recipes=()):
+def _requirements(attachments, native_recipes=(), pipeline_workflow=None, node_instances=()):
     from seedvision.persistence.reference_graphs import validate_reference_graphs
     from seedvision.persistence.native_recipes import validate_native_recipes
     recipes = tuple(attachment.recipe for attachment in validate_reference_graphs(attachments))
     recipes += validate_native_recipes(native_recipes)
+    if pipeline_workflow is not None:
+        from seedvision.pipeline.workflows import validate_workflow
+        validate_workflow(pipeline_workflow)
+        recipes += (pipeline_workflow.recipe,)
+    if node_instances:
+        from seedvision.pipeline.catalogue_nodes import native_instance_recipes
+        recipes += native_instance_recipes(node_instances)
     rows, seen = [], set()
     for recipe in recipes:
         for stage in recipe.stages:
@@ -93,11 +100,11 @@ def _requirements(attachments, native_recipes=()):
     return rows
 
 
-def validate_reference_model_assets(assets, attachments, native_recipes=()):
+def validate_reference_model_assets(assets, attachments, native_recipes=(), pipeline_workflow=None, node_instances=()):
     if type(assets) is not tuple or len(assets) > MAX_MODEL_ASSETS:
         raise ValueError('Project model assets require a bounded immutable tuple.')
     requirements = {(recipe.recipe_id, recipe.recipe_version, stage.stage_id, digest): selection
-                    for recipe, stage, selection, digest in _requirements(attachments, native_recipes)}
+                    for recipe, stage, selection, digest in _requirements(attachments, native_recipes, pipeline_workflow, node_instances)}
     seen, paths = set(), {}
     for asset in assets:
         if not isinstance(asset, ReferenceModelAsset):
@@ -115,10 +122,10 @@ def validate_reference_model_assets(assets, attachments, native_recipes=()):
     return assets
 
 
-def reference_model_assets_from_payload(value, attachments, native_recipes=()):
+def reference_model_assets_from_payload(value, attachments, native_recipes=(), pipeline_workflow=None, node_instances=()):
     if type(value) is not list or len(value) > MAX_MODEL_ASSETS:
         raise ValueError('Project model assets must be a bounded list.')
-    return validate_reference_model_assets(tuple(ReferenceModelAsset(**row) for row in value), attachments, native_recipes)
+    return validate_reference_model_assets(tuple(ReferenceModelAsset(**row) for row in value), attachments, native_recipes, pipeline_workflow, node_instances)
 
 
 def resolve_asset_path(root, relative):
@@ -162,9 +169,9 @@ def verified_asset_bytes(stage, selection, path):
     return raw
 
 
-def capture_reference_model_assets(root, attachments, existing=(), *, allow_unavailable=False, native_recipes=()):
+def capture_reference_model_assets(root, attachments, existing=(), *, allow_unavailable=False, native_recipes=(), pipeline_workflow=None, node_instances=()):
     """Publish immutable bounded model objects before publishing a project master."""
-    requirements = _requirements(attachments, native_recipes)  # Before reads/copies.
+    requirements = _requirements(attachments, native_recipes, pipeline_workflow, node_instances)  # Before reads/copies.
     if (type(existing) is not tuple or len(existing) > MAX_MODEL_ASSETS
             or any(not isinstance(asset, ReferenceModelAsset) for asset in existing)):
         raise ValueError('Existing model assets must be a bounded immutable tuple.')
@@ -217,13 +224,13 @@ def capture_reference_model_assets(root, attachments, existing=(), *, allow_unav
                     temporary.unlink(missing_ok=True)
         result.append(ReferenceModelAsset(recipe.recipe_id, recipe.recipe_version, stage.stage_id,
             digest, selection['source_sha256'], selection['source_bytes'], relative))
-    return validate_reference_model_assets(tuple(result), attachments, native_recipes)
+    return validate_reference_model_assets(tuple(result), attachments, native_recipes, pipeline_workflow, node_instances)
 
 
-def verify_reference_model_assets(root, assets, attachments, *, require_complete=False, native_recipes=()):
-    assets = validate_reference_model_assets(assets, attachments, native_recipes)
+def verify_reference_model_assets(root, assets, attachments, *, require_complete=False, native_recipes=(), pipeline_workflow=None, node_instances=()):
+    assets = validate_reference_model_assets(assets, attachments, native_recipes, pipeline_workflow, node_instances)
     requirements = {(recipe.recipe_id, recipe.recipe_version, stage.stage_id, digest): (stage, selection)
-                    for recipe, stage, selection, digest in _requirements(attachments, native_recipes)}
+                    for recipe, stage, selection, digest in _requirements(attachments, native_recipes, pipeline_workflow, node_instances)}
     if require_complete and {asset.key for asset in assets} != set(requirements):
         raise ValueError('Project classifier model closure is incomplete.')
     for asset in assets:
@@ -232,9 +239,9 @@ def verify_reference_model_assets(root, assets, attachments, *, require_complete
     return assets
 
 
-def unbound_model_selections(assets, attachments, native_recipes=()):
-    bound = {asset.key for asset in validate_reference_model_assets(assets, attachments, native_recipes)}
-    return tuple((recipe, stage, selection) for recipe, stage, selection, digest in _requirements(attachments, native_recipes)
+def unbound_model_selections(assets, attachments, native_recipes=(), pipeline_workflow=None, node_instances=()):
+    bound = {asset.key for asset in validate_reference_model_assets(assets, attachments, native_recipes, pipeline_workflow, node_instances)}
+    return tuple((recipe, stage, selection) for recipe, stage, selection, digest in _requirements(attachments, native_recipes, pipeline_workflow, node_instances)
         if (recipe.recipe_id, recipe.recipe_version, stage.stage_id, digest) not in bound)
 
 

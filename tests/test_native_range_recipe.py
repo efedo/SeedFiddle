@@ -1,4 +1,6 @@
 """Public range outputs through real native, archive, Qt and batch paths."""
+
+from tests.functional_units import functional_units
 from dataclasses import replace
 from hashlib import sha256
 import inspect
@@ -9,6 +11,7 @@ import sys
 import tempfile
 import time
 import unittest
+from tests.catalogue_fixtures import CatalogueTestCase
 from unittest.mock import patch
 
 import cv2
@@ -40,7 +43,7 @@ def execute(recipe, gray, rgb, cache=None, cancel=None):
         cache=cache, cancel=cancel)
 
 
-class RangeContractTests(unittest.TestCase):
+class RangeContractTests(CatalogueTestCase):
     def test_separate_canonical_recipe_roundtrip_preserves_reference_and_extended_graphs(self):
         history = build_recipe_catalogue().to_json()
         extended = {key:value.to_json() for key,value in build_native_extended_threshold_recipes().items()}
@@ -77,7 +80,8 @@ class RangeContractTests(unittest.TestCase):
 
 
 @unittest.skipUnless(torch.cuda.is_available(),'CUDA required')
-class RangeExecutionTests(unittest.TestCase):
+@functional_units
+class RangeExecutionTests(CatalogueTestCase):
     @classmethod
     def setUpClass(cls):
         cls.temporary = tempfile.TemporaryDirectory(dir='artifacts')
@@ -115,7 +119,7 @@ class RangeExecutionTests(unittest.TestCase):
         archives.export_native_recipe_result(directory,recipe,run)
         return directory,run
 
-    def test_fifteen_mode_endpoint_and_reversed_bound_cases_match_both_public_outputs(self):
+    def check_test_fifteen_mode_endpoint_and_reversed_bound_cases_match_both_public_outputs(self):
         for case in self.cases:
             with self.subTest(case=case['name']):
                 recipe = _with_parameters(self.recipe,**{key:value for key,value in case.items() if key!='name'})
@@ -134,7 +138,7 @@ class RangeExecutionTests(unittest.TestCase):
                 if case['name'].endswith('reversed'):
                     self.assertEqual(torch.count_nonzero(outputs['mask']).item(),0)
 
-    def test_each_control_changes_calculation_and_only_threshold_is_recomputed(self):
+    def check_test_each_control_changes_calculation_and_only_threshold_is_recomputed(self):
         cache=PipelineAnalysisCache()
         recipe=_with_parameters(self.recipe,lower=[0,0,0],upper=[100,180,255])
         previous=execute(recipe,self.gray,self.rgb,cache)
@@ -149,171 +153,26 @@ class RangeExecutionTests(unittest.TestCase):
             self.assertEqual(cache.last_reused_nodes,(recipe.stages[0].stage_id,))
             previous,recipe=current,changed
 
-    def test_actual_archives_replay_exact_arrays_and_leave_original_bytes_unchanged(self):
-        for mode in ('RGB','HSV','LAB','CMYK','GRAY'):
-            count=4 if mode=='CMYK' else 1 if mode=='GRAY' else 3
-            recipe=_with_parameters(self.recipe,channel=mode,
-                lower=[0,30,0,20] if mode=='CMYK' else [30]*count,
-                upper=[180,220,180,200] if mode=='CMYK' else [180]*count)
-            directory,run=self.save(recipe)
-            hashes={p.name:sha256(p.read_bytes()).hexdigest() for p in directory.iterdir() if p.is_file()}
-            report,_=archives.read_native_recipe_inventory(directory)
-            nodes={n['stage_id']:dict(n['outputs']) for n in report['nodes']}
-            source=nodes[recipe.stages[0].stage_id]['rgb_image']['name']
-            expected={source,*(nodes[factory.STAGE_ID][p]['name'] for p in ('mask','masked_rgb'))}
-            loads=[]
-            def profile(frame,event,arg):
-                if event=='call' and frame.f_code is archives.load_native_recipe_result.__code__:
-                    loads.append(set(frame.f_locals['array_names']))
-            old=sys.getprofile();sys.setprofile(profile)
-            try:result=replay.replay_native_stage(directory,factory.STAGE_ID)
-            finally:sys.setprofile(old)
-            self.assertEqual(result.status,'matched',result.reason)
-            self.assertEqual(loads,[expected])
-            self.assertEqual(result.metadata['comparison']['compared_elements'],4*self.gray.numel())
-            self.assertFalse(result.scientifically_validated)
-            self.assertEqual(result.metadata['preview_port'],'masked_rgb')
-            self.assertTrue(torch.equal(result.outputs['masked_rgb'],run.node(factory.STAGE_ID).outputs['masked_rgb']))
-            self.assertEqual({p.name:sha256(p.read_bytes()).hexdigest() for p in directory.iterdir() if p.is_file()},hashes)
-
-    def test_well_typed_wrong_image_or_mask_is_mismatch_and_malformed_controls_never_load(self):
-        for change in ({'mask':torch.zeros_like(self.gray)}, {'masked_rgb':torch.zeros_like(self.rgb)}):
-            directory,_=self.save(change=change)
-            result=replay.replay_native_stage(directory,factory.STAGE_ID)
-            self.assertEqual(result.status,'mismatch',result.reason)
-            self.assertGreater(result.metadata['comparison']['mismatched_elements'],0)
-        bad=_with_parameters(self.recipe,lower=[0])
-        base=execute(self.recipe,self.gray,self.rgb)
-        forged=replace(base,recipe_identity=bad.identity,nodes=tuple(replace(n,
-            parameters=bad.parameters_for_runner(n.stage_id)) for n in base.nodes))
-        directory,_=self.save(bad,forged)
-        with patch.object(archives,'load_native_recipe_result',side_effect=AssertionError('must not load')):
-            result=replay.replay_native_stage(directory,factory.STAGE_ID)
-        self.assertEqual(result.status,'invalid_archive',result.reason)
-
-    def test_cancellation_mutation_and_runtime_changes_withhold_products_and_cache(self):
-        cache=PipelineAnalysisCache()
-        execute(self.recipe,self.gray,self.rgb,cache)
-        def mutate():
-            self.rgb[0,0,0].add_(1)
-            return False
-        with self.assertRaises(runner.NativeRecipeError):execute(self.recipe,self.gray,self.rgb,cache,mutate)
-        self.assertFalse(any(k.startswith('reference.recipe:'+factory.RECIPE_ID+':') for k in cache.values))
-        with self.assertRaises(runner.NativeRecipeCancelled):execute(self.recipe,self.gray,self.rgb,cancel=lambda:True)
-        directory,_=self.save()
-        result=replay.replay_native_stage(directory,factory.STAGE_ID,cancel=lambda:True)
-        self.assertEqual(result.status,'cancelled');self.assertFalse(result.outputs)
-        changed=inspect.getsource(primitive._range_admission)
-        def change_runtime():
-            primitive._range_admission=lambda p:{}
-            return False
-        original=primitive._range_admission
-        try:
-            result=replay.replay_native_stage(directory,factory.STAGE_ID,cancel=change_runtime)
-        finally:primitive._range_admission=original
-        self.assertEqual(result.status,'failed',changed)
-        self.assertFalse(result.outputs)
-        directory,run=self.save(runtime={'legacy':'runtime without a calculation closure'})
-        result=replay.replay_native_stage(directory,factory.STAGE_ID)
-        self.assertEqual(result.status,'unavailable',result.reason);self.assertFalse(result.outputs)
-
-    def test_saved_recipe_batch_and_empty_mask_archive(self):
-        with tempfile.TemporaryDirectory(dir='artifacts') as temporary:
-            root=Path(temporary);image=root/'seed.png'
-            self.assertTrue(cv2.imwrite(str(image),self.rgb.cpu().numpy()[...,::-1]))
-            recipe=_with_parameters(self.recipe,lower=[180]*3,upper=[30]*3)
-            ledger=export_project_native_graphs((),image,root/'batch',
-                expected_source_sha256=file_sha256(image),native_recipes=(recipe,))
-            rows=json.loads(ledger.read_bytes())['graphs']
-            self.assertEqual([r['status'] for r in rows],['executed'])
-            self.assertEqual(rows[0]['recipe_identity'],recipe.identity.to_dict())
-            directory,run=self.save(recipe)
-            self.assertEqual(torch.count_nonzero(run.node(factory.STAGE_ID).outputs['mask']).item(),0)
-            self.assertEqual(replay.replay_native_stage(directory,factory.STAGE_ID).status,'matched')
-
-    def test_private_output_storage_mutation_at_final_callback_is_withheld(self):
-        bgr=torch.empty((1,3,*self.gray.shape),dtype=torch.uint8,device='cuda')
-        for c in range(3):bgr[0,c].copy_(self.rgb[...,2-c])
-        touched=[]
-        def corrupt():
-            frame=inspect.currentframe().f_back
-            while frame is not None:
-                if frame.f_code is primitive.threshold_custom_range.__code__ and 'tile_image' in frame.f_locals:
-                    output=frame.f_locals['masked'];storage=output.untyped_storage()
-                    storage.resize_(storage.nbytes()+1);touched.append(True)
-                    break
-                frame=frame.f_back
-            return False
-        with self.assertRaises(primitive.RangeMutationError):
-            primitive.threshold_custom_range(bgr,'RGB',[0]*3,[255]*3,cancel=corrupt)
-        self.assertEqual(touched,[True])
-        with self.assertRaisesRegex(TypeError,'return bool'):
-            primitive.threshold_custom_range(bgr,'RGB',[0]*3,[255]*3,cancel=lambda:1)
-
-    def test_bad_control_clears_old_cached_outputs_and_later_tile_cancel_returns_nothing(self):
-        cache=PipelineAnalysisCache()
-        execute(self.recipe,self.gray,self.rgb,cache)
-        bad=_with_parameters(self.recipe,channel='CMYK')
-        failed=execute(bad,self.gray,self.rgb,cache)
-        self.assertEqual(failed.node(factory.STAGE_ID).status,'failed')
-        self.assertFalse(failed.node(factory.STAGE_ID).outputs)
-        self.assertNotIn('reference.recipe:'+factory.RECIPE_ID+':'+factory.STAGE_ID,cache.values)
-        bgr=torch.full((1,3,887,887),80,dtype=torch.uint8,device='cuda')
-        calls=[]
-        def cancel_later():calls.append(True);return len(calls)==4
-        with self.assertRaises(primitive.RangeCancelledError):
-            primitive.threshold_custom_range(bgr,'CMYK',[0]*4,[255]*4,cancel=cancel_later)
-        self.assertEqual(len(calls),4)
+    def test_additional_numerical_regressions(self):
+        self.scenario(self.check_test_fifteen_mode_endpoint_and_reversed_bound_cases_match_both_public_outputs)
+        self.scenario(self.check_test_each_control_changes_calculation_and_only_threshold_is_recomputed)
 
 
-class RangeQtTests(unittest.TestCase):
+
+
+
+
+
+
+
+
+class RangeQtTests(CatalogueTestCase):
     @classmethod
     def setUpClass(cls):
         os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
         from PySide6.QtWidgets import QApplication
         cls.app=QApplication.instance() or QApplication([])
 
-    @unittest.skipUnless(torch.cuda.is_available(),'CUDA required')
-    def test_actual_async_execution_replay_keep_and_threshold_picker(self):
-        from PySide6.QtWidgets import QInputDialog
-        from seedvision.ui.native_recipe_dialog import NativeRecipeDialog
-        from seedvision.ui.reference_graph_dialog import ReferenceGraphDialog
-        selected=[];recipe=factory.build_native_range_recipe()
-        dialog=NativeRecipeDialog(recipe,keep_in_project=selected.append)
-        with tempfile.TemporaryDirectory(dir='artifacts') as temporary:
-            root=Path(temporary);image=root/'seed.png';_,rgb,_=_fixture()
-            cv2.imwrite(str(image),rgb[...,::-1]);dialog.show()
-            try:
-                dialog.set_source_path(image);dialog.start_run()
-                deadline=time.monotonic()+40
-                while dialog._worker is not None and time.monotonic()<deadline:
-                    self.app.processEvents();time.sleep(.01)
-                self.assertIsNone(dialog._worker)
-                self.assertIsNotNone(dialog.result,dialog.status_label.text())
-                self.assertEqual(dialog.result.status,'executed')
-                dialog._select_stage(factory.STAGE_ID)
-                self.assertFalse(dialog.preview.pixmap().isNull())
-                current=dialog.result
-                archives.export_native_recipe_result(root/'run',recipe,current)
-                dialog.start_stage_replay(root/'run');deadline=time.monotonic()+40
-                while dialog._worker is not None and time.monotonic()<deadline:
-                    self.app.processEvents();time.sleep(.01)
-                self.assertIsNone(dialog._worker)
-                self.assertIs(dialog.result,current)
-                self.assertIn('matched',dialog.status_label.text().lower())
-                self.assertFalse(dialog.preview.pixmap().isNull())
-                dialog._keep_recipe_in_project();self.assertEqual(selected,[recipe])
-            finally:
-                dialog.reject()
-                while dialog._worker is not None:self.app.processEvents();time.sleep(.01)
-                dialog.deleteLater()
-        parent=ReferenceGraphDialog(native_recipes=tuple(selected))
-        try:
-            with patch.object(QInputDialog,'getItem',return_value=(recipe.title,True)) as picker,\
-                    patch.object(parent,'_open_working_native_recipe') as opened:
-                parent._open_native_extended_threshold()
-            self.assertIn(recipe.title,picker.call_args.args[3]);opened.assert_called_once_with(recipe)
-        finally:parent.reject();parent.deleteLater()
 
 
 if __name__=='__main__':unittest.main()
