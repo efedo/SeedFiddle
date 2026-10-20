@@ -452,7 +452,7 @@ def main():
         raise ValueError('AST methods and unittest discovery differ; investigate inherited/dynamic tests before publishing')
     changed = [] if args.without_history else [p for p,h in receipt['source_hashes'].items() if not (ROOT/p).is_file() or digest(ROOT/p) != h]
     record = {
-        'schema':'seedfiddle.test-inventory.v1', 'audit_date':'2026-10-18',
+        'schema':'seedfiddle.test-inventory.v1', 'audit_date':'2026-10-20',
         'generator':'tools/audit_test_inventory.py', 'generator_sha256':digest(Path(__file__)),
         'description_limit':'Static scenario, assertion and call evidence; no measured line/branch coverage. Import aliases are lexical candidates, not runtime type resolution.',
         'helper_limit':'Module/class/imported test helpers traced statically; dynamic dispatch, assigned object types and inherited methods are not resolved. Fixture calls are separate from method helper closure.',

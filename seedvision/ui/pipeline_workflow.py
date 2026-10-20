@@ -3,24 +3,27 @@ from __future__ import annotations
 
 from pathlib import Path
 from threading import Event
+from time import monotonic
 import json
 from dataclasses import replace
 from collections.abc import Mapping
 
 import torch
-from PySide6.QtCore import QObject, QRunnable, QSignalBlocker, Qt, Signal
-from PySide6.QtGui import QPixmap
+from PySide6.QtCore import QObject, QRunnable, QSignalBlocker, Qt, Signal, QRectF
+from PySide6.QtGui import QPixmap, QPen, QColor
 from PySide6.QtWidgets import (QComboBox, QFileDialog, QGraphicsScene, QGraphicsView,
     QHBoxLayout, QLabel, QMenu, QMessageBox, QPushButton, QTextBrowser, QToolButton,
     QSizePolicy, QVBoxLayout, QWidget)
 
 from seedvision.pipeline import NodeStatus
+from seedvision.pipeline.project_context import CONTEXT_NODE_IDS, workspace_graph
 from seedvision.segmentation import PipelineAnalysisCache
-from seedvision.ui.native_workflow_helpers import configure_native_parameters, native_preview_image
+from seedvision.ui.native_workflow_helpers import configure_native_parameters, configure_foreground_regions, native_preview_image
 
 
 class _Signals(QObject):
     completed = Signal(object)
+    progress = Signal(str, str, str)
 
 
 class _Job(QRunnable):
@@ -39,6 +42,39 @@ class _Job(QRunnable):
 
 
 class _RasterView(QGraphicsView):
+    region_selected = Signal(object)
+    selecting_region = False
+    _region_item = None
+
+    def mousePressEvent(self, event):
+        if self.selecting_region and event.button() == Qt.MouseButton.LeftButton:
+            self._region_start = self.mapToScene(event.position().toPoint())
+            self._region_item = self.scene().addRect(QRectF(self._region_start, self._region_start),
+                QPen(QColor('#ff44bb'), 2))
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self.selecting_region and self._region_item is not None:
+            self._region_item.setRect(QRectF(self._region_start,
+                self.mapToScene(event.position().toPoint())).normalized())
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self.selecting_region and self._region_item is not None:
+            rectangle = self._region_item.rect().intersected(self.sceneRect())
+            self.scene().removeItem(self._region_item)
+            self._region_item = None
+            self.selecting_region = False
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+            self.region_selected.emit(rectangle)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
     def wheelEvent(self, event):
         factor = 1.2 if event.angleDelta().y() > 0 else 1 / 1.2
         self.scale(factor, factor)
@@ -70,7 +106,10 @@ class WorkflowPreview(QWidget):
         layout.addWidget(self.view, 1)
 
     def clear(self):
+        self.view._region_item = None
+        self.view.selecting_region = False
         self.view.scene().clear()
+        self.output_item = None
         self.message.clear()
 
     def setText(self, text):
@@ -80,9 +119,14 @@ class WorkflowPreview(QWidget):
     def setPixmap(self, pixmap):
         self.clear()
         item = self.view.scene().addPixmap(pixmap)
+        self.output_item = item
         self.view.scene().setSceneRect(item.boundingRect())
         self.message.setText('Node output · drag to pan · scroll to zoom')
         self.fit_image()
+
+    def set_base(self, pixmap):
+        item = self.view.scene().addPixmap(pixmap)
+        item.setZValue(-1)
 
     def fit_image(self):
         self.view.fitInView(self.view.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
@@ -110,6 +154,10 @@ class PipelineWorkflowController(QObject):
         self._panel_visibility = None
         self._default_device_label = None
         self._default_selection = window._selected_pipeline_node
+        from seedvision.ui.workflow_display import WorkflowDisplay
+        self.display = WorkflowDisplay(self)
+        self.activity = ''
+        self._started_at = None
         self.strip = QWidget(window)
         self.strip.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.strip.setObjectName('pipelineWorkflowStrip')
@@ -183,6 +231,7 @@ class PipelineWorkflowController(QObject):
         self.histogram = HueHistogramView(window)
         self.histogram.hide()
         self.selector.currentIndexChanged.connect(self.select_workflow)
+        self.preview.view.region_selected.connect(self.region_selected)
         self.save_button.clicked.connect(self.save)
         self.export_button.clicked.connect(self.export)
         self.sync_buttons()
@@ -210,6 +259,8 @@ class PipelineWorkflowController(QObject):
         if hasattr(self.window, 'pipeline_backends'):
             self.window.pipeline_backends.refresh()
         self.export_menu_action.setEnabled(self.export_button.isEnabled())
+        if self.active:
+            self.display.sync_controls()
 
     def adjust_for_width(self, available):
         """Keep file commands accessible when a narrow pane uses large text."""
@@ -255,7 +306,6 @@ class PipelineWorkflowController(QObject):
         self.install(workflow)
 
     def install(self, workflow):
-        from seedvision.pipeline.workflows import workflow_graph
         if not self.active:
             self._default_selection = self.window._selected_pipeline_node
         self.stop()
@@ -275,9 +325,12 @@ class PipelineWorkflowController(QObject):
                     self.selector.setItemData(index, 'current', Qt.ItemDataRole.UserRole + 1)
             self.selector.setCurrentIndex(index)
         self.clear_result_display()
+        self.activity = ''
+        self.display.mode, self.display.title = 'source', 'Source image'
+        self.display.blend_available = False
         self.cache = PipelineAnalysisCache()
         self._correction_prepared = None
-        self.graph = None if workflow is None else workflow_graph(workflow)
+        self.graph = None if workflow is None else workspace_graph(workflow)
         self.window.pipeline_inspector.set_analysis_result(None)
         self.window.pipeline_inspector.enable_unified_optimization(False)
         canvas = self.window.pipeline_canvas
@@ -302,23 +355,28 @@ class PipelineWorkflowController(QObject):
                 for widget, visible in self._panel_visibility:
                     widget.setVisible(visible)
                 self._panel_visibility = None
+            for control, enabled, tooltip in getattr(self, '_default_display_controls', ()):
+                control.setEnabled(enabled)
+                control.setToolTip(tooltip)
+            self._default_display_controls = ()
         else:
             if self._default_device_label is None:
                 self._default_device_label = self.window.compute_status_label.text()
             self.window.compute_status_label.setText('Not run (pipeline)')
             if self._toolbar_visibility is None:
                 self._toolbar_visibility = [(action, action.isVisible()) for action in self.window.workflow_toolbar.actions()]
-            for action in self.window.workflow_toolbar.actions():
-                action.setVisible(action in (self.window.open_action, self.window.analyze_action,
-                    getattr(self.window, 'stop_action', None), self.window.image_workspace_action,
-                    self.window.pipeline_workspace_action))
+                self._default_display_controls = [(control, control.isEnabled(), control.toolTip()) for control in (
+                    self.window.overlay_opacity_slider, self.window.annotation_opacity_slider,
+                    self.window.show_material_references_checkbox, self.window.show_instance_annotations_checkbox,
+                    self.window.paint_background_action, self.window.annotate_instances_action)]
             if self._panel_visibility is None:
                 self._panel_visibility = [(widget, not widget.isHidden()) for widget in self.window.default_pipeline_details]
             for widget in self.window.default_pipeline_details:
                 widget.hide()
             configure_native_parameters(self.graph, workflow.recipe, typed=True, editable_only=True)
+            configure_foreground_regions(self.graph, workflow)
             canvas.graph = self.graph
-            self._selected = workflow.display_state.get('selected_node', next(iter(self.graph.nodes)))
+            self._selected = workflow.display_state.get('selected_node', workflow.recipe.stages[0].stage_id)
             self._preferred_output = workflow.display_state.get('selected_output', '')
             canvas.rebuild_from_graph(self._selected)
             self.window.image_display_stack.setCurrentWidget(self.preview)
@@ -335,6 +393,15 @@ class PipelineWorkflowController(QObject):
         if getattr(self.window, 'catalogue_nodes', None) is not None:
             self.window.catalogue_nodes.install_primary(self.graph if self.active else self.window.pipeline)
         self.sync_buttons()
+        self.window._refresh_analysis_activity_panel()
+        self.window._refresh_project_node()
+        if workflow is None:
+            self.window._rebuild_overlay_menu(str(self.window.overlay_combo.currentData() or 'raw_image'))
+            mode = str(self.window.overlay_combo.currentData() or 'raw_image')
+            self.window._sync_overlay_display_controls(mode)
+            self.window.image_view.set_overlay_mode(mode)
+            self.window._sync_background_controls()
+            self.window._update_analysis_availability()
         documents = getattr(self.window, "pipeline_documents", None)
         if documents is not None:
             documents.loaded("Default seed analysis" if workflow is None else workflow.source_recipe.title,
@@ -354,6 +421,8 @@ class PipelineWorkflowController(QObject):
                 self.workflow = workflow_from_graph(self.workflow, self.graph)
                 self.workflow = replace(self.workflow, display_state=dict(self.workflow.display_state) | {
                     'selected_node': self._selected, 'selected_output': self._preferred_output,
+                    'context_layout': {key: [self.graph.node(key).x, self.graph.node(key).y]
+                                       for key in CONTEXT_NODE_IDS},
                     'image_visible': self.window.image_workspace_action.isChecked(),
                     'pipeline_visible': self.window.pipeline_workspace_action.isChecked()})
             finally:
@@ -373,6 +442,8 @@ class PipelineWorkflowController(QObject):
     def clear_result_display(self):
         """Release computed display products without removing node controls."""
         self.result = None
+        self.display.blend_available = False
+        self.display.mode, self.display.title = 'source', 'Source image'
         self._preview_candidates = []
         self.preview.clear()
         self.facts.clear()
@@ -385,6 +456,8 @@ class PipelineWorkflowController(QObject):
         self.stop()
         self._generation += 1
         self.clear_result_display()
+        self._started_at = None
+        self.report_activity('Pipeline changed — run to update outputs.')
         self.window.compute_status_label.setText('Not run (pipeline)')
         self.crop_selector.hide()
         self.window._set_project_dirty()
@@ -396,6 +469,19 @@ class PipelineWorkflowController(QObject):
             return False
         node = self.graph.node(node_id)
         old = dict(node.parameters)
+        if key == 'foreground_roi_bounds_xyxy':
+            from seedvision.pipeline.workflows import with_foreground_region
+            try:
+                bounds = json.loads(value) if isinstance(value, str) else value
+                self.workflow = with_foreground_region(self.workflow, node_id, bounds)
+            except (ValueError, TypeError) as error:
+                self.report_activity(f'Invalid foreground region: {error}')
+                return False
+            configure_foreground_regions(self.graph, self.workflow)
+            self.graph.invalidate((node_id, *self.graph.downstream(node_id, recursive=True)))
+            self.changed()
+            self.select_node(node_id)
+            return True
         try:
             self.graph.set_parameter(node_id, key, value)
             if key == 'channel' and self.workflow.recipe.stage(node_id).operation_id == 'threshold.custom_range':
@@ -414,6 +500,9 @@ class PipelineWorkflowController(QObject):
         self.window.pipeline_canvas.refresh()
 
     def reset_parameters(self, node_id):
+        if node_id in CONTEXT_NODE_IDS:
+            self.window._refresh_project_node()
+            return
         guard = getattr(self.window, "_pipeline_editing_allowed", None)
         if guard is not None and not guard():
             return False
@@ -423,7 +512,11 @@ class PipelineWorkflowController(QObject):
         old = dict(self.graph.node(node_id).parameters)
         self.graph.node(node_id).parameters = dict(source.node(node_id).parameters)
         try:
+            from seedvision.pipeline.workflows import with_foreground_region
+            if node_id in self.workflow.foreground_regions:
+                self.workflow = with_foreground_region(self.workflow, node_id, None)
             self.sync_graph()
+            configure_foreground_regions(self.graph, self.workflow)
         except Exception as error:
             self.graph.node(node_id).parameters = old
             self.window.statusBar().showMessage(str(error))
@@ -440,8 +533,7 @@ class PipelineWorkflowController(QObject):
             self.sync_graph()
         except (ValueError, TypeError) as error:
             self.window.statusBar().showMessage(str(error))
-            from seedvision.pipeline.workflows import workflow_graph
-            self.graph = workflow_graph(self.workflow)
+            self.graph = workspace_graph(self.workflow)
             configure_native_parameters(self.graph, self.workflow.recipe, typed=True, editable_only=True)
             self.window.pipeline_canvas.graph = self.graph
             self.window.pipeline_canvas.rebuild_from_graph(self._selected)
@@ -451,6 +543,9 @@ class PipelineWorkflowController(QObject):
         self.select_node(self._selected)
 
     def enabled_changed(self, node_id, enabled):
+        if node_id in CONTEXT_NODE_IDS:
+            self.select_node(node_id)
+            return False
         guard = getattr(self.window, "_pipeline_editing_allowed", None)
         if guard is not None and not guard():
             return False
@@ -482,16 +577,21 @@ class PipelineWorkflowController(QObject):
         if not self.active:
             self.window._analyze_current_image()
             return
+        if target_node_id in CONTEXT_NODE_IDS:
+            self.window._refresh_project_node()
+            self.report_activity('Project inputs are synchronized with the current image.')
+            return
         if self._job is not None or self.window._thread_pool.activeThreadCount():
-            self.window.statusBar().showMessage('Wait for the current work to finish.')
+            self.report_activity('Wait for the current work to finish.')
             return
         path = self.window.image_view.image_path
         if path is None:
+            self.report_activity('Open an image before running this pipeline.')
             return
         try:
             workflow = self.sync_graph()
         except (ValueError, TypeError) as error:
-            self.window.statusBar().showMessage(str(error))
+            self.report_activity(f'Cannot run pipeline: {error}')
             return
         from seedvision.pipeline.workflows import run_workflow_path
         self.clear_result_display()
@@ -500,7 +600,7 @@ class PipelineWorkflowController(QObject):
             try:
                 context = self.window._capture_correction_project_context()
             except (ValueError, OSError) as error:
-                self.window.statusBar().showMessage(str(error))
+                self.report_activity(f'Cannot prepare correction: {error}')
                 return
             self._correction_context = context
             binding = next((item for item in self.window._project_correction_bindings
@@ -518,7 +618,7 @@ class PipelineWorkflowController(QObject):
             paths = dict(workflow.input_paths)
             paths['source_rgb'] = str(path)
             if set(paths) != {'target_rgb', 'target_mask', 'source_rgb', 'source_mask'}:
-                self.window.statusBar().showMessage('Select the target image and both chip-label masks in the correction node.')
+                self.report_activity('Select the target image and both chip-label masks in the correction node.')
                 return
             from seedvision.benchmarking.native_correction_inputs import run_native_correction_files
             self.start_job(lambda cancel: run_native_correction_files(workflow.recipe, paths,
@@ -529,19 +629,45 @@ class PipelineWorkflowController(QObject):
             models = model_asset_paths(self.window._root, workflow.recipe,
                 self.window._project_reference_model_assets)
         except (ValueError, OSError) as error:
-            self.window.statusBar().showMessage(str(error))
+            self.report_activity(f'Cannot prepare pipeline models: {error}')
             return
         self.start_job(lambda cancel: run_workflow_path(workflow, path, cache=cache,
-            cancel=cancel, target_node_id=target_node_id, model_asset_paths=models), self.run_completed)
+            cancel=cancel, target_node_id=target_node_id, model_asset_paths=models,
+            progress=self.progress_callback), self.run_completed)
+
+    def report_activity(self, text):
+        self.activity = text
+        self.window.statusBar().showMessage(text)
+        self.window._refresh_analysis_activity_panel()
+
+    def progress_callback(self, stage_id, status, reason=''):
+        # Only immutable text crosses from the calculation thread into Qt.
+        job = self._job
+        if job is not None:
+            job.signals.progress.emit(stage_id, status, reason)
+
+    def node_progress(self, job, stage_id, status, reason):
+        if self._job is not job or job.token != (self._generation, self.window.image_view.image_path):
+            return
+        title = self.graph.node(stage_id).title if stage_id in self.graph.nodes else 'Preparing image'
+        if stage_id in self.graph.nodes:
+            node = self.graph.node(stage_id)
+            node.status = NodeStatus.RUNNING if status == 'running' else NodeStatus.COMPLETE if status in ('executed', 'provided', 'empty', 'reused', 'bypassed') else NodeStatus.BLOCKED
+            node.status_detail = status + (': ' + reason if reason else '')
+            self.window.pipeline_canvas.refresh()
+            self.window.pipeline_inspector.refresh_status()
+        self.report_activity(f'{title}: {status}' + (f'\n{reason}' if reason else ''))
 
     def start_job(self, function, completion):
         token = (self._generation, self.window.image_view.image_path)
         job = _Job(function, token)
         self._job = job
+        self._started_at = monotonic()
         job.signals.completed.connect(lambda result: self.job_completed(job, result, completion))
+        job.signals.progress.connect(lambda stage, status, reason: self.node_progress(job, stage, status, reason))
         self.window.pipeline_inspector.setEnabled(False)
         self.window.pipeline_canvas.setEnabled(False)
-        self.window.statusBar().showMessage('Working…')
+        self.report_activity('Preparing image…')
         self.sync_buttons()
         self.window._update_analysis_availability()
         self.window._thread_pool.start(job)
@@ -553,17 +679,22 @@ class PipelineWorkflowController(QObject):
         self.window.pipeline_inspector.setEnabled(True)
         self.window.pipeline_canvas.setEnabled(True)
         if job.cancel.is_set() or job.token != (self._generation, self.window.image_view.image_path):
-            self.window.statusBar().showMessage('Workflow work cancelled; obsolete outputs discarded.')
+            self.report_activity('Pipeline cancelled; obsolete outputs discarded.')
         elif isinstance(result, Exception):
-            self.window.statusBar().showMessage(f'Workflow failed: {result}')
+            self.report_activity(f'Pipeline failed: {result}')
+            self.preview.setText(self.activity)
+            self.facts.setPlainText(self.activity)
+            self.facts.show()
         else:
             completion(result)
         self.sync_buttons()
         self.window._update_analysis_availability()
+        self._started_at = None
 
     def stop(self):
         if self._job is not None:
             self._job.cancel.set()
+            self.report_activity('Stopping pipeline; waiting for the current calculation to finish safely…')
         else:
             self.window._stop_current_work()
 
@@ -585,7 +716,19 @@ class PipelineWorkflowController(QObject):
             node.status_detail = ('Reused · ' if item.reused else '') + item.status + (': ' + item.reason if item.reason else '')
         self.window.pipeline_canvas.refresh()
         self.select_node(self._selected)
-        self.window.statusBar().showMessage(f'Workflow {result.status}; select a node to inspect its outputs.')
+        failed = next((node for node in result.nodes if node.status in ('failed', 'unavailable', 'partial')), None)
+        if failed is not None:
+            title = self.graph.node(failed.stage_id).title
+            self.report_activity(f'{title}: {failed.status}\n{failed.reason}')
+            self.window.pipeline_canvas.select_node(failed.stage_id)
+        else:
+            elapsed = monotonic() - self._started_at if self._started_at is not None else 0
+            self.report_activity(f'Pipeline {result.status} in {elapsed:.1f}s. Select a node to inspect outputs.')
+            # A first run should show its useful final raster, not an unchanged input.
+            if self._selected in CONTEXT_NODE_IDS or self.workflow.recipe.stage(self._selected).operation_id.startswith('external.'):
+                target = next((node.stage_id for node in reversed(result.nodes)
+                    if any(torch.is_tensor(value) and value.ndim in (2, 3) for value in node.outputs.values())), self._selected)
+                self.window.pipeline_canvas.select_node(target)
 
     def correction_completed(self, completion):
         result, prepared = completion
@@ -599,6 +742,21 @@ class PipelineWorkflowController(QObject):
             self._preferred_output = ''
             self.window._set_project_dirty()
         self._selected = node_id
+        if node_id in CONTEXT_NODE_IDS:
+            if node_id == 'species_reference_library':
+                self.window._context_library_key = None
+            self.window._refresh_project_node()
+            self.window.pipeline_inspector.set_node(self.graph.node(node_id))
+            self.window.pipeline_inspector.overlay_combo.hide()
+            self.replay_action.setEnabled(False)
+            self.node_actions.hide()
+            self.histogram.hide()
+            self.facts.hide()
+            self.crop_selector.hide()
+            self.display.show_source()
+            if hasattr(self.window, 'pipeline_backends'):
+                self.window.pipeline_backends.refresh()
+            return
         from seedvision.benchmarking.native_stage_replay import SUPPORTED_REPLAY_OPERATIONS
         self.replay_action.setEnabled(self.workflow.recipe.stage(node_id).operation_id in SUPPORTED_REPLAY_OPERATIONS and self._job is None)
         self.window.pipeline_inspector.set_node(self.graph.node(node_id))
@@ -622,7 +780,7 @@ class PipelineWorkflowController(QObject):
         self._preview_candidates = []
         self.preview.clear()
         if self.result is None:
-            self.preview.setText('Run this workflow on the selected project image to inspect outputs.')
+            self.display.show_source()
             return
         try:
             node = self.result.node(node_id)
@@ -710,6 +868,17 @@ class PipelineWorkflowController(QObject):
                 widget.deleteLater()
         actions = []
         operation = stage.operation_id
+        from seedvision.pipeline.workflows import FOREGROUND_OPERATIONS
+        if operation in FOREGROUND_OPERATIONS:
+            button = QPushButton('Select foreground region…', self.node_actions)
+            button.setToolTip('Draw a rectangle around the seeds in the source image. Pixels outside remain background.')
+            source_frame = all(port.semantics.get('frame') in (None, 'source.decoded')
+                for port in stage.ports if port.direction == 'input')
+            button.setEnabled(source_frame)
+            if not source_frame:
+                button.setToolTip('This node uses a transformed frame. Enter region bounds in its input pixels in Settings.')
+            button.clicked.connect(self.select_region)
+            layout.addWidget(button)
         from seedvision.benchmarking.native_reader_recipe import BASE_IDS as READER_BASE_IDS
         if operation == 'external.image_inputs' and self.workflow.recipe.recipe_id in READER_BASE_IDS:
             actions.append(('Grayscale input mode…', 'native_reader_recipe', 'build_native_reader_recipe'))
@@ -743,6 +912,35 @@ class PipelineWorkflowController(QObject):
             for index in range(layout.count()):
                 layout.itemAt(index).widget().setEnabled(False)
         self.node_actions.setVisible(bool(layout.count()))
+
+    def select_region(self):
+        if not self.window._pipeline_editing_allowed():
+            return
+        stage = self.workflow.recipe.stage(self._selected)
+        if any(port.semantics.get('frame') not in (None, 'source.decoded')
+                for port in stage.ports if port.direction == 'input'):
+            self.report_activity('Select region requires source-image coordinates. Enter bounds in this node input frame instead.')
+            return
+        if self.window.image_view._source_pixmap is None:
+            self.report_activity('Open an image before selecting a foreground region.')
+            return
+        self._region_node = self._selected
+        self.display.show_source()
+        self.preview.view.selecting_region = True
+        self.preview.view.setCursor(Qt.CursorShape.CrossCursor)
+        self.preview.message.setText('Drag a rectangle around the seed foreground. The original image dimensions are preserved.')
+
+    def region_selected(self, rectangle):
+        import math
+        pixmap = self.window.image_view._source_pixmap
+        scene = self.preview.view.sceneRect()
+        if pixmap is None or rectangle.isEmpty() or scene.isEmpty():
+            return
+        sx, sy = pixmap.width()/scene.width(), pixmap.height()/scene.height()
+        bounds = [max(0, math.floor(rectangle.left()*sx)), max(0, math.floor(rectangle.top()*sy)),
+            min(pixmap.width(), math.ceil(rectangle.right()*sx)), min(pixmap.height(), math.ceil(rectangle.bottom()*sy))]
+        self.parameter_changed(self._region_node, 'foreground_roi_bounds_xyxy', json.dumps(bounds))
+        self.report_activity(f'Foreground region: {bounds}. Run pipeline to calculate it.')
 
     def choose_input(self, port):
         guard = getattr(self.window, "_pipeline_editing_allowed", None)
@@ -856,10 +1054,21 @@ class PipelineWorkflowController(QObject):
             self.render(node.outputs['packed_rgb'][offset:offset + height*width*3].reshape(height, width, 3), {'color_order': 'RGB'})
 
     def render(self, raster, semantics):
+        if self.active and self.display.mode == 'annotations':
+            self.window._stop_reference_point_editing()
         image = native_preview_image(raster, semantics)
         self.preview.setPixmap(QPixmap.fromImage(image))
         self.preview.message.setText(f'Node output · {raster.shape[1]}×{raster.shape[0]} source pixels · sampled to {image.width()}×{image.height()} display pixels · drag / scroll to pan / zoom')
+        if semantics.get('unit') == 'pixel' and 'distanceTransform' in semantics.get('source', ''):
+            self.preview.message.setText(self.preview.message.text() + ' · distance in pixels; logarithmic colour display; black = zero')
         self.window.image_display_stack.setCurrentWidget(self.preview)
+        catalogue = getattr(self.window, 'catalogue_nodes', None)
+        if self.active and self.result is not None and not (catalogue and catalogue.handles(catalogue._selected)):
+            self.display.rendered(raster, semantics)
+        elif self.active:
+            self.display.mode, self.display.title = 'output', 'Added node output'
+            self.display.blend_available = False
+            self.display.sync_controls()
 
     def save(self):
         documents = getattr(self.window, 'pipeline_documents', None)
@@ -971,6 +1180,9 @@ class PipelineWorkflowController(QObject):
                     node = graph.node(identifier)
                     node.x, node.y = old_node.x, old_node.y
             upgraded = workflow_from_graph(upgraded, graph)
+            from seedvision.pipeline.workflows import with_foreground_region
+            for stage_id, bounds in current.foreground_regions.items():
+                upgraded = with_foreground_region(upgraded, stage_id, bounds)
             upgraded = replace(upgraded, display_state=current.display_state)
             self.install(upgraded)
         except (ValueError, TypeError) as error:

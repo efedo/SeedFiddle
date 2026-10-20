@@ -70,8 +70,8 @@ class PipelineModelTests(unittest.TestCase):
         order = graph.topological_order()
         self.assertEqual(order[0], "project")
         self.assertEqual(set(order), set(graph.nodes))
-        self.assertEqual(len(graph.nodes), 30)
-        self.assertEqual(len(graph.connections), 184)
+        self.assertEqual(len(graph.nodes), 31)
+        self.assertEqual(len(graph.connections), 185)
         self.assertNotIn("perimeter_background_reference", graph.nodes)
         self.assertEqual(
             graph.connection_for_input(
@@ -158,7 +158,7 @@ class PipelineModelTests(unittest.TestCase):
         graph = build_default_pipeline()
         all_nodes = {**graph.nodes, **graph.unused_nodes}
         all_connections = (*graph.connections, *graph.unused_connections)
-        self.assertEqual(len(graph.connection_templates), 262)
+        self.assertEqual(len(graph.connection_templates), 263)
         self.assertTrue(all(node.output_ports for node in all_nodes.values()))
         self.assertEqual(
             len(all_connections),
@@ -199,9 +199,10 @@ class PipelineModelTests(unittest.TestCase):
             graph.restore_unused_node(node_id)
         expected = {
             "project": set(),
-            "metadata": {"project"},
+            "image_selector": {"project"},
+            "metadata": {"image_selector"},
             "species_reference_library": {"project", "metadata"},
-            "deskew_colour": {"project"},
+            "deskew_colour": {"image_selector"},
             "hue_only": {"deskew_colour", "layout_detection"},
             "wavelet_decomposition": {"deskew_colour", "layout_detection"},
             "ruler_detection": {"deskew_colour"},
@@ -791,10 +792,10 @@ class PipelineModelTests(unittest.TestCase):
 
     def check_test_calibration_nodes_feed_the_corrected_analysis_path(self) -> None:
         graph = build_default_pipeline()
-        self.assertEqual(graph.upstream("metadata"), ("project",))
+        self.assertEqual(graph.upstream("metadata"), ("image_selector",))
         self.assertEqual(
             graph.upstream("deskew_colour"),
-            ("project",),
+            ("image_selector",),
         )
         self.assertEqual(graph.upstream("ruler_detection"), ("deskew_colour",))
         self.assertEqual(
@@ -945,12 +946,12 @@ class PipelineModelTests(unittest.TestCase):
         self.assertNotIn("foreground_segmentation", graph.nodes)
         self.assertEqual(
             tuple(port for port, _label in node.output_ports),
-            ("raw_image", "annotations", "species_library"),
+            ("images", "annotations", "species_library"),
         )
         self.assertEqual(
             node.output_port_types,
             {
-                "raw_image": "RawImage",
+                "images": "ProjectImages",
                 "annotations": "ImageAnnotations",
                 "species_library": "SpeciesLibraryPin",
             },
@@ -976,12 +977,22 @@ class PipelineModelTests(unittest.TestCase):
                 for connection in graph.connections
                 if connection.source == "project"
             },
-            {"raw_image", "annotations", "species_library"},
+            {"images", "annotations", "species_library"},
         )
         self.assertEqual(
-            set(graph.downstream_from_port("project", "raw_image")),
+            set(graph.downstream_from_port("image_selector", "raw_image")),
             {"metadata", "deskew_colour"},
         )
+        self.assertEqual(graph.upstream('image_selector'), ('project',))
+        self.assertEqual(graph.downstream_from_port('project', 'images'), ('image_selector',))
+        for node_id in ('project', 'image_selector', 'metadata', 'species_reference_library'):
+            with self.assertRaises(ValueError):
+                graph.shelve_node(node_id)
+            with self.assertRaises(ValueError):
+                graph.set_enabled(node_id, False)
+        for edge in graph.fixed_connections:
+            with self.assertRaises(ValueError):
+                graph.disconnect(edge)
         for node_id in tuple(graph.unused_nodes):
             graph.restore_unused_node(node_id)
         self.assertEqual(

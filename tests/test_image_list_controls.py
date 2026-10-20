@@ -143,7 +143,7 @@ class ImageListControlsTests(unittest.TestCase):
                 controller.selector.setCurrentIndex(next(
                     index for index in range(1, controller.selector.count())
                     if controller.selector.itemData(index).recipe_id == "plantcv_seed_binary_working"))
-                controller.result = object()
+                controller.result = SimpleNamespace(node=unittest.mock.Mock(side_effect=StopIteration))
                 controller.facts.setPlainText("Old image result")
                 with patch.object(QMessageBox, "warning", return_value=QMessageBox.StandardButton.Discard):
                     self.assertTrue(window._remove_image(second))

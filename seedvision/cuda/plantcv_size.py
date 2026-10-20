@@ -20,7 +20,8 @@ import torch
 from .plantcv_raster_spans import (
     RasterSpanCancelled, RasterSpanLimitError,
     fill_polygon_spans, thick_line_spans, intersect_scanline_spans,
-    closed_polyline_spans, thick_line_fixed_spans, normalize_spans, circle_outline_spans,
+    closed_polyline_spans, iter_adjacent_closed_polyline_spans,
+    thick_line_fixed_spans, normalize_spans, circle_outline_spans,
     MAX_RASTER_SPAN_WORK, MAX_RASTER_SPAN_SEGMENTS, XY_SHIFT, XY_ONE,
 )
 
@@ -1012,7 +1013,7 @@ MAX_SIZE_DIAGNOSTIC_PIXELS = 16_000_000
 MAX_SIZE_DIAGNOSTIC_BATCH_PIXELS = 1_000_000
 MAX_SIZE_DIAGNOSTIC_SPAN_ITEMS = MAX_RASTER_SPAN_SEGMENTS
 MAX_SIZE_DIAGNOSTIC_SCRATCH_BYTES = 96 * 1024 * 1024
-MAX_SIZE_DIAGNOSTIC_LABELS = 128
+MAX_SIZE_DIAGNOSTIC_LABELS = 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -1264,6 +1265,12 @@ def render_plantcv_size_diagnostic_rgb(image_rgb, label_results, *, cancel=None,
     # guard the owned CUDA canvas as well as the runner's original inputs.
     cancel=paint_cancel
     paint_budget = [0, 0]
+    # Geometry preparation and raster painting are separate bounded phases.
+    # Each admits at most16M geometry visits; the former retains only bounded
+    # compact contours and the latter uses the existing96MiB paint batches.
+    # Charging preparation again to painting made hundreds of valid objects
+    # exhaust the shared counter before any stroke bound was reached.
+    work = [0]
     magenta, blue = (255, 0, 255), (255, 0, 0)
     try:
         for geometry in geometries:
@@ -1273,9 +1280,14 @@ def render_plantcv_size_diagnostic_rgb(image_rgb, label_results, *, cancel=None,
                 cancel=cancel, work_budget=work)
             _paint_rgb_spans_(canvas, spans, magenta, paint_budget, cancel=cancel, after_write=after_write)
             for contour in geometry.contours_xy:
-                spans = closed_polyline_spans(contour, width, height, thickness=line_thickness,
-                    cancel=cancel, work_budget=work)
-                _paint_rgb_spans_(canvas, spans, blue, paint_budget, cancel=cancel, after_write=after_write)
+                # CHAIN_APPROX_NONE contours have adjacent points. Normalize
+                # their strokes in bounded batches; a shared budget still
+                # accounts for every batch and any repainted overlap.
+                for spans in iter_adjacent_closed_polyline_spans(contour, width, height,
+                        thickness=line_thickness, cancel=cancel, work_budget=work,
+                        cache_directions=True):
+                    _paint_rgb_spans_(canvas, spans, blue, paint_budget,
+                        cancel=cancel, after_write=after_write)
             x, y, bw, bh = geometry.bbox_xywh
             cx, cy = geometry.centroid_xy
             for start, end in (((x, y), (x+bw, y)), ((cx, y), (cx, y+bh))):
@@ -1387,17 +1399,26 @@ def premeasure_plantcv_binary_mask(mask: torch.Tensor, *,
     topology_count = 0
     topology_chunks: list[torch.Tensor] = []
     topology_over_limit = False
-    tile_width = min(width, MAX_TILE_PIXELS)
+    # Scan only the occupied bounding rectangle. Neighborhood reads still use
+    # the complete CUDA raster and all coordinates remain in the original
+    # frame, preserving border tests, moments, contours and ellipse arithmetic.
+    occupied_rows = torch.nonzero(foreground_full.any(dim=1), as_tuple=False).flatten()
+    occupied_columns = torch.nonzero(foreground_full.any(dim=0), as_tuple=False).flatten()
+    scan_y0 = int(occupied_rows[0].item()) if occupied_rows.numel() else 0
+    scan_y1 = int(occupied_rows[-1].item())+1 if occupied_rows.numel() else 0
+    scan_x0 = int(occupied_columns[0].item()) if occupied_columns.numel() else 0
+    scan_x1 = int(occupied_columns[-1].item())+1 if occupied_columns.numel() else 0
+    tile_width = max(1, min(scan_x1-scan_x0, MAX_TILE_PIXELS))
     tile_height = max(1, MAX_TILE_PIXELS // tile_width)
 
     with torch.no_grad():
-        for y0 in range(0, height, tile_height):
-            y1 = min(height, y0 + tile_height)
+        for y0 in range(scan_y0, scan_y1, tile_height):
+            y1 = min(scan_y1, y0 + tile_height)
             rows = torch.arange(y0, y1, device=mask.device, dtype=torch.int64)
-            for x0 in range(0, width, tile_width):
+            for x0 in range(scan_x0, scan_x1, tile_width):
                 if _check_cancel(cancel):
                     raise PlantCVSizeCancelledError("size premeasurements cancelled")
-                x1 = min(width, x0 + tile_width)
+                x1 = min(scan_x1, x0 + tile_width)
                 columns = torch.arange(x0, x1, device=mask.device, dtype=torch.int64)
                 foreground, neighbor_bits = _tile_neighbor_bits(
                     foreground_full,

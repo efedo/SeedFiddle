@@ -502,6 +502,8 @@ class PipelineGraph:
 
         if identifier not in self.nodes:
             raise ValueError(f"Pipeline node {identifier!r} is not active.")
+        if identifier in getattr(self, "required_nodes", ()):
+            raise ValueError("Shared project nodes must remain in every pipeline.")
         node = self.nodes.pop(identifier)
         retained = tuple(
             connection
@@ -672,6 +674,8 @@ class PipelineGraph:
     def disconnect(self, connection: PipelineConnection) -> tuple[str, ...]:
         """Remove one active dependency and bypass its enabled consumer branch."""
 
+        if connection in getattr(self, "fixed_connections", ()):
+            raise ValueError("Shared project and image-selection connections are required.")
         if connection not in self.connections:
             raise ValueError("That pipeline connection is not active.")
         affected = (
@@ -858,6 +862,8 @@ class PipelineGraph:
     def set_enabled(self, node_id: str, enabled: bool) -> tuple[str, ...]:
         node = self._require_active(node_id)
         enabled = bool(enabled)
+        if not enabled and node_id in getattr(self, "required_nodes", ()):
+            raise ValueError("Shared project nodes must remain enabled.")
         if node.enabled == enabled:
             return ()
         affected = (node_id, *self.downstream(node_id, recursive=True))
@@ -1693,57 +1699,9 @@ def build_default_pipeline() -> PipelineGraph:
     calibration_residual_parameters = (
         ParameterSpec("calibration_residual_gain", "Residual-risk gain", "float", 0.10, 5.0, 0.10, "Scales reference-confidence and spatial extrapolation risk away from the card and ruler."),
     )
+    from seedvision.pipeline.project_context import context_nodes, CONTEXT_CONNECTIONS, protect_context
     nodes = (
-        PipelineNode(
-            "project",
-            "Project",
-            "Project",
-            "Current project, selected image, and image-local annotations",
-            0,
-            40,
-            details=(
-                "This is the sole root of one per-image analysis graph. It resolves "
-                "the selected raw image and its project-bound annotation bundle. "
-                "The bundle retains distinct Background, Foreground, Other, annotated "
-                "seed-instance, and manual-centre layers even though their shared "
-                "project/image ownership is represented by one graph connector. "
-                "Selecting this node shows the current master path, save state, image "
-                "inventory, selected image, species, and annotation counts."
-            ),
-            output_ports=(
-                ("raw_image", "Raw image"),
-                ("annotations", "Annotations"),
-                ("species_library", "Species library pin"),
-            ),
-            output_port_types={
-                "raw_image": "RawImage",
-                "annotations": "ImageAnnotations",
-                "species_library": "SpeciesLibraryPin",
-            },
-            status_detail="No image selected",
-        ),
-        PipelineNode(
-            "metadata", "Species and metadata", "Input", "Species, lot and notes", 320, 40,
-            output_ports=(("species", "Species"),),
-            output_port_types={"species": "SpeciesMetadata"},
-            status_detail="Choose species",
-        ),
-        PipelineNode(
-            "species_reference_library",
-            "Species reference library",
-            "Learning",
-            "Resolve the exact immutable species-library pin and exclude this source",
-            600,
-            180,
-            details=(
-                "Resolves the project's exact library ID, version, and content hash; "
-                "checks species, trait-vocabulary, and descriptor compatibility; then "
-                "removes every contribution carrying the current image SHA-256 before "
-                "supplying compact source-balanced banks. It never consumes or emits "
-                "an annotation raster and owns no probability-map overlay."
-            ),
-            status_detail="No species library pinned",
-        ),
+        *context_nodes(),
         PipelineNode(
             "ruler_detection",
             "Ruler detection and scale",
@@ -4167,25 +4125,9 @@ def build_default_pipeline() -> PipelineGraph:
             for title, keys in parameter_section_layouts[node.identifier]
         )
     connections = (
+        *CONTEXT_CONNECTIONS,
         PipelineConnection(
-            "project", "metadata", "RawImage", source_port="raw_image", target_port="image"
-        ),
-        PipelineConnection(
-            "project",
-            "species_reference_library",
-            "SpeciesLibraryPin",
-            source_port="species_library",
-            target_port="pin",
-        ),
-        PipelineConnection(
-            "metadata",
-            "species_reference_library",
-            "SpeciesMetadata",
-            source_port="species",
-            target_port="species",
-        ),
-        PipelineConnection(
-            "project", "deskew_colour", "RawImage", source_port="raw_image", target_port="image"
+            "image_selector", "deskew_colour", "RawImage", source_port="raw_image", target_port="image"
         ),
         PipelineConnection("deskew_colour", "ruler_detection", "CorrectedImage"),
         PipelineConnection("deskew_colour", "layout_detection", "CorrectedImage"),
@@ -4787,6 +4729,10 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineConnection("aggregation", "output", "LotSummary"),
     )
     graph = PipelineGraph(nodes, connections)
+    protect_context(graph)
+    for identifier, node in graph.nodes.items():
+        if identifier not in graph.required_nodes:
+            node.x += 320
     disabled_roots = (
         "distance_candidates",
         "circle_candidates",

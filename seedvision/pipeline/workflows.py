@@ -6,6 +6,24 @@ from seedvision.benchmarking.recipes import (RecipeSpec, RecipeProvenanceMode, D
     LayoutPosition, BranchCondition, to_pipeline_graph)
 from seedvision.pipeline.model import PipelineConnection, NodeStatus
 
+FOREGROUND_OPERATIONS = frozenset(('threshold.binary', 'threshold.mean', 'threshold.otsu',
+    'smpts_paper.intersection'))
+
+
+def restrict_foreground(mask, bounds):
+    """Exclude exterior foreground in a private CUDA mask, preserving its frame."""
+    from seedvision.benchmarking.native_morphology_roi_recipe import selected_bounds
+    roi = selected_bounds(bounds, mask.shape)
+    if roi is None:
+        return mask
+    x0, y0, x1, y1 = roi
+    result = mask.clone()
+    result[:y0] = 0
+    result[y1:] = 0
+    result[y0:y1, :x0] = 0
+    result[y0:y1, x1:] = 0
+    return result
+
 
 def workflow_catalogue():
     from seedvision.benchmarking.recipe_catalogue import build_recipe_catalogue
@@ -56,6 +74,7 @@ class PipelineWorkflow:
     display_state: Mapping | None = None
     backend_default: str = 'native'
     node_backends: Mapping | None = None
+    foreground_regions: Mapping | None = None
 
     def __post_init__(self):
         if self.input_paths is not None and not isinstance(self.input_paths, Mapping):
@@ -67,6 +86,11 @@ class PipelineWorkflow:
         if self.node_backends is not None and not isinstance(self.node_backends, Mapping):
             raise ValueError("Workflow node backends must be a mapping.")
         object.__setattr__(self, "node_backends", MappingProxyType(dict(self.node_backends or {})))
+        if self.foreground_regions is not None and not isinstance(self.foreground_regions, Mapping):
+            raise ValueError('Foreground regions must be a node-to-bounds mapping.')
+        object.__setattr__(self, 'foreground_regions', MappingProxyType({
+            key: tuple(bounds) if type(bounds) in (list, tuple) else bounds
+            for key, bounds in (self.foreground_regions or {}).items()}))
         validate_workflow(self)
 
     def backend_for(self, stage_id):
@@ -81,6 +105,8 @@ class PipelineWorkflow:
         # Keep native-only historical payloads byte-compatible at this seam.
         if self.backend_default != 'native' or self.node_backends:
             value.update(backend_default=self.backend_default, node_backends=dict(self.node_backends))
+        if self.foreground_regions:
+            value['foreground_regions'] = {key: list(bounds) for key, bounds in self.foreground_regions.items()}
         return value
 
     def to_json(self):
@@ -98,7 +124,7 @@ class PipelineWorkflow:
     @classmethod
     def from_dict(cls, value):
         import json
-        if (type(value) is not dict or set(value) - {'source_recipe', 'recipe', 'disabled_nodes', 'input_paths', 'display_state', 'backend_default', 'node_backends'}
+        if (type(value) is not dict or set(value) - {'source_recipe', 'recipe', 'disabled_nodes', 'input_paths', 'display_state', 'backend_default', 'node_backends', 'foreground_regions'}
                 or not {'source_recipe', 'recipe', 'disabled_nodes', 'input_paths'} <= set(value)):
             raise ValueError('Invalid working workflow fields.')
         if type(value.get('display_state', {})) is not dict:
@@ -111,7 +137,7 @@ class PipelineWorkflow:
             raise ValueError('Workflow node backends must be a JSON object.')
         return cls(RecipeSpec.from_json(json.dumps(value['source_recipe'])),
                    RecipeSpec.from_json(json.dumps(value['recipe'])), tuple(value['disabled_nodes']), value['input_paths'], value.get('display_state', {}),
-                   value.get('backend_default', 'native'), value.get('node_backends', {}))
+                   value.get('backend_default', 'native'), value.get('node_backends', {}), value.get('foreground_regions', {}))
 
 
 def validate_workflow(workflow):
@@ -127,7 +153,13 @@ def validate_workflow(workflow):
             or any(type(key) is not str or key not in known_backends or type(value) is not str or value not in ('native', 'plantcv')
                    for key, value in workflow.node_backends.items())):
         raise NativeRecipeError('Workflow backend overrides must name registered stages and backends.')
-    expected_provenance = _working_provenance(source) if recipe.dependencies != source.dependencies or workflow.disabled_nodes else source.provenance
+    eligible = {stage.stage_id for stage in recipe.stages if stage.operation_id in FOREGROUND_OPERATIONS}
+    for stage_id, bounds in workflow.foreground_regions.items():
+        if (stage_id not in eligible or type(bounds) is not tuple or len(bounds) != 4
+                or any(type(v) is not int or v < 0 for v in bounds)
+                or bounds[0] >= bounds[2] or bounds[1] >= bounds[3]):
+            raise NativeRecipeError('Foreground regions require eligible nodes and nonempty half-open integer bounds.')
+    expected_provenance = _working_provenance(source) if recipe.dependencies != source.dependencies or workflow.disabled_nodes or workflow.foreground_regions else source.provenance
     if recipe.provenance != expected_provenance:
         raise NativeRecipeError('Working recipe must carry its separate enhanced provenance.')
     if {s.stage_id for s in recipe.stages} != {s.stage_id for s in source.stages}:
@@ -152,14 +184,18 @@ def validate_workflow(workflow):
         raise NativeRecipeError('Contextual input paths must be bounded text.')
     if workflow.input_paths and recipe.recipe_id != 'plantcv_color_card_correct_color':
         raise NativeRecipeError('Only four-input correction accepts contextual file bindings.')
-    if set(workflow.display_state) - {'selected_node', 'selected_output', 'image_visible', 'pipeline_visible', 'pipeline_name'}:
+    if set(workflow.display_state) - {'selected_node', 'selected_output', 'image_visible', 'pipeline_visible', 'pipeline_name', 'context_layout'}:
         raise NativeRecipeError('Unknown workflow display state field.')
     for name, value in workflow.display_state.items():
-        if name in ('image_visible', 'pipeline_visible'):
+        if name == 'context_layout':
+            from seedvision.pipeline.project_context import validate_context_layout
+            validate_context_layout(value)
+        elif name in ('image_visible', 'pipeline_visible'):
             if type(value) is not bool:
                 raise NativeRecipeError('Workflow view visibility must be boolean.')
         elif name == 'selected_node':
-            if type(value) is not str or value not in {s.stage_id for s in recipe.stages}:
+            from seedvision.pipeline.project_context import CONTEXT_NODE_IDS
+            if type(value) is not str or value not in {s.stage_id for s in recipe.stages} | CONTEXT_NODE_IDS:
                 raise NativeRecipeError('Selected workflow node must be registered.')
         elif name == 'pipeline_name':
             if type(value) is not str or not value.strip() or value != value.strip() or len(value) > 256 or '\0' in value:
@@ -175,6 +211,17 @@ def create_workflow(recipe):
     from seedvision.benchmarking.native_recipe import _validate_recipe
     _validate_source(recipe)
     return PipelineWorkflow(recipe, recipe)
+
+
+def with_foreground_region(workflow, stage_id, bounds):
+    regions = dict(workflow.foreground_regions)
+    if bounds is None:
+        regions.pop(stage_id, None)
+    else:
+        regions[stage_id] = bounds
+    enhanced = bool(regions or workflow.disabled_nodes or workflow.recipe.dependencies != workflow.source_recipe.dependencies)
+    provenance = _working_provenance(workflow.source_recipe) if enhanced else workflow.source_recipe.provenance
+    return replace(workflow, recipe=replace(workflow.recipe, provenance=provenance), foreground_regions=regions)
 
 
 def workflow_graph(workflow):
@@ -199,6 +246,9 @@ def workflow_graph(workflow):
 
 
 def workflow_from_graph(workflow, graph):
+    from seedvision.pipeline.project_context import calculation_graph
+    workspace = graph
+    graph = calculation_graph(graph)
     if set(graph.nodes) != {s.stage_id for s in workflow.recipe.stages}:
         raise ValueError('Restore registered nodes before saving or running a workflow.')
     recipe = replace(workflow.recipe,
@@ -208,11 +258,13 @@ def workflow_from_graph(workflow, graph):
             for e in graph.connections),
         layout=tuple(LayoutPosition(n.identifier, n.x, n.y) for n in graph.nodes.values()))
     disabled = tuple(n.identifier for n in graph.nodes.values() if not n.enabled)
-    provenance = _working_provenance(workflow.source_recipe) if disabled or recipe.dependencies != workflow.source_recipe.dependencies else workflow.source_recipe.provenance
+    provenance = _working_provenance(workflow.source_recipe) if disabled or recipe.dependencies != workflow.source_recipe.dependencies or workflow.foreground_regions else workflow.source_recipe.provenance
     result = PipelineWorkflow(workflow.source_recipe, replace(recipe, provenance=provenance), disabled,
-        workflow.input_paths, workflow.display_state, workflow.backend_default, workflow.node_backends)
+        workflow.input_paths, workflow.display_state, workflow.backend_default, workflow.node_backends, workflow.foreground_regions)
     graph.reference_recipe_identity = result.recipe.identity
     graph.reference_recipe_mode = result.recipe.provenance.mode.value
+    workspace.reference_recipe_identity = result.recipe.identity
+    workspace.reference_recipe_mode = result.recipe.provenance.mode.value
     return result
 
 

@@ -36,6 +36,22 @@ def _node_payload(payload: dict[str, object], node_id: str) -> dict[str, object]
 
 @functional_units
 class AnalysisSettingsPersistenceTests(unittest.TestCase):
+    def check_test_version_twenty_two_inserts_image_selector_without_changing_calculations(self):
+        source = build_default_pipeline()
+        source.node('deskew_colour').parameters['max_deskew_degrees'] = 7.0
+        payload = analysis_settings_profile_to_payload(analysis_settings_profile_from_graph(source))
+        payload['version'] = 22
+        payload['nodes'] = [node for node in payload['nodes'] if node['id'] != 'image_selector']
+        payload['connections'] = [edge for edge in payload['connections'] if edge['target'] != 'image_selector']
+        for edge in payload['connections']:
+            if edge['source'] == 'image_selector':
+                edge['source'] = 'project'
+        target = build_default_pipeline()
+        apply_analysis_settings_profile(target, analysis_settings_profile_from_payload(payload))
+        self.assertEqual(analysis_settings_profile_from_graph(target), analysis_settings_profile_from_graph(source))
+        self.assertEqual(target.upstream('metadata'), ('image_selector',))
+        self.assertEqual(target.upstream('deskew_colour'), ('image_selector',))
+
     def check_test_json_round_trip_is_human_readable_and_analysis_only(self) -> None:
         graph = build_default_pipeline()
         graph.set_parameter("ruler_detection", "ruler_length_mm", 175.0)
@@ -516,7 +532,7 @@ class AnalysisSettingsPersistenceTests(unittest.TestCase):
         payload["nodes"] = [
             node
             for node in payload["nodes"]
-            if node["id"] not in {"project", "species_reference_library"}
+            if node["id"] not in {"project", "image_selector", "species_reference_library"}
         ]
         for node_id in ("raw_images", "reference_layers"):
             payload["nodes"].append(
@@ -545,10 +561,10 @@ class AnalysisSettingsPersistenceTests(unittest.TestCase):
                 or connection["target_port"] == "pin"
             ):
                 continue
-            if connection["source"] != "project":
+            if connection["source"] not in {"project", "image_selector"}:
                 legacy_connections.append(connection)
                 continue
-            if connection["target"] == "metadata":
+            if connection["target"] in {"metadata", "image_selector"}:
                 continue
             migrated = dict(connection)
             if connection["source_port"] == "raw_image":
@@ -575,7 +591,7 @@ class AnalysisSettingsPersistenceTests(unittest.TestCase):
                 target.connection_for_input("deskew_colour", "image").source,
                 target.connection_for_input("deskew_colour", "image").source_port,
             ),
-            ("project", "raw_image"),
+            ("image_selector", "raw_image"),
         )
         self.assertEqual(
             (
@@ -1037,6 +1053,7 @@ class AnalysisSettingsPersistenceTests(unittest.TestCase):
             )
 
     def test_workflow_lifecycle(self):
+        self.scenario(self.check_test_version_twenty_two_inserts_image_selector_without_changing_calculations)
         """17 related AnalysisSettingsPersistenceTests scenarios, each with private fixture state."""
         self.scenario(self.check_test_json_round_trip_is_human_readable_and_analysis_only)
         self.scenario(self.check_test_apply_restores_parameters_topology_enabled_and_suspended_once)

@@ -57,7 +57,7 @@ class FitTask(QRunnable):
 
 
 class OptimizationDialog(QDialog):
-    def __init__(self, graph, samples, selected, parent=None):
+    def __init__(self, graph, samples, selected, parent=None, *, excluded_images=()):
         super().__init__(parent)
         self.setWindowTitle('Optimize from project references')
         self.resize(840, 650)
@@ -68,6 +68,16 @@ class OptimizationDialog(QDialog):
             'reference-source policies and resolution limits stay fixed. You review the result before applying.')
         intro.setWordWrap(True)
         layout.addWidget(intro)
+        self.readiness = QLabel(self)
+        self.readiness.setWordWrap(True)
+        excluded = [f'{name}: {reason}' for name, reason in excluded_images]
+        self.readiness.setToolTip('\n'.join(excluded))
+        excluded_preview = '\n'.join(excluded[:3])
+        self.readiness.setText(f'{len(samples)} image(s) available; {len(excluded_images)} excluded.'
+            + ('\n' + excluded_preview if excluded_preview else '')
+            + ('\nHover for all excluded images.' if len(excluded) > 3 else '')
+            + '\nExcluded outlines are partial, unreviewed, disconnected, or explicitly excluded. Apply drafts before fitting.')
+        layout.addWidget(self.readiness)
         self.images = QTableWidget(len(samples), 3, self)
         self.images.setHorizontalHeaderLabels(['Use image', 'Eligible instances', 'Every seed reviewed'])
         for row, sample in enumerate(samples):
@@ -77,7 +87,11 @@ class OptimizationDialog(QDialog):
             item.setCheckState(Qt.CheckState.Checked)
             self.images.setItem(row, 0, item)
             count = 0 if sample.labels is None else np.count_nonzero(np.unique(sample.labels))
-            self.images.setItem(row, 1, QTableWidgetItem(f'{count} eligible; {len(sample.excluded_ids)} excluded'))
+            count_item = QTableWidgetItem(f'{count} eligible; {len(sample.excluded_ids)} excluded')
+            if sample.excluded_ids:
+                count_item.setToolTip('Excluded seed IDs: ' + ', '.join(map(str, sample.excluded_ids))
+                    + '. Review complete, connected outlines and clear explicit shape exclusions before fitting these seeds.')
+            self.images.setItem(row, 1, count_item)
             checkbox = QCheckBox()
             checkbox.setToolTip('Declare exhaustive coverage for this image only. Unchecked leaves disjoint predictions unscored.')
             checkbox.setEnabled(count > 0 and not sample.excluded_ids)
@@ -100,7 +114,9 @@ class OptimizationDialog(QDialog):
             item.setData(Qt.ItemDataRole.UserRole, key)
             item.setToolTip(OBJECTIVE_DESCRIPTIONS.get(contract.objective, contract.reason)
                 + '\nEqual weight per image; lower is better. In-sample adaptation.\n\nSearchable controls:\n' + '\n'.join(contract.searchable)
-                + '\n\nFixed controls:\n' + '\n'.join(f'{name}: {reason}' for name, reason in contract.fixed))
+                + '\n\nFixed controls:\n' + '\n'.join(f'{name}: {reason}' for name, reason in contract.fixed)
+                + '\n\nImage readiness:\n' + '\n'.join(f'{sample.path.name}: {reason or "Ready"}'
+                    for sample, reason in zip(samples, reasons)))
             available = bool(node.enabled and node.implemented and contract.searchable and count)
             item.setFlags(Qt.ItemFlag.ItemIsEnabled | (Qt.ItemFlag.ItemIsUserCheckable if available else Qt.ItemFlag.NoItemFlags))
             item.setCheckState(Qt.CheckState.Checked if available and (selected is None or key in selected) else Qt.CheckState.Unchecked)
@@ -152,7 +168,8 @@ class OptimizationDialog(QDialog):
             item.setFlags(Qt.ItemFlag.ItemIsEnabled | (Qt.ItemFlag.ItemIsUserCheckable if available else Qt.ItemFlag.NoItemFlags))
             if not available:
                 item.setCheckState(Qt.CheckState.Unchecked)
-            item.setText(f'{node.title}: {len(contract.searchable)} parameters; {contract.objective or contract.reason}; {count}/{len(samples)} image(s) eligible')
+            readiness = 'Node disabled.' if not node.enabled else f'{count}/{len(samples)} image(s) eligible'
+            item.setText(f'{node.title}: {len(contract.searchable)} parameters; {contract.objective or contract.reason}; {readiness}')
 
 
 class OptimizationController:
@@ -188,6 +205,7 @@ class OptimizationController:
 
     def _optimization_samples(self):
         samples = []
+        self._optimization_exclusions = []
         target_paths = {}
         policies = {}
         if self._current_project_path is not None:
@@ -199,6 +217,7 @@ class OptimizationController:
                 policies = json.loads(policy_path.read_text(encoding='utf-8'))
         for key, path in self._image_paths.items():
             if key in self._instance_annotations_dirty or key in self._reference_masks_dirty:
+                self._optimization_exclusions.append((path.name, 'Unapplied draft; apply or discard it first.'))
                 continue
             masks = {name: getattr(self, attr).get(key) for name, attr in (
                 ('background_reference_mask', '_applied_background_reference_masks'),
@@ -216,18 +235,27 @@ class OptimizationController:
             if target_path is not None:
                 target_path = self._current_project_path.parent / target_path
             if not arrays and result is None and target_path is None:
+                self._optimization_exclusions.append((path.name, 'No applied references, reviewed targets, or analysis.'))
                 continue
             library = self._resolved_species_library_for_current_image(path)
-            if library.error:
+            if library.error and self._project_species_library_pin is not None:
                 raise ValueError(f'{path.name}: {library.error}')
+            if library.artifact is None:
+                library_only = [node.title for node in self.pipeline.nodes.values() if node.enabled
+                    and any(value == 'Species library only' for value in node.parameters.values())]
+                if library_only:
+                    raise ValueError(f'{path.name}: pin a compatible species library or change the reference source for: '
+                        + ', '.join(library_only))
+            context = self._effective_biological_context(path)
+            vocabulary = self._seed_trait_catalogue.for_species(context.species_id)
             kwargs = dict(masks, seed_instance_traits=tuple(sorted(self._applied_seed_annotations.get(key, {}).values(), key=lambda item: item.seed_id)),
                 reference_transform=self._reference_transforms.get(key),
                 seed_trait_species=self._applied_seed_annotation_species.get(key, ''),
-                seed_trait_coat_patterns=self._current_seed_trait_vocabulary().coat_patterns,
+                seed_trait_coat_patterns=vocabulary.coat_patterns,
                 seed_trait_conditions=self._seed_trait_catalogue.conditions,
                 manual_seed_centres=self._manual_seed_centres_for_analysis(key),
-                learning_root=self._root, species=self.species_combo.currentText(),
-                biological_context=self._effective_biological_context(), species_library=library.artifact,
+                learning_root=self._root, species=vocabulary.display_name or context.species_id,
+                biological_context=context, species_library=library.artifact,
                 library_shape_bank=None if library.artifact is None else library.artifact.dimensions_shape)
             if arrays:
                 shape = tuple(arrays[0].shape)
@@ -259,9 +287,9 @@ class OptimizationController:
         try:
             samples = self._optimization_samples()
             if not samples:
-                raise ValueError('Apply and save reference regions or complete reviewed instances first. Images with unapplied drafts are excluded.')
+                raise ValueError('Apply reference regions or complete reviewed seed labels first.\n' + '\n'.join(f'{name}: {reason}' for name, reason in self._optimization_exclusions))
             selected = None if node_id is None else {node_id}
-            dialog = OptimizationDialog(self.pipeline, samples, selected, self)
+            dialog = OptimizationDialog(self.pipeline, samples, selected, self, excluded_images=self._optimization_exclusions)
             if dialog.exec() != QDialog.DialogCode.Accepted:
                 return
             chosen = []
@@ -309,7 +337,9 @@ class OptimizationController:
             ('centres', repr(self._manual_seed_centre_states)),
             ('targets', repr({key: {name: array_digest(value) for name, value in targets.items()}
                               for key, targets in self._optimization_targets.items()})),
-            ('library', repr(self._project_species_library_pin))]
+            ('library', repr(self._project_species_library_pin)),
+            ('biological_context', repr(self._project_biological_context)),
+            ('image_contexts', repr(self._project_image_biological_contexts))]
 
     def _optimization_progressed(self, node_id, evaluation, loss):
         if self._optimization_progress is not None:

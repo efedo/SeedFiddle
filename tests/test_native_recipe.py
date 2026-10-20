@@ -284,6 +284,14 @@ class NativeRecipeTests(CatalogueTestCase):
             with self.assertRaises(implementation._size.PlantCVSizeCancelledError):
                 implementation._dispatch('analysis.size', {'labels': first.labels, 'image': self.rgb},
                     {'n_labels': 1, 'label': 'selected'}, callback)
+        with patch.object(implementation._size, 'render_plantcv_size_diagnostic_rgb',
+                side_effect=implementation._size.RasterSpanLimitError('bounded diagnostic witness')):
+            partial = implementation._dispatch('analysis.size',
+                {'labels': first.labels, 'image': self.rgb},
+                {'n_labels': 1, 'label': 'selected'}, callback)
+        self.assertIn('observations', partial)
+        self.assertNotIn('diagnostic', partial)
+        self.assertEqual(partial.unavailable_reasons, {'diagnostic': 'bounded diagnostic witness'})
 
     def check_test_mutated_cached_output_and_failed_node_never_reuse_stale_descendants(self):
         original = self.run_recipe()
@@ -332,10 +340,39 @@ class NativeRecipeTests(CatalogueTestCase):
         self.scenario(self.check_test_mutated_cached_output_and_failed_node_never_reuse_stale_descendants)
         self.scenario(self.check_test_preflight_and_real_mid_recipe_cancellation_return_no_complete_result)
 
+    def check_test_hundreds_of_objects_reach_color_and_size_and_reuse(self):
+        y, x = np.ogrid[:256, :256]
+        mask = np.zeros((256,256), bool)
+        for cy in range(12, 233, 20):
+            for cx in range(12, 233, 20):
+                mask |= (x-cx)**2+(y-cy)**2 <= 6**2
+        gray = torch.as_tensor(np.where(mask, 210, 35).astype(np.uint8), device='cuda')
+        rgb = torch.empty((256,256,3), dtype=torch.uint8, device='cuda')
+        rgb[:] = torch.tensor([180, 110, 40], dtype=torch.uint8, device='cuda')
+        frame = CoordinateFrame('test.hundreds', (256,256), 'top-left', 'x-right,y-down', 'pixel')
+        cache = PipelineAnalysisCache()
+        def run():
+            return run_native_recipe(selected_recipe(), gray, rgb, source_sha256=SOURCE,
+                coordinate_frame=frame, preparation=PREPARATION, cache=cache)
+        result = run()
+        self.assertEqual(result.status, 'executed', [(n.stage_id,n.status,n.reason) for n in result.nodes])
+        self.assertEqual(int(result.labels.max().item()), 144)
+        self.assertEqual(len(result.node(PREFIX+'analyze_color').outputs['observations'].labels), 144)
+        self.assertEqual(len(result.node(PREFIX+'analyze_size').outputs['observations']), 144)
+        self.assertEqual(run().status, 'executed')
+        self.assertEqual(cache.last_computed_nodes, ())
+        from seedvision.export.native_results import export_native_recipe_result, load_native_recipe_result
+        with tempfile.TemporaryDirectory() as temporary:
+            report = export_native_recipe_result(Path(temporary)/'hundreds', selected_recipe(), result)
+            reopened, _ = load_native_recipe_result(report.parent)
+            size = next(node for node in reopened['nodes'] if node['operation_id'] == 'analysis.size')
+            self.assertEqual(size['status'], 'executed')
+
     def test_workflow_lifecycle(self):
         """2 related NativeRecipeTests scenarios, each with private fixture state."""
         self.scenario(self.check_test_real_canonical_graph_matches_pinned_public_preprocessing_watershed_and_color)
         self.scenario(self.check_test_repeat_layout_and_changed_controls_recompute_only_their_dependents)
+        self.scenario(self.check_test_hundreds_of_objects_reach_color_and_size_and_reuse)
 
 
 if __name__ == '__main__':

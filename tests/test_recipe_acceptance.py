@@ -687,6 +687,61 @@ class AcceptanceDifferenceTests(unittest.TestCase):
         self.assertEqual(json_difference_summary(1, 1.0)['total_changes'], 1)
         self.assertEqual(json_difference_summary(float('nan'), float('nan'))['total_changes'], 1)
 
+        # Reviewed source migrations cannot authorize numerical or environment changes.
+        from copy import deepcopy
+        from tests.acceptance_provenance import _apply_changes
+        old, new = 'a' * 64, 'b' * 64
+        source_only = {'cases': [{'runtime_calculation_pins': {'calculation_modules_sha256': old,
+            'cuda_driver_api': '13030'}, 'nodes': [{'pixels_sha256': old}],
+            'preparation': {'rgb': 'input helper ' + old + '; unmodified frame'}}]}
+        change = {'path': '/cases/0/runtime_calculation_pins/calculation_modules_sha256', 'old': old, 'new': new}
+        migrated = _apply_changes(deepcopy(source_only), [change], 'recipe', successor=True)
+        self.assertEqual(migrated['cases'][0]['runtime_calculation_pins']['calculation_modules_sha256'], new)
+        self.assertEqual(migrated['cases'][0]['nodes'], source_only['cases'][0]['nodes'])
+        from unittest.mock import patch
+        from tests.acceptance_provenance import apply as migrate_chain
+        stages = [{'recipe_transitions': [dict(change, path='/cases/0/runtime_calculation_pins/executor')]},
+                  {'recipe_transitions': [dict(change, path='/cases/0/runtime_calculation_pins/executor', old=new, new='c' * 64)]}]
+        with patch('tests.acceptance_provenance._records', return_value=stages):
+            chained = migrate_chain({'cases': [{'runtime_calculation_pins': {'executor': old}}]}, 'recipe')
+        self.assertEqual(chained['cases'][0]['runtime_calculation_pins']['executor'], 'c' * 64)
+        from tests.acceptance_provenance import (ARCHIVED_SUCCESSOR,
+            ARCHIVED_SUCCESSOR_SHA256, ROOT as provenance_root, _verify_supersession)
+        archived = {'predecessor': 'frozen-base.json', 'predecessor_sha256': old,
+                    'baselines': {'numerical.json': old}, 'previous_source_files': {'source.py': old},
+                    'source_files': {'source.py': new}}
+        replacement = dict(archived, source_files={'source.py': 'c' * 64},
+            supersedes=ARCHIVED_SUCCESSOR.relative_to(provenance_root).as_posix(),
+            supersedes_sha256=ARCHIVED_SUCCESSOR_SHA256,
+            superseded_source_files=archived['source_files'],
+            superseded_source_changes=[dict(path='source.py', old=new, new='c' * 64)])
+        _verify_supersession(replacement, archived)
+        for field, invalid in (('supersedes_sha256', old), ('baselines', {}),
+                               ('superseded_source_changes', [])):
+            with self.subTest(replacement_field=field), self.assertRaises(AssertionError):
+                _verify_supersession(dict(replacement, **{field: invalid}), archived)
+        from tests.acceptance_provenance import ARCHIVED_V2, ARCHIVED_V2_SHA256
+        replacement_v3 = dict(replacement, source_files={'source.py': 'd' * 64},
+            supersedes=ARCHIVED_V2.relative_to(provenance_root).as_posix(),
+            supersedes_sha256=ARCHIVED_V2_SHA256,
+            superseded_source_files=replacement['source_files'],
+            superseded_source_changes=[dict(path='source.py', old='c' * 64, new='d' * 64)])
+        _verify_supersession(replacement_v3, replacement,
+            archive_path=ARCHIVED_V2, archive_sha256=ARCHIVED_V2_SHA256)
+        with self.assertRaisesRegex(AssertionError, 'immutable lineage'):
+            _verify_supersession(replacement_v3, replacement)
+        for forbidden in ('/cases/0/nodes/0/pixels_sha256', '/cases/0/runtime_calculation_pins/cuda_driver_api'):
+            with self.assertRaisesRegex(AssertionError, 'non-code field'):
+                _apply_changes(deepcopy(source_only), [{'path': forbidden, 'old': old, 'new': new}], 'recipe', successor=True)
+        with self.assertRaisesRegex(AssertionError, 'non-code field'):
+            _apply_changes(deepcopy(source_only), [change], 'recipe')
+        with self.assertRaisesRegex(AssertionError, 'prior value differs'):
+            _apply_changes(deepcopy(source_only), [dict(change, old=new)], 'recipe', successor=True)
+        with self.assertRaisesRegex(AssertionError, 'beyond source identities'):
+            _apply_changes(deepcopy(source_only), [{'path': '/cases/0/preparation/rgb',
+                'old': source_only['cases'][0]['preparation']['rgb'],
+                'new': 'input helper ' + new + '; altered frame'}], 'recipe', successor=True)
+
     def test_invalid_bounds_and_non_json_values_are_rejected_or_mismatched(self):
         for kwargs in ({'maximum_samples': 0}, {'maximum_samples': True},
                        {'maximum_value_characters': 8}):

@@ -120,6 +120,13 @@ class PlantCVColorParityTests(unittest.TestCase):
             n_labels=2, colorspaces='ALL', label=['first', 'second'])
         self.compare(result, reference)
         self.assertEqual([item.pixel_count for item in result.labels], [70, 18])
+        indices = np.arange(13*12, dtype=np.int32).reshape(13,12)
+        image = np.stack((indices%31+20, indices%37+80, indices%53+180), axis=-1).astype(np.uint8)
+        labels = np.maximum(indices-11, 0).astype(np.int32)
+        expanded = analyze_color_cuda(torch.as_tensor(image, device='cuda'),
+            torch.as_tensor(labels, device='cuda'), n_labels=144, colorspaces='all', label='expanded')
+        self.compare(expanded, self.reference(image, labels, 144, 'all', 'expanded'))
+        self.assertEqual([item.pixel_count for item in expanded.labels], [1]*144)
 
     def check_test_binary_remap_and_empty_rgb_lab_hsv_states_match_public_call(self):
         image = np.zeros((3, 4, 3), dtype=np.uint8)
@@ -185,7 +192,7 @@ class PlantCVColorParityTests(unittest.TestCase):
         with self.assertRaises(ColorAnalysisError):
             analyze_color_cuda(image.cpu(), mask)
         with self.assertRaises(ColorAnalysisResourceError):
-            analyze_color_cuda(image, mask, n_labels=129)
+            analyze_color_cuda(image, mask, n_labels=module.MAX_LABELS+1)
         with self.assertRaises(ColorAnalysisError):
             analyze_color_cuda(image, mask, n_labels=2, label=['one'])
 

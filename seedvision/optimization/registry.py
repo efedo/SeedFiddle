@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 EXEMPT = {
     'project': 'Project data and references are not search parameters.',
+    'image_selector': 'The selected source image is an input, not a search parameter.',
     'metadata': 'Species and specimen metadata are facts.',
     'species_reference_library': 'Library provenance is fixed; consuming nodes own blend controls.',
     'trait_classifier': 'Frozen trait-model identity and abstention policy are explicit operator inputs; training/evaluation uses separately audited evidence, not image-local parameter search.',

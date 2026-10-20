@@ -6,7 +6,7 @@ bounded checkpoint reader. Agreement is computational, not scientific validation
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
 import sys
 from types import MappingProxyType
@@ -122,6 +122,47 @@ def _result(status, stage_id, reason='', outputs=None, metadata=None):
         MappingProxyType(dict(outputs or {})), _freeze_json(metadata or {}, name='stage replay facts'))
 
 
+
+def _canonical_replay_source(recipe):
+    """Recover the registered source provenance before validating a working archive."""
+    name = recipe.recipe_id
+    if name in runner._SEED_RECIPES:
+        canonical = runner.build_recipe_catalogue().recipe(name)
+    elif name in runner._WORKING_SEED_RECIPES:
+        canonical = runner.build_native_seed_recipe(runner.build_recipe_catalogue().recipe(runner._WORKING_SEED_RECIPES[name]))
+    elif name in runner._diagnostic_recipe.RECIPE_IDS:
+        canonical = runner._diagnostic_recipe.build_native_watershed_diagnostic_recipe(runner._diagnostic_recipe.canonical_base(name))
+    elif name in runner._morphology_roi_recipe.RECIPE_IDS:
+        canonical = runner._morphology_roi_recipe.build_native_morphology_roi_recipe(runner._morphology_roi_recipe.canonical_base(name))
+    elif name in runner._fill_roi_recipe.RECIPE_IDS:
+        canonical = runner._fill_roi_recipe.build_native_fill_roi_recipe(runner._fill_roi_recipe.canonical_base(name))
+    elif name in runner._NAIVE_BAYES_RECIPES:
+        canonical = runner._naive_bayes_recipe.build_native_naive_bayes_recipe()
+    elif name in runner._KMEANS_RECIPES:
+        canonical = runner._kmeans_recipe.build_native_kmeans_recipe()
+    elif name == runner._card_recipe.RECIPE_ID:
+        canonical = runner._card_recipe.build_native_card_recipe()
+    elif name in runner._calibrated_seed.RECIPE_IDS:
+        canonical = runner._calibrated_seed.build_native_calibrated_seed_recipe(name.rsplit('_', 1)[1])
+    elif name == runner._recovery_recipe.RECIPE_ID:
+        canonical = runner._recovery_recipe.build_native_core_recovery_recipe()
+    elif name == runner._paper_recipe.RECIPE_ID:
+        canonical = runner._paper_recipe.build_native_smpts_recipe()
+    elif name == runner._range_recipe.RECIPE_ID:
+        canonical = runner._range_recipe.build_native_range_recipe()
+    else:
+        canonical = runner._extended_recipe_specs.build_native_extended_threshold_recipes().get(name)
+        if canonical is None:
+            raise runner.NativeRecipeError('Working replay source is not registered.')
+    if runner._reader_recipe.is_reader_recipe(recipe):
+        if recipe.recipe_version == runner._reader_recipe.MEDIAN_RECIPE_VERSION:
+            canonical = runner._median_roi_recipe._upgrade(canonical)
+        canonical = runner._reader_recipe._upgrade(canonical)
+    elif runner._median_roi_recipe.is_median_roi_recipe(recipe):
+        canonical = runner._median_roi_recipe._upgrade(canonical)
+    return canonical
+
+
 def _runtime(recipe, device):
     calibrated = runner._diagnostic_recipe.base_recipe_id(recipe.recipe_id) in runner._calibrated_seed.RECIPE_IDS
     card = calibrated or recipe.recipe_id == runner._card_recipe.RECIPE_ID
@@ -204,6 +245,41 @@ def _port(stage, name, direction):
 
 
 
+
+def _foreground_region_context(recipe, stage, node, frame):
+    """Read only the archive-validated working mask adapter, in this input frame."""
+    key = 'foreground_region_bounds_xyxy'
+    binding = node['parameters']
+    if not any(item[0] == key for item in binding.get('items', ())):
+        return None
+    from seedvision.pipeline.workflows import FOREGROUND_OPERATIONS
+    bounds = _compact_frame_field(binding, key)
+    if (recipe.provenance.mode.value != 'enhanced' or stage.operation_id not in FOREGROUND_OPERATIONS
+            or type(bounds) is not list or len(bounds) != 4
+            or any(type(value) is not int or value < 0 for value in bounds)
+            or bounds[0] >= bounds[2] or bounds[1] >= bounds[3]):
+        raise archives.NativeResultExportError('Replay foreground region context is invalid.')
+    provenance = _compact_frame_metadata(node['backend_provenance'])
+    archives._foreground_provenance(stage, provenance, bounds, frame.shape)
+    return tuple(bounds)
+
+
+def _foreground_region_plan(plan, frame):
+    """Charge the full-frame byte clone retained alongside primitive output."""
+    pixels = math.prod(frame.shape)
+    extra = ((pixels + 511) // 512) * 512
+    result = dict(plan)
+    result['cuda_bytes'] += extra
+    if result.get('work') is not None:
+        result['work'] += 2 * pixels
+    if (result['cuda_bytes'] > MAX_REPLAY_CUDA_BYTES
+            or result.get('work') is not None and result['work'] > MAX_REPLAY_WORK):
+        raise NativeStageReplayUnavailable('Foreground adapter exceeds replay CUDA/work admission.')
+    result['foreground_region_adapter_cuda_bytes'] = extra
+    result['foreground_region_adapter_work'] = 2 * pixels
+    return result
+
+
 def _paper_context(recipe,nodes,stage,frame,poll):
     context={}
     for edge in recipe.dependencies:
@@ -249,7 +325,11 @@ def _paper_frame(recipe,report,stage,specs,poll):
         if {(e.target_port,e.source_stage,e.source_port,e.data_type) for e in incoming}!=wanted:
             raise archives.NativeResultExportError('Paper ancestry differs from canonical producer ports.')
         parameters=paper_contract.canonical(recipe.parameters_for_runner(current.stage_id),poll)
-        if paper_contract.decode(nodes[current.stage_id]['parameters'],poll)!=parameters:
+        saved_parameters = dict(paper_contract.decode(nodes[current.stage_id]['parameters'], poll))
+        region = _foreground_region_context(recipe, current, nodes[current.stage_id], frame)
+        if region is not None:
+            saved_parameters.pop('foreground_region_bounds_xyxy')
+        if saved_parameters != parameters:
             raise archives.NativeResultExportError('Saved paper ancestry controls differ from declared controls.')
         outputs=dict(nodes[current.stage_id]['outputs'])
         if current.stage_id==factory.SOURCE:
@@ -1586,7 +1666,15 @@ def replay_native_stage(directory, stage_id, *, device='cuda', cancel=None,
                     expected_recipe_identity.analytical_dict()):
             raise archives.NativeResultExportError('Saved run changed from the exact selected recipe/archive.')
         try:
-            runner._validate_recipe(recipe)
+            validation_recipe = recipe
+            if recipe.provenance.mode.value == 'enhanced' and 'workspace_workflow_adapter' in report['runtime']:
+                from seedvision.pipeline.workflows import _working_provenance
+                canonical = _canonical_replay_source(recipe)
+                if recipe.provenance != _working_provenance(canonical):
+                    raise runner.NativeRecipeError('Working replay provenance differs from its registered source.')
+                # ROI is recorded separately; this still rejects altered graph/port/parameter contracts.
+                validation_recipe = replace(recipe, provenance=canonical.provenance)
+            runner._validate_recipe(validation_recipe)
             runner._validate_preparation_mode(recipe, report['preparation'])
         except runner.NativeRecipeError as error:
             if (recipe.recipe_id in runner._NAIVE_BAYES_RECIPES + runner._KMEANS_RECIPES
@@ -1689,6 +1777,13 @@ def replay_native_stage(directory, stage_id, *, device='cuda', cancel=None,
         if crop_operation:crop_context_baseline=runner._card_recipe.correction._metadata_signature(crop_context)
         facts.update(frame_facts);facts['coordinate_frame']=frame.to_dict()
         parameters = recipe.parameters_for_runner(stage_id)
+        foreground_region = _foreground_region_context(recipe, stage, node, frame)
+        workspace_runtime = 'workspace_workflow_adapter' in report['runtime']
+        if foreground_region is not None:
+            if not workspace_runtime:
+                raise archives.NativeResultExportError('Replay foreground adapter omits its working-runtime binding.')
+            facts['foreground_region_bounds_xyxy'] = foreground_region
+            facts['foreground_region_adapter'] = 'CUDA full-frame binary mask exclusion v1'
         expected_calculation = None
         if stage.operation_id == 'threshold.otsu' and node.get('calculation') is not None:
             expected_calculation = runner._threshold.validate_otsu_calculation_facts(
@@ -1841,6 +1936,8 @@ def replay_native_stage(directory, stage_id, *, device='cuda', cancel=None,
             selected_device = torch.device('cuda',torch.cuda.current_device())
         runtime_factory,audit = _runtime,runner._module_record
         initial_records,initial_runtime = runtime_factory(recipe,selected_device)
+        if workspace_runtime:
+            runner._bind_working_runtime(initial_records, initial_runtime)
         # Expected compact provenance uses the recorded calculation runtime.
         # Reject incompatible runtimes before checking it against current code.
         if (report['runtime'].get('calculation_modules_sha256') is None or report['runtime']!=initial_runtime):
@@ -1868,6 +1965,8 @@ def replay_native_stage(directory, stage_id, *, device='cuda', cancel=None,
             names = tuple(dict.fromkeys(value for kind,value in (*selected_inputs.values(),*selected_outputs.values())
                 if kind=='array'))
             facts['plan'] = _plan(frame.shape,stage.operation_id,parameters,sum(specs[name]['nbytes'] for name in names))
+        if foreground_region is not None:
+            facts['plan'] = _foreground_region_plan(facts['plan'], frame)
         replay_module = sys.modules[__name__]
         replay_identity = runner._digest(audit(replay_module))
         archive_identity = runner._digest(audit(archives))
@@ -1936,6 +2035,12 @@ def replay_native_stage(directory, stage_id, *, device='cuda', cancel=None,
             try:
                 dispatched = runner._dispatch(stage.operation_id,inputs,parameters,poll)
                 calculation = runner._dispatch_calculation(stage.operation_id,dispatched,parameters)
+                if foreground_region is not None:
+                    from seedvision.pipeline.workflows import restrict_foreground
+                    poll()
+                    dispatched = dict(dispatched)
+                    dispatched['mask'] = restrict_foreground(dispatched['mask'], foreground_region)
+                    poll()
                 outputs = MappingProxyType(dict(dispatched))
                 if stage.operation_id == 'threshold.otsu':
                     actual_calculation = dict(calculation)
@@ -2022,6 +2127,8 @@ def replay_native_stage(directory, stage_id, *, device='cuda', cancel=None,
                 else:comparisons[name]=_compare_product(outputs[name],expected_products[name],poll)
             poll()
         final_records,final_runtime = runtime_factory(recipe,selected_device)
+        if workspace_runtime:
+            runner._bind_working_runtime(final_records, final_runtime)
         if (final_records!=initial_records or final_runtime!=initial_runtime
                 or runner._digest(audit(replay_module))!=replay_identity
                 or runner._digest(audit(archives))!=archive_identity

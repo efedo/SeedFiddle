@@ -20,10 +20,13 @@ from ._nvrtc import fixed_kernel_program
 from . import plantcv_thresholds as thresholds
 
 MAX_PIXELS = 64_000_000
-MAX_COMPONENTS = 4096
 MAX_CUDA_BYTES = 1024*1024*1024
-MAX_CROP_BYTES = 128*1024*1024
+MAX_CROP_BYTES = 144*1024*1024
 MAX_CPU_METADATA_BYTES = 32*1024*1024
+METADATA_BASE_BYTES = 1024*1024
+METADATA_BYTES_PER_COMPONENT = 4096
+# The inventory cap follows the unchanged aggregate host metadata allowance.
+MAX_COMPONENTS = (MAX_CPU_METADATA_BYTES-METADATA_BASE_BYTES)//METADATA_BYTES_PER_COMPONENT
 BACKEND_BYTES = 64*1024*1024
 MAX_COMPONENT_WORK = 32_000_000_000
 MAX_WINDOW_WORK = 1_000_000_000
@@ -125,7 +128,10 @@ def component_work(pixels):
     # Four pointer reads/writes per jump; four edges with bounded atomic accesses.
     # Admission units count conservative scalar array/atomic visits, not seconds
     # or CUDA instructions. Includes initialization, verification, scan and stats.
-    work = pixels*(4*MAX_JUMP_PASSES+UNION_ROUNDS*(24+12)+48)
+    # Admit the fixed initialization/scan/statistics phase here. Iterative
+    # passes charge this same budget as they execute, rather than charging
+    # all 512 possible jumps for a mask that converges in a few rounds.
+    work = pixels*48
     if work > MAX_COMPONENT_WORK:
         raise PaperResourceError('Paper component labeling exceeds its bounded work limit.')
     return work
@@ -136,7 +142,11 @@ def retained_bound(pixels):
     # Graph-retained rasters + one CCL/scan phase + replacement scratch, all
     # packed crops and a fixed backend allowance. Caller backing excess is added
     # by the graph runner. Caller-held previous results are outside cache ownership.
-    bound = 64*pixels+MAX_CROP_BYTES+BACKEND_BYTES
+    # At final CCL the graph owns 15N bytes (inputs, four threshold masks,
+    # source int32 labels and three erosion masks). Parent ping-pong, root
+    # flags, int32 prefix and final labels add17N. Other phases fit inside
+    # this32N envelope; crops have their own aggregate byte allowance.
+    bound = 32*pixels+MAX_CROP_BYTES+BACKEND_BYTES
     if bound > MAX_CUDA_BYTES:
         raise PaperResourceError('Paper graph exceeds its composed CUDA byte limit.')
     return bound
@@ -146,7 +156,7 @@ def metadata_bound(count):
     _integer(count, 'component count', 0, MAX_COMPONENTS)
     # Covers simultaneous source/final/crop records and compact stats copies.
     # CUDA-backed tensor wrappers/cache records share this modeled host allowance.
-    bound = 1024*1024+4096*count
+    bound = METADATA_BASE_BYTES+METADATA_BYTES_PER_COMPONENT*count
     if bound > MAX_CPU_METADATA_BYTES:
         raise PaperResourceError('Paper compact metadata exceeds its host byte limit.')
     return bound
@@ -227,7 +237,7 @@ def _statistics(labels, count, program, guard):
     program.launch_1d('paper_stats_initialize', (stats,), (count+1, height, width), count+1)
     _tiles(program, 'paper_stats', (labels, stats, state), (count+1, width), labels.numel(), guard)
     _valid_state(state, guard, 'Component IDs exceed their declared inventory.')
-    rows = stats[1:].cpu().tolist()  # At most4096 rows, five bounded int32 facts.
+    rows = stats[1:].cpu().tolist()  # Bounded inventory, five int32 facts per row.
     guard.checkpoint()
     if any(row[0] <= 0 for row in rows):
         raise ValueError('Component inventory contains an absent ID.')
@@ -252,16 +262,24 @@ def components(mask, *, cancel=None):
         _tiles(program, 'paper_initialize', (mask, parent, state), (), pixels, guard)
         _valid_state(state, guard, 'Component input must contain only0/255.')
         jumps = 0
+        work = component_work(pixels)
+        def charge(visits):
+            nonlocal work
+            work += visits*pixels
+            if work > MAX_COMPONENT_WORK:
+                raise PaperResourceError('Paper component labeling exceeds its executed work limit.')
         def compress(passes):
             nonlocal parent, other, jumps
             if jumps+passes > MAX_JUMP_PASSES:
                 raise PaperResourceError('Paper components exceeded512 pointer-jump passes.')
             for _ in range(passes):
+                charge(4)
                 _tiles(program, 'paper_jump', (parent, other), (), pixels, guard)
                 parent, other = other, parent
             jumps += passes
         for _ in range(UNION_ROUNDS):
             compress(JUMPS_PER_ROUND)
+            charge(24)
             program.launch('paper_reset', (state,), ())
             _tiles(program, 'paper_hook', (parent, state), tuple(mask.shape), pixels, guard)
             changed = int(state.item())
@@ -271,6 +289,7 @@ def components(mask, *, cancel=None):
                 # compress, verify every edge, then resume bounded union rounds
                 # if necessary instead of rejecting a resolvable component.
                 compress(FINAL_JUMPS)
+                charge(12)
                 program.launch('paper_reset', (state,), ())
                 _tiles(program, 'paper_verify_roots', (parent, flags, state), tuple(mask.shape), pixels, guard)
                 failed = int(state.item())
@@ -284,7 +303,7 @@ def components(mask, *, cancel=None):
         count = int(prefix[-1].item())
         guard.checkpoint()
         if count > MAX_COMPONENTS:
-            raise PaperResourceError('Paper component inventory exceeds4096 objects.')
+            raise PaperResourceError(f'Paper component inventory has {count} objects, exceeding {MAX_COMPONENTS}.')
         metadata_bound(count)
         labels = torch.empty_like(parent)
         guard.watch(labels)
@@ -372,7 +391,7 @@ def pack_crops(rgb, source_labels, source_inventory, final_labels, final_invento
     total = sum((r['bounds_xyxy'][2]-r['bounds_xyxy'][0])
         *(r['bounds_xyxy'][3]-r['bounds_xyxy'][1]) for r in final_inventory)
     if 4*total > MAX_CROP_BYTES:
-        raise PaperResourceError('Packed crops exceed the aggregate128MiB byte limit.')
+        raise PaperResourceError(f'Packed crops require {4*total} bytes, exceeding {MAX_CROP_BYTES}.')
     _admit((rgb, source_labels, final_labels), 4*total+BACKEND_BYTES+MAX_COMPONENTS*64)
     with torch.cuda.device(rgb.device), torch.no_grad():
         guard = _Guard(cancel, rgb, source_labels, final_labels)

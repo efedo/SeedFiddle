@@ -45,9 +45,9 @@ def contact_fixture():
 
 class PaperPlanningTests(unittest.TestCase):
     def test_full_fixture_admitted_and_work_cuda_limits_are_explicit(self):
-        pixels = 2080*3120
+        pixels = 4160*6240
         self.assertLess(paper.component_work(pixels), paper.MAX_COMPONENT_WORK)
-        self.assertEqual(paper.retained_bound(pixels), 64*pixels+192*1024*1024)
+        self.assertEqual(paper.retained_bound(pixels), 32*pixels+208*1024*1024)
         self.assertLess(paper.retained_bound(pixels), paper.MAX_CUDA_BYTES)
         for value in (0, True, 64_000_001):
             with self.assertRaises(ValueError):
@@ -67,6 +67,9 @@ class PaperPlanningTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 paper.select_contacts(bad, (3, 2), 5)
         self.assertLessEqual(paper.metadata_bound(4096), paper.MAX_CPU_METADATA_BYTES)
+        self.assertEqual(paper.metadata_bound(paper.MAX_COMPONENTS), paper.MAX_CPU_METADATA_BYTES)
+        with self.assertRaises(ValueError):
+            paper.metadata_bound(paper.MAX_COMPONENTS+1)
 
 
 @unittest.skipUnless(torch.cuda.is_available(), 'CUDA required')
@@ -165,8 +168,18 @@ class PaperCudaTests(unittest.TestCase):
         mask[::2, ::2] = 255
         actual = paper.components(self.gpu(mask))
         self.assertEqual(len(actual['components']), 4096)
-        mask = np.zeros((129, 129), np.uint8)
-        mask[::2, ::2] = 255
+        # Exercise the expanded inventory through extraction, without an
+        # expensive per-object image scan or a full-resolution test fixture.
+        mask = np.zeros((1, 2*4918), np.uint8)
+        mask[:, ::2] = 255
+        rgb = np.full((1,2*4918,3), [17,43,91], np.uint8)
+        extracted = paper.extract_from_intersection(self.gpu(mask), self.gpu(rgb),
+            contact_box_area=paper.MAX_PIXELS, erosion_ksize=1)
+        self.assertEqual(len(extracted['crops']), 4918)
+        self.assert_gpu(extracted['packed_rgb'].reshape(-1,3), rgb[:,::2].reshape(-1,3))
+        self.assertTrue(bool(torch.all(extracted['packed_mask'] == 255)))
+        mask = np.zeros((1, 2*(paper.MAX_COMPONENTS+1)), np.uint8)
+        mask[:, ::2] = 255
         with patch.object(paper, '_statistics') as stats:
             with self.assertRaises(paper.PaperResourceError):
                 paper.components(self.gpu(mask))
@@ -174,6 +187,15 @@ class PaperCudaTests(unittest.TestCase):
         with patch.object(paper, 'UNION_ROUNDS', 0):
             with self.assertRaises(paper.PaperResourceError):
                 paper.components(self.gpu(np.full((3, 3), 255, np.uint8)))
+        tiny = self.gpu(np.full((3, 3), 255, np.uint8))
+        # The fixed48N phase fits, but the first4N pointer-jump pass does not.
+        with patch.object(paper, 'MAX_COMPONENT_WORK', 52*tiny.numel()-1), \
+                patch.object(paper, '_statistics') as stats:
+            with self.assertRaisesRegex(paper.PaperResourceError, 'executed work'):
+                paper.components(tiny)
+            stats.assert_not_called()
+        recovered = paper.components(tiny)
+        self.assertTrue(torch.equal(recovered['labels'], torch.ones_like(recovered['labels'])))
 
     def check_test_stalled_hooks_fail_verification_and_alternate_stream_tiles_are_stable(self):
         mask = self.gpu(np.full((19, 23), 255, np.uint8))
@@ -233,9 +255,13 @@ class PaperCudaTests(unittest.TestCase):
         self.assertEqual(actual['disappeared_parent_ids'], ())
         self.assertEqual(tuple(actual['packed_rgb'].shape), (0,))
         mask[:] = 255
-        with patch.object(paper, 'MAX_CROP_BYTES', 100):
+        required = 4*mask.size
+        with patch.object(paper, 'MAX_CROP_BYTES', required-1):
             with self.assertRaises(paper.PaperResourceError):
                 paper.extract_from_intersection(self.gpu(mask), self.gpu(rgb), 1000)
+        with patch.object(paper, 'MAX_CROP_BYTES', required):
+            admitted = paper.extract_from_intersection(self.gpu(mask), self.gpu(rgb), 1000)
+        self.assertEqual(admitted['packed_rgb'].numel()+admitted['packed_mask'].numel(), required)
 
     def check_test_cancellation_mutation_and_malformed_partition_withhold_results(self):
         mask, rgb = contact_fixture()

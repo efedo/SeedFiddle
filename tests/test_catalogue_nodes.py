@@ -24,7 +24,7 @@ from seedvision.persistence.snapshot import create_snapshot, restore_snapshot
 class CatalogueNodeTests(CatalogueTestCase):
     def check_test_catalogue_includes_default_smpts_models_and_four_input_correction(self):
         entries = catalogue_entries()
-        self.assertEqual(sum(entry.backend == 'default' for entry in entries), 49)
+        self.assertEqual(sum(entry.backend == 'default' for entry in entries), 50)
         self.assertEqual(len({entry.key for entry in entries}), len(entries))
         operations = {entry.recipe.stage(entry.target_node).operation_id
                       for entry in entries if entry.recipe is not None}

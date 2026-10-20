@@ -151,6 +151,26 @@
       "path": "artifacts/pipeline-backend-code-provenance-v1.json",
       "sha256": "b5c30ee44f637e623ae7f4fec139b25020f629c342fc844c8e827e75a32e6d12",
       "group": "acceptance"
+    },
+    {
+      "path": "artifacts/full-resolution-code-provenance-v1.json",
+      "sha256": "652865981554125d63ac7272784c01b157cc5b8728e86066b6edbe99dcb3daac",
+      "group": "acceptance"
+    },
+    {
+      "path": "artifacts/full-resolution-code-provenance-v2.json",
+      "sha256": "3aa4298e979d60aa3ae3385017c3ffb4951aa94c7293d57fa6c57762bc734696",
+      "group": "acceptance"
+    },
+    {
+      "path": "artifacts/full-resolution-code-provenance-v3.json",
+      "sha256": "2a93625ffb97309685b776cc1ad23bc6b3e4438ce2bf038469f829c3e865b924",
+      "group": "acceptance"
+    },
+    {
+      "path": "artifacts/project-context-code-provenance-v1.json",
+      "sha256": "a46da97385b7f573509ecd72f1ab4b98253bbb1062946177385d1ee568b8bed9",
+      "group": "acceptance"
     }
   ]
 }

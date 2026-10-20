@@ -921,6 +921,8 @@ class PipelineInspector(QWidget):
     parameters_reset = Signal(str)
     overlay_selected = Signal(str)
     node_action_requested = Signal(str, str, object)
+    image_selection_requested = Signal(int)
+    species_library_requested = Signal()
 
     def __init__(self, parent=None, *, read_only: bool = False) -> None:
         super().__init__(parent)
@@ -1366,6 +1368,21 @@ class PipelineInspector(QWidget):
         layout.addWidget(self.enabled_fact_label)
         layout.addWidget(self.status_label)
         layout.addWidget(self.project_info_container)
+        self.image_selector_combo = QComboBox(self)
+        self.image_selector_combo.setObjectName('pipelineImageSelector')
+        self.image_selector_combo.setToolTip('Select the same current raw image as the Images list.')
+        self.image_selector_combo.currentIndexChanged.connect(self.image_selection_requested)
+        self.image_selector_combo.hide()
+        layout.addWidget(self.image_selector_combo)
+        self._context_details = {}
+        self.context_info_label = QLabel(self)
+        self.context_info_label.setWordWrap(True)
+        self.context_info_label.hide()
+        layout.addWidget(self.context_info_label)
+        self.species_library_button = QPushButton('Species reference libraries…', self)
+        self.species_library_button.clicked.connect(self.species_library_requested)
+        self.species_library_button.hide()
+        layout.addWidget(self.species_library_button)
         layout.addWidget(self.procedural_centres_container)
         layout.addWidget(self.procedural_fit_container)
         layout.addWidget(self.reference_edge_fit_container)
@@ -1405,6 +1422,10 @@ class PipelineInspector(QWidget):
         self.project_info_container.setVisible(
             node.identifier == "project" and not self.read_only
         )
+        self.image_selector_combo.setVisible(node.identifier == 'image_selector' and not self.read_only)
+        self.species_library_button.setVisible(node.identifier == 'species_reference_library' and not self.read_only)
+        self.context_info_label.setVisible(node.identifier in self._context_details and not self.read_only)
+        self.context_info_label.setText(self._context_details.get(node.identifier, ''))
         self.enabled_checkbox.blockSignals(True)
         self.enabled_checkbox.setChecked(node.enabled)
         self.enabled_checkbox.setEnabled(node.implemented and node.bypassable)
@@ -1620,7 +1641,8 @@ class PipelineInspector(QWidget):
             and node.implemented and self._optimization_ready and not self._optimization_busy and not self._editing_locked))
         text = contract.reason or f'{len(contract.searchable)} searchable controls; objective: {contract.objective}. '
         if contract.searchable:
-            text += ('Optimization is running.' if self._optimization_busy else
+            text += ('Pipeline is frozen. Clear Freeze to optimize node settings.' if self._editing_locked else
+                     'Optimization is running.' if self._optimization_busy else
                      'Save a project and apply references to enable fitting.' if not self._optimization_ready else
                      'Choose images and budget; inspect the proposal before applying. Missing target types are reported in the plan/results.')
         self.optimization_status.setText(text)
@@ -1669,6 +1691,20 @@ class PipelineInspector(QWidget):
         summary = str(text).strip() or "No project information is available."
         self.project_info_label.setText(summary)
         self.project_info_label.setToolTip(summary)
+
+    def set_image_choices(self, rows, current):
+        with QSignalBlocker(self.image_selector_combo):
+            self.image_selector_combo.clear()
+            for label, filename in rows:
+                self.image_selector_combo.addItem(label, filename)
+                self.image_selector_combo.setItemData(self.image_selector_combo.count()-1, filename, Qt.ItemDataRole.ToolTipRole)
+            self.image_selector_combo.setCurrentIndex(current)
+
+    def set_context_details(self, details):
+        self._context_details = dict(details)
+        identifier = self._node.identifier if self._node is not None else None
+        self.context_info_label.setVisible(identifier in details and not self.read_only)
+        self.context_info_label.setText(details.get(identifier, ''))
 
     def set_procedural_instance_statistics(self, text: str = "") -> None:
         """Display geometry for the procedural label selected in the image."""

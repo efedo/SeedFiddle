@@ -39,6 +39,29 @@ class NativeStageReplayPlanTests(CatalogueTestCase):
                 replay._plan(shape,'threshold.binary',{},2*shape[0]*shape[1])
         self.assertLess(replay._plan((2080,3120),'threshold.binary',{},2*2080*3120)['cuda_bytes'],
                         replay.MAX_REPLAY_CUDA_BYTES)
+        base = replay._plan((96, 128), 'threshold.binary', {}, 2 * 96 * 128)
+        charged = replay._foreground_region_plan(base, FRAME)
+        self.assertEqual(charged['cuda_bytes'] - base['cuda_bytes'], 96 * 128)
+        self.assertEqual(charged['foreground_region_adapter_work'], 2 * 96 * 128)
+        self.assertNotIn('foreground_region_adapter_cuda_bytes', base)
+        from seedvision.benchmarking.checkpoints import CoordinateFrame
+        full = CoordinateFrame('source.decoded', (1, maximum), 'top-left', 'x-right,y-down', 'pixel')
+        with self.assertRaises(replay.NativeStageReplayUnavailable):
+            replay._foreground_region_plan(plan, full)
+        from types import SimpleNamespace
+        region_key = 'foreground_region_bounds_xyxy'
+        encoded_bounds = {'kind': 'tuple', 'items': [20, 10, 80, 60]}
+        node = {'parameters': {'kind': 'mapping', 'items': [[region_key, encoded_bounds]]},
+            'backend_provenance': {'kind': 'mapping', 'items': [
+                ['foreground_region_adapter', 'CUDA full-frame binary mask exclusion v1'],
+                [region_key, encoded_bounds]]}}
+        recipe = SimpleNamespace(provenance=SimpleNamespace(mode=SimpleNamespace(value='enhanced')))
+        stage = SimpleNamespace(operation_id='threshold.binary')
+        self.assertEqual(replay._foreground_region_context(recipe, stage, node, FRAME), (20, 10, 80, 60))
+        # Parent/source dimensions must not admit bounds outside an actual local input frame.
+        smaller = CoordinateFrame('local', (96, 40), 'top-left', 'x-right,y-down', 'pixel')
+        with self.assertRaises(archives.NativeResultExportError):
+            replay._foreground_region_context(recipe, stage, node, smaller)
 
     def check_test_fill_compression_work_boundary_and_area_shortcuts(self):
         # For a one-row raster below the1M edge chunk there is one batch:
@@ -143,6 +166,40 @@ class NativeStageReplayTests(CatalogueTestCase):
                     self.assertTrue(torch.equal(value,self.run.node(self.stage(operation)).outputs[port]))
         self.assertEqual(self.archive_hashes(),before)
 
+    def check_test_working_foreground_regions_replay_from_recorded_context(self):
+        from seedvision.pipeline.workflows import create_workflow, with_foreground_region
+        from tests.replay_fixtures import archive_hashes
+        gray, rgb = (torch.as_tensor(array, device='cuda') for array in fixture())
+        bounds = (30, 20, 70, 60)
+        for kind in ('binary', 'mean', 'otsu'):
+            with self.subTest(kind=kind):
+                workflow = create_workflow(selected_recipe(kind))
+                stage = next(stage.stage_id for stage in workflow.recipe.stages
+                    if stage.operation_id == 'threshold.' + kind)
+                workflow = with_foreground_region(workflow, stage, bounds)
+                run = runner.run_native_recipe(workflow.recipe, gray, rgb, source_sha256=SOURCE,
+                    coordinate_frame=FRAME, preparation=PREPARATION, working_workflow=workflow,
+                    target_node_id=stage)
+                self.assertEqual(run.node(stage).status, 'executed', run.node(stage).reason)
+                directory = self.root / ('foreground-' + kind)
+                archives.export_native_recipe_result(directory, workflow.recipe, run)
+                before = archive_hashes(directory)
+                result = replay.replay_native_stage(directory, stage)
+                self.assertEqual(result.status, 'matched', result.reason)
+                self.assertTrue(torch.equal(result.outputs['mask'], run.node(stage).outputs['mask']))
+                self.assertEqual(tuple(result.outputs['mask'].shape), FRAME.shape)
+                exterior = result.outputs['mask'].clone()
+                exterior[bounds[1]:bounds[3], bounds[0]:bounds[2]] = 0
+                self.assertFalse(bool(exterior.any().item()))
+                self.assertEqual(result.metadata['foreground_region_bounds_xyxy'], bounds)
+                self.assertGreater(result.metadata['plan']['foreground_region_adapter_cuda_bytes'], 0)
+                self.assertEqual(result.metadata['comparison']['mismatched_elements'], 0)
+                self.assertEqual(archive_hashes(directory), before)
+                # A working archive also binds the adapter for upstream replays.
+                upstream = next(stage.stage_id for stage in workflow.recipe.stages
+                    if stage.operation_id == 'filter.median_blur')
+                self.assertEqual(replay.replay_native_stage(directory, upstream).status, 'matched')
+
     def check_test_mismatched_saved_output_is_reported_without_replacing_history(self):
         stage = self.stage('threshold.binary'); node = self.run.node(stage)
         changed = node.outputs['mask'].clone(); changed[0,0] = 255-changed[0,0]
@@ -244,8 +301,9 @@ class NativeStageReplayTests(CatalogueTestCase):
 
 
     def test_workflow_lifecycle(self):
-        """3 related NativeStageReplayTests scenarios, each with private fixture state."""
+        """4 related NativeStageReplayTests scenarios, each with private fixture state."""
         self.scenario(self.check_test_actual_raster_stage_replays_dispatch_only_target_preserve_archives_and_cuda)
+        self.scenario(self.check_test_working_foreground_regions_replay_from_recorded_context)
         self.scenario(self.check_test_mismatched_saved_output_is_reported_without_replacing_history)
         self.scenario(self.check_test_committed_full_resolution_saved_input_replay_cuda_and_host_peaks)
 

@@ -1,5 +1,18 @@
 # Functional test consolidation — 18 October 2026
 
+19 October workflow-repair verification: **640 units, 636 passes, four existing
+skips, zero failures/errors in 806.689 seconds** (806.821 parent seconds). The
+additional unit exercises real local-reference optimization. Eight existing units
+from three whole modules now run on the previously underused worker, preserving
+their shared fixtures and every discovered ID. The three assignments contain
+159, 193 and 288 units; two-worker scheduling is unchanged. The fresh full run
+passes both budgets, and the numerical baselines remain byte-identical. Evidence:
+`artifacts/workflow-repairs-full-v2.json` and its `.receipt.json` companion. The
+earlier V1 attempt reached its deadline with two identified assertion failures;
+its incomplete report and journals remain separate from this passing run.
+
+The 18 October consolidation checkpoint below retains its original scope.
+
 The target is fewer than 1,000 discovered functional units and at most 900 seconds
 for one fresh, unfiltered canonical full run. **Accepted: 639 units, 635 passes, four existing skips, 762.295 seconds** (762.822 parent seconds).
 The previous 126.5-minute figure was recorded work across completed segments,

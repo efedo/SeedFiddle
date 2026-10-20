@@ -25,7 +25,7 @@ from seedvision.benchmarking.checkpoints import (
     MeasurementContract, RasterRole, load_checkpoint, publish_checkpoint,
     _array_descriptor, _estimate_npz_size, _read_manifest, _validate_array_specs,
 )
-from seedvision.benchmarking.native_recipe import NativeRecipeCancelled, NativeRecipeResult
+from seedvision.benchmarking.native_recipe import NativeRecipeCancelled, NativeRecipeResult, MAX_LABELS
 from seedvision.benchmarking.native_correction_recipe import NativeCorrectionResult, RECIPE_ID as CORRECTION_RECIPE_ID
 from seedvision.benchmarking.native_correction_inputs import (
     validate_correction_input_sources, correction_file_implementation_sha256,
@@ -61,6 +61,24 @@ def _public_provenance(stage, value):
     if checked['operation'] != operation:
         raise NativeResultExportError('Public provenance belongs to another operation.')
     return checked
+
+
+def _foreground_provenance(stage, value, bounds, shape, *, public=False):
+    from seedvision.pipeline.workflows import FOREGROUND_OPERATIONS
+    recorded = value.get('foreground_region_bounds_xyxy') if isinstance(value, Mapping) else None
+    if (stage.operation_id not in FOREGROUND_OPERATIONS or not isinstance(value, Mapping)
+            or value.get('foreground_region_adapter') != 'CUDA full-frame binary mask exclusion v1'
+            or type(recorded) not in (list, tuple) or tuple(recorded) != tuple(bounds)):
+        raise NativeResultExportError('Foreground exclusion requires its explicit matching adapter provenance.')
+    from seedvision.benchmarking.native_morphology_roi_recipe import selected_bounds
+    try:
+        selected_bounds(bounds, shape)
+    except (ValueError, TypeError) as error:
+        raise NativeResultExportError(str(error)) from error
+    if not public and set(value) != {
+            'foreground_region_adapter', 'foreground_region_bounds_xyxy'}:
+        raise NativeResultExportError('Native foreground adapter provenance has unknown fields.')
+    return value
 
 
 class NativeResultExportError(ValueError):
@@ -418,12 +436,13 @@ def _validate_payload(payload):
                 or type(node['reason']) is not str or node['reason'] != node['reason'].strip()):
             raise NativeResultExportError('Native report node differs from its exact stage contract.')
         public = node.get('backend') == 'plantcv'
+        provenance = None
         if 'backend' in node:
-            if not public:
-                raise NativeResultExportError('Explicit archived backend must identify a public call.')
+            if node['backend'] not in ('native', 'plantcv'):
+                raise NativeResultExportError('Explicit archived backend must be native or plantcv.')
             try:
                 provenance = decode(node['backend_provenance'], permit_arrays=False)
-                if provenance is not None or node['status'] in _SUCCESS:
+                if public and (provenance is not None or node['status'] in _SUCCESS):
                     _public_provenance(stage, provenance)
             except (ValueError, TypeError) as error:
                 raise NativeResultExportError(str(error)) from error
@@ -443,7 +462,21 @@ def _validate_payload(payload):
             raise NativeResultExportError('Native node availability and reason disagree.')
         selected = recipe.parameters_for_runner(stage.stage_id)
         resolved = decode(node['parameters'], permit_arrays=False)
-        if type(resolved) is not dict or set(resolved) != set(selected):
+        region_key = 'foreground_region_bounds_xyxy'
+        has_region = isinstance(resolved, dict) and region_key in resolved
+        if has_region:
+            from seedvision.pipeline.workflows import FOREGROUND_OPERATIONS
+            bounds = resolved[region_key]
+            if (recipe.provenance.mode.value != 'enhanced' or stage.operation_id not in FOREGROUND_OPERATIONS
+                    or type(bounds) not in (list, tuple) or len(bounds) != 4
+                    or any(type(v) is not int or v < 0 for v in bounds)
+                    or bounds[0] >= bounds[2] or bounds[1] >= bounds[3]):
+                raise NativeResultExportError('Invalid enhanced foreground region context.')
+            if available:
+                _foreground_provenance(stage, provenance, bounds, identity.coordinate_frame.shape, public=public)
+        elif not public and ('backend' in node or provenance is not None):
+            raise NativeResultExportError('Native adapter provenance requires its foreground context.')
+        if type(resolved) is not dict or set(resolved) != set(selected) | ({region_key} if has_region else set()):
             raise NativeResultExportError('Native effective parameter inventory differs from its recipe.')
         for name, value in selected.items():
             if name == 'n_labels' and value is None and stage.operation_id in ('analysis.color', 'analysis.size'):
@@ -452,7 +485,7 @@ def _validate_payload(payload):
                 actual = resolved[name]
                 if actual is None and not available:
                     continue
-                if type(actual) is not int or not (1 <= actual <= 128 if available
+                if type(actual) is not int or not (1 <= actual <= MAX_LABELS if available
                         else 0 <= actual <= math.prod(identity.coordinate_frame.shape)):
                     raise NativeResultExportError('Invalid resolved native object count.')
             elif _json_bytes(resolved[name]) != _json_bytes(value):
@@ -567,7 +600,13 @@ def export_native_recipe_result(directory, recipe, result, *,
             nodes[-1].update(backend=backend,
                 backend_provenance=collector.encode(_public_provenance(stage, provenance)
                     if provenance is not None or node.status in _SUCCESS else None))
-        elif backend != 'native' or provenance is not None:
+        elif backend == 'native' and provenance is not None:
+            bounds = node.parameters.get('foreground_region_bounds_xyxy')
+            if bounds is None:
+                raise NativeResultExportError('Native adapter provenance requires its foreground context.')
+            _foreground_provenance(stage, provenance, bounds, result.coordinate_frame.shape)
+            nodes[-1].update(backend=backend, backend_provenance=collector.encode(provenance))
+        elif backend != 'native':
             raise NativeResultExportError('Native results cannot assert public execution provenance.')
     complete = all(node.status in ('provided', 'executed', 'empty', 'bypassed') for node in result.nodes)
     if result.status != ('executed' if complete else 'partial'):

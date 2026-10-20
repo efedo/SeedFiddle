@@ -519,13 +519,16 @@ def closed_polyline_spans(vertices, width, height, *, thickness=5, cancel=None, 
 
 
 def iter_adjacent_closed_polyline_spans(vertices, width, height, *, thickness=5,
-                                       cancel=None, work_budget=None, batch_edges=256):
+                                       cancel=None, work_budget=None, batch_edges=256,
+                                       cache_directions=False):
     """Bounded batches of the same closed stroke for CHAIN_APPROX_NONE points.
 
     Every edge, including closure, must be 8-neighbor adjacent. Painting all
     batches with one color equals painting their union. At most8192 estimated
     edge rows are retained per batch, plus one primitive's temporary geometry.
     A single edge may exceed that target; its rows remain bounded by the frame.
+    Optional direction reuse retains at most nine interior edge templates;
+    their rows are bounded by the fixed thickness and the source frame.
     Raw span and work limits cover the whole contour, not each yielded batch.
     """
     width, height = _frame(width, height)
@@ -533,6 +536,8 @@ def iter_adjacent_closed_polyline_spans(vertices, width, height, *, thickness=5,
         raise ValueError('line thickness must be an integer in [1, 32767]')
     if type(batch_edges) is not int or not 1 <= batch_edges <= 4096:
         raise ValueError('batch_edges must be an integer in [1, 4096]')
+    if type(cache_directions) is not bool:
+        raise ValueError('cache_directions must be a bool')
     if not hasattr(vertices, '__len__') or len(vertices) > MAX_RASTER_SPAN_POINTS:
         raise RasterSpanLimitError('polyline point count exceeds the bound')
     points = tuple((int(x), int(y)) for x, y in vertices)
@@ -542,7 +547,7 @@ def iter_adjacent_closed_polyline_spans(vertices, width, height, *, thickness=5,
         work_budget = [0]
     rows = min(height, thickness + 4)
     batch_edges = min(batch_edges, max(1, 8192 // rows))
-    raw, raw_count = [], 0
+    raw, raw_count, templates = [], 0, {}
     for index, first in enumerate(points):
         last = points[(index + 1) % len(points)]
         if (any(v < _INT32_MIN or v > _INT32_MAX for v in (*first, *last))
@@ -553,10 +558,26 @@ def iter_adjacent_closed_polyline_spans(vertices, width, height, *, thickness=5,
                 abs(first[0]-last[0]) + abs(first[1]-last[1]) + 1, cancel)
             edge = _point_spans(line8_points(width, height, first, last, cancel=cancel))
         else:
-            edge = thick_line_fixed_spans(width, height,
-                (first[0] << XY_SHIFT, first[1] << XY_SHIFT),
-                (last[0] << XY_SHIFT, last[1] << XY_SHIFT),
-                thickness=thickness, flags=2, cancel=cancel, work_budget=work_budget)
+            direction = (last[0]-first[0], last[1]-first[1])
+            # Interior adjacent edges differ only by integer translation.
+            # Keep at most nine compact templates; boundary edges use the
+            # original primitive because its clipping can affect rounding.
+            margin = thickness + 2
+            interior = cache_directions and all(margin <= x < width-margin and margin <= y < height-margin
+                for x, y in (first, last))
+            template = templates.get(direction) if interior else None
+            if template is None:
+                edge = thick_line_fixed_spans(width, height,
+                    (first[0] << XY_SHIFT, first[1] << XY_SHIFT),
+                    (last[0] << XY_SHIFT, last[1] << XY_SHIFT),
+                    thickness=thickness, flags=2, cancel=cancel, work_budget=work_budget)
+                if interior:
+                    templates[direction] = tuple((y-first[1], x0-first[0], x1-first[0])
+                        for y, x0, x1 in edge)
+            else:
+                _charge_geometry_work(work_budget, len(template), cancel)
+                edge = tuple((y+first[1], x0+first[0], x1+first[0])
+                    for y, x0, x1 in template)
         raw_count += len(edge)
         if raw_count > MAX_RASTER_SPAN_SEGMENTS:
             raise RasterSpanLimitError('aggregate contour stroke spans exceed the bound')

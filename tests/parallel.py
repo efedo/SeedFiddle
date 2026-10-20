@@ -10,6 +10,16 @@ from uuid import uuid4
 from tests.selection import ACCEPTANCE_TARGETS, matches
 
 
+# The 19 October full-run journals put 225s of native work on the slow
+# third worker while the desktop worker finished early. Move whole modules so
+# their class/catalogue fixtures remain together. Two-worker runs are unchanged.
+BALANCED_NATIVE_MODULES = frozenset((
+    'tests.test_native_core_recovery_recipe',
+    'tests.test_native_calibrated_range_recipe',
+    'tests.test_native_paper_replay',
+))
+
+
 def assignments(groups, jobs=3):
     cpu={test.id() for test in groups['cpu-qt']}
     buckets=[[],[],[]]
@@ -18,7 +28,8 @@ def assignments(groups, jobs=3):
         numerical=(name.startswith(('tests.test_plantcv_', 'tests.test_reference_',
                     'tests.test_smpts_paper.', 'tests.test_core_recovery.'))
                     or matches(name,ACCEPTANCE_TARGETS))
-        buckets[0 if name in cpu else 1 if numerical else 2].append(name)
+        balanced = jobs == 3 and name.rsplit('.', 2)[0] in BALANCED_NATIVE_MODULES
+        buckets[0 if name in cpu or balanced else 1 if numerical else 2].append(name)
     if jobs==2:buckets=[buckets[0]+buckets[1],buckets[2]]
     elif jobs!=3:raise ValueError('Parallel full runs require two or three workers')
     flat=[name for bucket in buckets for name in bucket]

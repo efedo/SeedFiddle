@@ -233,6 +233,8 @@ class NmsVisitEstimateTests(unittest.TestCase):
                         expected = torch.nn.functional.max_pool2d(values[None, None], kernel,
                             stride=1, padding=radius)[0, 0]
                         self.assertTrue(torch.equal(peaks._spacing_maximum(values, kernel, radius), expected))
+                        with patch.object(peaks, 'MAX_FILTER_TILE_SIDE', 2):
+                            self.assertTrue(torch.equal(peaks._spacing_maximum(values, kernel, radius), expected))
 
     def test_round_estimate_counts_four_axis_windows_dense_and_candidate_work(self):
         from seedvision.cuda import plantcv_peaks as peaks
@@ -242,6 +244,10 @@ class NmsVisitEstimateTests(unittest.TestCase):
                 kernel = 2 * (distance - 1) + 1
                 self.assertEqual(peaks._nms_round_visits(shape, distance, candidates),
                     shape[0] * shape[1] * (24 + 4 * kernel) + 64 * candidates)
+        with patch.object(peaks, 'MAX_FILTER_TILE_SIDE', 2):
+            # Four y tiles read4+6+6+4 rows; five x tiles read4+6+6+5+3 columns.
+            self.assertEqual(peaks._nms_round_visits((8,9), 3, 77),
+                24*8*9 + 4*5*20*24 + 64*77)
 
 
 @unittest.skipUnless(torch.cuda.is_available(), 'CUDA required')
@@ -286,6 +292,9 @@ class NmsVisitBudgetTests(unittest.TestCase):
         cases = (
             ((3, 8), 2, [[0, 0], [0, 1], [0, 2], [1, 5], [1, 6], [2, 7]]),
             ((3, 8), 3, [[0, 0], [0, 2], [0, 4], [1, 6], [2, 7], [2, 4]]),
+            ((2, 400), 3, [[0, i*2] for i in range(100)]),
+            ((30, 30), 3, [[int(i)//10*2, int(i)%10*2]
+                for i in np.random.default_rng(984).permutation(100)]),
         )
         for shape, distance, points in cases:
             with self.subTest(distance=distance):

@@ -124,6 +124,21 @@ class SizeDiagnosticRasterTests(unittest.TestCase):
                     if case['kind'] == 'circle' else
                     raster.closed_polyline_spans(case['points'], w, h, thickness=case['thickness']))
                 np.testing.assert_array_equal(span_pixels(spans, (h,w)), expected)
+        # Repeated edges in every direction exercise the interior templates;
+        # the translated copy at the frame edge exercises the clipping path.
+        loop = [(0,0),(1,0),(2,1),(2,2),(1,3),(0,3),(-1,2),(-1,1)]
+        paths = [loop*3, [(0,0)]*3]
+        for thickness in (1,2,3,5,8,13,31):
+            for path in paths:
+                for offset in ((48,48),(1,1),(93,1),(1,92),(93,92),
+                        (thickness+3,thickness+3)):
+                    points = [(x+offset[0],y+offset[1]) for x,y in path]
+                    batches = tuple(raster.iter_adjacent_closed_polyline_spans(
+                        points, 96, 96, thickness=thickness, batch_edges=2, cache_directions=True))
+                    actual = span_pixels((span for batch in batches for span in batch), (96,96))
+                    expected = span_pixels(raster.closed_polyline_spans(
+                        points, 96, 96, thickness=thickness), (96,96))
+                    np.testing.assert_array_equal(actual, expected)
 
     def check_test_shared_work_cap_rejects_before_polygon_allocation(self):
         with patch.object(raster, 'MAX_RASTER_SPAN_WORK', 1), \
@@ -145,6 +160,28 @@ class SizeDiagnosticRasterTests(unittest.TestCase):
                 raster.circle_outline_spans(40, 40, (20,20), 10)
         with self.assertRaises(raster.RasterSpanCancelled):
             raster.circle_outline_spans(40, 40, (20,20), 10, cancel=lambda: True)
+        points = tuple((x+48,y+48) for x,y in
+            ([(0,0),(1,0),(2,1),(2,2),(1,3),(0,3),(-1,2),(-1,1)]*3))
+        with patch.object(raster, 'thick_line_fixed_spans', wraps=raster.thick_line_fixed_spans) as line:
+            tuple(raster.iter_adjacent_closed_polyline_spans(points, 96, 96, batch_edges=16))
+            self.assertEqual(line.call_count, len(points), 'Default execution retains every primitive call.')
+        with self.assertRaisesRegex(ValueError, 'must be a bool'):
+            tuple(raster.iter_adjacent_closed_polyline_spans(points, 96, 96, cache_directions=1))
+        work, stopped = [0], [False]
+        with patch.object(raster, 'thick_line_fixed_spans', wraps=raster.thick_line_fixed_spans) as line:
+            batches = raster.iter_adjacent_closed_polyline_spans(points, 96, 96,
+                batch_edges=16, work_budget=work, cancel=lambda:stopped[0], cache_directions=True)
+            next(batches)
+            self.assertEqual(line.call_count, 8, 'The second loop reuses each directed edge.')
+            stopped[0] = True
+            with self.assertRaises(raster.RasterSpanCancelled):
+                next(batches)
+        batches = raster.iter_adjacent_closed_polyline_spans(points, 96, 96,
+            batch_edges=16, work_budget=work, cache_directions=True)
+        next(batches)
+        with patch.object(raster, 'MAX_RASTER_SPAN_WORK', work[0]+1):
+            with self.assertRaises(raster.RasterSpanLimitError):
+                next(batches)
 
     def test_workflow_lifecycle(self):
         """2 related SizeDiagnosticRasterTests scenarios, each with private fixture state."""
@@ -185,6 +222,12 @@ class SizeDiagnosticCudaTests(unittest.TestCase):
                 self.assertEqual(actual.device, image.device)
                 self.assertEqual(actual.dtype, torch.uint8)
                 self.assertNotEqual(actual.data_ptr(), image.data_ptr())
+                iterator = raster.iter_adjacent_closed_polyline_spans
+                def small_batches(*args, **kwargs):
+                    return iterator(*args, **kwargs, batch_edges=2)
+                with patch.object(size, 'iter_adjacent_closed_polyline_spans', side_effect=small_batches):
+                    batched = size.render_plantcv_size_diagnostic_rgb(image, results)
+                torch.testing.assert_close(batched, actual, rtol=0, atol=0)
 
     def check_test_thickness_one_actual_images_match_pinned_including_frame_and_holes(self):
         for name, labels, count in fixtures():
@@ -230,10 +273,39 @@ class SizeDiagnosticCudaTests(unittest.TestCase):
                     cancel=lambda: state['cancel'])
         self.assertEqual(state['painted'], 1)
         torch.testing.assert_close(image, before)
+        iterator = raster.iter_adjacent_closed_polyline_spans
+        state['cancel'] = False
+        state['batches'] = 0
+        def cancel_between_batches(*args, **kwargs):
+            for spans in iterator(*args, **kwargs, batch_edges=2):
+                yield spans
+                state['batches'] += 1
+                state['cancel'] = True
+        with patch.object(size, 'iter_adjacent_closed_polyline_spans', side_effect=cancel_between_batches):
+            with self.assertRaises(size.PlantCVSizeCancelledError):
+                size.render_plantcv_size_diagnostic_rgb(image, results,
+                    cancel=lambda: state['cancel'])
+        self.assertEqual(state['batches'], 1)
+        torch.testing.assert_close(image, before)
         with patch.object(size, 'MAX_SIZE_DIAGNOSTIC_PIXELS', 0):
             with self.assertRaises(raster.RasterSpanLimitError):
                 size.render_plantcv_size_diagnostic_rgb(image, results)
         torch.testing.assert_close(image, before)
+        budgets = []
+        charge = size._charge_size_geometry_work
+        def record_budget(budget, amount, cancel=None):
+            if budget is not None and not any(value is budget for value in budgets):
+                budgets.append(budget)
+            return charge(budget, amount, cancel)
+        with patch.object(size, '_charge_size_geometry_work', side_effect=record_budget):
+            expected = size.render_plantcv_size_diagnostic_rgb(image, results)
+        self.assertEqual(len(budgets), 2, 'Preparation and painting retain separate bounded work counters.')
+        limit = max(value[0] for value in budgets)+1
+        self.assertGreater(sum(value[0] for value in budgets), limit)
+        with patch.object(size, 'MAX_RASTER_SPAN_WORK', limit), \
+                patch.object(raster, 'MAX_RASTER_SPAN_WORK', limit):
+            actual = size.render_plantcv_size_diagnostic_rgb(image, results)
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
 
     def check_test_aggregate_points_and_hierarchy_shape_preflight_before_cpu_transfer(self):
         _, labels, count = fixtures()[0]

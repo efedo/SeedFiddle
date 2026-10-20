@@ -15,6 +15,7 @@ from .recipes import (DependencyContract, LayoutPosition, ParameterContract, Por
                       RecipeSpec, SourceMapping, SourceResolution)
 from seedvision.cuda import plantcv_range as color_range
 from seedvision.cuda import plantcv_peaks as peaks
+from seedvision.cuda import plantcv_size as size
 
 VERSION = '1.0.0'
 RANGE_RECIPE_ID = 'plantcv_calibrated_seed_range'
@@ -246,7 +247,7 @@ def _scaled_size(inputs):
     if not math.isfinite(area):
         raise ValueError('Size conversion area factor overflowed.')
     observations=inputs['observations']
-    if not isinstance(observations,Mapping) or not 1<=len(observations)<=128:
+    if not isinstance(observations,Mapping) or not 1<=len(observations)<=size.MAX_SIZE_DIAGNOSTIC_LABELS:
         raise ValueError('Size observations exceed their compact sample bound.')
     converted={}
     for sample,values in observations.items():

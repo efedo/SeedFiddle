@@ -56,8 +56,8 @@ def controls(parameters, error_type):
             {'n_labels','label'},{'n_labels','label','line_thickness'})):
         raise error_type('Size replay requires its exact historical or working controls.')
     count=parameters['n_labels'];label=parameters['label']
-    if type(count) is not int or not 1<=count<=128:
-        raise error_type('Size label count must be an integer in [1,128].')
+    if type(count) is not int or not 1<=count<=size.MAX_SIZE_DIAGNOSTIC_LABELS:
+        raise error_type(f'Size label count must be an integer in [1,{size.MAX_SIZE_DIAGNOSTIC_LABELS}].')
     thickness=parameters.get('line_thickness',5)
     if type(thickness) is not int or not 1<=thickness<=32767:
         raise error_type('Size line thickness must be an integer in [1,32767].')

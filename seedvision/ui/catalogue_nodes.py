@@ -134,8 +134,9 @@ class CatalogueNodesController(QObject):
         presenter = getattr(self.window, 'pipeline_workflow', None)
         primary_workflow = getattr(presenter, 'workflow', None)
         if self.primary is not None:
+            from seedvision.pipeline.project_context import CONTEXT_NODE_IDS
             for identifier in self.primary.nodes:
-                if primary_workflow is None:
+                if primary_workflow is None or identifier in CONTEXT_NODE_IDS:
                     present('default:' + identifier)
                 else:
                     present('native:' + _contract_key(primary_workflow.source_recipe.stage(identifier)))

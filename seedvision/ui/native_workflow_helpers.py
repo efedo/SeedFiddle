@@ -6,6 +6,24 @@ import torch
 from PySide6.QtGui import QImage
 from seedvision.pipeline.model import ParameterSpec, ParameterSection
 
+def configure_foreground_regions(graph, workflow):
+    """Expose the working pipeline's region adapter on its owning mask node."""
+    from seedvision.pipeline.workflows import FOREGROUND_OPERATIONS
+    key = 'foreground_roi_bounds_xyxy'
+    for stage in workflow.recipe.stages:
+        if stage.operation_id not in FOREGROUND_OPERATIONS:
+            continue
+        node = graph.node(stage.stage_id)
+        node.parameters[key] = json.dumps(workflow.foreground_regions.get(stage.stage_id))
+        node.default_parameters[key] = 'null'
+        if not any(spec.key == key for spec in node.parameter_specs):
+            node.parameter_specs += (ParameterSpec(key, 'Foreground region (input pixels)', 'structured',
+                description='null keeps the whole image. [left, top, right, bottom] excludes foreground outside '
+                    'this rectangle in this node input frame while preserving image dimensions. '
+                    'Select region draws it when the node uses source coordinates. '
+                    'This explicit native mask adapter also follows PlantCV threshold calls.'),)
+            node.parameter_sections += (ParameterSection('Foreground selection', (key,)),)
+
 def configure_native_parameters(graph, recipe, *, typed=False, editable_only=False):
     graph.reference_recipe_identity = recipe.identity
     descriptions = {
@@ -89,8 +107,17 @@ def native_preview_image(raster, semantics, *, maximum=1024):
         ids = sampled.to(torch.int64)
         sampled = torch.stack(((ids*53)%255, (ids*97)%255, (ids*193)%255), -1).to(torch.uint8)
     elif sampled.dtype in (torch.float32, torch.float64):
-        lower, upper = sampled.min(), sampled.max()
-        sampled = ((sampled-lower)/(upper-lower).clamp_min(1e-12)*255).to(torch.uint8)
+        if semantics.get('unit') == 'pixel' and 'distanceTransform' in semantics.get('source', ''):
+            # Display-only compression makes small foreground distances visible
+            # alongside large objects. Zero/background remains exactly black.
+            values = sampled.clamp_min(0).log1p()
+            level = values / values.max().clamp_min(1e-12)
+            rgb = torch.stack(((3*level-1).clamp(0, 1),
+                (1.5-3*(level-.5).abs()).clamp(0, 1), (1-2*level).clamp(0, 1)), -1)
+            sampled = (rgb * (values > 0).unsqueeze(-1) * 255).to(torch.uint8)
+        else:
+            lower, upper = sampled.min(), sampled.max()
+            sampled = ((sampled-lower)/(upper-lower).clamp_min(1e-12)*255).to(torch.uint8)
     elif sampled.dtype == torch.int32 or semantics.get('range') == '0..cluster_count-1':
         ids = sampled.to(torch.int64)
         # Distinct colours for sparse IDs throughout the recovery graph's

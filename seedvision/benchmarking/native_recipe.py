@@ -66,7 +66,7 @@ from seedvision.model_io import naive_bayes_provenance as _bayes_provenance
 MAX_RETAINED_CUDA_BYTES = 1024*1024*1024
 MAX_RASTER_PIXELS = 64_000_000
 MAX_MARKER_PIXELS = 65_536
-MAX_LABELS = 128
+MAX_LABELS = 1024
 _SEED_RECIPES = ('plantcv_seed_binary', 'plantcv_seed_mean', 'plantcv_seed_otsu')
 _WORKING_SEED_RECIPES = {
     'plantcv_seed_binary_working': 'plantcv_seed_binary',
@@ -768,9 +768,10 @@ def _model_dispatch(operation, inputs, parameters, cancel):
 
 class _CalculatedOutputs(dict):
     """Keep compact calculation facts separate from declared recipe ports."""
-    def __init__(self, values, calculation):
+    def __init__(self, values, calculation=None, *, unavailable_reasons=None):
         super().__init__(values)
         self.calculation = calculation
+        self.unavailable_reasons = dict(unavailable_reasons or {})
 
 
 def _dispatch_calculation(operation, outputs, parameters):
@@ -925,6 +926,7 @@ def _dispatch(operation, inputs, parameters, cancel):
         observations = {}
         label_results = []
         diagnostic_available = True
+        diagnostic_reason = ''
         diagnostic_points = diagnostic_boundary_points = diagnostic_contours = 0
         for label_id in range(1, parameters['n_labels']+1):
             _cancel(size_poll)
@@ -954,9 +956,10 @@ def _dispatch(operation, inputs, parameters, cancel):
                     diagnostic_boundary_points += boundary_points
                     diagnostic_contours += contours
                     label_results.append(result)
-                except (NotImplementedError, _size.RasterSpanLimitError):
+                except (NotImplementedError, _size.RasterSpanLimitError) as error:
                     label_results.clear()
                     diagnostic_available = False
+                    diagnostic_reason = str(error)
             observations[f'{labels[label_id-1]}_{label_id}'] = {
                 item.variable: {'trait': item.trait, 'method': item.method,
                     'scale': item.scale, 'datatype': str(item.datatype),
@@ -965,16 +968,17 @@ def _dispatch(operation, inputs, parameters, cancel):
         outputs = {'observations': _freeze_json(observations, name='size observations')}
         if not diagnostic_available:
             _cancel(size_poll)
-            return outputs
+            return _CalculatedOutputs(outputs, unavailable_reasons={'diagnostic': diagnostic_reason})
         try:
             outputs['diagnostic'] = _size.render_plantcv_size_diagnostic_rgb(
                 inputs['image'], tuple(label_results), cancel=size_poll, line_thickness=line_thickness)
-        except (NotImplementedError, _size.RasterSpanLimitError):
+        except (NotImplementedError, _size.RasterSpanLimitError) as error:
             # Accurate numerical observations survive a diagnostic-only limit.
             # The declared missing output makes this a partial node.
-            pass
+            diagnostic_reason = str(error)
         _cancel(size_poll)
-        return outputs
+        return _CalculatedOutputs(outputs,
+            unavailable_reasons={'diagnostic': diagnostic_reason} if diagnostic_reason else None)
     raise NotImplementedError(f'Native calculation is unavailable for {operation}.')
 
 
@@ -1254,12 +1258,14 @@ def _checked_model_asset_paths(recipe, value):
 
 def run_native_recipe_path(recipe, path, *, device='cuda', cache=None, cancel=None,
                            model_asset_paths=None, timing_recorder=None, working_workflow=None, target_node_id=None,
-                           reference_runner=None):
+                           reference_runner=None, progress=None):
     """Shared desktop/batch path entry point; the selected RecipeSpec is unchanged."""
     if cache is None:
         cache = PipelineAnalysisCache()
     if not isinstance(cache, PipelineAnalysisCache):
         raise TypeError('cache must be a PipelineAnalysisCache or None.')
+    if progress is not None:
+        progress('input_preparation', 'running', '')
     _path_preparation_poll(path,cache,cancel)
     if working_workflow is None:
         _validate_recipe(recipe)
@@ -1300,12 +1306,13 @@ def run_native_recipe_path(recipe, path, *, device='cuda', cache=None, cancel=No
         coordinate_frame=prepared.coordinate_frame, preparation=prepared.preparation,
         cache=cache, cancel=cancel, external_inputs=external_inputs, model_asset_paths=model_asset_paths,
         timing_recorder=timing_recorder, working_workflow=working_workflow, target_node_id=target_node_id,
-        reference_runner=reference_runner)
+        reference_runner=reference_runner, progress=progress)
 
 
 def run_native_recipe(recipe, gray, rgb, *, source_sha256, coordinate_frame,
                       preparation, cache=None, cancel=None, external_inputs=None, model_asset_paths=None,
-                      timing_recorder=None, working_workflow=None, target_node_id=None, reference_runner=None):
+                      timing_recorder=None, working_workflow=None, target_node_id=None, reference_runner=None,
+                      progress=None):
     """Execute the exact selected graph; retain valid per-node CUDA products.
 
     Preparation records must explain the caller's grayscale/RGB boundaries. A
@@ -1317,6 +1324,8 @@ def run_native_recipe(recipe, gray, rgb, *, source_sha256, coordinate_frame,
     """
     if cancel is not None and not callable(cancel):
         raise TypeError('cancel must be callable or None.')
+    if progress is not None and not callable(progress):
+        raise TypeError('progress must be callable or None.')
     if timing_recorder is not None:
         from seedvision.timing import NodeTimingRecorder
         if not isinstance(timing_recorder, NodeTimingRecorder):
@@ -1488,9 +1497,17 @@ def run_native_recipe(recipe, gray, rgb, *, source_sha256, coordinate_frame,
     backend_execution = BackendExecution(recipe, workflow=working_workflow, runner=reference_runner,
         cancel=cancel, cache=cache, prefix=prefix, watch=card_guard.watch if guarded_run else None)
     backend_execution.validate_cached_groups()
+    previous_progress = None
     for stage in _topological_stages(recipe):
         if stage.stage_id not in required_stages:
             continue
+        if progress is not None:
+            if previous_progress is not None:
+                previous_node = nodes[previous_progress]
+                progress(previous_progress, 'reused' if previous_node.reused else previous_node.status,
+                    previous_node.reason or '')
+            progress(stage.stage_id, 'running', '')
+            previous_progress = stage.stage_id
         _cancel(cancel)
         parameters = recipe.parameters_for_runner(stage.stage_id)
         incoming = [edge for edge in recipe.dependencies if edge.target_stage == stage.stage_id]
@@ -1512,6 +1529,11 @@ def run_native_recipe(recipe, gray, rgb, *, source_sha256, coordinate_frame,
             continue
         if stage.operation_id in ('analysis.color', 'analysis.size') and parameters.get('n_labels') is None:
             parameters['n_labels'] = int(inputs['labels'].max().item())
+        execution_parameters = parameters
+        foreground_roi = (working_workflow.foreground_regions.get(stage.stage_id)
+            if working_workflow is not None and stage.stage_id not in disabled else None)
+        if foreground_roi is not None:
+            parameters = {**parameters, 'foreground_region_bounds_xyxy': foreground_roi}
         calculation_parameters = parameters
         if stage.operation_id == 'external.plantcv.naive_bayes_pdf':
             calculation_parameters = {**parameters, 'model_source':
@@ -1584,7 +1606,7 @@ def run_native_recipe(recipe, gray, rgb, *, source_sha256, coordinate_frame,
             if stage.operation_id == _median_roi_recipe.OPERATION:
                 optional = (_median_roi_recipe.PARAMETER,)
             if stage.stage_id not in disabled:
-                _required_parameters(parameters, optional=optional)
+                _required_parameters(execution_parameters, optional=optional)
             if stage.stage_id in disabled:
                 from seedvision.pipeline.workflows import bypass_ports
                 outputs, status = {out: inputs[inp] for out, inp in bypass_ports(stage).items()}, 'bypassed'
@@ -1598,12 +1620,18 @@ def run_native_recipe(recipe, gray, rgb, *, source_sha256, coordinate_frame,
             elif stage.operation_id == 'external.plantcv.kmeans_centres':
                 outputs, status = {'model': selected_model, 'model_identity': selected_identity}, 'provided'
             elif selected_backend == 'plantcv':
-                outputs, backend_provenance, calculation = backend_execution.execute(stage, inputs, parameters, nodes)
+                outputs, backend_provenance, calculation = backend_execution.execute(stage, inputs, execution_parameters, nodes)
                 status = 'executed'
             else:
                 if stage.operation_id in ('analysis.color', 'analysis.size') and not 1 <= parameters['n_labels'] <= MAX_LABELS:
-                    raise NativeRecipeError('Analysis requires an actual object count in [1,128].')
-                outputs, status = _dispatch(stage.operation_id, inputs, parameters, cancel), 'executed'
+                    raise NativeRecipeError(f'Analysis requires an actual object count in [1,{MAX_LABELS}].')
+                outputs, status = _dispatch(stage.operation_id, inputs, execution_parameters, cancel), 'executed'
+            if foreground_roi is not None and stage.stage_id not in disabled:
+                from seedvision.pipeline.workflows import restrict_foreground
+                outputs['mask'] = restrict_foreground(outputs['mask'], foreground_roi)
+                backend_provenance = _freeze_json({**dict(backend_provenance or {}),
+                    'foreground_region_adapter': 'CUDA full-frame binary mask exclusion v1',
+                    'foreground_region_bounds_xyxy': foreground_roi}, name='foreground adapter provenance')
             if selected_backend == 'native':
                 calculation = _dispatch_calculation(stage.operation_id, outputs, parameters)
             if guarded_run:
@@ -1620,6 +1648,10 @@ def run_native_recipe(recipe, gray, rgb, *, source_sha256, coordinate_frame,
             if missing_outputs:
                 status = 'partial'
                 reason = 'Unavailable outputs: '+', '.join(missing_outputs)
+                details = getattr(outputs, 'unavailable_reasons', {})
+                for port in missing_outputs:
+                    if details.get(port):
+                        reason += f'; {port}: {details[port]}'
             node = NativeRecipeNode(stage.stage_id, stage.operation_id, status, MappingProxyType(outputs),
                 _freeze_json(parameters, name='resolved parameters'), MappingProxyType(input_keys), product_key,
                 reason=reason, calculation=calculation, backend=selected_backend,
@@ -1659,6 +1691,10 @@ def run_native_recipe(recipe, gray, rgb, *, source_sha256, coordinate_frame,
                 timing_recorder.stop(span, completed=False)
         nodes[stage.stage_id] = node
         timings[stage.stage_id] = time.perf_counter()-started
+    if progress is not None and previous_progress is not None:
+        previous_node = nodes[previous_progress]
+        progress(previous_progress, 'reused' if previous_node.reused else previous_node.status,
+            previous_node.reason or '')
     _cancel(cancel)
     if recovery_run or diagnostic_run or paper_run or range_run or calibrated_range or working_workflow is not None:
         # Caller callbacks have finished. Recheck the actual loaded calculation

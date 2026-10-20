@@ -21,7 +21,7 @@ from seedvision.pipeline import NodeStatus, ParameterSpec, PipelineConnection, P
 
 
 ANALYSIS_SETTINGS_FORMAT = "seedfiddle-analysis-settings"
-ANALYSIS_SETTINGS_VERSION = 22
+ANALYSIS_SETTINGS_VERSION = 23
 _LEGACY_ANALYSIS_SETTINGS_VERSIONS = frozenset(
     {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19}
 )
@@ -200,7 +200,7 @@ def analysis_settings_profile_from_payload(
     version = root["version"]
     if isinstance(version, bool) or not isinstance(version, int):
         raise InvalidAnalysisSettingsProfile("Profile version must be an integer.")
-    if version not in {*_LEGACY_ANALYSIS_SETTINGS_VERSIONS, 20, 21, ANALYSIS_SETTINGS_VERSION}:
+    if version not in {*_LEGACY_ANALYSIS_SETTINGS_VERSIONS, 20, 21, 22, ANALYSIS_SETTINGS_VERSION}:
         raise IncompatibleAnalysisSettingsProfile(
             f"Unsupported analysis-settings version {version}; this application "
             f"supports versions 1 through {ANALYSIS_SETTINGS_VERSION}."
@@ -683,6 +683,16 @@ def _prepare_analysis_settings(
                 for spec in trait_node.parameter_specs
             ),
         )
+    if canonical.version < 23 and 'image_selector' in expected_ids and 'image_selector' not in profile_by_id:
+        profile_by_id['image_selector'] = AnalysisNodeSettings('image_selector', True, True, False, ())
+    from seedvision.pipeline.project_context import CONTEXT_NODE_IDS, CONTEXT_CONNECTIONS
+    for identifier in CONTEXT_NODE_IDS & profile_by_id.keys():
+        saved = profile_by_id[identifier]
+        if canonical.version < 23:
+            from dataclasses import replace
+            profile_by_id[identifier] = replace(saved, active=True, enabled=True, connection_suspended=False)
+        elif not saved.active or not saved.enabled or saved.connection_suspended:
+            raise IncompatibleAnalysisSettingsProfile('Shared project nodes must remain active and enabled.')
     if canonical.version < 22 and 'trait_classifier' not in profile_by_id:
         classifier = catalogue['trait_classifier']
         profile_by_id['trait_classifier'] = AnalysisNodeSettings(
@@ -895,6 +905,9 @@ def _prepare_analysis_settings(
         if canonical.version in _LEGACY_ANALYSIS_SETTINGS_VERSIONS
         else {}
     )
+    if canonical.version < 23:
+        connected_by_key.update({_connection_key(edge): True for edge in CONTEXT_CONNECTIONS
+                                 if _connection_key(edge) in template_by_key})
     for connection in canonical.connections:
         source = connection.source
         source_port = connection.source_port
@@ -959,13 +972,19 @@ def _prepare_analysis_settings(
                 and connection.target_port == "annotations"
             ):
                 continue
+        if canonical.version < 23 and source == 'project' and source_port == 'raw_image':
+            source = 'image_selector'
         key = (
             source,
             source_port,
             target,
             target_port,
         )
-        if key in template_by_key:
+        if key in {_connection_key(edge) for edge in getattr(graph, 'fixed_connections', ())}:
+            if canonical.version >= 23 and not connection.connected:
+                raise IncompatibleAnalysisSettingsProfile('Shared project and image-selection connections are required.')
+            connected_by_key[key] = True
+        elif key in template_by_key:
             connected_by_key[key] = bool(connection.connected)
         else:
             # Keep an unrecognised endpoint so the catalogue comparison below

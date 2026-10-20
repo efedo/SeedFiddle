@@ -228,6 +228,7 @@ class _ManualSeedCentreState:
         object.__setattr__(self, "mode", str(self.mode))
 VIEWER_NODE_MODES = {
     "project": "raw_image",
+    "image_selector": "raw_image",
     "ruler_detection": "ruler_detection",
     "deskew_colour": "deskew_colour",
     "layout_detection": "layout_detection",
@@ -272,7 +273,7 @@ NON_SELECTABLE_OVERLAY_MODES = frozenset(
 )
 
 OVERLAY_NODE_OWNERS = {
-    "raw_image": "project",
+    "raw_image": "image_selector",
     "calibrated_image": "ruler_detection",
     "deskew_colour": "deskew_colour",
     "colour_reference": "deskew_colour",
@@ -1442,6 +1443,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.image_list = QListWidget(self)
         self.image_list.setAlternatingRowColors(True)
         self.image_list.itemActivated.connect(self._open_list_item)
+        self.pipeline_inspector.image_selection_requested.connect(self._select_pipeline_image)
+        self.pipeline_inspector.species_library_requested.connect(self._open_species_library_manager)
         self._image_list_delegate = _ImageListDelegate(self.image_list)
         self._image_list_delegate.remove_requested.connect(
             lambda filename: self._remove_image(Path(filename))
@@ -1686,29 +1689,17 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         return "\n".join(lines)
 
     def _refresh_project_node(self) -> None:
-        """Synchronize the sole graph root and its right-pane information."""
-
-        if not hasattr(self, "pipeline") or not self.pipeline.is_active("project"):
+        """Synchronize project context in every active workflow."""
+        if not hasattr(self, "pipeline_inspector") or not hasattr(self, "pipeline_canvas"):
             return
-        path = getattr(getattr(self, "image_view", None), "image_path", None)
-        self.pipeline.set_status(
-            "project",
-            NodeStatus.COMPLETE if path is not None else NodeStatus.WARNING,
-            (
-                f"{Path(path).name}; {len(self._image_paths):,} project image(s)"
-                if path is not None
-                else "No image selected"
-            ),
-        )
-        if hasattr(self, "pipeline_inspector"):
-            self.pipeline_inspector.set_project_summary(
-                self._project_summary_text()
-            )
-            if self._selected_pipeline_node == "project":
-                self.pipeline_inspector.refresh_status()
-        if hasattr(self, "pipeline_canvas"):
-            self.pipeline_canvas.refresh(("project",))
+        from seedvision.ui.project_context import refresh_project_context
+        refresh_project_context(self)
 
+    def _select_pipeline_image(self, index: int) -> None:
+        item = self.image_list.item(index) if index >= 0 else None
+        if item is not None:
+            self._open_list_item(item)
+        self._refresh_project_node()
 
     def _correction_project_state(self):
         selected = self.image_view.image_path
@@ -3190,27 +3181,29 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         )
 
         self.export_learning_sample_action = QAction(
-            "Export applied labels to learning dataset…", self
+            "Add image and seed labels to training dataset…", self
         )
         self.export_learning_sample_action.setEnabled(False)
+        self.export_learning_sample_action.setToolTip(
+            "Run analysis, apply seed labels, and review complete connected outlines first. "
+            "This action adds dataset files; training is a separate Learning action.")
         self.export_learning_sample_action.triggered.connect(
             self._export_learning_sample
         )
 
         self.load_instance_labels_action = QAction(
-            "Load matching seed reference as draft…", self
+            "Import bundled seed labels…", self
         )
         self.load_instance_labels_action.setEnabled(False)
         self.load_instance_labels_action.setToolTip(
-            "Use saved applied seed labels first, then the source-bound bundled "
-            "pre-annotation. If neither exists, choose a corrected-coordinate "
-            "mask file. Replacements remain undoable drafts."
+            "Import source-bound bundled seed labels as an undoable draft. "
+            "Review the outlines and apply the draft to use it in analysis."
         )
         self.load_instance_labels_action.triggered.connect(
             self._load_instance_reference_mask
         )
         self.choose_instance_labels_action = QAction(
-            "Choose seed-instance mask file as draft…", self
+            "Import seed labels from file…", self
         )
         self.choose_instance_labels_action.setEnabled(False)
         self.choose_instance_labels_action.setToolTip(
@@ -3221,9 +3214,12 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             self._choose_instance_mask_file
         )
         self.save_instance_labels_action = QAction(
-            "Save applied seed-label mask…", self
+            "Export seed labels…", self
         )
         self.save_instance_labels_action.setEnabled(False)
+        self.save_instance_labels_action.setToolTip(
+            "Export applied seed labels as a full-resolution 16-bit PNG in corrected-image coordinates. "
+            "Apply drafts before exporting their changes.")
         self.save_instance_labels_action.triggered.connect(
             self._save_instance_labels
         )
@@ -3596,6 +3592,10 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
     def _rebuild_overlay_menu(self, selected_mode: str) -> None:
         """Expose overlays as node submenus so ownership stays obvious."""
 
+        presenter = getattr(self, 'pipeline_workflow', None)
+        if presenter is not None and presenter.active:
+            presenter.display.rebuild_menu()
+            return
         self.overlay_menu.clear()
         grouped: dict[str, list[tuple[str, str]]] = {}
         for label, mode in self._active_overlay_entries():
@@ -4358,18 +4358,17 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         metadata_layout.addWidget(self.seed_shape_status_label)
 
         self.load_instance_reference_button = QPushButton(
-            "Load matching reference", self.instance_annotation_controls
+            "Import bundled seed labels…", self.instance_annotation_controls
         )
         self.load_instance_reference_button.setToolTip(
-            "Use the saved applied seed mask for this image when available. "
-            "Otherwise load its source-bound bundled pre-annotation; if neither "
-            "exists, choose a file. Replacements are undoable drafts."
+            "Import source-bound bundled seed labels as an undoable draft. "
+            "Review and apply the draft to use it in analysis."
         )
         self.load_instance_reference_button.clicked.connect(
             self._load_instance_reference_mask
         )
         self.choose_instance_mask_button = QPushButton(
-            "Choose mask file…", self.instance_annotation_controls
+            "Import seed labels from file…", self.instance_annotation_controls
         )
         self.choose_instance_mask_button.setToolTip(
             "Explicitly choose a full-resolution corrected-coordinate PNG, TIFF, "
@@ -5210,8 +5209,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             self.reference_association_label
         )
         details_layout.addWidget(self.reference_association_scroll, 1)
-        self.default_pipeline_details = (activity_heading, self.analysis_activity_label,
-            association_heading, self.reference_association_scroll, self.overlay_legend_label)
+        self.default_pipeline_details = (self.overlay_legend_label,)
         return panel
 
     def _build_metadata_panel(self) -> QScrollArea:
@@ -5543,6 +5541,13 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         """Keep long or superseded work visible even between node boundaries."""
 
         if not hasattr(self, "analysis_activity_label"):
+            return
+        presenter = getattr(self, 'pipeline_workflow', None)
+        if presenter is not None and presenter.active:
+            text = presenter.activity or 'Ready to run the selected pipeline.'
+            if presenter._started_at is not None:
+                text += f'\nElapsed: {max(0, monotonic() - presenter._started_at):.0f}s'
+            self.analysis_activity_label.setText(text)
             return
         if not self._analysis_activities:
             self.analysis_activity_label.setText(
@@ -6469,6 +6474,12 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
     @Slot(str)
     def _run_pipeline_to_node(self, node_id: str) -> None:
         """Execute the selected active node with only its enabled ancestors."""
+        from seedvision.pipeline.project_context import CONTEXT_NODE_IDS
+        if node_id in CONTEXT_NODE_IDS:
+            self._context_library_key = None
+            self._refresh_project_node()
+            self.statusBar().showMessage('Project inputs are synchronized with the current image.')
+            return
         if self.catalogue_nodes.handles(node_id):
             self.catalogue_nodes.run(node_id)
             return
@@ -8817,9 +8828,12 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             "Draft changed. Apply + save when complete; downstream calculations and "
             "the saved file still use the previous annotations."
             if annotations_dirty
-            else "Applied annotations are already saved in the canonical per-image "
-            "sidecar and constrain the instance branch. Save Project separately to "
-            "refresh the master file's recorded sidecar digest and project settings."
+            else "Applied seed labels are in memory, but their disk save failed. Save Project to retry."
+            if key in self._unsaved_reference_sidecars
+            else "Applied seed labels are saved in the per-image sidecar and used by analysis. "
+            "Save Project separately to record the sidecar digest and project settings."
+            if np.any(self._applied_instance_annotations.get(key, np.zeros(0, dtype=np.uint16)))
+            else "No seed labels are applied. Import or paint labels, review them, then apply the draft."
         )
         self._sync_reference_undo_controls(
             key, has_result=has_result, running=running
@@ -8911,6 +8925,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
     @Slot(bool)
     def _background_toolbar_editing_changed(self, enabled: bool) -> None:
         if enabled:
+            if not self._prepare_workflow_annotation_editor():
+                return
             target = (
                 self.background_point_button
                 if self.background_point_button.isEnabled()
@@ -8927,6 +8943,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
 
     @Slot(bool)
     def _background_point_editing_changed(self, enabled: bool) -> None:
+        if enabled and not self._prepare_workflow_annotation_editor():
+            return
         with QSignalBlocker(self.paint_background_action):
             self.paint_background_action.setChecked(enabled)
         if enabled:
@@ -8967,6 +8985,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
 
     @Slot(bool)
     def _foreground_point_editing_changed(self, enabled: bool) -> None:
+        if enabled and not self._prepare_workflow_annotation_editor():
+            return
         with QSignalBlocker(self.paint_background_action):
             self.paint_background_action.setChecked(enabled)
         if enabled:
@@ -9007,6 +9027,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
 
     @Slot(bool)
     def _background_exclusion_editing_changed(self, enabled: bool) -> None:
+        if enabled and not self._prepare_workflow_annotation_editor():
+            return
         with QSignalBlocker(self.paint_background_action):
             self.paint_background_action.setChecked(enabled)
         if enabled:
@@ -9041,6 +9063,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
 
     @Slot(bool)
     def _foreground_exclusion_editing_changed(self, enabled: bool) -> None:
+        if enabled and not self._prepare_workflow_annotation_editor():
+            return
         if enabled:
             for button in (
                 self.background_point_button,
@@ -9074,6 +9098,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
 
     @Slot(bool)
     def _physical_edge_editing_changed(self, enabled: bool) -> None:
+        if enabled and not self._prepare_workflow_annotation_editor():
+            return
         if enabled:
             for button in (
                 self.background_point_button,
@@ -9103,6 +9129,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
 
     @Slot(bool)
     def _non_edge_editing_changed(self, enabled: bool) -> None:
+        if enabled and not self._prepare_workflow_annotation_editor():
+            return
         if enabled:
             for button in (
                 self.background_point_button,
@@ -9133,6 +9161,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
 
     @Slot(bool)
     def _instance_annotation_editing_changed(self, enabled: bool) -> None:
+        if enabled and not self._prepare_workflow_annotation_editor():
+            return
         if enabled:
             with QSignalBlocker(self.background_point_button):
                 self.background_point_button.setChecked(False)
@@ -9168,6 +9198,10 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         else:
             self.statusBar().showMessage("Seed instance annotation finished.")
         self._sync_reference_panel_visibility()
+
+    def _prepare_workflow_annotation_editor(self):
+        presenter = getattr(self, 'pipeline_workflow', None)
+        return presenter is None or not presenter.active or presenter.display.show_annotations()
 
     @Slot(int)
     def _reference_brush_radius_changed(self, radius: int) -> None:
@@ -9532,7 +9566,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         species_id = self._current_seed_trait_species_id() or "unknown"
         key = self._current_image_key() if path is None else _path_identity(path)
         image_context = self._project_image_biological_contexts.get(key)
-        if image_context is not None and image_context.species_id == species_id:
+        if image_context is not None and (path is not None or image_context.species_id == species_id):
             return image_context
         current = self._project_biological_context
         if current is not None and current.species_id == species_id:
@@ -9542,7 +9576,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
     def _resolved_species_library_for_current_image(self, path: Path):
         return self._species_library_service.resolve(
             self._project_species_library_pin,
-            context=self._effective_biological_context(),
+            context=self._effective_biological_context(path),
             current_source_sha256=file_sha256(path),
             trait_vocabulary_sha256=file_sha256(
                 self._root / "config" / "traits.json"
@@ -10482,11 +10516,34 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 "Run the analysis and apply at least one complete seed-instance mask first.",
             )
             return
+        from seedvision.annotation.eligibility import eligible_instances
+        annotations = tuple(self._applied_seed_annotations.get(key, {}).values())
+        eligible = eligible_instances(labels, annotations)
+        applied_ids = set(np.unique(labels)) - {0}
+        eligible_ids = set(np.unique(eligible)) - {0}
+        excluded_ids = sorted(applied_ids - eligible_ids)
+        draft = key in self._instance_annotations_dirty or key in self._reference_masks_dirty
+        readiness = (f'{len(eligible_ids)} complete, shape-reviewed seed outline(s); '
+            f'{len(excluded_ids)} excluded; ' + ('unapplied draft present.' if draft else 'no unapplied draft.'))
+        if excluded_ids or draft:
+            QMessageBox.warning(self, "Training dataset export is not ready", readiness + "\n\n"
+                + ("Review complete connected outlines and clear shape exclusions for seed IDs: "
+                    + ', '.join(map(str, excluded_ids)) + '.\n' if excluded_ids else '')
+                + ("Apply or discard the draft first.\n" if draft else '')
+                + "No seeds were exported or silently omitted.")
+            return
         identifier_base = path.stem
         identifier = identifier_base
         revision = 1
         destination = self._root / "learning-data"
-        while (destination / f"{identifier}.features.npz").exists():
+        manifest_path = destination / "manifest.json"
+        try:
+            from seedvision.learning.data import LearningManifest
+            existing = {sample.identifier for sample in LearningManifest.load(manifest_path).samples} if manifest_path.is_file() else set()
+        except Exception as error:
+            QMessageBox.warning(self, "Invalid training dataset manifest", str(error))
+            return
+        while identifier in existing or (destination / '.learning-revisions' / identifier).exists():
             revision += 1
             identifier = f"{identifier_base}_r{revision}"
         dialog = LearningExportDialog(
@@ -10496,6 +10553,10 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             default_revision=str(revision),
             parent=self,
         )
+        summary = QLabel(readiness + "\nThis adds a normalized image crop, input features, seed labels, "
+            "derived boundary targets, and a manifest entry. Training is a separate Learning action.", dialog)
+        summary.setWordWrap(True)
+        dialog.layout().insertWidget(1, summary)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         options = dialog.options()
@@ -10527,8 +10588,10 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             return
         QMessageBox.information(
             self,
-            "Learning sample exported",
-            f"Exported {sample.identifier} to:\n{options.manifest_path}\n\n"
+            "Added to training dataset",
+            f"Added {sample.identifier} to:\n{options.manifest_path}\n\n"
+            "Saved the normalized crop, features, seed labels, derived boundary targets, and manifest. "
+            "Use Train or refine in Learning to train a model.\n\n"
             + (
                 "This sample is reviewed and eligible for its assigned split."
                 if sample.reviewed
@@ -10545,7 +10608,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             return
         selected, _ = QFileDialog.getSaveFileName(
             self,
-            "Save full-resolution seed-label mask",
+            "Export full-resolution applied seed labels",
             str(path.with_name(path.stem + ".seedlabels.png")),
             "16-bit label PNG (*.png)",
         )
@@ -10554,6 +10617,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         try:
             from seedvision.learning.data import write_label_image
 
+            if Path(selected).suffix.lower() != '.png':
+                raise ValueError('Choose a .png filename for lossless 16-bit seed labels.')
             destination = write_label_image(selected, labels)
         except Exception as error:  # noqa: BLE001 - user-facing file boundary
             QMessageBox.critical(self, "Could not save seed labels", str(error))
@@ -10570,7 +10635,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             QMessageBox.warning(
                 self,
                 "Analysis required",
-                "Run the analysis before loading seed-instance references. "
+                "Run the analysis before importing seed labels. "
                 "The editor stores labels in corrected-image coordinates.",
             )
             return None
@@ -10581,43 +10646,12 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
 
     @Slot()
     def _load_instance_reference_mask(self) -> None:
-        """Prefer applied seed labels before the bundled pre-annotation."""
+        """Import only the source-bound bundled seed labels as a draft."""
 
         context = self._instance_mask_import_context()
         if context is None:
             return
         image_path, result, corrected_shape = context
-        key = self._current_image_key()
-        applied = self._applied_instance_annotations.get(key or "")
-        if applied is not None:
-            if tuple(applied.shape) != corrected_shape:
-                QMessageBox.warning(
-                    self,
-                    "Saved seed reference does not match",
-                    "The applied seed mask has different dimensions from the "
-                    "current corrected image. No annotation was loaded.",
-                )
-                return
-            imported = ImportedInstanceMask(
-                labels=applied,
-                source_path=self._reference_region_store.path_for(image_path),
-                coordinate_space="corrected",
-                origin=self._applied_instance_annotation_origins.get(key, "manual"),
-            )
-            if self._install_imported_instance_mask(imported,
-                generation_source=self._reference_source_identities.get(key, (None, None))[1]):
-                self._draft_seed_annotations[key] = dict(
-                    self._applied_seed_annotations.get(key, {})
-                )
-                self._draft_seed_annotation_species[key] = (
-                    self._applied_seed_annotation_species.get(key, "")
-                )
-                self._reconcile_instance_draft(key)
-                self._sync_background_controls()
-                self.statusBar().showMessage(
-                    "Loaded the saved applied seed annotations as an undoable draft."
-                )
-            return
         from seedvision.export.preflight_outcomes import begin_preflight
         attempt = begin_preflight(image_path, 'image', 'desktop_bundled_reference_import')
         try:
@@ -10630,17 +10664,18 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             )
         except Exception as error:
             diagnostic = self._desktop_rejection(attempt, error)
-            QMessageBox.critical(self, "Could not load bundled seed references", diagnostic)
+            QMessageBox.critical(self, "Could not import bundled seed labels", diagnostic)
             return
 
         if imported is None:
-            self._choose_instance_mask_file()
+            QMessageBox.information(self, "No bundled seed labels", "No bundled seed labels match this image. "
+                "Use Import seed labels from file… to choose a corrected-image PNG, TIFF, or NPZ.")
             return
         self._install_imported_instance_mask(imported)
 
     @Slot()
     def _choose_instance_mask_file(self) -> None:
-        """Explicitly import a corrected-coordinate file, bypassing the bundle."""
+        """Import an exact-size corrected-image label file as a draft."""
 
         context = self._instance_mask_import_context()
         if context is None:
@@ -10648,7 +10683,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         image_path, _result, corrected_shape = context
         selected, _ = QFileDialog.getOpenFileName(
             self,
-            "Choose full-resolution seed-instance mask",
+            f"Import seed labels ({corrected_shape[1]} x {corrected_shape[0]}; corrected-image coordinates)",
             str(image_path.parent),
             "Lossless categorical masks (*.png *.tif *.tiff *.npz)",
         )
@@ -10660,12 +10695,12 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             imported = load_corrected_instance_mask(selected, corrected_shape)
         except Exception as error:
             diagnostic = self._desktop_rejection(attempt, error)
-            QMessageBox.critical(self, "Could not load seed-instance mask", diagnostic)
+            QMessageBox.critical(self, "Could not import seed labels", diagnostic)
             return
         self._install_imported_instance_mask(imported)
 
     # Compatibility for callers and tests written before the seed-reference
-    # button exposed the safer bundled-first path.
+    # button exposed the explicit bundled importer.
     def _load_instance_labels(self) -> None:
         self._load_instance_reference_mask()
 
@@ -10682,15 +10717,15 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         before_origin = self._instance_reference_origin(key)
         if np.array_equal(before[0], labels):
             self.statusBar().showMessage(
-                "The selected seed-instance mask is already the current draft."
+                "The selected seed labels are already the current draft."
             )
             return False
         if np.any(before[0]):
             answer = QMessageBox.question(
                 self,
-                "Replace seed-instance draft",
-                "This replaces the current seed-instance draft with the loaded "
-                "reference mask. The replacement is undoable until Apply + save. "
+                "Replace seed-label draft",
+                "This replaces the current seed-label draft with the imported "
+                "seed labels. The replacement is undoable until you apply the draft. "
                 "Continue?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
@@ -10699,7 +10734,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 return False
         if not self._record_instance_undo(
             key,
-            "imported seed-instance reference mask",
+            "imported seed labels",
             before,
             (labels,),
             before_origin=before_origin,
@@ -10729,7 +10764,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             else f", including {imported.external_reference_count:,} external reference(s)"
         )
         self.statusBar().showMessage(
-            f"Loaded {imported.instance_count:,} seed ID(s){external} as an "
+            f"Imported {imported.instance_count:,} seed ID(s){external} as an "
             f"undoable draft ({review_text}). IDs were preserved exactly."
         )
         return True
@@ -12207,6 +12242,14 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
     @Slot(int)
     def _overlay_changed(self, index: int) -> None:
         del index
+        presenter = getattr(self, 'pipeline_workflow', None)
+        if presenter is not None and presenter.active:
+            # Default-pipeline overlay selections made by annotation tools must
+            # stay in the explicitly selected calibrated editor.
+            if presenter.display.mode == 'annotations':
+                self.image_view.set_overlay_mode('calibrated_image')
+            presenter.display.sync_controls()
+            return
         mode = str(self.overlay_combo.currentData())
         self._rebuild_overlay_menu(mode)
         if not self._installing_project:
@@ -12264,6 +12307,10 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
     @Slot(int)
     def _overlay_opacity_changed(self, value: int) -> None:
         self.overlay_opacity_label.setText(f"{value}%")
+        presenter = getattr(self, 'pipeline_workflow', None)
+        if presenter is not None and presenter.active:
+            presenter.display.set_opacity(value)
+            return
         self.image_view.set_overlay_opacity(value / 100.0)
 
     @Slot(int)
@@ -13783,6 +13830,9 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._selected_pipeline_node = node_id
         if selection_changed and not self._installing_project:
             self._set_project_dirty()
+        if node_id == 'species_reference_library':
+            self._context_library_key = None
+        self._refresh_project_node()
         self.pipeline_inspector.set_node(self.pipeline.node(node_id))
         if hasattr(self, "pipeline_backends"):
             self.pipeline_backends.refresh()
@@ -14289,7 +14339,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             if key is not None:
                 self._cache_dirty_nodes.setdefault(key, set()).update(affected)
                 self._analyses.pop(key, None)
-                if key in self._analysis_caches:
+                if key in self._analysis_caches and not self.pipeline_workflow.active:
                     self._analyze_current_image(dirty_nodes=affected)
         self.pipeline_canvas.refresh(("metadata", *affected))
 
@@ -14338,7 +14388,9 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             self.pipeline_inspector.set_optimization_context(
                 ready=bool(self._project_tracking_enabled and self._current_project_path
                     and (self._applied_instance_annotations or self._applied_foreground_reference_masks
-                         or self._applied_background_reference_masks or self._optimization_targets
+                         or self._applied_background_reference_masks or self._applied_background_exclusion_masks
+                         or self._applied_foreground_exclusion_masks or self._applied_physical_edge_reference_masks
+                         or self._applied_non_edge_reference_masks or self._optimization_targets
                          or self._current_project_path.with_suffix('.optimization-targets.json').exists())),
                 busy=running,
             )
@@ -14364,6 +14416,10 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
 
         if getattr(self, 'pipeline_workflow', None) is not None:
             self.pipeline_workflow.sync_buttons()
+            presenter = self.pipeline_workflow
+            display = getattr(presenter, 'display', None)
+            if presenter.active and display is not None:
+                display.sync_controls()
 
     def _show_pipeline_workspace(self) -> None:
         self.pipeline_workspace_action.setChecked(True)

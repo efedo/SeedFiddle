@@ -113,7 +113,7 @@ class InstanceMaskImportUiTests(unittest.TestCase):
         self.assertFalse(self.window.show_instance_annotations_checkbox.isChecked())
         self.assertEqual(
             self.window._instance_undo_histories[self.key].next_label,
-            "imported seed-instance reference mask",
+            "imported seed labels",
         )
         self.assertIn(
             "1 seed ID has disconnected areas: 7",
@@ -130,88 +130,35 @@ class InstanceMaskImportUiTests(unittest.TestCase):
         self.assertEqual(len(self.window._instance_undo_histories[self.key]),0)
         self.assertTrue(self.window._instance_undo_histories[self.key].can_redo)
 
-    def check_test_saved_manual_mask_takes_priority_over_bundled_pre_annotation(self) -> None:
+    def check_test_bundle_import_is_explicit_and_preserves_applied_labels(self) -> None:
         from PySide6.QtWidgets import QMessageBox
-
-        bundled = np.zeros((60, 80), np.uint16)
-        bundled[5:15, 8:20] = 1
-        with patch(
-            "seedvision.ui.main_window.load_bundled_instance_mask",
-            return_value=self._imported(bundled),
-        ) as bundle_loader:
-            self.window._load_instance_reference_mask()
-        bundle_loader.assert_called_once()
-        with patch.object(self.window, "_analyze_current_image"):
-            self.window._apply_instance_annotations()
-
-        manual = bundled.copy()
-        manual[5:15, 8:20] = 0
-        manual[24:38, 31:47] = 1
-        self.window._set_instance_draft_state(self.key, manual, "manual:corrected")
-        self.window.image_view.set_instance_annotations(
-            manual, copy=False, render=False
-        )
-        with patch.object(self.window, "_analyze_current_image"):
-            self.window._apply_instance_annotations()
-        self.window._analyses[self.key] = self.result
-        saved = self.window._reference_region_store.load_if_present(
-            self.image_path, expected_shape=manual.shape
-        )
-        self.assertIsNotNone(saved)
-        np.testing.assert_array_equal(saved.annotated_seeds, manual)
-
-        with patch(
-            "seedvision.ui.main_window.load_bundled_instance_mask",
-            return_value=self._imported(bundled),
-        ) as bundle_loader:
-            self.window._load_instance_reference_mask()
-        bundle_loader.assert_not_called()
-        np.testing.assert_array_equal(
-            self.window._applied_instance_annotations[self.key], manual
-        )
-        self.assertNotIn(self.key, self.window._instance_annotations_dirty)
-
-        changed = manual.copy()
-        changed[42:48, 58:65] = 2
-        self.window._set_instance_draft_state(self.key, changed, "manual:unsaved")
-        with patch(
-            "seedvision.ui.main_window.load_bundled_instance_mask",
-            return_value=self._imported(bundled),
-        ) as bundle_loader, patch.object(
-            QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes
-        ):
-            self.window._load_instance_reference_mask()
-        bundle_loader.assert_not_called()
-        np.testing.assert_array_equal(
-            self.window.image_view.instance_annotations(), manual
-        )
-        self.window._undo_instance_reference_edit()
-        np.testing.assert_array_equal(
-            self.window.image_view.instance_annotations(), changed
-        )
-
-    def check_test_no_bundle_falls_back_to_npz_file_chooser(self) -> None:
-        labels = np.zeros((60, 80), dtype=np.uint16)
-        labels[5:20, 8:24] = 31_777
-        selected = self.root / "manual.npz"
-        np.savez_compressed(selected, annotated_seeds=labels)
-
-        with patch(
-            "seedvision.ui.main_window.load_bundled_instance_mask",
-            return_value=None,
-        ), patch(
-            "seedvision.ui.main_window.QFileDialog.getOpenFileName",
-            return_value=(str(selected), "Lossless categorical masks"),
-        ):
+        applied = np.zeros((60, 80), np.uint16)
+        applied[5:15, 8:20] = 1
+        bundled = np.zeros_like(applied)
+        bundled[24:38, 31:47] = 9
+        self.window._applied_instance_annotations[self.key] = applied
+        self.window._set_instance_draft_state(self.key, applied, 'manual')
+        with patch('seedvision.ui.main_window.load_bundled_instance_mask',
+                   return_value=self._imported(bundled)) as loader, \
+             patch.object(QMessageBox, 'question', return_value=QMessageBox.StandardButton.Yes):
             self.window.load_instance_labels_action.trigger()
+        loader.assert_called_once()
+        np.testing.assert_array_equal(self.window._applied_instance_annotations[self.key], applied)
+        np.testing.assert_array_equal(self.window._draft_instance_annotations[self.key], bundled)
+        self.assertIn(self.key, self.window._instance_annotations_dirty)
+        self.window._undo_instance_reference_edit()
+        np.testing.assert_array_equal(self.window._draft_instance_annotations.get(
+            self.key, self.window._applied_instance_annotations[self.key]), applied)
 
-        self.assertTrue(
-            np.array_equal(self.window._draft_instance_annotations[self.key], labels)
-        )
-        self.assertEqual(
-            self.window._draft_instance_annotation_origins[self.key],
-            f"import:{selected.resolve()}",
-        )
+    def check_test_no_bundle_explains_explicit_file_import(self) -> None:
+        from PySide6.QtWidgets import QMessageBox
+        with patch('seedvision.ui.main_window.load_bundled_instance_mask', return_value=None), \
+             patch('seedvision.ui.main_window.QFileDialog.getOpenFileName') as chooser, \
+             patch.object(QMessageBox, 'information') as information:
+            self.window.load_instance_labels_action.trigger()
+        chooser.assert_not_called()
+        self.assertIn('Import seed labels from file', information.call_args.args[2])
+        self.assertNotIn(self.key, self.window._instance_annotations_dirty)
 
     def check_test_explicit_file_chooser_bypasses_an_available_bundle(self) -> None:
         bundled_labels = np.zeros((60, 80), dtype=np.uint16)
@@ -243,7 +190,7 @@ class InstanceMaskImportUiTests(unittest.TestCase):
         self.assertIn(self.key, self.window._instance_annotations_dirty)
         self.assertEqual(
             self.window._instance_undo_histories[self.key].next_label,
-            "imported seed-instance reference mask",
+            "imported seed labels",
         )
 
     def check_test_validation_failure_warns_without_mutating_draft_or_history(self) -> None:
@@ -299,12 +246,96 @@ class InstanceMaskImportUiTests(unittest.TestCase):
         )
         self.assertNotIn(self.key, self.window._instance_undo_histories)
 
+    def check_test_training_export_readiness_and_revision_identity(self) -> None:
+        from PySide6.QtWidgets import QDialog, QMessageBox
+        from seedvision.persistence.reference_regions import SeedInstanceAnnotation
+        from seedvision.learning.data import LearningManifest, LearningSample
+        from seedvision.learning.contracts import FeatureStackSpec
+        labels = np.zeros((60, 80), np.uint16)
+        labels[10:20, 10:20] = 4
+        labels[30:40, 30:40] = 8
+        self.window._applied_instance_annotations[self.key] = labels
+        self.window._applied_seed_annotations[self.key] = {
+            4: SeedInstanceAnnotation(4, shape_reviewed=True, outline_visibility='complete')}
+        with patch.object(QMessageBox, 'warning') as warning, \
+             patch('seedvision.ui.main_window.LearningExportDialog') as dialog:
+            self.window._export_learning_sample()
+        dialog.assert_not_called()
+        self.assertIn('1 excluded', warning.call_args.args[2])
+        self.assertIn('8', warning.call_args.args[2])
+        self.window._applied_seed_annotations[self.key][8] = SeedInstanceAnnotation(
+            8, shape_reviewed=True, outline_visibility='complete')
+        self.window._instance_annotations_dirty.add(self.key)
+        with patch.object(QMessageBox, 'warning') as warning:
+            self.window._export_learning_sample()
+        self.assertIn('unapplied draft', warning.call_args.args[2])
+        self.window._instance_annotations_dirty.clear()
+        destination = self.root / 'learning-data'
+        manifest = LearningManifest('test', FeatureStackSpec(), (
+            LearningSample('capture', '', '', '', 'g', 'train', False),))
+        manifest.save(destination / 'manifest.json')
+        (destination / '.learning-revisions' / 'capture_r2').mkdir(parents=True)
+        from seedvision.ui.learning_workflow import LearningExportDialog
+        with patch('seedvision.ui.main_window.LearningExportDialog', wraps=LearningExportDialog) as constructor, \
+             patch.object(QDialog, 'exec', return_value=QDialog.DialogCode.Rejected):
+            self.window._export_learning_sample()
+        self.assertEqual(constructor.call_args.kwargs['default_identifier'], 'capture_r3')
+        self.assertEqual(constructor.call_args.kwargs['default_revision'], '3')
+        def reviewed_dialog(**kwargs):
+            dialog = LearningExportDialog(**kwargs)
+            dialog.group_edit.setText('capture-group')
+            dialog.author_edit.setText('Reviewer')
+            dialog.reviewed_checkbox.setChecked(True)
+            dialog.species_reviewed_checkbox.setChecked(True)
+            return dialog
+        with patch('seedvision.ui.main_window.LearningExportDialog', side_effect=reviewed_dialog), \
+             patch.object(QDialog, 'exec', return_value=QDialog.DialogCode.Accepted), \
+             patch('seedvision.learning.export.export_analysis_sample', return_value=SimpleNamespace(
+                 identifier='capture_r3', reviewed=True)) as exporter, \
+             patch('seedvision.ui.main_window.run_persistence', side_effect=lambda parent, call, text: call()), \
+             patch.object(QMessageBox, 'information') as information:
+            self.window._export_learning_sample()
+        exporter.assert_called_once()
+        self.assertIs(exporter.call_args.args[0], self.result)
+        np.testing.assert_array_equal(exporter.call_args.args[1], labels)
+        self.assertTrue(exporter.call_args.kwargs['reviewed'])
+        self.assertEqual(exporter.call_args.kwargs['annotation_author'], 'Reviewer')
+        self.assertIn('Train or refine', information.call_args.args[2])
+
+    def check_test_seed_label_export_uses_applied_16_bit_labels(self) -> None:
+        import cv2
+        from PySide6.QtWidgets import QFileDialog
+        applied = np.zeros((60, 80), np.uint16)
+        applied[10:20, 10:20] = 31777
+        draft = applied.copy()
+        draft[30:40, 30:40] = 42
+        self.window._applied_instance_annotations[self.key] = applied
+        self.window._draft_instance_annotations[self.key] = draft
+        invalid = self.root / 'lossy.jpg'
+        from PySide6.QtWidgets import QMessageBox
+        with patch.object(QFileDialog, 'getSaveFileName', return_value=(str(invalid), '')), \
+             patch.object(QMessageBox, 'critical') as warning:
+            self.window._save_instance_labels()
+        self.assertFalse(invalid.exists())
+        self.assertIn('lossless 16-bit', warning.call_args.args[2])
+        destination = self.root / 'export.png'
+        with patch.object(QFileDialog, 'getSaveFileName', return_value=(str(destination), '')):
+            self.window._save_instance_labels()
+        loaded = cv2.imread(str(destination), cv2.IMREAD_UNCHANGED)
+        self.assertEqual(loaded.dtype, np.uint16)
+        np.testing.assert_array_equal(loaded, applied)
+        self.window._unsaved_reference_sidecars.add(self.key)
+        self.window._sync_background_controls()
+        self.assertIn('disk save failed', self.window.instance_annotation_confirmation_label.text())
+
     def test_workflow_lifecycle(self):
-        """4 related InstanceMaskImportUiTests scenarios, each with private fixture state."""
+        """6 related InstanceMaskImportUiTests scenarios, each with private fixture state."""
         self.scenario(self.check_test_panel_import_is_draft_with_provenance_warning_and_undo)
-        self.scenario(self.check_test_saved_manual_mask_takes_priority_over_bundled_pre_annotation)
-        self.scenario(self.check_test_no_bundle_falls_back_to_npz_file_chooser)
+        self.scenario(self.check_test_bundle_import_is_explicit_and_preserves_applied_labels)
+        self.scenario(self.check_test_no_bundle_explains_explicit_file_import)
         self.scenario(self.check_test_explicit_file_chooser_bypasses_an_available_bundle)
+        self.scenario(self.check_test_training_export_readiness_and_revision_identity)
+        self.scenario(self.check_test_seed_label_export_uses_applied_16_bit_labels)
 
     def test_validation_and_recovery(self):
         """2 related InstanceMaskImportUiTests scenarios, each with private fixture state."""

@@ -42,8 +42,9 @@ MAX_NMS_ROUNDS = 4_096
 # It is a source-window/vector estimate, not elapsed time or GPU instructions.
 MAX_NMS_SAMPLE_VISITS = 64_000_000_000
 MAX_ESTIMATED_TENSOR_WORKSPACE_BYTES = 768 * 1024 * 1024
-_WORKSPACE_BYTES_PER_ROI_PIXEL = 64
-_WORKSPACE_BYTES_PER_CANDIDATE = 40
+_WORKSPACE_BYTES_PER_ROI_PIXEL = 20
+_WORKSPACE_BYTES_PER_CANDIDATE = 100
+MAX_FILTER_TILE_SIDE = 1024
 _FLOAT32_MIN = torch.finfo(torch.float32).min
 
 
@@ -118,10 +119,10 @@ def _estimated_workspace_bytes(
 ) -> int:
     """Bound known dense tensor temporaries; backend scratch is not measured."""
     roi_pixels = roi_height * roi_width
-    padded_pixels = (roi_height + 2 * distance) * (roi_width + 2 * distance)
+    padded_pixels = (min(roi_height, MAX_FILTER_TILE_SIDE) + 2 * distance) * (min(roi_width, MAX_FILTER_TILE_SIDE) + 2 * distance)
     return (
         roi_pixels * _WORKSPACE_BYTES_PER_ROI_PIXEL
-        + padded_pixels * 4  # float32 padded max-filter input
+        + padded_pixels * 24  # bounded halo/filter intermediates, including float64 callers
         + candidate_count * _WORKSPACE_BYTES_PER_CANDIDATE
     )
 
@@ -152,19 +153,63 @@ def _nms_round_visits(roi_shape, distance, candidate_count):
     """Conservative source-window/vector visits, not GPU instructions/time."""
     pixels = roi_shape[0]*roi_shape[1]
     kernel = 2*(distance-1)+1
+    radius = distance-1
+    # Separable filtering computes each tile's halo too. Charge repeated
+    # halo windows instead of treating overlapping tiles as one dense pass.
+    expanded_axes = [sum(
+        min(length, start+MAX_FILTER_TILE_SIDE+radius)-max(0, start-radius)
+        for start in range(0, length, MAX_FILTER_TILE_SIDE)) for length in roi_shape]
+    filtered_pixels = expanded_axes[0]*expanded_axes[1]
     # Two separable filters: four one-dimensional source windows per pixel.
     # Twenty-four dense visits cover canvas resets, conversion, intermediate
     # pool outputs and comparison buffers. Sixty-four vector visits cover rank/active/selected reads/writes,
     # indexed gathers/scatters, reductions and final coordinate selection.
-    return pixels*(24+4*kernel)+64*candidate_count
+    return 24*pixels+4*kernel*filtered_pixels+64*candidate_count
 
 
-def _spacing_maximum(values: torch.Tensor, kernel_size: int, radius: int) -> torch.Tensor:
-    """A square maximum is exactly two axis maxima, including -inf padding."""
-    horizontal = F.max_pool2d(values[None, None], kernel_size=(1, kernel_size),
-        stride=1, padding=(0, radius))
-    return F.max_pool2d(horizontal, kernel_size=(kernel_size, 1),
-        stride=1, padding=(radius, 0))[0, 0]
+def _spacing_maximum(values: torch.Tensor, kernel_size: int, radius: int,
+                     cancel=None) -> torch.Tensor:
+    """Exact global square maximum, with bounded halo/filter scratch.
+
+    Every tile reads its complete halo from the original global canvas. Only
+    the maximum filter is tiled; priority ordering and suppression stay global.
+    Replicated and negative-infinity exterior padding give the same maximum.
+    """
+    height, width = values.shape
+    result = torch.empty_like(values)
+    for top in range(0, height, MAX_FILTER_TILE_SIDE):
+        bottom = min(height, top + MAX_FILTER_TILE_SIDE)
+        for left in range(0, width, MAX_FILTER_TILE_SIDE):
+            _check_cancel(cancel)
+            right = min(width, left + MAX_FILTER_TILE_SIDE)
+            y0, y1 = max(0, top-radius), min(height, bottom+radius)
+            x0, x1 = max(0, left-radius), min(width, right+radius)
+            tile = values[y0:y1, x0:x1][None, None]
+            horizontal = F.max_pool2d(tile, kernel_size=(1, kernel_size),
+                stride=1, padding=(0, radius))
+            maximum = F.max_pool2d(horizontal, kernel_size=(kernel_size, 1),
+                stride=1, padding=(radius, 0))[0, 0]
+            result[top:bottom, left:right] = maximum[top-y0:bottom-y0, left-x0:right-x0]
+    return result
+
+
+def _candidate_maximum(values, coordinates, radius, cancel):
+    """Query exact square maxima only at candidates, with bounded gather tiles."""
+    side = 2*radius+1
+    device = values.device
+    offsets = torch.arange(-radius, radius+1, device=device, dtype=torch.int64)
+    dy = offsets[:, None].expand(side, side).reshape(-1)
+    dx = offsets[None, :].expand(side, side).reshape(-1)
+    count = int(coordinates.shape[0])
+    result = torch.empty(count, device=device, dtype=values.dtype)
+    chunk = max(1, 65_536//(side*side))
+    for start in range(0, count, chunk):
+        _check_cancel(cancel)
+        points = coordinates[start:start+chunk]
+        yy = (points[:, :1]+dy).clamp_(0, values.shape[0]-1)
+        xx = (points[:, 1:2]+dx).clamp_(0, values.shape[1]-1)
+        result[start:start+chunk] = values[yy, xx].amax(dim=1)
+    return result
 
 
 def _greedy_spacing(
@@ -178,7 +223,7 @@ def _greedy_spacing(
     Coordinates arrive sorted by descending intensity with stable row-major
     tie order.  Each round accepts every currently active point with best
     priority in its conflict neighborhood, then suppresses its neighbors.  A
-    float64 priority canvas represents these integer ranks exactly for the
+    float32 priority canvas represents these integer ranks exactly for the
     documented one-million-candidate limit; it never stores flattened pixel
     indices as float values.
     """
@@ -187,7 +232,14 @@ def _greedy_spacing(
 
     candidate_count = int(ordered_coordinates.shape[0])
     height, width = roi_shape
-    visits = _nms_round_visits(roi_shape,distance,candidate_count)
+    dense_visits = _nms_round_visits(roi_shape,distance,candidate_count)
+    # A sparse photograph can have a huge label ROI but few maxima. Gather
+    # the complete neighborhood at each candidate instead of filtering all
+    # empty pixels. Four visits cover each of two coordinate gathers, source
+    # lookup and reduction, for the priority and winner queries.
+    sparse_visits = 4*height*width + candidate_count*(64+8*(2*(distance-1)+1)**2)
+    sparse = candidate_count >= 64 and sparse_visits < dense_visits
+    visits = sparse_visits if sparse else dense_visits
     rounds = min(MAX_NMS_ROUNDS,MAX_NMS_SAMPLE_VISITS//visits)
     if rounds<1:
         raise PeakResourceError('greedy spacing exceeds its NMS sample-visit budget before allocation')
@@ -196,10 +248,10 @@ def _greedy_spacing(
     device = ordered_coordinates.device
     y_coords = ordered_coordinates[:, 0]
     x_coords = ordered_coordinates[:, 1]
-    ranks = torch.arange(candidate_count, dtype=torch.float64, device=device)
+    ranks = torch.arange(candidate_count, dtype=torch.float32, device=device)
     active = torch.ones(candidate_count, dtype=torch.bool, device=device)
     selected = torch.zeros_like(active)
-    priority_canvas = torch.empty((height, width), dtype=torch.float64, device=device)
+    priority_canvas = torch.empty((height, width), dtype=torch.float32, device=device)
     winner_canvas = torch.zeros((height, width), dtype=torch.bool, device=device)
     worst_rank = float(candidate_count)
 
@@ -207,16 +259,19 @@ def _greedy_spacing(
         _check_cancel(cancel)
         priority_canvas.fill_(-worst_rank)
         priority_canvas[y_coords, x_coords] = torch.where(active, -ranks, -worst_rank)
-        best_rank = _spacing_maximum(priority_canvas, kernel_size, radius)
-        winners = active & (best_rank[y_coords, x_coords] == -ranks)
+        best_rank = (_candidate_maximum(priority_canvas, ordered_coordinates, radius, cancel)
+            if sparse else _spacing_maximum(priority_canvas, kernel_size, radius, cancel)[y_coords, x_coords])
+        winners = active & (best_rank == -ranks)
+        del best_rank
         if not bool(winners.any().item()):
             raise RuntimeError("greedy spacing made no progress")
         selected |= winners
 
         winner_canvas.zero_()
         winner_canvas[y_coords, x_coords] = winners
-        suppressed = _spacing_maximum(winner_canvas.to(torch.float32), kernel_size, radius) > 0.0
-        active &= ~suppressed[y_coords, x_coords]
+        suppressed = (_candidate_maximum(winner_canvas, ordered_coordinates, radius, cancel)
+            if sparse else _spacing_maximum(winner_canvas.to(torch.float32), kernel_size, radius, cancel)[y_coords, x_coords]) > 0.0
+        active &= ~suppressed
         if not bool(active.any().item()):
             return ordered_coordinates[selected]
 
@@ -294,17 +349,9 @@ def local_maxima(
         candidates = image > threshold
     else:
         _check_cancel(cancel)
-        padded_image = F.pad(
-            image[None, None],
-            (distance, distance, distance, distance),
-            mode="replicate",
-        )
-        local_max = F.max_pool2d(
-            padded_image,
-            kernel_size=2 * distance + 1,
-            stride=1,
-        )[0, 0]
+        local_max = _spacing_maximum(image, 2 * distance + 1, distance, cancel)
         candidates = image == local_max
+        del local_max
         if bool(candidates[label_roi].all().item()):
             isolated = label_roi ^ _binary_opening_cross(label_roi)
             candidates = isolated

@@ -33,6 +33,9 @@ class NodeOptimizationUITests(unittest.TestCase):
             window._optimization_task = None
             window._project_tracking_enabled = False
             window._project_dirty = False
+            window._instance_annotations_dirty.clear()
+            window._reference_masks_dirty.clear()
+            window._unsaved_reference_sidecars.clear()
             window.close()
         self.addCleanup(dispose)
         return window
@@ -58,6 +61,10 @@ class NodeOptimizationUITests(unittest.TestCase):
         inspector.set_node(graph.node('procedural_instances'))
         inspector.set_optimization_context(ready=True, busy=True)
         self.assertFalse(inspector.optimization_button.isEnabled())
+        inspector.set_optimization_context(ready=True, busy=False)
+        inspector.set_editing_locked(True)
+        self.assertFalse(inspector.optimization_button.isEnabled())
+        self.assertIn('Pipeline is frozen', inspector.optimization_status.text())
 
     def check_test_project_command_and_dispatch_are_connected(self):
         from seedvision.ui.pipeline_inspector import PipelineInspector
@@ -193,13 +200,68 @@ class NodeOptimizationUITests(unittest.TestCase):
             self.assertEqual(Path(targets['sha']), Path(directory)/'targets.npz')
             self.assertTrue(json.loads(destination.with_suffix('.optimization-policy.json').read_text())['sha']['complete'])
 
+    def check_test_sample_preflight_allows_local_refs_and_tracks_image_context(self):
+        import numpy as np
+        from seedvision.reference_library.contracts import BiologicalContext
+        from seedvision.ui.main_window import _path_identity
+        from seedvision.persistence.reference_regions import SeedInstanceAnnotation
+        from seedvision.ui.optimization import OptimizationDialog
+        with TemporaryDirectory() as directory:
+            window = self.window(directory)
+            paths = [Path(directory) / (name + '.png') for name in ('first', 'second', 'draft')]
+            for path in paths:
+                path.write_bytes(b'fingerprinted source')
+            keys = [_path_identity(path) for path in paths]
+            window._image_paths = dict(zip(keys, paths))
+            window._project_species_library_pin = None
+            contexts = [BiologicalContext('unknown', seed_lot_id='lot_a'),
+                        BiologicalContext('unknown', seed_lot_id='lot_b')]
+            window._project_image_biological_contexts = dict(zip(keys, contexts))
+            labels = np.zeros((20, 24), np.uint16)
+            labels[3:10, 3:10] = 1
+            labels[12:17, 12:17] = 2
+            for key in keys:
+                window._applied_instance_annotations[key] = labels
+                window._applied_seed_annotations[key] = {1: SeedInstanceAnnotation(
+                    1, shape_reviewed=True, outline_visibility='complete')}
+            window._instance_annotations_dirty.add(keys[2])
+            resolved_contexts = []
+            def resolve(pin, *, context, **kwargs):
+                resolved_contexts.append(context)
+                return SimpleNamespace(error='No species library is pinned.', artifact=None)
+            with patch.object(window._species_library_service, 'resolve', side_effect=resolve):
+                samples = window._optimization_samples()
+            self.assertEqual(len(samples), 2)
+            self.assertEqual(resolved_contexts, contexts)
+            self.assertEqual([sample.kwargs['biological_context'] for sample in samples], contexts)
+            self.assertTrue(all(sample.kwargs['species_library'] is None for sample in samples))
+            self.assertTrue(all(sample.excluded_ids == (2,) for sample in samples))
+            self.assertIn('Unapplied draft', window._optimization_exclusions[0][1])
+            dialog = OptimizationDialog(window.pipeline, samples, None,
+                excluded_images=window._optimization_exclusions)
+            self.addCleanup(dialog.close)
+            self.assertIn('1 excluded', dialog.readiness.text())
+            self.assertIn('1 eligible; 1 excluded', dialog.images.item(0, 1).text())
+            snapshot = window._optimization_annotation_snapshot()
+            window._project_image_biological_contexts[keys[0]] = contexts[1]
+            self.assertNotEqual(snapshot, window._optimization_annotation_snapshot())
+            window.pipeline.node('reference_texture_prototypes').parameters['material_prototype_reference_source'] = 'Species library only'
+            with patch.object(window._species_library_service, 'resolve', side_effect=resolve):
+                with self.assertRaisesRegex(ValueError, 'pin a compatible species library'):
+                    window._optimization_samples()
+            window._project_species_library_pin = object()
+            with patch.object(window._species_library_service, 'resolve', side_effect=resolve):
+                with self.assertRaisesRegex(ValueError, 'No species library is pinned'):
+                    window._optimization_samples()
+
     def test_workflow_lifecycle(self):
-        """5 related NodeOptimizationUITests scenarios, each with private fixture state."""
+        """6 related NodeOptimizationUITests scenarios, each with private fixture state."""
         self.scenario(self.check_test_all_computational_cards_offer_shared_action)
         self.scenario(self.check_test_project_command_and_dispatch_are_connected)
         self.scenario(self.check_test_classifier_manual_controls_remain_editable_without_optimization)
         self.scenario(self.check_test_rollback_refuses_later_edits_to_another_control)
         self.scenario(self.check_test_save_as_preserves_companions_and_target_location)
+        self.scenario(self.check_test_sample_preflight_allows_local_refs_and_tracks_image_context)
 
     def test_validation_and_recovery(self):
         """2 related NodeOptimizationUITests scenarios, each with private fixture state."""

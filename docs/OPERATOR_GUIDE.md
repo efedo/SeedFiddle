@@ -1,10 +1,24 @@
 # Current operator guide
 
-Current Pipeline workflow (17 October 2026): choose a factory in the compact Workflow selector or **… → Other pipelines**, or use **… → Load pipeline** for a saved custom pipeline. All loads start with **Freeze** checked. Clear Freeze to edit node parameters, supported connections, bypass state and model/input selections. The original factory stays immutable; **Save** requires a distinct custom name and filename. Re-selecting a factory loads its original values.
+Shared project inputs (20 October 2026): every Pipeline workspace contains **Project → Image selector → Species and metadata**, plus **Species reference library**. Select **Image selector** and use its inspector dropdown, or activate an image in the left Images list; both choose the same current raw image. Image selection remains available while the calculation is frozen. These four nodes and their context connections cannot be removed or disabled. Their positions and the selected node are preserved in pipeline/layout files. Older Default settings acquire the selector automatically without changing calculation parameters.
+
+**Project** supplies the image inventory, image-local annotations and library pin. **Species and metadata** describes the selected image; edit its species with the existing **Image metadata → Species** control. Select **Species reference library** to inspect its pin/resolution and open the existing library manager. Default's connected consumers use the resolved banks. The PlantCV and SMPTS recipes expose the same project context, but do not implicitly consume species-library banks or change their factory algorithms.
+
+The two colour-correction choices serve different purposes. Built-in **Deskew and colour balance** rectifies image geometry and balances RGB channels using neutral patches. The separate PlantCV colour-card workflows fit source patch colours to target patch colours: the automatic card route uses an affine RGB transform with offsets, while four-input **Correct colour** uses a nine-term polynomial RGB fit. This can represent colour mixing and nonlinear response that neutral balance cannot; it does not replace geometric rectification. Keep it as optional advanced calibration when target patch data are available. Applying it alone does not establish better measurement accuracy.
+
+Current Pipeline workflow (19 October 2026): choose a factory in the compact Workflow selector or **… → Other pipelines**, or use **… → Load pipeline** for a saved custom pipeline. All loads start with **Freeze** checked. Clear Freeze to edit node parameters, supported connections, bypass state and model/input selections. The original factory stays immutable; **Save** requires a distinct custom name and filename. Re-selecting a factory loads its original values.
 
 Use **Run pipeline** and **Stop** on the application toolbar. The global **Native/PlantCV** selector and selected-node **Backend** selector choose actual execution; **Inherit** follows the global choice. They remain available while frozen. Stages without equivalent public calls show a native-only reason. The six watershed stages share one backend choice because the original is one public call. Explicit PlantCV execution requires the pinned local runtime; unavailable execution is reported without silently switching to native.
 
 The Pipeline **…** menu provides pipeline and layout load/save. On a narrow pane, Save/Export remain available in this menu when their buttons are hidden. A pipeline file preserves calculation settings, independent node IDs, connections, enabled state, backend choices, layout, selection and referenced assets. It does not embed image pixels or run outputs. Missing asset references remain explicit. A layout file changes positions and presentation by stable node ID; applying it preserves calculation caches. Project saving and snapshots retain their existing historical evidence. Native saved-stage replay explicitly reports unavailable for a stage produced by PlantCV; it does not substitute the native implementation.
+
+The shared image toolbar follows the active pipeline. **Overlay** offers **Source image**, **Calibrated image and annotations**, and the available outputs grouped by node. **Opacity** blends a mask or label output only when a matching RGB image has the same dimensions and coordinate frame. HSV controls appear only where the selected display supports their meaning. **Materials** or **Seeds** opens the calibrated annotation image established by Default seed analysis for that image; source and crop previews are never treated as the annotation canvas. Run Default seed analysis first if that frame is unavailable. Returning to Default restores its image controls.
+
+For working binary, adaptive-mean and Otsu threshold nodes, and the SMPTS intersection node, clear **Freeze** and use **Select foreground region…** or **Settings → Foreground region (input pixels)**. Enter `null` for the whole frame, or nonempty half-open integer bounds `[left, top, right, bottom]`: left/top are included, right/bottom are excluded. Bounds use that node's input pixels. Drawing is available for source-frame inputs; transformed inputs require bounds entered in their own input frame. The adapter runs after the threshold or intersection, sets foreground outside the rectangle to zero, and preserves the full raster dimensions and coordinates. It does not crop or resize the image. With PlantCV selected, the public threshold runs first and the explicit native mask adapter follows it; saved provenance identifies that addition. The region belongs to the working pipeline, survives save/reopen, and invalidates its node and dependents.
+
+Full-resolution analysis and reusable rasters remain on CUDA; bounded previews can be smaller for display. Admission still reports explicit unsupported precision, memory or work limits instead of silently changing image resolution. Size/colour count controls admit up to 1,024 resolved labels; independent precision, encoded-byte, metadata-traversal and work budgets still apply to calculation, archives and saved-stage replay. SMPTS inventory allows 7,936 components under the unchanged 32 MiB modeled metadata allowance; its packed-crop allowance is 144 MiB within the unchanged 1 GiB composed per-operation CUDA admission. These operation bounds do not promise total application GPU memory or process RSS. Successful execution, an admitted photograph, or a displayed component count does not establish correct seed counts. SMPTS remains a declared paper reconstruction with assumptions; eroded components and extracted crops are not automatically complete biological seed outlines or validated original-SMPTS results.
+
+During a run, the activity panel reports **Preparing image…**, the current node and its execution/reuse state, and elapsed time. A failed, partial or unavailable result shows its reason and selects the affected node for inspection. **Stop** requests safe cancellation; the display reports that it is waiting for the current calculation and discards obsolete outputs after cancellation. Read the node reason before changing controls or interpreting a partial result.
 
 The separate Reference window is removed. Factory workflows are inspected directly in Pipeline. The dated engineering checkpoints below retain their historical scope; their former Reference-window launcher instructions are superseded by the controls above.
 
@@ -124,7 +138,7 @@ are released and 0 preexisting bytes are separate. Only 64,896,000
 array bytes are selected. All 19,468,800 RGB values and 5,208 metadata leaves
 match, and archive hashes remain unchanged. The controlled grayscale/gray-repeat
 RGB, cutoff 100, fill 1 and peak-distance 8 fixture remains diagnostic coverage,
-outside the separate 128-label trait domain. Geometry remains near its 64M cap.
+outside the then-supported 128-label trait domain. That dated check does not define the current 1,024-label limit. Geometry remains near its recorded 64M cap.
 Actual replay-specific Qt views were inspected at 1440x900 and 1050x650.
 
 Bounded review approves the four final source/test files recorded in
@@ -166,7 +180,7 @@ work units; peak modeled host geometry was 12,369,424 bytes.
 This geometry result is near the cap and does not establish broader input coverage.
 The full-fixture oracle uses decoded grayscale and explicit gray-repeated RGB,
 binary cutoff 100, fill size 1 and peak distance 8. Its 1,294 labels exceed the
-separate 128-label downstream measurement domain. This is diagnostic coverage.
+then-supported 128-label downstream measurement domain. This is historical diagnostic coverage; the current measurement limit is 1,024 resolved labels.
 Actual async calibrated Qt views were inspected at 1440x900 and 1050x650.
 Bounded review approves eleven frozen files from supplied projections and root
 execution/visual evidence only: artifacts/native-watershed-diagnostic-frozen-hashes.json.
@@ -434,7 +448,7 @@ product and verified raw classifier-model bytes. Desktop **Export run...** drain
 its worker; project batch executes exact saved native-compatible attachments and
 records failures or unavailable original/reference executors explicitly. Historical
 graph records and baseline reports retain their own identities. Array groups support
-256 ordered class masks; metadata supports the full 128-label colour domain.
+256 ordered class masks; current size/colour metadata admits up to 1,024 resolved labels, subject to the separate resource budgets. The older controlled 128-label checks retain their recorded scope.
 These output archives are not per-stage replay certificates or scientific validation.
 The reviewed native-output/project/register integration gate runs142 tests in109.556s:
 141 pass and one existing platform-specific test skips.
@@ -795,10 +809,13 @@ disabled, on source, gamut, prototype-collage, or any other non-deskewed display
 
 For material references, choose Background, Foreground, or Other and paint the
 reviewed region. Use the independent exclusion controls only when the corresponding
-class model should ignore an area. Apply saves the draft for analysis; Undo/Redo
-remain local to the current annotation history.
+class model should ignore an area. **Apply + save** applies the draft to analysis and
+attempts to save the per-image sidecar. A failed save leaves the applied state in
+memory and is reported explicitly; use **Save Project** to retry. Undo/Redo remain
+local to the current annotation history.
 
-For seed instances:
+Click **Seeds** to edit the current seed labels; opening the editor does not import
+another reference. For seed instances:
 
 1. Select an ID, **Next empty**, or **Next unannotated**. The latter cycles painted
    seeds whose condition or shape review is incomplete. Set **Show** to all or
@@ -806,10 +823,13 @@ For seed instances:
 2. Choose Brush, Trace edge, Shape fill, Smart fill, or Eraser. Tool instructions
    are in each button's tooltip. Clear seed and Clear all are beside the visibility
    control.
-3. **Load matching reference** restores this image's saved applied manual labels
-   first. If none exist, it loads the bundled source-bound pre-annotation; if
-   neither exists, it opens a corrected-coordinate file chooser. The loaded labels
-   are an undoable draft and are not automatically accepted as ground truth.
+3. **Import bundled seed labels…** imports only the source-bound bundled labels.
+   If none match, it explains how to use **Import seed labels from file…** instead.
+   File import accepts lossless categorical PNG, TIFF or NPZ labels whose dimensions
+   exactly match the corrected image; the chooser shows the expected dimensions.
+   It does not transform a source-coordinate mask or silently select another source.
+   Both commands create an undoable draft. Review it before applying; imported
+   outlines are not automatically accepted as ground truth.
 4. Review **Seed condition**. **No defects** and the defect choices are mutually
    exclusive. Choose explicit Outline and Pose values. A Complete outline checks
    and locks **Full length visible**; incomplete outlines can set it explicitly for
@@ -823,6 +843,15 @@ For seed instances:
 
 The pixel and ID summary appears in the relevant Project node details rather than
 occupying permanent palette space.
+
+Keep these states separate:
+
+| State/action | What it means |
+| --- | --- |
+| Draft | Editable/imported labels, separate from the labels currently used by analysis. |
+| **Apply + save** | Uses the labels in analysis and attempts a sidecar disk save. A save failure leaves applied labels in memory; the confirmation text reports it. **Save Project** also records the sidecar digest and project settings. |
+| **Export seed labels…** | Writes the applied full-resolution labels as a 16-bit PNG in corrected-image coordinates. Apply a draft first to include its changes. |
+| **Add image and seed labels to training dataset…** | Creates a normalized image crop, model input features, seed labels, derived boundary targets and a manifest entry. This prepares data; training is a separate Learning action. |
 
 ## References and recovery
 
@@ -845,6 +874,25 @@ a separate verified working copy and reports the new master path. Open that path
 with **File → Open project**; the original snapshot remains unchanged. Missing or
 modified snapshot components prevent restoration.
 
+## Optimize from applied project references
+
+Save a project, apply the intended references, and clear **Freeze**. Use
+**Analysis → Optimize eligible nodes from project references…** or a supported
+node's **Optimize from project references…** action. Current-image and mixed
+library/current-image reference modes work from local applied references without
+a library pin. **Species library only** requires a compatible pinned library;
+a configured missing, broken or incompatible pin is reported rather than replaced
+with another version.
+
+The plan shows eligible and excluded seed counts, excluded image/draft reasons,
+and each node's image readiness. Only complete, connected, shape-reviewed outlines
+without an explicit shape exclusion are instance targets. Apply or discard drafts
+before fitting them; hover excluded counts for their seed IDs. Each image retains
+its own biological context and local references. Choose images and a bounded budget,
+then inspect the proposed changes before applying. Cancellation or changed inputs
+withhold the proposal, and accepted changes apply together. Optimization is
+in-sample project adaptation; it does not establish independent validation.
+
 ## Keyboard and expert workflow
 
 - `Ctrl+1` / `Ctrl+2`: image/pipeline visibility; an empty workspace recovers the image.
@@ -864,11 +912,21 @@ the toolbar. Mouse-wheel zoom retains the scene point under the pointer.
 
 ## Training and evaluation
 
-Learning export requires complete reviewed contours for physical-boundary targets,
-verified species for species-conditioned features, and an explicit biological/capture
-group. A filename is not a grouping policy. Related captures must share one split.
-Exports create immutable component revisions before switching the audited manifest;
-old features/labels remain paired if writing fails.
+Use **Learning → Add image and seed labels to training dataset…** after analysis
+and label review. The readiness message reports complete reviewed outlines,
+excluded IDs and unapplied drafts before writing. Fix incomplete, disconnected,
+unreviewed or explicitly excluded outlines and apply/discard drafts; export refuses
+to silently omit those seeds. The ready dialog explains the normalized crop,
+features, seed labels, derived targets and manifest it will create. The suggested
+sample revision avoids identifiers already in the manifest or immutable revision
+folders.
+
+Export also requires verified species for species-conditioned features and an
+explicit biological/capture group. A filename is not a grouping policy. Related
+captures must share one split. Exports create immutable component revisions before
+switching the audited manifest; old features/labels remain paired if writing fails.
+After export, use **Train or refine U-Net / StarDist…** in Learning to train a model.
+Saving a label PNG or adding a dataset sample does not start training.
 
 Feature specification v2 consistently means raw Foreground colour evidence in both
 live inference and export. V1 foreground recipes are ambiguous and must be re-exported

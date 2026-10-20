@@ -18,19 +18,26 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class TestRunnerTests(unittest.TestCase):
     def test_parallel_assignment_partitions_once_and_result_merge_cannot_hide_missing_or_failed_units(self):
-        from tests.parallel import assignments,merge
+        from tests.parallel import assignments,merge,BALANCED_NATIVE_MODULES
         class Item:
             def __init__(self,name):self.name=name
             def id(self):return self.name
         groups={'cpu-qt':[Item('tests.desktop.Case.test_flow')],
             'cuda':[Item('tests.test_plantcv_size.Case.test_math'),Item('tests.graph.Case.test_flow')],
             'acceptance':[Item('tests.test_recipe_acceptance.Case.test_matrix')]}
+        moved={module+'.'+cls+'.test_flow' for module in BALANCED_NATIVE_MODULES
+               for cls in ('ContractTests','CalculationTests')}
+        groups['cuda'].extend(Item(name) for name in sorted(moved))
         expected={item.id() for group in groups.values() for item in group}
         for jobs in (2,3):
             buckets=assignments(groups,jobs)
             self.assertEqual(len(buckets),jobs)
             self.assertEqual({name for bucket in buckets for name in bucket},expected)
             self.assertEqual(sum(map(len,buckets)),len(expected))
+            # Each measured module, including all of its classes, stays whole.
+            self.assertTrue(moved.issubset(buckets[0 if jobs == 3 else 1]))
+            self.assertTrue(all(name in moved or name == 'tests.desktop.Case.test_flow'
+                                for name in buckets[0]) if jobs == 3 else True)
             reports=[dict(tests=len(ids),passed=True,selection={'selected_ids':ids}) for ids in buckets]
             result=merge(buckets,reports,[0]*jobs)
             self.assertTrue(result['passed']);self.assertTrue(result['all_discovered_units_accounted_for'])

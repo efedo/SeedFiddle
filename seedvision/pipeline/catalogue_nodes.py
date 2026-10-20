@@ -185,7 +185,7 @@ def create_instance(catalogue_key, existing_ids=()):
                 scope.add(parent)
                 pending.append(parent)
     for node in graph.nodes.values():
-        node.enabled = node.identifier in scope
+        node.enabled = node.identifier in scope or node.identifier in graph.required_nodes
     return NodeInstance(identifier, catalogue_key, entry.target_node,
                         default_settings=analysis_settings_profile_from_graph(graph))
 

@@ -105,7 +105,7 @@ class ColourReplayContractTests(CatalogueTestCase):
         self.assertEqual(compact.compare(('nonfinite','nan'),('nonfinite','positive_infinity'),lambda:False)['mismatched_elements'],1)
 
     def check_test_effective_controls_and_allocation_free_resource_boundaries(self):
-        for values in ({**PARAMETERS,'n_labels':True},{**PARAMETERS,'n_labels':129},
+        for values in ({**PARAMETERS,'n_labels':True},{**PARAMETERS,'n_labels':1025},
                 {**PARAMETERS,'colorspaces':'CMYK'},{**PARAMETERS,'label':['wrong','length']}):
             with self.assertRaises(archives.NativeResultExportError):replay._plan((3,4),'analysis.color',values,84)
         for pixels in (65535,65536,65537):
@@ -113,6 +113,10 @@ class ColourReplayContractTests(CatalogueTestCase):
             self.assertEqual(plan['cuda_bytes'],128*pixels+128*1024*1024)
             self.assertEqual(plan['selected_limit_bytes'],48*1024*1024)
             self.assertEqual(plan['work_details']['n_labels'],128)
+        for count in (129,272,1024):
+            plan=replay._plan((3,4),'analysis.color',{**PARAMETERS,'n_labels':count},84)
+            self.assertEqual(plan['work_details']['n_labels'],count)
+            self.assertEqual(plan['cuda_bytes'],128*12+128*1024*1024)
         maximum=(1024*1024*1024-128*1024*1024)//128
         replay._plan((1,maximum),'analysis.color',PARAMETERS,7*maximum if 7*maximum<=48*1024*1024 else 1)
         with self.assertRaises(runner.NativeRecipeError):replay._plan((1,maximum+1),'analysis.color',PARAMETERS,1)

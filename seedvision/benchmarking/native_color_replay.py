@@ -40,7 +40,7 @@ def controls(parameters, error_type):
         raise error_type('Colour replay requires its exact three controls.')
     count=parameters['n_labels'];space=parameters['colorspaces'];label=parameters['label']
     if type(count) is not int or not 1<=count<=color.MAX_LABELS:
-        raise error_type('Colour label count must be an integer in [1,128].')
+        raise error_type(f'Colour label count must be an integer in [1,{color.MAX_LABELS}].')
     if type(space) is not str or space.lower() not in ('rgb','lab','hsv','all'):
         raise error_type('Colour space must be rgb, lab, hsv or all.')
     names=(label,)*count if type(label) is str else label

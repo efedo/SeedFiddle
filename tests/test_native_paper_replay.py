@@ -95,8 +95,15 @@ class PaperReplayContractTests(CatalogueTestCase):
                     contracts.plan(operation,(3,4),recipe.parameters_for_runner(stage),**{name:limit},**opts)
         with self.assertRaises(contracts.NativePaperReplayUnavailable):
             contracts.plan('smpts_paper.median',(1100,1000),{'ksize':31},**opts)
-        with self.assertRaises(contracts.NativePaperReplayUnavailable):
-            contracts.plan('smpts_paper.components',(1,7_272_728),{},**opts)
+        old_worst_case_shape = (1,7_272_728)
+        admitted = contracts.plan('smpts_paper.components',old_worst_case_shape,{},**opts)
+        self.assertEqual(admitted['component_work'], 48*old_worst_case_shape[1])
+        with patch.object(paper.paper, 'MAX_COMPONENT_WORK', 576):
+            admitted = contracts.plan('smpts_paper.components',(3,4),{},**opts)
+            self.assertEqual(admitted['component_work'], 576)
+        with patch.object(paper.paper, 'MAX_COMPONENT_WORK', 575):
+            with self.assertRaises(contracts.NativePaperReplayUnavailable):
+                contracts.plan('smpts_paper.components',(3,4),{},**opts)
         with self.assertRaises(contracts.NativePaperReplayError):
             contracts.plan('smpts_paper.erosion',(3,4),{'ksize':2},**opts)
         mean=contracts.plan('smpts_paper.mean',(2080,3120),{'ksize':25,'offset':2.,'object_type':'light'},
@@ -164,6 +171,30 @@ class PaperStageReplayTests(CatalogueTestCase):
                         if stage==paper.CROPS:self.assertFalse(result.outputs['metadata']['original_execution'])
                 after=archive_hashes(directory)
                 self.assertEqual(before,after)
+
+        self.check_working_foreground_intersection_and_downstream_replay()
+
+    def check_working_foreground_intersection_and_downstream_replay(self):
+        # Working intersection exclusions remain full-frame and bind downstream ancestry.
+        from seedvision.pipeline.workflows import create_workflow, with_foreground_region
+        recipe = selected_recipe()
+        workflow = with_foreground_region(create_workflow(recipe), paper.INTERSECTION,
+            [0, 0, self.full_gray.shape[1] // 2, self.full_gray.shape[0]])
+        frame = CoordinateFrame('source.decoded', self.full_gray.shape, 'top-left', 'x-right,y-down', 'pixel')
+        run = runner.run_native_recipe(workflow.recipe, torch.as_tensor(self.full_gray, device='cuda'),
+            torch.as_tensor(self.full_rgb, device='cuda'), source_sha256=sha256(self.images['full'].read_bytes()).hexdigest(),
+            coordinate_frame=frame, preparation={'gray':'explicit test gray','rgb':'original test RGB'},
+            working_workflow=workflow, target_node_id=paper.COMPONENTS)
+        directory = self.root / 'foreground-working'
+        archives.export_native_recipe_result(directory, workflow.recipe, run)
+        before = archive_hashes(directory)
+        for stage in (paper.INTERSECTION, paper.COMPONENTS):
+            result = replay.replay_native_stage(directory, stage)
+            self.assertEqual(result.status, 'matched', result.reason)
+            self.assertTrue(torch.equal(result.outputs['mask' if stage == paper.INTERSECTION else 'labels'],
+                run.node(stage).outputs['mask' if stage == paper.INTERSECTION else 'labels']))
+            self.assertEqual(result.metadata['comparison']['mismatched_elements'], 0)
+        self.assertEqual(before, archive_hashes(directory))
 
 
 

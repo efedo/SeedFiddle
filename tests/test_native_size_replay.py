@@ -60,10 +60,11 @@ class SizeReplayContractTests(CatalogueTestCase):
         for name,limit in (('MAX_METADATA_ITEMS',1),('MAX_METADATA_BYTES',10),('MAX_METADATA_DEPTH',1)):
             with patch.object(compact,name,limit):
                 with self.assertRaises(ValueError):compact.decode(tagged(original),ValueError)
-        for bad in ({**PARAMETERS,'n_labels':True},{**PARAMETERS,'n_labels':129},
+        for bad in ({**PARAMETERS,'n_labels':True},{**PARAMETERS,'n_labels':1025},
                 {**PARAMETERS,'line_thickness':32768},{**PARAMETERS,'label':'é'*513}):
             with self.assertRaises(ValueError):compact.controls(bad,ValueError)
         compact.controls({**PARAMETERS,'line_thickness':32767,'label':'é'*512},ValueError)
+        self.assertEqual(len(compact.controls({**PARAMETERS,'n_labels':1024},ValueError)),runner.MAX_LABELS)
 
     def check_test_anisotropic_all_variables_pixel_units_underflow_and_resource_plans(self):
         original=zero_rows()
@@ -105,6 +106,22 @@ class SizeReplayContractTests(CatalogueTestCase):
         compared=compact.compare(compact.canonical(changed),expected,lambda:False)
         self.assertEqual(compared['mismatched_elements'],128);self.assertEqual(len(compared['mismatch_paths']),32)
         self.assertGreater(compared['compared_elements'],128*17*6)
+        # Current-sized compact observations survive source-absent transport and units.
+        rows={f'graph_{i}':row for i in range(1,273)}
+        parameters={**PARAMETERS,'n_labels':272}
+        expected=compact.decode(tagged(rows),ValueError)
+        compact.observations(expected,parameters,ValueError)
+        converted=units._scaled_size({'observations':expected,
+            'scale':{'px_width':2.0,'px_height':3.0,'unit':'mm'}})
+        compact.observations(converted['observations'],parameters,ValueError,'mm')
+        self.assertEqual(len(converted['observations']),272)
+        self.assertEqual(compact.compare(compact.canonical(rows),expected,lambda:False)['mismatched_elements'],0)
+        # The count change does not relax metadata traversal admission.
+        with patch.object(compact,'MAX_METADATA_ITEMS',100):
+            with self.assertRaisesRegex(ValueError,'traversal bound'):compact.decode(tagged(rows),ValueError)
+        with self.assertRaises(ValueError):
+            units._scaled_size({'observations':{f'graph_{i}':row for i in range(1025)},
+                'scale':{'px_width':None,'px_height':None,'unit':None}})
         text='x'*2049;encodes=[]
         def profile(frame,event,arg):
             if event=='c_call' and getattr(arg,'__name__',None)=='encode' and getattr(arg,'__self__',None) is text:encodes.append(True)
@@ -165,6 +182,27 @@ class SizeReplayTests(CatalogueTestCase):
         with patch.object(runner,'_runtime_records',return_value=runtime),patch.object(size,'premeasure_plantcv_binary_mask',side_effect=NotImplementedError('controlled numerical limit')):
             result,_,_=self.attempt()
         self.assertEqual(result.status,'unavailable',result.reason);self.assertFalse(result.outputs)
+        self.check_above_128_source_absent_size_replay()
+
+    def check_above_128_source_absent_size_replay(self):
+        gray=np.zeros((96,128),dtype=np.uint8)
+        for y in range(12):
+            for x in range(12):gray[2+7*y:7+7*y,2+7*x:7+7*x]=210
+        rgb=np.repeat(gray[...,None],3,axis=2)
+        recipe=seeds.selected_recipe(**{'filter.median_blur':{'ksize':1},
+            'morphology.fill':{'size':1},'morphology.erode':{'ksize':3},
+            'morphology.dilate':{'ksize':3},'reference.internal.watershed.local_maxima':{'distance':1}})
+        saved=runner.run_native_recipe(recipe,torch.tensor(gray,device='cuda'),torch.tensor(rgb,device='cuda'),
+            source_sha256=seeds.SOURCE,coordinate_frame=seeds.FRAME,preparation=seeds.PREPARATION)
+        self.assertEqual(saved.status,'executed',[(node.stage_id,node.reason) for node in saved.nodes])
+        expected=saved.node(SIZE).outputs
+        self.assertEqual(len(expected['observations']),144)
+        directory=self.root/'above128-source-absent'
+        archives.export_native_recipe_result(directory,recipe,saved)
+        result,_,_=self.attempt(directory)
+        self.assertEqual(result.status,'matched',result.reason)
+        self.assertEqual(result.outputs['observations'],expected['observations'])
+        self.assertTrue(torch.equal(result.outputs['diagnostic'],expected['diagnostic']))
 
 
 

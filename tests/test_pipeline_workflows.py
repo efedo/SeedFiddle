@@ -16,6 +16,36 @@ from tests import test_project_analysis_persistence as project_test
 
 
 class PipelineWorkflowTests(CatalogueTestCase):
+    def test_shared_project_context_preserves_factory_calculations(self):
+        from seedvision.pipeline.project_context import CONTEXT_NODE_IDS, workspace_graph, CONTEXT_CONNECTIONS
+        for recipe in workflow_catalogue():
+            with self.subTest(recipe=recipe.recipe_id):
+                original = recipe.to_json()
+                workflow = create_workflow(recipe)
+                graph = workspace_graph(workflow)
+                self.assertTrue(CONTEXT_NODE_IDS <= graph.nodes.keys())
+                self.assertTrue(set(CONTEXT_CONNECTIONS) <= set(graph.connections))
+                self.assertEqual(graph.upstream('metadata'), ('image_selector',))
+                image_targets = graph.downstream_from_port('image_selector', 'raw_image')
+                self.assertIn('metadata', image_targets)
+                self.assertGreater(len(image_targets), 1)
+                saved = workflow_from_graph(workflow, graph)
+                self.assertEqual(saved.recipe.to_json(), original)
+                self.assertEqual(recipe.to_json(), original)
+                for identifier in CONTEXT_NODE_IDS:
+                    with self.assertRaises(ValueError):
+                        graph.shelve_node(identifier)
+                    with self.assertRaises(ValueError):
+                        graph.set_enabled(identifier, False)
+                for edge in graph.fixed_connections:
+                    with self.assertRaises(ValueError):
+                        graph.disconnect(edge)
+                edited = replace(saved, display_state={'selected_node': 'image_selector',
+                    'context_layout': {'image_selector': [-100, 200]}})
+                reopened = workspace_graph(PipelineWorkflow.from_json(edited.to_json()))
+                self.assertEqual((reopened.node('image_selector').x, reopened.node('image_selector').y), (-100, 200))
+                self.assertEqual(workflow_from_graph(edited, reopened).recipe.identity, recipe.identity)
+
     def workflow(self):
         return create_workflow(selected_recipe())
 
@@ -31,6 +61,24 @@ class PipelineWorkflowTests(CatalogueTestCase):
         del legacy['display_state']
         self.assertEqual(dict(PipelineWorkflow.from_dict(legacy).display_state), {})
         self.assertEqual(edited.recipe.identity.analytical_dict(), workflow.recipe.identity.analytical_dict())
+        from seedvision.pipeline.workflows import with_foreground_region
+        threshold_id = next(s.stage_id for s in edited.recipe.stages if s.operation_id == 'threshold.binary')
+        region = with_foreground_region(edited, threshold_id, [20, 10, 80, 60])
+        self.assertEqual(region.source_recipe, edited.source_recipe)
+        self.assertEqual(region.recipe.provenance.mode, RecipeProvenanceMode.ENHANCED)
+        self.assertEqual(PipelineWorkflow.from_json(region.to_json()), region)
+        self.assertEqual(workflow_from_graph(region, workflow_graph(region)).foreground_regions, region.foreground_regions)
+        self.assertEqual(with_foreground_region(region, threshold_id, None), edited)
+        self.assertNotIn('foreground_regions', edited.to_dict())
+        from unittest.mock import patch
+        from seedvision.pipeline import workflows
+        from seedvision.benchmarking.native_recipe import _bind_working_runtime
+        with patch.object(workflows, 'restrict_foreground', lambda mask, bounds: mask):
+            with self.assertRaisesRegex(NativeRecipeError, 'restrict_foreground'):
+                _bind_working_runtime({}, {})
+        for bounds in ([20, 10, 20, 60], [0, 0, True, 4], [-1, 0, 30, 40]):
+            with self.assertRaises(ValueError):
+                with_foreground_region(edited, threshold_id, bounds)
         self.assertEqual(graph.reference_recipe_identity, edited.recipe.identity)
         document = ProjectAnalysisDocument(project_test.ProjectAnalysisPersistenceTests._profile(), (), pipeline_workflow=edited)
         payload = _document_payload(document)
@@ -66,6 +114,35 @@ class PipelineWorkflowTests(CatalogueTestCase):
         run(replace(workflow_from_graph(workflow, graph), display_state={'selected_node': median.stage_id,
             'selected_output': 'gray_image', 'image_visible': True, 'pipeline_visible': False}))
         self.assertEqual(set(cache.last_reused_nodes), {source.stage_id, median.stage_id, threshold.stage_id})
+        from seedvision.pipeline.workflows import with_foreground_region
+        region = with_foreground_region(workflow, threshold.stage_id, [30, 20, 70, 60])
+        selected = run(region)
+        mask = first.node(threshold.stage_id).outputs['mask']
+        expected = torch.zeros_like(mask)
+        expected[20:60, 30:70] = mask[20:60, 30:70]
+        self.assertTrue(torch.equal(selected.node(threshold.stage_id).outputs['mask'], expected))
+        self.assertEqual(cache.last_computed_nodes, (threshold.stage_id,))
+        self.assertTrue(selected.node(median.stage_id).reused)
+        self.assertEqual(selected.node(threshold.stage_id).parameters['foreground_region_bounds_xyxy'], (30,20,70,60))
+        self.assertIn('foreground_region_adapter', selected.node(threshold.stage_id).backend_provenance)
+        import tempfile
+        from pathlib import Path
+        from seedvision.export.native_results import export_native_recipe_result, load_native_recipe_result
+        with tempfile.TemporaryDirectory() as temporary:
+            report = export_native_recipe_result(Path(temporary)/'foreground', region.recipe, selected)
+            reopened, _ = load_native_recipe_result(report.parent)
+            saved = next(node for node in reopened['nodes'] if node['stage_id'] == threshold.stage_id)
+            self.assertEqual(saved['backend'], 'native')
+            from seedvision.export.native_results import NativeResultExportError
+            original_node = selected.node(threshold.stage_id)
+            for extra in ({'backend':'plantcv'}, {'foreground_region_bounds_xyxy':None}):
+                forged = replace(original_node, backend_provenance={**dict(original_node.backend_provenance), **extra})
+                changed_result = replace(selected, nodes=tuple(forged if node.stage_id == threshold.stage_id else node
+                    for node in selected.nodes))
+                with self.assertRaises(NativeResultExportError):
+                    export_native_recipe_result(Path(temporary)/'forged-foreground', region.recipe, changed_result)
+        run(workflow)
+        self.assertEqual(cache.last_computed_nodes, (threshold.stage_id,))
         graph.node(median.stage_id).enabled = False
         bypass = workflow_from_graph(workflow, graph)
         result = run(bypass)

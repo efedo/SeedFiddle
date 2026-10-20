@@ -250,6 +250,15 @@ class PipelineBackendPublicIntegrationTests(CatalogueTestCase):
         repaired_again = self.execute(changed)
         self.assertEqual(self.runner.calls, ['threshold.binary'])
         self.assertEqual(repaired_again.node(threshold.stage_id).backend, 'plantcv')
+        from seedvision.pipeline.workflows import with_foreground_region
+        region = with_foreground_region(changed, threshold.stage_id, (30,20,70,60))
+        bounded = self.execute(region)
+        expected = torch.zeros_like(before.node(threshold.stage_id).outputs['mask'])
+        expected[20:60,30:70] = before.node(threshold.stage_id).outputs['mask'][20:60,30:70]
+        self.assertTrue(torch.equal(bounded.node(threshold.stage_id).outputs['mask'], expected))
+        self.assertEqual(bounded.node(threshold.stage_id).backend, 'plantcv')
+        self.assertIn('foreground_region_adapter', bounded.node(threshold.stage_id).backend_provenance)
+        self.assertTrue(all(bounded.node(identifier).reused for identifier in ancestors))
 
 
 
