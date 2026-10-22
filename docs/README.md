@@ -83,6 +83,8 @@ accepted work in the root roadmap; unpromoted ideas remain uncommitted.
 ## Directory specific notes
 
 - [Seed-instance reference masks](../seed-instance-references/README.md)
+- [Seed-instance benchmark](INSTANCE_BENCHMARK.md): scoring predicted masks against the
+  unreviewed reference pre-annotations, plus the experimental Cellpose-SAM spike.
 - [Learned checkpoints](../models/README.md)
 - [Offline wheelhouse](../wheels/README.md)
 - [Pinned runtime requirements](../requirements-runtime.txt)
