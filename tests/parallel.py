@@ -81,7 +81,25 @@ def stop_process_tree(child):
     child.wait(timeout=30)
 
 
-def run(groups, *, root, jobs, deadline):
+def last_started_unit(journal):
+    """Return the unit a worker journal shows started but not stopped, if any."""
+    open_id=None
+    try:lines=Path(journal).read_text(encoding='utf-8').splitlines()
+    except OSError:return None
+    for line in lines:
+        try:row=json.loads(line)
+        except ValueError:continue
+        if row.get('event')=='start':open_id=row.get('id')
+        elif row.get('id')==open_id:open_id=None
+    return open_id
+
+
+def run(groups, *, root, jobs, stall_seconds=900.0, deadline=None):
+    """Run workers; stop only a worker whose journal shows no progress for stall_seconds.
+
+    An optional absolute deadline still stops every worker, but wall time is
+    otherwise advisory: a slow machine must not turn a passing suite into FAIL.
+    """
     buckets=assignments(groups,jobs)
     folder=Path(root)/'artifacts/test-runs'/uuid4().hex
     folder.mkdir(parents=True)
@@ -101,13 +119,23 @@ def run(groups, *, root, jobs, deadline):
                    else {'start_new_session':True}))
             children.append(child);paths.append((report,journal,stem.with_suffix('.stderr.log')))
             print(f'Worker {index}: {len(ids)} units; {paths[-1][2]}',file=sys.stderr,flush=True)
-        timed_out=False
+        timed_out=False;stalled={}
+        launched=time.perf_counter();progress=[launched]*len(children);seen=[None]*len(children)
         while any(child.poll() is None for child in children):
-            if time.perf_counter()>=deadline:
+            now=time.perf_counter()
+            for index,child in enumerate(children):
+                if child.poll() is not None:continue
+                try:stamp=paths[index][1].stat().st_mtime_ns
+                except OSError:stamp=None
+                if stamp!=seen[index]:seen[index]=stamp;progress[index]=now
+                elif now-progress[index]>stall_seconds:
+                    stalled[index]=last_started_unit(paths[index][1])
+                    stop_process_tree(child)
+            if deadline is not None and now>=deadline:
                 timed_out=True
                 for child in children:stop_process_tree(child)
                 break
-            time.sleep(.1)
+            time.sleep(.25)
         reports=[]
         for report,_,_ in paths:
             try:reports.append(json.loads(report.read_text(encoding='utf-8')))
@@ -117,7 +145,11 @@ def run(groups, *, root, jobs, deadline):
             log=str(log),returncode=child.returncode) for ids,(report,journal,log),child
             in zip(buckets,paths,children,strict=True)]
         record['deadline_exceeded']=timed_out
-        record['passed'] &= not timed_out
+        record['stalled_workers']={str(index):unit for index,unit in stalled.items()}
+        for index,unit in stalled.items():
+            record['errors'].append(f'worker {index}: no journal progress for {stall_seconds:.0f}s'
+                +(f' during {unit}' if unit else ''))
+        record['passed'] &= not timed_out and not stalled
         return record
     finally:
         for child in children:stop_process_tree(child)

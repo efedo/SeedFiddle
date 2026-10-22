@@ -4,6 +4,8 @@ __pycache__/
 .pytest_cache/
 .coverage
 projects/
+# Saved scratch projects at the repository root; real fixtures live under tests/.
+/analysis*.seedfiddle-project.json
 artifacts/
 *.log
 build/

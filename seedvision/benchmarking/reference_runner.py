@@ -34,6 +34,9 @@ PINNED_SOURCE_AUDIT_SHA256 = "a747fdfe701e22627b0861c914c12f23d88b934f1dfe319758
 PINNED_REQUIREMENTS_SHA256 = "80b8a6dcab4131a1c5d1c788ba8bbf12296f233fdf65f24c86bca14ea6682b5b"
 
 PROTOCOL_VERSION = 1
+# The identity probe enumerates and hashes the reference environment; under
+# parallel test load it can exceed the 10 s that suited an idle machine.
+STATUS_PROBE_TIMEOUT_SECONDS = 60.0
 MAX_JSON_BYTES = 2 * 1024 * 1024
 MAX_INPUT_ARCHIVE_BYTES = 64 * 1024 * 1024
 MAX_OUTPUT_ARCHIVE_BYTES = 128 * 1024 * 1024
@@ -669,7 +672,8 @@ print(json.dumps({"python": sys.version.split()[0], "platform": platform_name, "
             env["PYTHONDONTWRITEBYTECODE"] = "1"
             return_code, stdout, stderr = _run_child(
                 [str(executable.resolve()), "-c", probe, probe_payload],
-                cwd=Path(temp_name), env=env, timeout_seconds=10.0, cancel_event=None,
+                cwd=Path(temp_name), env=env, timeout_seconds=STATUS_PROBE_TIMEOUT_SECONDS,
+                cancel_event=None,
             )
         if return_code != 0:
             raise ReferenceIdentityError(

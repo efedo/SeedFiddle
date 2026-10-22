@@ -51,6 +51,18 @@ class TestRunnerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'exactly once'):
             assignments({**groups,'cpu-qt':groups['cpu-qt']*2},3)
 
+    def test_stall_watchdog_names_the_unit_a_worker_journal_left_open(self):
+        from tests.parallel import last_started_unit
+        with tempfile.TemporaryDirectory() as directory:
+            journal=Path(directory)/'worker.journal.jsonl'
+            self.assertIsNone(last_started_unit(journal))
+            rows=[dict(id='tests.a.Case.test_one',event='start'),
+                  dict(id='tests.a.Case.test_one',event='stop',seconds=1.0,failures=0,errors=0,skips=0)]
+            journal.write_text(''.join(json.dumps(row)+'\n' for row in rows))
+            self.assertIsNone(last_started_unit(journal))
+            journal.write_text(journal.read_text()+json.dumps(dict(id='tests.a.Case.test_hang',event='start'))+'\n')
+            self.assertEqual(last_started_unit(journal),'tests.a.Case.test_hang')
+
     def test_functional_units_own_scenario_state_and_report_failure_skip_and_cleanup(self):
         from tests.functional_units import functional_units
         events = []

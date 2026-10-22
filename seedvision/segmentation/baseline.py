@@ -15,6 +15,7 @@ import cv2
 import numpy as np
 
 from seedvision.persistence.image_decoding import read_image
+from seedvision.pipeline.node_aliases import owning_node
 
 from seedvision.cuda import (
     CudaContext,
@@ -699,14 +700,7 @@ def analyze_image(
     reused: list[str] = []
 
     def node_enabled(node_id: str) -> bool:
-        visible_node_id = {
-            "foreground_noise_likelihood": "refined_background_likelihood",
-            "colour_reference": "deskew_colour",
-            "scale_calibration": "ruler_detection",
-            "edge_ridges": "edge_gradients",
-            "reference_edge_ridges": "reference_edge_probability",
-        }.get(node_id, node_id)
-        return enabled_nodes is None or visible_node_id in enabled_nodes
+        return enabled_nodes is None or owning_node(node_id) in enabled_nodes
 
     from seedvision.calibration.image import _calibration_source_key, calibration_cache_matches
     source_key = _calibration_source_key(image, cuda_context)

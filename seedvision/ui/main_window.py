@@ -68,6 +68,7 @@ from seedvision.calibration.neutral import neutral_balance_description
 
 _KEEP_INSTANCE_GENERATION = object()
 from seedvision.pipeline import NodeStatus, build_default_pipeline
+from seedvision.pipeline.node_aliases import owning_node
 from seedvision.ui.optimization import OptimizationController
 from seedvision.ui.reference_frames import ReferenceFrameController
 from seedvision.ui.work_control import WorkController
@@ -6553,15 +6554,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
     ) -> None:
         """Apply worker progress to the currently visible graph on the Qt thread."""
 
-        node_id = {
-            "foreground_segmentation": "background_likelihood",
-            "foreground_noise_likelihood": "refined_background_likelihood",
-            "colour_reference": "deskew_colour",
-            "scale_calibration": "ruler_detection",
-            "edge_ridges": "edge_gradients",
-            "reference_edge_ridges": "reference_edge_probability",
-            "perimeter_background_reference": "layout_detection",
-        }.get(node_id, node_id)
+        node_id = owning_node(node_id)
         current_path = self.image_view.image_path
         key = _path_identity(path_text)
         activity = self._analysis_activities.get(key)

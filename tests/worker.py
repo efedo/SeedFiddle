@@ -21,11 +21,15 @@ def main(argv=None):
             nonlocal owner
             if owner is None:owner=self
             self.started=time.perf_counter()
+            if self is owner:
+                # The controller's stall watchdog names this unit if it hangs.
+                with journal.open('a',encoding='utf-8') as output:
+                    output.write(json.dumps(dict(id=test.id(),event='start'))+'\n')
             super().startTest(test)
         def stopTest(self,test):
             if self is owner:
                 with journal.open('a',encoding='utf-8') as output:
-                    output.write(json.dumps(dict(id=test.id(),seconds=time.perf_counter()-self.started,
+                    output.write(json.dumps(dict(id=test.id(),event='stop',seconds=time.perf_counter()-self.started,
                         failures=len(self.failures),errors=len(self.errors),skips=len(self.skipped)))+'\n')
             super().stopTest(test)
         def addSubTest(self,test,subtest,err):
