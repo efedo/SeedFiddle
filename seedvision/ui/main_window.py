@@ -832,6 +832,8 @@ class _SpeciesLibraryBuildTask(QRunnable):
     def run(self) -> None:
         try:
             import cv2
+
+            from seedvision.persistence.image_decoding import read_image
             from seedvision import __version__
             from seedvision.calibration import calibrate_image
 
@@ -843,7 +845,7 @@ class _SpeciesLibraryBuildTask(QRunnable):
                     raise AnalysisCancelled("Species-library build was cancelled.")
                 self.signals.progress.emit(index, maximum, f"Calibrating {path.name}")
                 try:
-                    image = cv2.imread(str(path), cv2.IMREAD_COLOR)
+                    image = read_image(path, cv2.IMREAD_COLOR)
                     if image is None:
                         raise ValueError("could not decode the source image")
                     calibration = calibrate_image(image, self.calibration_settings)

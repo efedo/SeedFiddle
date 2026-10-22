@@ -14,6 +14,8 @@ from time import perf_counter
 import cv2
 import numpy as np
 
+from seedvision.persistence.image_decoding import read_image
+
 from seedvision.cuda import (
     CudaContext,
     GpuRaster,
@@ -551,7 +553,7 @@ def analyze_path(
             except Exception:
                 pass
         raw_started = perf_counter()
-        image = cv2.imread(str(path), cv2.IMREAD_COLOR)
+        image = read_image(path, cv2.IMREAD_COLOR)
         raw_elapsed = perf_counter() - raw_started
         if image is not None and progress_callback is not None:
             try:

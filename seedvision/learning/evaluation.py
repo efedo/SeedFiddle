@@ -11,6 +11,8 @@ from time import perf_counter
 import cv2
 import numpy as np
 
+from seedvision.persistence.image_decoding import read_image
+
 from seedvision.learning.checkpoint import load_checkpoint
 from seedvision.learning.contracts import ModelFamily
 from seedvision.learning.data import LearningManifest, read_label_image, resolve_sample_path
@@ -40,8 +42,8 @@ def _load_features(manifest_path: Path, relative_path: str, device):
 def _load_display_image(manifest_path: Path, sample, shape):
     image = None
     if sample.image:
-        image = cv2.imread(
-            str(resolve_sample_path(manifest_path, sample.image)), cv2.IMREAD_COLOR
+        image = read_image(
+            resolve_sample_path(manifest_path, sample.image), cv2.IMREAD_COLOR
         )
     if image is None:
         image = np.full((*shape, 3), 220, dtype=np.uint8)

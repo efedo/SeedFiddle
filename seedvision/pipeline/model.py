@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
+import math
 import re
 from typing import Any, Iterable, Mapping
 
@@ -130,6 +131,8 @@ class PipelineNode:
             raise KeyError(f"Node {self.identifier!r} has no parameter {key!r}.")
         if spec.kind == "float":
             value = float(value)
+            if not math.isfinite(value):
+                raise ValueError(f"{spec.label} must be a finite number.")
         elif spec.kind == "int":
             value = int(value)
         elif spec.kind == "bool":
@@ -832,7 +835,7 @@ class PipelineGraph:
             return (node_id,)
         self.revision += 1
         affected = (node_id, *self.downstream(node_id, recursive=True))
-        self.invalidate(affected)
+        self.invalidate(affected, preserve_bypassed=True)
         return affected
 
     def reset_parameters(self, node_id: str) -> tuple[str, ...]:

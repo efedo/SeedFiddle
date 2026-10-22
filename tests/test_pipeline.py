@@ -489,7 +489,10 @@ class PipelineModelTests(unittest.TestCase):
                 "output",
             ),
         )
-        self.assertEqual(graph.node("identification").status, NodeStatus.IDLE)
+        # Restored toolbox nodes stay disabled; an upstream edit invalidates
+        # them without presenting them as runnable.
+        self.assertFalse(graph.node("identification").enabled)
+        self.assertEqual(graph.node("identification").status, NodeStatus.BYPASSED)
         self.assertEqual(graph.node("layout_detection").status, NodeStatus.COMPLETE)
         self.assertEqual(graph.node("project").status, NodeStatus.COMPLETE)
 
@@ -733,7 +736,7 @@ class PipelineModelTests(unittest.TestCase):
             graph.node("procedural_instances").parameters["minimum_marker_score"],
             0.19,
         )
-        graph.invalidate.assert_called_once_with(affected)
+        graph.invalidate.assert_called_once_with(affected, preserve_bypassed=True)
         self.assertEqual(graph.node("procedural_instances").status, NodeStatus.IDLE)
 
         self.assertEqual(
@@ -1258,6 +1261,35 @@ class PipelineModelTests(unittest.TestCase):
                 "circle_candidates", "circle_accumulator_threshold", 100
             )
 
+    def check_test_non_finite_parameter_values_are_rejected(self) -> None:
+        graph = build_default_pipeline()
+        node = graph.node("ruler_detection")
+        before = dict(node.parameters)
+        revision = graph.revision
+        for value in (float("nan"), float("inf"), -float("inf")):
+            with self.assertRaises(ValueError):
+                graph.set_parameter("ruler_detection", "ruler_length_mm", value)
+        self.assertEqual(node.parameters, before)
+        self.assertEqual(graph.revision, revision)
+
+    def check_test_parameter_edit_keeps_disabled_node_bypassed(self) -> None:
+        graph = build_default_pipeline()
+        graph.set_enabled("ruler_detection", False)
+        node = graph.node("ruler_detection")
+        self.assertEqual(node.status, NodeStatus.BYPASSED)
+        affected = graph.set_parameter(
+            "ruler_detection",
+            "ruler_length_mm",
+            node.parameters["ruler_length_mm"] + 1.0,
+        )
+        self.assertIn("ruler_detection", affected)
+        self.assertFalse(node.enabled)
+        self.assertEqual(node.status, NodeStatus.BYPASSED)
+        for node_id in affected:
+            other = graph.node(node_id)
+            expected = NodeStatus.IDLE if other.enabled else NodeStatus.BYPASSED
+            self.assertEqual(other.status, expected, node_id)
+
     def check_test_oriented_trace_convexity_controls_are_explicit_and_consumed(self) -> None:
         graph = build_default_pipeline()
         node = graph.node("edge_traces")
@@ -1365,8 +1397,10 @@ class PipelineModelTests(unittest.TestCase):
         self.scenario(self.check_test_foreground_noise_first_tertile_is_default_and_exposed)
 
     def test_validation_and_recovery(self):
-        """5 related PipelineModelTests scenarios, each with private fixture state."""
+        """7 related PipelineModelTests scenarios, each with private fixture state."""
         self.scenario(self.check_test_reconnection_rejects_unimplemented_typed_substitutions)
+        self.scenario(self.check_test_non_finite_parameter_values_are_rejected)
+        self.scenario(self.check_test_parameter_edit_keeps_disabled_node_bypassed)
         self.scenario(self.check_test_identification_change_invalidates_only_downstream_nodes)
         self.scenario(self.check_test_parameter_batch_is_one_revision_and_one_invalidation)
         self.scenario(self.check_test_gradient_method_change_invalidates_only_gradient_descendants)
