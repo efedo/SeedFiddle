@@ -17,7 +17,7 @@ CONTEXT_CONNECTIONS = (
 def context_nodes():
     """Fresh mutable nodes; project ownership and image selection are distinct."""
     return (
-        PipelineNode('project', 'Project', 'Project',
+        PipelineNode('project', 'Inputs', 'Project',
             'Project images, image-local annotations and the species-library pin', 0, 40,
             details='Owns the image inventory, annotations and exact species-library pin. '
                 'Image selector chooses the current raw image from this inventory.',

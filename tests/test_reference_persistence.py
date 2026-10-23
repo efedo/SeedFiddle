@@ -641,7 +641,7 @@ class ReferenceRegionMainWindowTests(CatalogueTestCase):
                 "Validated; waiting for corrected-image calibration", panel
             )
             self.assertIn("Saved corrected coordinates: 68 × 52 px", panel)
-            self.assertIn("Annotated seeds 2 IDs / 160 px", panel)
+            self.assertIn("Seed outlines 2 IDs / 160 px", panel)
             self.assertIn(str(ReferenceRegionStore(root).path_for(image_path)), panel)
             self.assertNotIn(key, window._applied_instance_annotations)
 

@@ -74,7 +74,7 @@ class NativeKMeansTrainingDialog(QDialog):
         form.addRow('Patch size', self.patch_size)
         form.addRow('Sampling', sampling)
         form.addRow('Clusters', self.clusters)
-        form.addRow('Seed', self.seed_edit)
+        form.addRow('Random seed', self.seed_edit)
         form.addRow('Initializations', self.n_init)
         self.status_label = QLabel()
         self.status_label.setTextFormat(Qt.TextFormat.PlainText)
@@ -83,6 +83,7 @@ class NativeKMeansTrainingDialog(QDialog):
         self.stop_button = QPushButton('Stop')
         self.save_button = QPushButton('Save model…')
         self.button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        self.train_button.setDefault(True)
         actions = QHBoxLayout()
         for widget in (self.train_button, self.stop_button, self.save_button, self.button_box):
             actions.addWidget(widget)
@@ -124,7 +125,7 @@ class NativeKMeansTrainingDialog(QDialog):
             raise ValueError('Choose an image folder first.')
         text = self.seed_edit.text().strip()
         if not text or not text.isascii() or not text.isdecimal() or not 0 <= int(text) <= 0xFFFFFFFF:
-            raise ValueError('Seed must be an integer from 0 through 4294967295.')
+            raise ValueError('Random seed must be an integer from 0 through 4294967295.')
         mode = self.sampling_mode.currentIndex()
         sampling = None if mode == 0 else (self.sampling_count.value() if mode == 1 else float(self.sampling_fraction.value()))
         return _adapter.KMeansTrainingRequest(directory, self.prefix_edit.text(), self.image_count.value(),
@@ -134,6 +135,7 @@ class NativeKMeansTrainingDialog(QDialog):
         if self._worker is not None:
             return
         self._completion = None
+        self.button_box.button(QDialogButtonBox.StandardButton.Cancel).setText('Cancel')
         self.save_button.setEnabled(False)
         try:
             request = self._make_request()
@@ -170,6 +172,8 @@ class NativeKMeansTrainingDialog(QDialog):
             return
         self._completion, self._cached_rows = result, result.cache
         self.save_button.setEnabled(True)
+        # Training finished: leaving no longer abandons work, so say Close.
+        self.button_box.button(QDialogButtonBox.StandardButton.Cancel).setText('Close')
         self.status_label.setText(f'Ready to save: {result.summary.rows} patches, {result.summary.iterations} iterations.')
 
     def _stop_training(self):

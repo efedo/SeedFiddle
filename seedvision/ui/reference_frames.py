@@ -11,7 +11,7 @@ from seedvision.annotation.coordinates import reproject_bundle, validated_transf
 class ReferenceFrameController:
     def _init_reference_frames(self):
         self._source_fingerprints = {}
-        action = QAction('Review legacy reference alignment…',self)
+        action = QAction('Reference alignment…',self)
         action.triggered.connect(self._review_legacy_reference_alignment)
         for menu_action in self.menuBar().actions():
             if menu_action.text() == '&Analysis':

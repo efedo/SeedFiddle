@@ -1150,8 +1150,8 @@ def build_default_pipeline() -> PipelineGraph:
         ParameterSpec("shape_minimum_component_seeds", "Minimum physical seeds / component", "int", 1, 100, 1, "Minimum independent physical seeds required for a pose/hierarchy component."),
         ParameterSpec("shape_shrinkage_seed_count", "Hierarchy shrinkage support", "float", 0.0, 50.0, 0.5, "Equivalent parent support controlling partial pooling of sparse hierarchy components."),
         ParameterSpec("shape_maximum_contour_modes", "Maximum contour modes", "int", 0, 12, 1, "Maximum smooth residual contour modes retained after regularization."),
-        ParameterSpec("shape_use_prior_for_oval_candidates", "Use shape prior for oval candidates", "bool", description="Opt in to distribution-aware ellipse dimensions and pose families for curved-edge candidate voting."),
-        ParameterSpec("shape_use_prior_for_procedural", "Use shape prior for procedural candidates", "bool", description="Opt in to a separate soft population-shape compatibility term; existing hard safeguards remain authoritative."),
+        ParameterSpec("shape_use_prior_for_oval_candidates", "Shape prior for oval candidates", "bool", description="Opt in to distribution-aware ellipse dimensions and pose families for curved-edge candidate voting."),
+        ParameterSpec("shape_use_prior_for_procedural", "Shape prior for procedural candidates", "bool", description="Opt in to a separate soft population-shape compatibility term; existing hard safeguards remain authoritative."),
     )
     foreground_parameters = (
         ParameterSpec(
@@ -1168,7 +1168,7 @@ def build_default_pipeline() -> PipelineGraph:
         ParameterSpec("foreground_current_reference_weight", "Current-image reference weight", "float", 0.0, 8.0, 0.1, "Relative source-level weight of the current image in combined mode; it never overwrites painted pixels."),
         ParameterSpec(
             "inner_radius_fraction",
-            "Outer-rim area used",
+            "Rim area used",
             "float",
             0.75,
             0.96,
@@ -1321,7 +1321,7 @@ def build_default_pipeline() -> PipelineGraph:
         ParameterSpec("background_frequency_weight_power", "Mode frequency influence", "float", 0.0, 1.0, 0.05, "Weights each learned background colour mode by its occurrence frequency in the painted mask. Zero treats represented modes equally; one applies their area proportions directly."),
         ParameterSpec("background_distribution_scale_multiplier", "Colour tolerance multiplier", "float", 0.50, 3.00, 0.05, "Expands or contracts every learned background Lab colour mode before per-pixel probability is calculated."),
         ParameterSpec("background_automatic_evidence_floor", "Perimeter evidence floor", "float", 0.0, 1.0, 0.02, "Minimum fit authority retained by the automatic perimeter source after painted Background coverage is available."),
-        ParameterSpec("background_reviewed_authority_half_life_seed_areas", "Perimeter authority half-life / seed areas", "float", 0.05, 8.0, 0.05, "Painted Background coverage, measured in nominal seed areas, required to halve perimeter-source authority above its floor."),
+        ParameterSpec("background_reviewed_authority_half_life_seed_areas", "Perimeter decay (seed areas)", "float", 0.05, 8.0, 0.05, "Painted Background coverage, measured in nominal seed areas, required to halve perimeter-source authority above its floor."),
     )
     perimeter_background_parameters = (
         ParameterSpec(
@@ -1541,7 +1541,7 @@ def build_default_pipeline() -> PipelineGraph:
     illumination_parameters = (
         ParameterSpec("illumination_scale_fraction", "Illumination scale / diameter", "float", 0.10, 4.0, 0.05, "Large Gaussian scale used to separate illumination from seed reflectance."),
         ParameterSpec("flattening_contrast_gain", "Flattened contrast gain", "float", 0.10, 8.0, 0.10, "Gain applied to the log ratio between grayscale and its local illumination field."),
-        ParameterSpec("despeckle_maximum_diameter_fraction", "Maximum speckle diameter / seed diameter", "float", 0.005, 0.30, 0.005, "Largest dark feature scale eligible for removal, relative to the image-specific seed diameter. Features that do not fit inside this grayscale-closing support are preserved."),
+        ParameterSpec("despeckle_maximum_diameter_fraction", "Max speckle size / seed diameter", "float", 0.005, 0.30, 0.005, "Largest dark feature scale eligible for removal, relative to the image-specific seed diameter. Features that do not fit inside this grayscale-closing support are preserved."),
         ParameterSpec("despeckle_minimum_darkness_levels", "Minimum darkness below surround", "float", 1.0, 255.0, 1.0, "Minimum 8-bit grayscale intensity difference between an eligible speckle and its local closed-background estimate."),
         ParameterSpec("despeckle_periphery_width_fraction", "Peripheral sampling width / diameter", "float", 0.005, 0.20, 0.005, "Distance beyond the maximum speckle radius at which surrounding flattened-grayscale values are sampled for rejection and blended interpolation."),
         ParameterSpec("despeckle_minimum_lighter_surround_fraction", "Minimum lighter surround fraction", "float", 0.50, 1.00, 0.01, "Minimum fraction of sixteen peripheral directions that must be lighter by the configured darkness contrast. High values preserve lines and boundaries that are not enclosed speckles."),

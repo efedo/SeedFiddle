@@ -8,6 +8,7 @@ from tests.review_fixtures import controls_window, dispose_window, isolated_wind
 
 import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -44,17 +45,17 @@ class PipelineCanvasTests(CatalogueTestCase):
         unused_actions = [
             action.text() for action in canvas.unused_nodes_menu.actions()
         ]
-        self.assertIn("Add Circle candidates to graph", unused_actions)
-        self.assertIn("Add Distance-peak candidates to graph", unused_actions)
+        self.assertIn("Circle candidates", unused_actions)
+        self.assertIn("Distance-peak candidates", unused_actions)
         self.assertIn(
-            "Add Lightening derivative upper cutoff to graph", unused_actions
+            "Lightening derivative upper cutoff", unused_actions
         )
 
         self.assertIn(
-            "Add Darkening derivative upper cutoff to graph", unused_actions
+            "Darkening derivative upper cutoff", unused_actions
         )
         self.assertIn(
-            "Add Calibration residual risk to graph", unused_actions
+            "Calibration residual risk", unused_actions
         )
         for calibration_node_id in (
             "ruler_detection",
@@ -641,7 +642,7 @@ class PipelineCanvasTests(CatalogueTestCase):
         restore_action = next(
             action
             for action in canvas.unused_nodes_menu.actions()
-            if action.text() == "Add Circle candidates to graph"
+            if action.text() == "Circle candidates"
         )
         restore_action.trigger()
         self.application.processEvents()
@@ -996,7 +997,7 @@ class PipelineCanvasTests(CatalogueTestCase):
         window.pipeline_canvas.select_node("project")
         self.application.processEvents()
 
-        self.assertEqual(window.pipeline_inspector.title_label.text(), "Node: Project")
+        self.assertEqual(window.pipeline_inspector.title_label.text(), "Node: Inputs")
         self.assertFalse(window.pipeline_inspector.project_info_container.isHidden())
         summary = window.pipeline_inspector.project_info_label.text()
         self.assertIn("Master:", summary)
@@ -1382,7 +1383,7 @@ class PipelineCanvasTests(CatalogueTestCase):
             action
             for action in window.pipeline_canvas.unused_nodes_menu.actions()
             if action.text()
-            == "Add Lightening derivative upper cutoff to graph"
+            == "Lightening derivative upper cutoff"
         )
         restore_lightening.trigger()
         self.application.processEvents()
@@ -1517,14 +1518,14 @@ class PipelineCanvasTests(CatalogueTestCase):
         restore_action = next(
             action
             for action in window.pipeline_canvas.unused_nodes_menu.actions()
-            if action.text() == "Add Seed identification to graph"
+            if action.text() == "Seed identification"
         )
         restore_action.trigger()
         self.application.processEvents()
         self.assertFalse(window.calibration_section.isVisible())
         self.assertTrue(window.baseline_section.isVisible())
         self.assertFalse(window.analyze_button.isVisible())
-        self.assertTrue(window.warning_label.isVisible())
+        self.assertFalse(window.warning_label.isVisible())
 
     def check_test_image_and_pipeline_share_a_split_workspace(self) -> None:
 
@@ -1971,7 +1972,7 @@ class PipelineCanvasTests(CatalogueTestCase):
         self.assertIn("no-match", reference_legend)
 
     def check_test_compact_toolbar_and_contextual_paint_panel(self) -> None:
-        from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
+        from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, Qt
         from PySide6.QtGui import QMouseEvent
         from PySide6.QtTest import QTest
         from PySide6.QtWidgets import QLabel
@@ -1988,7 +1989,8 @@ class PipelineCanvasTests(CatalogueTestCase):
             for label in window.workflow_toolbar.findChildren(QLabel)
         }
         self.assertIn("Overlay:", toolbar_labels)
-        self.assertIn("Opacity:", toolbar_labels)
+        self.assertIn("Overlay opacity:", toolbar_labels)
+        self.assertIn("Annotation opacity:", toolbar_labels)
         self.assertIn("Annotate:", toolbar_labels)
         self.assertEqual(window.paint_background_action.text(), "Materials")
         self.assertEqual(window.annotate_instances_action.text(), "Seeds")
@@ -2041,7 +2043,8 @@ class PipelineCanvasTests(CatalogueTestCase):
         self.assertNotIn("Viewer overlay", detail_labels)
         self.assertNotIn("Painted background reference", detail_labels)
         self.assertTrue(window.overlay_owner_label.isHidden())
-        self.assertIs(window.reference_panel.parentWidget(), window.annotation_workspace)
+        # Docked as a splitter pane beside the viewer, hidden until annotating.
+        self.assertIs(window.reference_panel.parentWidget(), window.main_splitter)
         self.assertTrue(window.reference_panel.isHidden())
 
         window.paint_background_action.setEnabled(True)
@@ -2057,21 +2060,21 @@ class PipelineCanvasTests(CatalogueTestCase):
         self.application.processEvents()
         self.assertTrue(window.background_point_button.isChecked())
         self.assertFalse(window.reference_panel.isHidden())
-        hit_point = window.reference_panel_drag_handle.mapTo(
-            window.annotation_workspace,
-            window.reference_panel_drag_handle.rect().center(),
+        panel_rect = QRect(
+            window.reference_panel.mapTo(window, QPoint(0, 0)),
+            window.reference_panel.size(),
         )
-        hit_widget = window.annotation_workspace.childAt(hit_point)
-        self.assertTrue(
-            hit_widget is window.reference_panel
-            or window.reference_panel.isAncestorOf(hit_widget)
+        image_rect = QRect(
+            window.image_view.mapTo(window, QPoint(0, 0)),
+            window.image_view.size(),
         )
+        self.assertFalse(panel_rect.intersects(image_rect))
         self.assertEqual(window.image_view._reference_point_mode, "background")
         window.resize(1200, 650)
         window._show_split_workspace()
         self.application.processEvents()
         self.assertLessEqual(window.reference_panel.height(), window.height())
-        self.assertTrue(window.reference_panel.resize_grip.isVisible())
+        self.assertFalse(window.reference_panel.resize_grip.isVisible())
         self.assertGreaterEqual(
             window.foreground_point_button.height(),
             window.foreground_point_button.sizeHint().height(),
@@ -2080,41 +2083,21 @@ class PipelineCanvasTests(CatalogueTestCase):
             window.reference_panel_contents.width(),
             window.reference_panel_scroll.viewport().width(),
         )
-        # Start with room to drag horizontally inside the workspace.
-        window.image_view._move_context_panel_to(QPoint(180, 90), remember=True)
-        initial_panel_position = window.reference_panel.pos()
-        drag_delta = QPoint(-60, 0)
-        drag_center = window.reference_panel_drag_handle.rect().center()
-        QTest.mousePress(
-            window.reference_panel_drag_handle,
-            Qt.MouseButton.LeftButton,
-            pos=drag_center,
-        )
-        target_local = drag_center + drag_delta
-        move_event = QMouseEvent(
-            QEvent.Type.MouseMove,
-            QPointF(target_local),
-            QPointF(window.reference_panel_drag_handle.mapToGlobal(target_local)),
-            Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton,
-            Qt.KeyboardModifier.NoModifier,
-        )
-        self.application.sendEvent(window.reference_panel_drag_handle, move_event)
-        QTest.mouseRelease(
-            window.reference_panel_drag_handle,
-            Qt.MouseButton.LeftButton,
-            pos=target_local,
-        )
+        # The splitter divider, not a drag handle, sizes the docked pane.
+        splitter = window.main_splitter
+        index = splitter.indexOf(window.reference_panel)
+        sizes = splitter.sizes()
+        before = window.reference_panel.width()
+        # The viewer may already be at its minimum, so narrow the pane.
+        sizes[index] -= 60
+        sizes[1] += 60
+        splitter.setSizes(sizes)
         self.application.processEvents()
-        self.assertNotEqual(window.reference_panel.pos(), initial_panel_position)
-        self.assertEqual(window.reference_panel.pos(), initial_panel_position + drag_delta)
-        window.image_view._move_context_panel_to(QPoint(180, 90), remember=True)
-        self.application.processEvents()
-        moved_panel_position = window.reference_panel.pos()
-        window.image_view._layout_context_panel()
-        self.assertEqual(window.reference_panel.pos(), moved_panel_position)
+        self.assertLess(window.reference_panel.width(), before)
+        self.assertGreaterEqual(window.reference_panel.width(), 280)
         self.assertEqual(
             window.reference_panel_drag_handle.toolTip(),
-            "Drag to move the annotation tools anywhere in the application workspace.",
+            "Docked beside the image; drag the divider to resize.",
         )
 
         window.background_exclusion_button.setChecked(True)
@@ -3579,7 +3562,11 @@ class PipelineCanvasTests(CatalogueTestCase):
             # when a previous GUI test ended at one of these coordinates.
             QTest.mouseMove(view.viewport(), view.viewport().rect().topLeft())
             QTest.mouseMove(view.viewport(), first)
-            QTest.qWait(55)
+            # The preview is debounced; wait for it rather than a fixed 55 ms,
+            # which is too short when the full parallel suite is running.
+            deadline = time.monotonic() + 2.0
+            while view._instance_preview_endpoint is None and time.monotonic() < deadline:
+                QTest.qWait(10)
             self.assertIsNotNone(view._instance_preview_endpoint)
             QTest.mouseClick(view.viewport(), Qt.MouseButton.LeftButton, pos=first)
             self.assertIsNotNone(view._instance_trace_anchor)

@@ -6,7 +6,7 @@ Shared project inputs (20 October 2026): every Pipeline workspace contains **Pro
 
 The two colour-correction choices serve different purposes. Built-in **Deskew and colour balance** rectifies image geometry and balances RGB channels using neutral patches. The separate PlantCV colour-card workflows fit source patch colours to target patch colours: the automatic card route uses an affine RGB transform with offsets, while four-input **Correct colour** uses a nine-term polynomial RGB fit. This can represent colour mixing and nonlinear response that neutral balance cannot; it does not replace geometric rectification. Keep it as optional advanced calibration when target patch data are available. Applying it alone does not establish better measurement accuracy.
 
-Current Pipeline workflow (19 October 2026): choose a factory in the compact Workflow selector or **… → Other pipelines**, or use **… → Load pipeline** for a saved custom pipeline. All loads start with **Freeze** checked. Clear Freeze to edit node parameters, supported connections, bypass state and model/input selections. The original factory stays immutable; **Save** requires a distinct custom name and filename. Re-selecting a factory loads its original values.
+Current Pipeline workflow (19 October 2026): choose a factory in the compact Workflow selector or **… → Other pipelines**, or use **… → Load pipeline** for a saved custom pipeline. All loads start with **Lock** checked. Clear Freeze to edit node parameters, supported connections, bypass state and model/input selections. The original factory stays immutable; **Save** requires a distinct custom name and filename. Re-selecting a factory loads its original values.
 
 Use **Run pipeline** and **Stop** on the application toolbar. The global **Native/PlantCV** selector and selected-node **Backend** selector choose actual execution; **Inherit** follows the global choice. They remain available while frozen. Stages without equivalent public calls show a native-only reason. The six watershed stages share one backend choice because the original is one public call. Explicit PlantCV execution requires the pinned local runtime; unavailable execution is reported without silently switching to native.
 
@@ -14,7 +14,7 @@ The Pipeline **…** menu provides pipeline and layout load/save. On a narrow pa
 
 The shared image toolbar follows the active pipeline. **Overlay** offers **Source image**, **Calibrated image and annotations**, and the available outputs grouped by node. **Opacity** blends a mask or label output only when a matching RGB image has the same dimensions and coordinate frame. HSV controls appear only where the selected display supports their meaning. **Materials** or **Seeds** opens the calibrated annotation image established by Default seed analysis for that image; source and crop previews are never treated as the annotation canvas. Run Default seed analysis first if that frame is unavailable. Returning to Default restores its image controls.
 
-For working binary, adaptive-mean and Otsu threshold nodes, and the SMPTS intersection node, clear **Freeze** and use **Select foreground region…** or **Settings → Foreground region (input pixels)**. Enter `null` for the whole frame, or nonempty half-open integer bounds `[left, top, right, bottom]`: left/top are included, right/bottom are excluded. Bounds use that node's input pixels. Drawing is available for source-frame inputs; transformed inputs require bounds entered in their own input frame. The adapter runs after the threshold or intersection, sets foreground outside the rectangle to zero, and preserves the full raster dimensions and coordinates. It does not crop or resize the image. With PlantCV selected, the public threshold runs first and the explicit native mask adapter follows it; saved provenance identifies that addition. The region belongs to the working pipeline, survives save/reopen, and invalidates its node and dependents.
+For working binary, adaptive-mean and Otsu threshold nodes, and the SMPTS intersection node, clear **Lock** and use **Select foreground region…** or **Settings → Foreground region (input pixels)**. Enter `null` for the whole frame, or nonempty half-open integer bounds `[left, top, right, bottom]`: left/top are included, right/bottom are excluded. Bounds use that node's input pixels. Drawing is available for source-frame inputs; transformed inputs require bounds entered in their own input frame. The adapter runs after the threshold or intersection, sets foreground outside the rectangle to zero, and preserves the full raster dimensions and coordinates. It does not crop or resize the image. With PlantCV selected, the public threshold runs first and the explicit native mask adapter follows it; saved provenance identifies that addition. The region belongs to the working pipeline, survives save/reopen, and invalidates its node and dependents.
 
 Full-resolution analysis and reusable rasters remain on CUDA; bounded previews can be smaller for display. Admission still reports explicit unsupported precision, memory or work limits instead of silently changing image resolution. Size/colour count controls admit up to 1,024 resolved labels; independent precision, encoded-byte, metadata-traversal and work budgets still apply to calculation, archives and saved-stage replay. SMPTS inventory allows 7,936 components under the unchanged 32 MiB modeled metadata allowance; its packed-crop allowance is 144 MiB within the unchanged 1 GiB composed per-operation CUDA admission. These operation bounds do not promise total application GPU memory or process RSS. Successful execution, an admitted photograph, or a displayed component count does not establish correct seed counts. SMPTS remains a declared paper reconstruction with assumptions; eroded components and extracted crops are not automatically complete biological seed outlines or validated original-SMPTS results.
 
@@ -551,7 +551,7 @@ for the laboratory work still required. The concise capability matrix is in
 4. Run the pipeline. **Stop current work** (`Ctrl+.`) requests cancellation at a
    cooperative boundary. Closing waits asynchronously for running work, then
    resolves drafts with Save/Discard/Cancel. Failed saves retain in-memory edits.
-5. Open **Review / export results** (`Ctrl+R`). Inspect proposed, accepted,
+5. Open **Results** (`Ctrl+R`). Inspect proposed, accepted,
    excluded and unreviewed counts. Review decisions are tied to the exact source,
    recipe, calibration, annotation and prediction revision. Double-click a row
    to inspect it. Inspect unselected procedural candidates for missed atypical
@@ -662,7 +662,7 @@ source environment's packages. Conversion does not retrain or validate a model.
 ## Individual seed crops
 
 The reviewed crop-export workflow adds **Export crops for visible rows…** to
-**Review / export results**. Use the review/seed filters to choose rows, then supply
+**Results**. Use the review/seed filters to choose rows, then supply
 pixel padding and a destination. Each available seed produces a corrected image
 PNG, an isolated binary-mask PNG and coordinate/provenance metadata in
 `seed-crops.json`. The padded image may contain neighbouring seeds; their IDs and
@@ -823,8 +823,8 @@ another reference. For seed instances:
 2. Choose Brush, Trace edge, Shape fill, Smart fill, or Eraser. Tool instructions
    are in each button's tooltip. Clear seed and Clear all are beside the visibility
    control.
-3. **Import bundled seed labels…** imports only the source-bound bundled labels.
-   If none match, it explains how to use **Import seed labels from file…** instead.
+3. **Import bundled seed outlines…** imports only the source-bound bundled labels.
+   If none match, it explains how to use **Import seed outlines from file…** instead.
    File import accepts lossless categorical PNG, TIFF or NPZ labels whose dimensions
    exactly match the corrected image; the chooser shows the expected dimensions.
    It does not transform a source-coordinate mask or silently select another source.
@@ -850,7 +850,7 @@ Keep these states separate:
 | --- | --- |
 | Draft | Editable/imported labels, separate from the labels currently used by analysis. |
 | **Apply + save** | Uses the labels in analysis and attempts a sidecar disk save. A save failure leaves applied labels in memory; the confirmation text reports it. **Save Project** also records the sidecar digest and project settings. |
-| **Export seed labels…** | Writes the applied full-resolution labels as a 16-bit PNG in corrected-image coordinates. Apply a draft first to include its changes. |
+| **Export seed outlines…** | Writes the applied full-resolution labels as a 16-bit PNG in corrected-image coordinates. Apply a draft first to include its changes. |
 | **Add image and seed labels to training dataset…** | Creates a normalized image crop, model input features, seed labels, derived boundary targets and a manifest entry. This prepares data; training is a separate Learning action. |
 
 ## References and recovery
@@ -876,7 +876,7 @@ modified snapshot components prevent restoration.
 
 ## Optimize from applied project references
 
-Save a project, apply the intended references, and clear **Freeze**. Use
+Save a project, apply the intended references, and clear **Lock**. Use
 **Analysis → Optimize eligible nodes from project references…** or a supported
 node's **Optimize from project references…** action. Current-image and mixed
 library/current-image reference modes work from local applied references without
@@ -912,7 +912,7 @@ the toolbar. Mouse-wheel zoom retains the scene point under the pointer.
 
 ## Training and evaluation
 
-Use **Learning → Add image and seed labels to training dataset…** after analysis
+Use **Learning → Seed outlines → Add image to training dataset…** after analysis
 and label review. The readiness message reports complete reviewed outlines,
 excluded IDs and unapplied drafts before writing. Fix incomplete, disconnected,
 unreviewed or explicitly excluded outlines and apply/discard drafts; export refuses

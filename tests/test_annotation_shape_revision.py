@@ -384,15 +384,18 @@ class AnnotationWidgetTests(unittest.TestCase):
             self.app.processEvents()
             stack = window.instance_tool_options_stack
             self.assertLess(stack.height(), 120)
-            grip = window.reference_panel.resize_grip
-            start = grip.rect().center()
-            QTest.mousePress(grip, Qt.MouseButton.LeftButton, pos=start)
-            QTest.mouseMove(grip, start+QPoint(65, -40))
-            QTest.mouseRelease(grip, Qt.MouseButton.LeftButton, pos=start+QPoint(65, -40))
-            self.assertIsNotNone(window.reference_panel.user_size)
-            size = window.reference_panel.size()
-            window.image_view._layout_context_panel()
-            self.assertEqual(window.reference_panel.size(), size)
+            # The docked pane keeps a width the user set with the divider.
+            splitter = window.main_splitter
+            index = splitter.indexOf(window.reference_panel)
+            sizes = splitter.sizes()
+            sizes[index] += 65
+            sizes[1] -= 65
+            splitter.setSizes(sizes)
+            self.app.processEvents()
+            width = window.reference_panel.width()
+            window._sync_reference_panel_visibility()
+            self.app.processEvents()
+            self.assertEqual(window.reference_panel.width(), width)
         finally:
             dispose_window(window)
 

@@ -157,7 +157,7 @@ class InstanceMaskImportUiTests(unittest.TestCase):
              patch.object(QMessageBox, 'information') as information:
             self.window.load_instance_labels_action.trigger()
         chooser.assert_not_called()
-        self.assertIn('Import seed labels from file', information.call_args.args[2])
+        self.assertIn('Import seed outlines from file', information.call_args.args[2])
         self.assertNotIn(self.key, self.window._instance_annotations_dirty)
 
     def check_test_explicit_file_chooser_bypasses_an_available_bundle(self) -> None:

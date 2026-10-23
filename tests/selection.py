@@ -82,6 +82,8 @@ CPU_QT_TARGETS = (
     'tests.test_native_image_inputs.ImageInputContractTests',
     'tests.test_test_runner',
     'tests.test_node_vocabulary',
+    'tests.test_ui_text_limits',
+    'tests.test_gui_layout',
 )
 
 ACCEPTANCE_TARGETS = (

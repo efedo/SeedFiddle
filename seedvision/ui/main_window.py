@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import json
 import os
 import weakref
@@ -58,10 +59,12 @@ from PySide6.QtWidgets import (
     QStyle,
     QStyledItemDelegate,
     QStyleOptionViewItem,
+    QTabWidget,
     QToolBar,
     QToolButton,
     QVBoxLayout,
     QWidget,
+    QWidgetAction,
 )
 
 from seedvision.calibration.neutral import neutral_balance_description
@@ -1210,6 +1213,50 @@ class _ProceduralFitTask(QRunnable):
         self.signals.completed.emit(report)
 
 
+_REFERENCE_SUMMARY_STATES = {
+    "loaded": ("References loaded", "ok"),
+    "saved": ("References saved", "ok"),
+    "pending": ("References awaiting calibration", "info"),
+    "missing": ("No references", "muted"),
+    "not checked": ("References not checked", "muted"),
+    "rejected": ("References not loaded", "warn"),
+    "withheld": ("References withheld by project", "warn"),
+    "memory_only": ("References not saved to disk", "warn"),
+}
+_SUMMARY_CHIP_COLOURS = {
+    "ok": ("#e3f1e6", "#1e5b2c"),
+    "info": ("#e2edf6", "#1d4a6e"),
+    "warn": ("#fbeadb", "#7a3d06"),
+    "muted": ("#eceff2", "#4a5560"),
+}
+
+
+def _summary_chip(text: str, tone: str) -> str:
+    background, foreground = _SUMMARY_CHIP_COLOURS[tone]
+    return (
+        f'<span style="background-color:{background}; color:{foreground};">'
+        f"&nbsp;{html.escape(text)}&nbsp;</span>"
+    )
+
+
+def _reference_summary_html(
+    status: str, *, seed_count: int, draft: bool, bundled_available: bool
+) -> str:
+    """Render the per-image reference state as a few compact status chips."""
+
+    label, tone = _REFERENCE_SUMMARY_STATES.get(
+        status, (status.replace("_", " ").capitalize(), "muted")
+    )
+    chips = [_summary_chip(label, tone)]
+    if seed_count:
+        chips.append(_summary_chip(f"{seed_count:,} seeds outlined", "ok"))
+    if draft:
+        chips.append(_summary_chip("Unapplied edits", "warn"))
+    if bundled_available and not seed_count:
+        chips.append(_summary_chip("Bundled draft outlines available", "info"))
+    return " ".join(chips)
+
+
 class _ImageListDelegate(QStyledItemDelegate):
     """Keep native image rows while reserving a small removal target."""
 
@@ -1224,8 +1271,11 @@ class _ImageListDelegate(QStyledItemDelegate):
         native = QStyleOptionViewItem(option)
         native.rect = option.rect.adjusted(0, 0, -26, 0)
         super().paint(painter, native, index)
-        icon = option.widget.style().standardIcon(QStyle.StandardPixmap.SP_TitleBarCloseButton)
-        icon.paint(painter, self.remove_rect(option.rect), Qt.AlignmentFlag.AlignCenter)
+        # Draw the removal target only where the pointer or selection is, so a
+        # long list does not show a column of identical close buttons.
+        if option.state & (QStyle.StateFlag.State_MouseOver | QStyle.StateFlag.State_Selected):
+            icon = option.widget.style().standardIcon(QStyle.StandardPixmap.SP_TitleBarCloseButton)
+            icon.paint(painter, self.remove_rect(option.rect), Qt.AlignmentFlag.AlignCenter)
 
     def editorEvent(self, event, model, option, index):
         if (
@@ -1445,6 +1495,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
 
         self.image_list = QListWidget(self)
         self.image_list.setAlternatingRowColors(True)
+        # Hover state drives the per-row removal target in the delegate.
+        self.image_list.setMouseTracking(True)
         self.image_list.itemActivated.connect(self._open_list_item)
         self.pipeline_inspector.image_selection_requested.connect(self._select_pipeline_image)
         self.pipeline_inspector.species_library_requested.connect(self._open_species_library_manager)
@@ -1469,6 +1521,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._init_work_control()
         self.stop_action.triggered.connect(lambda: self.pipeline_workflow.stop() if self.pipeline_workflow.active else None)
         self._init_results()
+        self._finalize_menus()
         self._show_split_workspace()
         self.pipeline_inspector.enable_unified_optimization()
         self._analysis_activity_timer = QTimer(self)
@@ -3106,7 +3159,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         )
 
         self.save_reference_regions_action = QAction(
-            "Save applied reference regions", self
+            "Save applied annotations", self
         )
         self.save_reference_regions_action.setEnabled(False)
         self.save_reference_regions_action.setToolTip(
@@ -3117,7 +3170,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             self._save_reference_regions
         )
 
-        self.undo_reference_edit_action = QAction("Undo reference edit", self)
+        self.undo_reference_edit_action = QAction("Undo annotation edit", self)
         self.undo_reference_edit_action.setShortcut(
             QKeySequence.StandardKey.Undo
         )
@@ -3184,7 +3237,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         )
 
         self.export_learning_sample_action = QAction(
-            "Add image and seed labels to training dataset…", self
+            "Add image to training dataset…", self
         )
         self.export_learning_sample_action.setEnabled(False)
         self.export_learning_sample_action.setToolTip(
@@ -3195,7 +3248,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         )
 
         self.load_instance_labels_action = QAction(
-            "Import bundled seed labels…", self
+            "Import bundled seed outlines…", self
         )
         self.load_instance_labels_action.setEnabled(False)
         self.load_instance_labels_action.setToolTip(
@@ -3206,7 +3259,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             self._load_instance_reference_mask
         )
         self.choose_instance_labels_action = QAction(
-            "Import seed labels from file…", self
+            "Import seed outlines from file…", self
         )
         self.choose_instance_labels_action.setEnabled(False)
         self.choose_instance_labels_action.setToolTip(
@@ -3217,7 +3270,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             self._choose_instance_mask_file
         )
         self.save_instance_labels_action = QAction(
-            "Export seed labels…", self
+            "Export seed outlines…", self
         )
         self.save_instance_labels_action.setEnabled(False)
         self.save_instance_labels_action.setToolTip(
@@ -3263,21 +3316,23 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         file_menu.addAction(self.save_project_as_action)
         file_menu.addSeparator()
         file_menu.addAction(self.open_action)
-        settings_menu = file_menu.addMenu("Analysis settings")
-        settings_menu.addAction(self.load_analysis_settings_action)
-        settings_menu.addAction(self.save_analysis_settings_action)
-        file_menu.addSeparator()
         file_menu.addAction(self.save_reference_regions_action)
         file_menu.addSeparator()
         file_menu.addAction(self.exit_action)
 
         edit_menu = self.menuBar().addMenu("&Edit")
         edit_menu.addAction(self.undo_reference_edit_action)
+        self._menus = {
+            "file": file_menu,
+            "edit": edit_menu,
+        }
 
         analysis_menu = self.menuBar().addMenu("&Analysis")
         analysis_menu.addAction(self.analyze_action)
+        self._menus["analysis"] = analysis_menu
 
         learning_menu = self.menuBar().addMenu("&Learning")
+        self._menus["learning"] = learning_menu
         learning_menu.addAction(self.load_instance_labels_action)
         learning_menu.addAction(self.choose_instance_labels_action)
         learning_menu.addAction(self.save_instance_labels_action)
@@ -3303,6 +3358,93 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
 
         help_menu = self.menuBar().addMenu("&Help")
         help_menu.addAction(self.diagnostics_action)
+        self._menus["help"] = help_menu
+
+    def _finalize_menus(self) -> None:
+        """Lay out every menu once all controllers have created their actions.
+
+        Controllers append to the Analysis and File menus while they initialize;
+        this pass gives each menu one deliberate order without changing which
+        actions exist or what they do.
+        """
+
+        from seedvision.ui.help_menu import install_help_actions
+
+        menus = self._menus
+        for menu in menus.values():
+            for action in tuple(menu.actions()):
+                menu.removeAction(action)
+
+        file_menu = menus["file"]
+        for action in (
+            self.new_project_action,
+            self.open_project_action,
+        ):
+            file_menu.addAction(action)
+        file_menu.addMenu(self.recent_projects_menu)
+        file_menu.addAction(self.save_project_action)
+        file_menu.addAction(self.save_project_as_action)
+        file_menu.addSeparator()
+        file_menu.addAction(self.open_action)
+        file_menu.addAction(self.save_reference_regions_action)
+        file_menu.addSeparator()
+        transfer_menu = file_menu.addMenu("Import / export")
+        transfer_menu.addAction(self.load_analysis_settings_action)
+        transfer_menu.addAction(self.save_analysis_settings_action)
+        transfer_menu.addSeparator()
+        transfer_menu.addAction(self.save_viewport_action)
+        snapshot_menu = file_menu.addMenu("Snapshots")
+        for action in self.snapshot_actions:
+            snapshot_menu.addAction(action)
+        file_menu.addSeparator()
+        file_menu.addAction(self.exit_action)
+
+        edit_menu = menus["edit"]
+        edit_menu.addAction(self.undo_reference_edit_action)
+        edit_menu.addAction(self.redo_reference_action)
+        edit_menu.addSeparator()
+        edit_menu.addAction(self.paint_background_action)
+        edit_menu.addAction(self.annotate_instances_action)
+        edit_menu.addSeparator()
+        edit_menu.addAction(self.search_node_action)
+
+        analysis_menu = menus["analysis"]
+        analysis_menu.addAction(self.analyze_action)
+        analysis_menu.addAction(self.stop_action)
+        analysis_menu.addSeparator()
+        analysis_menu.addAction(self.results_action)
+        analysis_menu.addAction(self.terminal_history_action)
+        analysis_menu.addSeparator()
+        optimise_menu = analysis_menu.addMenu("Optimise")
+        optimise_menu.addAction(self.optimize_project_action)
+        optimise_menu.addAction(self.import_optimization_targets_action)
+        optimise_menu.addAction(self.optimization_history_action)
+        analysis_menu.addAction(self.reference_alignment_action)
+
+        learning_menu = menus["learning"]
+        outlines_menu = learning_menu.addMenu("Seed outlines")
+        for action in (
+            self.load_instance_labels_action,
+            self.choose_instance_labels_action,
+            self.save_instance_labels_action,
+            self.export_learning_sample_action,
+        ):
+            outlines_menu.addAction(action)
+        learning_menu.addSeparator()
+        for action in (
+            self.audit_learning_dataset_action,
+            self.train_learning_model_action,
+            self.train_trait_model_action,
+            self.activate_trait_model_action,
+        ):
+            learning_menu.addAction(action)
+        learning_menu.addSeparator()
+        learning_menu.addAction(self.train_native_bayes_action)
+        learning_menu.addAction(self.train_native_kmeans_action)
+        learning_menu.addSeparator()
+        learning_menu.addAction(self.manage_species_libraries_action)
+
+        install_help_actions(self, menus["help"])
 
     def _build_overlay_controls(self) -> None:
         """Create the compact viewer controls shared by the top toolbar."""
@@ -3312,6 +3454,15 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         # compatibility); the visible selector is a node -> overlay menu.
         self.overlay_combo.hide()
         self.overlay_menu = QMenu(self)
+        # Parented to the window so overlay_menu.clear() never deletes it.
+        self._overlay_filter_field = QLineEdit(self)
+        self._overlay_filter_field.setObjectName("overlayFilterField")
+        self._overlay_filter_field.setPlaceholderText("Filter overlays…")
+        self._overlay_filter_field.setClearButtonEnabled(True)
+        self._overlay_filter_field.textChanged.connect(self._filter_overlay_menu)
+        self._overlay_filter_action = QWidgetAction(self)
+        self._overlay_filter_action.setDefaultWidget(self._overlay_filter_field)
+        self.overlay_menu.aboutToShow.connect(self._overlay_filter_field.setFocus)
         self.overlay_button = QToolButton(self)
         self.overlay_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.overlay_button.setMenu(self.overlay_menu)
@@ -3600,6 +3751,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             presenter.display.rebuild_menu()
             return
         self.overlay_menu.clear()
+        self._overlay_filter_field.clear()
+        self.overlay_menu.addAction(self._overlay_filter_action)
         grouped: dict[str, list[tuple[str, str]]] = {}
         for label, mode in self._active_overlay_entries():
             owner = _overlay_node_owner(mode)
@@ -3611,20 +3764,29 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             if node_id in grouped
         )
         owner_order.extend(owner for owner in grouped if owner not in owner_order)
-        selected_label = "Raw image"
+        # Group owning nodes under their category, keeping pipeline order
+        # within each category, so ~180 overlays read as a short outline.
+        by_category: dict[str, list[str]] = {}
         for owner in owner_order:
-            entries = grouped.get(owner)
-            if not entries:
-                continue
-            title = self.pipeline.node(owner).title
-            submenu = self.overlay_menu.addMenu(title)
-            for label, mode in entries:
-                action = submenu.addAction(label)
-                action.triggered.connect(
-                    lambda _checked=False, selected=mode: self._select_overlay_mode(selected)
-                )
-                if mode == selected_mode:
-                    selected_label = label
+            by_category.setdefault(self.pipeline.node(owner).category, []).append(owner)
+        selected_label = "Raw image"
+        for category, owners in by_category.items():
+            self.overlay_menu.addSection(category)
+            for owner in owners:
+                entries = grouped.get(owner)
+                if not entries:
+                    continue
+                title = self.pipeline.node(owner).title
+                # A node with one overlay is one entry, not a one-item submenu.
+                target = self.overlay_menu if len(entries) == 1 else self.overlay_menu.addMenu(title)
+                for label, mode in entries:
+                    action = target.addAction(label)
+                    action.setData(title)
+                    action.triggered.connect(
+                        lambda _checked=False, selected=mode: self._select_overlay_mode(selected)
+                    )
+                    if mode == selected_mode:
+                        selected_label = label
         self.overlay_button.setText(
             self.overlay_button.fontMetrics().elidedText(
                 selected_label,
@@ -3637,6 +3799,34 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             f"{selected_label}\n"
             "Choose a calculating node, then one of the overlays that node owns."
         )
+
+    def _filter_overlay_menu(self, text: str) -> None:
+        """Show only overlays (or owning nodes) whose names contain the text."""
+
+        needle = text.casefold().strip()
+        section = None
+        section_has_visible = False
+
+        def close_section():
+            if section is not None:
+                section.setVisible(section_has_visible)
+
+        for action in self.overlay_menu.actions():
+            if action is self._overlay_filter_action:
+                continue
+            if action.isSeparator():
+                close_section()
+                section, section_has_visible = action, False
+                continue
+            submenu = action.menu()
+            if submenu is not None:
+                names = [action.text(), *(child.text() for child in submenu.actions())]
+            else:
+                names = [action.text(), str(action.data() or "")]
+            visible = not needle or any(needle in name.casefold() for name in names)
+            action.setVisible(visible)
+            section_has_visible = section_has_visible or visible
+        close_section()
 
     def _select_overlay_mode(self, mode: str) -> None:
         index = self.overlay_combo.findData(mode)
@@ -3679,6 +3869,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         reference_panel_header_layout = QHBoxLayout(reference_panel_header)
         reference_panel_header_layout.setContentsMargins(0, 0, 0, 0)
         reference_panel_header_layout.setSpacing(4)
+        # The panel is docked beside the viewer, so this is a title, not a handle.
         self.reference_panel_drag_handle = QLabel(
             "Annotation tools", reference_panel_header
         )
@@ -3686,7 +3877,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             Qt.AlignmentFlag.AlignCenter
         )
         self.reference_panel_drag_handle.setToolTip(
-            "Drag to move the annotation tools anywhere in the application workspace."
+            "Docked beside the image; drag the divider to resize."
         )
         self.reference_panel_drag_handle.setStyleSheet(
             "padding: 3px; font-weight: 600; background: palette(midlight); "
@@ -3731,7 +3922,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             self.image_view.set_material_reference_annotations_visible
         )
         self.show_instance_annotations_checkbox = QCheckBox(
-            "Seed instances", self.reference_visibility_controls
+            "Seed outlines", self.reference_visibility_controls
         )
         self.show_instance_annotations_checkbox.setChecked(True)
         self.show_instance_annotations_checkbox.setToolTip(
@@ -4361,7 +4552,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         metadata_layout.addWidget(self.seed_shape_status_label)
 
         self.load_instance_reference_button = QPushButton(
-            "Import bundled seed labels…", self.instance_annotation_controls
+            "Import bundled seed outlines…", self.instance_annotation_controls
         )
         self.load_instance_reference_button.setToolTip(
             "Import source-bound bundled seed labels as an undoable draft. "
@@ -4371,7 +4562,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             self._load_instance_reference_mask
         )
         self.choose_instance_mask_button = QPushButton(
-            "Import seed labels from file…", self.instance_annotation_controls
+            "Import seed outlines from file…", self.instance_annotation_controls
         )
         self.choose_instance_mask_button.setToolTip(
             "Explicitly choose a full-resolution corrected-coordinate PNG, TIFF, "
@@ -4386,6 +4577,9 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         instance_import_layout.setSpacing(3)
         instance_import_layout.addWidget(self.load_instance_reference_button, 1)
         instance_import_layout.addWidget(self.choose_instance_mask_button)
+        # Import lives in Learning > Seed outlines; the buttons stay as state
+        # holders for availability sync but are not a second visible home.
+        instance_import_buttons.hide()
         instance_layout.addWidget(instance_import_buttons)
 
         instance_brush_widget = QWidget(self.instance_annotation_controls)
@@ -4417,14 +4611,15 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.instance_paint_mode_button.setCheckable(True)
         self.instance_paint_mode_button.setChecked(True)
         self.instance_paint_mode_button.setToolTip(
-            "Freehand interior painting. Right-drag temporarily erases with any tool."
+            "Freehand interior painting (Ctrl+Alt+B). Right-drag temporarily "
+            "erases with any tool."
         )
         self.instance_edge_trace_button = QPushButton("Trace edge", instance_mode_widget)
         self.instance_edge_trace_button.setCheckable(True)
         self.instance_edge_trace_button.setToolTip(
             "Click an edge anchor, move to preview the magnetic path, then click to "
-            "apply an exact one-pixel segment. Return to the cyan first-anchor "
-            "marker to close and fill the contour."
+            "apply an exact one-pixel segment (Ctrl+Alt+T). Return to the cyan "
+            "first-anchor marker to close and fill the contour."
         )
         self.instance_shape_guided_fill_button = QPushButton(
             "Shape fill", instance_mode_widget
@@ -4441,8 +4636,9 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.instance_smart_fill_button = QPushButton("Smart fill", instance_mode_widget)
         self.instance_smart_fill_button.setCheckable(True)
         self.instance_smart_fill_button.setToolTip(
-            "Move for a locally adaptive edge-stopped preview, then click to fill. "
-            "An unmarked seed starts at the cursor; a partial mark adds context."
+            "Move for a locally adaptive edge-stopped preview, then click to fill "
+            "(Ctrl+Alt+F). An unmarked seed starts at the cursor; a partial mark "
+            "adds context."
         )
         self.instance_eraser_button = QPushButton("Eraser", instance_mode_widget)
         self.instance_eraser_button.setCheckable(True)
@@ -4919,6 +5115,9 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.apply_instance_annotations_button.clicked.connect(
             self._apply_instance_annotations
         )
+        # The one action that makes seed edits durable reads as primary.
+        self.apply_instance_annotations_button.setDefault(True)
+        self.apply_instance_annotations_button.setStyleSheet("font-weight: 600;")
         self.revert_instance_annotations_button = QPushButton(
             "Revert", instance_confirmation
         )
@@ -4969,13 +5168,25 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._update_instance_colour_swatch()
 
         self.reference_panel.hide()
-        self.image_view.set_context_panel(self.reference_panel)
-        self.image_view.set_context_panel_drag_handle(
-            self.reference_panel_drag_handle
-        )
+        # Docked as a splitter pane in _build_layout: it never covers the image.
+        self.reference_panel.resize_grip.hide()
+        self.reference_panel.setMinimumWidth(280)
+        self._link_brush_radius_sliders()
         self.image_workspace_action.toggled.connect(
             lambda _checked: self._sync_reference_panel_visibility()
         )
+
+    def _link_brush_radius_sliders(self) -> None:
+        """Materials and Seeds share one brush radius; either slider sets it."""
+
+        def follow(source, target):
+            def mirror(value):
+                if target.value() != value:
+                    target.setValue(value)
+            source.valueChanged.connect(mirror)
+
+        follow(self.reference_brush_slider, self.instance_brush_slider)
+        follow(self.instance_brush_slider, self.reference_brush_slider)
 
     def _build_toolbar(self) -> None:
         self.workflow_toolbar = QToolBar("Workflow", self)
@@ -5007,7 +5218,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.workflow_toolbar.addWidget(overlay_controls)
         self.workflow_toolbar.addSeparator()
 
-        self.opacity_toolbar_label = QLabel("Opacity:", self.workflow_toolbar)
+        self.opacity_toolbar_label = QLabel("Overlay opacity:", self.workflow_toolbar)
         self.opacity_toolbar_label.setObjectName("opacityToolbarLabel")
         self.overlay_opacity_slider.setMinimumWidth(54)
         self.overlay_opacity_slider.setMaximumWidth(102)
@@ -5050,7 +5261,10 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.workflow_toolbar.addAction(self.paint_background_action)
         self.workflow_toolbar.addAction(self.annotate_instances_action)
         self.workflow_toolbar.addWidget(self.reference_visibility_controls)
-        self.workflow_toolbar.addWidget(QLabel("Opacity:", self.workflow_toolbar))
+        self.annotation_opacity_toolbar_label = QLabel(
+            "Annotation opacity:", self.workflow_toolbar
+        )
+        self.workflow_toolbar.addWidget(self.annotation_opacity_toolbar_label)
         self.annotation_opacity_slider = QSlider(Qt.Orientation.Horizontal, self)
         self.annotation_opacity_slider.setRange(0, 100)
         self.annotation_opacity_slider.setValue(68)
@@ -5088,27 +5302,22 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.main_splitter = splitter
         splitter.addWidget(self._build_image_panel())
         splitter.addWidget(self.workspace_splitter)
+        # Annotation tools dock between the viewer and the inspector; the pane
+        # is hidden (and takes no width) unless an annotation mode is active.
+        splitter.addWidget(self.reference_panel)
         splitter.addWidget(self._build_metadata_panel())
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
         splitter.setStretchFactor(2, 0)
-        splitter.setSizes((225, 1020, 295))
-        # Keep the palette above the managed splitter panes, with room to move
-        # across the application workspace on native Windows.
+        splitter.setStretchFactor(3, 0)
+        splitter.setCollapsible(2, False)
+        splitter.setSizes((225, 1000, 340, 380))
         self.annotation_workspace = QWidget(self)
         workspace_layout = QVBoxLayout(self.annotation_workspace)
         workspace_layout.setContentsMargins(0, 0, 0, 0)
         workspace_layout.setSpacing(0)
         workspace_layout.addWidget(splitter, 1)
         self.setCentralWidget(self.annotation_workspace)
-        self.reference_panel.setParent(self.annotation_workspace)
-        self.image_view._layout_context_panel()
-        splitter.splitterMoved.connect(
-            lambda _position, _index: self.image_view._layout_context_panel()
-        )
-        self.workspace_splitter.splitterMoved.connect(
-            lambda _position, _index: self.image_view._layout_context_panel()
-        )
         from seedvision.ui.catalogue_nodes import CatalogueNodesController
         self.catalogue_nodes = CatalogueNodesController(self)
         self.catalogue_nodes.graph_changed.connect(self._install_catalogue_canvas)
@@ -5191,7 +5400,29 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
 
         association_heading = QLabel("References and annotations", panel)
         association_heading.setStyleSheet("font-size: 13px; font-weight: 600;")
-        details_layout.addWidget(association_heading)
+        association_header = QHBoxLayout()
+        association_header.addWidget(association_heading, 1)
+        self.reference_association_details_button = QToolButton(panel)
+        self.reference_association_details_button.setObjectName(
+            "referenceAssociationDetailsButton"
+        )
+        self.reference_association_details_button.setText("Details")
+        self.reference_association_details_button.setCheckable(True)
+        self.reference_association_details_button.setToolTip(
+            "Show archive locations, pixel counts and load state for this image."
+        )
+        association_header.addWidget(self.reference_association_details_button)
+        details_layout.addLayout(association_header)
+        # One line of state; the full archive report is one click away.
+        self.reference_association_summary = QLabel(
+            "No image selected", panel
+        )
+        self.reference_association_summary.setObjectName(
+            "referenceAssociationSummary"
+        )
+        self.reference_association_summary.setWordWrap(True)
+        self.reference_association_summary.setTextFormat(Qt.TextFormat.RichText)
+        details_layout.addWidget(self.reference_association_summary)
         self.reference_association_scroll = QScrollArea(panel)
         self.reference_association_scroll.setWidgetResizable(True)
         self.reference_association_scroll.setFrameShape(QFrame.Shape.StyledPanel)
@@ -5211,33 +5442,43 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.reference_association_scroll.setWidget(
             self.reference_association_label
         )
+        self.reference_association_scroll.hide()
+        self.reference_association_details_button.toggled.connect(
+            self.reference_association_scroll.setVisible
+        )
         details_layout.addWidget(self.reference_association_scroll, 1)
+        details_layout.addStretch(0)
         self.default_pipeline_details = (self.overlay_legend_label,)
         return panel
 
-    def _build_metadata_panel(self) -> QScrollArea:
+    def _build_metadata_panel(self) -> QWidget:
+        """Results pinned on top of Node and Image tabs."""
+
+        right_panel = QWidget(self)
+        self.right_panel = right_panel
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(4)
+
         content = QWidget(self)
-        content.setMinimumWidth(265)
+        content.setMinimumWidth(300)
         layout = QVBoxLayout(content)
         layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
 
-        heading = QLabel("Image metadata", content)
-        heading.setStyleSheet("font-size: 16px; font-weight: 600;")
-        layout.addWidget(heading)
-
+        image_page = QWidget(self)
+        image_layout = QVBoxLayout(image_page)
         form = QFormLayout()
         form.addRow("Species", self.species_combo)
-        self.filename_label = QLabel("No image selected", content)
+        self.filename_label = QLabel("No image selected", image_page)
         self.filename_label.setWordWrap(True)
         form.addRow("File", self.filename_label)
-        self.dimensions_label = QLabel("—", content)
+        self.dimensions_label = QLabel("—", image_page)
         form.addRow("Dimensions", self.dimensions_label)
         self.compute_status_label = self._muted_label("Not analysed")
         form.addRow("Analysis device", self.compute_status_label)
-        layout.addLayout(form)
+        image_layout.addLayout(form)
+        image_layout.addStretch(1)
 
-        # The node title identifies this section without a second heading.
-        layout.addWidget(self._separator())
         layout.addWidget(self.pipeline_inspector)
         layout.addWidget(self.pipeline_workflow.crop_selector)
         layout.addWidget(self.pipeline_workflow.node_actions)
@@ -5270,7 +5511,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         baseline_layout = QVBoxLayout(self.baseline_section)
         baseline_layout.setContentsMargins(0, 0, 0, 0)
         baseline_layout.addWidget(self._separator())
-        baseline_layout.addWidget(self._section_label("Baseline analysis"))
+        baseline_layout.addWidget(self._section_label("Results"))
         self.analyze_button = QPushButton("Run pipeline", content)
         self.analyze_button.setEnabled(False)
         self.analyze_button.clicked.connect(self._analyze_current_image)
@@ -5283,12 +5524,13 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         baseline_layout.addWidget(self.count_label)
         self.crowding_label = self._muted_label("No result")
         baseline_layout.addWidget(self.crowding_label)
-        self.warning_label = self._muted_label(
-            "Results are approximate proposals for correction, not validated counts."
-        )
+        # Shows run state and result warnings only; the standing disclaimer
+        # lives in the results dialog where the counts are reviewed.
+        self.warning_label = self._muted_label("")
         self.warning_label.setWordWrap(True)
+        self.warning_label.hide()
         baseline_layout.addWidget(self.warning_label)
-        layout.insertWidget(0,self.baseline_section)
+        right_layout.addWidget(self.baseline_section)
 
         layout.addStretch(1)
 
@@ -5296,8 +5538,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.metadata_scroll.setWidgetResizable(True)
         self.metadata_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.metadata_scroll.setWidget(content)
-        self.metadata_scroll.setMinimumWidth(285)
-        self.metadata_scroll.setMaximumWidth(440)
+        self.metadata_scroll.setMinimumWidth(320)
+        self.metadata_scroll.setMaximumWidth(460)
         self.metadata_scroll.setStyleSheet(
             "QScrollBar:vertical { width: 18px; margin: 1px; "
             "background: #20262d; }"
@@ -5307,7 +5549,16 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { "
             "height: 0px; }"
         )
-        return self.metadata_scroll
+        self.details_tabs = QTabWidget(right_panel)
+        self.details_tabs.setObjectName("detailsTabs")
+        self.details_tabs.setDocumentMode(True)
+        self.details_tabs.addTab(self.metadata_scroll, "Node")
+        self.details_tabs.addTab(image_page, "Image")
+        right_layout.addWidget(self.details_tabs, 1)
+        # Minimums sum below 1050 px with the annotation pane docked.
+        right_panel.setMinimumWidth(320)
+        right_panel.setMaximumWidth(460)
+        return right_panel
 
     def _set_reference_region_load_status(
         self, key: str, status: str, detail: str
@@ -5408,6 +5659,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             self.reference_association_label.setText(
                 "Select an image to inspect its saved associations."
             )
+            self.reference_association_summary.setText("No image selected")
             self._refresh_project_node()
             return
 
@@ -5509,7 +5761,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                     "Known content:",
                     f"Background {counts[0]:,} px; Foreground {counts[1]:,} px; "
                     f"Other {counts[2]:,} px",
-                    f"Annotated seeds {counts[3]:,} IDs / {counts[4]:,} px",
+                    f"Seed outlines {counts[3]:,} IDs / {counts[4]:,} px",
                 )
             )
             if semantic_annotations:
@@ -5534,10 +5786,21 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             lines.extend(("", "Known content: empty archive"))
         if key in self._reference_masks_dirty or key in self._instance_annotations_dirty:
             lines.extend(("", "Draft edits: unapplied (not yet analytical)"))
-        lines.extend(("", self._bundled_instance_association_text(path)))
+        bundled_text = self._bundled_instance_association_text(path)
+        lines.extend(("", bundled_text))
         text = "\n".join(lines)
         self.reference_association_label.setText(text)
         self.reference_association_label.setToolTip(text)
+        draft = key in self._reference_masks_dirty or key in self._instance_annotations_dirty
+        self.reference_association_summary.setText(
+            _reference_summary_html(
+                status,
+                seed_count=counts[3] if any(counts) else 0,
+                draft=draft,
+                bundled_available=bundled_text.startswith("Bundled pre-annotation: available"),
+            )
+        )
+        self.reference_association_summary.setToolTip(text)
         self._refresh_project_node()
 
     def _refresh_analysis_activity_panel(self) -> None:
@@ -6123,17 +6386,17 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             self._show_analysis_result(cached)
         self._sync_background_controls()
         self._refresh_reference_association_panel()
-        self.statusBar().showMessage(
-            f"Loaded {path}"
-            + (
-                " with saved reference regions pending calibration validation."
-                if references_loaded
-                and key in self._pending_unbound_reference_bundles
-                else " with saved reference regions."
-                if references_loaded
-                else ""
+        restored = []
+        if references_loaded:
+            restored.append(
+                "references pending calibration"
+                if key in self._pending_unbound_reference_bundles
+                else "references restored"
             )
-            + (" with saved manual seed centres." if centres_loaded else "")
+        if centres_loaded:
+            restored.append("centres restored")
+        self.statusBar().showMessage(
+            " · ".join((f"{path.name} loaded", *restored))
         )
 
     def _cancel_noncurrent_image_work(self, target_key: str) -> None:
@@ -6221,9 +6484,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.compute_status_label.setText("Not analysed")
         self.count_label.setText("—")
         self.crowding_label.setText("No result")
-        self.warning_label.setText(
-            "Results are approximate proposals for correction, not validated counts."
-        )
+        self.warning_label.setText("")
+        self.warning_label.hide()
         self._sync_background_controls()
 
     def _baseline_settings(self) -> BaselineSettings:
@@ -6461,9 +6723,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._refresh_analysis_activity_panel()
         self._update_analysis_availability()
         self.count_label.setText("Analysing…")
-        self.warning_label.setText(
-            "Executing the active calibration and diagnostic pipeline in the background."
-        )
+        self.warning_label.setText("Running the pipeline in the background.")
+        self.warning_label.show()
         self.statusBar().showMessage(
             f"Analysing {path.name}"
             + (
@@ -6891,6 +7152,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         if self.image_view.image_path == path:
             self.count_label.setText("Failed")
             self.warning_label.setText(error)
+            self.warning_label.show()
         # Release the serialized worker slot before entering a modal dialog.
         # Otherwise a queued image looks stalled until this warning is closed.
         self._start_pending_analysis()
@@ -8529,7 +8791,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._stop_instance_annotation_editing()
         with QSignalBlocker(self.paint_background_action):
             self.paint_background_action.setChecked(False)
-        self.image_view.set_context_panel_visible(False)
+        self.reference_panel.hide()
 
     def _sync_reference_panel_visibility(self) -> None:
         active = (
@@ -8542,7 +8804,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         instance_mode = self.annotate_instances_action.isChecked()
         self.reference_controls.setVisible(active and not instance_mode)
         self.instance_annotation_controls.setVisible(instance_mode)
-        self.image_view.set_context_panel_visible(
+        self.reference_panel.setVisible(
             active and self.image_workspace_action.isChecked()
         )
         if hasattr(self, "reference_undo_button"):
@@ -9244,21 +9506,12 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         for label, source in sources:
             combo.addItem(label, source)
         combo.setToolTip(
-            "Select the exact edge raster used for snapping or as the fill "
-            "barrier. Generic thinned ridges are the precise default; the "
-            "reference-ridge option uses true-edge support times Physical probability. "
-            "The normalized source applies bounded one-sided enhancement "
-            "within a seed-scale neighborhood, and retains an absolute noise gate. Combined "
-            "uses the per-pixel maximum of generic ridges and binary oriented traces, "
-            "plus normalized learned evidence and broad edge magnitude at "
-            "45% strength. Reference-edge probability is continuous gradient support "
-            "times Physical probability, including unknown confidence. Conservative "
-            "net physical-edge evidence instead uses support times max(Physical - "
-            "weight × Non-physical, 0), retaining only more selectively classified "
-            "boundaries. The subtraction weight affects only that conservative "
-            "branch and its ridge, never the authoritative or normalized probability. "
-            "Raw prototype compatibility is diagnostic only. Edge "
-            "magnitude alone is broader and can stop short of the visible ridge."
+            "Edge raster used for snapping and as the fill barrier. Thinned "
+            "ridges are the precise default; the reference and conservative "
+            "options weight edges by learned physical-edge evidence; Combined "
+            "adds oriented traces and edge magnitude at 45% strength. Raw "
+            "prototype compatibility is diagnostic "
+            "only, and plain edge magnitude can stop short of the visible edge."
         )
 
     def _current_instance_tool(self) -> str:
@@ -9282,7 +9535,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             self.instance_tool_options_stack.setCurrentWidget(page)
         self._sync_instance_tool_settings()
         self.image_view.set_instance_annotation_tool(tool)
-        self.image_view._layout_context_panel()
         self._show_instance_tool_instructions(tool)
 
     def _show_instance_tool_instructions(self, tool: str) -> None:
@@ -10663,8 +10915,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             return
 
         if imported is None:
-            QMessageBox.information(self, "No bundled seed labels", "No bundled seed labels match this image. "
-                "Use Import seed labels from file… to choose a corrected-image PNG, TIFF, or NPZ.")
+            QMessageBox.information(self, "No bundled seed outlines", "No bundled seed outlines match this image. "
+                "Use Import seed outlines from file… to choose a corrected-image PNG, TIFF, or NPZ.")
             return
         self._install_imported_instance_mask(imported)
 
@@ -13807,6 +14059,9 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
 
     @Slot(str)
     def _pipeline_node_selected(self, node_id: str) -> None:
+        # Choosing a node is a request to inspect it.
+        if hasattr(self, "details_tabs"):
+            self.details_tabs.setCurrentWidget(self.metadata_scroll)
         if self.catalogue_nodes.handles(node_id):
             self.catalogue_nodes.select_node(node_id)
             self.pipeline_workflow.sync_buttons()

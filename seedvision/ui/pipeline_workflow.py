@@ -164,7 +164,7 @@ class PipelineWorkflowController(QObject):
         row = QHBoxLayout(self.strip)
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(3)
-        self.workflow_label = QLabel('Workflow', self.strip)
+        self.workflow_label = QLabel('Pipeline', self.strip)
         row.addWidget(self.workflow_label)
         self.selector = QComboBox(self.strip)
         self.selector.setFixedWidth(120)

@@ -45,6 +45,7 @@ from PySide6.QtWidgets import (
 
 from seedvision.pipeline import NodeStatus, PipelineConnection, PipelineGraph, PipelineNode
 from seedvision.ui.canvas_controls import style_canvas_control_bar
+from seedvision.ui.spin_format import spin_decimals
 
 
 STATUS_COLOURS = {
@@ -508,27 +509,12 @@ class PipelineNodeItem(QGraphicsObject):
             )
             self._header_height = max(34.0, math.ceil(title_bounds.height() + 12.0))
             self._header_body_offset = self._header_height - 34.0
-        named_port_count = max(len(node.input_ports), len(node.output_ports))
-        port_base = self.NAMED_PORT_Y + self._header_body_offset
-        port_bottom = (
-            port_base + 10.0
-            + max(0, named_port_count - 1) * self.ROW_HEIGHT
-            if named_port_count
-            else 80.0 + self._header_body_offset
-        )
-        self._controls_separator_y = max(84.0, port_bottom + 4.0)
-        self._controls_y = self._controls_separator_y + 5.0
-        if node.inline_parameters:
-            controls_bottom = (
-                self._controls_y
-                + (len(node.inline_parameters) - 1) * self.ROW_HEIGHT
-                + 22.0
-            )
-            self._footer_y = controls_bottom + 4.0
-        else:
-            self._footer_y = max(84.0, port_bottom + 4.0)
-        self.height = max(self.DEFAULT_HEIGHT, self._footer_y + 24.0)
+        # Viewer-only overlay outputs fold behind one expander row; every
+        # dataflow output and every connected port always stays visible.
+        self._show_all_outputs = False
         self._inline_editors: dict[str, QWidget] = {}
+        self._inline_proxies: dict[str, QGraphicsProxyWidget] = {}
+        self._layout_geometry()
         self._adjacent = False
         self.setPos(node.x, node.y)
         self.setFlags(
@@ -541,6 +527,82 @@ class PipelineNodeItem(QGraphicsObject):
         self.setZValue(2)
         self._build_inline_editors()
 
+    def _output_connected(self, port_id: str) -> bool:
+        return any(
+            connection.source == self.node.identifier
+            and connection.source_port == port_id
+            for connection in self.graph.connections
+        )
+
+    def visible_output_ports(self) -> tuple[tuple[str, str], ...]:
+        if self._show_all_outputs:
+            return self.node.output_ports
+        return tuple(
+            (port_id, label)
+            for port_id, label in self.node.output_ports
+            if not str(self.node.output_port_types.get(port_id, "")).startswith("ViewerOverlay:")
+            or self._output_connected(port_id)
+        )
+
+    def hidden_output_count(self) -> int:
+        return len(self.node.output_ports) - len(self.visible_output_ports())
+
+    def _has_output_expander(self) -> bool:
+        return self._show_all_outputs or self.hidden_output_count() > 0
+
+    def _expander_y(self) -> float:
+        return self._port_y_at(len(self.visible_output_ports()))
+
+    def _layout_geometry(self) -> None:
+        """Size the card for its visible ports and inline controls."""
+
+        output_rows = len(self.visible_output_ports()) + int(self._has_output_expander())
+        named_port_count = max(len(self.node.input_ports), output_rows)
+        port_base = self.NAMED_PORT_Y + self._header_body_offset
+        port_bottom = (
+            port_base + 10.0
+            + max(0, named_port_count - 1) * self.ROW_HEIGHT
+            if named_port_count
+            else 80.0 + self._header_body_offset
+        )
+        self._controls_separator_y = max(84.0, port_bottom + 4.0)
+        self._controls_y = self._controls_separator_y + 5.0
+        if self.node.inline_parameters:
+            controls_bottom = (
+                self._controls_y
+                + (len(self.node.inline_parameters) - 1) * self.ROW_HEIGHT
+                + 22.0
+            )
+            self._footer_y = controls_bottom + 4.0
+        else:
+            self._footer_y = max(84.0, port_bottom + 4.0)
+        self.height = max(self.DEFAULT_HEIGHT, self._footer_y + 24.0)
+        for index, (key, _) in enumerate(self.node.inline_parameters):
+            proxy = self._inline_proxies.get(key)
+            if proxy is not None:
+                proxy.setPos(
+                    self.width - proxy.widget().width() - 12.0,
+                    self._controls_y + index * self.ROW_HEIGHT,
+                )
+
+    def _relayout(self) -> bool:
+        """Re-size after port visibility changes; return whether geometry moved."""
+
+        previous = (self.height, self._footer_y, self._controls_y)
+        self.prepareGeometryChange()
+        self._layout_geometry()
+        return previous != (self.height, self._footer_y, self._controls_y)
+
+    def set_outputs_expanded(self, expanded: bool) -> None:
+        expanded = bool(expanded)
+        if expanded == self._show_all_outputs:
+            return
+        self._show_all_outputs = expanded
+        self._relayout()
+        self.update()
+        # Reuse the move path so incident cables follow the resized card.
+        self._moved_callback(self.node.identifier)
+
     def boundingRect(self) -> QRectF:  # noqa: N802 - Qt override
         return QRectF(-8, -8, self.width + 16, self.height + 16)
 
@@ -549,7 +611,7 @@ class PipelineNodeItem(QGraphicsObject):
 
     def output_anchor(self, port_id: str = "") -> QPointF:
         return self.mapToScene(
-            QPointF(self.width, self._port_y(self.node.output_ports, port_id))
+            QPointF(self.width, self._port_y(self.visible_output_ports(), port_id))
         )
 
     def port_at_scene(
@@ -560,7 +622,7 @@ class PipelineNodeItem(QGraphicsObject):
         local = self.mapFromScene(scene_position)
         for direction, x, ports in (
             ("input", 0.0, self.node.input_ports),
-            ("output", self.width, self.node.output_ports),
+            ("output", self.width, self.visible_output_ports()),
         ):
             for port_id, _ in ports:
                 y = self._port_y(ports, port_id)
@@ -583,6 +645,13 @@ class PipelineNodeItem(QGraphicsObject):
             f"{interaction}"
         )
 
+    def _port_y_at(self, index: int) -> float:
+        return (
+            PipelineNodeItem.NAMED_PORT_Y
+            + self._header_body_offset
+            + index * PipelineNodeItem.ROW_HEIGHT
+        )
+
     def _port_y(self, ports: tuple[tuple[str, str], ...], port_id: str) -> float:
         if not ports:
             return PipelineNodeItem.PORT_Y + self._header_body_offset
@@ -590,11 +659,7 @@ class PipelineNodeItem(QGraphicsObject):
             (index for index, (identifier, _) in enumerate(ports) if identifier == port_id),
             0,
         )
-        return (
-            PipelineNodeItem.NAMED_PORT_Y
-            + self._header_body_offset
-            + index * PipelineNodeItem.ROW_HEIGHT
-        )
+        return self._port_y_at(index)
 
     def _build_inline_editors(self) -> None:
         for index, (key, _) in enumerate(self.node.inline_parameters):
@@ -618,6 +683,7 @@ class PipelineNodeItem(QGraphicsObject):
                 )
                 proxy.setZValue(4)
                 self._inline_editors[key] = editor
+                self._inline_proxies[key] = proxy
                 continue
             if spec.kind == "int":
                 editor = QSpinBox()
@@ -626,7 +692,11 @@ class PipelineNodeItem(QGraphicsObject):
                 editor.setValue(int(self.node.parameters[key]))
             elif spec.kind == "float":
                 editor = QDoubleSpinBox()
-                editor.setDecimals(2)
+                editor.setDecimals(spin_decimals(
+                    spec,
+                    self.node.parameters[key],
+                    self.node.default_parameters.get(key, self.node.parameters[key]),
+                ))
                 editor.setRange(float(spec.minimum), float(spec.maximum))
                 editor.setSingleStep(float(spec.step or 0.01))
                 editor.setValue(float(self.node.parameters[key]))
@@ -685,8 +755,11 @@ class PipelineNodeItem(QGraphicsObject):
             )
             proxy.setZValue(4)
             self._inline_editors[key] = editor
+            self._inline_proxies[key] = proxy
 
     def refresh(self) -> None:
+        # Connecting or disconnecting can reveal or fold a viewer output.
+        self._relayout()
         for key, editor in self._inline_editors.items():
             with QSignalBlocker(editor):
                 if isinstance(editor, QLabel):
@@ -860,14 +933,21 @@ class PipelineNodeItem(QGraphicsObject):
                     label, Qt.TextElideMode.ElideRight, 90
                 )
                 painter.drawText(QRectF(10, y - 10, 92, 20), compact_label)
-        if self.node.output_ports:
-            for port_id, label in self.node.output_ports:
-                y = self._port_y(self.node.output_ports, port_id)
-                connected = any(
-                    connection.source == self.node.identifier
-                    and connection.source_port == port_id
-                    for connection in self.graph.connections
-                )
+        visible_outputs = self.visible_output_ports()
+        if self._has_output_expander():
+            hidden = self.hidden_output_count()
+            painter.setPen(QColor("#8fb8d8"))
+            painter.drawText(
+                QRectF(self.width - 150, self._expander_y() - 10, 138, 20),
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                f"▸ {hidden} more view{'s' if hidden != 1 else ''}"
+                if hidden
+                else "▾ Hide views",
+            )
+        if visible_outputs:
+            for port_id, label in visible_outputs:
+                y = self._port_y(visible_outputs, port_id)
+                connected = self._output_connected(port_id)
                 painter.setPen(port_pen)
                 painter.setBrush(
                     QColor("#70dfa7") if connected else QColor("#7d8995")
@@ -894,6 +974,20 @@ class PipelineNodeItem(QGraphicsObject):
         elif change == self.GraphicsItemChange.ItemSelectedHasChanged:
             self.setZValue(4.0 if value else 2.0)
         return result
+
+    def output_expander_rect(self) -> QRectF:
+        return QRectF(self.width - 150, self._expander_y() - 11, 150, 22)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt override
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and self._has_output_expander()
+            and self.output_expander_rect().contains(event.pos())
+        ):
+            self.set_outputs_expanded(not self._show_all_outputs)
+            event.accept()
+            return
+        super().mousePressEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802 - Qt override
         super().mouseReleaseEvent(event)
@@ -958,10 +1052,24 @@ class PipelineEdgeItem(QGraphicsPathItem):
         self.update_path()
 
     def set_highlighted(self, highlighted: bool) -> None:
-        """Emphasize every connection incident to the selected node."""
+        """Emphasize every connection incident to the selected node.
 
-        colour = self.base_colour.lighter(138) if highlighted else self.base_colour
-        pen = QPen(colour, 4.8 if highlighted else 2.4)
+        Resting cables are thin and desaturated so the cards stay readable;
+        the typed colour appears only on the selected node's connections.
+        Cables touching a bypassed node are dimmed further.
+        """
+
+        if highlighted:
+            colour = self.base_colour.lighter(138)
+            width = 4.0
+        else:
+            colour = QColor.fromHsvF(
+                max(0.0, self.base_colour.hsvHueF()), 0.22, 0.66
+            )
+            width = 1.5
+        if not (self.source.node.enabled and self.target.node.enabled):
+            colour.setAlphaF(0.28)
+        pen = QPen(colour, width)
         pen.setCosmetic(True)
         self.setPen(pen)
         self.setZValue(1 if highlighted else 0)
@@ -1013,7 +1121,9 @@ class PipelineCableItem(QGraphicsPathItem):
         super().__init__()
         self.bundle_key = bundle_key
         self.route_points = tuple(QPointF(point) for point in route_points)
-        pen = QPen(QColor(colour), 8.0)
+        trunk = QColor(colour)
+        trunk.setAlphaF(0.45)
+        pen = QPen(trunk, 5.0)
         pen.setCosmetic(True)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
@@ -1284,7 +1394,7 @@ class PipelineCanvas(QGraphicsView):
         self.node_search.setPlaceholderText('Find node…')
         self.node_search.setClearButtonEnabled(True)
         box.addWidget(self.node_search)
-        legend = QLabel('Blue: already present   ·   Green: not present', panel)
+        legend = QLabel('✓ already in the pipeline (adds another instance)', panel)
         legend.setStyleSheet('color: #46515d;')
         box.addWidget(legend)
         self.node_catalogue_list = QListWidget(panel)
@@ -1304,28 +1414,62 @@ class PipelineCanvas(QGraphicsView):
         self._refresh_unused_node_toolbox()
         self.unused_nodes_button.setToolTip('Add a catalogue node with its required inputs. Selecting an existing node adds another independent instance.')
 
+    CATALOGUE_HEADER_ROLE = Qt.ItemDataRole.UserRole + 2
+
     def _populate_node_catalogue(self) -> None:
         self.node_catalogue_list.clear()
+        grouped: dict[str, list[dict]] = {}
         for entry in self._catalogue_provider():
-            count = entry.get('count', int(entry['present']))
-            item = QListWidgetItem(entry['title'])
-            item.setData(Qt.ItemDataRole.UserRole, entry['key'])
-            item.setData(Qt.ItemDataRole.UserRole + 1, entry.get('category', ''))
-            item.setForeground(QColor('#1768ad' if entry['present'] else '#218044'))
-            item.setToolTip(entry['description'] + '\n' +
-                (f'{count} instance(s) present. Add another independent instance.' if count else 'Add an independent instance.'))
-            self.node_catalogue_list.addItem(item)
+            grouped.setdefault(entry.get('category', '') or 'Other', []).append(entry)
+        for category, entries in grouped.items():
+            # Non-selectable category headings keep 120+ entries scannable.
+            header = QListWidgetItem(category.upper())
+            header.setData(self.CATALOGUE_HEADER_ROLE, category)
+            header.setFlags(Qt.ItemFlag.NoItemFlags)
+            font = header.font()
+            font.setBold(True)
+            header.setFont(font)
+            header.setForeground(QColor('#46515d'))
+            self.node_catalogue_list.addItem(header)
+            for entry in entries:
+                count = entry.get('count', int(entry['present']))
+                item = QListWidgetItem(('✓ ' if entry['present'] else '') + entry['title'])
+                item.setData(Qt.ItemDataRole.UserRole, entry['key'])
+                item.setData(Qt.ItemDataRole.UserRole + 1, category)
+                item.setForeground(QColor('#1768ad' if entry['present'] else '#218044'))
+                item.setToolTip(entry['description'] + '\n' +
+                    (f'{count} instance(s) present. Add another independent instance.' if count else 'Add an independent instance.'))
+                self.node_catalogue_list.addItem(item)
         self._filter_node_catalogue(self.node_search.text())
         self.node_search.setFocus()
 
+    def catalogue_entry_items(self) -> list[QListWidgetItem]:
+        """Selectable catalogue rows, excluding category headings."""
+        return [
+            self.node_catalogue_list.item(index)
+            for index in range(self.node_catalogue_list.count())
+            if self.node_catalogue_list.item(index).data(self.CATALOGUE_HEADER_ROLE) is None
+        ]
+
     def _filter_node_catalogue(self, text) -> None:
         needle = text.casefold().strip()
+        visible_categories = set()
+        for item in self.catalogue_entry_items():
+            category = str(item.data(Qt.ItemDataRole.UserRole + 1))
+            hidden = needle not in (item.text() + ' ' + category).casefold()
+            item.setHidden(hidden)
+            if not hidden:
+                visible_categories.add(category)
         for index in range(self.node_catalogue_list.count()):
             item = self.node_catalogue_list.item(index)
-            item.setHidden(needle not in (item.text() + ' ' + str(item.data(Qt.ItemDataRole.UserRole + 1))).casefold())
+            category = item.data(self.CATALOGUE_HEADER_ROLE)
+            if category is not None:
+                item.setHidden(category not in visible_categories)
 
     def _add_catalogue_item(self, item) -> None:
         if self.read_only or self._editing_locked:
+            return
+        if item.data(self.CATALOGUE_HEADER_ROLE) is not None:
             return
         if not self.add_node_menu.isVisible():
             return
@@ -1333,8 +1477,7 @@ class PipelineCanvas(QGraphicsView):
         self._catalogue_add(item.data(Qt.ItemDataRole.UserRole))
 
     def _add_first_catalogue_match(self) -> None:
-        for index in range(self.node_catalogue_list.count()):
-            item = self.node_catalogue_list.item(index)
+        for item in self.catalogue_entry_items():
             if not item.isHidden():
                 self._add_catalogue_item(item)
                 return
@@ -1501,9 +1644,11 @@ class PipelineCanvas(QGraphicsView):
             )
             self.edge_items.append(edge)
             self._scene.addItem(edge)
-        self._update_edge_paths()
+        # Refresh cards first: a new or removed connection can change which
+        # outputs are visible, and edge anchors depend on that geometry.
         for item in self.node_items.values():
             item.refresh()
+        self._update_edge_paths()
         self._update_scene_rect()
 
     def set_cable_bundling_enabled(self, enabled: bool) -> None:
@@ -1960,10 +2105,13 @@ class PipelineCanvas(QGraphicsView):
         if self.read_only:
             self.unused_nodes_button.setToolTip("")
             return
+        if self._editing_locked:
+            self.unused_nodes_button.setToolTip('Unlock the pipeline to add nodes.')
+        elif self._catalogue_provider is not None:
+            self.unused_nodes_button.setToolTip('Add a catalogue node with its required inputs. Selecting an existing node adds another independent instance.')
+        # The button reads "Add node", so entries name only the node.
         for node in self.graph.unused_nodes.values():
-            action = self.unused_nodes_menu.addAction(
-                f"Add {node.title} to graph"
-            )
+            action = self.unused_nodes_menu.addAction(node.title)
             action.setToolTip(node.description)
             action.setStatusTip(node.description)
             action.triggered.connect(
@@ -2153,6 +2301,16 @@ class PipelineCanvas(QGraphicsView):
             if item is not None:
                 item.refresh()
         self._update_edge_paths()
+        # Enabling or bypassing a node changes how its cables are dimmed.
+        selected = [
+            item for item in self._scene.selectedItems() if isinstance(item, PipelineNodeItem)
+        ]
+        selected_id = selected[0].node.identifier if selected else None
+        for edge in self.edge_items:
+            edge.set_highlighted(
+                selected_id is not None
+                and selected_id in (edge.connection.source, edge.connection.target)
+            )
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton:

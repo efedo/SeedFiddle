@@ -942,7 +942,7 @@ class PipelineModelTests(unittest.TestCase):
         graph = build_default_pipeline()
         node = graph.node("project")
         self.assertEqual(node.category, "Project")
-        self.assertEqual(node.title, "Project")
+        self.assertEqual(node.title, "Inputs")
         self.assertNotIn("raw_images", graph.nodes)
         self.assertNotIn("reference_layers", graph.nodes)
         self.assertNotIn("manual_seed_centres", graph.nodes)

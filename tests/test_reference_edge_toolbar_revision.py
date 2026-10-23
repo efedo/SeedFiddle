@@ -71,9 +71,11 @@ class ReferenceEdgeToolbarRevisionTests(CatalogueTestCase):
         # Annotation opacity stays next to its checkboxes on a wide toolbar.
         window.resize(1920, 1080)
         self.app.processEvents()
-        gap = (window.annotation_opacity_slider.x()
+        # Its label now names the slider, so measure checkboxes -> label.
+        gap = (window.annotation_opacity_toolbar_label.x()
                - window.reference_visibility_controls.geometry().right())
         self.assertLess(gap, 80)
+        self.assertLess(window.annotation_opacity_toolbar_label.x(), window.annotation_opacity_slider.x())
         self.assertFalse(window.reference_panel.isAncestorOf(window.reference_visibility_controls))
         window.annotation_opacity_slider.setValue(23)
         window.show_material_references_checkbox.setChecked(False)

@@ -302,6 +302,18 @@ class ReferenceIdentityTests(unittest.TestCase):
 
     @unittest.skipUnless(HAS_REFERENCE_ENV, "isolated PlantCV reference environment is not provisioned")
     def test_availability_probes_interpreter_and_reports_unavailable_desktop_python(self) -> None:
+        # The identity probe has a 10 s budget sized for an idle machine. This
+        # test checks identity, not latency, so give the probe headroom when
+        # the parallel full suite is saturating the CPU and disk.
+        from unittest.mock import patch
+        import seedvision.benchmarking.reference_runner as runner_module
+
+        original_run_child = runner_module._run_child
+
+        def patient_run_child(command, *, timeout_seconds, **kwargs):
+            return original_run_child(command, timeout_seconds=max(timeout_seconds, 60.0), **kwargs)
+
+        self.enterContext(patch.object(runner_module, "_run_child", patient_run_child))
         reference_status = plantcv_reference_status(python_executable=REFERENCE_PYTHON)
         self.assertTrue(reference_status["available"], reference_status)
         self.assertEqual(reference_status["backend"], "plantcv_reference")

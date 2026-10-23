@@ -4,7 +4,7 @@ import json
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout,
-    QLabel, QLineEdit, QPlainTextEdit, QPushButton, QVBoxLayout, QInputDialog)
+    QLabel, QLineEdit, QPlainTextEdit, QPushButton, QVBoxLayout, QInputDialog, QWidget)
 
 from seedvision.export.method_qc import (MethodQC, acknowledge_method_qc, export_method_qc,
     load_method_qc, load_method_qc_acknowledgment)
@@ -29,12 +29,15 @@ class MethodQCDialog(QDialog):
         self.facts.setObjectName('methodQCRecordedFacts')
         self.facts.setReadOnly(True)
         layout.addWidget(self.facts, 1)
-        row = QHBoxLayout()
-        row.addWidget(QLabel('Recorded operator account:', self))
-        self.operator = QLineEdit(getpass.getuser(), self)
+        # Who acknowledged matters only once a record is open.
+        self.operator_row = QWidget(self)
+        row = QHBoxLayout(self.operator_row)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(QLabel('Recorded operator account:', self.operator_row))
+        self.operator = QLineEdit(getpass.getuser(), self.operator_row)
         self.operator.setObjectName('methodQCOperator')
         row.addWidget(self.operator, 1)
-        layout.addLayout(row)
+        layout.addWidget(self.operator_row)
         self.status = QLabel(self)
         self.status.setWordWrap(True)
         self.status.setTextFormat(Qt.TextFormat.PlainText)
@@ -51,6 +54,7 @@ class MethodQCDialog(QDialog):
         layout.addWidget(self.retain_button)
         for button in (self.load_button, self.batch_button, self.export_button, self.ack_button, self.load_ack_button):
             buttons.addButton(button, QDialogButtonBox.ButtonRole.ActionRole)
+        self.load_button.setDefault(True)
         self.load_button.clicked.connect(self._load)
         self.batch_button.clicked.connect(self._load_batch_row)
         self.export_button.clicked.connect(self._export)
@@ -68,6 +72,7 @@ class MethodQCDialog(QDialog):
         self.acknowledgment = None
         for button in (self.export_button, self.ack_button, self.load_ack_button):
             button.setEnabled(quality is not None)
+        self.operator_row.setVisible(quality is not None)
         self.retain_button.setEnabled(quality is not None and self._project_root is not None)
         if quality is None:
             self.summary.setText('No recorded recipe QC selected.')
