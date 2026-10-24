@@ -4,14 +4,14 @@
 for finding disposition. The compact annotation palette, corrected-view-only
 annotations, saved-reference precedence, stable zoom, and one-shot hilum picker
 were added after the original remediation run. See
-[Current project status](CURRENT_STATUS.md). The 29 September baseline ran 670 tests: 668 passed and 2 skipped. Current
+[Current project status](../CURRENT_STATUS.md). The 29 September baseline ran 670 tests: 668 passed and 2 skipped. Current
 verification and the accepted peer-functionality extension are recorded in the
 status summary; this register retains the original finding scope.
 
 Updated 2026-09-18. This register follows all 30 findings in
 [the original critical review](CRITICAL_APPLICATION_REVIEW_2026_09_08.md).
 The original report is historical evidence; this document records current behavior.
-The earlier [node optimization implementation](NODE_OPTIMIZATION.md) is preserved.
+The earlier [node optimization implementation](../NODE_OPTIMIZATION.md) is preserved.
 
 ## Outcome and interpretation
 
@@ -119,7 +119,7 @@ synthetic data do not establish laboratory counting, geometry or trait accuracy.
 
 ## Inputs needed to finish scientific findings
 
-The [scientific validation protocol](SCIENTIFIC_VALIDATION_PROTOCOL.md) gives the
+The [scientific validation protocol](../SCIENTIFIC_VALIDATION_PROTOCOL.md) gives the
 collection, adjudication, freeze and analysis procedure. The remaining inputs are:
 
 1. **P1: intended use and tolerances.** Decisions the application supports; acceptable

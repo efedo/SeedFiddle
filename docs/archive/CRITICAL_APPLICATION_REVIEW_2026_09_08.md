@@ -3,7 +3,7 @@
 > **Historical review.** This document intentionally preserves the findings at
 > revision `60a4b8b`. Their current disposition is in
 > [CRITICAL_REVIEW_REMEDIATION.md](CRITICAL_REVIEW_REMEDIATION.md); the concise
-> present state is [CURRENT_STATUS.md](CURRENT_STATUS.md).
+> present state is [CURRENT_STATUS.md](../CURRENT_STATUS.md).
 
 **Review date:** 8 September 2026
 **Reviewed revision:** `60a4b8bb3af1c34f54c4945231699fafa496a694`
@@ -44,10 +44,10 @@ The sparse fixture was `IMG_9670c.JPG`, 3120×2080 source pixels. A fresh run to
 
 All generated evidence remains in ignored `artifacts/`; no fixture was changed.
 
-- [Full test log](D:/Programming/SeedFiddle/artifacts/critical-review-full-suite-2026-09-08.log)
-- [Reproduction results](D:/Programming/SeedFiddle/artifacts/critical-review-2026-09-08/reproductions.json) and [reproduction script](D:/Programming/SeedFiddle/artifacts/critical_review_probes.py)
-- [Qt review harness](D:/Programming/SeedFiddle/artifacts/critical_review_ui.py) and [final worker log](D:/Programming/SeedFiddle/artifacts/critical-review-ui-foreground.log)
-- [UI observations](D:/Programming/SeedFiddle/artifacts/critical-review-2026-09-08/ui-observations.json), [fresh analysis](D:/Programming/SeedFiddle/artifacts/critical-review-2026-09-08/analysis-observations.json), and [material-supported analysis](D:/Programming/SeedFiddle/artifacts/critical-review-2026-09-08/foreground-observations.json)
+- Full test log
+- Reproduction results and reproduction script
+- Qt review harness and final worker log
+- UI observations, fresh analysis, and material-supported analysis
 
 These links are local evidence, not committed assets. Preserve the evidence directory separately if the report needs to travel with its screenshots and logs.
 
@@ -209,7 +209,7 @@ At 1366×768 **and** 1920×1080, long node titles, descriptions, field labels, a
 
 **Improve:** Reflow labels above controls when narrow; wrap titles and explanations; use sensible expanding editors; remember splitter widths. Test every inspector at its supported minimum width with real fonts, long enum labels, keyboard focus, and 125–200% DPI. Acceptance means key labels and values are readable together without horizontal scrolling.
 
-![The actual 1366×768 window: clipped inspector and an initially cable-dominated graph](D:/Programming/SeedFiddle/artifacts/critical-review-2026-09-08/02-open-sparse-1366.png)
+!The actual 1366×768 window: clipped inspector and an initially cable-dominated graph
 
 ### R15 — Routine users encounter the pipeline's implementation complexity immediately
 
@@ -223,7 +223,7 @@ In the actual annotation view, the floating panel was **430×638 pixels** within
 
 **Improve:** Put seed selection, tool choice, Undo, and Apply/save first and keep commit state visible. Collapse optional biological/shape metadata. Offer a docked annotation panel or a smaller movable palette, remember its position, and provide a compact keyboard-assisted review sequence. Clearly distinguish “save editing progress” from “approve for a scientific consumer,” especially after R03. Verify full paint → undo → switch ID → apply → reopen flows without panel hunting.
 
-![Actual annotation view: tools are below optional metadata and the panel covers much of the image area](D:/Programming/SeedFiddle/artifacts/critical-review-2026-09-08/09-annotation-image-only.png)
+!Actual annotation view: tools are below optional metadata and the panel covers much of the image area
 
 ### R17 — Species defaults can silently mislabel analyses and learning exports
 

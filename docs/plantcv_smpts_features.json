@@ -33513,7 +33513,7 @@
   "test_infrastructure_audit_implementation": {
     "date": "2026-10-15",
     "status": "complete",
-    "audit": "docs/TEST_INFRASTRUCTURE_AUDIT.md",
+    "audit": "docs/archive/TEST_INFRASTRUCTURE_AUDIT.md",
     "baseline_full_run": "artifacts/test-suite-cleanup-full-v2.json",
     "baseline_tests": 2811,
     "baseline_test_seconds": 8532.209,

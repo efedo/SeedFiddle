@@ -1,91 +1,76 @@
 # Documentation index
 
-Start with [Current project status](CURRENT_STATUS.md). It states the implemented
-capabilities, current annotation behavior, latest verification, and remaining
-laboratory work and the accepted peer-functionality direction as of 4 October 2026.
+## Start here
 
-## Current operational documents
+- [Repository README](../README.md): what Seed Fiddle is, installation, a first run.
+- [Current status](CURRENT_STATUS.md): what is implemented, what is validated (nothing
+  yet, scientifically) and what blocks laboratory use.
+- [Operator guide](OPERATOR_GUIDE.md): day-to-day use of every part of the
+  application. Opens with `F1`.
 
-- [Repository README](../README.md): setup, main workflow, compatibility, and checks.
-- [Operator guide](OPERATOR_GUIDE.md): day to day image, annotation, result, project,
-  training, evaluation, frozen factory workflows, backend selection and pipeline/layout files.
-- [Architecture and contracts](ARCHITECTURE.md): ownership, caching, persistence,
-  evaluation, and extension rules.
-- [Test commands](TESTING.md), [complete test inventory](testing/TEST_INVENTORY.md)
-  and [multi-pass test infrastructure audit](TEST_INFRASTRUCTURE_AUDIT.md): current
-  test functionality, historical costs and recommended consolidation.
-- [Implementation roadmap](../PLAN.md): completed baseline phases, accepted
-  peer-functionality work and remaining validation milestones.
-- [Node catalogue](NODE_CATALOGUE.md): generated card, control, default, and
-  optimization inventory.
-- [Node optimization](NODE_OPTIMIZATION.md): current fitting workflow and objectives.
-- [Scientific validation protocol](SCIENTIFIC_VALIDATION_PROTOCOL.md): evidence that
-  is still required before scientific or laboratory claims.
-- [Critical review remediation](CRITICAL_REVIEW_REMEDIATION.md): disposition of the
-  30 findings and the boundary between software repair and empirical validation.
+## For developers
 
-## Accepted project direction
+- [HANDOFF.md](../HANDOFF.md) and [AGENTS.md](../AGENTS.md): orientation, binding
+  rules and known pitfalls.
+- [Architecture and contracts](ARCHITECTURE.md): packages, caching, persistence and
+  extension rules.
+- [Testing](TESTING.md): runner, tiers, prerequisites and CI. Generated
+  [test inventory](testing/TEST_INVENTORY.md); the
+  [18 October consolidation](archive/TEST_SUITE_REDESIGN_2026_10_18.md); the
+  [frozen recipe profile coverage](testing/RECIPE_PROFILE_COVERAGE.md).
+- [Node catalogue](NODE_CATALOGUE.md): generated list of every node, control,
+  default and optimisation status. Regenerate with `scripts/generate_node_catalogue.py`.
+- [Roadmap](../PLAN.md): engineering phases, the peer-functionality direction and the
+  remaining validation phases.
 
-- [PlantCV–SMPTS comparison](PLANTCV_SMPTS_COMPARISON.md): revised research rationale
-  and peer-functionality scope, aligned with the native SeedFiddle baseline.
-- [Peer-functionality implementation and benchmark plan](PLANTCV_SMPTS_IMPLEMENTATION_PLAN.md):
-  canonical F01–F22 capability families, WP0–WP6 delivery gates and comparative design.
-- [Operation-level feature register](plantcv_smpts_features.json): source and native
-  mappings, gaps, tests, separate functionality/conformance/science status, and
-  current WP0/WP1/WP2 implementation evidence and remaining gates.
+## Methods and science
 
-The reports define accepted development direction. The register records incremental
-implementation evidence; it does not establish measured peer performance. The root
-roadmap owns sequencing; the status summary owns current
-capabilities; the scientific protocol owns empirical release requirements. Proposed
-YAML remains design material; current status identifies implemented APIs and controls.
-Historical audits and implementation
-records retain their dated claims; their future-tense passages do not supersede this
-roadmap. The future-ideas list remains uncommitted except where explicitly promoted.
-
-## Current implementation records
-
+- [Seed-detection evaluation](SEED_DETECTION_EVALUATION.md): how the current
+  detection pipelines compare with the literature, and recommended directions.
+- [Scientific validation protocol](SCIENTIFIC_VALIDATION_PROTOCOL.md): evidence
+  required before any scientific or laboratory claim (gates L01–L04).
+- [Node optimisation](NODE_OPTIMIZATION.md): objectives, eligibility and exemptions.
 - [Learned instance segmentation](LEARNED_INSTANCE_SEGMENTATION.md) and
-  [engineering results](LEARNED_SEGMENTATION_RESULTS.md)
-- [Species reference libraries](SPECIES_REFERENCE_LIBRARIES.md)
-- [Reference seed dimensions and shape](REFERENCE_SEED_DIMENSIONS_AND_SHAPE.md)
-- [Reference matching and costs](PROCEDURAL_REFERENCE_MATCHING_AND_COSTS.md)
-- [Edge normalization](LOCAL_EDGE_NORMALIZATION.md)
-- [Material evidence redesign](MATERIAL_EVIDENCE_REDESIGN.md)
-- [Ruler evidence detection](RULER_EVIDENCE_DETECTION.md)
-- [Annotation and shape review](ANNOTATION_SHAPE_AND_EDGE_REVIEW_2026_09_05.md)
+  [seed-trait training](TRAIT_CLASSIFIER_TRAINING.md).
+- [Species reference libraries](SPECIES_REFERENCE_LIBRARIES.md),
+  [reference seed dimensions and shape](REFERENCE_SEED_DIMENSIONS_AND_SHAPE.md),
+  [procedural reference matching and costs](PROCEDURAL_REFERENCE_MATCHING_AND_COSTS.md),
+  [local edge normalisation](LOCAL_EDGE_NORMALIZATION.md) and
+  [ruler evidence detection](RULER_EVIDENCE_DETECTION.md): implementation records for
+  specific calculations. Their UI descriptions may predate the current window.
 
-These documents explain implemented calculations and migration decisions. Their
-dated UI descriptions may precede the compact palette described in the current
-status and operator guide.
+## PlantCV–SMPTS peer functionality
 
-## Historical audits and redesign records
+- [Comparison report](PLANTCV_SMPTS_COMPARISON.md): rationale and scope.
+- [Implementation and benchmark plan](PLANTCV_SMPTS_IMPLEMENTATION_PLAN.md): the
+  design specification (families F01–F22, work packages WP0–WP6).
+- [Method and input-domain inventory](PLANTCV_SMPTS_METHOD_DOMAIN_MATRIX.md) and its
+  [JSON](plantcv_smpts_method_domain_matrix.json); the operation-level
+  [feature register](plantcv_smpts_features.json) (validated by
+  `tests/test_peer_feature_register.py`); the
+  [acceptance audit](PLANTCV_SMPTS_ACCEPTANCE_AUDIT.json).
+- [Benchmark reports](BENCHMARK_REPORTS.md): command-line benchmark actions and the
+  reference-environment setup.
+- Third-party algorithm notices: [OpenCV](OPENCV_MATH_NOTICES.md),
+  [scikit-image watershed](SCIKIT_IMAGE_WATERSHED_NOTICES.md),
+  [SciPy k-means](SCIPY_KMEANS_NOTICES.md), [scikit-learn k-means](SKLEARN_KMEANS_NOTICES.md),
+  [Bayes KDE](BAYES_KDE_NOTICES.md).
 
-- [Critical application review, 8 September](CRITICAL_APPLICATION_REVIEW_2026_09_08.md)
-- [Node optimization compliance review, 9 September](NODE_OPTIMIZATION_COMPLIANCE_REVIEW_2026_09_09.md)
-- [Comprehensive node calculation audit](COMPREHENSIVE_NODE_CALCULATION_FORENSIC_AUDIT.md)
-- [Evidence and analytical chain audit](EVIDENCE_AND_ANALYSIS_FORENSIC_AUDIT.md)
-- [Pipeline consolidation audit](PIPELINE_CONSOLIDATION_AND_EVIDENCE_AUDIT.md)
-- [Node control audit](NODE_CONTROL_AUDIT.md)
-- [Analysis reliability redesign](analysis-redesign-2026-08-22.md)
-- [Historical repository README](../README_HISTORY.md)
+## Ideas and history
 
-These are retained as evidence for the revision they examined. Findings marked
-open there may have been repaired later; use the current status and remediation
-register for present behavior.
+- [Future ideas](FUTURE_IDEAS.md): an uncommitted brainstorm; nothing there is
+  implemented unless the roadmap says so.
+- [archive/](archive/): dated reviews, audits and redesign records (August–October
+  2026). They describe the revision they examined; findings marked open there may
+  since have been fixed.
+- Until October 2026 the root documents and several guides carried a long,
+  repeated chronological implementation log. It was removed in the documentation
+  cleanup and remains in git history, for example `git show 2e5b398:HANDOFF.md`.
 
-## Research backlog
-
-[Future ideas](FUTURE_IDEAS.md) is an append-only brainstorm. Items there are not
-current controls or evidence of implementation. Explicit promotion notes point to
-accepted work in the root roadmap; unpromoted ideas remain uncommitted.
-
-## Directory specific notes
+## Directory notes
 
 - [Seed-instance reference masks](../seed-instance-references/README.md)
 - [Learned checkpoints](../models/README.md)
 - [Offline wheelhouse](../wheels/README.md)
-- [Pinned runtime requirements](../requirements-runtime.txt)
-- [Archived prompt scratchpad](../seedfiddle_prompts.md): dated requests, not a
-  current defect list or roadmap.
-- [Agent handoff and chronological implementation log](../HANDOFF.md)
+- [Development prompt notes](../seedfiddle_prompts.md): dated requests, not a defect
+  list or roadmap.

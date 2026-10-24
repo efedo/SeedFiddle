@@ -24,12 +24,12 @@ The complete starting inventory records **2,823 methods in 248 files**, includin
 their functionality, assertions, helper calls, fixtures, historical outcomes and
 timings. It was saved before source consolidation:
 
-- [Every original method](consolidation-2026-10-18/before-TEST_INVENTORY.md)
-- [Machine-readable original inventory](consolidation-2026-10-18/before-test_inventory.json)
-- [Every original method decision](consolidation-2026-10-18/TEST_DISPOSITIONS.md)
-- [Machine-readable decisions](consolidation-2026-10-18/dispositions.json)
-- [Original-to-current method mapping](consolidation-2026-10-18/method_mapping.json)
-- [Current discovered units and scenario evidence](TEST_INVENTORY.md)
+- [Every original method](../testing/consolidation-2026-10-18/before-test_inventory.json)
+- [Machine-readable original inventory](../testing/consolidation-2026-10-18/before-test_inventory.json)
+- [Every original method decision](../testing/consolidation-2026-10-18/dispositions.json)
+- [Machine-readable decisions](../testing/consolidation-2026-10-18/dispositions.json)
+- [Original-to-current method mapping](../testing/consolidation-2026-10-18/method_mapping.json)
+- [Current discovered units and scenario evidence](../testing/TEST_INVENTORY.md)
 
 Static call overlap helps locate duplication. It does not establish statement,
 branch or semantic coverage equivalence. The register makes no measured coverage
@@ -74,7 +74,7 @@ The four frozen baseline files are byte-identical. Production-source provenance
 remains byte-exact. Historical whole-test-file pins are bridged only by a checked
 AST digest of their numerical fixture definitions: imports, constants, helper
 functions, setup and teardown stay exact while test organization can change.
-See [fixture definition manifest](consolidation-2026-10-18/fixture_definitions.json).
+See [fixture definition manifest](../testing/consolidation-2026-10-18/fixture_definitions.json).
 
 ## Execution and budget
 
