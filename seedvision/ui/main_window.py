@@ -70,7 +70,7 @@ from PySide6.QtWidgets import (
 from seedvision.calibration.neutral import neutral_balance_description
 
 _KEEP_INSTANCE_GENERATION = object()
-from seedvision.pipeline import NodeStatus, build_default_pipeline
+from seedvision.pipeline import NodeStatus, build_default_pipeline, category_rank
 from seedvision.pipeline.node_aliases import owning_node
 from seedvision.ui.optimization import OptimizationController
 from seedvision.ui.reference_frames import ReferenceFrameController
@@ -3770,7 +3770,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         for owner in owner_order:
             by_category.setdefault(self.pipeline.node(owner).category, []).append(owner)
         selected_label = "Raw image"
-        for category, owners in by_category.items():
+        for category, owners in sorted(by_category.items(), key=lambda item: category_rank(item[0])):
             self.overlay_menu.addSection(category)
             for owner in owners:
                 entries = grouped.get(owner)

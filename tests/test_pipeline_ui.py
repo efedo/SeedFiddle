@@ -1977,10 +1977,11 @@ class PipelineCanvasTests(CatalogueTestCase):
         from PySide6.QtTest import QTest
         from PySide6.QtWidgets import QLabel
 
-        from seedvision.ui.main_window import MainWindow
-
-        window = MainWindow(ROOT)
-        window.pipeline_documents.set_frozen(False)
+        settings_directory = tempfile.TemporaryDirectory(prefix="seedfiddle-layout-settings-")
+        self.addCleanup(settings_directory.cleanup)
+        window = isolated_window(
+            ROOT, settings_path=Path(settings_directory.name) / "settings.ini"
+        )
         window.show()
         self.application.processEvents()
 

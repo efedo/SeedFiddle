@@ -85,6 +85,20 @@ class GuiLayoutTests(unittest.TestCase):
             sum(action.isVisible() for action in menu.actions()), len(visible)
         )
 
+    def check_test_overlay_sections_follow_workflow_categories(self) -> None:
+        from seedvision.pipeline import NODE_CATEGORIES, build_default_pipeline
+
+        graph = build_default_pipeline()
+        unknown = {node_id: node.category for node_id, node in graph.nodes.items()
+                   if node.category not in NODE_CATEGORIES}
+        unused = {node_id: node.category for node_id, node in graph.unused_nodes.items()
+                  if node.category not in NODE_CATEGORIES}
+        self.assertEqual({**unknown, **unused}, {})
+        self.window._rebuild_overlay_menu("raw_image")
+        sections = [action.text() for action in self.window.overlay_menu.actions() if action.isSeparator()]
+        self.assertEqual(sections, sorted(sections, key=NODE_CATEGORIES.index))
+        self.assertEqual(sections[0], "Inputs")
+
     def check_test_reference_summary_is_compact_and_details_are_on_demand(self) -> None:
         from seedvision.ui.main_window import _reference_summary_html
 
@@ -132,12 +146,13 @@ class GuiLayoutTests(unittest.TestCase):
         self.assertIs(tabs.currentWidget(), self.window.metadata_scroll)
 
     def test_workflow_lifecycle(self):
-        """9 related GuiLayoutTests scenarios, each with private fixture state."""
+        """10 related GuiLayoutTests scenarios, each with private fixture state."""
         self.scenario(self.check_test_every_shortcut_is_unique)
         self.scenario(self.check_test_toolbar_keeps_run_view_and_annotation_controls_only)
         self.scenario(self.check_test_menus_group_commands_and_end_file_with_exit)
         self.scenario(self.check_test_shortcut_reference_lists_window_commands)
         self.scenario(self.check_test_overlay_filter_hides_non_matching_entries)
+        self.scenario(self.check_test_overlay_sections_follow_workflow_categories)
         self.scenario(self.check_test_reference_summary_is_compact_and_details_are_on_demand)
         self.scenario(self.check_test_spin_decimals_never_round_a_value)
         self.scenario(self.check_test_node_cards_fold_viewer_outputs_behind_an_expander)

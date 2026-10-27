@@ -43,7 +43,7 @@ from PySide6.QtWidgets import (
     QToolButton,
 )
 
-from seedvision.pipeline import NodeStatus, PipelineConnection, PipelineGraph, PipelineNode
+from seedvision.pipeline import NodeStatus, PipelineConnection, PipelineGraph, PipelineNode, category_rank
 from seedvision.ui.canvas_controls import style_canvas_control_bar
 from seedvision.ui.spin_format import spin_decimals
 
@@ -1421,7 +1421,7 @@ class PipelineCanvas(QGraphicsView):
         grouped: dict[str, list[dict]] = {}
         for entry in self._catalogue_provider():
             grouped.setdefault(entry.get('category', '') or 'Other', []).append(entry)
-        for category, entries in grouped.items():
+        for category, entries in sorted(grouped.items(), key=lambda item: category_rank(item[0])):
             # Non-selectable category headings keep 120+ entries scannable.
             header = QListWidgetItem(category.upper())
             header.setData(self.CATALOGUE_HEADER_ROLE, category)

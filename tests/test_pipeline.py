@@ -941,7 +941,7 @@ class PipelineModelTests(unittest.TestCase):
     def check_test_project_is_the_only_root_and_supplies_image_and_annotations(self) -> None:
         graph = build_default_pipeline()
         node = graph.node("project")
-        self.assertEqual(node.category, "Project")
+        self.assertEqual(node.category, "Inputs")
         self.assertEqual(node.title, "Inputs")
         self.assertNotIn("raw_images", graph.nodes)
         self.assertNotIn("reference_layers", graph.nodes)

@@ -2,6 +2,7 @@
 
 from seedvision.pipeline.model import (
     INTENTIONALLY_UNEXPOSED_SETTINGS,
+    NODE_CATEGORIES,
     NodeStatus,
     ParameterSection,
     ParameterSpec,
@@ -9,10 +10,12 @@ from seedvision.pipeline.model import (
     PipelineGraph,
     PipelineNode,
     build_default_pipeline,
+    category_rank,
 )
 
 __all__ = [
     "INTENTIONALLY_UNEXPOSED_SETTINGS",
+    "NODE_CATEGORIES",
     "NodeStatus",
     "ParameterSection",
     "ParameterSpec",
@@ -20,4 +23,5 @@ __all__ = [
     "PipelineGraph",
     "PipelineNode",
     "build_default_pipeline",
+    "category_rank",
 ]
