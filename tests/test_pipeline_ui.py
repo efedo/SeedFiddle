@@ -38,8 +38,8 @@ class PipelineCanvasTests(CatalogueTestCase):
         self.application.processEvents()
         canvas.fit_graph()
         self.assertGreater(canvas.horizontalScrollBar().maximum(), 0)
-        self.assertEqual(len(canvas.node_items), 31)
-        self.assertEqual(len(canvas.edge_items), 185)
+        self.assertEqual(len(canvas.node_items), 32)
+        self.assertEqual(len(canvas.edge_items), 189)
         self.assertNotIn("circle_candidates", canvas.node_items)
         self.assertEqual(canvas.unused_nodes_button.text(), "Add node")
         unused_actions = [
@@ -623,8 +623,8 @@ class PipelineCanvasTests(CatalogueTestCase):
         self.application.processEvents()
         self.assertEqual(restored, ["circle_candidates"])
         self.assertIn("circle_candidates", canvas.node_items)
-        self.assertEqual(len(canvas.node_items), 32)
-        self.assertEqual(len(canvas.edge_items), 193)
+        self.assertEqual(len(canvas.node_items), 33)
+        self.assertEqual(len(canvas.edge_items), 197)
         self.assertEqual(canvas.unused_nodes_button.text(), "Add node")
         self.assertTrue(canvas.unused_nodes_button.isEnabled())
         self.assertTrue(canvas.node_items["circle_candidates"].isSelected())
@@ -637,7 +637,7 @@ class PipelineCanvasTests(CatalogueTestCase):
         self.assertNotIn("circle_candidates", canvas.node_items)
         self.assertIn("circle_candidates", graph.unused_nodes)
         self.assertFalse(graph.node("circle_candidates").enabled)
-        self.assertEqual(len(canvas.edge_items), 185)
+        self.assertEqual(len(canvas.edge_items), 189)
         self.assertEqual(canvas.unused_nodes_button.text(), "Add node")
         restore_action = next(
             action
@@ -705,7 +705,7 @@ class PipelineCanvasTests(CatalogueTestCase):
             and edge.source_port == "corrected_image"
         )
         canvas._disconnect_connection(connection)
-        self.assertEqual(len(canvas.edge_items), 184)
+        self.assertEqual(len(canvas.edge_items), 188)
         self.assertFalse(graph.node(connection.target).enabled)
         self.assertIsNone(
             graph.connection_for_input(connection.target, connection.target_port)
@@ -722,7 +722,7 @@ class PipelineCanvasTests(CatalogueTestCase):
                 connection.source_port
             )
         )
-        self.assertEqual(len(canvas.edge_items), 185)
+        self.assertEqual(len(canvas.edge_items), 189)
         self.assertTrue(graph.node(connection.target).enabled)
         self.assertIsNotNone(
             graph.connection_for_input(connection.target, connection.target_port)

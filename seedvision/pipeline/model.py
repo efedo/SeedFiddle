@@ -1528,8 +1528,6 @@ def build_default_pipeline() -> PipelineGraph:
         ParameterSpec("boundary_arc_sample_count", "Arc samples", "int", 5, 41, 2, "Number of positions sampled across every circle hypothesis; missing samples are tolerated."),
         ParameterSpec("boundary_orientation_tolerance_degrees", "Arc tangent tolerance", "float", 2.0, 60.0, 1.0, "Angular tolerance between observed and predicted tangents along an arc."),
         ParameterSpec("boundary_missing_support_floor", "Missing-edge floor", "float", 0.0, 0.75, 0.01, "Support retained for an occluded or locally missing arc sample instead of making it a hard failure."),
-        ParameterSpec("boundary_circle_residual_tolerance", "Circle residual tolerance", "float", 0.02, 0.80, 0.01, "Relative radial residual mapped to circle-fit confidence."),
-        ParameterSpec("boundary_ellipse_residual_tolerance", "Ellipse residual tolerance", "float", 0.02, 0.80, 0.01, "Normalized conic residual mapped to ellipse-fit confidence."),
         ParameterSpec("boundary_max_axis_ratio", "Maximum ellipse axis ratio", "float", 1.0, 4.0, 0.05, "Largest seed ellipse axis ratio accepted as plausible."),
         ParameterSpec("boundary_radius_log_tolerance", "Radius-prior tolerance", "float", 0.05, 1.5, 0.05, "Log-space width of the soft global-diameter agreement term."),
         ParameterSpec("boundary_center_vote_weight", "Centre-vote influence", "float", 0.0, 1.0, 0.05, "Contribution from orientation-aware normal votes for compatible seed centres."),
@@ -1691,6 +1689,13 @@ def build_default_pipeline() -> PipelineGraph:
         ParameterSpec("local_maximum_radius_fraction", "Peak radius / diameter", "float", 0.01, 0.50, 0.01, "Object-probability non-maximum radius relative to calibrated seed diameter."),
         ParameterSpec("minimum_instance_area_fraction", "Minimum area / diameter squared", "float", 0.01, 1.50, 0.01, "Decoded polygons below this calibrated area are rejected."),
         ParameterSpec("maximum_candidates", "Maximum polygon candidates", "int", 64, 16384, 64, "Safety cap applied after object-probability ranking and before polygon NMS."),
+    )
+    cellpose_instance_parameters = (
+        ParameterSpec("pretrained_model", "Cellpose model", "text", description="Pretrained Cellpose model name (cpsam_v2 downloads once, about 1.2 GB) or the path of a Cellpose weights file."),
+        ParameterSpec("rescale_to_seed_diameter", "Rescale to seed diameter", "bool", description="Resize the image so the calibrated seed diameter matches Cellpose's 30 px object size before inference. Off runs at native resolution."),
+        ParameterSpec("flow_threshold", "Flow-error threshold", "float", 0.0, 3.0, 0.05, "Masks whose flows disagree with their own shape by more than this are removed. Zero keeps every mask."),
+        ParameterSpec("cellprob_threshold", "Cell-probability threshold", "float", -6.0, 6.0, 0.25, "Logit above which pixels follow the flows into masks. Lower values find more and larger seeds."),
+        ParameterSpec("minimum_instance_area_fraction", "Minimum area / diameter squared", "float", 0.01, 1.50, 0.01, "Masks, after clipping to the dish, below this calibrated area are removed."),
     )
     image_quality_parameters = (
         ParameterSpec("quality_noise_scale_fraction", "Noise scale / diameter", "float", 0.005, 0.30, 0.005, "Local high-frequency scale used for sensor/noise risk."),
@@ -2733,8 +2738,6 @@ def build_default_pipeline() -> PipelineGraph:
                 "boundary_arc_sample_count": 15,
                 "boundary_orientation_tolerance_degrees": 20.0,
                 "boundary_missing_support_floor": 0.15,
-                "boundary_circle_residual_tolerance": 0.16,
-                "boundary_ellipse_residual_tolerance": 0.18,
                 "boundary_max_axis_ratio": 2.20,
                 "boundary_radius_log_tolerance": 0.45,
                 "boundary_center_vote_weight": 0.35,
@@ -3153,6 +3156,55 @@ def build_default_pipeline() -> PipelineGraph:
             ),
         ),
         PipelineNode(
+            "cellpose_sam_instances",
+            "Cellpose-SAM seed instances",
+            "Seed detection",
+            "Segment every seed with the pretrained Cellpose-SAM model",
+            2400,
+            1320,
+            details=(
+                "The pretrained Cellpose-SAM model (a SAM ViT-L backbone with a "
+                "Cellpose flow head) predicts, for each pixel, a flow towards its seed's "
+                "centre and a cell probability. Following the flows groups pixels into "
+                "seed masks, which are clipped to the detected dish. It runs zero-shot on "
+                "the calibrated colour crop: no checkpoint or training is needed. Enable "
+                "the node and run the pipeline; the first run downloads the weights once. "
+                "Network flows are cached, so threshold edits only repeat mask recovery. "
+                "Requires the optional cellpose package; results are unvalidated "
+                "proposals for review."
+            ),
+            enabled=False,
+            bypassable=True,
+            status=NodeStatus.BYPASSED,
+            status_detail="Disabled; enable to run Cellpose-SAM",
+            parameters={
+                "pretrained_model": "cpsam_v2",
+                "rescale_to_seed_diameter": False,
+                "flow_threshold": 0.4,
+                "cellprob_threshold": 0.0,
+                "minimum_instance_area_fraction": 0.15,
+            },
+            parameter_specs=cellpose_instance_parameters,
+            input_ports=(
+                ("image", "Corrected image"),
+                ("scale", "Seed diameter"),
+            ),
+            output_ports=(
+                ("instances", "Instance identities"),
+                ("probability", "Cell probability"),
+                ("confidence", "Instance confidence"),
+            ),
+            output_port_types={
+                "instances": "SeedInstances",
+                "probability": "CellProbability",
+                "confidence": "InstanceConfidence",
+            },
+            inline_parameters=(
+                ("cellprob_threshold", "Cell probability"),
+                ("flow_threshold", "Flow error"),
+            ),
+        ),
+        PipelineNode(
             "radial_profile", "Per-seed radial profiles", "Seed traits",
             "Compare each assigned pixel with expected centre-to-edge lightness",
             2400, 540,
@@ -3173,7 +3225,7 @@ def build_default_pipeline() -> PipelineGraph:
             'Apply a frozen supplied-vocabulary classifier to the selected seed instances',
             2670, 1060, enabled=False, bypassable=True, status=NodeStatus.BYPASSED,
             status_detail='Disabled; select a frozen trait model',
-            optional_enabled_input_ports=('procedural', 'unet', 'stardist'),
+            optional_enabled_input_ports=('procedural', 'unet', 'stardist', 'cellpose'),
             parameters={'trait_model_path': 'None', 'trait_abstention_threshold': .8},
             inline_parameters=(('trait_abstention_threshold', 'Minimum probability'),),
             parameter_specs=(
@@ -3182,7 +3234,7 @@ def build_default_pipeline() -> PipelineGraph:
                 ParameterSpec('trait_abstention_threshold', 'Minimum predictive probability', 'float',
                     0., 1., .01, 'Withhold the class below this calibrated predictive probability.'),
             ),
-            details='Uses the same enabled U-Net, StarDist, then procedural selection as result export. '
+            details='Uses the same enabled U-Net, StarDist, Cellpose-SAM, then procedural selection as result export. '
                 'CUDA colour and visible-pixel geometry features and calibrated scores are cached separately '
                 'from threshold decisions. Invalid crop/frame/support inputs abstain. Supplied definitions '
                 'and development calibration do not establish biological validation.',
@@ -3850,8 +3902,6 @@ def build_default_pipeline() -> PipelineGraph:
             (
                 "Oval geometry fit",
                 (
-                    "boundary_circle_residual_tolerance",
-                    "boundary_ellipse_residual_tolerance",
                     "boundary_max_axis_ratio",
                 ),
             ),
@@ -4029,6 +4079,17 @@ def build_default_pipeline() -> PipelineGraph:
             (
                 "Polygon acceptance",
                 ("nms_iou_threshold", "minimum_instance_area_fraction"),
+            ),
+        ),
+        "cellpose_sam_instances": (
+            ("Model", ("pretrained_model", "rescale_to_seed_diameter")),
+            (
+                "Mask recovery",
+                (
+                    "cellprob_threshold",
+                    "flow_threshold",
+                    "minimum_instance_area_fraction",
+                ),
             ),
         ),
         'trait_classifier': (
@@ -4651,11 +4712,15 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineConnection("illumination_decomposition", "stardist_instances", "ShadowLikelihood", source_port="shadow", target_port="shadow"),
         PipelineConnection("illumination_decomposition", "stardist_instances", "HighlightLikelihood", source_port="highlight", target_port="highlight"),
         PipelineConnection("image_quality", "stardist_instances", "SensorNoiseLikelihood", source_port="sensor_noise", target_port="sensor_noise"),
+        PipelineConnection("deskew_colour", "cellpose_sam_instances", "CorrectedImage", target_port="image"),
+        PipelineConnection("layout_detection", "cellpose_sam_instances", "DishRegion", target_port="image"),
+        PipelineConnection("seed_scale_estimation", "cellpose_sam_instances", "SeedDiameter", target_port="scale"),
         PipelineConnection('deskew_colour', 'trait_classifier', 'CorrectedImage', target_port='image'),
         PipelineConnection('layout_detection', 'trait_classifier', 'DishRegion', source_port='dish_region', target_port='valid'),
         PipelineConnection('procedural_instances', 'trait_classifier', 'SeedInstances', source_port='instances', target_port='procedural'),
         PipelineConnection('unet_instances', 'trait_classifier', 'SeedInstances', source_port='instances', target_port='unet'),
         PipelineConnection('stardist_instances', 'trait_classifier', 'SeedInstances', source_port='instances', target_port='stardist'),
+        PipelineConnection('cellpose_sam_instances', 'trait_classifier', 'SeedInstances', source_port='instances', target_port='cellpose'),
         PipelineConnection("instance_masks", "radial_profile", "ProvisionalInstances"),
         PipelineConnection(
             "identification", "radial_profile", "SeedProposals",

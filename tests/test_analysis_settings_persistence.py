@@ -52,6 +52,40 @@ class AnalysisSettingsPersistenceTests(unittest.TestCase):
         self.assertEqual(target.upstream('metadata'), ('image_selector',))
         self.assertEqual(target.upstream('deskew_colour'), ('image_selector',))
 
+    def check_test_version_twenty_three_adds_disabled_cellpose_branch(self):
+        source = build_default_pipeline()
+        source.node('deskew_colour').parameters['max_deskew_degrees'] = 7.0
+        payload = analysis_settings_profile_to_payload(analysis_settings_profile_from_graph(source))
+        payload['version'] = 23
+        payload['nodes'] = [node for node in payload['nodes'] if node['id'] != 'cellpose_sam_instances']
+        payload['connections'] = [edge for edge in payload['connections']
+                                  if 'cellpose_sam_instances' not in (edge['source'], edge['target'])]
+        target = build_default_pipeline()
+        target.set_parameter('cellpose_sam_instances', 'flow_threshold', 0.8)
+        apply_analysis_settings_profile(target, analysis_settings_profile_from_payload(payload))
+        self.assertEqual(analysis_settings_profile_from_graph(target), analysis_settings_profile_from_graph(source))
+        self.assertFalse(target.node('cellpose_sam_instances').enabled)
+        self.assertEqual(target.node('cellpose_sam_instances').parameters['flow_threshold'], 0.4)
+        self.assertEqual(target.connection_for_input('trait_classifier', 'cellpose').source, 'cellpose_sam_instances')
+
+    def check_test_version_twenty_three_drops_never_run_edge_residual_tolerances(self):
+        source = build_default_pipeline()
+        source.set_parameter('seed_edge_curves', 'boundary_max_axis_ratio', 2.6)
+        payload = analysis_settings_profile_to_payload(analysis_settings_profile_from_graph(source))
+        retired = {'boundary_circle_residual_tolerance': 0.30, 'boundary_ellipse_residual_tolerance': 0.40}
+        _node_payload(payload, 'seed_edge_curves')['parameters'].update(retired)
+        with self.assertRaisesRegex(IncompatibleAnalysisSettingsProfile, 'boundary_circle_residual_tolerance'):
+            apply_analysis_settings_profile(build_default_pipeline(), analysis_settings_profile_from_payload(payload))
+        payload['version'] = 23
+        payload['nodes'] = [node for node in payload['nodes'] if node['id'] != 'cellpose_sam_instances']
+        payload['connections'] = [edge for edge in payload['connections']
+                                  if 'cellpose_sam_instances' not in (edge['source'], edge['target'])]
+        target = build_default_pipeline()
+        apply_analysis_settings_profile(target, analysis_settings_profile_from_payload(payload))
+        self.assertEqual(analysis_settings_profile_from_graph(target), analysis_settings_profile_from_graph(source))
+        self.assertEqual(target.node('seed_edge_curves').parameters['boundary_max_axis_ratio'], 2.6)
+        self.assertFalse(set(retired) & set(target.node('seed_edge_curves').parameters))
+
     def check_test_json_round_trip_is_human_readable_and_analysis_only(self) -> None:
         graph = build_default_pipeline()
         graph.set_parameter("ruler_detection", "ruler_length_mm", 175.0)
@@ -1053,8 +1087,10 @@ class AnalysisSettingsPersistenceTests(unittest.TestCase):
             )
 
     def test_workflow_lifecycle(self):
+        """20 related AnalysisSettingsPersistenceTests scenarios, each with private fixture state."""
         self.scenario(self.check_test_version_twenty_two_inserts_image_selector_without_changing_calculations)
-        """17 related AnalysisSettingsPersistenceTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_version_twenty_three_adds_disabled_cellpose_branch)
+        self.scenario(self.check_test_version_twenty_three_drops_never_run_edge_residual_tolerances)
         self.scenario(self.check_test_json_round_trip_is_human_readable_and_analysis_only)
         self.scenario(self.check_test_apply_restores_parameters_topology_enabled_and_suspended_once)
         self.scenario(self.check_test_no_op_is_neutral_and_net_ridge_control_is_analytical)

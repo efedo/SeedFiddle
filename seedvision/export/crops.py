@@ -21,6 +21,7 @@ _SUPPORTED_METHODS = {
     "procedural_instances",
     "unet_instances",
     "stardist_instances",
+    "cellpose_sam_instances",
 }
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 MAX_BATCH_CROP_PIXELS = 12_000_000
@@ -363,7 +364,11 @@ def _selected_labels_and_source_shape(analysis, method: str, result):
         source_shape = _raster_shape(analysis.layers.valid_mask)
         if labels.shape != source_shape:
             raise ValueError("Learned labels must align to the complete analysis crop.")
-        expected_family = "unet_watershed" if method == "unet_instances" else "stardist"
+        expected_family = {
+            "unet_instances": "unet_watershed",
+            "stardist_instances": "stardist",
+            "cellpose_sam_instances": "cellpose_sam",
+        }[method]
         family = getattr(result.family, "value", str(result.family))
         if family != expected_family:
             raise ValueError(f"The learned result family does not match {method}.")

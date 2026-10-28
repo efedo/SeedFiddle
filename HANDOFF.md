@@ -40,7 +40,7 @@ work, families F01–F22). See [README.md](README.md) for the user view and
 | `seedvision/segmentation/` | `baseline.py` production orchestration and procedural instance separation. |
 | `seedvision/cuda/`, `calibration/`, `measurement/` | Device-resident evidence, calibration and geometry. |
 | `seedvision/benchmarking/` | PlantCV/SMPTS recipes, isolated reference runner, checkpoints, conformance and grouped comparisons. |
-| `seedvision/learning/` | U-Net/StarDist training, datasets, evaluation protocols. |
+| `seedvision/learning/` | U-Net/StarDist training, datasets, evaluation protocols; the optional Cellpose-SAM node (`cellpose_sam.py`). |
 | `seedvision/persistence/`, `export/` | Projects, snapshots, sidecars, image decoding (`image_decoding.read_image`), result reports, batch runner. |
 | `seedvision/reference_library/`, `optimization/`, `annotation/` | Species libraries, reference-driven node optimisation, annotation tools. |
 | `tests/` | Parallel unittest runner (`python -m tests`) and ~250 test modules. |
@@ -106,8 +106,9 @@ old `test-runs/` and `test-temp/` directories and never touches the list above.
 ## Open work
 
 - **Seed detection quality.** Procedural separation undercounts touching seeds
-  (about 5× on the benchmark image); Cellpose-SAM looked right by eye in a spike.
-  Reviewed reference masks are the blocker for any quantitative claim. See
+  (about 5× on the benchmark image). Cellpose-SAM looked right by eye and is now an
+  optional, disabled-by-default node (see the operator guide's Cellpose-SAM
+  section). Reviewed reference masks are the blocker for any quantitative claim. See
   [docs/SEED_DETECTION_EVALUATION.md](docs/SEED_DETECTION_EVALUATION.md).
 - **Laboratory gates L01–L04** (reviewed corpus, physical/colour measurement,
   trait definitions, operator study) are external and still open; see

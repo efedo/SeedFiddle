@@ -92,7 +92,7 @@ values.
 Select a node to show it in the **Node** tab: **How it works**, its parameters in
 grouped sections (collapse a section with its arrow), **Reset** to restore the
 loaded values, and **Enabled** where the node can be bypassed. Supported nodes
-offer **Optimise from project references…** (see [Optimisation](#optimisation)).
+offer **Optimise this node…** (see [Optimisation](#optimisation)).
 
 On the canvas:
 
@@ -243,8 +243,10 @@ never reported as zero seeds.
 ## Optimisation
 
 Save the project, apply the intended references and clear **Lock**. Use
-**Analysis → Optimise → Optimise from project references…** or a node's own
-**Optimise from project references…** button.
+**Analysis → Optimise → Optimise all pipeline nodes…** to search every eligible
+node in pipeline order, or a node's own **Optimise this node…** button to search
+only that node. A node stops early once a full pass improves nothing at the
+displayed precision.
 
 The plan shows eligible and excluded seeds and images, with reasons, and each
 node's readiness. Only complete, connected, shape-reviewed, non-excluded outlines
@@ -304,6 +306,54 @@ Feature specification v2 means raw Foreground colour evidence in both inference
 and export. Version 1 foreground recipes are ambiguous and must be re-exported and
 retrained. Checkpoints load only tensor and primitive state through PyTorch's
 restricted loader.
+
+## Cellpose-SAM
+
+**Cellpose-SAM seed instances** (Seed detection category of the Default seed
+analysis) runs the pretrained Cellpose-SAM model zero-shot on the calibrated colour
+crop. It needs no training or checkpoint, but it needs the optional `cellpose`
+package, which the launcher reports and never installs.
+
+Install it into the project environment from the repository root. Cellpose's own
+dependency list pulls in `opencv-python-headless`, which would replace the GUI
+OpenCV build, so install it without dependencies and add the rest explicitly:
+
+```powershell
+.venv\Scripts\python -m pip install --no-deps torchvision==0.28.0 --index-url https://download.pytorch.org/whl/cu126
+.venv\Scripts\python -m pip install --no-deps cellpose==4.2.1.1
+.venv\Scripts\python -m pip install scipy natsort tifffile fastremap fill_voids imagecodecs roifile segment_anything tqdm
+```
+
+To run it:
+
+1. Clear **Lock**, select the node and tick **Enabled**. If the package is missing,
+   a message says so and the node stays disabled.
+2. **Run pipeline**. The first run downloads the `cpsam_v2` weights (about
+   1.2 GB) into `~/.cellpose/models`, or `CELLPOSE_LOCAL_MODELS_PATH` if set, and
+   loading them takes several seconds. Later runs reuse the loaded model.
+3. Choose **Cellpose-SAM seed instances**, **cell probability** or **instance
+   confidence** from the **Overlay** menu.
+
+Results use the first enabled instance node that completed, in the order U-Net,
+StarDist, Cellpose-SAM, procedural. With the learned nodes at their default
+(disabled), an enabled Cellpose-SAM node therefore supplies the reviewed seeds and
+measurements; disable it to return to procedural separation.
+
+Controls:
+
+- **Model**: a Cellpose pretrained name (`cpsam_v2`) or the path of a Cellpose
+  weights file, absolute or relative to the project folder. **Rescale to estimated
+  seed diameter** resizes the crop so the seed-scale estimate maps to Cellpose's
+  30-pixel training diameter; off, the model relies on its own scale invariance.
+  Changing either reruns the network.
+- **Mask recovery**: **Cell-probability threshold** (logit; lower admits fainter
+  pixels), **Flow-error threshold** (higher accepts masks whose flows agree less
+  with their shape) and **Minimum instance area** (a fraction of the squared seed
+  diameter). Objects centred outside the dish are dropped and the rest are clipped
+  to it. These controls re-decode the cached flows without rerunning the network.
+
+The output is unvalidated: no reviewed reference masks exist yet, so treat every
+instance as a proposal to review.
 
 ## Batch processing
 

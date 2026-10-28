@@ -127,6 +127,7 @@ from seedvision.reference_library import (
 from seedvision.reference_library import LibrarySourceInput
 from seedvision.resources import release_host_caches, resident_bytes
 from seedvision.learning.pipeline import StarDistPipelineSettings, UNetPipelineSettings
+from seedvision.learning.cellpose_sam import CellposeSamSettings
 from seedvision.annotation import (
     EdgeTraceOptions,
     InstanceContinuitySummary,
@@ -198,6 +199,7 @@ OVERLAY_NODE_IDS = (
     "procedural_instances",
     "unet_instances",
     "stardist_instances",
+    "cellpose_sam_instances",
     *ADVANCED_NODE_MODES.keys(),
 )
 CALIBRATION_NODE_IDS = (
@@ -402,6 +404,9 @@ OVERLAY_NODE_OWNERS = {
     "stardist_radial_uncertainty": "stardist_instances",
     "stardist_instances": "stardist_instances",
     "stardist_confidence": "stardist_instances",
+    "cellpose_sam_cell_probability": "cellpose_sam_instances",
+    "cellpose_sam_instances": "cellpose_sam_instances",
+    "cellpose_sam_confidence": "cellpose_sam_instances",
 }
 for _node_id, _mode in ADVANCED_NODE_MODES.items():
     OVERLAY_NODE_OWNERS[_mode] = _node_id
@@ -508,6 +513,9 @@ OVERLAY_DATA_PORTS = {
     "procedural_concavity": "concavity",
     "procedural_alternative_candidates": "alternatives",
     "procedural_reference_error": "reference_error",
+    "cellpose_sam_cell_probability": "probability",
+    "cellpose_sam_instances": "instances",
+    "cellpose_sam_confidence": "confidence",
 }
 
 
@@ -614,6 +622,7 @@ class _AnalysisTask(QRunnable):
         reference_archive_source_sha256=None,
         reference_annotation_snapshot_source_sha256=None,
         trait_settings=None,
+        cellpose_settings=None,
     ) -> None:
         super().__init__()
         self.path = path
@@ -628,6 +637,7 @@ class _AnalysisTask(QRunnable):
         self.procedural_settings = procedural_settings
         self.unet_settings = unet_settings
         self.stardist_settings = stardist_settings
+        self.cellpose_settings = cellpose_settings
         self.trait_settings = trait_settings
         self.learning_root = Path(learning_root)
         self.species = str(species)
@@ -714,6 +724,7 @@ class _AnalysisTask(QRunnable):
                 procedural_settings=self.procedural_settings,
                 unet_settings=self.unet_settings,
                 stardist_settings=self.stardist_settings,
+                cellpose_settings=self.cellpose_settings,
                 trait_settings=self.trait_settings,
                 background_reference_points=self.background_reference_points,
                 foreground_reference_points=self.foreground_reference_points,
@@ -3602,15 +3613,15 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             ("Trace continuity", "edge_trace_continuity"),
             ("Trace gap confidence", "edge_trace_gap_confidence"),
             ("Radius confirmation", "edge_radius_confirmation"),
-            ("Circle-fit confidence", "edge_circle_fit"),
-            ("Ellipse-fit confidence", "edge_ellipse_fit"),
-            ("Circle/ellipse fit residual", "edge_fit_residual"),
+            ("Edge circular-arc support", "edge_circle_fit"),
+            ("Edge-oval perimeters", "edge_ellipse_fit"),
+            ("Circular-arc fit residual", "edge_fit_residual"),
             ("Raw boundary centre-vote field", "edge_centre_votes"),
             (
                 "Fit-validated oval-centre probability",
                 "oval_centre_probability",
             ),
-            ("Semantic boundary side", "edge_semantic_sides"),
+            ("Seed material inside edges", "edge_semantic_sides"),
             ("Rejected edge reasons", "edge_rejections"),
             ("Raw centre-vote peak markers", "edge_fit_geometry"),
             ("Most likely edge ovals", "edge_oval_hypotheses"),
@@ -3638,6 +3649,9 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             ("StarDist radial uncertainty", "stardist_radial_uncertainty"),
             ("StarDist seed instances", "stardist_instances"),
             ("StarDist instance confidence", "stardist_confidence"),
+            ("Cellpose-SAM cell probability", "cellpose_sam_cell_probability"),
+            ("Cellpose-SAM seed instances", "cellpose_sam_instances"),
+            ("Cellpose-SAM instance confidence", "cellpose_sam_confidence"),
             *(
                 (label, mode)
                 for label, mode in ADVANCED_OVERLAY_LABELS
@@ -6538,6 +6552,10 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         from seedvision.pipeline.settings import production_settings
         return production_settings(self.pipeline)['stardist_settings']
 
+    def _cellpose_settings(self) -> CellposeSamSettings:
+        from seedvision.pipeline.settings import production_settings
+        return production_settings(self.pipeline)['cellpose_settings']
+
     def _trait_settings(self):
         from seedvision.pipeline.settings import production_settings
         return production_settings(self.pipeline)['trait_settings']
@@ -6707,6 +6725,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 reference_archive_source_sha256=self._reference_source_identities.get(key, (None, None))[0],
                 reference_annotation_snapshot_source_sha256=self._reference_source_identities.get(key, (None, None))[1],
                 trait_settings=self._trait_settings(),
+                cellpose_settings=self._cellpose_settings(),
             )
         except Exception as error:
             self._analysis_preflight_failed(attempt.outcome(error), attempt_revision)
@@ -6969,6 +6988,9 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             else result.stardist_instances
             if self.pipeline.node("stardist_instances").enabled
             and result.stardist_instances is not None
+            else result.cellpose_sam_instances
+            if self.pipeline.node("cellpose_sam_instances").enabled
+            and result.cellpose_sam_instances is not None
             else None
         )
         if unavailable:
@@ -13066,14 +13088,15 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             ),
             "edge_radius_confirmation": (
                 "Hue is fitted radius ratio (half to twice nominal across the hue "
-                "wheel); brightness combines arc, circle, ellipse and centre-vote support."
+                "wheel); brightness is the stronger of circular-arc support and weighted "
+                "centre-vote support."
             ),
-            "edge_circle_fit": "Circle-arc and proposal-conditioned radial fit confidence.",
-            "edge_ellipse_fit": "Confidence painted along proposal-independent oval perimeters accepted from distributed curved-edge and tangent support.",
-            "edge_fit_residual": "Bright pixels have high residual under both fitted circle and ellipse models.",
+            "edge_circle_fit": "Per edge pixel: how well a seed-sized circular arc through that pixel, along its tangent, is supported by neighbouring edges. Only ridge pixels carry a value.",
+            "edge_ellipse_fit": "The perimeters of the accepted edge ovals (the same ovals as Most likely edge ovals), painted with each oval's confidence. Not a per-edge fit: no seed proposals exist at this stage.",
+            "edge_fit_residual": "Per traced edge pixel: one minus its circular-arc support, so bright edges are poorly explained by a seed-sized arc.",
             "edge_centre_votes": "Normal/radius votes with seed-scaled tangent offsets accumulated from fragmented oriented traces; bright maxima are raw oval-centre hypotheses before perimeter validation.",
             "oval_centre_probability": "Fit-validated probability that a pixel is the centre of a plausible oval supported by distributed curved-edge and tangent evidence. Blue is low; red is high.",
-            "edge_semantic_sides": "Soft agreement that the inferred inside is foreground/non-background. It boosts but never gates an edge.",
+            "edge_semantic_sides": "Per edge pixel: how seed-like the side its best arc fit treats as the seed interior is (seed material just inside, non-seed material just outside). Bright edges enclose seed material; dark edges have background on their inner side. It boosts but never gates an edge.",
             "edge_rejections": (
                 "Hue categorizes rejection: weak hysteresis, junction/short trace, "
                 "poor continuity, implausible shape/radius, or low combined confidence."
@@ -13082,12 +13105,12 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             "edge_oval_hypotheses": "Proposal-independent ovals reconstructed backward from curved edge fragments. Brighter, thicker cyan outlines have stronger distributed perimeter and tangent support.",
             "seed_edge_curves": (
                 "Final seed-boundary confidence after ridge thinning, oriented trace "
-                "continuity, dense arc radii, centre voting, circle/ellipse residuals, "
+                "continuity, dense arc radii, centre voting, circular-arc support, "
                 "and soft semantic/lightness confirmation."
             ),
             "procedural_seed_mask": "Thresholded seed material after dish-margin removal and seed-sized enclosed coat-hole filling.",
             "procedural_boundary_cost": "Normalized physical boundary cost fused from edges, sensor/noise, ridges and local shadow.",
-            "procedural_centres": "Marker likelihood from smoothed material, physical-boundary depth, blurred flattened grayscale, and positive support from proposal-independent fit-validated oval centres; dots are retained markers. Raw centre votes are a separate pre-validation diagnostic in Seed-boundary confirmation.",
+            "procedural_centres": "Marker likelihood from smoothed material, physical-boundary depth, blurred flattened grayscale, and positive support from proposal-independent fit-validated oval centres; dots are the markers actually used. Raw centre votes are a separate pre-validation diagnostic in Seed-boundary confirmation. When saved manual centres replace automatic ones, the dots are those manual centres and this likelihood selects nothing.",
             "procedural_instances": "Marker-controlled watershed instance identities. Dot colour runs red to green with per-instance confidence. Click a coloured seed to outline it and show its area, maximum width, concavity, protrusion, solidity, axis ratio and score in the Procedural node panel.",
             "procedural_confidence": "Per-instance marker, boundary and calibrated-area confidence mapped back onto every assigned pixel.",
             "procedural_concavity": "Convex-hull deficit for each retained instance, scaled to the configured hard concavity cutoff; brighter regions are more internally concave.",
@@ -13105,6 +13128,9 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             "stardist_radial_uncertainty": "Learned uncertainty of the StarDist radial boundary regression.",
             "stardist_instances": "Star-convex seed polygons retained after score ordering and overlap-aware non-maximum suppression.",
             "stardist_confidence": "Per-polygon StarDist score mapped onto decoded pixels; it is not a validation guarantee.",
+            "cellpose_sam_cell_probability": "Pretrained Cellpose-SAM probability that a pixel belongs to a seed, before flow following.",
+            "cellpose_sam_instances": "Cellpose-SAM seed masks recovered by following the predicted flows, clipped to the dish.",
+            "cellpose_sam_confidence": "Mean Cellpose-SAM cell probability inside each mask; it is not a validation guarantee.",
             "boundary_confidence": "Dormant legacy diagnostic, disabled and shelved by default: bypassed output is black. If explicitly restored and enabled, hue is the directed boundary normal (0° = 360°) and brightness is confidence.",
             "boundary_magnitude": "Dormant legacy diagnostic, disabled and shelved by default: bypassed output is black. If explicitly restored and enabled, brightness is the material-morphology/lightness boundary confidence.",
             "touching_split_likelihood": "High values mark shallow foreground necks and concave distance-transform saddles that may separate touching seeds.",
@@ -13216,6 +13242,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             "unet_pattern_boundary",
             "unet_centres",
             "stardist_object_probability",
+            "cellpose_sam_cell_probability",
         }
         if mode in inverse_probability_modes:
             text = "Scale key: white = low displayed probability/evidence; black = high. " + text
@@ -13429,6 +13456,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         for node_id, learned in (
             ("unet_instances", getattr(result, "unet_instances", None)),
             ("stardist_instances", getattr(result, "stardist_instances", None)),
+            ("cellpose_sam_instances", getattr(result, "cellpose_sam_instances", None)),
         ):
             if learned is None:
                 continue
@@ -13929,6 +13957,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             "procedural_instances",
             "unet_instances",
             "stardist_instances",
+            "cellpose_sam_instances",
         ):
             node = self.pipeline.node(node_id)
             if self.pipeline.is_active(node_id) and node.enabled:
@@ -14022,6 +14051,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             "procedural_instances": "Optimizing and selecting procedural seed candidates",
             "unet_instances": "Inferring U-Net seed interiors and boundaries",
             "stardist_instances": "Inferring and suppressing StarDist polygons",
+            "cellpose_sam_instances": "Inferring Cellpose-SAM flows and following them into seed masks",
             "radial_profile": "Accumulating seed radial profiles",
             "wrinkling": "Detecting seed-scaled ridge texture",
             "coat_damage": "Fusing coat-anomaly evidence",
@@ -14439,6 +14469,10 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             values = dict(self.pipeline.node(node_id).parameters)
             values[key] = value
             StarDistPipelineSettings(**values)
+        elif node_id == "cellpose_sam_instances":
+            values = dict(self.pipeline.node(node_id).parameters)
+            values[key] = value
+            CellposeSamSettings(**values)
 
     @Slot(object)
     def _pipeline_connections_changed(self, affected) -> None:
@@ -14508,6 +14542,29 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 )
                 self.pipeline_inspector.set_node(self.pipeline.node(node_id))
                 return
+        if enabled and node_id == "cellpose_sam_instances":
+            from seedvision.learning.cellpose_sam import (
+                INSTALL_HINT,
+                cellpose_installed,
+                resolve_weights,
+            )
+
+            if not cellpose_installed():
+                QMessageBox.warning(
+                    self,
+                    "Cellpose-SAM is not installed",
+                    "The optional cellpose package is not installed in this "
+                    f"environment.\n\n{INSTALL_HINT}",
+                )
+                self.pipeline_inspector.set_node(self.pipeline.node(node_id))
+                return
+            selection = str(self.pipeline.node(node_id).parameters["pretrained_model"])
+            if not resolve_weights(selection, self._root).is_file():
+                self.statusBar().showMessage(
+                    f"Cellpose-SAM weights '{selection}' are not cached yet; the first "
+                    "run downloads them (about 1.2 GB for cpsam_v2).",
+                    15000,
+                )
         try:
             affected = self.pipeline.set_enabled(node_id, enabled)
         except ValueError as error:

@@ -42,6 +42,7 @@ from seedvision.segmentation.procedural import (
     procedural_seed_instances,
 )
 from seedvision.segmentation.procedural_fit import procedural_reference_error_map
+from seedvision.learning.cellpose_sam import CellposeSamSettings
 from seedvision.learning.contracts import LearnedInstanceResult, ModelFamily
 from seedvision.learning.pipeline import (
     StarDistPipelineSettings,
@@ -428,6 +429,7 @@ class BaselineAnalysis:
     procedural_instances: ProceduralInstanceResult | None = None
     unet_instances: LearnedInstanceResult | None = None
     stardist_instances: LearnedInstanceResult | None = None
+    cellpose_sam_instances: LearnedInstanceResult | None = None
     reference_seed_bounds: tuple[tuple[float, float, float, float], ...] = ()
     reference_seed_diameters_px: tuple[float, ...] = ()
     initial_seed_diameter_px: float | None = None
@@ -512,6 +514,7 @@ def analyze_path(
     reference_archive_source_sha256: str | None = None,
     reference_annotation_snapshot_source_sha256: str | None = None,
     trait_settings=None,
+    cellpose_settings: CellposeSamSettings | None = None,
 ) -> BaselineAnalysis:
     """Read and analyze an image from disk."""
 
@@ -589,6 +592,7 @@ def analyze_path(
         procedural_settings=procedural_settings,
         unet_settings=unet_settings,
         stardist_settings=stardist_settings,
+        cellpose_settings=cellpose_settings,
         trait_settings=trait_settings,
         background_reference_points=background_reference_points,
         foreground_reference_points=foreground_reference_points,
@@ -665,6 +669,7 @@ def analyze_image(
     _initial_timings: dict[str, float] | None = None,
     _source_sha256: str | None = None,
     trait_settings=None,
+    cellpose_settings: CellposeSamSettings | None = None,
 ) -> BaselineAnalysis:
     """Generate approximate seed proposals for a controlled-layout image."""
 
@@ -678,6 +683,7 @@ def analyze_image(
     procedural_settings = procedural_settings or ProceduralInstanceSettings()
     unet_settings = unet_settings or UNetPipelineSettings()
     stardist_settings = stardist_settings or StarDistPipelineSettings()
+    cellpose_settings = cellpose_settings or CellposeSamSettings()
     background_colour_enabled = bool(
         background_colour_enabled and layer_settings.background_colour_enabled
     )
@@ -2297,16 +2303,64 @@ def analyze_image(
 
     backend_failures = {}
 
-    def learned_branch(node_id, family, branch_settings):
-        enabled = enabled_nodes is not None and node_id in enabled_nodes
+    def clear_learned_branch(node_id):
         prefix = f"learning.{node_id}"
+        for suffix in ("outputs", "checkpoint", "inference_signature", "decoder_signature", "result"):
+            values.pop(f"{prefix}.{suffix}", None)
 
-        def clear_branch():
-            for suffix in ("outputs", "checkpoint", "inference_signature", "decoder_signature", "result"):
-                values.pop(f"{prefix}.{suffix}", None)
+    def cached_model_branch(node_id, *, upstream_dirty, inference_signature,
+                            decoder_signature, predict, decode):
+        """Cache model outputs apart from decoding, so decoder edits skip inference."""
+        prefix = f"learning.{node_id}"
+        inference_dirty = (
+            upstream_dirty
+            or values.get(f"{prefix}.inference_signature") != inference_signature
+            or f"{prefix}.outputs" not in values
+        )
+        decoder_dirty = (
+            inference_dirty
+            or node_id in dirty
+            or values.get(f"{prefix}.decoder_signature") != decoder_signature
+            or f"{prefix}.result" not in values
+        )
+        if not decoder_dirty:
+            reused.append(node_id)
+            return values[f"{prefix}.result"]
+        phase = 'inference_failed' if inference_dirty else 'decoder_failed'
+        try:
+            with timings.measure(node_id):
+                if inference_dirty:
+                    outputs, checkpoint_id = predict()
+                    values[f"{prefix}.outputs"] = outputs
+                    values[f"{prefix}.checkpoint"] = checkpoint_id
+                    values[f"{prefix}.inference_signature"] = inference_signature
+                else:
+                    outputs = values[f"{prefix}.outputs"]
+                    checkpoint_id = values[f"{prefix}.checkpoint"]
+                phase = 'decoder_failed'
+                decoded = decode(outputs, checkpoint_id)
+        except AnalysisCancelled:
+            clear_learned_branch(node_id)
+            raise
+        except Exception as error:
+            clear_learned_branch(node_id)
+            # A poisoned CUDA context cannot establish a usable fallback.
+            import torch
+            if isinstance(error, torch.cuda.OutOfMemoryError) or (
+                    isinstance(error, RuntimeError) and any(text in str(error).lower()
+                    for text in ('cuda', 'device-side assert', 'illegal memory access'))):
+                raise
+            backend_failures[node_id] = ('failed', phase, type(error).__name__, str(error) or type(error).__name__)
+            computed.append(node_id)
+            return None
+        values[f"{prefix}.result"] = decoded
+        values[f"{prefix}.decoder_signature"] = decoder_signature
+        computed.append(node_id)
+        return decoded
 
-        if not enabled:
-            clear_branch()
+    def learned_branch(node_id, family, branch_settings):
+        if enabled_nodes is None or node_id not in enabled_nodes:
+            clear_learned_branch(node_id)
             return None
         configured_checkpoint = Path(branch_settings.checkpoint_path).expanduser()
         resolved_checkpoint = (
@@ -2321,84 +2375,93 @@ def analyze_image(
             else None
         )
         if checkpoint_fingerprint is None:
-            clear_branch()
+            clear_learned_branch(node_id)
             backend_failures[node_id] = ('unavailable', 'checkpoint_missing', None, None)
             return None
-        inference_signature = (
-            *branch_settings.inference_signature,
-            str(resolved_checkpoint).casefold(),
-            checkpoint_fingerprint,
-            str(species),
-            round(float(seed_diameter), 5),
+        return cached_model_branch(
+            node_id,
+            upstream_dirty=learned_upstream_dirty,
+            inference_signature=(
+                *branch_settings.inference_signature,
+                str(resolved_checkpoint).casefold(),
+                checkpoint_fingerprint,
+                str(species),
+                round(float(seed_diameter), 5),
+            ),
+            decoder_signature=(
+                *branch_settings.decoder_signature,
+                round(float(seed_diameter), 5),
+            ),
+            predict=lambda: predict_pipeline_model(
+                family,
+                root=learning_root,
+                settings=branch_settings,
+                source_bgr=layers.gpu_source,
+                valid_mask=layers.gpu_valid,
+                evidence=learned_evidence,
+                species=species,
+                seed_diameter_px=seed_diameter,
+                cancellation_requested=cancellation_requested,
+            ),
+            decode=lambda outputs, checkpoint_id: decode_pipeline_model(
+                family,
+                outputs,
+                settings=branch_settings,
+                seed_diameter_px=seed_diameter,
+                # Reviewed masks are evaluation targets, never inference markers.
+                painted_instances=None,
+                valid_mask=layers.valid_mask,
+                checkpoint_id=checkpoint_id,
+            ),
         )
-        inference_dirty = (
-            learned_upstream_dirty
-            or values.get(f"{prefix}.inference_signature") != inference_signature
-            or f"{prefix}.outputs" not in values
+
+    def cellpose_branch():
+        node_id = "cellpose_sam_instances"
+        if enabled_nodes is None or node_id not in enabled_nodes:
+            clear_learned_branch(node_id)
+            return None
+        from seedvision.learning.cellpose_sam import (
+            cellpose_installed, decode_cellpose_sam, predict_cellpose_sam, resolve_weights)
+        if not cellpose_installed():
+            clear_learned_branch(node_id)
+            backend_failures[node_id] = ('unavailable', 'dependency_missing', None, None)
+            return None
+        rescaled = cellpose_settings.rescale_to_seed_diameter
+        weights = resolve_weights(cellpose_settings.pretrained_model, learning_root)
+        weights_version = (
+            (str(weights).casefold(), weights.stat().st_size, weights.stat().st_mtime_ns)
+            if weights.is_file()
+            else None
         )
-        decoder_signature = (
-            *branch_settings.decoder_signature,
-            round(float(seed_diameter), 5),
+        # Cellpose sees only the corrected colour crop (and, when rescaling,
+        # the seed scale); material and edge evidence never enter it.
+        return cached_model_branch(
+            node_id,
+            upstream_dirty=calibration_dirty or layout_dirty or (rescaled and seed_scale_dirty),
+            inference_signature=(
+                *cellpose_settings.inference_signature,
+                weights_version,
+                round(float(seed_diameter), 5) if rescaled else None,
+            ),
+            decoder_signature=(
+                *cellpose_settings.decoder_signature,
+                round(float(seed_diameter), 5),
+            ),
+            predict=lambda: predict_cellpose_sam(
+                cellpose_settings,
+                root=learning_root,
+                source_bgr=layers.gpu_source,
+                seed_diameter_px=seed_diameter,
+                cancellation_requested=cancellation_requested,
+            ),
+            decode=lambda outputs, checkpoint_id: decode_cellpose_sam(
+                outputs,
+                settings=cellpose_settings,
+                seed_diameter_px=seed_diameter,
+                valid_mask=layers.valid_mask,
+                checkpoint_id=checkpoint_id,
+            ),
         )
-        decoder_dirty = (
-            inference_dirty
-            or node_id in dirty
-            or values.get(f"{prefix}.decoder_signature") != decoder_signature
-            or f"{prefix}.result" not in values
-        )
-        if decoder_dirty:
-            phase = 'inference_failed' if inference_dirty else 'decoder_failed'
-            try:
-                with timings.measure(node_id):
-                    if inference_dirty:
-                        outputs, checkpoint_id = predict_pipeline_model(
-                            family,
-                            root=learning_root,
-                            settings=branch_settings,
-                            source_bgr=layers.gpu_source,
-                            valid_mask=layers.gpu_valid,
-                            evidence=learned_evidence,
-                            species=species,
-                            seed_diameter_px=seed_diameter,
-                            cancellation_requested=cancellation_requested,
-                        )
-                        values[f"{prefix}.outputs"] = outputs
-                        values[f"{prefix}.checkpoint"] = checkpoint_id
-                        values[f"{prefix}.inference_signature"] = inference_signature
-                    else:
-                        outputs = values[f"{prefix}.outputs"]
-                        checkpoint_id = values[f"{prefix}.checkpoint"]
-                    phase = 'decoder_failed'
-                    decoded = decode_pipeline_model(
-                        family,
-                        outputs,
-                        settings=branch_settings,
-                        seed_diameter_px=seed_diameter,
-                        # Reviewed masks are evaluation targets, never inference markers.
-                        painted_instances=None,
-                        valid_mask=layers.valid_mask,
-                        checkpoint_id=checkpoint_id,
-                    )
-            except AnalysisCancelled:
-                clear_branch()
-                raise
-            except Exception as error:
-                clear_branch()
-                # A poisoned CUDA context cannot establish a usable fallback.
-                import torch
-                if isinstance(error, torch.cuda.OutOfMemoryError) or (
-                        isinstance(error, RuntimeError) and any(text in str(error).lower()
-                        for text in ('cuda', 'device-side assert', 'illegal memory access'))):
-                    raise
-                backend_failures[node_id] = ('failed', phase, type(error).__name__, str(error) or type(error).__name__)
-                computed.append(node_id)
-                return None
-            values[f"{prefix}.result"] = decoded
-            values[f"{prefix}.decoder_signature"] = decoder_signature
-            computed.append(node_id)
-            return decoded
-        reused.append(node_id)
-        return values[f"{prefix}.result"]
 
     unet_result = learned_branch(
         "unet_instances", ModelFamily.UNET_WATERSHED, unet_settings
@@ -2406,13 +2469,15 @@ def analyze_image(
     stardist_result = learned_branch(
         "stardist_instances", ModelFamily.STARDIST, stardist_settings
     )
+    cellpose_result = cellpose_branch()
 
     trait_result = None
     if enabled_nodes is not None and 'trait_classifier' in enabled_nodes:
         from seedvision.learning.instance_selection import select_instances
         from seedvision.learning.trait_pipeline import TraitClassifierSettings, run_trait_classifier
         selected_method, selected_instances, _ = select_instances(unet=unet_result,
-            stardist=stardist_result, procedural=procedural_result, enabled=enabled_nodes,
+            stardist=stardist_result, cellpose=cellpose_result,
+            procedural=procedural_result, enabled=enabled_nodes,
             foreground_available=layers.foreground_colour_profile is not None)
         with timings.measure('trait_classifier'):
             trait_result, trait_computed = run_trait_classifier(selected_method, selected_instances,
@@ -2430,6 +2495,8 @@ def analyze_image(
         if unet_result is not None
         else stardist_result.count
         if stardist_result is not None
+        else cellpose_result.count
+        if cellpose_result is not None
         else procedural_result.count
         if procedural_result is not None
         else len(proposals)
@@ -2448,7 +2515,7 @@ def analyze_image(
 
     warnings = [
         "Learned instances are not publication-validated; review and correction are required."
-        if unet_result is not None or stardist_result is not None
+        if unet_result is not None or stardist_result is not None or cellpose_result is not None
         else "Untrained procedural instances; review and correction are required."
         if procedural_result is not None
         else "Untrained classical proposals; review and correction are required."
@@ -2519,15 +2586,18 @@ def analyze_image(
     artifact_selections_json = capture_artifact_selections(learning_root,
         selections={'unet_instances': unet_settings.checkpoint_path,
                     'stardist_instances': stardist_settings.checkpoint_path,
+                    'cellpose_sam_instances': cellpose_settings.pretrained_model,
                     'trait_classifier': (trait_settings or TraitClassifierSettings()).trait_model_path},
         enabled=enabled_nodes or (), trait_result=trait_result,
         checkpoints={node: branch.checkpoint_id for node, branch in
-                     (('unet_instances', unet_result), ('stardist_instances', stardist_result))
+                     (('unet_instances', unet_result), ('stardist_instances', stardist_result),
+                      ('cellpose_sam_instances', cellpose_result))
                      if branch is not None})
     from seedvision.export.backend_outcomes import capture_native_outcomes
     backend_outcomes_json = capture_native_outcomes(enabled=enabled_nodes or (),
         results={'procedural_instances': procedural_result, 'unet_instances': unet_result,
-                 'stardist_instances': stardist_result}, failures=backend_failures,
+                 'stardist_instances': stardist_result,
+                 'cellpose_sam_instances': cellpose_result}, failures=backend_failures,
         foreground_available=layers.foreground_colour_profile is not None)
     result = BaselineAnalysis(
         image_path=image_path,
@@ -2585,6 +2655,7 @@ def analyze_image(
         procedural_instances=procedural_result,
         unet_instances=unet_result,
         stardist_instances=stardist_result,
+        cellpose_sam_instances=cellpose_result,
         reference_seed_bounds=reference_seed_bounds,
         reference_seed_diameters_px=reference_seed_diameters,
         initial_seed_diameter_px=(
@@ -2600,6 +2671,8 @@ def analyze_image(
             if unet_result is not None
             else "StarDist star-convex polygons (review required)"
             if stardist_result is not None
+            else cellpose_result.method
+            if cellpose_result is not None
             else "procedural marker-controlled watershed (review required)"
             if procedural_result is not None
             else "classical fused review proposals"

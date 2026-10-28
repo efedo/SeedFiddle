@@ -70,8 +70,8 @@ class PipelineModelTests(unittest.TestCase):
         order = graph.topological_order()
         self.assertEqual(order[0], "project")
         self.assertEqual(set(order), set(graph.nodes))
-        self.assertEqual(len(graph.nodes), 31)
-        self.assertEqual(len(graph.connections), 185)
+        self.assertEqual(len(graph.nodes), 32)
+        self.assertEqual(len(graph.connections), 189)
         self.assertNotIn("perimeter_background_reference", graph.nodes)
         self.assertEqual(
             graph.connection_for_input(
@@ -158,7 +158,7 @@ class PipelineModelTests(unittest.TestCase):
         graph = build_default_pipeline()
         all_nodes = {**graph.nodes, **graph.unused_nodes}
         all_connections = (*graph.connections, *graph.unused_connections)
-        self.assertEqual(len(graph.connection_templates), 263)
+        self.assertEqual(len(graph.connection_templates), 267)
         self.assertTrue(all(node.output_ports for node in all_nodes.values()))
         self.assertEqual(
             len(all_connections),
@@ -329,6 +329,9 @@ class PipelineModelTests(unittest.TestCase):
                 "reference_edge_probability", "illumination_decomposition",
                 "image_quality",
             },
+            "cellpose_sam_instances": {
+                "deskew_colour", "layout_detection", "seed_scale_estimation",
+            },
             "radial_profile": {
                 "identification", "instance_masks", "deskew_colour",
                 "layout_detection",
@@ -364,7 +367,7 @@ class PipelineModelTests(unittest.TestCase):
             "output": {"aggregation"},
             "trait_classifier": {
                 "deskew_colour", "layout_detection", "procedural_instances",
-                "unet_instances", "stardist_instances",
+                "unet_instances", "stardist_instances", "cellpose_sam_instances",
             },
         }
         self.assertEqual(set(expected), set(graph.nodes))
@@ -1021,7 +1024,10 @@ class PipelineModelTests(unittest.TestCase):
         expected = set(roots)
         for root in roots:
             expected.update(graph.downstream(root, recursive=True))
-        expected.update({"unet_instances", "stardist_instances", "trait_classifier"})
+        expected.update({
+            "unet_instances", "stardist_instances", "cellpose_sam_instances",
+            "trait_classifier",
+        })
         self.assertEqual(
             {node.identifier for node in graph.nodes.values() if not node.enabled},
             expected,
@@ -1036,6 +1042,7 @@ class PipelineModelTests(unittest.TestCase):
         self.assertTrue(graph.node("surface_darkness_gradients").enabled)
         self.assertFalse(graph.node("unet_instances").enabled)
         self.assertFalse(graph.node("stardist_instances").enabled)
+        self.assertFalse(graph.node("cellpose_sam_instances").enabled)
         self.assertIn("surface_darkness_gradients", graph.nodes)
 
     def check_test_disabling_a_node_disables_all_dependents(self) -> None:

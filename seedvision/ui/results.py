@@ -304,6 +304,10 @@ class ResultsController:
                     path = Path(self.pipeline.node(identifier).parameters['checkpoint_path'])
                     path = path if path.is_absolute() else self._root/path
                     provenance['checkpoints'][identifier] = file_sha256(path) if path.is_file() else 'unavailable'
+            if self.pipeline.node('cellpose_sam_instances').enabled:
+                from seedvision.learning.cellpose_sam import resolve_weights, weights_sha256
+                path = resolve_weights(self.pipeline.node('cellpose_sam_instances').parameters['pretrained_model'], self._root)
+                provenance['checkpoints']['cellpose_sam_instances'] = weights_sha256(path) if path.is_file() else 'unavailable'
         from seedvision.learning.data import file_sha256
         project = self._current_project_path
         reference = self._project_reference_sidecar_paths.get(key)

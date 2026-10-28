@@ -59,11 +59,13 @@ class FitTask(QRunnable):
 class OptimizationDialog(QDialog):
     def __init__(self, graph, samples, selected, parent=None, *, excluded_images=()):
         super().__init__(parent)
-        self.setWindowTitle('Optimize from project references')
+        single = selected is not None and len(selected) == 1
+        self.setWindowTitle(f'Optimise node: {graph.node(next(iter(selected))).title}' if single
+                            else 'Optimise all pipeline nodes')
         self.resize(840, 650)
         layout = QVBoxLayout(self)
         intro = QLabel('In-sample project adaptation — not independent validation.\n'
-            'Each node is fitted across the selected images, then downstream nodes use its proposal.\n'
+            'Only checked nodes are searched, in pipeline order; downstream nodes use each accepted proposal.\n'
             'Only complete, shape-reviewed instances are eligible. Physical facts, scoring costs,\n'
             'reference-source policies and resolution limits stay fixed. You review the result before applying.')
         intro.setWordWrap(True)
@@ -146,6 +148,10 @@ class OptimizationDialog(QDialog):
                     if not path.is_file():
                         blockers.append(f'{graph.node(identifier).title}: select a compatible checkpoint or disable the branch first.')
                         break
+        if 'cellpose_sam_instances' in graph.nodes and graph.node('cellpose_sam_instances').enabled:
+            from seedvision.learning.cellpose_sam import cellpose_installed
+            if not cellpose_installed():
+                blockers.append(f"{graph.node('cellpose_sam_instances').title}: install the optional cellpose package or disable the branch first.")
         if blockers:
             note.setText('\n'.join(blockers))
             buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(False)
@@ -193,7 +199,10 @@ class OptimizationController:
         self._optimization_menu_actions = self.menuBar().actions()
         action = next(item for item in self._optimization_menu_actions if item.text() == '&Analysis')
         menu = action.menu()
-        self.optimize_project_action = QAction('Optimise from project references…', self)
+        self.optimize_project_action = QAction('Optimise all pipeline nodes…', self)
+        self.optimize_project_action.setStatusTip(
+            "Search every eligible node, in pipeline order, against this project's references. "
+            'To optimise one node, select it and use its Optimise this node… button.')
         self.optimize_project_action.triggered.connect(lambda: self._start_node_optimization())
         menu.addAction(self.optimize_project_action)
         self.import_optimization_targets_action = QAction('Import optimisation targets…', self)
@@ -314,7 +323,8 @@ class OptimizationController:
             task.signals.completed.connect(self._optimization_completed)
             task.signals.failed.connect(self._optimization_failed)
             progress = QProgressDialog('Preparing production baselines…', 'Cancel', 0, 0, self)
-            progress.setWindowTitle('Optimize project nodes')
+            progress.setWindowTitle(f'Optimising {self.pipeline.node(next(iter(selected))).title}'
+                                    if len(selected) == 1 else f'Optimising {len(selected)} pipeline nodes')
             progress.setMinimumDuration(0)
             progress.setAutoClose(False)
             progress.canceled.connect(task.cancel)

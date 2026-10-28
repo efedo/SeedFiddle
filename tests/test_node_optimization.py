@@ -152,6 +152,31 @@ class OptimizationContractTests(unittest.TestCase):
         self.assertIn('Budget exhausted', row.reason)
         self.assertEqual(len(row.trials), 1)
 
+    def check_test_search_stops_after_a_pass_without_visible_improvement(self):
+        graph = build_default_pipeline()
+        evaluator = FakeEvaluator()
+        searched = []
+
+        def score(current, identifier):
+            sigma = current.node(identifier).parameters['edge_blur_sigma']
+            chroma = current.node(identifier).parameters['edge_chroma_weight']
+            searched.append((sigma, chroma))
+            # Chroma moves the loss by under 1e-5: invisible, so never accepted.
+            loss = (sigma - 0.96) ** 2 + 2e-6 * chroma
+            return {'image-a': loss, 'image-b': loss}
+
+        evaluator.score = score
+        evaluator.parameters = lambda current, key, names: (('edge_blur_sigma', 'edge_chroma_weight'), {})
+        report = optimize(graph, evaluator, selected={'edge_gradients'}, passes=4)
+        row = next(row for row in report.nodes if row.node_id == 'edge_gradients')
+        self.assertEqual(set(row.changes), {'edge_blur_sigma'})
+        self.assertAlmostEqual(row.changes['edge_blur_sigma'], 0.96)
+        # Baseline, two candidates per control in pass 1, then only the
+        # responsive control at half step in pass 2, which improves nothing.
+        self.assertEqual(len(row.trials), 1 + 4 + 2)
+        self.assertEqual({chroma for _, chroma in searched[5:]}, {1.5})
+        self.assertIn('Stopped after pass 2 of 4', row.reason)
+
     def check_test_downstream_search_observes_accepted_upstream_values(self):
         graph = build_default_pipeline()
         graph.node('wavelet_decomposition').set_parameter('wavelet_level_count', 4)
@@ -186,6 +211,7 @@ class OptimizationContractTests(unittest.TestCase):
         self.scenario(self.check_test_integer_boolean_and_categorical_candidates_are_typed)
         self.scenario(self.check_test_frozen_trait_classifier_has_no_image_local_search_objective)
         self.scenario(self.check_test_shared_proposal_optimizes_both_images_not_last_image)
+        self.scenario(self.check_test_search_stops_after_a_pass_without_visible_improvement)
         self.scenario(self.check_test_candidate_cannot_win_by_dropping_an_image)
         self.scenario(self.check_test_downstream_search_observes_accepted_upstream_values)
         self.scenario(self.check_test_settings_match_controller_parameter_owners)

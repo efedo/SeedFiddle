@@ -7,7 +7,7 @@ with full-resolution analysis on a CUDA GPU through PyTorch.
 
 Analyses are typed node graphs ("pipelines"). The Default seed analysis combines
 calibration, material and edge evidence, procedural instance separation and
-optional learned (U-Net/StarDist) branches. Eighteen further factory pipelines
+optional learned (U-Net/StarDist) and pretrained Cellpose-SAM branches. Eighteen further factory pipelines
 reproduce selected PlantCV and SMPTS seed workflows natively, so methods can be
 compared on the same image.
 

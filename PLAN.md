@@ -111,7 +111,9 @@ Native PyTorch U-Net/watershed and StarDist branches, tiled inference, training,
 checkpoint metadata, dataset export/audit, global matching metrics, and evaluation
 protocols are implemented. Learned nodes are disabled by default and require an
 explicit compatible checkpoint. Existing controlled results are synthetic
-engineering evidence; no real-image accuracy claim is made.
+engineering evidence; no real-image accuracy claim is made. A zero-shot
+Cellpose-SAM node (optional `cellpose` package) is also available, disabled by
+default.
 
 ### 5. Species libraries and reviewed geometry — complete
 
@@ -128,7 +130,7 @@ shape remains unknowable from one silhouette without paired views or thickness d
 
 ### 6. Reference-driven optimization — complete
 
-The shared registry gives 38 computational nodes an optimisation capability and
+The shared registry gives 39 computational nodes an optimisation capability and
 12 an explicit exemption. Project optimization runs eligible
 nodes in dependency order with fixed reference objectives, production calculations,
 isolated caches, cancellation, stale-input checks, per-image losses, before/after
@@ -251,8 +253,8 @@ scientific accuracy.
 ## Next concrete work
 
 1. **Seed detection.** Establish reviewed reference masks for the benchmark images,
-   then compare procedural separation with a foundation-model segmenter
-   (Cellpose-SAM was promising in a spike) under the frozen evaluation protocol.
+   then compare procedural separation with the Cellpose-SAM node (promising by
+   eye) under the frozen evaluation protocol.
    See [the seed-detection evaluation](docs/SEED_DETECTION_EVALUATION.md).
 2. **Laboratory inputs.** Obtain intended-use tolerances, reviewed grouped images,
    acquisition geometry, trait definitions and operator requirements (phases A–E).

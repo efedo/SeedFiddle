@@ -22,7 +22,7 @@ MAX_NODE_INSTANCES = 64
 MAX_NODE_INSTANCE_BYTES = 12 * 1024 * 1024
 _PRIVATE_DEFAULT_ARGUMENTS = frozenset({'settings', 'calibration_settings', 'dish_settings',
     'layer_settings', 'advanced_settings', 'procedural_settings', 'unet_settings',
-    'stardist_settings', 'trait_settings', 'enabled_nodes', 'node_cache', 'dirty_nodes',
+    'stardist_settings', 'cellpose_settings', 'trait_settings', 'enabled_nodes', 'node_cache', 'dirty_nodes',
     'cancellation_requested', 'background_colour_enabled'})
 
 

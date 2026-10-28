@@ -14,7 +14,7 @@ changes are in [AGENTS.md](../AGENTS.md); the user-facing behaviour is in the
 | `cuda/`, `calibration/`, `measurement/`, `visualization/` | Device-resident evidence and PlantCV-compatible CUDA operations, ruler/card/vessel detection, reviewed geometry, display layers. |
 | `annotation/` | Annotation tools, eligibility rules and exact coordinate transport. |
 | `benchmarking/` | PlantCV/SMPTS recipe specifications and catalogue, isolated reference runner, checkpoints, conformance, grouped study manifests and comparisons, native recipe execution. |
-| `learning/`, `classification/`, `model_io/` | U-Net/StarDist training and evaluation, trait classification, standard-library model formats and PlantCV model conversion. |
+| `learning/`, `classification/`, `model_io/` | U-Net/StarDist training and evaluation, the optional pretrained Cellpose-SAM branch, trait classification, standard-library model formats and PlantCV model conversion. |
 | `persistence/` | Projects, snapshots, reference archives, sidecars, settings profiles, run and QC history, image decoding (`image_decoding.read_image`, safe for non-ASCII paths). |
 | `export/` | Authoritative result reports, CSV/JSON/image and crop export, native whole-run archives, the saved-project batch runner. |
 | `reference_library/`, `optimization/` | Immutable species libraries; reference-driven node optimisation. |

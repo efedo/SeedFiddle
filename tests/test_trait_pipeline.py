@@ -61,10 +61,12 @@ class TraitPipelineTests(unittest.TestCase):
             procedural_instances=self.instances, trait_classifier=result)
 
     def check_test_selected_method_preference_is_shared_and_filters_disabled_branches(self):
-        values = dict(unet=object(), stardist=object(), procedural=object())
+        values = dict(unet=object(), stardist=object(), cellpose=object(), procedural=object())
         analysis = SimpleNamespace(unet_instances=values['unet'], stardist_instances=values['stardist'],
-            procedural_instances=values['procedural'], layers=SimpleNamespace(foreground_colour_profile=object()))
-        for enabled in (None, {'procedural_instances'}, {'stardist_instances', 'procedural_instances'}):
+            cellpose_sam_instances=values['cellpose'], procedural_instances=values['procedural'],
+            layers=SimpleNamespace(foreground_colour_profile=object()))
+        for enabled in (None, {'procedural_instances'}, {'stardist_instances', 'procedural_instances'},
+                        {'cellpose_sam_instances', 'procedural_instances'}):
             self.assertEqual(select_instances(**values, enabled=enabled), select_result(analysis, enabled))
         analysis.layers.foreground_colour_profile = None
         self.assertIsNone(select_result(analysis, {'procedural_instances'})[1])
@@ -185,7 +187,7 @@ class TraitPipelineTests(unittest.TestCase):
         self.assertIn('trait_model_path', {x.key for x in node.parameter_specs})
         self.assertIn('trait_abstention_threshold', {x.key for x in node.parameter_specs})
         self.assertEqual(set(graph.upstream('trait_classifier')), {'deskew_colour', 'layout_detection',
-            'procedural_instances', 'unet_instances', 'stardist_instances'})
+            'procedural_instances', 'unet_instances', 'stardist_instances', 'cellpose_sam_instances'})
 
     def check_test_classifier_enables_with_alternative_branches_and_required_inputs_remain_honest(self):
         graph = build_default_pipeline()

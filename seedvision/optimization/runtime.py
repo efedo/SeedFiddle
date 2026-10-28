@@ -40,7 +40,7 @@ DERIVED_DIAGNOSTICS = {'touching_split', 'ellipse_likelihood', 'assignment_confi
 def eligibility_reason(graph, identifier, sample):
     kind = OBJECTIVES.get(identifier)
     has_instances = sample.labels is not None and bool(np.any(sample.labels))
-    if kind in {'instances', 'unet', 'stardist', 'legacy instances', 'proposals', 'edges', 'ceiling edges', 'boundary'} and not has_instances:
+    if kind in {'instances', 'unet', 'stardist', 'cellpose', 'legacy instances', 'proposals', 'edges', 'ceiling edges', 'boundary'} and not has_instances:
         return 'Apply complete, shape-reviewed instance annotations.'
     if kind == 'instances' and ('procedural_instances' not in graph.nodes or not graph.node('procedural_instances').enabled):
         return 'Enable Procedural seed separation for this downstream objective.'
@@ -49,6 +49,10 @@ def eligibility_reason(graph, identifier, sample):
         path = configured if configured.is_absolute() else Path(sample.kwargs.get('learning_root', '.')) / configured
         if not path.is_file():
             return 'Select an existing compatible learned checkpoint first.'
+    if kind == 'cellpose':
+        from seedvision.learning.cellpose_sam import cellpose_installed
+        if not cellpose_installed():
+            return 'Install the optional cellpose package first.'
     if kind in {'material', 'colour', 'noise', 'texture'} and not has_instances and not any(
             value is not None and np.any(value) for key,value in sample.kwargs.items() if key.endswith('reference_mask') or key.endswith('exclusion_mask')):
         return 'Apply material class reference regions or complete seed instances.'
@@ -320,6 +324,16 @@ class ProductionEvaluator:
                     if not path.is_file():
                         raise Ineligible(f'{identifier}: load a compatible checkpoint before optimizing an enabled learned branch: {path}')
                     self.checkpoints[str(path.resolve())] = file_digest(path)
+        if 'cellpose_sam_instances' in graph.nodes and graph.node('cellpose_sam_instances').enabled:
+            from seedvision.learning.cellpose_sam import cellpose_installed, resolve_weights, weights_sha256
+            if not cellpose_installed():
+                raise Ineligible('cellpose_sam_instances: install the optional cellpose package before optimizing.')
+            for sample in self.samples:
+                path = resolve_weights(graph.node('cellpose_sam_instances').parameters['pretrained_model'],
+                                       sample.kwargs.get('learning_root', '.'))
+                if not path.is_file():
+                    raise Ineligible(f'cellpose_sam_instances: run the node once to download its weights: {path}')
+                self.checkpoints[str(path)] = weights_sha256(path)
         self.provenance = {'objective_version': 1, 'image_weighting': 'equal per image',
             'checkpoints': self.checkpoints,
             'libraries': [str(getattr(getattr(s.kwargs.get('species_library'), 'manifest', None), 'content_sha256', 'none')) for s in self.samples],
@@ -464,7 +478,7 @@ class ProductionEvaluator:
                 if reason:
                     raise Ineligible(reason)
                 kind = OBJECTIVES[identifier]
-                if kind in {'instances', 'unet', 'stardist', 'legacy instances', 'proposals', 'edges', 'boundary'}:
+                if kind in {'instances', 'unet', 'stardist', 'cellpose', 'legacy instances', 'proposals', 'edges', 'boundary'}:
                     if sample.labels is None or not np.any(sample.labels):
                         raise Ineligible('Apply shape-reviewed complete instances.')
                 derived = identifier in DERIVED_DIAGNOSTICS and sample.labels is not None and np.any(sample.labels)
@@ -486,9 +500,10 @@ class ProductionEvaluator:
     def score_result(self, identifier, sample, result):
         kind = OBJECTIVES[identifier]
         layers = result.layers
-        if kind in {'instances', 'unet', 'stardist', 'legacy instances'}:
+        if kind in {'instances', 'unet', 'stardist', 'cellpose', 'legacy instances'}:
             output = {'instances': result.procedural_instances, 'unet': result.unet_instances,
-                      'stardist': result.stardist_instances, 'legacy instances': layers.instance_labels}[kind]
+                      'stardist': result.stardist_instances, 'cellpose': result.cellpose_sam_instances,
+                      'legacy instances': layers.instance_labels}[kind]
             if output is None:
                 raise Ineligible('Enable and connect the downstream instance node (and load its checkpoint if learned).')
             labels = output.labels if hasattr(output, 'labels') else output

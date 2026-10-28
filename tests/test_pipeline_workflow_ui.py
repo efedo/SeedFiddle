@@ -175,7 +175,7 @@ class PipelineWorkflowUiTests(CatalogueTestCase):
         canvas = self.window.pipeline_canvas
         canvas._populate_node_catalogue()
         entries = canvas.catalogue_entry_items()
-        self.assertEqual(len(entries), 123)
+        self.assertEqual(len(entries), 124)
         self.assertGreater(canvas.node_catalogue_list.count(), len(entries))
         colours = {item.foreground().color().name() for item in entries}
         self.assertEqual(colours, {'#1768ad', '#218044'})

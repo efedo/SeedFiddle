@@ -211,8 +211,10 @@ class ManifestTests(unittest.TestCase):
         distributions = {item.distribution for item in configuration.packages}
         self.assertEqual(
             distributions,
-            {"PySide6", "numpy", "opencv-python", "matplotlib", "torch"},
+            {"PySide6", "numpy", "opencv-python", "matplotlib", "torch", "cellpose"},
         )
+        cellpose = next(item for item in configuration.packages if item.distribution == "cellpose")
+        self.assertFalse(cellpose.required)
         self.assertEqual(configuration.python.recommended, "3.12")
         self.assertEqual(configuration.python.minimum, "3.12.0")
         torch = next(item for item in configuration.packages if item.distribution == "torch")

@@ -14,9 +14,11 @@ targets.
    reference or instance drafts are excluded. Shape references must be marked
    **shape reviewed**, **complete**, connected, and without a shape-exclusion
    reason. Partial outlines are not silently treated as complete objects.
-2. Select **Analysis → Optimise → Optimise from project references…**, or
-   the optimization button on an individual computational node. Both use the
-   same planner, production evaluator, search, result review and application path.
+2. Select **Analysis → Optimise → Optimise all pipeline nodes…** to search
+   every eligible node in pipeline order, or a node's **Optimise this node…**
+   button to search that node alone (the plan opens with only it checked). Both
+   use the same planner, production evaluator, search, result review and
+   application path.
 3. Select images and nodes. The planner shows reference counts, objective types,
    missing prerequisites and fixed/searchable controls (hover a node). Inactive
    toolbox nodes are not activated. Enable an optional branch before fitting it.
@@ -28,6 +30,11 @@ targets.
 5. Choose passes and a per-node evaluation budget. Zero means a complete sweep
    of every currently eligible control. A nonzero budget includes the baseline
    and records exhaustion explicitly. It may end before every control is tried.
+   Each pass tries every control one step either side of its current value, and
+   each further pass halves the step. A gain under 0.00001 in mean loss (below
+   the five decimals the progress dialog shows) does not count. A node stops
+   early after a pass that improves nothing, and a control whose candidates did
+   not move the loss is not searched again with smaller steps.
 6. Inspect the proposal, per-image losses and before/after instance overlays.
    Apply installs one shared set of project parameters. Cancel or reject keeps
    existing settings. Save the project to persist accepted parameter values.
@@ -40,7 +47,7 @@ decoder/analysis controls, never silently train a neural network.
 
 ## Coverage and objectives
 
-The shared registry (`seedvision/optimization/registry.py`) gives 38 computational
+The shared registry (`seedvision/optimization/registry.py`) gives 39 computational
 nodes an optimisation capability and 12 nodes an explicit exemption. A new unknown node
 or unsupported control kind raises an error rather than silently losing coverage.
 
@@ -55,7 +62,7 @@ or unsupported control kind raises an error rather than silently losing coverage
 | Lightening/darkening gradient ceilings | Their own filtered gradient magnitude against fixed contour/interior targets. These optional diagnostic outputs currently have no instance-separation consumer. |
 | Grayscale and local lighting | Downstream instance loss; shadow/highlight controls additionally require reviewed shadow/highlight target rasters. |
 | Procedural seed separation | Actual production instance loss. All 35 eligible controls are accessible, including integer controls and formerly omitted surface/oval/shape/candidate controls. |
-| U-Net instances; StarDist instances | Instance loss from production decoders in their native GUI units, reusing frozen inference outputs where inputs are unchanged. |
+| U-Net instances; StarDist instances; Cellpose-SAM seed instances | Instance loss from production decoders in their native GUI units, reusing frozen inference outputs where inputs are unchanged. The Cellpose-SAM model choice is fixed; only its mask-recovery and rescaling controls are searched. |
 | Reference seed traits | Reviewed coat and condition labels. Unreviewed conditions are not negative examples. |
 | Wrinkling | Reviewed wrinkled/not-wrinkled condition labels on complete instances; a weak region-level target, not a wrinkle tracing annotation. |
 | Boundary confidence and normals | Boundary magnitude against fixed contours/interiors. |

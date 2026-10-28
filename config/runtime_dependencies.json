@@ -46,6 +46,15 @@
       "purpose": "CUDA image analysis, segmentation diagnostics, and trait inference",
       "index_url": "https://download.pytorch.org/whl/cu126",
       "required": true
+    },
+    {
+      "distribution": "cellpose",
+      "import_name": "cellpose",
+      "install_spec": "cellpose==4.2.1.1",
+      "minimum": "4.2.0",
+      "maximum_exclusive": "5.0.0",
+      "purpose": "optional Cellpose-SAM seed instances; install manually as described in docs/OPERATOR_GUIDE.md",
+      "required": false
     }
   ]
 }

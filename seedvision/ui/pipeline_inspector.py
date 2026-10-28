@@ -1399,7 +1399,10 @@ class PipelineInspector(QWidget):
         optimization_layout.setContentsMargins(0, 4, 0, 4)
         self.optimization_status = QLabel(self.optimization_container)
         self.optimization_status.setWordWrap(True)
-        self.optimization_button = QPushButton('Optimise from project references…', self.optimization_container)
+        self.optimization_button = QPushButton('Optimise this node…', self.optimization_container)
+        self.optimization_button.setToolTip(
+            "Search only this node's controls against the project's references. "
+            'Analysis → Optimise → Optimise all pipeline nodes… searches every eligible node.')
         self.optimization_button.clicked.connect(self._request_optimization)
         optimization_layout.addWidget(self.optimization_status)
         optimization_layout.addWidget(self.optimization_button)

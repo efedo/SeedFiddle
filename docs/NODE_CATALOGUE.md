@@ -379,8 +379,6 @@ Optimization: instances.
 | Arc samples (`boundary_arc_sample_count`) | 15 | Eligible when reviewed targets are available |
 | Arc tangent tolerance (`boundary_orientation_tolerance_degrees`) | 20.0 | Eligible when reviewed targets are available |
 | Missing-edge floor (`boundary_missing_support_floor`) | 0.15 | Eligible when reviewed targets are available |
-| Circle residual tolerance (`boundary_circle_residual_tolerance`) | 0.16 | Eligible when reviewed targets are available |
-| Ellipse residual tolerance (`boundary_ellipse_residual_tolerance`) | 0.18 | Eligible when reviewed targets are available |
 | Maximum ellipse axis ratio (`boundary_max_axis_ratio`) | 2.2 | Eligible when reviewed targets are available |
 | Radius-prior tolerance (`boundary_radius_log_tolerance`) | 0.45 | Eligible when reviewed targets are available |
 | Centre-vote influence (`boundary_center_vote_weight`) | 0.35 | Eligible when reviewed targets are available |
@@ -521,6 +519,20 @@ Optimization: stardist.
 | Peak radius / diameter (`local_maximum_radius_fraction`) | 0.08 | Eligible when reviewed targets are available |
 | Minimum area / diameter squared (`minimum_instance_area_fraction`) | 0.15 | Eligible when reviewed targets are available |
 | Maximum polygon candidates (`maximum_candidates`) | 4096 | Eligible when reviewed targets are available |
+
+## Cellpose-SAM seed instances (`cellpose_sam_instances`)
+
+Segment every seed with the pretrained Cellpose-SAM model
+
+Optimization: cellpose.
+
+| Control | Default | Search status |
+|---|---|---|
+| Cellpose model (`pretrained_model`) | cpsam_v2 | Pretrained model identity; choose the model in the node inspector. |
+| Rescale to seed diameter (`rescale_to_seed_diameter`) | False | Eligible when reviewed targets are available |
+| Flow-error threshold (`flow_threshold`) | 0.4 | Eligible when reviewed targets are available |
+| Cell-probability threshold (`cellprob_threshold`) | 0.0 | Eligible when reviewed targets are available |
+| Minimum area / diameter squared (`minimum_instance_area_fraction`) | 0.15 | Eligible when reviewed targets are available |
 
 ## Object-level seed traits (`trait_classifier`)
 

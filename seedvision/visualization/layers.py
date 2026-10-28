@@ -305,8 +305,6 @@ class AnalysisLayerSettings:
     boundary_arc_sample_count: int = 15
     boundary_orientation_tolerance_degrees: float = 20.0
     boundary_missing_support_floor: float = 0.15
-    boundary_circle_residual_tolerance: float = 0.16
-    boundary_ellipse_residual_tolerance: float = 0.18
     boundary_max_axis_ratio: float = 2.20
     boundary_radius_log_tolerance: float = 0.45
     boundary_center_vote_weight: float = 0.35
