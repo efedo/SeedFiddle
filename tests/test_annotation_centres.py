@@ -141,8 +141,8 @@ class AnnotationCentresUiTests(unittest.TestCase):
         self.assertEqual(markers(), [])
         self.assertEqual(view.instance_centres(), {})
 
-    def check_test_annotation_palette_docks_beside_the_image_view(self):
-        from PySide6.QtCore import QPoint, QRect
+    def check_test_annotation_palette_can_extend_beyond_image_view(self):
+        from PySide6.QtCore import QPoint
 
         window, _ = self.make_window()
         window.resize(1200, 700)
@@ -151,12 +151,26 @@ class AnnotationCentresUiTests(unittest.TestCase):
         window.annotate_instances_action.setChecked(True)
         self.app.processEvents()
         panel = window.reference_panel
-        self.assertIs(panel.parentWidget(), window.main_splitter)
+        self.assertIs(panel.parentWidget(), window.annotation_workspace)
         self.assertTrue(panel.isVisible())
-        panel_rect = QRect(panel.mapTo(window, QPoint(0, 0)), panel.size())
-        image_rect = QRect(window.image_view.mapTo(window, QPoint(0, 0)), window.image_view.size())
-        self.assertFalse(panel_rect.intersects(image_rect))
-        self.assertGreater(panel_rect.left(), image_rect.left())
+        handle_centre = window.reference_panel_drag_handle.mapTo(
+            window.annotation_workspace,
+            window.reference_panel_drag_handle.rect().center(),
+        )
+        hit_widget = window.annotation_workspace.childAt(handle_centre)
+        self.assertIsNotNone(hit_widget)
+        self.assertTrue(
+            hit_widget is panel or panel.isAncestorOf(hit_widget)
+        )
+        bounds = window.annotation_workspace.rect()
+        window.image_view._move_context_panel_to(
+            QPoint(bounds.right() - panel.width() + 1, bounds.top()),
+            remember=True,
+        )
+        image_right = window.image_view.mapTo(
+            window.annotation_workspace, QPoint(window.image_view.width(), 0)
+        ).x()
+        self.assertGreater(panel.geometry().right(), image_right)
         self.assertFalse(panel.isHidden())
         window._show_pipeline_workspace()
         self.assertTrue(panel.isHidden())
@@ -352,7 +366,7 @@ class AnnotationCentresUiTests(unittest.TestCase):
         """8 related AnnotationCentresUiTests scenarios, each with private fixture state."""
         self.scenario(self.check_test_compact_seed_selector_and_no_routine_explanatory_labels)
         self.scenario(self.check_test_crosshairs_follow_masks_selection_visibility_opacity_and_image_switch)
-        self.scenario(self.check_test_annotation_palette_docks_beside_the_image_view)
+        self.scenario(self.check_test_annotation_palette_can_extend_beyond_image_view)
         self.scenario(self.check_test_annotations_only_appear_on_deskewed_image)
         self.scenario(self.check_test_hilum_tracks_outline_edits_undo_and_persistence)
         self.scenario(self.check_test_direction_is_unknown_at_centroid_and_removed_without_landmark)

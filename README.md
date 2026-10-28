@@ -50,7 +50,7 @@ fails, delete only the incomplete `.venv` and run it again.
   removes it from the project.
 - **Image** and **Pipeline** views (centre): the selected overlay on the image, and
   the node graph. Toggle either with `Ctrl+1` / `Ctrl+2`; both are visible by default.
-- **Reference annotation** panel: docks beside the image when you choose
+- **Reference annotation** panel: a movable overlay over the image when you choose
   **Materials** or **Seeds** on the toolbar.
 - **Right panel**: the result summary and **Results…** at the top, then two tabs:
   **Node** (inspector for the selected pipeline node) and **Image** (file,

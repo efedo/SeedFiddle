@@ -8,7 +8,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from PySide6.QtCore import QLineF, QPoint, QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QLineF, QPoint, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QBrush,
     QColor,
@@ -676,11 +676,17 @@ class ImageView(QGraphicsView):
         self._last_reference_paint_point: QPointF | None = None
         self._last_reference_hover_point: QPointF | None = None
         self._reference_brush_outline_item = None
+        self._context_panel: QFrame | None = None
         self._hilum_editing = False
         self._hilum_point = None
         self._hilum_direction = None
         self._hilum_drag = None
         self._hilum_items = []
+        self._context_panel_drag_handle = None
+        self._context_panel_user_position: QPoint | None = None
+        self._context_panel_saved_window_position: QPoint | None = None
+        self._context_panel_drag_global: QPointF | None = None
+        self._context_panel_drag_origin: QPoint | None = None
 
         self.setAcceptDrops(True)
         self.setMouseTracking(True)
@@ -834,6 +840,9 @@ class ImageView(QGraphicsView):
         if not changed:
             return
         self._layout_instance_continuity_warning()
+        self._layout_context_panel()
+        if self._context_panel is not None:
+            self._context_panel.raise_()
         if message:
             banner.raise_()
         self.zoom_controls.raise_()
@@ -857,6 +866,15 @@ class ImageView(QGraphicsView):
         x = max(0, (self.width() - width) // 2)
         y = self.zoom_controls.height() + 6
         banner.setGeometry(x, y, width, height)
+
+    def _context_panel_minimum_y(self) -> int:
+        minimum_y = self.zoom_controls.height()
+        if not self.instance_continuity_warning_banner.isHidden():
+            minimum_y = max(
+                minimum_y,
+                self.instance_continuity_warning_banner.geometry().bottom() + 8,
+            )
+        return minimum_y
 
     def set_hilum_editing(self, enabled: bool) -> None:
         self._hilum_editing = bool(enabled)
@@ -899,6 +917,111 @@ class ImageView(QGraphicsView):
             item = self._scene.addPath(path, pen)
             item.setZValue(z)
             self._hilum_items.append(item)
+
+    def set_context_panel(self, panel: QFrame) -> None:
+        """Track an application-owned contextual panel near the image viewport."""
+
+        self._context_panel = panel
+        self._layout_context_panel()
+        self.instance_continuity_warning_banner.raise_()
+        self.zoom_controls.raise_()
+
+    def set_context_panel_drag_handle(self, handle) -> None:
+        """Let a dedicated handle reposition the contextual panel."""
+
+        if self._context_panel_drag_handle is not None:
+            self._context_panel_drag_handle.removeEventFilter(self)
+        self._context_panel_drag_handle = handle
+        handle.installEventFilter(self)
+        handle.setCursor(Qt.CursorShape.OpenHandCursor)
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802 - Qt override
+        if watched is self._context_panel_drag_handle and self._context_panel is not None:
+            if (
+                event.type() == QEvent.Type.MouseButtonPress
+                and event.button() == Qt.MouseButton.LeftButton
+            ):
+                self._context_panel_drag_global = event.globalPosition()
+                self._context_panel_drag_origin = self._context_panel.pos()
+                watched.setCursor(Qt.CursorShape.ClosedHandCursor)
+                event.accept()
+                return True
+            if (
+                event.type() == QEvent.Type.MouseMove
+                and self._context_panel_drag_global is not None
+                and event.buttons() & Qt.MouseButton.LeftButton
+            ):
+                delta = (event.globalPosition() - self._context_panel_drag_global).toPoint()
+                self._move_context_panel_to(
+                    self._context_panel_drag_origin + delta,
+                    remember=True,
+                )
+                event.accept()
+                return True
+            if event.type() == QEvent.Type.MouseButtonRelease:
+                self._context_panel_drag_global = None
+                self._context_panel_drag_origin = None
+                watched.setCursor(Qt.CursorShape.OpenHandCursor)
+                event.accept()
+                return True
+        return super().eventFilter(watched, event)
+
+    def set_context_panel_visible(self, visible: bool) -> None:
+        if self._context_panel is None:
+            return
+        self._context_panel.setVisible(visible)
+        if visible:
+            self._layout_context_panel()
+            self._context_panel.raise_()
+            self.instance_continuity_warning_banner.raise_()
+            self.zoom_controls.raise_()
+
+    def _layout_context_panel(self) -> None:
+        if self._context_panel is None:
+            return
+        container = self._context_panel.parentWidget()
+        if container is None:
+            return
+        if self._context_panel_saved_window_position is not None:
+            self._context_panel_user_position = container.mapFrom(
+                container.window(), self._context_panel_saved_window_position
+            )
+            self._context_panel_saved_window_position = None
+        central = container.centralWidget() if hasattr(container, "centralWidget") else None
+        bounds = central.geometry() if central is not None else container.rect()
+        default_position = self.mapTo(
+            container, QPoint(12, max(46, self._context_panel_minimum_y()))
+        )
+        user_size = getattr(self._context_panel, "user_size", None)
+        hint = user_size or self._context_panel.sizeHint()
+        available_width = max(240, bounds.width() - 24)
+        available_height = max(140, bounds.height() - 12)
+        width = min(max(300, hint.width()) if user_size else 430, available_width)
+        default_height = min(680, bounds.bottom() - default_position.y() - 12)
+        height = min(hint.height() if user_size else max(180, default_height), available_height)
+        self._context_panel.resize(width, height)
+        requested = self._context_panel_user_position or default_position
+        self._move_context_panel_to(requested, remember=False)
+
+    def _move_context_panel_to(
+        self, position: QPoint, *, remember: bool
+    ) -> None:
+        if self._context_panel is None:
+            return
+        container = self._context_panel.parentWidget()
+        if container is None:
+            return
+        central = container.centralWidget() if hasattr(container, "centralWidget") else None
+        bounds = central.geometry() if central is not None else container.rect()
+        maximum_x = max(bounds.left(), bounds.right() - self._context_panel.width() + 1)
+        maximum_y = max(bounds.top(), bounds.bottom() - self._context_panel.height() + 1)
+        clamped = QPoint(
+            max(bounds.left(), min(int(position.x()), maximum_x)),
+            max(bounds.top(), min(int(position.y()), maximum_y)),
+        )
+        self._context_panel.move(clamped)
+        if remember:
+            self._context_panel_user_position = clamped
 
     @property
     def image_path(self) -> Path | None:
@@ -4724,6 +4847,9 @@ class ImageView(QGraphicsView):
         self.zoom_controls.setGeometry(0, 0, max(120, self.width()), 38)
         self._layout_calculating_banner()
         self._layout_instance_continuity_warning()
+        self._layout_context_panel()
+        if self._context_panel is not None:
+            self._context_panel.raise_()
         self.instance_continuity_warning_banner.raise_()
         self.calculating_banner.raise_()
         self.zoom_controls.raise_()

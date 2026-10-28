@@ -116,8 +116,7 @@ old `test-runs/` and `test-temp/` directories and never touches the list above.
 - **Original SMPTS source** is unavailable, so SMPTS stages are a paper
   reconstruction and F09.2 is unresolved.
 - **GUI follow-ups** not done in the October pass: an icon strip for annotation
-  tools (no icon assets exist), and the canvas is cramped at 1050×650 while the
-  annotation panel is docked.
+  tools (no icon assets exist).
 
 ## History
 

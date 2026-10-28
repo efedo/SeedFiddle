@@ -3869,7 +3869,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         reference_panel_header_layout = QHBoxLayout(reference_panel_header)
         reference_panel_header_layout.setContentsMargins(0, 0, 0, 0)
         reference_panel_header_layout.setSpacing(4)
-        # The panel is docked beside the viewer, so this is a title, not a handle.
+        # The panel floats over the viewer; its title bar is the drag handle.
         self.reference_panel_drag_handle = QLabel(
             "Annotation tools", reference_panel_header
         )
@@ -3877,7 +3877,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             Qt.AlignmentFlag.AlignCenter
         )
         self.reference_panel_drag_handle.setToolTip(
-            "Docked beside the image; drag the divider to resize."
+            "Drag to move the annotation tools anywhere in the application workspace."
         )
         self.reference_panel_drag_handle.setStyleSheet(
             "padding: 3px; font-weight: 600; background: palette(midlight); "
@@ -5168,9 +5168,11 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._update_instance_colour_swatch()
 
         self.reference_panel.hide()
-        # Docked as a splitter pane in _build_layout: it never covers the image.
-        self.reference_panel.resize_grip.hide()
-        self.reference_panel.setMinimumWidth(280)
+        # Floats over the viewer so annotating never narrows the image.
+        self.image_view.set_context_panel(self.reference_panel)
+        self.image_view.set_context_panel_drag_handle(
+            self.reference_panel_drag_handle
+        )
         self._link_brush_radius_sliders()
         self.image_workspace_action.toggled.connect(
             lambda _checked: self._sync_reference_panel_visibility()
@@ -5302,22 +5304,27 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.main_splitter = splitter
         splitter.addWidget(self._build_image_panel())
         splitter.addWidget(self.workspace_splitter)
-        # Annotation tools dock between the viewer and the inspector; the pane
-        # is hidden (and takes no width) unless an annotation mode is active.
-        splitter.addWidget(self.reference_panel)
         splitter.addWidget(self._build_metadata_panel())
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
         splitter.setStretchFactor(2, 0)
-        splitter.setStretchFactor(3, 0)
-        splitter.setCollapsible(2, False)
-        splitter.setSizes((225, 1000, 340, 380))
+        splitter.setSizes((225, 1020, 380))
         self.annotation_workspace = QWidget(self)
         workspace_layout = QVBoxLayout(self.annotation_workspace)
         workspace_layout.setContentsMargins(0, 0, 0, 0)
         workspace_layout.setSpacing(0)
         workspace_layout.addWidget(splitter, 1)
         self.setCentralWidget(self.annotation_workspace)
+        # The annotation tools float above the managed splitter panes, with
+        # room to move across the whole application workspace.
+        self.reference_panel.setParent(self.annotation_workspace)
+        self.image_view._layout_context_panel()
+        splitter.splitterMoved.connect(
+            lambda _position, _index: self.image_view._layout_context_panel()
+        )
+        self.workspace_splitter.splitterMoved.connect(
+            lambda _position, _index: self.image_view._layout_context_panel()
+        )
         from seedvision.ui.catalogue_nodes import CatalogueNodesController
         self.catalogue_nodes = CatalogueNodesController(self)
         self.catalogue_nodes.graph_changed.connect(self._install_catalogue_canvas)
@@ -5555,7 +5562,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.details_tabs.addTab(self.metadata_scroll, "Node")
         self.details_tabs.addTab(image_page, "Image")
         right_layout.addWidget(self.details_tabs, 1)
-        # Minimums sum below 1050 px with the annotation pane docked.
+        # Keep the side panels narrow enough to leave the viewer room.
         right_panel.setMinimumWidth(320)
         right_panel.setMaximumWidth(460)
         return right_panel
@@ -8791,7 +8798,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._stop_instance_annotation_editing()
         with QSignalBlocker(self.paint_background_action):
             self.paint_background_action.setChecked(False)
-        self.reference_panel.hide()
+        self.image_view.set_context_panel_visible(False)
 
     def _sync_reference_panel_visibility(self) -> None:
         active = (
@@ -8804,7 +8811,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         instance_mode = self.annotate_instances_action.isChecked()
         self.reference_controls.setVisible(active and not instance_mode)
         self.instance_annotation_controls.setVisible(instance_mode)
-        self.reference_panel.setVisible(
+        self.image_view.set_context_panel_visible(
             active and self.image_workspace_action.isChecked()
         )
         if hasattr(self, "reference_undo_button"):
@@ -9535,6 +9542,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             self.instance_tool_options_stack.setCurrentWidget(page)
         self._sync_instance_tool_settings()
         self.image_view.set_instance_annotation_tool(tool)
+        self.image_view._layout_context_panel()
         self._show_instance_tool_instructions(tool)
 
     def _show_instance_tool_instructions(self, tool: str) -> None:

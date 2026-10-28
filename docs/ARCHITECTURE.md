@@ -121,9 +121,11 @@ assisted previews, and hilum editing whenever the source image, gamut slice,
 prototype collage, or another non-deskewed view is displayed. This avoids a
 visually plausible but geometrically incorrect overlay.
 
-The main window owns the reference annotation panel, which docks as a pane of the
-main splitter while an annotation mode is active. The image view owns only scene
-content and zoom/pan behaviour. Toolbar zoom preserves the viewport
+The main window owns the reference annotation panel, which floats over the
+central workspace while an annotation mode is active; the image view positions it,
+clamps it to the workspace and moves it by its title bar, and the window saves
+its position. The panel takes no splitter space, so it never narrows the viewer.
+Otherwise the image view owns only scene content and zoom/pan behaviour. Toolbar zoom preserves the viewport
 centre; wheel zoom preserves the scene point beneath the pointer. Hilum placement
 is a one-shot interaction tied to the current seed ID and derives its saved
 direction from the painted seed centroid.

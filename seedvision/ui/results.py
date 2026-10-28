@@ -2,7 +2,7 @@
 from dataclasses import asdict
 from html import escape
 import json
-from PySide6.QtCore import Qt, QObject, QRunnable, Signal, QTimer, QByteArray, QSignalBlocker
+from PySide6.QtCore import Qt, QObject, QRunnable, Signal, QTimer, QByteArray, QPoint, QSignalBlocker
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QLabel, QTableWidget, QTableWidgetItem,
     QComboBox, QLineEdit, QPushButton, QFileDialog, QMessageBox, QProgressDialog, QInputDialog, QPlainTextEdit)
@@ -121,11 +121,14 @@ class ResultsController:
         self.addAction(self.redo_reference_action)
         self.image_workspace_action.toggled.connect(self._ensure_workspace_visible)
         self.pipeline_workspace_action.toggled.connect(self._ensure_workspace_visible)
-        # v2: the docked annotation pane added a fourth splitter section, so
-        # three-pane states saved before it are not restored onto this layout.
-        state = self._application_settings.value('review-ui/main-splitter-v2')
+        # v3: three panes again now the annotation tools float; four-pane v2
+        # states from the docked layout are not restored onto it.
+        state = self._application_settings.value('review-ui/main-splitter-v3')
         if isinstance(state,QByteArray):
             self.main_splitter.restoreState(state)
+        position = self._application_settings.value('review-ui/annotation-window-position')
+        if isinstance(position,QPoint):
+            self.image_view._context_panel_saved_window_position = position
         viewport_action = QAction('Save current image viewport…',self)
         # Ctrl+Shift+E belongs to Results; sharing it made both ambiguous.
         viewport_action.setShortcut('Ctrl+Alt+E')
@@ -185,7 +188,12 @@ class ResultsController:
             QMessageBox.warning(self,'Snapshot failed',str(error))
 
     def _save_review_ui_state(self):
-        self._application_settings.setValue('review-ui/main-splitter-v2',self.main_splitter.saveState())
+        self._application_settings.setValue('review-ui/main-splitter-v3',self.main_splitter.saveState())
+        if self.image_view._context_panel_user_position is not None:
+            position = self.annotation_workspace.mapTo(
+                self, self.image_view._context_panel_user_position
+            )
+            self._application_settings.setValue('review-ui/annotation-window-position',position)
 
     def _step_annotated_seed(self, direction):
         if not self.annotate_instances_action.isChecked() or self._background_work_is_active():

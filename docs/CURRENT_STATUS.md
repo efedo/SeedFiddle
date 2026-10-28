@@ -67,7 +67,7 @@ Operation-level detail: [feature register](plantcv_smpts_features.json) and
 ## Annotation behaviour
 
 - **Materials** and **Seeds** on the toolbar open the reference annotation panel,
-  docked beside the image. Annotations are shown and edited only on the corrected,
+  a movable overlay that floats over the workspace. Annotations are shown and edited only on the corrected,
   deskewed image; other views hide them because their coordinates do not align.
 - Seed selection offers **Next empty** and **Next unannotated**; **Show** selects all
   seeds or the current one.

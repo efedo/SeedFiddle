@@ -17,7 +17,7 @@ cannot support see [Current status](CURRENT_STATUS.md).
 | Images (left) | Images in the project. Icons show calculated, computed and unsaved states; hover for the text status. The ✕ on hover removes an image from the project. |
 | Image view | The selected overlay on the current image. Drag to pan, scroll to zoom. |
 | Pipeline view | The node graph for the current image. Both views are visible by default; `Ctrl+1` and `Ctrl+2` toggle each, `Ctrl+3` shows both. |
-| Reference annotation panel | Docks beside the image while **Materials** or **Seeds** is active. |
+| Reference annotation panel | Floats over the image while **Materials** or **Seeds** is active; drag its title to move it and the corner grip to resize it. |
 | Right panel | Result summary, **Results…** and **Paint seed references…** at the top; below, the **Node** tab (inspector for the selected node) and the **Image** tab (file, dimensions, species, analysis device and calibration evidence). |
 
 **Help → Keyboard shortcuts** lists every shortcut; the common ones are at the end

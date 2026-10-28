@@ -1972,7 +1972,7 @@ class PipelineCanvasTests(CatalogueTestCase):
         self.assertIn("no-match", reference_legend)
 
     def check_test_compact_toolbar_and_contextual_paint_panel(self) -> None:
-        from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, Qt
+        from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
         from PySide6.QtGui import QMouseEvent
         from PySide6.QtTest import QTest
         from PySide6.QtWidgets import QLabel
@@ -2044,8 +2044,8 @@ class PipelineCanvasTests(CatalogueTestCase):
         self.assertNotIn("Viewer overlay", detail_labels)
         self.assertNotIn("Painted background reference", detail_labels)
         self.assertTrue(window.overlay_owner_label.isHidden())
-        # Docked as a splitter pane beside the viewer, hidden until annotating.
-        self.assertIs(window.reference_panel.parentWidget(), window.main_splitter)
+        # Floats over the workspace, hidden until annotating.
+        self.assertIs(window.reference_panel.parentWidget(), window.annotation_workspace)
         self.assertTrue(window.reference_panel.isHidden())
 
         window.paint_background_action.setEnabled(True)
@@ -2057,25 +2057,28 @@ class PipelineCanvasTests(CatalogueTestCase):
         window.erase_foreground_points_button.setEnabled(True)
         window.erase_background_exclusion_button.setEnabled(True)
         window.erase_foreground_exclusion_button.setEnabled(True)
+        viewer_width = window.image_view.width()
         window.paint_background_action.setChecked(True)
         self.application.processEvents()
         self.assertTrue(window.background_point_button.isChecked())
         self.assertFalse(window.reference_panel.isHidden())
-        panel_rect = QRect(
-            window.reference_panel.mapTo(window, QPoint(0, 0)),
-            window.reference_panel.size(),
+        # Floating over the viewer, the tools never narrow the image.
+        self.assertEqual(window.image_view.width(), viewer_width)
+        hit_point = window.reference_panel_drag_handle.mapTo(
+            window.annotation_workspace,
+            window.reference_panel_drag_handle.rect().center(),
         )
-        image_rect = QRect(
-            window.image_view.mapTo(window, QPoint(0, 0)),
-            window.image_view.size(),
+        hit_widget = window.annotation_workspace.childAt(hit_point)
+        self.assertTrue(
+            hit_widget is window.reference_panel
+            or window.reference_panel.isAncestorOf(hit_widget)
         )
-        self.assertFalse(panel_rect.intersects(image_rect))
         self.assertEqual(window.image_view._reference_point_mode, "background")
         window.resize(1200, 650)
         window._show_split_workspace()
         self.application.processEvents()
         self.assertLessEqual(window.reference_panel.height(), window.height())
-        self.assertFalse(window.reference_panel.resize_grip.isVisible())
+        self.assertTrue(window.reference_panel.resize_grip.isVisible())
         self.assertGreaterEqual(
             window.foreground_point_button.height(),
             window.foreground_point_button.sizeHint().height(),
@@ -2084,21 +2087,41 @@ class PipelineCanvasTests(CatalogueTestCase):
             window.reference_panel_contents.width(),
             window.reference_panel_scroll.viewport().width(),
         )
-        # The splitter divider, not a drag handle, sizes the docked pane.
-        splitter = window.main_splitter
-        index = splitter.indexOf(window.reference_panel)
-        sizes = splitter.sizes()
-        before = window.reference_panel.width()
-        # The viewer may already be at its minimum, so narrow the pane.
-        sizes[index] -= 60
-        sizes[1] += 60
-        splitter.setSizes(sizes)
+        # Start with room to drag horizontally inside the workspace.
+        window.image_view._move_context_panel_to(QPoint(180, 90), remember=True)
+        initial_panel_position = window.reference_panel.pos()
+        drag_delta = QPoint(-60, 0)
+        drag_center = window.reference_panel_drag_handle.rect().center()
+        QTest.mousePress(
+            window.reference_panel_drag_handle,
+            Qt.MouseButton.LeftButton,
+            pos=drag_center,
+        )
+        target_local = drag_center + drag_delta
+        move_event = QMouseEvent(
+            QEvent.Type.MouseMove,
+            QPointF(target_local),
+            QPointF(window.reference_panel_drag_handle.mapToGlobal(target_local)),
+            Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        self.application.sendEvent(window.reference_panel_drag_handle, move_event)
+        QTest.mouseRelease(
+            window.reference_panel_drag_handle,
+            Qt.MouseButton.LeftButton,
+            pos=target_local,
+        )
         self.application.processEvents()
-        self.assertLess(window.reference_panel.width(), before)
-        self.assertGreaterEqual(window.reference_panel.width(), 280)
+        self.assertNotEqual(window.reference_panel.pos(), initial_panel_position)
+        self.assertEqual(window.reference_panel.pos(), initial_panel_position + drag_delta)
+        window.image_view._move_context_panel_to(QPoint(180, 90), remember=True)
+        self.application.processEvents()
+        moved_panel_position = window.reference_panel.pos()
+        window.image_view._layout_context_panel()
+        self.assertEqual(window.reference_panel.pos(), moved_panel_position)
         self.assertEqual(
             window.reference_panel_drag_handle.toolTip(),
-            "Docked beside the image; drag the divider to resize.",
+            "Drag to move the annotation tools anywhere in the application workspace.",
         )
 
         window.background_exclusion_button.setChecked(True)
