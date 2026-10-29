@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from hashlib import sha256
 import os
 from pathlib import Path
@@ -15,7 +15,9 @@ import numpy as np
 from seedvision.persistence.reference_regions import file_sha256
 
 
-MANUAL_SEED_CENTRE_VERSION = 1
+MANUAL_SEED_CENTRE_VERSION = 2
+# Version two adds the automatic centres removed in Augment mode.
+_READABLE_MANUAL_SEED_CENTRE_VERSIONS = frozenset((1, MANUAL_SEED_CENTRE_VERSION))
 MANUAL_SEED_CENTRE_MODES = frozenset(("augment", "replace_automatic"))
 
 
@@ -38,6 +40,9 @@ class StoredManualSeedCentres:
     source_shape: tuple[int, int]
     centres_xy: np.ndarray
     mode: str = "augment"
+    suppressed_xy: np.ndarray = field(
+        default_factory=lambda: np.empty((0, 2), np.float64)
+    )
 
 
 class ManualSeedCentreStore:
@@ -73,6 +78,7 @@ class ManualSeedCentreStore:
         *,
         mode: str,
         source_shape: tuple[int, int],
+        suppressed_xy: np.ndarray | None = None,
     ) -> Path:
         """Save exact source-coordinate floats, including meaningful empty replace."""
 
@@ -86,6 +92,11 @@ class ManualSeedCentreStore:
             centres_xy, (height, width), ManualSeedCentreStoreError
         )
         mode = _validated_mode(mode, ManualSeedCentreStoreError)
+        suppressed = _validated_centres(
+            np.empty((0, 2), np.float64) if suppressed_xy is None else suppressed_xy,
+            (height, width),
+            ManualSeedCentreStoreError,
+        )
         destination = self.path_for(image)
         destination.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temporary_name = tempfile.mkstemp(
@@ -109,6 +120,7 @@ class ManualSeedCentreStore:
                     coordinate_space=np.asarray("source-image"),
                     mode=np.asarray(mode),
                     centres_xy=centres,
+                    suppressed_xy=suppressed,
                 )
             temporary.replace(destination)
         finally:
@@ -181,7 +193,7 @@ class ManualSeedCentreStore:
                         f"Manual-centre archive is missing {missing[0]!r}: {source}"
                     )
                 version = _scalar_int(archive["version"], "version")
-                if version != MANUAL_SEED_CENTRE_VERSION:
+                if version not in _READABLE_MANUAL_SEED_CENTRE_VERSIONS:
                     raise InvalidManualSeedCentreArchive(
                         f"Unsupported manual-centre version {version} in {source}."
                     )
@@ -231,6 +243,17 @@ class ManualSeedCentreStore:
                     saved_shape,
                     InvalidManualSeedCentreArchive,
                 )
+                if version >= 2 and "suppressed_xy" not in archive.files:
+                    raise InvalidManualSeedCentreArchive(
+                        f"Manual-centre archive is missing 'suppressed_xy': {source}"
+                    )
+                suppressed = _validated_centres(
+                    np.asarray(archive["suppressed_xy"])
+                    if version >= 2
+                    else np.empty((0, 2), np.float64),
+                    saved_shape,
+                    InvalidManualSeedCentreArchive,
+                )
         except (ManualSeedCentreStoreError,):
             raise
         except (OSError, ValueError, TypeError, EOFError, BadZipFile) as error:
@@ -238,10 +261,12 @@ class ManualSeedCentreStore:
                 f"Could not read manual seed centres from {source}: {error}"
             ) from error
         centres.flags.writeable = False
+        suppressed.flags.writeable = False
         return StoredManualSeedCentres(
             source_shape=saved_shape,
             centres_xy=centres,
             mode=mode,
+            suppressed_xy=suppressed,
         )
 
 

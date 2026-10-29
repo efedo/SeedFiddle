@@ -485,6 +485,27 @@ class ProceduralInstanceTests(unittest.TestCase):
             )
         )
 
+        # Removing one automatic marker records a suppressed point: only that
+        # marker disappears, nothing manual is added, and the rest stay.
+        suppressed = procedural_seed_instances(
+            valid,
+            54.0,
+            **arguments,
+            manual_seed_centres=ManualSeedCentres(
+                (),
+                ManualSeedCentreMode.AUGMENT,
+                suppressed_xy=(tuple(baseline_automatic[0] + 3.0),),
+            ),
+        )
+        np.testing.assert_array_equal(
+            suppressed.marker_centres_for_source(ProceduralMarkerSource.AUTOMATIC),
+            baseline_automatic[1:],
+        )
+        self.assertEqual(
+            len(suppressed.marker_centres_for_source(ProceduralMarkerSource.MANUAL)),
+            0,
+        )
+
     def check_test_replace_mode_and_empty_replace_delete_automatic_markers(self) -> None:
         valid, arguments = self._manual_centre_scene_arguments()
         replacement = procedural_seed_instances(
@@ -664,6 +685,7 @@ class ProceduralInstanceTests(unittest.TestCase):
             ((10.0, 20.0), (30.0, 40.0)),
             ManualSeedCentreMode.AUGMENT,
             ManualSeedCentreSpace.SOURCE_IMAGE,
+            ((2.0, 8.0),),
         )
         corrected = _manual_centres_in_corrected_coordinates(
             source, SimpleNamespace(transform_points=transform)
@@ -675,7 +697,8 @@ class ProceduralInstanceTests(unittest.TestCase):
         np.testing.assert_allclose(
             corrected.centres_xy, ((26.0, 11.0), (56.0, 26.0))
         )
-        self.assertEqual(calls, [source.centres_xy])
+        np.testing.assert_allclose(corrected.suppressed_xy, ((14.0, 2.0),))
+        self.assertEqual(calls, [source.centres_xy, source.suppressed_xy])
         self.assertIs(
             _manual_centres_in_corrected_coordinates(
                 corrected, SimpleNamespace(transform_points=lambda _points: None)
@@ -685,6 +708,9 @@ class ProceduralInstanceTests(unittest.TestCase):
         np.testing.assert_allclose(
             corrected.translated(-6.0, -8.0).centres_xy,
             ((20.0, 3.0), (50.0, 18.0)),
+        )
+        np.testing.assert_allclose(
+            corrected.translated(-6.0, -8.0).suppressed_xy, ((8.0, -6.0),)
         )
 
     def check_test_redesigned_boundary_settings_are_validated(self) -> None:

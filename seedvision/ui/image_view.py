@@ -569,7 +569,7 @@ class ImageView(QGraphicsView):
     instance_annotations_generated = Signal(object, object)
     instance_tool_status = Signal(str)
     shape_fill_size_preference_changed = Signal(float)
-    manual_seed_centres_edited = Signal(object, str, str)
+    manual_seed_centres_edited = Signal(object, object, str, str)
     manual_seed_centre_editing_cancelled = Signal()
     procedural_instance_selected = Signal(int)
     hilum_landmark_edited = Signal(object, object)
@@ -626,6 +626,7 @@ class ImageView(QGraphicsView):
         self._instance_annotations: np.ndarray | None = None
         self._manual_seed_centres = np.empty((0, 2), dtype=np.float64)
         self._manual_seed_centre_mode = "augment"
+        self._manual_seed_suppressed = np.empty((0, 2), dtype=np.float64)
         self._manual_seed_centre_editing = False
         self._manual_seed_centre_selected: dict[str, object] | None = None
         self._manual_seed_centre_drag: dict[str, object] | None = None
@@ -1114,6 +1115,7 @@ class ImageView(QGraphicsView):
         self._instance_annotations = None
         self._manual_seed_centres = np.empty((0, 2), dtype=np.float64)
         self._manual_seed_centre_mode = "augment"
+        self._manual_seed_suppressed = np.empty((0, 2), dtype=np.float64)
         self._manual_seed_centre_editing = False
         self._manual_seed_centre_selected = None
         self._manual_seed_centre_drag = None
@@ -1168,6 +1170,7 @@ class ImageView(QGraphicsView):
         self._instance_annotations = None
         self._manual_seed_centres = np.empty((0, 2), dtype=np.float64)
         self._manual_seed_centre_mode = "augment"
+        self._manual_seed_suppressed = np.empty((0, 2), dtype=np.float64)
         self._manual_seed_centre_editing = False
         self._manual_seed_centre_selected = None
         self._manual_seed_centre_drag = None
@@ -1230,22 +1233,29 @@ class ImageView(QGraphicsView):
         centres_xy: np.ndarray | None,
         *,
         mode: str = "augment",
+        suppressed_xy: np.ndarray | None = None,
         render: bool = True,
     ) -> None:
-        """Supply manual centres in full corrected-image coordinates."""
+        """Supply manual centres in full corrected-image coordinates.
+
+        ``suppressed_xy`` holds the automatic centres removed in Augment mode.
+        """
 
         if mode not in {"augment", "replace_automatic"}:
             raise ValueError(f"Unknown manual seed-centre mode {mode!r}.")
-        if centres_xy is None:
-            values = np.empty((0, 2), dtype=np.float64)
-        else:
-            values = np.asarray(centres_xy)
+
+        def validated(points) -> np.ndarray:
+            if points is None:
+                return np.empty((0, 2), dtype=np.float64)
+            values = np.asarray(points)
             if values.ndim != 2 or values.shape[1:] != (2,):
                 raise ValueError("Manual seed centres must be an N×2 array.")
             if not np.all(np.isfinite(values)):
                 raise ValueError("Manual seed centres must contain finite coordinates.")
-            values = values.astype(np.float64, copy=True)
-        self._manual_seed_centres = values
+            return values.astype(np.float64, copy=True)
+
+        self._manual_seed_centres = validated(centres_xy)
+        self._manual_seed_suppressed = validated(suppressed_xy)
         self._manual_seed_centre_mode = mode
         self._manual_seed_centre_selected = None
         self._manual_seed_centre_drag = None
@@ -1255,6 +1265,9 @@ class ImageView(QGraphicsView):
 
     def manual_seed_centres(self) -> tuple[np.ndarray, str]:
         return self._manual_seed_centres.copy(), self._manual_seed_centre_mode
+
+    def manual_seed_suppressed_centres(self) -> np.ndarray:
+        return self._manual_seed_suppressed.copy()
 
     def set_manual_seed_centre_editing(self, enabled: bool) -> None:
         """Enter the click/add, drag/move, and right-click/remove centre mode."""
@@ -1276,28 +1289,6 @@ class ImageView(QGraphicsView):
             self.viewport().unsetCursor()
         if self._analysis_result is not None:
             self._render_analysis()
-
-    def editable_procedural_marker_centres(
-        self,
-        *,
-        exclude_result_index: int | None = None,
-    ) -> np.ndarray:
-        """Return surviving non-annotation markers in corrected coordinates."""
-
-        records = self._procedural_marker_records(include_current_manual=True)
-        points: list[tuple[float, float]] = []
-        for record in records:
-            if record["source"] in {"annotation", "rejected"}:
-                continue
-            result_index = record.get("result_index")
-            if exclude_result_index is not None and result_index == exclude_result_index:
-                continue
-            point = record["point"]
-            candidate = (float(point.x()), float(point.y()))
-            if any(np.hypot(candidate[0] - x, candidate[1] - y) < 0.25 for x, y in points):
-                continue
-            points.append(candidate)
-        return np.asarray(points, dtype=np.float64).reshape(-1, 2)
 
     def _clear_overlay_items(self) -> None:
         self._clear_manual_seed_centre_drag_items()
@@ -2613,6 +2604,18 @@ class ImageView(QGraphicsView):
                     }
                 )
 
+        if self._manual_seed_centre_mode == "augment":
+            for suppressed_index, (x, y) in enumerate(self._manual_seed_suppressed):
+                records.append(
+                    {
+                        "point": QPointF(float(x), float(y)),
+                        "source": "suppressed",
+                        "manual_index": None,
+                        "suppressed_index": suppressed_index,
+                        "result_index": None,
+                        "reason": "",
+                    }
+                )
         if include_current_manual:
             for manual_index, (x, y) in enumerate(self._manual_seed_centres):
                 if manual_index in used_manual:
@@ -2646,12 +2649,15 @@ class ImageView(QGraphicsView):
                 == record.get("manual_index")
                 and self._manual_seed_centre_selected.get("result_index")
                 == record.get("result_index")
+                and self._manual_seed_centre_selected.get("suppressed_index")
+                == record.get("suppressed_index")
             )
         colours = {
             "automatic": QColor("#43ddff"),
             "manual": QColor("#ffe04f"),
             "annotation": QColor("#ff55de"),
             "rejected": QColor("#ff4545"),
+            "suppressed": QColor("#d0d0d0"),
         }
         colour = colours.get(source, colours["automatic"])
         pen = QPen(QColor("#ffffff") if selected else colour, 3.0 if selected else 2.0)
@@ -2673,7 +2679,7 @@ class ImageView(QGraphicsView):
                 brush,
             )
             items.append(item)
-        else:
+        elif source != "suppressed":
             item = self._scene.addEllipse(
                 -radius,
                 -radius,
@@ -2692,7 +2698,7 @@ class ImageView(QGraphicsView):
                     self._scene.addLine(0.0, -3.5, 0.0, 3.5, dark_pen),
                 )
             )
-        elif source == "rejected":
+        elif source in {"rejected", "suppressed"}:
             items.extend(
                 (
                     self._scene.addLine(-5.0, -5.0, 5.0, 5.0, pen),
@@ -2700,7 +2706,8 @@ class ImageView(QGraphicsView):
                 )
             )
         tooltips = {
-            "automatic": "Automatic procedural watershed marker. Dragging or deleting it switches to Replace automatic mode.",
+            "automatic": "Automatic procedural watershed marker. Drag it to move it, or right-click or press Delete to remove it; only this centre changes.",
+            "suppressed": "Removed automatic centre: automatic detection places no marker within 0.45 seed diameters of this point. Right-click or press Delete to restore it.",
             "manual": "Manual procedural watershed marker. Drag to adjust; right-click or Delete removes it.",
             "annotation": "Locked marker from an applied seed-instance annotation. Edit the annotation to move it.",
             "rejected": str(record.get("reason") or "Rejected manual marker."),
@@ -2736,7 +2743,7 @@ class ImageView(QGraphicsView):
             self._overlay_items.append(item)
 
     def _render_edge_oval_hypotheses(self, result) -> None:
-        """Draw only proposal-independent ovals inferred from curved edges."""
+        """Draw the seed ovals fitted at centre-vote maxima."""
 
         geometry = result.layers.edge_fit_geometry
         if geometry is None:
@@ -5721,7 +5728,13 @@ class ImageView(QGraphicsView):
 
         pointer = self.mapFromScene(scene_point)
         candidates: list[tuple[float, int, dict[str, object]]] = []
-        priority = {"manual": 0, "rejected": 0, "automatic": 1, "annotation": 2}
+        priority = {
+            "manual": 0,
+            "rejected": 0,
+            "automatic": 1,
+            "suppressed": 1,
+            "annotation": 2,
+        }
         for record in self._procedural_marker_records(include_current_manual=True):
             marker = self.mapFromScene(record["point"])
             distance = float(np.hypot(pointer.x() - marker.x(), pointer.y() - marker.y()))
@@ -5767,6 +5780,14 @@ class ImageView(QGraphicsView):
                 )
                 self._render_analysis()
                 return
+            if source == "suppressed":
+                self._manual_seed_centre_selected = dict(record)
+                self.instance_tool_status.emit(
+                    "Removed automatic centre: right-click it or press Delete to let "
+                    "automatic detection place a centre here again."
+                )
+                self._render_analysis()
+                return
             if source == "rejected":
                 self.instance_tool_status.emit(
                     "Rejected manual centre: "
@@ -5777,17 +5798,14 @@ class ImageView(QGraphicsView):
             result_index = record.get("result_index")
             manual_index = record.get("manual_index")
             if source == "automatic":
-                # A distant move would not suppress the old automatic maximum
-                # in Augment mode. Convert the currently surviving editable
-                # marker set into an explicit replacement before moving it.
-                base = self.editable_procedural_marker_centres()
-                if not len(base):
-                    return
-                distances = np.hypot(
-                    base[:, 0] - original.x(), base[:, 1] - original.y()
+                # Only this centre changes: its old position is suppressed and
+                # the moved point becomes manual. Every other marker stays
+                # automatic and keeps following the analysis settings.
+                base = np.vstack(
+                    (self._manual_seed_centres, (original.x(), original.y()))
                 )
-                index = int(np.argmin(distances))
-                mode = "replace_automatic"
+                index = len(base) - 1
+                mode = self._manual_seed_centre_mode
             elif manual_index is not None:
                 base = self._manual_seed_centres.copy()
                 index = int(manual_index)
@@ -5856,13 +5874,20 @@ class ImageView(QGraphicsView):
         index = int(drag["index"])
         values[index] = (point.x(), point.y())
         mode = str(drag["mode"])
+        suppressed = None
         if source == "automatic":
-            label = "moved automatic centre and switched to Replace automatic"
+            original = drag["original"]
+            suppressed = np.vstack(
+                (self._manual_seed_suppressed, (original.x(), original.y()))
+            )
+            label = "moved an automatic centre (now manual)"
         elif source == "new":
             label = "added manual seed centre"
         else:
             label = "moved manual seed centre"
-        self._commit_manual_seed_centre_edit(values, mode, label)
+        self._commit_manual_seed_centre_edit(
+            values, mode, label, suppressed=suppressed
+        )
 
     def _remove_manual_seed_centre_record(
         self, record: dict[str, object]
@@ -5876,13 +5901,25 @@ class ImageView(QGraphicsView):
             return
         manual_index = record.get("manual_index")
         if source == "automatic":
-            values = self.editable_procedural_marker_centres(
-                exclude_result_index=int(record["result_index"])
-            )
+            point = record["point"]
             self._commit_manual_seed_centre_edit(
-                values,
-                "replace_automatic",
-                "removed automatic centre and switched to Replace automatic",
+                self._manual_seed_centres,
+                self._manual_seed_centre_mode,
+                "removed automatic centre",
+                suppressed=np.vstack(
+                    (self._manual_seed_suppressed, (point.x(), point.y()))
+                ),
+            )
+            return
+        if source == "suppressed":
+            index = int(record["suppressed_index"])
+            if not 0 <= index < len(self._manual_seed_suppressed):
+                return
+            self._commit_manual_seed_centre_edit(
+                self._manual_seed_centres,
+                self._manual_seed_centre_mode,
+                "restored automatic detection at a removed centre",
+                suppressed=np.delete(self._manual_seed_suppressed, index, axis=0),
             )
             return
         if manual_index is None:
@@ -5898,13 +5935,25 @@ class ImageView(QGraphicsView):
         )
 
     def _commit_manual_seed_centre_edit(
-        self, values: np.ndarray, mode: str, label: str
+        self,
+        values: np.ndarray,
+        mode: str,
+        label: str,
+        *,
+        suppressed: np.ndarray | None = None,
     ) -> None:
         self._manual_seed_centres = np.asarray(values, dtype=np.float64).reshape(-1, 2)
+        if suppressed is not None:
+            self._manual_seed_suppressed = np.asarray(
+                suppressed, dtype=np.float64
+            ).reshape(-1, 2)
         self._manual_seed_centre_mode = str(mode)
         self._manual_seed_centre_selected = None
         self.manual_seed_centres_edited.emit(
-            self._manual_seed_centres.copy(), self._manual_seed_centre_mode, label
+            self._manual_seed_centres.copy(),
+            self._manual_seed_suppressed.copy(),
+            self._manual_seed_centre_mode,
+            label,
         )
         self.instance_tool_status.emit(label.capitalize() + "; recomputing procedural instances.")
         self._render_analysis()

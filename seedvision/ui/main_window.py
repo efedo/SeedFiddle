@@ -225,13 +225,25 @@ class _ManualSeedCentreState:
 
     centres_source_xy: np.ndarray
     mode: str = "augment"
+    # Automatic centres removed in Augment mode; unused by Replace automatic.
+    suppressed_source_xy: np.ndarray | None = None
 
     def __post_init__(self) -> None:
-        values = np.asarray(self.centres_source_xy, dtype=np.float64).reshape(-1, 2)
-        values = values.copy()
-        values.flags.writeable = False
-        object.__setattr__(self, "centres_source_xy", values)
+        for name in ("centres_source_xy", "suppressed_source_xy"):
+            raw = getattr(self, name)
+            values = np.asarray(
+                () if raw is None else raw, dtype=np.float64
+            ).reshape(-1, 2).copy()
+            values.flags.writeable = False
+            object.__setattr__(self, name, values)
         object.__setattr__(self, "mode", str(self.mode))
+
+    def same_edits(self, other: "_ManualSeedCentreState") -> bool:
+        return (
+            self.mode == other.mode
+            and np.array_equal(self.centres_source_xy, other.centres_source_xy)
+            and np.array_equal(self.suppressed_source_xy, other.suppressed_source_xy)
+        )
 VIEWER_NODE_MODES = {
     "project": "raw_image",
     "image_selector": "raw_image",
@@ -2081,6 +2093,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                     state.centres_source_xy,
                     mode=state.mode,
                     source_shape=read_source_raster_shape(path),
+                    suppressed_xy=state.suppressed_source_xy,
                 )
             except (
                 InstanceMaskImportError,
@@ -3613,9 +3626,9 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             ("Trace continuity", "edge_trace_continuity"),
             ("Trace gap confidence", "edge_trace_gap_confidence"),
             ("Radius confirmation", "edge_radius_confirmation"),
-            ("Edge circular-arc support", "edge_circle_fit"),
-            ("Edge-oval perimeters", "edge_ellipse_fit"),
-            ("Circular-arc fit residual", "edge_fit_residual"),
+            ("Edge agreement with fitted circles", "edge_circle_fit"),
+            ("Edge agreement with fitted ellipses", "edge_ellipse_fit"),
+            ("Edge shape-fit residual", "edge_fit_residual"),
             ("Raw boundary centre-vote field", "edge_centre_votes"),
             (
                 "Fit-validated oval-centre probability",
@@ -3624,7 +3637,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             ("Seed material inside edges", "edge_semantic_sides"),
             ("Rejected edge reasons", "edge_rejections"),
             ("Raw centre-vote peak markers", "edge_fit_geometry"),
-            ("Most likely edge ovals", "edge_oval_hypotheses"),
+            ("Fitted seed ovals", "edge_oval_hypotheses"),
             ("Final seed-boundary confidence", "seed_edge_curves"),
             ("Seed-material mask", "procedural_seed_mask"),
             ("Physical boundary cost", "procedural_boundary_cost"),
@@ -6542,6 +6555,10 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             ),
             ManualSeedCentreMode(state.mode),
             ManualSeedCentreSpace.SOURCE_IMAGE,
+            tuple(
+                (float(x), float(y))
+                for x, y in state.suppressed_source_xy
+            ),
         )
 
     def _unet_settings(self) -> UNetPipelineSettings:
@@ -7939,7 +7956,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                     self._project_unresolved_manual_centre_sidecars.add(key)
             return False
         self._manual_seed_centre_states[key] = _ManualSeedCentreState(
-            stored.centres_xy, stored.mode
+            stored.centres_xy, stored.mode, stored.suppressed_xy
         )
         self._unsaved_manual_centre_sidecars.discard(key)
         self._withheld_manual_centre_sidecars.discard(key)
@@ -7981,6 +7998,14 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             state.centres_source_xy, result.calibration.affine_matrix
         )
 
+    def _manual_seed_suppressed_in_corrected_coordinates(
+        self, key: str, result
+    ) -> np.ndarray:
+        state = self._manual_seed_centre_state(key)
+        return self._project_manual_seed_centres(
+            state.suppressed_source_xy, result.calibration.affine_matrix
+        )
+
     def _manual_seed_centres_in_source_coordinates(
         self, corrected_xy: np.ndarray, result
     ) -> np.ndarray:
@@ -8018,13 +8043,15 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         state = self._manual_seed_centre_state(key)
         if result is None:
             result = self._analyses.get(key)
-        corrected = (
-            np.empty((0, 2), np.float64)
-            if result is None
-            else self._manual_seed_centres_in_corrected_coordinates(key, result)
-        )
+        if result is None:
+            corrected = suppressed = np.empty((0, 2), np.float64)
+        else:
+            corrected = self._manual_seed_centres_in_corrected_coordinates(key, result)
+            suppressed = self._manual_seed_suppressed_in_corrected_coordinates(
+                key, result
+            )
         self.image_view.set_manual_seed_centres(
-            corrected, mode=state.mode, render=render
+            corrected, mode=state.mode, suppressed_xy=suppressed, render=render
         )
 
     def _persist_manual_seed_centres(
@@ -8039,6 +8066,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 state.centres_source_xy,
                 mode=state.mode,
                 source_shape=read_source_raster_shape(path),
+                suppressed_xy=state.suppressed_source_xy,
             )
         except (ManualSeedCentreStoreError, OSError) as error:
             self._unsaved_manual_centre_sidecars.add(key)
@@ -8061,9 +8089,9 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         )
         return destination
 
-    @Slot(object, str, str)
+    @Slot(object, object, str, str)
     def _manual_seed_centres_edited(
-        self, corrected_xy: object, mode: str, label: str
+        self, corrected_xy: object, suppressed_xy: object, mode: str, label: str
     ) -> None:
         key = self._current_image_key()
         result = None if key is None else self._analyses.get(key)
@@ -8076,13 +8104,21 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             source_xy = self._manual_seed_centres_in_source_coordinates(
                 np.asarray(corrected_xy, dtype=np.float64), result
             )
+            suppressed_source_xy = (
+                np.empty((0, 2), np.float64)
+                if mode == "replace_automatic"
+                else self._manual_seed_centres_in_source_coordinates(
+                    np.asarray(suppressed_xy, dtype=np.float64).reshape(-1, 2),
+                    result,
+                )
+            )
         except (OSError, ValueError) as error:
             self.statusBar().showMessage(str(error))
             self._sync_manual_seed_centres_to_view(key, result, render=True)
             return
         self._apply_manual_seed_centre_state(
             key,
-            _ManualSeedCentreState(source_xy, mode),
+            _ManualSeedCentreState(source_xy, mode, suppressed_source_xy),
             label=label,
             record_undo=True,
         )
@@ -8097,9 +8133,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
     ) -> None:
         self._catalogue_context_changed()
         previous = self._manual_seed_centre_state(key)
-        if previous.mode == state.mode and np.array_equal(
-            previous.centres_source_xy, state.centres_source_xy
-        ):
+        if previous.same_edits(state):
             self._sync_procedural_centres_controls()
             return
         if record_undo:
@@ -8127,6 +8161,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             NodeStatus.COMPLETE,
             f"Manual annotations; {len(state.centres_source_xy):,} centre point(s); "
             + (
+                f"{len(state.suppressed_source_xy):,} removed automatic centre(s); "
                 "augmenting automatic markers"
                 if state.mode == "augment"
                 else "replacing automatic markers"
@@ -11597,15 +11632,17 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         current = self._manual_seed_centre_state(key)
         if current.mode == mode:
             return
+        # Manual centres carry over; automatic centres are never copied, so
+        # Replace starts from the user's own points (often none) and Augment
+        # resumes automatic detection. Undo restores removed-centre edits.
+        corrected = self._manual_seed_centres_in_corrected_coordinates(key, result)
         if mode == "replace_automatic":
-            corrected = self.image_view.editable_procedural_marker_centres()
-            label = "switched to Replace automatic using surviving centres"
+            label = "switched to Replace automatic; automatic centre detection is off"
         else:
-            corrected = self._manual_seed_centres_in_corrected_coordinates(
-                key, result
-            )
-            label = "switched to Augment automatic"
-        self._manual_seed_centres_edited(corrected, mode, label)
+            label = "switched to Augment automatic; automatic centre detection is on"
+        self._manual_seed_centres_edited(
+            corrected, np.empty((0, 2), np.float64), mode, label
+        )
 
     def _sync_procedural_centres_controls(self) -> None:
         if not hasattr(self, "pipeline_inspector"):
@@ -11647,13 +11684,14 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             status = "Run procedural inference to inspect and edit its actual markers."
         elif state.mode == "augment":
             status = (
-                f"{len(state.centres_source_xy):,} manual override(s); automatic "
-                "markers remain enabled."
+                f"{len(state.centres_source_xy):,} manual centre(s) and "
+                f"{len(state.suppressed_source_xy):,} removed automatic centre(s); "
+                "automatic centre detection is on."
             )
         else:
             status = (
-                f"{len(state.centres_source_xy):,} replacement marker(s); automatic "
-                "marker discovery is disabled."
+                f"{len(state.centres_source_xy):,} manual centre(s); automatic "
+                "centre detection is off, so only these centres seed instances."
             )
         self.pipeline_inspector.set_procedural_centres_state(
             mode=state.mode,
@@ -13088,12 +13126,12 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             ),
             "edge_radius_confirmation": (
                 "Hue is fitted radius ratio (half to twice nominal across the hue "
-                "wheel); brightness is the stronger of circular-arc support and weighted "
-                "centre-vote support."
+                "wheel); brightness is the strongest of circular-arc support, agreement "
+                "with a fitted seed circle or ellipse, and weighted centre-vote support."
             ),
-            "edge_circle_fit": "Per edge pixel: how well a seed-sized circular arc through that pixel, along its tangent, is supported by neighbouring edges. Only ridge pixels carry a value.",
-            "edge_ellipse_fit": "The perimeters of the accepted edge ovals (the same ovals as Most likely edge ovals), painted with each oval's confidence. Not a per-edge fit: no seed proposals exist at this stage.",
-            "edge_fit_residual": "Per traced edge pixel: one minus its circular-arc support, so bright edges are poorly explained by a seed-sized arc.",
+            "edge_circle_fit": "Per traced edge pixel: how well it lies on, and runs along, the circle fitted to the nearest seed proposal. Brightness is the fit's score times closeness within the circle residual tolerance. Round seeds are bright; elongated seeds are dim here and bright in the ellipse view.",
+            "edge_ellipse_fit": "Per traced edge pixel: how well it lies on, and runs along, the ellipse fitted to the nearest seed proposal (the outlines in Fitted seed ovals). Brightness is the fit's score times closeness within the ellipse residual tolerance. Dark edges belong to no fitted seed, such as coat texture, debris or seeds the fitter missed.",
+            "edge_fit_residual": "Per traced edge pixel: one minus the best of its circular-arc support and its agreement with a fitted circle or ellipse. Bright edges are explained by no seed-shaped outline.",
             "edge_centre_votes": "Normal/radius votes with seed-scaled tangent offsets accumulated from fragmented oriented traces; bright maxima are raw oval-centre hypotheses before perimeter validation.",
             "oval_centre_probability": "Fit-validated probability that a pixel is the centre of a plausible oval supported by distributed curved-edge and tangent evidence. Blue is low; red is high.",
             "edge_semantic_sides": "Per edge pixel: how seed-like the side its best arc fit treats as the seed interior is (seed material just inside, non-seed material just outside). Bright edges enclose seed material; dark edges have background on their inner side. It boosts but never gates an edge.",
@@ -13101,16 +13139,17 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 "Hue categorizes rejection: weak hysteresis, junction/short trace, "
                 "poor continuity, implausible shape/radius, or low combined confidence."
             ),
-            "edge_fit_geometry": "Raw reverse-transform centre peaks before full oval validation; compact geometry transfers only when selected.",
-            "edge_oval_hypotheses": "Proposal-independent ovals reconstructed backward from curved edge fragments. Brighter, thicker cyan outlines have stronger distributed perimeter and tangent support.",
+            "edge_fit_geometry": "Centre-vote maxima: the seed proposals that the oval fitter starts from, before fitting and duplicate removal. Compact geometry transfers only when selected.",
+            "edge_oval_hypotheses": "Ellipses fitted to the boundary around each centre-vote maximum, after duplicate removal. Brighter, thicker cyan outlines have boundary hits more evenly around them, more of their outline on oriented traced edges and more seed material inside.",
             "seed_edge_curves": (
                 "Final seed-boundary confidence after ridge thinning, oriented trace "
                 "continuity, dense arc radii, centre voting, circular-arc support, "
+                "agreement with seed outlines fitted at the vote maxima, "
                 "and soft semantic/lightness confirmation."
             ),
             "procedural_seed_mask": "Thresholded seed material after dish-margin removal and seed-sized enclosed coat-hole filling.",
             "procedural_boundary_cost": "Normalized physical boundary cost fused from edges, sensor/noise, ridges and local shadow.",
-            "procedural_centres": "Marker likelihood from smoothed material, physical-boundary depth, blurred flattened grayscale, and positive support from proposal-independent fit-validated oval centres; dots are the markers actually used. Raw centre votes are a separate pre-validation diagnostic in Seed-boundary confirmation. When saved manual centres replace automatic ones, the dots are those manual centres and this likelihood selects nothing.",
+            "procedural_centres": "Marker likelihood from smoothed material, physical-boundary depth, blurred flattened grayscale, and positive support from the centres of seed ovals fitted in Seed-boundary confirmation; dots are the markers actually used. Raw centre votes are a separate diagnostic in Seed-boundary confirmation. When saved manual centres replace automatic ones, the dots are those manual centres and this likelihood selects nothing.",
             "procedural_instances": "Marker-controlled watershed instance identities. Dot colour runs red to green with per-instance confidence. Click a coloured seed to outline it and show its area, maximum width, concavity, protrusion, solidity, axis ratio and score in the Procedural node panel.",
             "procedural_confidence": "Per-instance marker, boundary and calibrated-area confidence mapped back onto every assigned pixel.",
             "procedural_concavity": "Convex-hull deficit for each retained instance, scaled to the configured hard concavity cutoff; brighter regions are more internally concave.",
@@ -13253,7 +13292,47 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             or "likelihood" in mode
         ):
             text = "Scale key: black = low displayed probability/evidence; white or maximum semantic-colour brightness = high. " + text
+        if mode in {"procedural_centres", "procedural_instances"}:
+            text += " " + self._procedural_marker_key()
         self.overlay_legend_label.setText(text)
+
+    def _procedural_marker_key(self) -> str:
+        """Name each centre-marker style with its count on the current image."""
+
+        key = self._current_image_key()
+        result = None if key is None else self._analyses.get(key)
+        procedural = getattr(result, "procedural_instances", None)
+        sources = np.asarray(
+            getattr(procedural, "marker_sources", ()), dtype=object
+        ).reshape(-1)
+        counts = {
+            name: sum(
+                self.image_view._normalised_procedural_marker_source(value) == name
+                for value in sources
+            )
+            for name in ("automatic", "manual", "annotation")
+        }
+        state = (
+            self._default_manual_seed_centre_state()
+            if key is None
+            else self._manual_seed_centre_state(key)
+        )
+        text = (
+            f"Centre markers: hollow cyan = automatic ({counts['automatic']:,}); "
+            f"filled yellow = manual ({counts['manual']:,}); magenta square = "
+            f"locked to an applied annotation ({counts['annotation']:,})"
+        )
+        if state.mode == "augment":
+            text += (
+                f"; grey \u00d7 = removed automatic centre "
+                f"({len(state.suppressed_source_xy):,}). Automatic detection is on."
+            )
+        else:
+            text += (
+                ". Replace automatic is on: automatic detection is off and only "
+                "manual centres are used."
+            )
+        return text
 
     def _mark_analysis_complete(self, result) -> None:
         node_timings = getattr(result, "node_timings_seconds", {})
@@ -13929,7 +14008,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             ),
         )
         manual_state = self._manual_seed_centre_state(key)
-        if len(manual_state.centres_source_xy):
+        if len(manual_state.centres_source_xy) or manual_state.mode != "augment":
             reference_node = self.pipeline.node("project")
             reference_node.status_detail += (
                 f"; centres {len(manual_state.centres_source_xy):,} "
@@ -14037,7 +14116,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             "reference_seed_traits": "Fitting isolated coat-pattern and reviewed condition material prototypes",
             "reference_edge_probability": "Classifying physical and apparent edges from reviewed examples",
             "edge_traces": "Linking orientation-compatible ridge fragments",
-            "seed_edge_curves": "Voting backward from curved edges and fitting proposal-independent ovals",
+            "seed_edge_curves": "Voting backward from curved edges and fitting seed ovals at the vote maxima",
             "background_likelihood": "Estimating the likely colour range",
             "refined_background_likelihood": "Evaluating foreground, background, and Other texture rays",
             "boundary_normals": "Estimating boundary confidence and normals",

@@ -6758,6 +6758,477 @@ def reference_probability_ridges(
     )
 
 
+@dataclass(slots=True)
+class _SeedOvalFits:
+    """Fitted seed outlines in working pixels; rejected fits score zero."""
+
+    centres: object
+    major: object
+    minor: object
+    angles: object
+    scores: object
+    circle_centres: object
+    circle_radii: object
+    circle_scores: object
+
+
+def _conic_ray_radius(theta, ray_x, ray_y):
+    """Distance along unit rays from the origin to an origin-relative conic.
+
+    ``theta`` holds A..E of ``A x^2 + B xy + C y^2 + D x + E y = 1``. A ray
+    without a positive crossing is NaN.
+    """
+
+    import torch
+
+    a, b, c, d, e = theta.unbind(-1)
+    quadratic = (
+        a[:, None] * ray_x.square()
+        + b[:, None] * ray_x * ray_y
+        + c[:, None] * ray_y.square()
+    )
+    linear = d[:, None] * ray_x + e[:, None] * ray_y
+    discriminant = linear.square() + 4.0 * quadratic
+    root = torch.sqrt(discriminant.clamp_min(0.0))
+    radius = (root - linear) / (2.0 * quadratic.clamp_min(1e-6))
+    usable = (quadratic > 1e-6) & (discriminant >= 0.0) & (radius > 0.0)
+    return torch.where(usable, radius, torch.full_like(radius, float("nan")))
+
+
+def _conic_ellipse(theta):
+    """Return a conic's centre offset, semi-axes, major-axis angle and validity."""
+
+    import torch
+
+    a, b, c, d, e = theta.unbind(-1)
+    determinant = 4.0 * a * c - b.square()
+    safe = torch.where(
+        determinant.abs() > 1e-9, determinant, torch.ones_like(determinant)
+    )
+    centre_x = (b * e - 2.0 * c * d) / safe
+    centre_y = (b * d - 2.0 * a * e) / safe
+    level = 1.0 - 0.5 * (d * centre_x + e * centre_y)
+    matrix = torch.stack(
+        (torch.stack((a, 0.5 * b), dim=-1), torch.stack((0.5 * b, c), dim=-1)),
+        dim=-2,
+    )
+    eigenvalues, eigenvectors = torch.linalg.eigh(matrix)
+    major = torch.sqrt(level.clamp_min(1e-9) / eigenvalues[:, 0].clamp_min(1e-9))
+    minor = torch.sqrt(level.clamp_min(1e-9) / eigenvalues[:, 1].clamp_min(1e-9))
+    angle = torch.atan2(eigenvectors[:, 1, 0], eigenvectors[:, 0, 0])
+    valid = (
+        (determinant > 1e-9)
+        & (eigenvalues[:, 0] > 1e-9)
+        & (level > 1e-9)
+        & torch.isfinite(major + minor + centre_x + centre_y)
+    )
+    return centre_x, centre_y, major, minor, angle, valid
+
+
+def _fit_seed_ovals(
+    centres,
+    vote_values,
+    *,
+    edge_support,
+    normal_x,
+    normal_y,
+    foreground,
+    lightness,
+    valid,
+    diameter: float,
+    settings,
+) -> _SeedOvalFits:
+    """Fit an ellipse and a circle around each candidate seed centre.
+
+    Rays leave each candidate in evenly spaced directions. Each ray sample
+    scores how well it combines traced-edge strength, an edge normal along
+    the ray, seed material on the inner side, a crease darker than the
+    interior and the seed-size prior; a ray stops where it leaves seed
+    material and prefers the first boundary it crosses. Dynamic programming
+    then takes one sample per ray along a smooth closed outline with the
+    largest total score. An ellipse and a circle are fitted to those hits by
+    iteratively reweighted least squares,
+    so a hit on a neighbour's edge or on coat texture loses its weight, and
+    the rays are cast once more from the fitted centre. A fit scores by how
+    evenly inlying hits surround it, how much of its outline lies on
+    oriented traced edges and how much seed material it encloses. Duplicate
+    fits of one seed keep only the strongest.
+    """
+
+    import torch
+    import torch.nn.functional as functional
+
+    device = centres.device
+    count = int(centres.shape[0])
+    ray_count, sector_count = 48, 12
+    minimum_axis = diameter * float(settings.boundary_radius_min_fraction)
+    maximum_axis = diameter * float(settings.boundary_radius_max_fraction)
+    nominal = max(diameter * 0.5, 1.0)
+    first_radius, last_radius = 0.6 * minimum_axis, 1.1 * maximum_axis
+    # Radii are spaced evenly in log radius, so a fixed index window bounds
+    # the relative change in radius between neighbouring rays.
+    log_span = float(np.log(last_radius / first_radius))
+    sample_count = int(np.clip(np.ceil(log_span * last_radius / 0.75) + 1, 16, 160))
+    log_step = log_span / (sample_count - 1)
+    radii = first_radius * torch.exp(
+        torch.arange(sample_count, device=device, dtype=torch.float32) * log_step
+    )
+    spacing = radii * log_step
+    # Edges crossed before a sample exclude the last 2.5 pixels, so the
+    # dilated ridge a boundary sample sits on never penalizes itself.
+    behind = torch.searchsorted(radii, radii - 2.5, right=True) - 1
+    ray_angles = torch.arange(ray_count, device=device, dtype=torch.float32) * (
+        2.0 * np.pi / ray_count
+    )
+    # The steepest relative radius change between neighbouring rays of the
+    # most elongated plausible ellipse, with a little slack for irregular seeds.
+    ratio = float(settings.boundary_max_axis_ratio)
+    window = int(np.clip(
+        np.ceil((0.5 * (ratio - 1.0 / ratio) * 2.0 * np.pi / ray_count + 0.03) / log_step),
+        1,
+        sample_count // 4,
+    ))
+    transition_penalty = 0.02 * (
+        torch.arange(-window, window + 1, device=device, dtype=torch.float32) / window
+    ).square()
+    lap = torch.cat((
+        torch.arange(ray_count, device=device),
+        torch.arange(ray_count // 2, device=device),
+    ))
+    ray_x, ray_y = torch.cos(ray_angles), torch.sin(ray_angles)
+    radius_prior = torch.exp(
+        -0.5
+        * (
+            torch.log(radii / nominal)
+            / float(settings.boundary_radius_log_tolerance)
+        ).square()
+    )
+    normal_floor = _fit_normal_floor(settings)
+    offset = max(1.5, 0.08 * diameter)
+    edge_floor = 0.7 * float(settings.ridge_low_threshold)
+    ellipse_tolerance = float(settings.boundary_ellipse_residual_tolerance)
+    circle_tolerance = float(settings.boundary_circle_residual_tolerance)
+    annealing = (3.0, 2.0, 1.4, 1.0)
+    valid = valid.float()
+    # Seed-material probability can be uniformly weak, as on pale seeds on a
+    # pale dish, so it is read relative to its level at the proposals, which
+    # lie on seed material.
+    if count:
+        material_level = torch.quantile(
+            bilinear_sample(foreground, centres[:, 0], centres[:, 1]), 0.5
+        )
+        foreground = (foreground / material_level.clamp_min(0.02)).clamp(0.0, 1.0)
+
+    def aligned(value):
+        return ((value - normal_floor) / max(1e-5, 1.0 - normal_floor)).clamp(0.0, 1.0)
+
+    def cast(origin):
+        ux, uy = ray_x[None, :, None], ray_y[None, :, None]
+        sx = origin[:, 0, None, None] + ux * radii
+        sy = origin[:, 1, None, None] + uy * radii
+        edge = bilinear_sample(edge_support, sx, sy)
+        alignment = aligned(torch.abs(
+            bilinear_sample(normal_x, sx, sy) * ux
+            + bilinear_sample(normal_y, sx, sy) * uy
+        ))
+        inner_x, inner_y = sx - ux * offset, sy - uy * offset
+        inner = bilinear_sample(foreground, inner_x, inner_y)
+        outer = bilinear_sample(foreground, sx + ux * offset, sy + uy * offset)
+        crease = torch.sigmoid(
+            (
+                bilinear_sample(lightness, inner_x, inner_y)
+                - bilinear_sample(lightness, sx, sy)
+                - 1.0
+            )
+            / 6.0
+        )
+        on_material = (bilinear_sample(foreground, sx, sy) / 0.3).clamp(0.0, 1.0)
+        reach = torch.cumprod(
+            torch.cat((torch.ones_like(on_material[..., :1]), on_material[..., :-1]), -1),
+            dim=-1,
+        )
+        oriented = edge * alignment
+        crossed = torch.cumsum(oriented * spacing, dim=-1)
+        crossed = torch.where(
+            behind >= 0,
+            crossed[..., behind.clamp_min(0)],
+            torch.zeros_like(crossed),
+        )
+        score = (
+            oriented
+            * inner
+            * (0.6 + 0.4 * (inner - outer).clamp(0.0, 1.0))
+            * (0.6 + 0.4 * crease)
+            * (0.35 + 0.65 * radius_prior)
+            * torch.exp(-crossed / 0.4)
+            * reach
+            * bilinear_sample(valid, sx, sy)
+        )
+        index = trace_outline(score)
+        strength = score.gather(-1, index[..., None])[..., 0]
+        return radii[index], strength, edge.gather(-1, index[..., None])[..., 0]
+
+    def trace_outline(score):
+        # Dynamic programming picks one boundary sample per ray along a
+        # smooth outline with the largest total score: coat texture does not
+        # close around the proposal and a neighbour's outline is not smooth
+        # in its polar frame. One and a half laps let the outline close.
+        value = score[:, lap[0]]
+        choices = []
+        for ray in lap[1:]:
+            padded = functional.pad(value, (window, window), value=-1e9)
+            best, choice = (padded.unfold(-1, 2 * window + 1, 1) - transition_penalty).max(-1)
+            choices.append(choice)
+            value = score[:, ray] + best
+        index = value.argmax(-1)
+        path = [index]
+        for choice in reversed(choices[-(ray_count - 1):]):
+            index = index + choice.gather(-1, index[:, None])[:, 0] - window
+            path.append(index)
+        traced = torch.empty(score.shape[:2], device=device, dtype=torch.long)
+        traced[:, lap[-ray_count:].flip(0)] = torch.stack(path, dim=1)
+        return traced
+
+    def solve(design, weights, target):
+        normal_matrix = torch.einsum("kri,kr,krj->kij", design, weights, design)
+        right = torch.einsum("kri,kr->ki", design, weights * target)
+        ridge = 1e-4 * normal_matrix.diagonal(dim1=1, dim2=2).sum(-1).clamp_min(1e-2)
+        identity = torch.eye(design.shape[-1], device=device)
+        return torch.linalg.solve(normal_matrix + ridge[:, None, None] * identity, right)
+
+    def fit_ellipse(hit, strength):
+        x, y = hit * ray_x / nominal, hit * ray_y / nominal
+        design = torch.stack((x * x, x * y, y * y, x, y), dim=-1)
+        weights = strength
+        for factor in annealing:
+            theta = solve(design, weights, torch.ones_like(x))
+            fitted = _conic_ray_radius(theta, ray_x, ray_y) * nominal
+            residual = torch.nan_to_num((hit - fitted) / fitted, nan=1e3)
+            weights = strength * torch.exp(
+                -0.5 * (residual / (ellipse_tolerance * factor)).square()
+            )
+        return theta, residual
+
+    def fit_circle(hit, strength):
+        x, y = hit * ray_x / nominal, hit * ray_y / nominal
+        design = torch.stack((x, y, torch.ones_like(x)), dim=-1)
+        weights = strength
+        for factor in annealing:
+            d, e, f = solve(design, weights, -(x * x + y * y)).unbind(-1)
+            centre_x, centre_y = -0.5 * d, -0.5 * e
+            radius = torch.sqrt((centre_x.square() + centre_y.square() - f).clamp_min(1e-6))
+            residual = (
+                torch.sqrt((x - centre_x[:, None]).square() + (y - centre_y[:, None]).square())
+                - radius[:, None]
+            ) / radius[:, None]
+            weights = strength * torch.exp(
+                -0.5 * (residual / (circle_tolerance * factor)).square()
+            )
+        return torch.stack((centre_x, centre_y), dim=1) * nominal, radius * nominal, residual
+
+    def coverage(inliers):
+        return inliers.reshape(-1, sector_count, ray_count // sector_count).any(-1).float().mean(-1)
+
+    perimeter = torch.arange(64, device=device, dtype=torch.float32) * (2.0 * np.pi / 64)
+    chunks = []
+    for start in range(0, count, 256):
+        origin = centres[start : start + 256]
+        hit, strength, _ = cast(origin)
+        theta, _ = fit_ellipse(hit, strength)
+        shift_x, shift_y, _, _, _, usable = _conic_ellipse(theta)
+        shift = torch.stack((shift_x, shift_y), dim=1) * nominal
+        usable &= torch.linalg.vector_norm(shift, dim=1) <= 0.35 * diameter
+        origin = origin + torch.where(usable[:, None], shift, torch.zeros_like(shift))
+        hit, strength, hit_edge = cast(origin)
+        theta, residual = fit_ellipse(hit, strength)
+        shift_x, shift_y, major, minor, angle, usable = _conic_ellipse(theta)
+        shift = torch.stack((shift_x, shift_y), dim=1) * nominal
+        usable &= torch.linalg.vector_norm(shift, dim=1) <= 0.35 * diameter
+        fitted = origin + shift
+        major, minor = major * nominal, minor * nominal
+        circle_offset, circle_radius, circle_residual = fit_circle(hit, strength)
+
+        on_edge_hit = hit_edge >= edge_floor
+        ellipse_coverage = coverage((residual.abs() <= ellipse_tolerance) & on_edge_hit)
+        circle_coverage = coverage((circle_residual.abs() <= circle_tolerance) & on_edge_hit)
+        cosine, sine = torch.cos(angle)[:, None], torch.sin(angle)[:, None]
+        local_x = major[:, None] * torch.cos(perimeter)
+        local_y = minor[:, None] * torch.sin(perimeter)
+        px = fitted[:, 0:1] + local_x * cosine - local_y * sine
+        py = fitted[:, 1:2] + local_x * sine + local_y * cosine
+        gradient_x = torch.cos(perimeter) / major[:, None].clamp_min(1e-3)
+        gradient_y = torch.sin(perimeter) / minor[:, None].clamp_min(1e-3)
+        gradient_length = torch.sqrt(gradient_x.square() + gradient_y.square()).clamp_min(1e-6)
+        expected_x = (gradient_x * cosine - gradient_y * sine) / gradient_length
+        expected_y = (gradient_x * sine + gradient_y * cosine) / gradient_length
+        agreement = aligned(torch.abs(
+            bilinear_sample(normal_x, px, py) * expected_x
+            + bilinear_sample(normal_y, px, py) * expected_y
+        ))
+        on_outline = (
+            bilinear_sample(edge_support, px, py) * agreement >= edge_floor
+        ).float().mean(-1)
+        interior = bilinear_sample(
+            foreground,
+            0.5 * (fitted[:, 0:1] + px),
+            0.5 * (fitted[:, 1:2] + py),
+        ).mean(-1)
+        plausible = (
+            usable
+            & (minor >= first_radius)
+            & (major <= last_radius)
+            & (major <= minor * float(settings.boundary_max_axis_ratio))
+        )
+        score = (
+            torch.sqrt(ellipse_coverage * on_outline)
+            * interior
+            * plausible
+            * (0.5 + 0.5 * vote_values[start : start + 256].clamp(0.0, 1.0))
+        )
+        circle_plausible = (circle_radius >= first_radius) & (circle_radius <= last_radius)
+        circle_share = (circle_coverage / ellipse_coverage.clamp_min(1e-3)).clamp(0.0, 1.0)
+        nominal_axis = torch.full_like(major, nominal)
+        chunks.append((
+            torch.where(usable[:, None], fitted, origin),
+            torch.where(usable, major, nominal_axis),
+            torch.where(usable, minor, nominal_axis),
+            torch.where(usable, angle, torch.zeros_like(angle)),
+            score,
+            origin + circle_offset,
+            circle_radius,
+            circle_share * circle_plausible,
+        ))
+    if not chunks:
+        empty = torch.zeros((0,), device=device)
+        empty_xy = torch.zeros((0, 2), device=device)
+        return _SeedOvalFits(empty_xy, empty, empty, empty, empty, empty_xy, empty, empty)
+    fits = _SeedOvalFits(*(torch.cat(values) for values in zip(*chunks)))
+
+    # A fit duplicates a stronger surviving fit when either centre lies well
+    # inside the other outline. Suppression runs over the scored fits only.
+    scores = fits.scores * (fits.scores >= float(settings.boundary_minimum_confidence))
+    scored = torch.nonzero(scores > 0.0, as_tuple=True)[0]
+    if int(scored.numel()):
+        kept_centres = fits.centres[scored]
+        relative = kept_centres[None, :, :] - kept_centres[:, None, :]
+        cosine = torch.cos(fits.angles[scored])[:, None]
+        sine = torch.sin(fits.angles[scored])[:, None]
+        along = relative[..., 0] * cosine + relative[..., 1] * sine
+        across = relative[..., 1] * cosine - relative[..., 0] * sine
+        inside = (
+            (along / fits.major[scored, None]).square()
+            + (across / fits.minor[scored, None]).square()
+        ) < 0.49
+        overlap = inside | inside.T
+        kept_scores = scores[scored]
+        order = torch.arange(int(scored.numel()), device=device)
+        dominated = overlap & (
+            (kept_scores[:, None] > kept_scores[None, :])
+            | ((kept_scores[:, None] == kept_scores[None, :]) & (order[:, None] < order[None, :]))
+        )
+        alive = torch.ones_like(kept_scores, dtype=torch.bool)
+        for _ in range(8):
+            alive = ~(dominated & alive[:, None]).any(dim=0)
+        survivors = torch.zeros_like(scores, dtype=torch.bool)
+        survivors[scored[alive]] = True
+        scores = scores * survivors
+    fits.scores = scores
+    fits.circle_scores = fits.circle_scores * scores
+    return fits
+
+
+def _fit_normal_floor(settings) -> float:
+    """Cosine below which an edge normal no longer supports a fitted outline."""
+
+    return float(np.cos(np.deg2rad(
+        min(80.0, 2.0 * float(settings.boundary_orientation_tolerance_degrees))
+    )))
+
+
+def _nearest_fit_index(centres, major, minor, angles, scores, tolerance, shape):
+    """Index of the strongest fit whose outline passes near each pixel, or -1.
+
+    Each fit paints relative radial offsets up to a few tolerances inside
+    and outside its outline; a pixel keeps the fit with the largest score
+    times residual falloff.
+    """
+
+    import torch
+
+    height, width = shape
+    device = centres.device
+    best = torch.zeros(height * width, device=device, dtype=torch.int64)
+    kept = torch.nonzero(scores > 0.0, as_tuple=True)[0]
+    if not int(kept.numel()):
+        return best.reshape(height, width) - 1
+    band = min(2.5 * float(tolerance), 0.9)
+    largest = float(major[kept].max()) * (1.0 + band)
+    angle_count = int(np.clip(np.ceil(2.0 * np.pi * largest / 0.7), 32, 2048))
+    phi = torch.arange(angle_count, device=device, dtype=torch.float32) * (
+        2.0 * np.pi / angle_count
+    )
+    offsets = torch.linspace(
+        -band,
+        band,
+        int(np.clip(np.ceil(2.0 * band * largest / 0.7), 3, 127)) | 1,
+        device=device,
+    )
+    falloff = torch.exp(-0.5 * (offsets / float(tolerance)).square())
+    scale = 1.0 + offsets[None, None, :]
+    for start in range(0, int(kept.numel()), 16):
+        index = kept[start : start + 16]
+        local_x = major[index, None, None] * torch.cos(phi)[None, :, None] * scale
+        local_y = minor[index, None, None] * torch.sin(phi)[None, :, None] * scale
+        cosine = torch.cos(angles[index])[:, None, None]
+        sine = torch.sin(angles[index])[:, None, None]
+        x = torch.round(centres[index, 0, None, None] + local_x * cosine - local_y * sine)
+        y = torch.round(centres[index, 1, None, None] + local_x * sine + local_y * cosine)
+        inside = (x >= 0) & (x <= width - 1) & (y >= 0) & (y <= height - 1)
+        pixel = y.long().clamp(0, height - 1) * width + x.long().clamp(0, width - 1)
+        strength = torch.round(
+            scores[index, None, None] * falloff[None, None, :] * 65535.0
+        ).long() + 1
+        key = ((strength << 32) | index[:, None, None]) * inside
+        best.scatter_reduce_(0, pixel.reshape(-1), key.reshape(-1), reduce="amax")
+    nearest = torch.where(best > 0, best & 0xFFFFFFFF, torch.full_like(best, -1))
+    return nearest.reshape(height, width)
+
+
+def _edge_fit_agreement(nearest, centres, major, minor, angles, scores, tolerance, *, normal_x, normal_y, xx, yy, normal_floor):
+    """Per-pixel agreement with the nearest fitted outline.
+
+    The value is the fit's score times a Gaussian of the pixel's relative
+    radial residual over ``tolerance``, times how well the pixel's edge
+    normal matches the outline's normal there.
+    """
+
+    import torch
+
+    if not int(centres.shape[0]):
+        return torch.zeros_like(xx)
+    index = nearest.clamp_min(0)
+    dx = xx - centres[index, 0]
+    dy = yy - centres[index, 1]
+    cosine, sine = torch.cos(angles[index]), torch.sin(angles[index])
+    along = dx * cosine + dy * sine
+    across = dy * cosine - dx * sine
+    a, b = major[index].clamp_min(1e-3), minor[index].clamp_min(1e-3)
+    residual = torch.sqrt((along / a).square() + (across / b).square()) - 1.0
+    gradient_x = along / a.square() * cosine - across / b.square() * sine
+    gradient_y = along / a.square() * sine + across / b.square() * cosine
+    gradient_length = torch.sqrt(gradient_x.square() + gradient_y.square()).clamp_min(1e-9)
+    agreement = torch.abs(
+        normal_x[0, 0] * gradient_x + normal_y[0, 0] * gradient_y
+    ) / gradient_length
+    agreement = ((agreement - normal_floor) / max(1e-5, 1.0 - normal_floor)).clamp(0.0, 1.0)
+    value = (
+        scores[index]
+        * torch.exp(-0.5 * (residual / float(tolerance)).square())
+        * agreement
+    )
+    return torch.where(nearest >= 0, value, torch.zeros_like(value))
+
+
 def seed_boundary_tracing(
     gradients: EdgeGradientProducts,
     seed_diameter,
@@ -6778,7 +7249,13 @@ def seed_boundary_tracing(
     trace_source_name: str = "generic_ridges",
     timing_recorder=None,
 ) -> BoundaryTraceProducts:
-    """Trace thinned ridges and confirm circle/ellipse seed boundaries on GPU."""
+    """Trace thinned ridges and confirm seed boundaries with fitted outlines on GPU.
+
+    Circular-arc support at each ridge pixel votes for seed centres. Vote
+    maxima are fitted with an ellipse and a circle, and an edge pixel is
+    confirmed by the strongest of its own arc support and its agreement
+    with a fitted outline.
+    """
 
     import torch
     import torch.nn.functional as functional
@@ -7381,8 +7858,82 @@ def seed_boundary_tracing(
         vote_probability, best_centre_x, best_centre_y
     ) * trace_seed
 
-    circle_confidence = best_circle
-    shape_confidence = circle_confidence
+    # Centre-vote maxima are the seed proposals. Each is fitted with an
+    # ellipse and a circle before the final confidence, so an edge pixel on a
+    # fitted outline is confirmed by the whole outline, not only its own arc.
+    peak_window = max(3, round(diameter * 0.25)) | 1
+    local_maxima = vote_ranking == functional.max_pool2d(
+        vote_ranking[None, None],
+        peak_window,
+        stride=1,
+        padding=peak_window // 2,
+    )[0, 0]
+    candidate_votes = torch.where(
+        local_maxima & (vote_ranking >= 0.20),
+        vote_ranking,
+        torch.zeros_like(vote_ranking),
+    )
+    top_count = min(
+        int(settings.boundary_geometry_max_candidates),
+        int(candidate_votes.numel()),
+    )
+    vote_rank_values, vote_indices = torch.topk(
+        candidate_votes.reshape(-1), top_count
+    )
+    vote_values = vote_rank_values.clamp(0.0, 1.0)
+    candidate_centres_working = torch.stack(
+        ((vote_indices % width).float(), (vote_indices // width).float()), dim=1
+    )
+    vote_centres = candidate_centres_working / scale
+    fitted_candidates = vote_values >= max(
+        0.10, float(settings.boundary_minimum_confidence) * 0.75
+    )
+    fits = _fit_seed_ovals(
+        candidate_centres_working[fitted_candidates],
+        vote_values[fitted_candidates],
+        edge_support=ridge_support,
+        normal_x=normal_x,
+        normal_y=normal_y,
+        foreground=foreground,
+        lightness=lightness,
+        valid=valid,
+        diameter=diameter,
+        settings=settings,
+    )
+    agreement_inputs = dict(
+        normal_x=normal_x,
+        normal_y=normal_y,
+        xx=xx,
+        yy=yy,
+        normal_floor=_fit_normal_floor(settings),
+    )
+    ellipse_outline = (
+        fits.centres, fits.major, fits.minor, fits.angles, fits.scores,
+        float(settings.boundary_ellipse_residual_tolerance),
+    )
+    ellipse_confidence = _edge_fit_agreement(
+        _nearest_fit_index(*ellipse_outline, (height, width)),
+        *ellipse_outline,
+        **agreement_inputs,
+    ) * trace_seed
+    circle_outline = (
+        fits.circle_centres,
+        fits.circle_radii,
+        fits.circle_radii,
+        torch.zeros_like(fits.circle_radii),
+        fits.circle_scores,
+        float(settings.boundary_circle_residual_tolerance),
+    )
+    circle_confidence = _edge_fit_agreement(
+        _nearest_fit_index(*circle_outline, (height, width)),
+        *circle_outline,
+        **agreement_inputs,
+    ) * trace_seed
+
+    # Local circular-arc support still confirms edges of seeds without a fit.
+    shape_confidence = torch.maximum(
+        best_circle, torch.maximum(circle_confidence, ellipse_confidence)
+    )
     combined_shape = torch.maximum(
         shape_confidence,
         centre_support * settings.boundary_center_vote_weight,
@@ -7438,350 +7989,15 @@ def seed_boundary_tracing(
     rejection_hue = (rejection_reason / 6.0).clamp(0.0, 1.0)
     rejection_strength = (rejection_reason > 0).float() * nms
 
-    local_maxima = vote_ranking == functional.max_pool2d(
-        vote_ranking[None, None],
-        max(3, round(diameter * 0.25)) | 1,
-        stride=1,
-        padding=(max(3, round(diameter * 0.25)) | 1) // 2,
-    )[0, 0]
-    candidate_votes = torch.where(
-        local_maxima & (vote_ranking >= 0.20),
-        vote_ranking,
-        torch.zeros_like(vote_ranking),
-    )
-    top_count = min(
-        int(settings.boundary_geometry_max_candidates),
-        int(candidate_votes.numel()),
-    )
-    vote_rank_values, vote_indices = torch.topk(
-        candidate_votes.reshape(-1), top_count
-    )
-    vote_values = vote_rank_values.clamp(0.0, 1.0)
-    vote_centres = torch.stack(
-        ((vote_indices % width).float() / scale, (vote_indices // width).float() / scale),
-        dim=1,
-    )
-
-    # Fit proposal-independent ovals by working backward from curved ridge
-    # fragments. Each accepted ridge pixel already has a locally supported
-    # normal/radius projection (best_centre_x/y). Associate those projections
-    # with nearby centre-vote maxima, accumulate edge-coordinate moments, then
-    # validate the resulting ellipse against its complete sampled perimeter.
-    # Procedural proposals and annotation-derived instance labels are never
-    # inputs to this fit.
-    candidate_centres_working = torch.stack(
-        ((vote_indices % width).float(), (vote_indices // width).float()), dim=1
-    )
-    candidate_enabled = vote_values >= max(
-        0.10, float(settings.boundary_minimum_confidence) * 0.75
-    )
-    edge_mask = trace_seed & (nms >= float(settings.ridge_low_threshold))
-    edge_yx = torch.nonzero(edge_mask, as_tuple=False)
-    totals = torch.zeros(top_count, device=context.device)
-    moment_xx = torch.zeros_like(totals)
-    moment_xy = torch.zeros_like(totals)
-    moment_yy = torch.zeros_like(totals)
-    radius_totals = torch.zeros_like(totals)
-    minimum_axis = diameter * float(settings.boundary_radius_min_fraction)
-    maximum_axis = diameter * float(settings.boundary_radius_max_fraction)
-    association_chunk = 32768
-    for start in range(0, int(edge_yx.shape[0]), association_chunk):
-        points_yx = edge_yx[start : start + association_chunk]
-        point_y = points_yx[:, 0]
-        point_x = points_yx[:, 1]
-        edge_points = torch.stack((point_x.float(), point_y.float()), dim=1)
-        centre_distance_sq = (
-            edge_points[:, None, :]
-            - candidate_centres_working[None, :, :]
-        ).square().sum(dim=2)
-        plausible_radius = (
-            (centre_distance_sq >= minimum_axis**2)
-            & (centre_distance_sq <= maximum_axis**2)
-        )
-        centre_distance_sq = torch.where(
-            candidate_enabled[None, :] & plausible_radius,
-            centre_distance_sq,
-            torch.full_like(centre_distance_sq, float("inf")),
-        )
-        nearest_distance_sq, assigned = torch.min(centre_distance_sq, dim=1)
-        weight = (
-            nms[point_y, point_x]
-            * (0.25 + 0.75 * trace_confidence[point_y, point_x])
-            * torch.isfinite(nearest_distance_sq)
-        )
-        assigned_centres = candidate_centres_working[assigned]
-        relative_x = point_x.float() - assigned_centres[:, 0]
-        relative_y = point_y.float() - assigned_centres[:, 1]
-        totals.scatter_add_(0, assigned, weight)
-        moment_xx.scatter_add_(0, assigned, weight * relative_x.square())
-        moment_xy.scatter_add_(0, assigned, weight * relative_x * relative_y)
-        moment_yy.scatter_add_(0, assigned, weight * relative_y.square())
-        radius_totals.scatter_add_(
-            0, assigned, weight * best_radius[point_y, point_x]
-        )
-
-    safe_totals = totals.clamp_min(1e-5)
-    covariance_xx = moment_xx / safe_totals
-    covariance_xy = moment_xy / safe_totals
-    covariance_yy = moment_yy / safe_totals
-    covariance_trace = covariance_xx + covariance_yy
-    covariance_discriminant = torch.sqrt(
-        (covariance_xx - covariance_yy).square()
-        + 4.0 * covariance_xy.square()
-    )
-    eigen_major = (
-        (covariance_trace + covariance_discriminant) * 0.5
-    ).clamp_min(1.0)
-    eigen_minor = (
-        (covariance_trace - covariance_discriminant) * 0.5
-    ).clamp_min(1.0)
-    moment_major = torch.sqrt(2.0 * eigen_major)
-    moment_minor = torch.sqrt(2.0 * eigen_minor)
-    supported_radius = radius_totals / safe_totals
-    supported_radius = torch.where(
-        totals > 0.0,
-        supported_radius,
-        torch.full_like(supported_radius, diameter * 0.5),
-    )
-    oval_major = 0.78 * moment_major + 0.22 * supported_radius
-    oval_minor = 0.78 * moment_minor + 0.22 * supported_radius
-    oval_major = oval_major.clamp(min=minimum_axis, max=maximum_axis)
-    oval_minor = oval_minor.clamp(min=minimum_axis, max=maximum_axis)
-    oval_major, oval_minor = torch.maximum(
-        oval_major, oval_minor
-    ), torch.minimum(oval_major, oval_minor)
-    oval_minor = torch.maximum(
-        oval_minor,
-        oval_major / float(settings.boundary_max_axis_ratio),
-    )
-    oval_angles = 0.5 * torch.atan2(
-        2.0 * covariance_xy, covariance_xx - covariance_yy
-    )
-
-    # Uniform angular sectors make a short, excellent arc insufficient by
-    # itself: confidence requires distributed support around the proposed oval.
-    perimeter_sector_count = 16
-    perimeter_samples_per_sector = max(
-        4, int(np.ceil(settings.boundary_arc_sample_count / 2.0))
-    )
-    perimeter_sample_count = (
-        perimeter_sector_count * perimeter_samples_per_sector
-    )
-    perimeter_angles = torch.arange(
-        perimeter_sample_count,
-        device=context.device,
-        dtype=torch.float32,
-    ) * (2.0 * np.pi / perimeter_sample_count)
-    perimeter_cos = torch.cos(perimeter_angles)[None, None, :]
-    perimeter_sin = torch.sin(perimeter_angles)[None, None, :]
-
-    # Moment fits provide orientation and one useful axis hypothesis, but
-    # fragmented traces can bias their eccentricity. Search a compact bank of
-    # seed-scaled semi-axis pairs at that orientation and retain the one with
-    # the best complete-perimeter support.
-    axis_ratio_count = max(
-        3,
-        int(np.ceil((settings.boundary_max_axis_ratio - 1.0) / 0.20)) + 1,
-    )
-    axis_ratios = torch.linspace(
-        1.0,
-        float(settings.boundary_max_axis_ratio),
-        axis_ratio_count,
-        device=context.device,
-    )
-    radius_bank, ratio_bank = torch.meshgrid(
-        radii_tested,
-        axis_ratios,
-        indexing="ij",
-    )
-    ratio_root = torch.sqrt(ratio_bank)
-    grid_major = (radius_bank * ratio_root).reshape(-1)
-    grid_minor = (radius_bank / ratio_root).reshape(-1)
-    grid_valid = (
-        (grid_major <= maximum_axis)
-        & (grid_minor >= minimum_axis)
-    )
-    hypothesis_major = torch.cat(
-        (
-            oval_major[:, None],
-            grid_major[None, :].expand(top_count, -1),
-        ),
-        dim=1,
-    )
-    hypothesis_minor = torch.cat(
-        (
-            oval_minor[:, None],
-            grid_minor[None, :].expand(top_count, -1),
-        ),
-        dim=1,
-    )
-    hypothesis_valid = torch.cat(
-        (
-            torch.ones((top_count, 1), device=context.device, dtype=torch.bool),
-            grid_valid[None, :].expand(top_count, -1),
-        ),
-        dim=1,
-    )
-    angle_cos = torch.cos(oval_angles)[:, None, None]
-    angle_sin = torch.sin(oval_angles)[:, None, None]
-    local_x = hypothesis_major[:, :, None] * perimeter_cos
-    local_y = hypothesis_minor[:, :, None] * perimeter_sin
-    sample_x = (
-        candidate_centres_working[:, 0:1, None]
-        + local_x * angle_cos
-        - local_y * angle_sin
-    )
-    sample_y = (
-        candidate_centres_working[:, 1:2, None]
-        + local_x * angle_sin
-        + local_y * angle_cos
-    )
-    expected_tangent_x = (
-        -hypothesis_major[:, :, None] * perimeter_sin * angle_cos
-        - hypothesis_minor[:, :, None] * perimeter_cos * angle_sin
-    )
-    expected_tangent_y = (
-        -hypothesis_major[:, :, None] * perimeter_sin * angle_sin
-        + hypothesis_minor[:, :, None] * perimeter_cos * angle_cos
-    )
-    expected_tangent_norm = torch.sqrt(
-        expected_tangent_x.square() + expected_tangent_y.square()
-    ).clamp_min(1e-5)
-    expected_tangent_x /= expected_tangent_norm
-    expected_tangent_y /= expected_tangent_norm
-    sampled_edge = bilinear_sample(ridge_support, sample_x, sample_y)
-    sampled_tangent_x = bilinear_sample(tangent_x, sample_x, sample_y)
-    sampled_tangent_y = bilinear_sample(tangent_y, sample_x, sample_y)
-    tangent_agreement = torch.abs(
-        sampled_tangent_x * expected_tangent_x
-        + sampled_tangent_y * expected_tangent_y
-    ).clamp(0.0, 1.0)
-    tangent_floor = float(
-        np.cos(np.deg2rad(settings.boundary_orientation_tolerance_degrees))
-    )
-    oriented_support = sampled_edge * (
-        (tangent_agreement - tangent_floor)
-        / max(1e-5, 1.0 - tangent_floor)
-    ).clamp(0.0, 1.0)
-    sector_support = oriented_support.reshape(
-        top_count,
-        hypothesis_major.shape[1],
-        perimeter_sector_count,
-        perimeter_samples_per_sector,
-    ).amax(dim=3)
-    hypothesis_coverage = (
-        sector_support >= float(settings.ridge_low_threshold) * 0.70
-    ).float().mean(dim=2)
-    hypothesis_mean_support = sector_support.mean(dim=2)
-    hypothesis_fit = (
-        0.72 * hypothesis_coverage + 0.28 * hypothesis_mean_support
-    ) * hypothesis_valid
-    best_hypothesis = torch.argmax(hypothesis_fit, dim=1)
-    oval_major = hypothesis_major.gather(
-        1, best_hypothesis[:, None]
-    )[:, 0]
-    oval_minor = hypothesis_minor.gather(
-        1, best_hypothesis[:, None]
-    )[:, 0]
-    distributed_coverage = hypothesis_coverage.gather(
-        1, best_hypothesis[:, None]
-    )[:, 0]
-    mean_perimeter_support = hypothesis_mean_support.gather(
-        1, best_hypothesis[:, None]
-    )[:, 0]
-    approximate_circumference = 2.0 * np.pi * torch.sqrt(
-        (oval_major.square() + oval_minor.square()) * 0.5
-    ).clamp_min(1.0)
-    accumulated_support = (
-        totals / approximate_circumference
-    ).clamp(0.0, 1.0)
-    perimeter_fit = (
-        0.60 * distributed_coverage
-        + 0.25 * mean_perimeter_support
-        + 0.15 * accumulated_support
-    ).clamp(0.0, 1.0)
-    oval_scores = torch.sqrt(
-        vote_values.clamp(0.0, 1.0) * perimeter_fit
-    )
-    oval_scores *= candidate_enabled
-
-    # Suppress duplicate centres on the tensor device. A candidate survives
-    # only if no stronger (or earlier equal-strength) hypothesis lies within a
-    # seed-scaled neighbourhood.
-    pairwise_distance_sq = (
-        candidate_centres_working[:, None, :]
-        - candidate_centres_working[None, :, :]
-    ).square().sum(dim=2)
-    candidate_indices = torch.arange(top_count, device=context.device)
-    stronger = oval_scores[None, :] > oval_scores[:, None]
-    equal_earlier = (
-        (oval_scores[None, :] == oval_scores[:, None])
-        & (candidate_indices[None, :] < candidate_indices[:, None])
-    )
-    duplicate_radius_sq = max(2.0, diameter * 0.30) ** 2
-    suppressed = (
-        (pairwise_distance_sq < duplicate_radius_sq)
-        & (stronger | equal_earlier)
-    ).any(dim=1)
-    accepted_ovals = (
-        ~suppressed
-        & candidate_enabled
-        & (oval_scores >= float(settings.boundary_minimum_confidence))
-        & (distributed_coverage >= 0.20)
-    )
-    oval_scores = oval_scores * accepted_ovals
-
-    # Preserve a raster diagnostic for the accepted ellipse fits. It is a
-    # sampled fitted perimeter, not a copy of the source ridge strength.
-    final_angle_cos = torch.cos(oval_angles)[:, None]
-    final_angle_sin = torch.sin(oval_angles)[:, None]
-    final_local_x = oval_major[:, None] * perimeter_cos[:, 0]
-    final_local_y = oval_minor[:, None] * perimeter_sin[:, 0]
-    final_sample_x = (
-        candidate_centres_working[:, 0:1]
-        + final_local_x * final_angle_cos
-        - final_local_y * final_angle_sin
-    )
-    final_sample_y = (
-        candidate_centres_working[:, 1:2]
-        + final_local_x * final_angle_sin
-        + final_local_y * final_angle_cos
-    )
-    oval_edge_indices = (
-        torch.round(final_sample_y).long().clamp(0, height - 1) * width
-        + torch.round(final_sample_x).long().clamp(0, width - 1)
-    )
-    oval_edge_values = oval_scores[:, None].expand_as(final_sample_x)
-    oval_edge_confidence = torch.zeros(height * width, device=context.device)
-    oval_edge_confidence.scatter_reduce_(
-        0,
-        oval_edge_indices.reshape(-1),
-        oval_edge_values.reshape(-1),
-        reduce="amax",
-        include_self=True,
-    )
-    oval_edge_confidence = functional.max_pool2d(
-        oval_edge_confidence.reshape(1, 1, height, width),
-        3,
-        stride=1,
-        padding=1,
-    )[0, 0]
-    ellipse_confidence = oval_edge_confidence
-
     oval_impulses = torch.zeros(height * width, device=context.device)
     oval_indices = (
-        torch.round(candidate_centres_working[:, 1])
-        .long()
-        .clamp(0, height - 1)
-        * width
-        + torch.round(candidate_centres_working[:, 0])
-        .long()
-        .clamp(0, width - 1)
+        torch.round(fits.centres[:, 1]).long().clamp(0, height - 1) * width
+        + torch.round(fits.centres[:, 0]).long().clamp(0, width - 1)
     )
     oval_impulses.scatter_reduce_(
         0,
         oval_indices,
-        oval_scores,
+        fits.scores,
         reduce="amax",
         include_self=True,
     )
@@ -7811,15 +8027,12 @@ def seed_boundary_tracing(
     geometry = GpuBoundaryGeometry(
         vote_centres_xy=vote_centres,
         vote_confidence=vote_values,
-        oval_centres_xy=(
-            candidate_centres_working / max(scale, 1e-6)
-        ),
+        oval_centres_xy=fits.centres / max(scale, 1e-6),
         oval_axes_xy=(
-            torch.stack((oval_major, oval_minor), dim=1)
-            / max(scale, 1e-6)
+            torch.stack((fits.major, fits.minor), dim=1) / max(scale, 1e-6)
         ),
-        oval_angle_radians=oval_angles,
-        oval_confidence=oval_scores,
+        oval_angle_radians=fits.angles,
+        oval_confidence=fits.scores,
     )
 
     products = BoundaryTraceProducts(
@@ -7841,8 +8054,8 @@ def seed_boundary_tracing(
         gap_confidence=full_u8(gap_confidence[None, None], "trace gap confidence"),
         radius_ratio_hue=full_u8(radius_hue[None, None], "fitted radius ratio hue", multiplier=179.0),
         radius_confidence=full_u8(combined_shape[None, None], "radius confirmation"),
-        circle_confidence=full_u8(circle_confidence[None, None], "circle fit confidence"),
-        ellipse_confidence=full_u8(ellipse_confidence[None, None], "ellipse fit confidence"),
+        circle_confidence=full_u8(circle_confidence[None, None], "edge circle-fit agreement"),
+        ellipse_confidence=full_u8(ellipse_confidence[None, None], "edge ellipse-fit agreement"),
         fit_residual=full_u8(fit_residual[None, None], "shape fit residual"),
         centre_votes=full_u8(vote_probability[None, None], "seed centre votes"),
         oval_centre_probability=full_u8(

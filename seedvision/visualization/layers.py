@@ -306,6 +306,8 @@ class AnalysisLayerSettings:
     boundary_orientation_tolerance_degrees: float = 20.0
     boundary_missing_support_floor: float = 0.15
     boundary_max_axis_ratio: float = 2.20
+    boundary_circle_residual_tolerance: float = 0.15
+    boundary_ellipse_residual_tolerance: float = 0.12
     boundary_radius_log_tolerance: float = 0.45
     boundary_center_vote_weight: float = 0.35
     boundary_center_vote_blur_fraction: float = 0.08
@@ -314,7 +316,7 @@ class AnalysisLayerSettings:
     boundary_nonphysical_edge_discount: float = 0.80
     boundary_polarity_boost: float = 0.20
     boundary_minimum_confidence: float = 0.12
-    boundary_geometry_max_candidates: int = 256
+    boundary_geometry_max_candidates: int = 2048
     boundary_working_maximum_dimension: int = 1280
     material_colour_weight: float = 1.0
     material_noise_weight: float = 0.55
@@ -654,6 +656,14 @@ class AnalysisLayerSettings:
             raise ValueError("Boundary arc span must be between 10 and 160 degrees.")
         if not 1.0 <= self.boundary_max_axis_ratio <= 4.0:
             raise ValueError("Boundary maximum axis ratio must be between 1 and 4.")
+        for name, value in (
+            ("boundary_circle_residual_tolerance", self.boundary_circle_residual_tolerance),
+            ("boundary_ellipse_residual_tolerance", self.boundary_ellipse_residual_tolerance),
+        ):
+            if not 0.02 <= value <= 0.80:
+                raise ValueError(f"{name} must be between 0.02 and 0.80.")
+        if not 16 <= self.boundary_geometry_max_candidates <= 4096:
+            raise ValueError("Boundary oval candidate limit must be between 16 and 4096.")
         for name, value in (
             ("boundary_center_vote_weight", self.boundary_center_vote_weight),
             ("boundary_semantic_weight", self.boundary_semantic_weight),

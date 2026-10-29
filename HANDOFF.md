@@ -106,9 +106,15 @@ old `test-runs/` and `test-temp/` directories and never touches the list above.
 ## Open work
 
 - **Seed detection quality.** Procedural separation undercounts touching seeds
-  (about 5× on the benchmark image). Cellpose-SAM looked right by eye and is now an
-  optional, disabled-by-default node (see the operator guide's Cellpose-SAM
-  section). Reviewed reference masks are the blocker for any quantitative claim. See
+  (about 5× on the benchmark image). Against Cellpose-SAM masks as a stand-in
+  reference, its markers mostly land on seeds; the loss is in its instance filters
+  (area and concavity limits scaled by the seed-diameter estimate, which runs about
+  1.4× the seeds' equivalent diameter on packed images), so a different centre
+  source does not help. The fitted seed ovals of Seed-boundary confirmation find
+  roughly half the seeds on packed images and most on sparse ones. Cellpose-SAM
+  looked right by eye and is now an optional, disabled-by-default node (see the
+  operator guide's Cellpose-SAM section). Reviewed reference masks are the blocker
+  for any quantitative claim. See
   [docs/SEED_DETECTION_EVALUATION.md](docs/SEED_DETECTION_EVALUATION.md).
 - **Laboratory gates L01–L04** (reviewed corpus, physical/colour measurement,
   trait definitions, operator study) are external and still open; see

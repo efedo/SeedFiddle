@@ -1039,8 +1039,10 @@ class PipelineInspector(QWidget):
         self.procedural_centres_description = QLabel(
             "Click empty image space to add a centre, drag a marker to adjust it, "
             "and right-click or press Delete to remove it. Automatic markers are "
-            "hollow cyan, manual markers yellow, annotation-locked markers magenta, "
-            "and rejected edits red.",
+            "hollow cyan, manual markers filled yellow, annotation-locked markers "
+            "magenta squares, removed automatic centres grey \u00d7, and rejected "
+            "edits red. Moving or removing an automatic centre changes only that "
+            "centre.",
             self.procedural_centres_container,
         )
         self.procedural_centres_description.setWordWrap(True)
@@ -1062,11 +1064,12 @@ class PipelineInspector(QWidget):
             "Replace automatic", "replace_automatic"
         )
         mode_tooltip = (
-            "Augment keeps automatic marker discovery and adds manual overrides. "
-            "Replace automatic treats the editable list as the complete automatic "
-            "marker set; markers derived from applied seed annotations remain locked "
-            "and authoritative in either mode. Switching to Replace first copies the "
-            "currently surviving automatic and manual markers, so none disappear."
+            "Augment keeps automatic centre detection on: your manual centres are "
+            "added, and automatic centres you moved or removed stay suppressed. "
+            "Replace automatic turns automatic detection off, so only your manual "
+            "centres seed instances; it starts from your manual centres (often "
+            "none) and never copies automatic ones. Markers derived from applied "
+            "seed annotations remain locked and authoritative in either mode."
         )
         mode_label.setToolTip(mode_tooltip)
         self.procedural_centres_mode_combo.setToolTip(mode_tooltip)

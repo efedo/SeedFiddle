@@ -211,6 +211,26 @@ Only connected, complete, shape-reviewed, non-excluded outlines supervise physic
 contours, optimisation and training. Saving progress does not approve an
 incomplete contour.
 
+### Manual seed centres
+
+Select the Procedural seed separation node and choose **Edit centres on image**.
+Click empty space to add a centre, drag a marker to move it, and right-click or
+press Delete to remove it. Each gesture is saved for this image and recomputes only
+procedural separation and what depends on it.
+
+| Marker | Meaning |
+|---|---|
+| Hollow cyan circle | Automatic centre found by the procedural node |
+| Filled yellow circle | Manual centre you added or moved |
+| Grey × | Automatic centre you moved or removed; detection stays suppressed there. Delete it to restore detection. |
+| Magenta square | Centre locked by an applied seed annotation |
+
+**Mode** sets how manual centres combine with automatic detection. **Augment
+automatic** keeps detection on and adds your centres, for correcting a few seeds.
+**Replace automatic** turns detection off so only your manual centres (and
+annotation-locked ones) seed instances, for marking every seed by hand. Replace
+starts from your manual centres and never copies automatic ones.
+
 ## Results and export
 
 Open **Results…** (`Ctrl+Shift+E`, or the button in the right panel).

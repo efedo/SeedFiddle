@@ -171,10 +171,12 @@ class OptimizationContractTests(unittest.TestCase):
         row = next(row for row in report.nodes if row.node_id == 'edge_gradients')
         self.assertEqual(set(row.changes), {'edge_blur_sigma'})
         self.assertAlmostEqual(row.changes['edge_blur_sigma'], 0.96)
-        # Baseline, two candidates per control in pass 1, then only the
-        # responsive control at half step in pass 2, which improves nothing.
-        self.assertEqual(len(row.trials), 1 + 4 + 2)
-        self.assertEqual({chroma for _, chroma in searched[5:]}, {1.5})
+        # Baseline, two candidates per control in pass 1, then both controls
+        # again at half step in pass 2, which improves nothing. A control
+        # that did not move the loss is still searched: another control's
+        # accepted value can change how much it matters.
+        self.assertEqual(len(row.trials), 1 + 4 + 4)
+        self.assertEqual(len({chroma for _, chroma in searched[5:]}), 3)
         self.assertIn('Stopped after pass 2 of 4', row.reason)
 
     def check_test_downstream_search_observes_accepted_upstream_values(self):

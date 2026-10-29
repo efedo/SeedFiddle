@@ -68,23 +68,40 @@ class AnalysisSettingsPersistenceTests(unittest.TestCase):
         self.assertEqual(target.node('cellpose_sam_instances').parameters['flow_threshold'], 0.4)
         self.assertEqual(target.connection_for_input('trait_classifier', 'cellpose').source, 'cellpose_sam_instances')
 
-    def check_test_version_twenty_three_drops_never_run_edge_residual_tolerances(self):
+    def check_test_older_versions_adopt_the_oval_fit_tolerances_and_candidate_limit(self):
         source = build_default_pipeline()
         source.set_parameter('seed_edge_curves', 'boundary_max_axis_ratio', 2.6)
-        payload = analysis_settings_profile_to_payload(analysis_settings_profile_from_graph(source))
-        retired = {'boundary_circle_residual_tolerance': 0.30, 'boundary_ellipse_residual_tolerance': 0.40}
-        _node_payload(payload, 'seed_edge_curves')['parameters'].update(retired)
+        defaults = dict(source.node('seed_edge_curves').parameters)
+        current = analysis_settings_profile_to_payload(analysis_settings_profile_from_graph(source))
+        tolerances = ('boundary_circle_residual_tolerance', 'boundary_ellipse_residual_tolerance')
+
+        def loaded(version, limit, inert=None):
+            payload = deepcopy(current)
+            payload['version'] = version
+            parameters = _node_payload(payload, 'seed_edge_curves')['parameters']
+            parameters['boundary_geometry_max_candidates'] = limit
+            for key in tolerances:
+                parameters.pop(key)
+            parameters.update(inert or {})
+            if version == 23:
+                payload['nodes'] = [node for node in payload['nodes'] if node['id'] != 'cellpose_sam_instances']
+                payload['connections'] = [edge for edge in payload['connections']
+                                          if 'cellpose_sam_instances' not in (edge['source'], edge['target'])]
+            target = build_default_pipeline()
+            target.set_parameter('seed_edge_curves', 'boundary_ellipse_residual_tolerance', 0.5)
+            apply_analysis_settings_profile(target, analysis_settings_profile_from_payload(payload))
+            return target.node('seed_edge_curves').parameters
+
+        # Version twenty-four saved no tolerances, version twenty-three saved
+        # inert ones; both fit with the defaults. Only the old default limit
+        # of 256 rises; a limit the user chose stays.
+        for parameters in (loaded(24, 256), loaded(23, 256, {key: 0.4 for key in tolerances})):
+            self.assertEqual({key: parameters[key] for key in tolerances}, {key: defaults[key] for key in tolerances})
+            self.assertEqual(parameters['boundary_geometry_max_candidates'], defaults['boundary_geometry_max_candidates'])
+            self.assertEqual(parameters['boundary_max_axis_ratio'], 2.6)
+        self.assertEqual(loaded(24, 512)['boundary_geometry_max_candidates'], 512)
         with self.assertRaisesRegex(IncompatibleAnalysisSettingsProfile, 'boundary_circle_residual_tolerance'):
-            apply_analysis_settings_profile(build_default_pipeline(), analysis_settings_profile_from_payload(payload))
-        payload['version'] = 23
-        payload['nodes'] = [node for node in payload['nodes'] if node['id'] != 'cellpose_sam_instances']
-        payload['connections'] = [edge for edge in payload['connections']
-                                  if 'cellpose_sam_instances' not in (edge['source'], edge['target'])]
-        target = build_default_pipeline()
-        apply_analysis_settings_profile(target, analysis_settings_profile_from_payload(payload))
-        self.assertEqual(analysis_settings_profile_from_graph(target), analysis_settings_profile_from_graph(source))
-        self.assertEqual(target.node('seed_edge_curves').parameters['boundary_max_axis_ratio'], 2.6)
-        self.assertFalse(set(retired) & set(target.node('seed_edge_curves').parameters))
+            loaded(25, 256)
 
     def check_test_json_round_trip_is_human_readable_and_analysis_only(self) -> None:
         graph = build_default_pipeline()
@@ -1090,7 +1107,7 @@ class AnalysisSettingsPersistenceTests(unittest.TestCase):
         """20 related AnalysisSettingsPersistenceTests scenarios, each with private fixture state."""
         self.scenario(self.check_test_version_twenty_two_inserts_image_selector_without_changing_calculations)
         self.scenario(self.check_test_version_twenty_three_adds_disabled_cellpose_branch)
-        self.scenario(self.check_test_version_twenty_three_drops_never_run_edge_residual_tolerances)
+        self.scenario(self.check_test_older_versions_adopt_the_oval_fit_tolerances_and_candidate_limit)
         self.scenario(self.check_test_json_round_trip_is_human_readable_and_analysis_only)
         self.scenario(self.check_test_apply_restores_parameters_topology_enabled_and_suspended_once)
         self.scenario(self.check_test_no_op_is_neutral_and_net_ridge_control_is_analytical)
