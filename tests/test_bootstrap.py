@@ -3,7 +3,10 @@ from __future__ import annotations
 from tests.functional_units import functional_units
 
 import importlib.metadata
+import hashlib
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,6 +15,7 @@ from unittest.mock import patch
 from seedvision.bootstrap import (
     BootstrapError,
     Dependency,
+    RuntimeReport,
     build_pip_command,
     install_dependencies,
     inspect_dependency,
@@ -217,6 +221,7 @@ class ManifestTests(unittest.TestCase):
         self.assertFalse(cellpose.required)
         self.assertEqual(configuration.python.recommended, "3.12")
         self.assertEqual(configuration.python.minimum, "3.12.0")
+        self.assertEqual(configuration.python.maximum_exclusive, "3.16.0")
         torch = next(item for item in configuration.packages if item.distribution == "torch")
         self.assertEqual(torch.index_url, "https://download.pytorch.org/whl/cu126")
         self.assertTrue(torch.required)
@@ -230,6 +235,112 @@ class ManifestTests(unittest.TestCase):
             requirement_lines,
             {item.install_spec for item in configuration.required_packages},
         )
+
+        self.assertTrue(version_is_compatible(
+            "3.15.2",
+            configuration.python.minimum,
+            configuration.python.maximum_exclusive,
+        ))
+        self.assertFalse(version_is_compatible(
+            "3.16.0",
+            configuration.python.minimum,
+            configuration.python.maximum_exclusive,
+        ))
+        self.assertFalse(version_is_compatible(
+            "3.11.9",
+            configuration.python.minimum,
+            configuration.python.maximum_exclusive,
+        ))
+
+        installed_versions = {
+            "PySide6": "6.12.0",
+            "numpy": "2.5.4",
+            "opencv-python": "5.0.0.93",
+            "matplotlib": "3.11.2",
+            "torch": "2.15.0",
+            "cellpose": "4.2.1.1",
+        }
+        checks = tuple(
+            inspect_dependency(
+                item,
+                module_finder=lambda _: object(),
+                version_getter=installed_versions.__getitem__,
+            )
+            for item in configuration.packages
+        )
+        report = RuntimeReport(
+            python_version="3.15.2",
+            python_executable=sys.executable,
+            architecture_bits=64,
+            in_virtual_environment=True,
+            python_compatible=True,
+            dependency_checks=checks,
+        )
+        self.assertTrue(all(check.compatible for check in checks))
+        self.assertEqual(report.packages_to_install, ())
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            fixture_root = Path(temporary_directory) / "checkout"
+            config_directory = fixture_root / "config"
+            scripts_directory = fixture_root / "scripts"
+            config_directory.mkdir(parents=True)
+            scripts_directory.mkdir()
+            lock_path = config_directory / "plantcv-reference-requirements.txt"
+            config_path = config_directory / "peer_reference_sources.json"
+            utility_path = scripts_directory / "repair_reference_lock.py"
+            lock_source = (root / "config" / "plantcv-reference-requirements.txt").read_bytes()
+            lock_lf = lock_source.replace(b"\r\n", b"\n")
+            lock_crlf = lock_lf.replace(b"\n", b"\r\n")
+            expected_sha = hashlib.sha256(lock_crlf).hexdigest()
+            self.assertEqual(
+                json.loads((root / "config" / "peer_reference_sources.json").read_text())[
+                    "environment"
+                ]["lockfile_sha256"],
+                expected_sha,
+            )
+            config_path.write_bytes((root / "config" / "peer_reference_sources.json").read_bytes())
+            utility_path.write_bytes((root / "scripts" / "repair_reference_lock.py").read_bytes())
+
+            def run_utility(*arguments: str) -> subprocess.CompletedProcess[str]:
+                return subprocess.run(
+                    [sys.executable, str(utility_path), *arguments],
+                    cwd=fixture_root.parent,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+
+            lock_path.write_bytes(lock_lf)
+            before_check = lock_path.read_bytes()
+            checked = run_utility()
+            self.assertEqual(checked.returncode, 1, checked.stdout + checked.stderr)
+            self.assertIn(hashlib.sha256(before_check).hexdigest(), checked.stdout)
+            self.assertIn(expected_sha, checked.stdout)
+            self.assertIn("CRLF line-ending conversion would resolve it", checked.stdout)
+            self.assertEqual(lock_path.read_bytes(), before_check)
+
+            repaired = run_utility("--repair")
+            self.assertEqual(repaired.returncode, 0, repaired.stdout + repaired.stderr)
+            self.assertEqual(lock_path.read_bytes(), lock_crlf)
+            self.assertEqual(hashlib.sha256(lock_path.read_bytes()).hexdigest(), expected_sha)
+
+            before_correct = lock_path.stat()
+            unchanged = run_utility("--repair")
+            self.assertEqual(unchanged.returncode, 0, unchanged.stdout + unchanged.stderr)
+            self.assertIn("no change needed", unchanged.stdout)
+            self.assertEqual(lock_path.stat().st_mtime_ns, before_correct.st_mtime_ns)
+
+            altered = lock_crlf.replace(b"altair==5.5.0", b"altair==5.4.0", 1)
+            lock_path.write_bytes(altered)
+            rejected = run_utility("--repair")
+            self.assertEqual(rejected.returncode, 1, rejected.stdout + rejected.stderr)
+            self.assertIn("Refusing repair", rejected.stderr)
+            self.assertEqual(lock_path.read_bytes(), altered)
+
+            lock_path.unlink()
+            missing = run_utility()
+            self.assertEqual(missing.returncode, 1, missing.stdout + missing.stderr)
+            self.assertIn("Reference lock error", missing.stderr)
 
     def test_trait_manifest_contains_agreed_species_and_damage_fields(self) -> None:
         root = Path(__file__).resolve().parents[1]

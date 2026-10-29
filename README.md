@@ -22,9 +22,11 @@ compared on the same image.
 
 ## Install and launch
 
-Requirements: Windows, 64-bit Python 3.12 (3.13–3.14 allowed with the full pinned
-dependency set), and an NVIDIA GPU whose driver supports the configured PyTorch
-CUDA wheel. A separate CUDA toolkit is not needed.
+Requirements: Windows, 64-bit Python 3.12 (the baseline) and an NVIDIA GPU whose
+driver supports the configured PyTorch CUDA wheel. Python 3.13–3.15 are permitted
+by the runtime gate when compatible dependencies are already installed. The
+baseline installation pins are not a promise that bootstrap can provision a new
+Python 3.15 environment. A separate CUDA toolkit is not needed.
 
 ```powershell
 git clone https://github.com/efedo/SeedFiddle.git
@@ -43,6 +45,33 @@ The first launch can create `.venv` and install the pinned packages from
 `--diagnostics` reports the runtime and whether CUDA is active. `--offline` installs
 only from wheels you place in `wheels/` (binaries are not committed). If a bootstrap
 fails, delete only the incomplete `.venv` and run it again.
+
+### Use an existing Python environment
+
+The application runtime and the PlantCV reference environment have different
+purposes. The application uses the dependencies already installed in the selected
+interpreter; the frozen PlantCV environment remains an isolated Python 3.12
+environment for reproducing reference calculations. Its lock file is byte-pinned:
+the working-tree bytes must match the CRLF SHA-256 recorded in the provenance, even
+though Git stores the text normalized. `.gitattributes` requests CRLF for fresh
+checkouts, including when `core.autocrlf=false`. An existing checkout or a
+downloaded copy that still has LF endings may need a one-time repair.
+
+Run these commands with the interpreter that contains the dependencies you
+installed:
+
+```powershell
+python scripts/repair_reference_lock.py
+python scripts/repair_reference_lock.py --repair
+python seed_vision.py --environment current --no-bootstrap --diagnostics
+python seed_vision.py --environment current --no-bootstrap
+```
+
+The first lock command checks only; use `--repair` only when CRLF conversion alone
+matches the existing pinned checksum. `--environment current` keeps the explicitly
+selected interpreter, and `--no-bootstrap` prevents installation using the
+baseline pins. The diagnostics command checks runtime compatibility before
+launching; the final command launches Seed Fiddle.
 
 ## The window
 
