@@ -243,8 +243,7 @@ class PipelineWorkflowController(QObject):
     def sync_buttons(self):
         busy = self._job is not None or bool(getattr(getattr(self.window, 'catalogue_nodes', None), 'busy', False))
         self.selector.setEnabled(not busy)
-        self.window.analyze_action.setEnabled(not busy and not self.window._thread_pool.activeThreadCount()
-            and self.window.image_view.image_path is not None)
+        self.window._sync_run_controls()
         self.save_button.setEnabled(not busy)
         self.export_button.setEnabled(not busy and (self.result is not None if self.active else bool(self.window._analyses)))
         catalogue = getattr(self.window, 'catalogue_nodes', None)

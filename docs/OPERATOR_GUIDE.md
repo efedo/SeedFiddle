@@ -18,7 +18,7 @@ cannot support see [Current status](CURRENT_STATUS.md).
 | Image view | The selected overlay on the current image. Drag to pan, scroll to zoom. |
 | Pipeline view | The node graph for the current image. Both views are visible by default; `Ctrl+1` and `Ctrl+2` toggle each, `Ctrl+3` shows both. |
 | Reference annotation panel | Floats over the image while **Materials** or **Seeds** is active; drag its title to move it and the corner grip to resize it. |
-| Right panel | Result summary, **Results…** and **Paint seed references…** at the top; below, the **Node** tab (inspector for the selected node) and the **Image** tab (file, dimensions, species, analysis device and calibration evidence). |
+| Right panel | Result summary, **Results…** and, when Foreground evidence is missing, **Paint Foreground references…** at the top; below, the **Node** tab (inspector for the selected node) and the **Image** tab (file, dimensions, species, analysis device and calibration evidence). |
 
 **Help → Keyboard shortcuts** lists every shortcut; the common ones are at the end
 of this guide. Splitter sizes and the annotation panel position are remembered.
@@ -171,7 +171,8 @@ analysis first if the corrected frame is not yet available.
 
 ### Material references
 
-Choose **Materials**, pick Background, Foreground or Other, and paint the region.
+Choose **Materials** (or **Paint Foreground references…** when a result reports
+missing Foreground evidence), pick Background, Foreground or Other, and paint the region.
 Use the exclusion controls only where a class model should ignore an area. **Apply
 + save** applies the draft to analysis and saves the per-image sidecar. If saving
 fails, the applied state stays in memory and the failure is reported; **Save
@@ -179,7 +180,7 @@ project** retries.
 
 ### Seed outlines
 
-Choose **Seeds** (or **Paint seed references…**). Then:
+Choose **Seeds**. Then:
 
 1. Select a seed ID, or use **Next empty** / **Next unannotated** (painted seeds whose
    condition or shape review is incomplete). **Show** displays all seeds or the

@@ -102,10 +102,14 @@ class ResultsController:
         button = QPushButton('Results…',self)
         button.clicked.connect(self._review_results)
         self.baseline_section.layout().addWidget(button)
-        self.reference_readiness_button = QPushButton('Paint seed references…',self)
-        self.reference_readiness_button.clicked.connect(lambda: self._pipeline_node_selected('background_likelihood'))
+        # Shown when the result lacks Foreground evidence, which Material
+        # references supply; seed outlines cannot satisfy it.
+        self.reference_readiness_button = QPushButton('Paint Foreground references…',self)
+        self.reference_readiness_button.setToolTip('Open Materials annotation with the Foreground class selected. '
+            'Paint seed examples, then Apply + save.')
+        self.reference_readiness_button.clicked.connect(self._paint_foreground_references)
         self.baseline_section.layout().addWidget(self.reference_readiness_button)
-        # Results, node search and redo live in the Analysis and Edit menus
+        # Results and node search live in the Analysis and Edit menus
         # (with shortcuts); the toolbar keeps only run control and viewing.
         actions = self.workflow_toolbar.actions()
         self.workflow_toolbar.insertAction(actions[actions.index(self.analyze_action) + 1], self.stop_action)
@@ -113,12 +117,6 @@ class ResultsController:
         self.search_node_action.setShortcut('Ctrl+K')
         self.search_node_action.triggered.connect(self._find_pipeline_node)
         self.addAction(self.search_node_action)
-        self.redo_reference_action = QAction('Redo annotation edit',self)
-        self.redo_reference_action.setShortcut('Ctrl+Shift+Z')
-        self.redo_reference_action.triggered.connect(lambda: self._undo_instance_reference_edit(redo=True)
-            if self.annotate_instances_action.isChecked() else self._undo_reference_mask_edit(redo=True)
-            if self.paint_background_action.isChecked() else None)
-        self.addAction(self.redo_reference_action)
         self.image_workspace_action.toggled.connect(self._ensure_workspace_visible)
         self.pipeline_workspace_action.toggled.connect(self._ensure_workspace_visible)
         # v3: three panes again now the annotation tools float; four-pane v2
@@ -154,6 +152,13 @@ class ResultsController:
             action.triggered.connect(method)
             self.addAction(action)
             self.snapshot_actions.append(action)
+
+    def _paint_foreground_references(self):
+        self._pipeline_node_selected('background_likelihood')
+        if self.foreground_point_button.isEnabled():
+            self.foreground_point_button.setChecked(True)
+        else:
+            self.statusBar().showMessage('Wait for the current analysis to finish, then paint Foreground references.')
 
     def _create_snapshot(self):
         self._create_snapshot_impl()
@@ -642,12 +647,14 @@ class ResultsController:
             def finished(path,error):
                 self._result_export_task = None
                 progress.close()
+                self._update_analysis_availability()
                 if error:
                     QMessageBox.warning(self,'Export failed',error)
                 else:
                     self.statusBar().showMessage(f'Result revision exported to {path}')
             task.signals.done.connect(finished)
             dialog.accept()
+            self._update_analysis_availability()
             self._thread_pool.start(task)
         export.clicked.connect(start_export)
         crops = QPushButton('Export crops for visible rows…', dialog)
@@ -685,6 +692,7 @@ class ResultsController:
                 progress.close()
                 if self._closing_after_work:
                     return
+                self._update_analysis_availability()
                 if error:
                     QMessageBox.warning(self, 'Seed crop export incomplete', error)
                 else:
@@ -697,6 +705,7 @@ class ResultsController:
             task.signals.done.connect(finished_crops)
             progress.show()
             dialog.accept()
+            self._update_analysis_availability()
             self._thread_pool.start(task)
         crops.clicked.connect(start_crop_export)
         dialog.exec()

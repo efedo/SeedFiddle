@@ -188,6 +188,9 @@ class ReferenceUndoUiTests(CatalogueTestCase):
         self.assertEqual(len(history), 3)
         self.assertEqual(self.window.reference_undo_button.text(), "Undo (3)")
         self.assertTrue(self.window.undo_reference_edit_action.isEnabled())
+        self.assertEqual(self.window.undo_reference_edit_action.text(), "Undo other stroke")
+        self.assertFalse(self.window.redo_reference_action.isEnabled())
+        self.assertEqual(self.window.redo_reference_action.text(), "Redo annotation edit")
         self.window.reference_undo_button.click()
         self.assertFalse(
             np.any(self._reference_mask("other")[second])
@@ -219,6 +222,15 @@ class ReferenceUndoUiTests(CatalogueTestCase):
         self.assertFalse(self.window.reference_undo_button.isEnabled())
         self.assertFalse(self.window.apply_reference_masks_button.isEnabled())
         self.assertFalse(self.window.revert_reference_masks_button.isEnabled())
+
+        # Redo follows its own history and names the edit it restores.
+        self.assertTrue(self.window.redo_reference_action.isEnabled())
+        self.assertEqual(self.window.redo_reference_action.text(), "Redo foreground stroke")
+        self.window.redo_reference_action.trigger()
+        self.assertTrue(np.all(self._reference_mask("foreground")[first]))
+        self.assertEqual(len(self.window._reference_undo_histories[key]), 1)
+        self.assertEqual(self.window.undo_reference_edit_action.text(), "Undo foreground stroke")
+        self.assertEqual(self.window.redo_reference_action.text(), "Redo background stroke")
 
     def check_test_retired_boundary_reference_edits_are_ignored(self) -> None:
         height, width = self._shape()
