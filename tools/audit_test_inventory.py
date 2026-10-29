@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import ast
 import collections
+from datetime import date
 import hashlib
 import json
 import re
@@ -394,14 +395,15 @@ def write_outputs(record):
         f"Total: **{len(record['tests']):,} methods in {len(record['modules'])} test files**. "
         'A method can contain many subtests, input cases or expensive executions. Those are not separate unittest methods.', '',
         'Discovery reconciliation: ' + record['collection_status'] + '.', '',
-        f"Historical status and method seconds come from `{record['historical_receipt']}`. "
+        (f"Historical status and method seconds come from `{record['historical_receipt']}`. "
+         if record['historical_receipt'] else 'No historical run receipt was used, so status and seconds are blank. ')+
         'Class setup/teardown, discovery and interpreter shutdown are not allocated to methods. '
         'A dash means no method duration was recorded, not zero cost. '
         'Runtime skips can differ by environment; their exact historical reasons are in JSON.', '',
         'Regenerate: `.venv\\Scripts\\python.exe tools/audit_test_inventory.py --collect`. '
         'This imports modules for discovery but never runs tests or setup fixtures. '
         'Without the ignored historical receipts, use `--without-history`; historical status/timing fields are then unrecorded.', '',
-        'See [the multi-pass audit](../TEST_INFRASTRUCTURE_AUDIT.md) for overlap, cost and infrastructure findings.', '',
+        'See [the multi-pass audit](../archive/TEST_INFRASTRUCTURE_AUDIT.md) for overlap, cost and infrastructure findings.', '',
         '| Module | Tests | Historical method seconds | Scope |', '| --- | ---: | ---: | --- |']
     for module in record['modules']:
         anchor = module['module'].replace('.', '')
@@ -452,7 +454,7 @@ def main():
         raise ValueError('AST methods and unittest discovery differ; investigate inherited/dynamic tests before publishing')
     changed = [] if args.without_history else [p for p,h in receipt['source_hashes'].items() if not (ROOT/p).is_file() or digest(ROOT/p) != h]
     record = {
-        'schema':'seedfiddle.test-inventory.v1', 'audit_date':'2026-10-20',
+        'schema':'seedfiddle.test-inventory.v1', 'audit_date':date.today().isoformat(),
         'generator':'tools/audit_test_inventory.py', 'generator_sha256':digest(Path(__file__)),
         'description_limit':'Static scenario, assertion and call evidence; no measured line/branch coverage. Import aliases are lexical candidates, not runtime type resolution.',
         'helper_limit':'Module/class/imported test helpers traced statically; dynamic dispatch, assigned object types and inherited methods are not resolved. Fixture calls are separate from method helper closure.',

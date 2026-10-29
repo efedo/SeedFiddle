@@ -12,14 +12,14 @@ from seedvision.learning.data import file_sha256
 
 CONTRACT = 'seedfiddle.native-artifact-selections-v1'
 SLOTS = {'unet_instances': 'checkpoint_path', 'stardist_instances': 'checkpoint_path',
-         'trait_classifier': 'trait_model_path'}
+         'cellpose_sam_instances': 'pretrained_model', 'trait_classifier': 'trait_model_path'}
 
 
 def _canonical(value):
     return json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False)
 
 
-def _selection(root, node, selected):
+def _selection(root, node, selected, enabled=True):
     if not isinstance(selected, str) or not selected.strip():
         raise ValueError('Native artifact selection must be a nonempty string.')
     if node == 'trait_classifier':
@@ -28,6 +28,16 @@ def _selection(root, node, selected):
         return dict(resolved_path=path, source_sha256=digest,
                     model_sha256=None if model is None else model.model_sha256,
                     state=reason or 'valid_frozen_model')
+    if node == 'cellpose_sam_instances':
+        from seedvision.learning.cellpose_sam import resolve_weights, weights_sha256
+        # A model name resolves into Cellpose's weights cache. The weights are
+        # about 1.2 GB, so a disabled node records the location unhashed.
+        path = resolve_weights(selected, root)
+        if not enabled:
+            return dict(resolved_path=str(path), source_sha256=None, model_sha256=None,
+                        state='disabled_unhashed')
+        return dict(resolved_path=str(path), source_sha256=weights_sha256(path) if path.is_file() else None,
+                    model_sha256=None, state='bytes_recorded_format_unproven' if path.is_file() else 'file_missing')
     path = Path(selected).expanduser()
     path = path.resolve() if path.is_absolute() else (Path(root) / path).resolve()
     return dict(resolved_path=str(path), source_sha256=file_sha256(path) if path.is_file() else None,
@@ -42,7 +52,7 @@ def capture_artifact_selections(root, *, selections, enabled, trait_result=None,
         if node not in SLOTS:
             raise ValueError('Unsupported native artifact slot.')
         record = dict(selection=selected, enabled=node in enabled, used=False, producer_id=None,
-                      **_selection(root, node, selected))
+                      **_selection(root, node, selected, node in enabled))
         if node == 'trait_classifier' and trait_result is not None:
             report = trait_result.report
             if (record['resolved_path'] != report['model_path']
@@ -93,7 +103,7 @@ def verified_artifact_facts(captured):
                 raise ValueError('Malformed captured native artifact selections.')
             # Absolute recorded locations make verification independent of cwd.
             selected = record['resolved_path'] or record['selection']
-            current = _selection(Path.cwd(), node, selected)
+            current = _selection(Path.cwd(), node, selected, record['enabled'])
             expected_state = ('bytes_recorded_format_unproven'
                               if record['state'] == 'used_checkpoint_bytes_verified' else record['state'])
             if (current['resolved_path'] != record['resolved_path']

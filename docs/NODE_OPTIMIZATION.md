@@ -1,18 +1,12 @@
 # Reference-driven node optimization
 
-**Status reviewed 29 September 2026.** The implementation remains current at
-revision `f244df8`. Runs are adaptation against project references and are never
-independent validation; see [CURRENT_STATUS.md](CURRENT_STATUS.md).
-
-Implemented 2026-09-18. This guide describes the implementation that addresses
-the historical [node compliance review](NODE_OPTIMIZATION_COMPLIANCE_REVIEW_2026_09_09.md).
-
-**Direction alignment (3 October 2026):** the
-[peer-functionality plan](PLANTCV_SMPTS_IMPLEMENTATION_PLAN.md) requires new production
-controls to join this capability registry or state an exemption. Exact-reference
-conformance uses fixed parameters; enhanced-mode tuning stays on development data.
-Project optimization remains in-sample adaptation and cannot serve as the locked
-comparative test or select a winning method from its targets.
+Project optimisation tunes node parameters against the project's applied
+references. Runs are in-sample adaptation, never independent validation; see
+[CURRENT_STATUS.md](CURRENT_STATUS.md). New production controls must join this
+capability registry or state an exemption. Exact-reference conformance runs use
+fixed parameters, and enhanced-mode tuning stays on development data; optimisation
+cannot serve as the locked comparative test or pick a winning method from its own
+targets.
 
 ## Run an optimization
 
@@ -20,9 +14,11 @@ comparative test or select a winning method from its targets.
    reference or instance drafts are excluded. Shape references must be marked
    **shape reviewed**, **complete**, connected, and without a shape-exclusion
    reason. Partial outlines are not silently treated as complete objects.
-2. Select **Analysis → Optimize eligible nodes from project references…**, or
-   the optimization button on an individual computational node. Both use the
-   same planner, production evaluator, search, result review and application path.
+2. Select **Analysis → Optimise → Optimise all pipeline nodes…** to search
+   every eligible node in pipeline order, or a node's **Optimise this node…**
+   button to search that node alone (the plan opens with only it checked). Both
+   use the same planner, production evaluator, search, result review and
+   application path.
 3. Select images and nodes. The planner shows reference counts, objective types,
    missing prerequisites and fixed/searchable controls (hover a node). Inactive
    toolbox nodes are not activated. Enable an optional branch before fitting it.
@@ -34,6 +30,11 @@ comparative test or select a winning method from its targets.
 5. Choose passes and a per-node evaluation budget. Zero means a complete sweep
    of every currently eligible control. A nonzero budget includes the baseline
    and records exhaustion explicitly. It may end before every control is tried.
+   Each pass tries every control one step either side of its current value, and
+   each further pass halves the step. A gain under 0.00001 in mean loss (below
+   the five decimals the progress dialog shows) does not count. A node stops
+   early after a pass that improves nothing, and a control whose candidates did
+   not move the loss is not searched again with smaller steps.
 6. Inspect the proposal, per-image losses and before/after instance overlays.
    Apply installs one shared set of project parameters. Cancel or reject keeps
    existing settings. Save the project to persist accepted parameter values.
@@ -46,9 +47,8 @@ decoder/analysis controls, never silently train a neural network.
 
 ## Coverage and objectives
 
-The shared registry classifies all 48 cards and all 309 controls: 38 computational
-cards have optimization capabilities, covering 269 searchable controls before
-run-specific exclusions. Ten cards have explicit exemptions. A new unknown node
+The shared registry (`seedvision/optimization/registry.py`) gives 39 computational
+nodes an optimisation capability and 12 nodes an explicit exemption. A new unknown node
 or unsupported control kind raises an error rather than silently losing coverage.
 
 | Nodes | Objective / required references |
@@ -62,7 +62,7 @@ or unsupported control kind raises an error rather than silently losing coverage
 | Lightening/darkening gradient ceilings | Their own filtered gradient magnitude against fixed contour/interior targets. These optional diagnostic outputs currently have no instance-separation consumer. |
 | Grayscale and local lighting | Downstream instance loss; shadow/highlight controls additionally require reviewed shadow/highlight target rasters. |
 | Procedural seed separation | Actual production instance loss. All 35 eligible controls are accessible, including integer controls and formerly omitted surface/oval/shape/candidate controls. |
-| U-Net instances; StarDist instances | Instance loss from production decoders in their native GUI units, reusing frozen inference outputs where inputs are unchanged. |
+| U-Net instances; StarDist instances; Cellpose-SAM seed instances | Instance loss from production decoders in their native GUI units, reusing frozen inference outputs where inputs are unchanged. The Cellpose-SAM model choice is fixed; only its mask-recovery and rescaling controls are searched. |
 | Reference seed traits | Reviewed coat and condition labels. Unreviewed conditions are not negative examples. |
 | Wrinkling | Reviewed wrinkled/not-wrinkled condition labels on complete instances; a weak region-level target, not a wrinkle tracing annotation. |
 | Boundary confidence and normals | Boundary magnitude against fixed contours/interiors. |
@@ -114,7 +114,7 @@ shadow, highlight and softness controls similarly require their own output label
 
 ## Reviewed diagnostic targets
 
-Use **Analysis → Import reviewed optimization targets…** after analyzing the
+Use **Analysis → Optimise → Import optimisation targets…** after analyzing the
 current image. The file is a non-pickled `.npz` archive, bounded to 1 GiB and 256
 arrays. It is bound to the original source file and the exact corrected-image
 transform. Values are float rasters in `[0,1]`, at the full corrected-image
@@ -197,7 +197,7 @@ disposition. **Save As** copies the companion records and resolves imported
 target paths relative to the original project. Moving projects outside the app
 also requires moving their companion files and referenced targets appropriately.
 
-**Analysis → Optimization history / restore previous settings…** lets you select
+**Analysis → Optimise → Optimisation history…** lets you select
 a run record and restore its pre-run values. Restore refuses to overwrite later
 edits to any control on an affected node. It marks the project dirty; save after
 restoring. Other node settings are left intact.
@@ -215,8 +215,3 @@ and verifies that applying the shared proposal reproduces final scores.
 Generated-image smoke tests additionally exercise optional diagnostic adapters.
 They validate wiring and execution, not biological accuracy. Real held-out
 annotated benchmarks are still required before making accuracy claims.
-
-Validation on 18 September 2026: 66 focused tests passed. Full unittest discovery
-ran 638 tests: 635 passed, two skipped, and the pre-existing absent
-`images/IMG_9689c.JPG` fixture caused the sole failure. Native plan/result dialogs
-were rendered and visually inspected. The committed image fixtures were unchanged.

@@ -48,6 +48,25 @@ class BackendOutcomeTests(unittest.TestCase):
         self.assertEqual(outcomes.read_native_outcomes(json.dumps(json.loads(raw))), ledger)
         self.assertEqual(result_report(analysis)['proposed_count'], 0)
 
+    def check_test_cellpose_dependency_outcome_is_third_party_and_legacy_ledgers_still_read(self):
+        analysis = self.analysis()
+        raw = self.capture(analysis, {'unet_instances': ('unavailable', 'checkpoint_missing', None, None),
+                                      'cellpose_sam_instances': ('unavailable', 'dependency_missing', None, None)},
+                           enabled={'procedural_instances', 'unet_instances', 'cellpose_sam_instances'})
+        record = outcomes.verified_native_outcomes(raw, analysis)['outcomes']['cellpose_sam_instances']
+        self.assertEqual((record['state'], record['reason_code'], record['mode']),
+                         ('unavailable', 'dependency_missing', 'third_party_pretrained'))
+        self.assertIn('Cellpose-SAM', ' '.join(outcomes.outcome_descriptions(json.loads(raw))))
+        for mutate in (lambda r: r.update(reason_code='checkpoint_missing'),
+                       lambda r: r.update(mode='native_compatible')):
+            payload = json.loads(raw)
+            mutate(payload['outcomes']['cellpose_sam_instances'])
+            with self.assertRaises(ValueError):
+                outcomes.read_native_outcomes(json.dumps(payload))
+        legacy = json.loads(raw)
+        del legacy['outcomes']['cellpose_sam_instances']
+        self.assertNotIn('cellpose_sam_instances', outcomes.read_native_outcomes(json.dumps(legacy))['outcomes'])
+
     def check_test_legacy_is_unknown_diagnostics_do_not_hash_and_outcome_changes_stale_review(self):
         analysis = self.analysis()
         legacy = result_report(analysis)
@@ -127,8 +146,9 @@ class BackendOutcomeTests(unittest.TestCase):
             result_report(analysis)
 
     def test_validation_and_recovery(self):
-        """5 related BackendOutcomeTests scenarios, each with private fixture state."""
+        """6 related BackendOutcomeTests scenarios, each with private fixture state."""
         self.scenario(self.check_test_available_empty_missing_and_disabled_are_distinct_and_round_trip)
+        self.scenario(self.check_test_cellpose_dependency_outcome_is_third_party_and_legacy_ledgers_still_read)
         self.scenario(self.check_test_legacy_is_unknown_diagnostics_do_not_hash_and_outcome_changes_stale_review)
         self.scenario(self.check_test_nonselected_prediction_mutation_and_forged_producer_states_reject)
         self.scenario(self.check_test_malformed_inventory_states_counts_frames_and_duplicate_keys_reject)

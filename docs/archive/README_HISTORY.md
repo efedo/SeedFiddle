@@ -3,17 +3,17 @@
 Archived during the 2026-09-18 critical-review remediation. This text preserves
 previous implementation descriptions and experiment claims; it is not the current
 operator contract. Some examples, fixture totals and annotation behavior are obsolete.
-Use [README](README.md), [the operator guide](docs/OPERATOR_GUIDE.md), and
-[the current status](docs/CURRENT_STATUS.md) for present behavior. The
-[documentation index](docs/README.md) explains which other records are current or
+Use [README](../../README.md), [the operator guide](../OPERATOR_GUIDE.md), and
+[the current status](../CURRENT_STATUS.md) for present behavior. The
+[documentation index](../README.md) explains which other records are current or
 historical.
 
 # Seed Fiddle
 
-Current operation: [Operator guide](docs/OPERATOR_GUIDE.md),
-[generated node catalogue](docs/NODE_CATALOGUE.md),
-[review remediation status](docs/CRITICAL_REVIEW_REMEDIATION.md), and
-[scientific validation protocol](docs/SCIENTIFIC_VALIDATION_PROTOCOL.md).
+Current operation: [Operator guide](../OPERATOR_GUIDE.md),
+[generated node catalogue](../NODE_CATALOGUE.md),
+[review remediation status](CRITICAL_REVIEW_REMEDIATION.md), and
+[scientific validation protocol](../SCIENTIFIC_VALIDATION_PROTOCOL.md).
 The dated audits and experiment reports retain their historical findings;
 the operator guide describes the current workflow and migration requirements.
 
@@ -27,16 +27,16 @@ classifying soybean and lupin seeds in calibrated laboratory photographs.
 
 The project now includes a PyTorch CUDA evidence pipeline, a review-oriented
 procedural instance-separation node, and selectable analysis overlays in the
-desktop interface. See [`PLAN.md`](PLAN.md) for the
+desktop interface. See [`PLAN.md`](../../PLAN.md) for the
 agreed scope and delivery sequence.
 
 It also includes disabled-by-default native PyTorch implementations of a
 five-logical-head U-Net plus pattern-aware watershed and 2-D StarDist. Their
 training, validation, fixture-review, and data-export paths are implemented,
 but no checkpoint has been validated for scientific use on real photographs.
-See [`docs/LEARNED_INSTANCE_SEGMENTATION.md`](docs/LEARNED_INSTANCE_SEGMENTATION.md)
+See [`docs/LEARNED_INSTANCE_SEGMENTATION.md`](../LEARNED_INSTANCE_SEGMENTATION.md)
 for the protocol and
-[`docs/LEARNED_SEGMENTATION_RESULTS.md`](docs/LEARNED_SEGMENTATION_RESULTS.md)
+[`docs/LEARNED_SEGMENTATION_RESULTS.md`](LEARNED_SEGMENTATION_RESULTS.md)
 for the current evidence and limitations.
 
 ## Launch
@@ -1082,4 +1082,4 @@ the exact active tensor device and any fallback.
 
 ## License
 
-Seed Fiddle is available under the [MIT License](LICENSE).
+Seed Fiddle is available under the [MIT License](../../LICENSE).

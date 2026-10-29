@@ -115,6 +115,7 @@ class NativeNaiveBayesTrainingDialog(QDialog):
         self.save_plots_checkbox = QCheckBox('Save probability density plots (SVG) beside the model')
         self.save_plots_checkbox.setObjectName('nativeNaiveBayesSavePDFPlots')
         self.button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        self.train_button.setDefault(True)
         self.samples_row, self.images_row, self.masks_row = QWidget(), QWidget(), QWidget()
         source_row, image_row, mask_row = (QHBoxLayout(widget)
             for widget in (self.samples_row, self.images_row, self.masks_row))

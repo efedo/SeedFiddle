@@ -2382,6 +2382,36 @@ class AnalysisLayerTests(unittest.TestCase):
                 source_name,
             )
 
+    def check_test_centre_votes_land_only_on_seed_material_inside_the_dish(self) -> None:
+        import cv2
+        import numpy as np
+
+        from seedvision.cuda import CudaContext
+        from seedvision.cuda.layers import directional_edges, seed_boundary_tracing
+        from seedvision.visualization import AnalysisLayerSettings
+
+        # A dark seed and a hollow ring of the same size: both outlines vote
+        # for their centres, but only the seed's centre lies on seed material.
+        image = np.full((96, 192, 3), 225, np.uint8)
+        cv2.circle(image, (48, 48), 22, (35, 55, 95), -1)
+        cv2.circle(image, (144, 48), 22, (35, 55, 95), 3)
+        valid = np.full((96, 192), 255, np.uint8)
+        seed = np.zeros((96, 192), np.uint8)
+        cv2.circle(seed, (48, 48), 22, 255, -1)
+        settings = AnalysisLayerSettings()
+        context = CudaContext.resolve(requested="cpu")
+        gradients = directional_edges(image, valid, settings, cuda_context=context)
+
+        def votes(**kwargs):
+            traced = seed_boundary_tracing(gradients, 44.0, settings, cuda_context=context, **kwargs)
+            return np.asarray(traced.centre_votes).astype(float)
+
+        unconstrained = votes()
+        gated = votes(foreground_probability=seed)
+        self.assertGreater(unconstrained[44:53, 140:149].max(), 0.5 * unconstrained.max())
+        self.assertGreater(gated[44:53, 44:53].max(), 0.5 * gated.max())
+        self.assertLess(gated[38:59, 134:155].max(), 0.05 * gated.max())
+
     def check_test_semantic_trace_source_is_rethinned_after_interpolation_halo(self) -> None:
         import numpy as np
 
@@ -2459,6 +2489,7 @@ class AnalysisLayerTests(unittest.TestCase):
         self.scenario(self.check_test_edge_gradients_can_replace_colour_primary_with_despeckled_grayscale)
         self.scenario(self.check_test_oriented_traces_retain_non_generic_semantic_ridge_sources)
         self.scenario(self.check_test_semantic_trace_source_is_rethinned_after_interpolation_halo)
+        self.scenario(self.check_test_centre_votes_land_only_on_seed_material_inside_the_dish)
 
     def test_validation_and_recovery(self):
         """2 related AnalysisLayerTests scenarios, each with private fixture state."""

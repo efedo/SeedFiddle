@@ -35,6 +35,7 @@ def select_result(analysis, enabled=None):
     from seedvision.learning.instance_selection import select_instances
     return select_instances(unet=getattr(analysis, 'unet_instances', None),
         stardist=getattr(analysis, 'stardist_instances', None),
+        cellpose=getattr(analysis, 'cellpose_sam_instances', None),
         procedural=getattr(analysis, 'procedural_instances', None), enabled=enabled,
         foreground_available=getattr(getattr(analysis, 'layers', None),
                                      'foreground_colour_profile', None) is not None)

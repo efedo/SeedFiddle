@@ -10,6 +10,12 @@ from statistics import mean
 from .registry import affected_nodes, capability, candidate_values
 
 
+# Smallest mean-loss gain that counts. The progress dialog reports five
+# decimals; a smaller gain is invisible there and within evaluation noise, so
+# it neither changes a control nor keeps the search going.
+MINIMUM_IMPROVEMENT = 1e-5
+
+
 class OptimizationCancelled(Exception):
     pass
 
@@ -59,6 +65,9 @@ def optimize(graph, evaluator, *, selected=None, passes=1, maximum_evaluations=0
     Evaluator scores are keyed by frozen image/group IDs. A node cannot win by
     dropping an image. Zero budget means one complete sweep of every control;
     explicit budgets record exhaustion, rather than claiming complete coverage.
+    Each further pass halves the steps, so a node stops after a pass that
+    improves nothing, and a control none of whose candidates moved the loss is
+    not searched again with smaller steps.
     """
     if passes < 1 or maximum_evaluations < 0:
         raise ValueError('Invalid optimization budget.')
@@ -98,10 +107,16 @@ def optimize(graph, evaluator, *, selected=None, passes=1, maximum_evaluations=0
             row.trials.append({'parameters': {}, 'scores': dict(scores), 'excluded': exclusions})
             specs = {spec.key: spec for spec in node.parameter_specs}
             exhausted = False
+            stopped_after = None
+            active = list(eligible)
             for pass_number in range(passes):
-                for key in eligible:
+                improved = False
+                inert = set()
+                for key in active:
                     origin = node.parameters[key]
                     best_value, best_scores = origin, scores
+                    current_loss = aggregate(scores)
+                    responsive = False
                     for value in candidate_values(specs[key], origin, pass_number):
                         if cancelled():
                             raise OptimizationCancelled()
@@ -115,24 +130,37 @@ def optimize(graph, evaluator, *, selected=None, passes=1, maximum_evaluations=0
                                 raise ValueError('Candidate changed the evaluation image set.')
                             loss = aggregate(candidate)
                             row.trials.append({'parameter': key, 'value': value, 'scores': candidate})
-                            if loss < aggregate(best_scores) - 1e-9:
+                            responsive |= abs(loss - current_loss) >= MINIMUM_IMPROVEMENT
+                            if loss < aggregate(best_scores) - MINIMUM_IMPROVEMENT:
                                 best_value, best_scores = value, candidate
                         except (ValueError, Ineligible) as error:
                             row.trials.append({'parameter': key, 'value': value, 'invalid': str(error)})
+                            responsive = True
                         finally:
                             node.set_parameter(key, origin)
                         progress(identifier, len(row.trials), aggregate(best_scores))
                     node.set_parameter(key, best_value)
+                    improved |= best_value != origin
+                    if not responsive:
+                        inert.add(key)
                     scores = best_scores
                     if exhausted:
                         break
                 if exhausted:
                     break
+                if not improved:
+                    if pass_number + 1 < passes:
+                        stopped_after = pass_number + 1
+                    break
+                active = [key for key in active if key not in inert]
             row.after = dict(scores)
             row.changes = {key: value for key, value in node.parameters.items()
                            if value != report.original[identifier][key]}
             row.status = 'improved' if row.changes else 'unchanged'
-            row.reason = 'Budget exhausted; some candidates were not evaluated.' if exhausted else 'Completed requested parameter sweeps.'
+            row.reason = ('Budget exhausted; some candidates were not evaluated.' if exhausted else
+                          f'Stopped after pass {stopped_after} of {passes}: no control improved the '
+                          f'mean loss by at least {MINIMUM_IMPROVEMENT:g}.' if stopped_after else
+                          'Completed requested parameter sweeps.')
             evaluator.accept(working, identifier)
         if cancelled():
             raise OptimizationCancelled()

@@ -2,7 +2,7 @@
 
 All **223 frozen numerical profiles remain in acceptance**. This mapping reconciles the current `canonical_profiles(validate=False)` order and identities against the immutable V2 baseline; selected fixture recipes differ from their canonical contracts only in parameter values. No graph, CUDA calculation or numerical comparison was executed to produce it.
 
-The complete per-profile mapping is [audit-recipe-profile-map-v1.json](../../artifacts/audit-recipe-profile-map-v1.json). It records each identity/version/provenance and fixture family, every selected control and port/dependency contract, source and frame, array shape/dtype/hash, complete recorded-node hash, lifecycle checks, replay representative and shared prefixes. The artifact is ignored local audit evidence; this reviewed summary is the maintained repository document.
+The complete per-profile mapping was generated as `artifacts/audit-recipe-profile-map-v1.json`; that generated file is no longer retained. It records each identity/version/provenance and fixture family, every selected control and port/dependency contract, source and frame, array shape/dtype/hash, complete recorded-node hash, lifecycle checks, replay representative and shared prefixes. The artifact is ignored local audit evidence; this reviewed summary is the maintained repository document.
 
 | Profile boundary | Count | Distinction |
 | --- | ---: | --- |

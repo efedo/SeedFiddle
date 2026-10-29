@@ -8,6 +8,7 @@ from tests.review_fixtures import controls_window, dispose_window, isolated_wind
 
 import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -37,24 +38,24 @@ class PipelineCanvasTests(CatalogueTestCase):
         self.application.processEvents()
         canvas.fit_graph()
         self.assertGreater(canvas.horizontalScrollBar().maximum(), 0)
-        self.assertEqual(len(canvas.node_items), 31)
-        self.assertEqual(len(canvas.edge_items), 185)
+        self.assertEqual(len(canvas.node_items), 32)
+        self.assertEqual(len(canvas.edge_items), 189)
         self.assertNotIn("circle_candidates", canvas.node_items)
         self.assertEqual(canvas.unused_nodes_button.text(), "Add node")
         unused_actions = [
             action.text() for action in canvas.unused_nodes_menu.actions()
         ]
-        self.assertIn("Add Circle candidates to graph", unused_actions)
-        self.assertIn("Add Distance-peak candidates to graph", unused_actions)
+        self.assertIn("Circle candidates", unused_actions)
+        self.assertIn("Distance-peak candidates", unused_actions)
         self.assertIn(
-            "Add Lightening derivative upper cutoff to graph", unused_actions
+            "Lightening derivative upper cutoff", unused_actions
         )
 
         self.assertIn(
-            "Add Darkening derivative upper cutoff to graph", unused_actions
+            "Darkening derivative upper cutoff", unused_actions
         )
         self.assertIn(
-            "Add Calibration residual risk to graph", unused_actions
+            "Calibration residual risk", unused_actions
         )
         for calibration_node_id in (
             "ruler_detection",
@@ -622,8 +623,8 @@ class PipelineCanvasTests(CatalogueTestCase):
         self.application.processEvents()
         self.assertEqual(restored, ["circle_candidates"])
         self.assertIn("circle_candidates", canvas.node_items)
-        self.assertEqual(len(canvas.node_items), 32)
-        self.assertEqual(len(canvas.edge_items), 193)
+        self.assertEqual(len(canvas.node_items), 33)
+        self.assertEqual(len(canvas.edge_items), 197)
         self.assertEqual(canvas.unused_nodes_button.text(), "Add node")
         self.assertTrue(canvas.unused_nodes_button.isEnabled())
         self.assertTrue(canvas.node_items["circle_candidates"].isSelected())
@@ -636,12 +637,12 @@ class PipelineCanvasTests(CatalogueTestCase):
         self.assertNotIn("circle_candidates", canvas.node_items)
         self.assertIn("circle_candidates", graph.unused_nodes)
         self.assertFalse(graph.node("circle_candidates").enabled)
-        self.assertEqual(len(canvas.edge_items), 185)
+        self.assertEqual(len(canvas.edge_items), 189)
         self.assertEqual(canvas.unused_nodes_button.text(), "Add node")
         restore_action = next(
             action
             for action in canvas.unused_nodes_menu.actions()
-            if action.text() == "Add Circle candidates to graph"
+            if action.text() == "Circle candidates"
         )
         restore_action.trigger()
         self.application.processEvents()
@@ -704,7 +705,7 @@ class PipelineCanvasTests(CatalogueTestCase):
             and edge.source_port == "corrected_image"
         )
         canvas._disconnect_connection(connection)
-        self.assertEqual(len(canvas.edge_items), 184)
+        self.assertEqual(len(canvas.edge_items), 188)
         self.assertFalse(graph.node(connection.target).enabled)
         self.assertIsNone(
             graph.connection_for_input(connection.target, connection.target_port)
@@ -721,7 +722,7 @@ class PipelineCanvasTests(CatalogueTestCase):
                 connection.source_port
             )
         )
-        self.assertEqual(len(canvas.edge_items), 185)
+        self.assertEqual(len(canvas.edge_items), 189)
         self.assertTrue(graph.node(connection.target).enabled)
         self.assertIsNotNone(
             graph.connection_for_input(connection.target, connection.target_port)
@@ -996,7 +997,7 @@ class PipelineCanvasTests(CatalogueTestCase):
         window.pipeline_canvas.select_node("project")
         self.application.processEvents()
 
-        self.assertEqual(window.pipeline_inspector.title_label.text(), "Node: Project")
+        self.assertEqual(window.pipeline_inspector.title_label.text(), "Node: Inputs")
         self.assertFalse(window.pipeline_inspector.project_info_container.isHidden())
         summary = window.pipeline_inspector.project_info_label.text()
         self.assertIn("Master:", summary)
@@ -1382,7 +1383,7 @@ class PipelineCanvasTests(CatalogueTestCase):
             action
             for action in window.pipeline_canvas.unused_nodes_menu.actions()
             if action.text()
-            == "Add Lightening derivative upper cutoff to graph"
+            == "Lightening derivative upper cutoff"
         )
         restore_lightening.trigger()
         self.application.processEvents()
@@ -1517,14 +1518,14 @@ class PipelineCanvasTests(CatalogueTestCase):
         restore_action = next(
             action
             for action in window.pipeline_canvas.unused_nodes_menu.actions()
-            if action.text() == "Add Seed identification to graph"
+            if action.text() == "Seed identification"
         )
         restore_action.trigger()
         self.application.processEvents()
         self.assertFalse(window.calibration_section.isVisible())
         self.assertTrue(window.baseline_section.isVisible())
         self.assertFalse(window.analyze_button.isVisible())
-        self.assertTrue(window.warning_label.isVisible())
+        self.assertFalse(window.warning_label.isVisible())
 
     def check_test_image_and_pipeline_share_a_split_workspace(self) -> None:
 
@@ -1976,10 +1977,11 @@ class PipelineCanvasTests(CatalogueTestCase):
         from PySide6.QtTest import QTest
         from PySide6.QtWidgets import QLabel
 
-        from seedvision.ui.main_window import MainWindow
-
-        window = MainWindow(ROOT)
-        window.pipeline_documents.set_frozen(False)
+        settings_directory = tempfile.TemporaryDirectory(prefix="seedfiddle-layout-settings-")
+        self.addCleanup(settings_directory.cleanup)
+        window = isolated_window(
+            ROOT, settings_path=Path(settings_directory.name) / "settings.ini"
+        )
         window.show()
         self.application.processEvents()
 
@@ -1988,7 +1990,8 @@ class PipelineCanvasTests(CatalogueTestCase):
             for label in window.workflow_toolbar.findChildren(QLabel)
         }
         self.assertIn("Overlay:", toolbar_labels)
-        self.assertIn("Opacity:", toolbar_labels)
+        self.assertIn("Overlay opacity:", toolbar_labels)
+        self.assertIn("Annotation opacity:", toolbar_labels)
         self.assertIn("Annotate:", toolbar_labels)
         self.assertEqual(window.paint_background_action.text(), "Materials")
         self.assertEqual(window.annotate_instances_action.text(), "Seeds")
@@ -2041,6 +2044,7 @@ class PipelineCanvasTests(CatalogueTestCase):
         self.assertNotIn("Viewer overlay", detail_labels)
         self.assertNotIn("Painted background reference", detail_labels)
         self.assertTrue(window.overlay_owner_label.isHidden())
+        # Floats over the workspace, hidden until annotating.
         self.assertIs(window.reference_panel.parentWidget(), window.annotation_workspace)
         self.assertTrue(window.reference_panel.isHidden())
 
@@ -2053,10 +2057,13 @@ class PipelineCanvasTests(CatalogueTestCase):
         window.erase_foreground_points_button.setEnabled(True)
         window.erase_background_exclusion_button.setEnabled(True)
         window.erase_foreground_exclusion_button.setEnabled(True)
+        viewer_width = window.image_view.width()
         window.paint_background_action.setChecked(True)
         self.application.processEvents()
         self.assertTrue(window.background_point_button.isChecked())
         self.assertFalse(window.reference_panel.isHidden())
+        # Floating over the viewer, the tools never narrow the image.
+        self.assertEqual(window.image_view.width(), viewer_width)
         hit_point = window.reference_panel_drag_handle.mapTo(
             window.annotation_workspace,
             window.reference_panel_drag_handle.rect().center(),
@@ -3579,7 +3586,11 @@ class PipelineCanvasTests(CatalogueTestCase):
             # when a previous GUI test ended at one of these coordinates.
             QTest.mouseMove(view.viewport(), view.viewport().rect().topLeft())
             QTest.mouseMove(view.viewport(), first)
-            QTest.qWait(55)
+            # The preview is debounced; wait for it rather than a fixed 55 ms,
+            # which is too short when the full parallel suite is running.
+            deadline = time.monotonic() + 2.0
+            while view._instance_preview_endpoint is None and time.monotonic() < deadline:
+                QTest.qWait(10)
             self.assertIsNotNone(view._instance_preview_endpoint)
             QTest.mouseClick(view.viewport(), Qt.MouseButton.LeftButton, pos=first)
             self.assertIsNotNone(view._instance_trace_anchor)

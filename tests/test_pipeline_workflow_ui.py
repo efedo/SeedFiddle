@@ -174,9 +174,10 @@ class PipelineWorkflowUiTests(CatalogueTestCase):
         self.assertLessEqual(self.controller.strip.geometry().right(), self.window.pipeline_canvas.control_bar.width())
         canvas = self.window.pipeline_canvas
         canvas._populate_node_catalogue()
-        self.assertEqual(canvas.node_catalogue_list.count(), 123)
-        colours = {canvas.node_catalogue_list.item(index).foreground().color().name()
-            for index in range(canvas.node_catalogue_list.count())}
+        entries = canvas.catalogue_entry_items()
+        self.assertEqual(len(entries), 124)
+        self.assertGreater(canvas.node_catalogue_list.count(), len(entries))
+        colours = {item.foreground().color().name() for item in entries}
         self.assertEqual(colours, {'#1768ad', '#218044'})
 
     def check_test_typed_controls_and_choice_edit_reach_engine_contract(self):
@@ -220,7 +221,7 @@ class PipelineWorkflowUiTests(CatalogueTestCase):
         self.window.show()
         self.select_binary()
         self.application.processEvents()
-        for widget in (self.window.analysis_activity_label, self.window.reference_association_scroll,
+        for widget in (self.window.analysis_activity_label, self.window.reference_association_summary,
                        self.window.overlay_button):
             self.assertTrue(widget.isVisible(), f'{widget.metaObject().className()}: {widget.objectName()}')
         visibility_action = next(action for action in self.window.workflow_toolbar.actions()
@@ -263,7 +264,7 @@ class PipelineWorkflowUiTests(CatalogueTestCase):
         self.assertTrue(self.window.analyze_action.isEnabled())
         self.controller.selector.setCurrentIndex(0)
         self.assertTrue(self.window.analysis_activity_label.isVisible())
-        self.assertTrue(self.window.reference_association_scroll.isVisible())
+        self.assertTrue(self.window.reference_association_summary.isVisible())
         self.assertIs(self.window.image_display_stack.currentWidget(), self.window.image_view)
         self.assertEqual([control.isEnabled() for control in controls], default_enabled)
 

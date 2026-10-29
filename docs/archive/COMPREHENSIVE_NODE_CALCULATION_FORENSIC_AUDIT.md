@@ -2,9 +2,9 @@
 
 > **Historical audit.** This report records the graph examined on 27 August 2026.
 > Later consolidation, optimization, results, and review work repaired or superseded
-> several findings. Use [CURRENT_STATUS.md](CURRENT_STATUS.md),
+> several findings. Use [CURRENT_STATUS.md](../CURRENT_STATUS.md),
 > [CRITICAL_REVIEW_REMEDIATION.md](CRITICAL_REVIEW_REMEDIATION.md), and the generated
-> [NODE_CATALOGUE.md](NODE_CATALOGUE.md) for present behavior.
+> [NODE_CATALOGUE.md](../NODE_CATALOGUE.md) for present behavior.
 
 Date: 2026-08-27
 

@@ -14,6 +14,8 @@ from typing import Any
 import cv2
 import numpy as np
 
+from seedvision.persistence.image_decoding import read_image
+
 from seedvision.learning.contracts import FeatureStackSpec, ModelFamily
 from seedvision.learning.targets import build_dense_targets, build_stardist_targets
 
@@ -102,7 +104,7 @@ def resolve_sample_path(manifest_path: Path | str, value: str) -> Path:
 
 
 def read_label_image(path: Path | str) -> np.ndarray:
-    values = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+    values = read_image(path, cv2.IMREAD_UNCHANGED)
     if values is None:
         raise ValueError(f"Could not read label raster {path}.")
     if values.ndim != 2 or not np.issubdtype(values.dtype, np.integer):

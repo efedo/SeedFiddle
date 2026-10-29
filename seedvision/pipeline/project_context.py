@@ -17,7 +17,7 @@ CONTEXT_CONNECTIONS = (
 def context_nodes():
     """Fresh mutable nodes; project ownership and image selection are distinct."""
     return (
-        PipelineNode('project', 'Project', 'Project',
+        PipelineNode('project', 'Inputs', 'Inputs',
             'Project images, image-local annotations and the species-library pin', 0, 40,
             details='Owns the image inventory, annotations and exact species-library pin. '
                 'Image selector chooses the current raw image from this inventory.',
@@ -25,18 +25,18 @@ def context_nodes():
                           ('species_library', 'Species library pin')),
             output_port_types={'images': 'ProjectImages', 'annotations': 'ImageAnnotations',
                                'species_library': 'SpeciesLibraryPin'}),
-        PipelineNode('image_selector', 'Image selector', 'Input',
+        PipelineNode('image_selector', 'Image selector', 'Inputs',
             'Current raw image, synchronized with the Images list', 320, 40,
             details='Choose an image here or in the Images list. Both select the same source '
                 'file; switching images cancels obsolete work and replaces image-local outputs.',
             output_ports=(('raw_image', 'Raw image'),),
             output_port_types={'raw_image': 'RawImage'}, status_detail='No image selected'),
-        PipelineNode('metadata', 'Species and metadata', 'Input', 'Species, lot and notes', 640, -200,
+        PipelineNode('metadata', 'Species and metadata', 'Inputs', 'Species, lot and notes', 640, -200,
             details='Metadata belongs to the image selected above. Use the Species control '
                 'in Image metadata to change its species.',
             output_ports=(('species', 'Species'),), output_port_types={'species': 'SpeciesMetadata'},
             status_detail='Choose species'),
-        PipelineNode('species_reference_library', 'Species reference library', 'Learning',
+        PipelineNode('species_reference_library', 'Species reference library', 'Inputs',
             'Resolve the exact species-library pin and exclude the current image', 960, 330,
             details='Checks the exact library version, species, trait vocabulary and descriptors, '
                 'then excludes contributions from the current image. Banks affect only nodes '

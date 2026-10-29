@@ -88,51 +88,53 @@ class ResultsController:
         self._image_run_outcomes = {}
         self._run_outcome_history = {}
         self._selected_history_outcome = None
-        self.results_action = QAction('Review / export results…',self)
+        self.results_action = QAction('Results…',self)
         self.results_action.setShortcut('Ctrl+Shift+E')
         self.results_action.triggered.connect(self._review_results)
         self.addAction(self.results_action)
-        self.terminal_history_action = QAction('Review terminal run history…', self)
+        self.terminal_history_action = QAction('Run history…', self)
         self.terminal_history_action.triggered.connect(self._review_terminal_history)
         self.addAction(self.terminal_history_action)
         for action in self._optimization_menu_actions:
             if action.text() == '&Analysis':
                 action.menu().addAction(self.results_action)
                 action.menu().addAction(self.terminal_history_action)
-        button = QPushButton('Review / export results…',self)
+        button = QPushButton('Results…',self)
         button.clicked.connect(self._review_results)
         self.baseline_section.layout().addWidget(button)
-        self.reference_readiness_button = QPushButton('Supply Foreground references',self)
+        self.reference_readiness_button = QPushButton('Paint seed references…',self)
         self.reference_readiness_button.clicked.connect(lambda: self._pipeline_node_selected('background_likelihood'))
         self.baseline_section.layout().addWidget(self.reference_readiness_button)
-        self.workflow_toolbar.addAction(self.results_action)
+        # Results, node search and redo live in the Analysis and Edit menus
+        # (with shortcuts); the toolbar keeps only run control and viewing.
         actions = self.workflow_toolbar.actions()
         self.workflow_toolbar.insertAction(actions[actions.index(self.analyze_action) + 1], self.stop_action)
         self.search_node_action = QAction('Find pipeline node…',self)
         self.search_node_action.setShortcut('Ctrl+K')
         self.search_node_action.triggered.connect(self._find_pipeline_node)
         self.addAction(self.search_node_action)
-        self.workflow_toolbar.addAction(self.search_node_action)
         self.redo_reference_action = QAction('Redo annotation edit',self)
         self.redo_reference_action.setShortcut('Ctrl+Shift+Z')
         self.redo_reference_action.triggered.connect(lambda: self._undo_instance_reference_edit(redo=True)
             if self.annotate_instances_action.isChecked() else self._undo_reference_mask_edit(redo=True)
             if self.paint_background_action.isChecked() else None)
         self.addAction(self.redo_reference_action)
-        self.workflow_toolbar.addAction(self.redo_reference_action)
         self.image_workspace_action.toggled.connect(self._ensure_workspace_visible)
         self.pipeline_workspace_action.toggled.connect(self._ensure_workspace_visible)
-        state = self._application_settings.value('review-ui/main-splitter')
+        # v3: three panes again now the annotation tools float; four-pane v2
+        # states from the docked layout are not restored onto it.
+        state = self._application_settings.value('review-ui/main-splitter-v3')
         if isinstance(state,QByteArray):
             self.main_splitter.restoreState(state)
         position = self._application_settings.value('review-ui/annotation-window-position')
         if isinstance(position,QPoint):
             self.image_view._context_panel_saved_window_position = position
         viewport_action = QAction('Save current image viewport…',self)
-        viewport_action.setShortcut('Ctrl+Shift+E')
+        # Ctrl+Shift+E belongs to Results; sharing it made both ambiguous.
+        viewport_action.setShortcut('Ctrl+Alt+E')
         viewport_action.triggered.connect(self._save_current_viewport)
         self.addAction(viewport_action)
-        self._optimization_menu_actions[0].menu().addAction(viewport_action)
+        self.save_viewport_action = viewport_action
         for direction,shortcut in ((1,'Alt+Right'),(-1,'Alt+Left')):
             action = QAction('Next annotated seed' if direction>0 else 'Previous annotated seed',self)
             action.setShortcut(shortcut)
@@ -144,13 +146,14 @@ class ResultsController:
             action.triggered.connect(lambda _checked=False,tool=tool:self._instance_tool_selected(tool,True)
                 if self.annotate_instances_action.isChecked() else None)
             self.addAction(action)
-        for title,method in (('Create immutable portable snapshot…',self._create_snapshot),
+        self.snapshot_actions = []
+        for title,method in (('Create snapshot…',self._create_snapshot),
                              ('Create snapshot with reference checkpoints…',self._create_snapshot_with_reference_checkpoints),
-                             ('Restore portable snapshot…',self._restore_snapshot)):
+                             ('Restore snapshot…',self._restore_snapshot)):
             action = QAction(title,self)
             action.triggered.connect(method)
             self.addAction(action)
-            self._optimization_menu_actions[0].menu().addAction(action)
+            self.snapshot_actions.append(action)
 
     def _create_snapshot(self):
         self._create_snapshot_impl()
@@ -185,7 +188,7 @@ class ResultsController:
             QMessageBox.warning(self,'Snapshot failed',str(error))
 
     def _save_review_ui_state(self):
-        self._application_settings.setValue('review-ui/main-splitter',self.main_splitter.saveState())
+        self._application_settings.setValue('review-ui/main-splitter-v3',self.main_splitter.saveState())
         if self.image_view._context_panel_user_position is not None:
             position = self.annotation_workspace.mapTo(
                 self, self.image_view._context_panel_user_position
@@ -301,6 +304,10 @@ class ResultsController:
                     path = Path(self.pipeline.node(identifier).parameters['checkpoint_path'])
                     path = path if path.is_absolute() else self._root/path
                     provenance['checkpoints'][identifier] = file_sha256(path) if path.is_file() else 'unavailable'
+            if self.pipeline.node('cellpose_sam_instances').enabled:
+                from seedvision.learning.cellpose_sam import resolve_weights, weights_sha256
+                path = resolve_weights(self.pipeline.node('cellpose_sam_instances').parameters['pretrained_model'], self._root)
+                provenance['checkpoints']['cellpose_sam_instances'] = weights_sha256(path) if path.is_file() else 'unavailable'
         from seedvision.learning.data import file_sha256
         project = self._current_project_path
         reference = self._project_reference_sidecar_paths.get(key)
@@ -480,6 +487,9 @@ class ResultsController:
         dialog.setWindowTitle('Review visible seed instances')
         dialog.resize(960,640)
         layout = QVBoxLayout(dialog)
+        disclaimer = QLabel('Results are approximate proposals for correction, not validated counts.', dialog)
+        disclaimer.setStyleSheet('font-weight: 600;')
+        layout.addWidget(disclaimer)
         summary = QLabel(dialog)
         summary.setWordWrap(True)
         layout.addWidget(summary)
@@ -512,7 +522,7 @@ class ResultsController:
         next_seed = QPushButton('Next matching seed (Alt+N)',dialog)
         next_seed.setShortcut('Alt+N')
         layout.addWidget(next_seed)
-        compare = QPushButton('Compare completed instance methods / outcomes…',dialog)
+        compare = QPushButton('Compare instance methods…',dialog)
         def compare_methods():
             from seedvision.export.backend_outcomes import outcome_descriptions
             lines = outcome_descriptions(report['backend_outcomes'])
@@ -523,7 +533,8 @@ class ResultsController:
                 '\n\nCounts are unreviewed proposals. Compare boundaries using each method overlay; agreement alone does not establish accuracy. Enable and run a missing method before comparing it.')
         compare.clicked.connect(compare_methods)
         layout.addWidget(compare)
-        alternatives = QPushButton('Inspect unselected procedural candidates in the image',dialog)
+        alternatives = QPushButton('Show rejected candidates',dialog)
+        alternatives.setToolTip('Close this review and show unselected procedural candidates on the image.')
         alternatives.clicked.connect(lambda: (dialog.accept(), self._show_image_workspace(),
             self.overlay_combo.setCurrentIndex(self.overlay_combo.findData('procedural_alternative_candidates'))))
         alternatives.setEnabled(report['method']=='procedural_instances')

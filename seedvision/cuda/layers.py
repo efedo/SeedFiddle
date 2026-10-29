@@ -224,10 +224,6 @@ class GpuBoundaryGeometry:
 
     vote_centres_xy: object
     vote_confidence: object
-    instance_centres_xy: object
-    ellipse_axes_xy: object
-    ellipse_angle_radians: object
-    ellipse_confidence: object
     oval_centres_xy: object
     oval_axes_xy: object
     oval_angle_radians: object
@@ -242,10 +238,6 @@ class GpuBoundaryGeometry:
             self._host_cache = {
                 "vote_centres_xy": self.vote_centres_xy.detach().cpu().numpy(),
                 "vote_confidence": self.vote_confidence.detach().cpu().numpy(),
-                "instance_centres_xy": self.instance_centres_xy.detach().cpu().numpy(),
-                "ellipse_axes_xy": self.ellipse_axes_xy.detach().cpu().numpy(),
-                "ellipse_angle_radians": self.ellipse_angle_radians.detach().cpu().numpy(),
-                "ellipse_confidence": self.ellipse_confidence.detach().cpu().numpy(),
                 "oval_centres_xy": self.oval_centres_xy.detach().cpu().numpy(),
                 "oval_axes_xy": self.oval_axes_xy.detach().cpu().numpy(),
                 "oval_angle_radians": self.oval_angle_radians.detach().cpu().numpy(),
@@ -6775,9 +6767,6 @@ def seed_boundary_tracing(
     foreground_probability=None,
     physical_edge_probability=None,
     non_edge_probability=None,
-    instance_labels=None,
-    centers=(),
-    radii=(),
     cuda_context=None,
     previous: BoundaryTraceProducts | None = None,
     recompute_ridges: bool = True,
@@ -7243,14 +7232,6 @@ def seed_boundary_tracing(
             )
         )
     )
-    prior_ovality_sigma = (
-        0.35
-        if shape_component is None
-        else max(
-            0.08,
-            float(np.sqrt(max(shape_component.covariance[3][3], 0.0))),
-        )
-    )
     # Ellipse centres do not generally lie exactly on a boundary point's
     # normal. Tangential offsets broaden the reverse transform just enough to
     # include plausible oval centres while retaining a centred soft prior.
@@ -7382,6 +7363,15 @@ def seed_boundary_tracing(
     vote_accumulator = gaussian_blur(
         vote_accumulator[None, None], vote_blur
     )[0, 0]
+    # A seed centre lies on seed material inside the dish. Votes landing on
+    # background, the dish rim or beyond it come from edges of other objects.
+    # The material probability is smoothed at the vote scale so coat texture
+    # cannot punch holes in a seed's interior.
+    vote_accumulator = (
+        vote_accumulator
+        * gaussian_blur(foreground, vote_blur)[0, 0].clamp(0.0, 1.0)
+        * valid[0, 0]
+    )
     vote_scale = torch.quantile(
         vote_accumulator.reshape(-1), 0.995
     ).clamp_min(1e-6)
@@ -7391,115 +7381,8 @@ def seed_boundary_tracing(
         vote_probability, best_centre_x, best_centre_y
     ) * trace_seed
 
-    # Batched proposal-conditioned circle and ellipse fits. All scatter
-    # reductions and conic residuals remain on the tensor device.
-    centers_array = np.asarray(centers, np.float32).reshape(-1, 2)
-    proposal_radii = np.asarray(radii, np.float32).reshape(-1)
-    ellipse_confidence = torch.zeros_like(nms)
-    proposal_circle_confidence = torch.zeros_like(nms)
-    ellipse_axes = torch.empty((0, 2), device=context.device)
-    ellipse_angles = torch.empty((0,), device=context.device)
-    ellipse_fit_values = torch.empty((0,), device=context.device)
-    center_tensor = torch.empty((0, 2), device=context.device)
-    if instance_labels is not None and len(centers_array):
-        labels = resized(
-            _raster_tensor(instance_labels, context), "nearest"
-        )[0, 0].long().clamp(0, len(centers_array))
-        center_tensor = torch.as_tensor(
-            centers_array * scale, device=context.device, dtype=torch.float32
-        )
-        radius_tensor = torch.as_tensor(
-            np.maximum(proposal_radii * scale, 1.0),
-            device=context.device,
-            dtype=torch.float32,
-        )
-        padded_centres = torch.cat(
-            (torch.zeros((1, 2), device=context.device), center_tensor), dim=0
-        )
-        assigned_centres = padded_centres[labels]
-        ux = xx - assigned_centres[:, :, 0]
-        uy = yy - assigned_centres[:, :, 1]
-        weights = (nms * trace_confidence * (labels > 0)).reshape(-1)
-        flat_labels = labels.reshape(-1)
-        count = len(centers_array) + 1
-
-        def scatter(values):
-            result = torch.zeros(count, device=context.device)
-            return result.scatter_add_(0, flat_labels, values.reshape(-1) * weights)
-
-        totals = scatter(torch.ones_like(nms)).clamp_min(1e-5)
-        cxx = scatter(ux.square()) / totals
-        cyy = scatter(uy.square()) / totals
-        cxy = scatter(ux * uy) / totals
-        trace_cov = cxx + cyy
-        discriminant = torch.sqrt((cxx - cyy).square() + 4.0 * cxy.square())
-        eigen_major = ((trace_cov + discriminant) * 0.5).clamp_min(1.0)
-        eigen_minor = ((trace_cov - discriminant) * 0.5).clamp_min(1.0)
-        major = torch.sqrt(2.0 * eigen_major)
-        minor = torch.sqrt(2.0 * eigen_minor)
-        fitted_angle = 0.5 * torch.atan2(2.0 * cxy, cxx - cyy)
-        proposal_radius_padded = torch.cat(
-            (torch.ones(1, device=context.device), radius_tensor), dim=0
-        )
-        major = 0.72 * major + 0.28 * proposal_radius_padded
-        minor = 0.72 * minor + 0.28 * proposal_radius_padded
-        axis_ratio = (major / minor.clamp_min(1.0)).clamp(
-            1.0, settings.boundary_max_axis_ratio
-        )
-        minor = major / axis_ratio
-        assigned_angle = fitted_angle[labels]
-        cosine, sine = torch.cos(assigned_angle), torch.sin(assigned_angle)
-        local_x = ux * cosine + uy * sine
-        local_y = -ux * sine + uy * cosine
-        assigned_major = major[labels].clamp_min(1.0)
-        assigned_minor = minor[labels].clamp_min(1.0)
-        ellipse_radius = torch.sqrt(
-            (local_x / assigned_major).square()
-            + (local_y / assigned_minor).square()
-        )
-        ellipse_residual = torch.abs(ellipse_radius - 1.0)
-        ellipse_confidence = torch.exp(
-            -0.5
-            * (
-                ellipse_residual
-                / settings.boundary_ellipse_residual_tolerance
-            ).square()
-        ) * trace_confidence * trace_seed * (labels > 0)
-        if shape_component is not None:
-            assigned_axis_ratio = axis_ratio[labels]
-            ovality_prior = torch.exp(
-                -0.5
-                * (
-                    (assigned_axis_ratio - prior_ovality)
-                    / prior_ovality_sigma
-                ).square()
-            )
-            # This is deliberately suggestive: an atypical accession or pose
-            # retains half of its image-derived ellipse confidence.
-            ellipse_confidence *= 0.50 + 0.50 * ovality_prior
-        radial_distance = torch.sqrt(ux.square() + uy.square())
-        fitted_circle_radius = scatter(radial_distance) / totals
-        fitted_circle_radius = (
-            0.72 * fitted_circle_radius + 0.28 * proposal_radius_padded
-        )
-        circle_residual = torch.abs(
-            radial_distance - fitted_circle_radius[labels]
-        ) / fitted_circle_radius[labels].clamp_min(1.0)
-        proposal_circle_confidence = torch.exp(
-            -0.5
-            * (
-                circle_residual
-                / settings.boundary_circle_residual_tolerance
-            ).square()
-        ) * trace_confidence * trace_seed * (labels > 0)
-        ellipse_axes = torch.stack((major[1:], minor[1:]), dim=1)
-        ellipse_angles = fitted_angle[1:]
-        ellipse_fit_values = (
-            totals[1:] / max(diameter * np.pi, 1.0)
-        ).clamp(0.0, 1.0)
-
-    circle_confidence = torch.maximum(best_circle, proposal_circle_confidence)
-    shape_confidence = torch.maximum(circle_confidence, ellipse_confidence)
+    circle_confidence = best_circle
+    shape_confidence = circle_confidence
     combined_shape = torch.maximum(
         shape_confidence,
         centre_support * settings.boundary_center_vote_weight,
@@ -7883,9 +7766,7 @@ def seed_boundary_tracing(
         stride=1,
         padding=1,
     )[0, 0]
-    ellipse_confidence = torch.maximum(
-        ellipse_confidence, oval_edge_confidence
-    )
+    ellipse_confidence = oval_edge_confidence
 
     oval_impulses = torch.zeros(height * width, device=context.device)
     oval_indices = (
@@ -7930,10 +7811,6 @@ def seed_boundary_tracing(
     geometry = GpuBoundaryGeometry(
         vote_centres_xy=vote_centres,
         vote_confidence=vote_values,
-        instance_centres_xy=center_tensor / max(scale, 1e-6),
-        ellipse_axes_xy=ellipse_axes / max(scale, 1e-6),
-        ellipse_angle_radians=ellipse_angles,
-        ellipse_confidence=ellipse_fit_values,
         oval_centres_xy=(
             candidate_centres_working / max(scale, 1e-6)
         ),

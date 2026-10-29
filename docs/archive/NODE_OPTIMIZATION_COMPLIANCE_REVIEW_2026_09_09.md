@@ -1,13 +1,13 @@
 # Seed Fiddle: annotation-guided node optimization compliance review
 
 > **Historical review with implemented response.** Use
-> [CURRENT_STATUS.md](CURRENT_STATUS.md) for the overall present state.
+> [CURRENT_STATUS.md](../CURRENT_STATUS.md) for the overall present state.
 
 > **Implementation update — 18 September 2026:** the findings below describe
 > the historical reviewed revision. The shared node registry, project-wide
 > sequential production optimizer, node actions, fixed reference objectives,
 > diagnostic-target import, reversible application/history and regression tests
-> are now implemented. See [Node optimization](NODE_OPTIMIZATION.md) for current
+> are now implemented. See [Node optimization](../NODE_OPTIMIZATION.md) for current
 > coverage, usage, objective definitions and limitations. All 38 computational
 > cards have an optimization route; ten cards have explicit exemptions. Runs
 > are labelled in-sample adaptation, not independent accuracy validation.
@@ -36,7 +36,7 @@
 
 **The application does not meet this requirement.** The actual Qt inspector offers annotation-guided parameter fitting on only **two cards: Reference edges and Procedural seed separation**. Both have substantial coverage or objective defects. Other annotation-trained nodes automatically estimate models from examples, but do not offer optimization of their exposed settings. The Analysis menu contains only **Run pipeline**; there is no project-wide optimization coordinator. Learned-model training and command-line decoder searches provide useful separate capabilities, but do not fill these gaps.
 
-This addendum extends the [critical application review](D:/Programming/SeedFiddle/docs/CRITICAL_APPLICATION_REVIEW_2026_09_08.md). Its conclusions are based on current source, a fresh inventory of every card and actual Qt inspector, focused regression tests, the full test suite, and small synthetic counterexamples. Proposed objectives below are implementation recommendations, not measured evidence that tuning a particular node will improve real-image accuracy.
+This addendum extends the [critical application review](CRITICAL_APPLICATION_REVIEW_2026_09_08.md). Its conclusions are based on current source, a fresh inventory of every card and actual Qt inspector, focused regression tests, the full test suite, and small synthetic counterexamples. Proposed objectives below are implementation recommendations, not measured evidence that tuning a particular node will improve real-image accuracy.
 
 ## 1. Compliance standard and scope
 
@@ -66,7 +66,7 @@ Do not optimize physical facts, reference identities, annotation completeness de
 
 Counts include selectors, resource controls, and scoring-policy fields; **2/48 is not an appropriate compliance percentage**, because some cards have no fit-worthy calculation. The older `NODE_CONTROL_AUDIT.md` checks control exposure and wiring, not optimization compliance, and its catalogue predates this inventory.
 
-The fit actions are hard-coded in [PipelineInspector](D:/Programming/SeedFiddle/seedvision/ui/pipeline_inspector.py:911) and dispatched by node ID in [MainWindow](D:/Programming/SeedFiddle/seedvision/ui/main_window.py:10419). [PipelineNode](D:/Programming/SeedFiddle/seedvision/pipeline/model.py:107) has no optimizer capability, target, or exclusion metadata. The [menu construction](D:/Programming/SeedFiddle/seedvision/ui/main_window.py:2964) confirms the missing project command. “Fit workspace” and the canvas “Fit” control only change the view.
+The fit actions are hard-coded in PipelineInspector and dispatched by node ID in MainWindow. PipelineNode has no optimizer capability, target, or exclusion metadata. The menu construction confirms the missing project command. “Fit workspace” and the canvas “Fit” control only change the view.
 
 ## 2. Node-by-node assessment
 
@@ -134,7 +134,7 @@ These cards should be explicitly skipped by the project command while inactive. 
 | Final output / `output` | 0 | Planned | Formatting/export itself does not call for optimization. Future computational grading needs a declared target. | P2 workflow |
 | Calibration residual risk / `calibration_residuals` | 1 | Conditional | Fit gain only against independently observed calibration/measurement errors. Minimizing the displayed risk would trivially reward understating uncertainty. | P2 |
 
-The graph catalogue is in [model.py](D:/Programming/SeedFiddle/seedvision/pipeline/model.py:999). Diagnostic calculations supporting the conditional judgments are in [advanced.py](D:/Programming/SeedFiddle/seedvision/visualization/advanced.py:1038), including radial profiles, wrinkling, damage, patterns and colour probabilities; residual-risk scaling is at [line 1264](D:/Programming/SeedFiddle/seedvision/visualization/advanced.py:1264). The current applied semantic vocabulary is loaded by [seed_traits.py](D:/Programming/SeedFiddle/seedvision/annotation/seed_traits.py:57) from [traits.json](D:/Programming/SeedFiddle/config/traits.json).
+The graph catalogue is in model.py. Diagnostic calculations supporting the conditional judgments are in advanced.py, including radial profiles, wrinkling, damage, patterns and colour probabilities; residual-risk scaling is at line 1264. The current applied semantic vocabulary is loaded by seed_traits.py from [traits.json](D:/Programming/SeedFiddle/config/traits.json).
 
 ## 3. Required improvements, with evidence and acceptance criteria
 
@@ -144,7 +144,7 @@ The graph catalogue is in [model.py](D:/Programming/SeedFiddle/seedvision/pipeli
 
 **Required change.** Add a node optimization registry/contract recording target requirements, objective, candidate controls and types, dependencies, actual calculation owner, scope, resource budget, and explicit exclusions. Generate node actions and project eligibility from this contract. Existing optimizer implementations should register with it. Do not add independent hard-coded dialogs for every node.
 
-**Acceptance.** Every implemented card in the inventory declares either an actionable optimizer or a justified exemption/conditional state. Every computational control is classified as searchable, fixed for a documented reason, or inactive under a specific input configuration. A node cannot silently lose coverage when a new parameter is added. See [PipelineNode](D:/Programming/SeedFiddle/seedvision/pipeline/model.py:107) and [inspector dispatch](D:/Programming/SeedFiddle/seedvision/ui/pipeline_inspector.py:1641).
+**Acceptance.** Every implemented card in the inventory declares either an actionable optimizer or a justified exemption/conditional state. Every computational control is classified as searchable, fixed for a documented reason, or inactive under a specific input configuration. A node cannot silently lose coverage when a new parameter is added. See PipelineNode and inspector dispatch.
 
 ### O02 — P1: add the project-wide sequential command
 
@@ -152,7 +152,7 @@ The graph catalogue is in [model.py](D:/Programming/SeedFiddle/seedvision/pipeli
 
 **Required change.** Provide an **Optimize eligible nodes from project references…** command that builds a plan from the actual active graph, fits each eligible node against the selected project reference set, adopts accepted upstream values within the run, and then fits downstream nodes using those values. Aggregate losses across selected images/groups with declared weighting. Report skipped cards and reasons.
 
-**Acceptance.** A project with two different annotated images yields one shared proposal per node scored on both images, with per-image results. A missing target on one image does not make it a negative example. One-image operation remains available and is labelled accordingly. The command requires no manual node-by-node intervention after the user selects the run scope and application policy. Full contract: section 4. Current scope is visible in [edge fit start](D:/Programming/SeedFiddle/seedvision/ui/main_window.py:10572) and [procedural application](D:/Programming/SeedFiddle/seedvision/ui/main_window.py:11176).
+**Acceptance.** A project with two different annotated images yields one shared proposal per node scored on both images, with per-image results. A missing target on one image does not make it a negative example. One-image operation remains available and is labelled accordingly. The command requires no manual node-by-node intervention after the user selects the run scope and application policy. Full contract: section 4. Current scope is visible in edge fit start and procedural application.
 
 ### O03 — P1: fit the production procedural path and remove ineffective trials
 
@@ -171,7 +171,7 @@ A synthetic, nonempty two-seed reproduction set each parameter to both 0 and 1: 
 
 **Required change.** Evaluate the production path with upstream learned evidence rebuilt from the permitted training fold, then score held-out references. An explicitly labelled in-sample adaptation mode can also be supported; it must still use the intended production inputs. Do not solve leakage by deleting features and presenting their search as meaningful. Exclude unavailable-input parameters from a run with visible reasons.
 
-**Acceptance.** Each included search parameter can affect its production calculation under the run's input configuration; candidate results are scored with production-equivalent upstream evidence. Predictions and scores for the selected proposal can be reproduced after application. Reference masks remain excluded as automatic watershed markers. Sources: [worker](D:/Programming/SeedFiddle/seedvision/ui/main_window.py:1076), [input preparation](D:/Programming/SeedFiddle/seedvision/segmentation/procedural.py:1193), [boundary calculation](D:/Programming/SeedFiddle/seedvision/segmentation/procedural.py:1506), [normal inference](D:/Programming/SeedFiddle/seedvision/segmentation/baseline.py:2068).
+**Acceptance.** Each included search parameter can affect its production calculation under the run's input configuration; candidate results are scored with production-equivalent upstream evidence. Predictions and scores for the selected proposal can be reproduced after application. Reference masks remain excluded as automatic watershed markers. Sources: worker, input preparation, boundary calculation, normal inference.
 
 ### O04 — P1: complete procedural parameter coverage and resolve the legacy control
 
@@ -187,7 +187,7 @@ A synthetic, nonempty two-seed reproduction set each parameter to both 0 and 1: 
 
 **Required change.** Expose a bounded advanced search for all remaining eligible controls, including integer candidate hypotheses and discrete choices where relevant. Group searches by computation, support constrained combinations, and show excluded controls. Preserve the fixed cost/coverage policy throughout candidate evaluation.
 
-**Acceptance.** Every meaningful procedural control has an accessible search path; default subsets are labelled. Inactive legacy controls are handled honestly. The 28-name whitelist is not mistaken for GUI coverage. Sources: [default search and whitelist](D:/Programming/SeedFiddle/seedvision/segmentation/procedural_fit.py:49), [material branch](D:/Programming/SeedFiddle/seedvision/segmentation/procedural.py:1441).
+**Acceptance.** Every meaningful procedural control has an accessible search path; default subsets are labelled. Inactive legacy controls are handled honestly. The 28-name whitelist is not mistaken for GUI coverage. Sources: default search and whitelist, material branch.
 
 ### O05 — P1: freeze the edge evaluation targets before searching
 
@@ -204,7 +204,7 @@ This is a counterexample to score comparability, not a measured effect size on r
 
 **Required change.** Freeze reviewed target masks, validity regions, tolerances and fold membership before optimization. A training-sample interior buffer may remain searchable, but the evaluation buffer must be independent and fixed. When pseudo-labels are necessary, record how they were produced and keep them fixed for candidate comparisons.
 
-**Acceptance.** Fixed predictions have identical scores for every proposal, regardless of training-sampling settings. Test target identity across buffer, gradient, ridge, crop and scale proposals. Source: [edge evaluator](D:/Programming/SeedFiddle/seedvision/segmentation/reference_edge_fit.py:129), especially [target generation](D:/Programming/SeedFiddle/seedvision/segmentation/reference_edge_fit.py:226), and [internal-edge selection](D:/Programming/SeedFiddle/seedvision/annotation/instance_references.py:165).
+**Acceptance.** Fixed predictions have identical scores for every proposal, regardless of training-sampling settings. Test target identity across buffer, gradient, ridge, crop and scale proposals. Source: edge evaluator, especially target generation, and internal-edge selection.
 
 ### O06 — P1: optimize all Reference edges operations against the intended outputs
 
@@ -214,7 +214,7 @@ Missing search areas include bank capacity/minimum samples, allowed library blen
 
 **Required change.** Define separate classifier and final-edge objectives, with a documented downstream instance check. Invoke the full node calculations for affected candidates and include the frozen library context. Cover each eligible operation; fixed source provenance must not become a way to select evaluation labels into training.
 
-**Acceptance.** Every included parameter affects an output contributing to its objective. The reported improvement is reproducible for the selected output after application. The search can tune final normalization/ridges without silently evaluating only raw classifier membership. Sources: [six search parameters](D:/Programming/SeedFiddle/seedvision/segmentation/reference_edge_fit.py:21), [evaluated fields](D:/Programming/SeedFiddle/seedvision/segmentation/reference_edge_fit.py:178), [library-capable producer](D:/Programming/SeedFiddle/seedvision/cuda/layers.py:5428).
+**Acceptance.** Every included parameter affects an output contributing to its objective. The reported improvement is reproducible for the selected output after application. The search can tune final normalization/ridges without silently evaluating only raw classifier membership. Sources: six search parameters, evaluated fields, library-capable producer.
 
 ### O07 — P1: share supervision eligibility and evaluation rules across optimizers
 
@@ -224,7 +224,7 @@ The edge evaluator correctly separates prototype-training IDs from scoring IDs. 
 
 **Required change.** Filter complete/eligible instances by persisted metadata, validate semantic classes, use reviewed-region masks for partial coverage, and freeze source/annotation hashes and coordinate mappings. Keep unreviewed regions unknown. For predictive validation, rebuild every annotation-trained ancestor without evaluation examples, including colour, texture, shape and library inputs. Record project/image/group split and distinguish fitting, validation used for selection, and independent final assessment.
 
-**Acceptance.** Partial, draft, stale, or ineligible masks cannot silently become complete-seed targets. Each image carries its own coverage declaration; a single whole-dish checkbox must not automatically declare every project image exhaustively annotated. Calibration/crop changes cannot alter the truth domain to reduce error. Scientific claims remain limited to the actual split/provenance. Sources: [procedural eligibility](D:/Programming/SeedFiddle/seedvision/ui/main_window.py:10863), [edge preflight](D:/Programming/SeedFiddle/seedvision/ui/main_window.py:10572), [instance fold split](D:/Programming/SeedFiddle/seedvision/segmentation/reference_edge_fit.py:160), original review R03/R08/R12.
+**Acceptance.** Partial, draft, stale, or ineligible masks cannot silently become complete-seed targets. Each image carries its own coverage declaration; a single whole-dish checkbox must not automatically declare every project image exhaustively annotated. Calibration/crop changes cannot alter the truth domain to reduce error. Scientific claims remain limited to the actual split/provenance. Sources: procedural eligibility, edge preflight, instance fold split, original review R03/R08/R12.
 
 ### O08 — P2: expose learned-node tuning through the same node interface
 
@@ -234,7 +234,7 @@ The U-Net search covers five settings: interior threshold, centre threshold, sep
 
 **Required change.** Reuse the backend search in node-local actions and the coordinator where learned nodes are active and compatible checkpoints exist. Complete decoder coverage with fixed predictions and consistent units. Provide model-weight training as a separate, explicit scope; the project procedural command should not unexpectedly launch long training runs.
 
-**Acceptance.** Optimized values have the same meaning in offline evaluation and live node inference, persist in the project, and produce identical decoded instances from the same outputs. Training and decoder tuning are clearly distinguished. Sources: [decoder grids](D:/Programming/SeedFiddle/seedvision/learning/evaluation.py:138), [CLI options](D:/Programming/SeedFiddle/seed_vision.py:129), [GUI training action](D:/Programming/SeedFiddle/seedvision/ui/main_window.py:2927).
+**Acceptance.** Optimized values have the same meaning in offline evaluation and live node inference, persist in the project, and produce identical decoded instances from the same outputs. Training and decoder tuning are clearly distinguished. Sources: decoder grids, CLI options, GUI training action.
 
 ### O09 — P2: provide a consistent, informative fitting experience
 
@@ -242,7 +242,7 @@ The U-Net search covers five settings: interior threshold, centre threshold, sep
 
 **Required change.** Show each eligible card's annotation counts, target type, fit scope, included/excluded parameter groups, search budget, and unavailable reasons. Use consistent result comparisons and application policy for individual and project runs. Let users inspect before/after overlays and per-image regressions; report cancellation, no improvement and budget exhaustion distinctly. A visible score must identify its output, metric and evaluation set.
 
-**Acceptance.** No fit opens only to discover a predictable missing prerequisite. A project run does not prompt repeatedly at each node. Existing cancellation and stale-result guards remain effective. Sources: [procedural state](D:/Programming/SeedFiddle/seedvision/ui/pipeline_inspector.py:1641), [edge description/button](D:/Programming/SeedFiddle/seedvision/ui/pipeline_inspector.py:1275), [edge result handling](D:/Programming/SeedFiddle/seedvision/ui/main_window.py:10690), [procedural result handling](D:/Programming/SeedFiddle/seedvision/ui/main_window.py:11096).
+**Acceptance.** No fit opens only to discover a predictable missing prerequisite. A project run does not prompt repeatedly at each node. Existing cancellation and stale-result guards remain effective. Sources: procedural state, edge description/button, edge result handling, procedural result handling.
 
 ### O10 — P1: make ownership, caching and reproducibility part of the coordinator
 
@@ -250,7 +250,7 @@ The U-Net search covers five settings: interior threshold, centre threshold, sep
 
 **Required change.** Resolve true computation ownership in the optimization contract, ideally aligning it with the graph. Candidate evaluations must use isolated settings/cache namespaces, preserve reusable upstream CUDA tensors, and invalidate the changed computation and affected consumers for each selected image. Persist the run's inputs, settings, objective version, splits, trials/summaries, final decision and changed nodes. Keep an atomic proposal or a reversible checkpoint for the sequence.
 
-**Acceptance.** Unrelated cached nodes are reused; every affected producer is recomputed. Cancellation/failure cannot leave a partly installed candidate. Saved/reopened projects reproduce accepted parameters and expose the run's provenance. A final full-pipeline comparison detects cross-node regressions. Sources: [topological order](D:/Programming/SeedFiddle/seedvision/pipeline/model.py:761), [parameter updates](D:/Programming/SeedFiddle/seedvision/pipeline/model.py:783), [edge producer invalidation](D:/Programming/SeedFiddle/seedvision/ui/main_window.py:10761). This is a required design constraint for the missing coordinator, not a claim that the current explicit edge invalidation is absent.
+**Acceptance.** Unrelated cached nodes are reused; every affected producer is recomputed. Cancellation/failure cannot leave a partly installed candidate. Saved/reopened projects reproduce accepted parameters and expose the run's provenance. A final full-pipeline comparison detects cross-node regressions. Sources: topological order, parameter updates, edge producer invalidation. This is a required design constraint for the missing coordinator, not a claim that the current explicit edge invalidation is absent.
 
 ### O11 — P1: test compliance and objective validity, not just successful search
 
@@ -311,6 +311,6 @@ $env:QT_QPA_PLATFORM = 'offscreen'
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-Local evidence is available in [inventory.json](D:/Programming/SeedFiddle/artifacts/node-optimization-review-2026-09-09/inventory.json), [probes.json](D:/Programming/SeedFiddle/artifacts/node-optimization-review-2026-09-09/probes.json), the [inventory harness](D:/Programming/SeedFiddle/artifacts/node_optimization_review.py), [counterexample harness](D:/Programming/SeedFiddle/artifacts/node_optimization_probes.py), [focused test log](D:/Programming/SeedFiddle/artifacts/node-optimization-review-focused-suite-2026-09-09.log), and [full test log](D:/Programming/SeedFiddle/artifacts/node-optimization-review-full-suite-2026-09-09.log). These generated review artifacts remain ignored under `artifacts/`; the tables and counterexample results above retain the essential evidence in the report.
+Local evidence is available in inventory.json, probes.json, the inventory harness, counterexample harness, focused test log, and full test log. These generated review artifacts remain ignored under `artifacts/`; the tables and counterexample results above retain the essential evidence in the report.
 
 This review does not claim exhaustive numerical sensitivity testing of all 309 parameter entries or a measured real-world gain from every proposed optimization objective. It establishes present UI/backend coverage, identifies specific objective and input-path defects, and defines a complete node-level compliance plan with testable acceptance criteria.

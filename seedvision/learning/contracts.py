@@ -15,6 +15,12 @@ class ModelFamily(StrEnum):
     STARDIST = "stardist"
 
 
+class PretrainedModelFamily(StrEnum):
+    """Third-party pretrained backends; never a trainable checkpoint family."""
+
+    CELLPOSE_SAM = "cellpose_sam"
+
+
 DEFAULT_SPECIES = (
     "unknown",
     "soybean",
@@ -87,9 +93,9 @@ class FeatureStackSpec:
 
 @dataclass(slots=True)
 class LearnedInstanceResult:
-    """Common decoded result returned by either learned model family."""
+    """Common decoded result returned by every learned instance backend."""
 
-    family: ModelFamily
+    family: ModelFamily | PretrainedModelFamily
     labels: np.ndarray
     centres_xy: np.ndarray
     instance_confidences: np.ndarray

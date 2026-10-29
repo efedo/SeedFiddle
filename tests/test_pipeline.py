@@ -70,8 +70,8 @@ class PipelineModelTests(unittest.TestCase):
         order = graph.topological_order()
         self.assertEqual(order[0], "project")
         self.assertEqual(set(order), set(graph.nodes))
-        self.assertEqual(len(graph.nodes), 31)
-        self.assertEqual(len(graph.connections), 185)
+        self.assertEqual(len(graph.nodes), 32)
+        self.assertEqual(len(graph.connections), 189)
         self.assertNotIn("perimeter_background_reference", graph.nodes)
         self.assertEqual(
             graph.connection_for_input(
@@ -158,7 +158,7 @@ class PipelineModelTests(unittest.TestCase):
         graph = build_default_pipeline()
         all_nodes = {**graph.nodes, **graph.unused_nodes}
         all_connections = (*graph.connections, *graph.unused_connections)
-        self.assertEqual(len(graph.connection_templates), 263)
+        self.assertEqual(len(graph.connection_templates), 267)
         self.assertTrue(all(node.output_ports for node in all_nodes.values()))
         self.assertEqual(
             len(all_connections),
@@ -329,6 +329,9 @@ class PipelineModelTests(unittest.TestCase):
                 "reference_edge_probability", "illumination_decomposition",
                 "image_quality",
             },
+            "cellpose_sam_instances": {
+                "deskew_colour", "layout_detection", "seed_scale_estimation",
+            },
             "radial_profile": {
                 "identification", "instance_masks", "deskew_colour",
                 "layout_detection",
@@ -364,7 +367,7 @@ class PipelineModelTests(unittest.TestCase):
             "output": {"aggregation"},
             "trait_classifier": {
                 "deskew_colour", "layout_detection", "procedural_instances",
-                "unet_instances", "stardist_instances",
+                "unet_instances", "stardist_instances", "cellpose_sam_instances",
             },
         }
         self.assertEqual(set(expected), set(graph.nodes))
@@ -489,7 +492,10 @@ class PipelineModelTests(unittest.TestCase):
                 "output",
             ),
         )
-        self.assertEqual(graph.node("identification").status, NodeStatus.IDLE)
+        # Restored toolbox nodes stay disabled; an upstream edit invalidates
+        # them without presenting them as runnable.
+        self.assertFalse(graph.node("identification").enabled)
+        self.assertEqual(graph.node("identification").status, NodeStatus.BYPASSED)
         self.assertEqual(graph.node("layout_detection").status, NodeStatus.COMPLETE)
         self.assertEqual(graph.node("project").status, NodeStatus.COMPLETE)
 
@@ -733,7 +739,7 @@ class PipelineModelTests(unittest.TestCase):
             graph.node("procedural_instances").parameters["minimum_marker_score"],
             0.19,
         )
-        graph.invalidate.assert_called_once_with(affected)
+        graph.invalidate.assert_called_once_with(affected, preserve_bypassed=True)
         self.assertEqual(graph.node("procedural_instances").status, NodeStatus.IDLE)
 
         self.assertEqual(
@@ -938,8 +944,8 @@ class PipelineModelTests(unittest.TestCase):
     def check_test_project_is_the_only_root_and_supplies_image_and_annotations(self) -> None:
         graph = build_default_pipeline()
         node = graph.node("project")
-        self.assertEqual(node.category, "Project")
-        self.assertEqual(node.title, "Project")
+        self.assertEqual(node.category, "Inputs")
+        self.assertEqual(node.title, "Inputs")
         self.assertNotIn("raw_images", graph.nodes)
         self.assertNotIn("reference_layers", graph.nodes)
         self.assertNotIn("manual_seed_centres", graph.nodes)
@@ -1018,7 +1024,10 @@ class PipelineModelTests(unittest.TestCase):
         expected = set(roots)
         for root in roots:
             expected.update(graph.downstream(root, recursive=True))
-        expected.update({"unet_instances", "stardist_instances", "trait_classifier"})
+        expected.update({
+            "unet_instances", "stardist_instances", "cellpose_sam_instances",
+            "trait_classifier",
+        })
         self.assertEqual(
             {node.identifier for node in graph.nodes.values() if not node.enabled},
             expected,
@@ -1033,6 +1042,7 @@ class PipelineModelTests(unittest.TestCase):
         self.assertTrue(graph.node("surface_darkness_gradients").enabled)
         self.assertFalse(graph.node("unet_instances").enabled)
         self.assertFalse(graph.node("stardist_instances").enabled)
+        self.assertFalse(graph.node("cellpose_sam_instances").enabled)
         self.assertIn("surface_darkness_gradients", graph.nodes)
 
     def check_test_disabling_a_node_disables_all_dependents(self) -> None:
@@ -1258,6 +1268,35 @@ class PipelineModelTests(unittest.TestCase):
                 "circle_candidates", "circle_accumulator_threshold", 100
             )
 
+    def check_test_non_finite_parameter_values_are_rejected(self) -> None:
+        graph = build_default_pipeline()
+        node = graph.node("ruler_detection")
+        before = dict(node.parameters)
+        revision = graph.revision
+        for value in (float("nan"), float("inf"), -float("inf")):
+            with self.assertRaises(ValueError):
+                graph.set_parameter("ruler_detection", "ruler_length_mm", value)
+        self.assertEqual(node.parameters, before)
+        self.assertEqual(graph.revision, revision)
+
+    def check_test_parameter_edit_keeps_disabled_node_bypassed(self) -> None:
+        graph = build_default_pipeline()
+        graph.set_enabled("ruler_detection", False)
+        node = graph.node("ruler_detection")
+        self.assertEqual(node.status, NodeStatus.BYPASSED)
+        affected = graph.set_parameter(
+            "ruler_detection",
+            "ruler_length_mm",
+            node.parameters["ruler_length_mm"] + 1.0,
+        )
+        self.assertIn("ruler_detection", affected)
+        self.assertFalse(node.enabled)
+        self.assertEqual(node.status, NodeStatus.BYPASSED)
+        for node_id in affected:
+            other = graph.node(node_id)
+            expected = NodeStatus.IDLE if other.enabled else NodeStatus.BYPASSED
+            self.assertEqual(other.status, expected, node_id)
+
     def check_test_oriented_trace_convexity_controls_are_explicit_and_consumed(self) -> None:
         graph = build_default_pipeline()
         node = graph.node("edge_traces")
@@ -1365,8 +1404,10 @@ class PipelineModelTests(unittest.TestCase):
         self.scenario(self.check_test_foreground_noise_first_tertile_is_default_and_exposed)
 
     def test_validation_and_recovery(self):
-        """5 related PipelineModelTests scenarios, each with private fixture state."""
+        """7 related PipelineModelTests scenarios, each with private fixture state."""
         self.scenario(self.check_test_reconnection_rejects_unimplemented_typed_substitutions)
+        self.scenario(self.check_test_non_finite_parameter_values_are_rejected)
+        self.scenario(self.check_test_parameter_edit_keeps_disabled_node_bypassed)
         self.scenario(self.check_test_identification_change_invalidates_only_downstream_nodes)
         self.scenario(self.check_test_parameter_batch_is_one_revision_and_one_invalidation)
         self.scenario(self.check_test_gradient_method_change_invalidates_only_gradient_descendants)

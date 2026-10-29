@@ -1,8 +1,8 @@
 # Analysis reliability redesign (2026-08-22)
 
 > **Dated redesign record.** This captures the 22 August 2026 change set, not the
-> current UI or complete graph. Use [CURRENT_STATUS.md](CURRENT_STATUS.md) and
-> [OPERATOR_GUIDE.md](OPERATOR_GUIDE.md) for present behavior.
+> current UI or complete graph. Use [CURRENT_STATUS.md](../CURRENT_STATUS.md) and
+> [OPERATOR_GUIDE.md](../OPERATOR_GUIDE.md) for present behavior.
 
 ## Scope and evidence
 

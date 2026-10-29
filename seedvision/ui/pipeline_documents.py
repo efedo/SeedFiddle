@@ -28,13 +28,13 @@ class PipelineDocumentsController(QObject):
         self.current_path = None
         self.current_name = 'Custom pipeline'
         self.factory_name = None
-        self.freeze_action = QAction('Frozen', window)
+        self.freeze_action = QAction('Locked', window)
         self.freeze_action.setCheckable(True)
         self.freeze_action.setChecked(True)
         self.freeze_action.setToolTip(
-            'Freeze node parameters and connections. Running, backend selection, layout and inspection remain available.')
+            'Lock node parameters and connections. Running, backend selection, layout and inspection remain available.')
         self.freeze_action.toggled.connect(self.set_frozen)
-        self.freeze_button = QCheckBox('Freeze', window)
+        self.freeze_button = QCheckBox('Lock', window)
         self.freeze_button.setObjectName('pipelineFreezeButton')
         self.freeze_button.setToolTip(self.freeze_action.toolTip())
         self.freeze_button.setChecked(True)
@@ -58,7 +58,7 @@ class PipelineDocumentsController(QObject):
         self._frozen = frozen
         with QSignalBlocker(self.freeze_action):
             self.freeze_action.setChecked(frozen)
-            self.freeze_action.setText('Frozen' if frozen else 'Editable')
+            self.freeze_action.setText('Locked' if frozen else 'Editable')
         with QSignalBlocker(self.freeze_button):
             self.freeze_button.setChecked(frozen)
         if changed:
@@ -77,7 +77,7 @@ class PipelineDocumentsController(QObject):
 
     def can_edit(self):
         if self._frozen:
-            self.window.statusBar().showMessage('Pipeline is frozen. Clear Freeze to edit node parameters and connections.')
+            self.window.statusBar().showMessage('Pipeline is locked. Clear Lock to edit node parameters and connections.')
             return False
         return True
 

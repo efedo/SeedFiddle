@@ -21,7 +21,7 @@ from seedvision.pipeline import NodeStatus, ParameterSpec, PipelineConnection, P
 
 
 ANALYSIS_SETTINGS_FORMAT = "seedfiddle-analysis-settings"
-ANALYSIS_SETTINGS_VERSION = 23
+ANALYSIS_SETTINGS_VERSION = 24
 _LEGACY_ANALYSIS_SETTINGS_VERSIONS = frozenset(
     {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19}
 )
@@ -200,7 +200,7 @@ def analysis_settings_profile_from_payload(
     version = root["version"]
     if isinstance(version, bool) or not isinstance(version, int):
         raise InvalidAnalysisSettingsProfile("Profile version must be an integer.")
-    if version not in {*_LEGACY_ANALYSIS_SETTINGS_VERSIONS, 20, 21, 22, ANALYSIS_SETTINGS_VERSION}:
+    if version not in {*_LEGACY_ANALYSIS_SETTINGS_VERSIONS, 20, 21, 22, 23, ANALYSIS_SETTINGS_VERSION}:
         raise IncompatibleAnalysisSettingsProfile(
             f"Unsupported analysis-settings version {version}; this application "
             f"supports versions 1 through {ANALYSIS_SETTINGS_VERSION}."
@@ -699,6 +699,16 @@ def _prepare_analysis_settings(
             identifier='trait_classifier', active=True, enabled=False,
             connection_suspended=False, parameters=tuple(
                 (spec.key, classifier.default_parameters[spec.key]) for spec in classifier.parameter_specs))
+    if (canonical.version < 24 and 'cellpose_sam_instances' in expected_ids
+            and 'cellpose_sam_instances' not in profile_by_id):
+        # Version twenty-four adds the optional Cellpose-SAM instance branch.
+        # It starts disabled, so older profiles keep every saved result.
+        # The same version drops two seed-edge residual tolerances (below).
+        cellpose = catalogue['cellpose_sam_instances']
+        profile_by_id['cellpose_sam_instances'] = AnalysisNodeSettings(
+            identifier='cellpose_sam_instances', active=True, enabled=False,
+            connection_suspended=False, parameters=tuple(
+                (spec.key, cellpose.default_parameters[spec.key]) for spec in cellpose.parameter_specs))
     profile_ids = set(profile_by_id)
     missing_ids = expected_ids - profile_ids
     unknown_ids = profile_ids - expected_ids
@@ -833,6 +843,12 @@ def _prepare_analysis_settings(
         ):
             if new_key not in edge_parameters and legacy_key in legacy_prototypes:
                 edge_parameters[new_key] = legacy_prototypes[legacy_key]
+    if canonical.version < 24:
+        # These tolerances scored proposal-conditioned circle and ellipse fits
+        # that the pipeline never ran, so dropping them changes no result.
+        edge_curves = supplied_parameters_by_id.get("seed_edge_curves", {})
+        edge_curves.pop("boundary_circle_residual_tolerance", None)
+        edge_curves.pop("boundary_ellipse_residual_tolerance", None)
     for node_id, node in catalogue.items():
         saved = profile_by_id[node_id]
         supplied = supplied_parameters_by_id[node_id]
@@ -1032,9 +1048,11 @@ def _prepare_analysis_settings(
             + ")."
         )
     if missing_connections:
-        classifier_migration = (canonical.version in {20, 21}
-            and all(key[2] == 'trait_classifier' for key in missing_connections))
-        if canonical.version not in _LEGACY_ANALYSIS_SETTINGS_VERSIONS and not classifier_migration:
+        def migrated(key):
+            return ((canonical.version in {20, 21} and key[2] == 'trait_classifier')
+                    or (canonical.version < 24 and 'cellpose_sam_instances' in (key[0], key[2])))
+        if (canonical.version not in _LEGACY_ANALYSIS_SETTINGS_VERSIONS
+                and not all(migrated(key) for key in missing_connections)):
             raise IncompatibleAnalysisSettingsProfile(
                 "Analysis-settings connection catalogue mismatch (missing connections: "
                 + _formatted_connections(missing_connections)

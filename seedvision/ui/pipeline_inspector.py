@@ -22,6 +22,12 @@ from PySide6.QtWidgets import (
 )
 
 from seedvision.pipeline import PipelineNode
+from seedvision.ui.spin_format import spin_decimals
+
+# Sections after the first start collapsed on nodes with more controls than
+# this, so the commonly tuned settings are visible without scrolling.
+COLLAPSE_SECTIONS_ABOVE_CONTROLS = 8
+PARAMETER_LABEL_WIDTH = 150
 
 
 class BackgroundColourGamut(QWidget):
@@ -1338,7 +1344,9 @@ class PipelineInspector(QWidget):
         self.foreground_start_label.setVisible(False)
         self.parameter_container = QWidget(self)
         self.parameter_form = QFormLayout(self.parameter_container)
-        self.parameter_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
+        # Label left, control right; long labels wrap within their column.
+        self.parameter_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.DontWrapRows)
+        self.parameter_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self.parameter_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         self.parameter_form.setContentsMargins(0, 0, 0, 0)
         self.parameters_header = QWidget(self)
@@ -1391,7 +1399,10 @@ class PipelineInspector(QWidget):
         optimization_layout.setContentsMargins(0, 4, 0, 4)
         self.optimization_status = QLabel(self.optimization_container)
         self.optimization_status.setWordWrap(True)
-        self.optimization_button = QPushButton('Optimize from project references…', self.optimization_container)
+        self.optimization_button = QPushButton('Optimise this node…', self.optimization_container)
+        self.optimization_button.setToolTip(
+            "Search only this node's controls against the project's references. "
+            'Analysis → Optimise → Optimise all pipeline nodes… searches every eligible node.')
         self.optimization_button.clicked.connect(self._request_optimization)
         optimization_layout.addWidget(self.optimization_status)
         optimization_layout.addWidget(self.optimization_button)
@@ -1429,7 +1440,10 @@ class PipelineInspector(QWidget):
         self.enabled_checkbox.blockSignals(True)
         self.enabled_checkbox.setChecked(node.enabled)
         self.enabled_checkbox.setEnabled(node.implemented and node.bypassable)
-        self.enabled_checkbox.setVisible(not self.read_only)
+        # A node that can never be bypassed shows no permanently greyed toggle.
+        self.enabled_checkbox.setVisible(
+            not self.read_only and node.implemented and node.bypassable
+        )
         self.enabled_checkbox.blockSignals(False)
         self.enabled_fact_label.setText(
             "Node enabled: yes" if node.enabled else "Node enabled: no"
@@ -1492,13 +1506,16 @@ class PipelineInspector(QWidget):
                     editor.setToolTip(f"{spec.description}\nFixed reference value.")
                     field_label = QLabel(spec.label, self.parameter_container)
                     field_label.setWordWrap(True)
+                    field_label.setMaximumWidth(PARAMETER_LABEL_WIDTH)
                     field_label.setToolTip(spec.description)
                     self.parameter_form.addRow(field_label, editor)
                     self._parameter_widgets.append(editor)
                     continue
                 if spec.kind == "float":
                     editor = QDoubleSpinBox(self.parameter_container)
-                    editor.setDecimals(3)
+                    editor.setDecimals(
+                        spin_decimals(spec, value, node.default_parameters.get(spec.key, value))
+                    )
                     editor.setRange(float(spec.minimum), float(spec.maximum))
                     editor.setSingleStep(float(spec.step or 0.01))
                     editor.setValue(float(value))
@@ -1554,6 +1571,7 @@ class PipelineInspector(QWidget):
                     editor.setToolTip('Legacy fallback only. The connected resolved material input already combines texture; tune Material evidence decision instead.')
                 field_label = QLabel(spec.label, self.parameter_container)
                 field_label.setWordWrap(True)
+                field_label.setMaximumWidth(PARAMETER_LABEL_WIDTH)
                 if not self.read_only:
                     field_label.setBuddy(editor)
                 editor.setAccessibleName(spec.label)
@@ -1566,6 +1584,11 @@ class PipelineInspector(QWidget):
                 for row in rows:
                     self.parameter_form.setRowVisible(row,checked)
             toggle.toggled.connect(expand_section)
+            if (
+                section_index > 0
+                and len(node.parameter_specs) > COLLAPSE_SECTIONS_ABOVE_CONTROLS
+            ):
+                toggle.setChecked(False)
         self.parameter_container.setVisible(bool(node.parameter_specs))
         self._refresh_neutral_controls()
         self.parameters_header.setVisible(bool(node.parameter_specs))
@@ -1639,14 +1662,18 @@ class PipelineInspector(QWidget):
         self.optimization_button.setVisible(bool(contract.searchable))
         self.optimization_button.setEnabled(bool(contract.searchable and node.enabled
             and node.implemented and self._optimization_ready and not self._optimization_busy and not self._editing_locked))
-        text = contract.reason or f'{len(contract.searchable)} searchable controls; objective: {contract.objective}. '
+        text = contract.reason or ''
         if contract.searchable:
-            text += ('Pipeline is frozen. Clear Freeze to optimize node settings.' if self._editing_locked else
-                     'Optimization is running.' if self._optimization_busy else
-                     'Save a project and apply references to enable fitting.' if not self._optimization_ready else
-                     'Choose images and budget; inspect the proposal before applying. Missing target types are reported in the plan/results.')
+            text = ('Parameters are locked. Unlock to optimise.' if self._editing_locked else
+                    'Optimisation is running.' if self._optimization_busy else
+                    'Save a project and apply references to enable optimisation.' if not self._optimization_ready else
+                    'Choose images and a budget, then review the proposal before applying it.')
         self.optimization_status.setText(text)
-        self.optimization_status.setToolTip('\n'.join(f'{key}: {reason}' for key, reason in contract.fixed))
+        self.optimization_status.setVisible(bool(text))
+        # The searchable/fixed inventory is reference detail, not panel text.
+        details = [f'{len(contract.searchable)} searchable controls; objective: {contract.objective}.']
+        details.extend(f'{key}: {reason}' for key, reason in contract.fixed)
+        self.optimization_status.setToolTip('\n'.join(details))
 
     def _request_optimization(self) -> None:
         if (

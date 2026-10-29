@@ -8,3 +8,4 @@
 - Preserve node-local caching and recompute only a changed node and its dependents.
 - Run the focused tests for each change and the full `unittest` suite before hand-off.
 - Keep exposed node controls honest: every parameter must affect a calculation, not merely validation or presentation.
+- Keep documentation current-state: update the relevant section in place rather than prepending or appending dated checkpoint logs, and do not cite generated `artifacts/` files as evidence in docs. Put dated reviews and audits in `docs/archive/`.

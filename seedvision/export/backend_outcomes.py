@@ -10,11 +10,19 @@ BACKENDS = {
     'procedural_instances': 'seedfiddle.native.procedural',
     'unet_instances': 'seedfiddle.native.unet_watershed',
     'stardist_instances': 'seedfiddle.native.stardist',
+    'cellpose_sam_instances': 'cellpose.sam.pretrained',
 }
+# Cellpose-SAM is a third-party pretrained model, not a native reimplementation.
+MODES = {node: 'native_compatible' for node in BACKENDS}
+MODES['cellpose_sam_instances'] = 'third_party_pretrained'
+# Ledgers captured before the Cellpose-SAM node existed lack its record.
+_LEGACY_BACKENDS = frozenset(BACKENDS) - {'cellpose_sam_instances'}
+_UNAVAILABLE = {'procedural_instances': 'foreground_missing', 'unet_instances': 'checkpoint_missing',
+                'stardist_instances': 'checkpoint_missing', 'cellpose_sam_instances': 'dependency_missing'}
 _FIELDS = {'backend_id', 'backend_version', 'mode', 'enabled', 'state',
            'reason_code', 'prediction_facts', 'error_type', 'diagnostic'}
 _REASONS = {'available': {None}, 'not_run': {'disabled'},
-            'unavailable': {'checkpoint_missing', 'foreground_missing'},
+            'unavailable': set(_UNAVAILABLE.values()),
             'failed': {'inference_failed', 'decoder_failed'}}
 
 
@@ -65,7 +73,7 @@ def capture_native_outcomes(*, enabled, results, failures=None, foreground_avail
             else:
                 raise ValueError('An enabled backend requires explicit producer evidence.')
         records[node] = {'backend_id': backend, 'backend_version': __version__,
-            'mode': 'native_compatible', 'enabled': active, 'state': state,
+            'mode': MODES[node], 'enabled': active, 'state': state,
             'reason_code': reason, 'prediction_facts': facts,
             'error_type': error_type, 'diagnostic': diagnostic}
     captured = _json({'contract': CONTRACT, 'outcomes': records})
@@ -96,12 +104,12 @@ def read_native_outcomes(captured):
     if not isinstance(payload, dict) or set(payload) != {'contract', 'outcomes'} or payload['contract'] != CONTRACT:
         raise ValueError('Unsupported backend outcome contract.')
     records = payload['outcomes']
-    if not isinstance(records, dict) or set(records) != set(BACKENDS):
+    if not isinstance(records, dict) or set(records) not in (set(BACKENDS), set(_LEGACY_BACKENDS)):
         raise ValueError('Native backend inventory is incomplete.')
     for node, record in records.items():
         if not isinstance(record, dict) or set(record) != _FIELDS:
             raise ValueError('Invalid backend outcome fields.')
-        if (record['backend_id'] != BACKENDS[node] or record['mode'] != 'native_compatible'
+        if (record['backend_id'] != BACKENDS[node] or record['mode'] != MODES[node]
                 or not isinstance(record['backend_version'], str) or not record['backend_version']
                 or type(record['enabled']) is not bool):
             raise ValueError('Invalid native backend identity.')
@@ -111,7 +119,7 @@ def read_native_outcomes(captured):
             raise ValueError('Invalid backend outcome state/reason.')
         if record['enabled'] != (state != 'not_run'):
             raise ValueError('Backend enablement disagrees with producer evidence.')
-        if state == 'unavailable' and ((node == 'procedural_instances') != (reason == 'foreground_missing')):
+        if state == 'unavailable' and reason != _UNAVAILABLE[node]:
             raise ValueError('Backend prerequisite does not match its producer.')
         if state == 'failed' and node == 'procedural_instances':
             raise ValueError('Procedural failures are not represented by a completed analysis.')
@@ -187,10 +195,13 @@ def outcome_descriptions(payload):
     """Plain-language summaries shared by Qt review and comparison."""
     if payload['outcomes'] is None:
         return ['Backend execution evidence was not recorded.']
-    names = {'procedural_instances': 'Procedural', 'unet_instances': 'U-Net', 'stardist_instances': 'StarDist'}
+    names = {'procedural_instances': 'Procedural', 'unet_instances': 'U-Net', 'stardist_instances': 'StarDist',
+             'cellpose_sam_instances': 'Cellpose-SAM'}
     lines = []
     for node in BACKENDS:
-        record = payload['outcomes'][node]
+        record = payload['outcomes'].get(node)
+        if record is None:
+            continue
         state = record['state']
         detail = (f"{record['prediction_facts']['instance_count']} proposed instances"
                   if state == 'available' else str(record['reason_code']).replace('_', ' '))

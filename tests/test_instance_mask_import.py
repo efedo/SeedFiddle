@@ -16,6 +16,7 @@ from seedvision.persistence import (
     file_sha256,
     load_bundled_instance_mask,
     load_corrected_instance_mask,
+    read_source_raster_shape,
 )
 
 
@@ -311,9 +312,27 @@ class InstanceMaskImportTests(unittest.TestCase):
                 )
             )
 
+    def check_test_source_shape_and_corrected_masks_decode_from_non_ascii_paths(self) -> None:
+        # cv2.imread cannot open non-ASCII paths on Windows; the shared decoder must.
+        labels = np.zeros((6, 9), dtype=np.uint16)
+        labels[1:3, 2:5] = 12
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary) / "graines_é种子"
+            root.mkdir()
+            image_path = root / "source é.png"
+            mask_path = root / "labels 种子.png"
+            image_path.write_bytes(
+                cv2.imencode(".png", np.full((6, 9, 3), 90, dtype=np.uint8))[1].tobytes()
+            )
+            mask_path.write_bytes(cv2.imencode(".png", labels)[1].tobytes())
+            self.assertEqual(read_source_raster_shape(image_path), (6, 9))
+            imported = load_corrected_instance_mask(mask_path, (6, 9))
+            np.testing.assert_array_equal(imported.labels, labels)
+
     def test_workflow_lifecycle(self):
-        """6 related InstanceMaskImportTests scenarios, each with private fixture state."""
+        """7 related InstanceMaskImportTests scenarios, each with private fixture state."""
         self.scenario(self.check_test_corrected_png_tiff_and_npz_preserve_sparse_ids_exactly)
+        self.scenario(self.check_test_source_shape_and_corrected_masks_decode_from_non_ascii_paths)
         self.scenario(self.check_test_bundled_source_mask_is_fingerprint_bound_and_warped_nearest)
         self.scenario(self.check_test_bundled_manifest_requires_every_integrity_field)
         self.scenario(self.check_test_bundled_manifest_requires_partition_counts_to_sum_to_total)

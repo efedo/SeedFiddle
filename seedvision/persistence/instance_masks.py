@@ -17,6 +17,7 @@ from zipfile import BadZipFile
 import cv2
 import numpy as np
 
+from seedvision.persistence.image_decoding import read_image
 from seedvision.persistence.reference_regions import file_sha256
 
 
@@ -59,7 +60,7 @@ def read_source_raster_shape(path: Path | str) -> tuple[int, int]:
 
     source = Path(path).resolve()
     try:
-        image = cv2.imread(str(source), cv2.IMREAD_GRAYSCALE)
+        image = read_image(source, cv2.IMREAD_GRAYSCALE)
     except cv2.error as error:
         raise InstanceMaskImportError(
             f"Could not decode source dimensions for {source}: {error}"
@@ -312,7 +313,7 @@ def _read_mask_file(path: Path) -> tuple[np.ndarray, str | None]:
     suffix = path.suffix.lower()
     if suffix in {".png", ".tif", ".tiff"}:
         try:
-            values = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+            values = read_image(path, cv2.IMREAD_UNCHANGED)
         except cv2.error as error:
             raise InstanceMaskImportError(
                 f"Could not decode categorical mask {path}: {error}"

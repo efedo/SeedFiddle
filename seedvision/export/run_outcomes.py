@@ -45,12 +45,13 @@ def _request(path, args, kwargs):
     from seedvision.visualization import AnalysisLayerSettings, AdvancedAnalysisSettings
     from seedvision.segmentation.procedural import ProceduralInstanceSettings
     from seedvision.learning.pipeline import UNetPipelineSettings, StarDistPipelineSettings
+    from seedvision.learning.cellpose_sam import CellposeSamSettings
     from seedvision.learning.trait_pipeline import TraitClassifierSettings
     defaults = {'settings': BaselineSettings, 'calibration_settings': CalibrationSettings,
         'dish_settings': DishDetectionSettings, 'layer_settings': AnalysisLayerSettings,
         'advanced_settings': AdvancedAnalysisSettings, 'procedural_settings': ProceduralInstanceSettings,
         'unet_settings': UNetPipelineSettings, 'stardist_settings': StarDistPipelineSettings,
-        'trait_settings': TraitClassifierSettings}
+        'cellpose_settings': CellposeSamSettings, 'trait_settings': TraitClassifierSettings}
     supplied = dict(kwargs)
     if len(args) > 8:
         raise TypeError('Too many positional analysis settings.')
@@ -65,10 +66,12 @@ def _request(path, args, kwargs):
     artifact_capture = capture_artifact_selections(root, selections={
         'unet_instances': settings['unet_settings']['checkpoint_path'],
         'stardist_instances': settings['stardist_settings']['checkpoint_path'],
+        'cellpose_sam_instances': settings['cellpose_settings']['pretrained_model'],
         'trait_classifier': settings['trait_settings']['trait_model_path']}, enabled=enabled or ())
     artifacts = verified_artifact_facts(artifact_capture)
     for node, setting, field in (('unet_instances', 'unet_settings', 'checkpoint_path'),
             ('stardist_instances', 'stardist_settings', 'checkpoint_path'),
+            ('cellpose_sam_instances', 'cellpose_settings', 'pretrained_model'),
             ('trait_classifier', 'trait_settings', 'trait_model_path')):
         settings[setting][field] = semantic_artifact(artifacts[node], node)
     library = supplied.get('species_library')
@@ -308,11 +311,13 @@ def _validate_request(request):
         'background_colour_enabled', 'species_library', 'library_shape_bank_sha256'}
     settings_names = {'settings', 'calibration_settings', 'dish_settings', 'layer_settings', 'advanced_settings',
                       'procedural_settings', 'unet_settings', 'stardist_settings', 'trait_settings'}
+    # Requests recorded before the Cellpose-SAM node existed lack its settings.
+    accepted_settings = (settings_names, settings_names | {'cellpose_settings'})
     mask_names = {'background_reference_mask', 'foreground_reference_mask', 'background_exclusion_mask',
                   'foreground_exclusion_mask', 'seed_instance_annotations'}
     if (not isinstance(request, dict) or set(request) != request_fields
             or request['contract'] != 'seedfiddle.supplied-analysis-request-v1'
-            or not isinstance(request['settings'], dict) or set(request['settings']) != settings_names
+            or not isinstance(request['settings'], dict) or set(request['settings']) not in accepted_settings
             or any(not isinstance(value, dict) for value in request['settings'].values())
             or not isinstance(request['supplied_masks'], dict) or set(request['supplied_masks']) != mask_names):
         raise ValueError('Invalid supplied run request facts.')

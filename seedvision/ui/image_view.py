@@ -184,6 +184,9 @@ OVERLAY_MODES = {
     "stardist_radial_uncertainty",
     "stardist_instances",
     "stardist_confidence",
+    "cellpose_sam_cell_probability",
+    "cellpose_sam_instances",
+    "cellpose_sam_confidence",
     "none",
     *(mode for _, mode in ADVANCED_OVERLAY_LABELS),
 }
@@ -2180,6 +2183,8 @@ class ImageView(QGraphicsView):
             if self._overlay_mode.startswith("unet_")
             else "stardist_instances"
             if self._overlay_mode.startswith("stardist_")
+            else "cellpose_sam_instances"
+            if self._overlay_mode.startswith("cellpose_sam_")
             else None
         )
         if learned_name is not None:
@@ -2210,6 +2215,7 @@ class ImageView(QGraphicsView):
                         "unet_uncertainty": "uncertainty",
                         "stardist_object_probability": "object_probability",
                         "stardist_radial_uncertainty": "radial_uncertainty",
+                        "cellpose_sam_cell_probability": "cell_probability",
                     }[self._overlay_mode]
                     self._render_scalar_raster(
                         learned.rasters[raster_key],
@@ -2457,30 +2463,6 @@ class ImageView(QGraphicsView):
             )
             item.setOpacity(self._overlay_opacity)
             item.setZValue(20)
-            self._overlay_items.append(item)
-        ellipse_pen = QPen(QColor("#42e5ff"), 4)
-        ellipse_pen.setCosmetic(True)
-        for centre, axes, angle, confidence in zip(
-            values["instance_centres_xy"],
-            values["ellipse_axes_xy"],
-            values["ellipse_angle_radians"],
-            values["ellipse_confidence"],
-            strict=True,
-        ):
-            if confidence < 0.08:
-                continue
-            major, minor = float(axes[0]), float(axes[1])
-            item = self._scene.addEllipse(
-                -major,
-                -minor,
-                major * 2.0,
-                minor * 2.0,
-                ellipse_pen,
-            )
-            item.setPos(float(centre[0] + offset_x), float(centre[1] + offset_y))
-            item.setRotation(float(np.rad2deg(angle)))
-            item.setOpacity(self._overlay_opacity * min(1.0, float(confidence)))
-            item.setZValue(19)
             self._overlay_items.append(item)
 
     def _render_rgba_overlay(

@@ -4,8 +4,31 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
+import math
 import re
 from typing import Any, Iterable, Mapping
+
+
+# Node categories in workflow order: what each node is for, not how it runs.
+NODE_CATEGORIES = (
+    "Inputs",
+    "Calibration",
+    "Image quality",
+    "Material evidence",
+    "Edge evidence",
+    "Seed detection",
+    "Seed traits",
+    "Results",
+)
+
+
+def category_rank(category: str) -> int:
+    """Sort key placing known categories in workflow order, others after."""
+
+    try:
+        return NODE_CATEGORIES.index(category)
+    except ValueError:
+        return len(NODE_CATEGORIES)
 
 
 class NodeStatus(StrEnum):
@@ -130,6 +153,8 @@ class PipelineNode:
             raise KeyError(f"Node {self.identifier!r} has no parameter {key!r}.")
         if spec.kind == "float":
             value = float(value)
+            if not math.isfinite(value):
+                raise ValueError(f"{spec.label} must be a finite number.")
         elif spec.kind == "int":
             value = int(value)
         elif spec.kind == "bool":
@@ -832,7 +857,7 @@ class PipelineGraph:
             return (node_id,)
         self.revision += 1
         affected = (node_id, *self.downstream(node_id, recursive=True))
-        self.invalidate(affected)
+        self.invalidate(affected, preserve_bypassed=True)
         return affected
 
     def reset_parameters(self, node_id: str) -> tuple[str, ...]:
@@ -1147,8 +1172,8 @@ def build_default_pipeline() -> PipelineGraph:
         ParameterSpec("shape_minimum_component_seeds", "Minimum physical seeds / component", "int", 1, 100, 1, "Minimum independent physical seeds required for a pose/hierarchy component."),
         ParameterSpec("shape_shrinkage_seed_count", "Hierarchy shrinkage support", "float", 0.0, 50.0, 0.5, "Equivalent parent support controlling partial pooling of sparse hierarchy components."),
         ParameterSpec("shape_maximum_contour_modes", "Maximum contour modes", "int", 0, 12, 1, "Maximum smooth residual contour modes retained after regularization."),
-        ParameterSpec("shape_use_prior_for_oval_candidates", "Use shape prior for oval candidates", "bool", description="Opt in to distribution-aware ellipse dimensions and pose families for curved-edge candidate voting."),
-        ParameterSpec("shape_use_prior_for_procedural", "Use shape prior for procedural candidates", "bool", description="Opt in to a separate soft population-shape compatibility term; existing hard safeguards remain authoritative."),
+        ParameterSpec("shape_use_prior_for_oval_candidates", "Shape prior for oval candidates", "bool", description="Opt in to distribution-aware ellipse dimensions and pose families for curved-edge candidate voting."),
+        ParameterSpec("shape_use_prior_for_procedural", "Shape prior for procedural candidates", "bool", description="Opt in to a separate soft population-shape compatibility term; existing hard safeguards remain authoritative."),
     )
     foreground_parameters = (
         ParameterSpec(
@@ -1165,7 +1190,7 @@ def build_default_pipeline() -> PipelineGraph:
         ParameterSpec("foreground_current_reference_weight", "Current-image reference weight", "float", 0.0, 8.0, 0.1, "Relative source-level weight of the current image in combined mode; it never overwrites painted pixels."),
         ParameterSpec(
             "inner_radius_fraction",
-            "Outer-rim area used",
+            "Rim area used",
             "float",
             0.75,
             0.96,
@@ -1318,7 +1343,7 @@ def build_default_pipeline() -> PipelineGraph:
         ParameterSpec("background_frequency_weight_power", "Mode frequency influence", "float", 0.0, 1.0, 0.05, "Weights each learned background colour mode by its occurrence frequency in the painted mask. Zero treats represented modes equally; one applies their area proportions directly."),
         ParameterSpec("background_distribution_scale_multiplier", "Colour tolerance multiplier", "float", 0.50, 3.00, 0.05, "Expands or contracts every learned background Lab colour mode before per-pixel probability is calculated."),
         ParameterSpec("background_automatic_evidence_floor", "Perimeter evidence floor", "float", 0.0, 1.0, 0.02, "Minimum fit authority retained by the automatic perimeter source after painted Background coverage is available."),
-        ParameterSpec("background_reviewed_authority_half_life_seed_areas", "Perimeter authority half-life / seed areas", "float", 0.05, 8.0, 0.05, "Painted Background coverage, measured in nominal seed areas, required to halve perimeter-source authority above its floor."),
+        ParameterSpec("background_reviewed_authority_half_life_seed_areas", "Perimeter decay (seed areas)", "float", 0.05, 8.0, 0.05, "Painted Background coverage, measured in nominal seed areas, required to halve perimeter-source authority above its floor."),
     )
     perimeter_background_parameters = (
         ParameterSpec(
@@ -1503,8 +1528,6 @@ def build_default_pipeline() -> PipelineGraph:
         ParameterSpec("boundary_arc_sample_count", "Arc samples", "int", 5, 41, 2, "Number of positions sampled across every circle hypothesis; missing samples are tolerated."),
         ParameterSpec("boundary_orientation_tolerance_degrees", "Arc tangent tolerance", "float", 2.0, 60.0, 1.0, "Angular tolerance between observed and predicted tangents along an arc."),
         ParameterSpec("boundary_missing_support_floor", "Missing-edge floor", "float", 0.0, 0.75, 0.01, "Support retained for an occluded or locally missing arc sample instead of making it a hard failure."),
-        ParameterSpec("boundary_circle_residual_tolerance", "Circle residual tolerance", "float", 0.02, 0.80, 0.01, "Relative radial residual mapped to circle-fit confidence."),
-        ParameterSpec("boundary_ellipse_residual_tolerance", "Ellipse residual tolerance", "float", 0.02, 0.80, 0.01, "Normalized conic residual mapped to ellipse-fit confidence."),
         ParameterSpec("boundary_max_axis_ratio", "Maximum ellipse axis ratio", "float", 1.0, 4.0, 0.05, "Largest seed ellipse axis ratio accepted as plausible."),
         ParameterSpec("boundary_radius_log_tolerance", "Radius-prior tolerance", "float", 0.05, 1.5, 0.05, "Log-space width of the soft global-diameter agreement term."),
         ParameterSpec("boundary_center_vote_weight", "Centre-vote influence", "float", 0.0, 1.0, 0.05, "Contribution from orientation-aware normal votes for compatible seed centres."),
@@ -1538,7 +1561,7 @@ def build_default_pipeline() -> PipelineGraph:
     illumination_parameters = (
         ParameterSpec("illumination_scale_fraction", "Illumination scale / diameter", "float", 0.10, 4.0, 0.05, "Large Gaussian scale used to separate illumination from seed reflectance."),
         ParameterSpec("flattening_contrast_gain", "Flattened contrast gain", "float", 0.10, 8.0, 0.10, "Gain applied to the log ratio between grayscale and its local illumination field."),
-        ParameterSpec("despeckle_maximum_diameter_fraction", "Maximum speckle diameter / seed diameter", "float", 0.005, 0.30, 0.005, "Largest dark feature scale eligible for removal, relative to the image-specific seed diameter. Features that do not fit inside this grayscale-closing support are preserved."),
+        ParameterSpec("despeckle_maximum_diameter_fraction", "Max speckle size / seed diameter", "float", 0.005, 0.30, 0.005, "Largest dark feature scale eligible for removal, relative to the image-specific seed diameter. Features that do not fit inside this grayscale-closing support are preserved."),
         ParameterSpec("despeckle_minimum_darkness_levels", "Minimum darkness below surround", "float", 1.0, 255.0, 1.0, "Minimum 8-bit grayscale intensity difference between an eligible speckle and its local closed-background estimate."),
         ParameterSpec("despeckle_periphery_width_fraction", "Peripheral sampling width / diameter", "float", 0.005, 0.20, 0.005, "Distance beyond the maximum speckle radius at which surrounding flattened-grayscale values are sampled for rejection and blended interpolation."),
         ParameterSpec("despeckle_minimum_lighter_surround_fraction", "Minimum lighter surround fraction", "float", 0.50, 1.00, 0.01, "Minimum fraction of sixteen peripheral directions that must be lighter by the configured darkness contrast. High values preserve lines and boundaries that are not enclosed speckles."),
@@ -1667,6 +1690,13 @@ def build_default_pipeline() -> PipelineGraph:
         ParameterSpec("minimum_instance_area_fraction", "Minimum area / diameter squared", "float", 0.01, 1.50, 0.01, "Decoded polygons below this calibrated area are rejected."),
         ParameterSpec("maximum_candidates", "Maximum polygon candidates", "int", 64, 16384, 64, "Safety cap applied after object-probability ranking and before polygon NMS."),
     )
+    cellpose_instance_parameters = (
+        ParameterSpec("pretrained_model", "Cellpose model", "text", description="Pretrained Cellpose model name (cpsam_v2 downloads once, about 1.2 GB) or the path of a Cellpose weights file."),
+        ParameterSpec("rescale_to_seed_diameter", "Rescale to seed diameter", "bool", description="Resize the image so the calibrated seed diameter matches Cellpose's 30 px object size before inference. Off runs at native resolution."),
+        ParameterSpec("flow_threshold", "Flow-error threshold", "float", 0.0, 3.0, 0.05, "Masks whose flows disagree with their own shape by more than this are removed. Zero keeps every mask."),
+        ParameterSpec("cellprob_threshold", "Cell-probability threshold", "float", -6.0, 6.0, 0.25, "Logit above which pixels follow the flows into masks. Lower values find more and larger seeds."),
+        ParameterSpec("minimum_instance_area_fraction", "Minimum area / diameter squared", "float", 0.01, 1.50, 0.01, "Masks, after clipping to the dish, below this calibrated area are removed."),
+    )
     image_quality_parameters = (
         ParameterSpec("quality_noise_scale_fraction", "Noise scale / diameter", "float", 0.005, 0.30, 0.005, "Local high-frequency scale used for sensor/noise risk."),
     )
@@ -1785,7 +1815,7 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineNode(
             "hue_only",
             "Hue only",
-            "GPU diagnostic",
+            "Material evidence",
             "Display corrected-image hue at fixed neutral darkness",
             1240,
             -560,
@@ -1799,7 +1829,7 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineNode(
             "wavelet_decomposition",
             "Wavelet decomposition",
-            "GPU diagnostic",
+            "Material evidence",
             "Undecimated multiscale B3-spline decomposition with exact reconstruction",
             1160,
             -560,
@@ -1825,7 +1855,7 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineNode(
             "seed_scale_estimation",
             "Reference seed dimensions and shape",
-            "Segmentation",
+            "Calibration",
             "Measure reviewed silhouettes and resolve joint dimensions/shape priors",
             1200,
             -160,
@@ -1884,7 +1914,7 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineNode(
             "distance_candidates",
             "Distance-peak candidates",
-            "Segmentation",
+            "Seed detection",
             "Find seed-centre peaks inside connected foreground",
             1680,
             -300,
@@ -1906,7 +1936,7 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineNode(
             "circle_candidates",
             "Circle candidates",
-            "Segmentation",
+            "Seed detection",
             "Find seed-like circular edges in the dish crop",
             1800,
             -100,
@@ -1952,7 +1982,7 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineNode(
             "identification",
             "Seed identification",
-            "Segmentation",
+            "Seed detection",
             "Consolidate active seed-centre candidates into review proposals",
             1920,
             -200,
@@ -1975,7 +2005,7 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineNode(
             "background_likelihood",
             "Material colour probabilities",
-            "Segmentation",
+            "Material evidence",
             "Independent foreground, background, and Other colour evidence",
             1320,
             180,
@@ -2052,7 +2082,7 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineNode(
             "instance_masks",
             "Instance colour masks",
-            "Diagnostic overlay",
+            "Seed detection",
             "Unique, spatially contrasting provisional seed masks",
             2160,
             -200,
@@ -2076,7 +2106,7 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineNode(
             "refined_background_likelihood",
             "Material noise probabilities",
-            "Diagnostic overlay",
+            "Material evidence",
             "Independent foreground, background, and Other directional texture evidence",
             1440,
             180,
@@ -2155,7 +2185,7 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineNode(
             "edge_gradients",
             "Edge gradients",
-            "GPU diagnostic",
+            "Edge evidence",
             "Configurable original/wavelet gradients plus both tangent encodings",
             1340,
             390,
@@ -2206,7 +2236,7 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineNode(
             "surface_darkness_gradients",
             "Directional surface darkness gradients",
-            "GPU diagnostic",
+            "Edge evidence",
             "Find maximum one-sided lightening and darkening L* slopes",
             1440,
             1080,
@@ -2244,7 +2274,7 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineNode(
             "lightening_gradient_ceiling",
             "Lightening derivative upper cutoff",
-            "GPU diagnostic",
+            "Edge evidence",
             "Suppress lightening slopes above an editable upper magnitude",
             1740,
             1060,
@@ -2269,7 +2299,7 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineNode(
             "darkening_gradient_ceiling",
             "Darkening derivative upper cutoff",
-            "GPU diagnostic",
+            "Edge evidence",
             "Suppress darkening slopes above an editable upper magnitude",
             1740,
             1240,
@@ -2294,7 +2324,7 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineNode(
             "frequency_noise_masks",
             "Multiscale darkness and colour noise",
-            "GPU diagnostic",
+            "Material evidence",
             "Measure surrounding darkness and Lab-colour energy in three bands",
             1440,
             1420,
@@ -2332,7 +2362,7 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineNode(
             "reference_texture_prototypes",
             "Reference texture prototypes",
-            "GPU diagnostic",
+            "Material evidence",
             "Learn material prototypes and instance-derived edge classes",
             1560,
             690,
@@ -2402,7 +2432,7 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineNode(
             "material_evidence_decision",
             "Material evidence decision",
-            "Segmentation",
+            "Material evidence",
             "Calibrate Seed versus Non-seed with explicit ambiguity and unknown mass",
             1660,
             260,
@@ -2466,7 +2496,7 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineNode(
             "reference_seed_traits",
             "Reference seed traits",
-            "GPU diagnostic",
+            "Seed traits",
             "Classify reviewed seed coat patterns and non-exclusive conditions",
             1870,
             260,
@@ -2536,7 +2566,7 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineNode(
             "reference_edge_probability",
             "Reference edges",
-            "GPU diagnostic",
+            "Edge evidence",
             "Classify edge context, require true-edge support, normalize, and thin",
             1860,
             690,
@@ -2644,7 +2674,7 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineNode(
             "edge_traces",
             "Oriented edge traces",
-            "GPU diagnostic",
+            "Edge evidence",
             "Link tangent/curvature-compatible ridges, bridge gaps and split junctions",
             2280,
             430,
@@ -2695,7 +2725,7 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineNode(
             "seed_edge_curves",
             "Seed-boundary confirmation",
-            "Boundary analysis",
+            "Edge evidence",
             "Trace, radius, circle, ellipse, centre-vote and semantic confirmation",
             2340,
             500,
@@ -2708,8 +2738,6 @@ def build_default_pipeline() -> PipelineGraph:
                 "boundary_arc_sample_count": 15,
                 "boundary_orientation_tolerance_degrees": 20.0,
                 "boundary_missing_support_floor": 0.15,
-                "boundary_circle_residual_tolerance": 0.16,
-                "boundary_ellipse_residual_tolerance": 0.18,
                 "boundary_max_axis_ratio": 2.20,
                 "boundary_radius_log_tolerance": 0.45,
                 "boundary_center_vote_weight": 0.35,
@@ -2752,7 +2780,7 @@ def build_default_pipeline() -> PipelineGraph:
             ),
         ),
         PipelineNode(
-            "boundary_normals", "Boundary confidence and normals", "GPU diagnostic",
+            "boundary_normals", "Boundary confidence and normals", "Edge evidence",
             "Estimate boundary strength and continuous outward normal direction",
             1920, 180,
             details=(
@@ -2766,7 +2794,7 @@ def build_default_pipeline() -> PipelineGraph:
             parameter_specs=boundary_normal_parameters,
         ),
         PipelineNode(
-            "touching_split", "Touching-seed split likelihood", "GPU diagnostic",
+            "touching_split", "Touching-seed split likelihood", "Seed detection",
             "Locate shared necks and distance-transform saddles inside seed masses",
             2160, 70,
             details="High likelihood requires boundary support near a shallow foreground neck or concave distance-transform saddle; it guides correction of provisional GPU assignments.",
@@ -2774,7 +2802,7 @@ def build_default_pipeline() -> PipelineGraph:
             parameter_specs=touching_split_parameters,
         ),
         PipelineNode(
-            "ellipse_likelihood", "Multiscale ellipse likelihood", "GPU diagnostic",
+            "ellipse_likelihood", "Multiscale ellipse likelihood", "Seed detection",
             "Score seed-radius boundary support and local elliptical orientation",
             2280, 270,
             details="Structure-tensor anisotropy is combined with boundary evidence near each proposal radius. Hue shows axial ellipse orientation and brightness shows support.",
@@ -2782,7 +2810,7 @@ def build_default_pipeline() -> PipelineGraph:
             parameter_specs=ellipse_parameters,
         ),
         PipelineNode(
-            "proposal_disagreement", "Proposal disagreement", "GPU diagnostic",
+            "proposal_disagreement", "Proposal disagreement", "Seed detection",
             "Show where circle, distance, interior, and ellipse evidence disagree",
             2400, 70,
             details="The normalized standard deviation among four independently derived evidence maps highlights fragile proposals and method-specific failures.",
@@ -2790,7 +2818,7 @@ def build_default_pipeline() -> PipelineGraph:
             parameter_specs=disagreement_parameters,
         ),
         PipelineNode(
-            "assignment_confidence", "Instance-assignment confidence", "GPU diagnostic",
+            "assignment_confidence", "Instance-assignment confidence", "Seed detection",
             "Estimate confidence that each pixel belongs to its proposed seed",
             2400, 270,
             details="Interior confidence is discounted at strong boundaries and where neighbouring provisional labels meet. A separate contested-pixel intermediate is viewable.",
@@ -2806,7 +2834,7 @@ def build_default_pipeline() -> PipelineGraph:
             },
         ),
         PipelineNode(
-            "contact_graph", "Occlusion/contact graph", "GPU diagnostic",
+            "contact_graph", "Occlusion/contact graph", "Seed detection",
             "Connect seed proposals whose extents touch or overlap",
             2640, 170,
             details="GPU pairwise distances create a proposal contact graph; the viewer overlays candidate contact lines on shared-boundary evidence.",
@@ -2814,7 +2842,7 @@ def build_default_pipeline() -> PipelineGraph:
             parameter_specs=contact_parameters,
         ),
         PipelineNode(
-            "illumination_decomposition", "Grayscale and local lighting", "GPU diagnostic",
+            "illumination_decomposition", "Grayscale and local lighting", "Image quality",
             "Flatten grayscale and identify locally unusual shadow/highlight areas",
             1280, 760,
             details=(
@@ -2867,7 +2895,7 @@ def build_default_pipeline() -> PipelineGraph:
             },
         ),
         PipelineNode(
-            "image_quality", "Image-quality diagnostics", "GPU diagnostic",
+            "image_quality", "Image-quality diagnostics", "Image quality",
             "Map focus, clipping, underexposure, glare, and local noise risk",
             1740, 760,
             details="The composite risk map is backed by separately viewable focus, clipped-highlight, underexposure, and sensor-noise maps.",
@@ -2891,7 +2919,7 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineNode(
             "procedural_instances",
             "Procedural seed separation",
-            "Segmentation",
+            "Seed detection",
             "Fuse material, physical-boundary and seed-scale evidence into reviewable instances",
             2520,
             820,
@@ -3013,7 +3041,7 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineNode(
             "unet_instances",
             "U-Net + watershed instances",
-            "Learned segmentation",
+            "Seed detection",
             "Distinguish physical contacts from non-physical coat-pattern boundaries",
             2100,
             1060,
@@ -3079,7 +3107,7 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineNode(
             "stardist_instances",
             "StarDist seed instances",
-            "Learned segmentation",
+            "Seed detection",
             "Predict one scored star-convex polygon for each visible seed",
             2400,
             1060,
@@ -3128,7 +3156,56 @@ def build_default_pipeline() -> PipelineGraph:
             ),
         ),
         PipelineNode(
-            "radial_profile", "Per-seed radial profiles", "GPU diagnostic",
+            "cellpose_sam_instances",
+            "Cellpose-SAM seed instances",
+            "Seed detection",
+            "Segment every seed with the pretrained Cellpose-SAM model",
+            2400,
+            1320,
+            details=(
+                "The pretrained Cellpose-SAM model (a SAM ViT-L backbone with a "
+                "Cellpose flow head) predicts, for each pixel, a flow towards its seed's "
+                "centre and a cell probability. Following the flows groups pixels into "
+                "seed masks, which are clipped to the detected dish. It runs zero-shot on "
+                "the calibrated colour crop: no checkpoint or training is needed. Enable "
+                "the node and run the pipeline; the first run downloads the weights once. "
+                "Network flows are cached, so threshold edits only repeat mask recovery. "
+                "Requires the optional cellpose package; results are unvalidated "
+                "proposals for review."
+            ),
+            enabled=False,
+            bypassable=True,
+            status=NodeStatus.BYPASSED,
+            status_detail="Disabled; enable to run Cellpose-SAM",
+            parameters={
+                "pretrained_model": "cpsam_v2",
+                "rescale_to_seed_diameter": False,
+                "flow_threshold": 0.4,
+                "cellprob_threshold": 0.0,
+                "minimum_instance_area_fraction": 0.15,
+            },
+            parameter_specs=cellpose_instance_parameters,
+            input_ports=(
+                ("image", "Corrected image"),
+                ("scale", "Seed diameter"),
+            ),
+            output_ports=(
+                ("instances", "Instance identities"),
+                ("probability", "Cell probability"),
+                ("confidence", "Instance confidence"),
+            ),
+            output_port_types={
+                "instances": "SeedInstances",
+                "probability": "CellProbability",
+                "confidence": "InstanceConfidence",
+            },
+            inline_parameters=(
+                ("cellprob_threshold", "Cell probability"),
+                ("flow_threshold", "Flow error"),
+            ),
+        ),
+        PipelineNode(
+            "radial_profile", "Per-seed radial profiles", "Seed traits",
             "Compare each assigned pixel with expected centre-to-edge lightness",
             2400, 540,
             details="Pixels are normalized by their assigned proposal radius and accumulated into a configurable global radial profile. The residual highlights unusual edge darkening or internal structure.",
@@ -3144,11 +3221,11 @@ def build_default_pipeline() -> PipelineGraph:
             },
         ),
         PipelineNode(
-            'trait_classifier', 'Object-level seed traits', 'GPU trait analysis',
+            'trait_classifier', 'Object-level seed traits', 'Seed traits',
             'Apply a frozen supplied-vocabulary classifier to the selected seed instances',
             2670, 1060, enabled=False, bypassable=True, status=NodeStatus.BYPASSED,
             status_detail='Disabled; select a frozen trait model',
-            optional_enabled_input_ports=('procedural', 'unet', 'stardist'),
+            optional_enabled_input_ports=('procedural', 'unet', 'stardist', 'cellpose'),
             parameters={'trait_model_path': 'None', 'trait_abstention_threshold': .8},
             inline_parameters=(('trait_abstention_threshold', 'Minimum probability'),),
             parameter_specs=(
@@ -3157,7 +3234,7 @@ def build_default_pipeline() -> PipelineGraph:
                 ParameterSpec('trait_abstention_threshold', 'Minimum predictive probability', 'float',
                     0., 1., .01, 'Withhold the class below this calibrated predictive probability.'),
             ),
-            details='Uses the same enabled U-Net, StarDist, then procedural selection as result export. '
+            details='Uses the same enabled U-Net, StarDist, Cellpose-SAM, then procedural selection as result export. '
                 'CUDA colour and visible-pixel geometry features and calibrated scores are cached separately '
                 'from threshold decisions. Invalid crop/frame/support inputs abstain. Supplied definitions '
                 'and development calibration do not establish biological validation.',
@@ -3165,7 +3242,7 @@ def build_default_pipeline() -> PipelineGraph:
             output_port_types={'predictions': 'TraitPredictions'},
         ),
         PipelineNode(
-            "wrinkling", "Wrinkling likelihood", "GPU trait analysis",
+            "wrinkling", "Wrinkling likelihood", "Seed traits",
             "Detect seed-relative ridge and valley texture away from boundaries",
             2640, 480,
             details="Band-limited lightness curvature is normalized within the dish and gated by soft seed-interior confidence, excluding the main seed boundary.",
@@ -3173,7 +3250,7 @@ def build_default_pipeline() -> PipelineGraph:
             parameter_specs=wrinkling_parameters,
         ),
         PipelineNode(
-            "coat_damage", "Seed-coat damage likelihood", "GPU trait analysis",
+            "coat_damage", "Seed-coat damage likelihood", "Seed traits",
             "Combine local colour anomaly, internal edges, and radial residuals",
             2880, 450,
             details="Damage confidence rises where an anomalous local colour coincides with internal edge or radial-profile evidence; normal outer boundaries are suppressed.",
@@ -3181,7 +3258,7 @@ def build_default_pipeline() -> PipelineGraph:
             parameter_specs=damage_parameters,
         ),
         PipelineNode(
-            "pattern_decomposition", "Coat-pattern decomposition", "GPU trait analysis",
+            "pattern_decomposition", "Coat-pattern decomposition", "Seed traits",
             "Provide broad plain, spotted, mottled, patch, stripe, and bicolour probabilities",
             2400, 720,
             details="Fine, medium, and coarse seed-relative frequency responses plus directional structure produce transparent heuristic class probabilities. Each class probability is available as an intermediate overlay.",
@@ -3197,7 +3274,7 @@ def build_default_pipeline() -> PipelineGraph:
             },
         ),
         PipelineNode(
-            "colour_probabilities", "Broad colour probabilities", "GPU trait analysis",
+            "colour_probabilities", "Broad colour probabilities", "Seed traits",
             "Estimate white, yellow, green, red, brown, and black pixel probabilities",
             2400, 900,
             details="Colour-balanced RGB is compared with broad prototype colours using a softmax. The winning class, uncertainty, and every class probability are viewable independently.",
@@ -3213,7 +3290,7 @@ def build_default_pipeline() -> PipelineGraph:
             },
         ),
         PipelineNode(
-            "calibration_residuals", "Calibration residual risk", "GPU diagnostic",
+            "calibration_residuals", "Calibration residual risk", "Calibration",
             "Map confidence loss and extrapolation away from calibration references",
             1200, 940,
             details="Detected card/ruler confidence seeds the risk surface; risk increases with distance from the closest transformed calibration anchor.",
@@ -3221,23 +3298,23 @@ def build_default_pipeline() -> PipelineGraph:
             parameter_specs=calibration_residual_parameters,
         ),
         PipelineNode(
-            "review", "Human review", "Review", "Add, delete, split and merge masks", 3120, -200,
+            "review", "Human review", "Results", "Add, delete, split and merge masks", 3120, -200,
             implemented=False, status=NodeStatus.PLANNED, status_detail="Planned",
         ),
         PipelineNode(
-            "measurements", "Measurements", "Analysis", "Calibrated shape measurements", 3360, -310,
+            "measurements", "Measurements", "Results", "Calibrated shape measurements", 3360, -310,
             bypassable=True, status=NodeStatus.BLOCKED, status_detail="Requires reviewed masks",
         ),
         PipelineNode(
-            "classification", "Coat and condition", "Analysis", "Colour, pattern, wrinkling and damage", 3360, -90,
+            "classification", "Coat and condition", "Seed traits", "Colour, pattern, wrinkling and damage", 3360, -90,
             implemented=False, bypassable=True, status=NodeStatus.PLANNED, status_detail="Planned",
         ),
         PipelineNode(
-            "aggregation", "Lot aggregation", "Summary", "Counts, proportions and coverage", 3600, -200,
+            "aggregation", "Lot aggregation", "Results", "Counts, proportions and coverage", 3600, -200,
             implemented=False, status=NodeStatus.PLANNED, status_detail="Planned",
         ),
         PipelineNode(
-            "output", "Final output", "Output", "CSV, JSON and annotated images", 3840, -200,
+            "output", "Final output", "Results", "CSV, JSON and annotated images", 3840, -200,
             implemented=False, status=NodeStatus.PLANNED, status_detail="Planned",
         ),
     )
@@ -3825,8 +3902,6 @@ def build_default_pipeline() -> PipelineGraph:
             (
                 "Oval geometry fit",
                 (
-                    "boundary_circle_residual_tolerance",
-                    "boundary_ellipse_residual_tolerance",
                     "boundary_max_axis_ratio",
                 ),
             ),
@@ -4004,6 +4079,17 @@ def build_default_pipeline() -> PipelineGraph:
             (
                 "Polygon acceptance",
                 ("nms_iou_threshold", "minimum_instance_area_fraction"),
+            ),
+        ),
+        "cellpose_sam_instances": (
+            ("Model", ("pretrained_model", "rescale_to_seed_diameter")),
+            (
+                "Mask recovery",
+                (
+                    "cellprob_threshold",
+                    "flow_threshold",
+                    "minimum_instance_area_fraction",
+                ),
             ),
         ),
         'trait_classifier': (
@@ -4626,11 +4712,15 @@ def build_default_pipeline() -> PipelineGraph:
         PipelineConnection("illumination_decomposition", "stardist_instances", "ShadowLikelihood", source_port="shadow", target_port="shadow"),
         PipelineConnection("illumination_decomposition", "stardist_instances", "HighlightLikelihood", source_port="highlight", target_port="highlight"),
         PipelineConnection("image_quality", "stardist_instances", "SensorNoiseLikelihood", source_port="sensor_noise", target_port="sensor_noise"),
+        PipelineConnection("deskew_colour", "cellpose_sam_instances", "CorrectedImage", target_port="image"),
+        PipelineConnection("layout_detection", "cellpose_sam_instances", "DishRegion", target_port="image"),
+        PipelineConnection("seed_scale_estimation", "cellpose_sam_instances", "SeedDiameter", target_port="scale"),
         PipelineConnection('deskew_colour', 'trait_classifier', 'CorrectedImage', target_port='image'),
         PipelineConnection('layout_detection', 'trait_classifier', 'DishRegion', source_port='dish_region', target_port='valid'),
         PipelineConnection('procedural_instances', 'trait_classifier', 'SeedInstances', source_port='instances', target_port='procedural'),
         PipelineConnection('unet_instances', 'trait_classifier', 'SeedInstances', source_port='instances', target_port='unet'),
         PipelineConnection('stardist_instances', 'trait_classifier', 'SeedInstances', source_port='instances', target_port='stardist'),
+        PipelineConnection('cellpose_sam_instances', 'trait_classifier', 'SeedInstances', source_port='instances', target_port='cellpose'),
         PipelineConnection("instance_masks", "radial_profile", "ProvisionalInstances"),
         PipelineConnection(
             "identification", "radial_profile", "SeedProposals",
