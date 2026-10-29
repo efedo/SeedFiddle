@@ -6,19 +6,26 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0,str(ROOT))
-from seedvision.export.project_runner import run_project
+from seedvision.bootstrap import BootstrapError, require_runtime_ready
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--project',type=Path,required=True,help='Saved, fingerprint-verified project master')
     parser.add_argument('--workspace',type=Path,default=ROOT)
     parser.add_argument('--output-dir',type=Path,default=ROOT/'artifacts'/'project-results')
     parser.add_argument('--seed-crop-padding-px',type=int,default=None,
         help='Also export each proposed seed image/mask crop with this nonnegative pixel padding')
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if args.seed_crop_padding_px is not None and args.seed_crop_padding_px < 0:
         parser.error('--seed-crop-padding-px must be nonnegative')
+    try:
+        require_runtime_ready()
+    except BootstrapError as error:
+        print(f'Batch analysis requires a ready NVIDIA CUDA runtime:\n{error}', file=sys.stderr)
+        return 2
+    from seedvision.export.project_runner import run_project
+
     for path in run_project(args.workspace,args.project,args.output_dir,crop_padding_px=args.seed_crop_padding_px):
         print(path)
         if args.seed_crop_padding_px is not None:

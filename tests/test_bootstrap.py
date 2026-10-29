@@ -14,12 +14,16 @@ from unittest.mock import patch
 
 from seedvision.bootstrap import (
     BootstrapError,
+    DependencyCheck,
     Dependency,
     RuntimeReport,
+    TorchProbeResult,
     build_pip_command,
     install_dependencies,
     inspect_dependency,
+    inspect_runtime,
     load_configuration,
+    probe_torch,
     version_is_compatible,
     version_key,
 )
@@ -144,11 +148,25 @@ class PipCommandTests(unittest.TestCase):
         self.assertIn("--no-index", command)
         self.assertIn("--find-links", command)
 
+    def check_test_offline_cuda_pin_cannot_be_satisfied_by_cpu_torch_wheel(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            wheelhouse = Path(temporary_directory)
+            (wheelhouse / "torch-2.14.1+cpu-cp312-cp312-win_amd64.whl").touch()
+            command = build_pip_command(
+                "python.exe",
+                ("torch==2.14.1+cu126",),
+                wheelhouse=wheelhouse,
+                offline=True,
+            )
+        self.assertIn("--no-index", command)
+        self.assertIn("--find-links", command)
+        self.assertEqual(command[-1], "torch==2.14.1+cu126")
+
     def check_test_online_command_can_select_the_cuda_wheel_index(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             command = build_pip_command(
                 "python.exe",
-                ("torch==2.13.0",),
+                ("torch==2.14.1+cu126",),
                 wheelhouse=Path(temporary_directory),
                 offline=False,
                 index_url="https://download.pytorch.org/whl/cu126",
@@ -174,11 +192,12 @@ class PipCommandTests(unittest.TestCase):
         torch = Dependency(
             distribution="torch",
             import_name="torch",
-            install_spec="torch==2.13.0",
+            install_spec="torch==2.14.1+cu126",
             minimum="2.5.0",
             maximum_exclusive="3.0.0",
             purpose="inference",
             index_url="https://download.pytorch.org/whl/cu126",
+            requires_cuda=True,
         )
         with tempfile.TemporaryDirectory() as temporary_directory:
             with patch("seedvision.bootstrap.run_checked") as run_checked:
@@ -194,12 +213,13 @@ class PipCommandTests(unittest.TestCase):
         self.assertNotIn("--index-url", first_command)
         self.assertIn("Example==2.4.0", first_command)
         self.assertIn("--index-url", second_command)
-        self.assertIn("torch==2.13.0", second_command)
+        self.assertIn("torch==2.14.1+cu126", second_command)
 
     def test_workflow_lifecycle(self):
-        """4 related PipCommandTests scenarios, each with private fixture state."""
+        """5 related PipCommandTests scenarios, each with private fixture state."""
         self.scenario(self.check_test_online_command_can_prefer_local_wheels)
         self.scenario(self.check_test_offline_command_disables_package_indexes)
+        self.scenario(self.check_test_offline_cuda_pin_cannot_be_satisfied_by_cpu_torch_wheel)
         self.scenario(self.check_test_online_command_can_select_the_cuda_wheel_index)
         self.scenario(self.check_test_online_install_separates_default_and_cuda_indexes)
 
@@ -225,15 +245,23 @@ class ManifestTests(unittest.TestCase):
         torch = next(item for item in configuration.packages if item.distribution == "torch")
         self.assertEqual(torch.index_url, "https://download.pytorch.org/whl/cu126")
         self.assertTrue(torch.required)
+        self.assertTrue(torch.requires_cuda)
+        self.assertEqual(torch.install_spec, "torch==2.14.1+cu126")
 
         requirement_lines = {
             line.strip()
             for line in (root / "requirements-runtime.txt").read_text(encoding="utf-8").splitlines()
             if line.strip() and not line.lstrip().startswith("#")
         }
+        source_options = {line for line in requirement_lines if line.startswith("--")}
+        package_specs = requirement_lines - source_options
         self.assertEqual(
-            requirement_lines,
+            package_specs,
             {item.install_spec for item in configuration.required_packages},
+        )
+        self.assertEqual(
+            source_options,
+            {"--find-links https://download.pytorch.org/whl/cu126/torch/"},
         )
 
         self.assertTrue(version_is_compatible(
@@ -257,7 +285,7 @@ class ManifestTests(unittest.TestCase):
             "numpy": "2.5.4",
             "opencv-python": "5.0.0.93",
             "matplotlib": "3.11.2",
-            "torch": "2.15.0",
+            "torch": "2.15.0+cu132",
             "cellpose": "4.2.1.1",
         }
         checks = tuple(
@@ -377,6 +405,194 @@ class ManifestTests(unittest.TestCase):
             ["immature", "split", "wrinkled", "stained"],
         )
         self.assertTrue(traits["visible_face_only"])
+
+
+class CudaRuntimeTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.configuration = load_configuration(Path(__file__).resolve().parents[1])
+
+    def make_probe(self, **overrides) -> TorchProbeResult:
+        values = {
+            "python_executable": "python.exe",
+            "state": "completed",
+            "torch_version": "2.15.0+cu132",
+            "module_location": "site-packages/torch/__init__.py",
+            "cuda_built": True,
+            "cuda_version": "13.2",
+            "hip_version": None,
+            "cuda_available": True,
+            "gpu_name": "NVIDIA GPU",
+            "calculation_succeeded": True,
+            "failure_detail": None,
+        }
+        values.update(overrides)
+        return TorchProbeResult(**values)
+
+    def inspect_with_probe(self, probe: TorchProbeResult) -> RuntimeReport:
+        versions = {
+            "PySide6": "6.12.0",
+            "numpy": "2.5.4",
+            "opencv-python": "5.0.0.93",
+            "matplotlib": "3.11.2",
+            "torch": "2.15.0+cu132",
+            "cellpose": "4.2.1.1",
+        }
+        checks = tuple(
+            DependencyCheck(
+                dependency=dependency,
+                installed=True,
+                compatible=True,
+                version=versions[dependency.distribution],
+                detail="compatible",
+            )
+            for dependency in self.configuration.packages
+        )
+        with patch("seedvision.bootstrap.inspect_dependency", side_effect=checks):
+            return inspect_runtime(self.configuration, torch_probe=probe)
+
+    def test_build_and_device_readiness_are_classified_separately(self) -> None:
+        working = self.inspect_with_probe(self.make_probe())
+        self.assertTrue(working.ready)
+        self.assertTrue(working.cuda_ready)
+        self.assertEqual(working.packages_to_install, ())
+
+        cpu_only = self.inspect_with_probe(
+            self.make_probe(cuda_built=False, cuda_version=None, cuda_available=False,
+                            gpu_name=None, calculation_succeeded=False,
+                            failure_detail="torch.cuda.is_available() returned false")
+        )
+        self.assertFalse(cpu_only.ready)
+        self.assertTrue(cpu_only.has_cuda_package_problem)
+        self.assertEqual(
+            [item.distribution for item in cpu_only.packages_to_install],
+            ["torch"],
+        )
+
+        rocm = self.inspect_with_probe(
+            self.make_probe(cuda_version=None, hip_version="6.4",
+                            calculation_succeeded=True)
+        )
+        self.assertFalse(rocm.ready)
+        self.assertTrue(rocm.has_cuda_package_problem)
+        torch_check = next(
+            check for check in rocm.dependency_checks
+            if check.dependency.distribution == "torch"
+        )
+        self.assertIn("ROCm", torch_check.detail)
+
+        no_device = self.inspect_with_probe(
+            self.make_probe(cuda_available=False, gpu_name=None,
+                            calculation_succeeded=False,
+                            failure_detail="no CUDA-capable device is detected")
+        )
+        self.assertFalse(no_device.ready)
+        self.assertFalse(no_device.has_cuda_package_problem)
+        self.assertEqual(no_device.packages_to_install, ())
+
+        calc_failed = self.inspect_with_probe(
+            self.make_probe(failure_detail="CUDA kernel launch failed",
+                            calculation_succeeded=False)
+        )
+        self.assertFalse(calc_failed.ready)
+        self.assertFalse(calc_failed.has_cuda_package_problem)
+        self.assertEqual(calc_failed.packages_to_install, ())
+
+        failed_probe = self.inspect_with_probe(
+            self.make_probe(state="timeout", cuda_built=None, cuda_version=None,
+                            cuda_available=None, gpu_name=None,
+                            calculation_succeeded=False,
+                            failure_detail="probe exceeded timeout")
+        )
+        self.assertFalse(failed_probe.ready)
+        self.assertFalse(failed_probe.has_cuda_package_problem)
+        self.assertEqual(failed_probe.packages_to_install, ())
+
+    def test_probe_handles_timeout_crash_import_and_malformed_output(self) -> None:
+        with patch(
+            "seedvision.bootstrap.subprocess.run",
+            side_effect=subprocess.TimeoutExpired("python", 1),
+        ):
+            timed_out = probe_torch("python", timeout=1)
+        self.assertEqual(timed_out.state, "timeout")
+        self.assertIn("timeout", timed_out.failure_detail)
+
+        with patch(
+            "seedvision.bootstrap.subprocess.run",
+            side_effect=OSError("interpreter is unavailable"),
+        ):
+            launch_failed = probe_torch("missing-python")
+        self.assertEqual(launch_failed.state, "launch_failed")
+        self.assertIn("interpreter is unavailable", launch_failed.failure_detail)
+
+        for stderr, expected_state in (
+            ("ModuleNotFoundError: No module named torch", "import_failed"),
+            ("DLL load failed while importing torch", "import_failed"),
+            ("fatal process exit", "abnormal_exit"),
+        ):
+            with patch(
+                "seedvision.bootstrap.subprocess.run",
+                return_value=subprocess.CompletedProcess(
+                    args=["python"], returncode=1, stdout="", stderr=stderr
+                ),
+            ):
+                failed = probe_torch("python")
+            self.assertEqual(failed.state, expected_state)
+            self.assertIn(stderr.splitlines()[-1], failed.failure_detail)
+
+        with patch(
+            "seedvision.bootstrap.subprocess.run",
+            return_value=subprocess.CompletedProcess(
+                args=["python"], returncode=0, stdout="not json", stderr=""
+            ),
+        ):
+            malformed = probe_torch("python")
+        self.assertEqual(malformed.state, "invalid_response")
+        self.assertIn("invalid CUDA probe output", malformed.failure_detail)
+
+    def test_probe_parses_real_calculation_status_from_selected_interpreter(self) -> None:
+        payload = {
+            "torch_version": "2.15.0+cu132",
+            "module_location": "C:/Python/Lib/site-packages/torch/__init__.py",
+            "cuda_built": True,
+            "cuda_version": "13.2",
+            "hip_version": None,
+            "cuda_available": True,
+            "gpu_name": "NVIDIA Blackwell",
+            "calculation_succeeded": True,
+            "failure_detail": None,
+        }
+        with patch(
+            "seedvision.bootstrap.subprocess.run",
+            return_value=subprocess.CompletedProcess(
+                args=["python"], returncode=0,
+                stdout=json.dumps(payload), stderr="",
+            ),
+        ) as run:
+            result = probe_torch("selected-python.exe")
+        self.assertEqual(result.python_executable, "selected-python.exe")
+        self.assertEqual(result.state, "completed")
+        self.assertTrue(result.nvidia_cuda_build)
+        self.assertTrue(result.calculation_succeeded)
+        self.assertEqual(result.gpu_name, "NVIDIA Blackwell")
+        self.assertEqual(run.call_args.args[0][0], "selected-python.exe")
+        self.assertIn("torch.cuda.synchronize()", run.call_args.args[0][2])
+        self.assertIn("torch.backends.cuda.is_built()", run.call_args.args[0][2])
+        self.assertIn("torch.version.hip", run.call_args.args[0][2])
+
+    def test_diagnostics_separate_build_and_real_device_execution(self) -> None:
+        report = self.inspect_with_probe(
+            self.make_probe(cuda_available=False, gpu_name=None,
+                            calculation_succeeded=False,
+                            failure_detail="driver initialization failed")
+        )
+        from seedvision.bootstrap import format_report
+
+        output = format_report(report, self.configuration)
+        self.assertIn("PyTorch build: NVIDIA CUDA build", output)
+        self.assertIn("CUDA device execution: FAIL", output)
+        self.assertIn("driver initialization failed", output)
+        self.assertIn("will not fix an unavailable device", output)
 
 
 if __name__ == "__main__":

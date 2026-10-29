@@ -1,9 +1,10 @@
 # Preferred development versions. The bootstrapper accepts already-installed
 # compatible versions within the ranges in config/runtime_dependencies.json.
-# The bootstrapper installs PyTorch from the CUDA wheel index declared in
-# config/runtime_dependencies.json rather than from the default package index.
+# Keep PyPI as the source for other packages; this link supplies the pinned CUDA
+# wheel without allowing a CPU-only torch wheel to satisfy the requirement.
 PySide6==6.11.1
 numpy==2.5.1
 opencv-python==5.0.0.93
 matplotlib==3.11.2
-torch==2.13.0
+--find-links https://download.pytorch.org/whl/cu126/torch/
+torch==2.14.1+cu126

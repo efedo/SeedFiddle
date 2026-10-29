@@ -22,11 +22,12 @@ compared on the same image.
 
 ## Install and launch
 
-Requirements: Windows, 64-bit Python 3.12 (the baseline) and an NVIDIA GPU whose
-driver supports the configured PyTorch CUDA wheel. Python 3.13–3.15 are permitted
-by the runtime gate when compatible dependencies are already installed. The
-baseline installation pins are not a promise that bootstrap can provision a new
-Python 3.15 environment. A separate CUDA toolkit is not needed.
+Requirements: Windows, 64-bit Python 3.12 (the baseline), a supported NVIDIA GPU,
+a compatible NVIDIA driver, and CUDA-enabled PyTorch that successfully executes a
+small CUDA calculation. Python 3.13–3.15 are permitted by the runtime gate when
+compatible dependencies are already installed. The baseline installation pins
+are not a promise that bootstrap can provision a new Python 3.15 environment. A
+separate CUDA toolkit is not needed.
 
 ```powershell
 git clone https://github.com/efedo/SeedFiddle.git
@@ -42,9 +43,41 @@ The first launch can create `.venv` and install the pinned packages from
 .\.venv\Scripts\python.exe .\seed_vision.py --diagnostics
 ```
 
-`--diagnostics` reports the runtime and whether CUDA is active. `--offline` installs
-only from wheels you place in `wheels/` (binaries are not committed). If a bootstrap
-fails, delete only the incomplete `.venv` and run it again.
+`--diagnostics` reports PyTorch build compatibility separately from an actual GPU
+calculation; it returns nonzero until both are ready. `--offline` installs only
+from wheels you place in `wheels/` (binaries are not committed). A CPU-only or
+ROCm PyTorch build is incompatible; a CUDA build with an unavailable GPU or
+driver is a hardware/runtime problem and is not repeatedly reinstalled.
+
+### NVIDIA CUDA and Python 3.15
+
+Use the same interpreter for pip, diagnostics, analysis, and launch. The preferred
+CUDA 12.6 pin is a baseline option for supported NVIDIA GPUs, but CUDA 12.6 does
+not cover Blackwell GPUs. On Windows with Python 3.15, the CUDA 13.2 wheel is an
+option for Blackwell hardware and requires a driver compatible with CUDA 13.2.
+CUDA 12.6 can be used where supported by the GPU and installed driver; choose the
+wheel family for the hardware/driver rather than downgrading an already-working
+newer CUDA build.
+
+Install one of these into the selected interpreter:
+
+```powershell
+python -m pip install --upgrade "torch==2.15.0+cu132" --index-url https://download.pytorch.org/whl/cu132
+python -m pip install --upgrade "torch==2.14.1+cu126" --index-url https://download.pytorch.org/whl/cu126
+```
+
+Verify package consistency and run a real CUDA calculation before launching:
+
+```powershell
+python -m pip check
+python -c "import torch; x=torch.tensor([1.0,2.0,3.0],device='cuda'); y=((x+2)*3).sum(); torch.cuda.synchronize(); print(torch.cuda.get_device_name(0), y.item())"
+python seed_vision.py --environment current --no-bootstrap --diagnostics
+python seed_vision.py --environment current --no-bootstrap
+```
+
+The runtime gate accepts any in-range NVIDIA CUDA PyTorch build that passes the
+calculation, including a working newer CUDA family; the preferred install pin is
+not an equality requirement.
 
 ### Use an existing Python environment
 

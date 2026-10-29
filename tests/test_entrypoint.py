@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from tests.functional_units import functional_units
 
+import io
+from contextlib import redirect_stderr, redirect_stdout
 import sys
 import subprocess
 import types
@@ -36,6 +38,138 @@ class EntrypointTests(unittest.TestCase):
         self.assertEqual(arguments.environment, "auto")
         self.assertEqual(arguments.bootstrap, "ask")
         self.assertFalse(arguments.offline)
+
+    def check_test_failed_cuda_readiness_blocks_launch_and_diagnostics_returns_nonzero(self) -> None:
+        import seed_vision
+
+        report = types.SimpleNamespace(
+            ready=False,
+            packages_to_install=(),
+            python_compatible=True,
+            architecture_bits=64,
+            torch_probe=None,
+        )
+        with patch("seed_vision.inspect_runtime", return_value=report), \
+             patch("seed_vision.format_report", return_value="CUDA device execution: FAIL"), \
+             patch("seed_vision._launch_application") as launch:
+            diagnostics_output = io.StringIO()
+            with redirect_stdout(diagnostics_output):
+                diagnostics_status = seed_vision.main(
+                    ["--environment", "current", "--diagnostics"]
+                )
+            launch_output = io.StringIO()
+            with redirect_stdout(launch_output), redirect_stderr(io.StringIO()):
+                launch_status = seed_vision.main(
+                    ["--environment", "current", "--no-bootstrap"]
+                )
+        self.assertEqual(diagnostics_status, 2)
+        self.assertIn("CUDA device execution: FAIL", diagnostics_output.getvalue())
+        self.assertEqual(launch_status, 2)
+        launch.assert_not_called()
+
+    def check_test_hardware_failure_does_not_trigger_package_reinstallation(self) -> None:
+        import seed_vision
+
+        report = types.SimpleNamespace(
+            ready=False,
+            packages_to_install=(),
+            python_compatible=True,
+            architecture_bits=64,
+            torch_probe=None,
+        )
+        with patch("seed_vision.inspect_runtime", return_value=report), \
+             patch("seed_vision.format_report", return_value="CUDA device unavailable"), \
+             patch("seed_vision.install_dependencies") as install, \
+             patch("seed_vision._run_with_interpreter") as rerun:
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                status = seed_vision.main(["--environment", "current", "--bootstrap", "auto"])
+        self.assertEqual(status, 2)
+        install.assert_not_called()
+        rerun.assert_not_called()
+
+    def check_test_no_bootstrap_does_not_install_cuda_package_repair(self) -> None:
+        import seed_vision
+
+        torch = types.SimpleNamespace(
+            distribution="torch",
+            install_spec="torch==2.14.1+cu126",
+        )
+        report = types.SimpleNamespace(
+            ready=False,
+            packages_to_install=(torch,),
+            python_compatible=True,
+            architecture_bits=64,
+            torch_probe=None,
+        )
+        with patch("seed_vision.inspect_runtime", return_value=report), \
+             patch("seed_vision.format_report", return_value="CPU-only PyTorch"), \
+             patch("seed_vision.install_dependencies") as install:
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                status = seed_vision.main(
+                    ["--environment", "current", "--no-bootstrap"]
+                )
+        self.assertEqual(status, 2)
+        install.assert_not_called()
+
+    def check_test_cuda_package_repair_rechecks_target_without_bootstrap_loop(self) -> None:
+        import seed_vision
+
+        torch = types.SimpleNamespace(
+            distribution="torch",
+            install_spec="torch==2.14.1+cu126",
+        )
+        report = types.SimpleNamespace(
+            ready=False,
+            packages_to_install=(torch,),
+            python_compatible=True,
+            architecture_bits=64,
+            in_virtual_environment=False,
+            torch_probe=None,
+        )
+        with patch("seed_vision.inspect_runtime", return_value=report), \
+             patch("seed_vision.format_report", return_value="CPU-only PyTorch"), \
+             patch("seed_vision.install_dependencies") as install, \
+             patch("seed_vision._run_with_interpreter", return_value=2) as rerun:
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                status = seed_vision.main(
+                    ["--environment", "current", "--bootstrap", "auto"]
+                )
+        self.assertEqual(status, 2)
+        install.assert_called_once()
+        self.assertEqual(
+            install.call_args.args[1],
+            (torch,),
+        )
+        self.assertEqual(rerun.call_args.kwargs["bootstrap"], "never")
+
+    def check_test_cpu_learning_maintenance_does_not_require_a_gpu(self) -> None:
+        import seed_vision
+
+        with patch("seed_vision.inspect_runtime") as inspect, \
+             patch("seed_vision._run_learning_action", return_value=0) as action:
+            for arguments in (
+                ["--learning-audit", "manifest.json"],
+                ["--create-synthetic-learning-data", "synthetic-data"],
+            ):
+                self.assertEqual(seed_vision.main(arguments), 0)
+        inspect.assert_not_called()
+        self.assertEqual(action.call_count, 2)
+
+    def check_test_batch_analysis_runs_shared_runtime_preflight_before_importing_runner(self) -> None:
+        from scripts import analyze_pilot
+        from seedvision.bootstrap import BootstrapError
+
+        with patch(
+            "scripts.analyze_pilot.require_runtime_ready",
+            side_effect=BootstrapError("CUDA is not ready"),
+        ) as preflight:
+            output = io.StringIO()
+            errors = io.StringIO()
+            with redirect_stdout(output), redirect_stderr(errors):
+                status = analyze_pilot.main(["--project", "missing.seedfiddle-project.json"])
+        self.assertEqual(status, 2)
+        preflight.assert_called_once_with()
+        self.assertIn("CUDA is not ready", errors.getvalue())
 
     def check_test_application_starts_main_window_maximized(self) -> None:
         from seedvision.application import run
@@ -109,6 +243,15 @@ class EntrypointTests(unittest.TestCase):
         self.scenario(self.check_test_importing_entrypoint_does_not_import_gui_or_ml_packages)
         self.scenario(self.check_test_parser_defaults_to_safe_interactive_bootstrap)
         self.scenario(self.check_test_application_starts_main_window_maximized)
+
+    def test_cuda_readiness_enforcement(self):
+        """6 readiness scenarios, each with isolated bootstrap mocks."""
+        self.scenario(self.check_test_failed_cuda_readiness_blocks_launch_and_diagnostics_returns_nonzero)
+        self.scenario(self.check_test_hardware_failure_does_not_trigger_package_reinstallation)
+        self.scenario(self.check_test_no_bootstrap_does_not_install_cuda_package_repair)
+        self.scenario(self.check_test_cuda_package_repair_rechecks_target_without_bootstrap_loop)
+        self.scenario(self.check_test_cpu_learning_maintenance_does_not_require_a_gpu)
+        self.scenario(self.check_test_batch_analysis_runs_shared_runtime_preflight_before_importing_runner)
 
 
 if __name__ == "__main__":

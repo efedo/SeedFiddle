@@ -21,7 +21,6 @@ from seedvision.bootstrap import (  # noqa: E402 - intentionally after ROOT setu
     inspect_runtime,
     install_dependencies,
     load_configuration,
-    probe_torch,
     project_venv_python,
 )
 
@@ -496,21 +495,17 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         _validate_benchmark_arguments(args)
+        if not args.diagnostics and (
+            args.learning_audit or args.create_synthetic_learning_data
+        ):
+            result = _run_learning_action(args)
+            return 2 if result is None else result
         configuration = load_configuration(ROOT)
         report = inspect_runtime(configuration)
 
         if args.diagnostics:
             print(format_report(report, configuration))
-            torch_check = next(
-                (
-                    check
-                    for check in report.dependency_checks
-                    if check.dependency.import_name == "torch"
-                ),
-                None,
-            )
-            if torch_check and torch_check.compatible:
-                print(f"Acceleration: {probe_torch(report.python_executable)}")
+            if report.torch_probe and report.torch_probe.calculation_succeeded:
                 print(
                     "Image pipeline: PyTorch CUDA for full-raster calibration, "
                     "colour/noise probabilities, image-quality products, and edge "
@@ -551,6 +546,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         if bootstrap_mode == "never":
             print("\nBootstrap is disabled; no changes were made.", file=sys.stderr)
+            return 2
+        if not report.packages_to_install:
+            print(
+                "\nRuntime readiness failed without a repairable package problem; "
+                "check the CUDA device and driver details above.",
+                file=sys.stderr,
+            )
             return 2
 
         environment = args.environment
