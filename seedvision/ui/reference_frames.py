@@ -125,7 +125,8 @@ class ReferenceFrameController:
             from pathlib import Path
             from uuid import uuid4
             import shutil
-            original = Path(self._reference_region_store.path_for(result.image_path))
+            original = Path(self._project_reference_sidecar_paths.get(key)
+                            or self._reference_region_store.path_for(result.image_path))
             if original.is_file():
                 shutil.copyfile(original,original.with_name(original.stem+'.unbound-'+uuid4().hex+original.suffix))
             path = self._reference_region_store.save(result.image_path,bound)

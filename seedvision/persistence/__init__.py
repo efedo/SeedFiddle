@@ -66,6 +66,19 @@ from seedvision.persistence.project_analysis import (
     ResolvedProjectImage,
     ResolvedProjectSidecar,
 )
+from seedvision.persistence.project_annotations import (
+    PROJECT_ANNOTATIONS_SUFFIX,
+    annotation_folder,
+    project_annotation_directory,
+)
+from seedvision.persistence.annotation_transfer import (
+    ANNOTATION_BUNDLE_EXTENSION,
+    AnnotationBundleEntry,
+    AnnotationExportItem,
+    AnnotationTransferError,
+    read_annotation_bundle,
+    write_annotation_bundle,
+)
 from seedvision.persistence.reference_regions import (
     ImageFingerprintMismatch,
     InvalidReferenceArchive,
@@ -78,6 +91,15 @@ from seedvision.persistence.reference_regions import (
 from seedvision.reference_library.contracts import BiologicalContext, SpeciesLibraryPin
 
 __all__ = [
+    "ANNOTATION_BUNDLE_EXTENSION",
+    "AnnotationBundleEntry",
+    "AnnotationExportItem",
+    "AnnotationTransferError",
+    "PROJECT_ANNOTATIONS_SUFFIX",
+    "annotation_folder",
+    "project_annotation_directory",
+    "read_annotation_bundle",
+    "write_annotation_bundle",
     "ANALYSIS_SETTINGS_FILE_SUFFIX",
     "ANALYSIS_SETTINGS_FORMAT",
     "ANALYSIS_SETTINGS_VERSION",

@@ -2448,8 +2448,63 @@ class AnalysisLayerTests(unittest.TestCase):
         self.assertGreater(len(locations), 20)
         self.assertLessEqual(len(np.unique(locations[:, 1])), 1)
 
+    def check_test_fitted_seed_outlines_recover_isolated_and_touching_ellipses(self) -> None:
+        from dataclasses import replace
+
+        import cv2
+        import numpy as np
+
+        from seedvision.cuda import CudaContext
+        from seedvision.cuda.layers import directional_edges, seed_boundary_tracing
+        from seedvision.visualization import AnalysisLayerSettings
+
+        # Centre, semi-axes and angle of an oblique oval, a round seed, an
+        # upright oval and two touching ovals with no background between them.
+        truth = (
+            ((60, 60), (28, 18), 20), ((150, 64), (24, 24), 0), ((60, 160), (30, 16), 90),
+            ((126, 160), (26, 17), 0), ((178, 160), (26, 17), 0),
+        )
+        image = np.full((230, 240, 3), 225, np.uint8)
+        seed = np.zeros((230, 240), np.uint8)
+        for centre, axes, angle in truth:
+            cv2.ellipse(image, centre, axes, angle, 0, 360, (35, 55, 95), -1)
+            cv2.ellipse(seed, centre, axes, angle, 0, 360, 255, -1)
+        valid = np.full(seed.shape, 255, np.uint8)
+        settings = AnalysisLayerSettings()
+        context = CudaContext.resolve(requested="cpu")
+        gradients = directional_edges(image, valid, settings, cuda_context=context)
+
+        def traced(**changes):
+            return seed_boundary_tracing(
+                gradients, 48.0, replace(settings, **changes),
+                foreground_probability=seed, cuda_context=context,
+            )
+
+        result = traced()
+        geometry = result.geometry.materialize()
+        kept = geometry["oval_confidence"] > 0.0
+        centres = geometry["oval_centres_xy"][kept]
+        self.assertEqual(len(centres), len(truth))
+        for (centre, axes, angle) in truth:
+            index = int(np.argmin(np.linalg.norm(centres - centre, axis=1)))
+            self.assertLess(float(np.linalg.norm(centres[index] - centre)), 2.0)
+            fitted_axes = geometry["oval_axes_xy"][kept][index]
+            np.testing.assert_allclose(fitted_axes, axes, atol=1.5)
+            if axes[0] != axes[1]:
+                fitted_angle = np.rad2deg(geometry["oval_angle_radians"][kept][index]) % 180.0
+                self.assertLess(abs((fitted_angle - angle + 90.0) % 180.0 - 90.0), 4.0)
+        # Nearly every ridge is a seed outline here, and agrees with its fit.
+        ridges = np.asarray(result.ridges) > 0
+        ellipse = np.asarray(result.ellipse_confidence)
+        self.assertGreater(int(np.count_nonzero(ellipse[ridges] >= 128)), 0.8 * int(ridges.sum()))
+        # Both residual tolerances change the confirmed seed boundary.
+        final = np.asarray(result.final_likelihood).astype(int)
+        for key in ("boundary_ellipse_residual_tolerance", "boundary_circle_residual_tolerance"):
+            changed = np.asarray(traced(**{key: 0.04}).final_likelihood).astype(int)
+            self.assertGreater(int(np.abs(changed - final).sum()), 0, key)
+
     def test_workflow_lifecycle(self):
-        """39 related AnalysisLayerTests scenarios, each with private fixture state."""
+        """40 related AnalysisLayerTests scenarios, each with private fixture state."""
         self.scenario(self.check_test_reference_seed_traits_are_isolated_normalized_material_models)
         self.scenario(self.check_test_other_probability_overlays_are_direct_bright_and_lazy)
         self.scenario(self.check_test_signed_probability_excess_overlays_are_lazy_and_never_purple)
@@ -2490,6 +2545,7 @@ class AnalysisLayerTests(unittest.TestCase):
         self.scenario(self.check_test_oriented_traces_retain_non_generic_semantic_ridge_sources)
         self.scenario(self.check_test_semantic_trace_source_is_rethinned_after_interpolation_halo)
         self.scenario(self.check_test_centre_votes_land_only_on_seed_material_inside_the_dish)
+        self.scenario(self.check_test_fitted_seed_outlines_recover_isolated_and_touching_ellipses)
 
     def test_validation_and_recovery(self):
         """2 related AnalysisLayerTests scenarios, each with private fixture state."""

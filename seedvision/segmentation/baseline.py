@@ -2899,14 +2899,16 @@ def _manual_centres_in_corrected_coordinates(
         raise TypeError("manual_seed_centres must be a ManualSeedCentres value.")
     if centres.coordinate_space is ManualSeedCentreSpace.CORRECTED_IMAGE:
         return centres
-    if not centres.centres_xy:
-        transformed: tuple[tuple[float, float], ...] = ()
-    else:
-        values = calibration.transform_points(list(centres.centres_xy))
-        transformed = tuple((float(x), float(y)) for x, y in values)
+    def transformed(points) -> tuple[tuple[float, float], ...]:
+        if not points:
+            return ()
+        values = calibration.transform_points(list(points))
+        return tuple((float(x), float(y)) for x, y in values)
+
     return centres.in_coordinate_space(
-        transformed,
+        transformed(centres.centres_xy),
         ManualSeedCentreSpace.CORRECTED_IMAGE,
+        transformed(centres.suppressed_xy),
     )
 
 

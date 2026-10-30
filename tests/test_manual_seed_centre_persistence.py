@@ -64,6 +64,57 @@ class ManualSeedCentreStoreTests(unittest.TestCase):
             assert deleted is not None
             self.assertEqual(deleted.mode, "replace_automatic")
             self.assertEqual(deleted.centres_xy.shape, (0, 2))
+            self.assertEqual(deleted.suppressed_xy.shape, (0, 2))
+
+            # Augment also keeps the automatic centres the user removed.
+            removed = np.asarray(((7.5, 9.25),), dtype=np.float64)
+            store.save(
+                image,
+                centres,
+                mode="augment",
+                source_shape=(24, 36),
+                suppressed_xy=removed,
+            )
+            restored = store.load_if_present(image, (24, 36))
+            assert restored is not None
+            np.testing.assert_array_equal(restored.centres_xy, centres)
+            np.testing.assert_array_equal(restored.suppressed_xy, removed)
+            self.assertFalse(restored.suppressed_xy.flags.writeable)
+
+    def check_test_version_one_sidecar_loads_without_suppressed_centres(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image = self._image(root, "capture.png", b"source photograph")
+            store = ManualSeedCentreStore(root)
+            centres = np.asarray(((3.0, 4.0),), dtype=np.float64)
+            sidecar = store.save(
+                image,
+                centres,
+                mode="replace_automatic",
+                source_shape=(24, 36),
+                suppressed_xy=np.asarray(((5.0, 6.0),)),
+            )
+            with np.load(sidecar, allow_pickle=False) as archive:
+                fields = {
+                    name: archive[name]
+                    for name in archive.files
+                    if name != "suppressed_xy"
+                }
+            fields["version"] = np.asarray(1, dtype=np.uint16)
+            with sidecar.open("wb") as stream:
+                np.savez_compressed(stream, **fields)
+
+            loaded = store.load_if_present(image, (24, 36))
+            assert loaded is not None
+            self.assertEqual(loaded.mode, "replace_automatic")
+            np.testing.assert_array_equal(loaded.centres_xy, centres)
+            self.assertEqual(loaded.suppressed_xy.shape, (0, 2))
+
+            fields["version"] = np.asarray(2, dtype=np.uint16)
+            with sidecar.open("wb") as stream:
+                np.savez_compressed(stream, **fields)
+            with self.assertRaisesRegex(InvalidManualSeedCentreArchive, "suppressed_xy"):
+                store.load_if_present(image, (24, 36))
 
     def check_test_each_image_has_independent_source_bound_state(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -163,8 +214,9 @@ class ManualSeedCentreStoreTests(unittest.TestCase):
                 store.load_if_present(image, (21, 30))
 
     def test_workflow_lifecycle(self):
-        """3 related ManualSeedCentreStoreTests scenarios, each with private fixture state."""
+        """4 related ManualSeedCentreStoreTests scenarios, each with private fixture state."""
         self.scenario(self.check_test_round_trip_preserves_exact_source_floats_mode_and_empty_replace)
+        self.scenario(self.check_test_version_one_sidecar_loads_without_suppressed_centres)
         self.scenario(self.check_test_each_image_has_independent_source_bound_state)
         self.scenario(self.check_test_same_named_external_images_do_not_share_a_sidecar)
 

@@ -65,9 +65,9 @@ def optimize(graph, evaluator, *, selected=None, passes=1, maximum_evaluations=0
     Evaluator scores are keyed by frozen image/group IDs. A node cannot win by
     dropping an image. Zero budget means one complete sweep of every control;
     explicit budgets record exhaustion, rather than claiming complete coverage.
-    Each further pass halves the steps, so a node stops after a pass that
-    improves nothing, and a control none of whose candidates moved the loss is
-    not searched again with smaller steps.
+    Each further pass halves the steps and searches every control again,
+    because accepting one control can change how much another one matters. A
+    node stops after a pass in which no control improved the mean loss.
     """
     if passes < 1 or maximum_evaluations < 0:
         raise ValueError('Invalid optimization budget.')
@@ -108,15 +108,11 @@ def optimize(graph, evaluator, *, selected=None, passes=1, maximum_evaluations=0
             specs = {spec.key: spec for spec in node.parameter_specs}
             exhausted = False
             stopped_after = None
-            active = list(eligible)
             for pass_number in range(passes):
                 improved = False
-                inert = set()
-                for key in active:
+                for key in eligible:
                     origin = node.parameters[key]
                     best_value, best_scores = origin, scores
-                    current_loss = aggregate(scores)
-                    responsive = False
                     for value in candidate_values(specs[key], origin, pass_number):
                         if cancelled():
                             raise OptimizationCancelled()
@@ -130,19 +126,15 @@ def optimize(graph, evaluator, *, selected=None, passes=1, maximum_evaluations=0
                                 raise ValueError('Candidate changed the evaluation image set.')
                             loss = aggregate(candidate)
                             row.trials.append({'parameter': key, 'value': value, 'scores': candidate})
-                            responsive |= abs(loss - current_loss) >= MINIMUM_IMPROVEMENT
                             if loss < aggregate(best_scores) - MINIMUM_IMPROVEMENT:
                                 best_value, best_scores = value, candidate
                         except (ValueError, Ineligible) as error:
                             row.trials.append({'parameter': key, 'value': value, 'invalid': str(error)})
-                            responsive = True
                         finally:
                             node.set_parameter(key, origin)
                         progress(identifier, len(row.trials), aggregate(best_scores))
                     node.set_parameter(key, best_value)
                     improved |= best_value != origin
-                    if not responsive:
-                        inert.add(key)
                     scores = best_scores
                     if exhausted:
                         break
@@ -152,7 +144,6 @@ def optimize(graph, evaluator, *, selected=None, passes=1, maximum_evaluations=0
                     if pass_number + 1 < passes:
                         stopped_after = pass_number + 1
                     break
-                active = [key for key in active if key not in inert]
             row.after = dict(scores)
             row.changes = {key: value for key, value in node.parameters.items()
                            if value != report.original[identifier][key]}

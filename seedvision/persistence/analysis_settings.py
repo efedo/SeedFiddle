@@ -21,7 +21,7 @@ from seedvision.pipeline import NodeStatus, ParameterSpec, PipelineConnection, P
 
 
 ANALYSIS_SETTINGS_FORMAT = "seedfiddle-analysis-settings"
-ANALYSIS_SETTINGS_VERSION = 24
+ANALYSIS_SETTINGS_VERSION = 25
 _LEGACY_ANALYSIS_SETTINGS_VERSIONS = frozenset(
     {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19}
 )
@@ -200,7 +200,7 @@ def analysis_settings_profile_from_payload(
     version = root["version"]
     if isinstance(version, bool) or not isinstance(version, int):
         raise InvalidAnalysisSettingsProfile("Profile version must be an integer.")
-    if version not in {*_LEGACY_ANALYSIS_SETTINGS_VERSIONS, 20, 21, 22, 23, ANALYSIS_SETTINGS_VERSION}:
+    if version not in {*_LEGACY_ANALYSIS_SETTINGS_VERSIONS, 20, 21, 22, 23, 24, ANALYSIS_SETTINGS_VERSION}:
         raise IncompatibleAnalysisSettingsProfile(
             f"Unsupported analysis-settings version {version}; this application "
             f"supports versions 1 through {ANALYSIS_SETTINGS_VERSION}."
@@ -703,7 +703,6 @@ def _prepare_analysis_settings(
             and 'cellpose_sam_instances' not in profile_by_id):
         # Version twenty-four adds the optional Cellpose-SAM instance branch.
         # It starts disabled, so older profiles keep every saved result.
-        # The same version drops two seed-edge residual tolerances (below).
         cellpose = catalogue['cellpose_sam_instances']
         profile_by_id['cellpose_sam_instances'] = AnalysisNodeSettings(
             identifier='cellpose_sam_instances', active=True, enabled=False,
@@ -843,12 +842,18 @@ def _prepare_analysis_settings(
         ):
             if new_key not in edge_parameters and legacy_key in legacy_prototypes:
                 edge_parameters[new_key] = legacy_prototypes[legacy_key]
-    if canonical.version < 24:
-        # These tolerances scored proposal-conditioned circle and ellipse fits
-        # that the pipeline never ran, so dropping them changes no result.
-        edge_curves = supplied_parameters_by_id.get("seed_edge_curves", {})
-        edge_curves.pop("boundary_circle_residual_tolerance", None)
-        edge_curves.pop("boundary_ellipse_residual_tolerance", None)
+    if canonical.version < 25 and "seed_edge_curves" in supplied_parameters_by_id:
+        # Version twenty-five fits an ellipse and a circle to every centre-vote
+        # maximum. The two residual tolerances drive those fits; earlier saved
+        # values never affected a result (version twenty-four dropped them), so
+        # they adopt the defaults. A candidate limit still at the old default
+        # of 256 rises to the new default so crowded images are fully fitted.
+        edge_curves = supplied_parameters_by_id["seed_edge_curves"]
+        defaults = catalogue["seed_edge_curves"].default_parameters
+        for key in ("boundary_circle_residual_tolerance", "boundary_ellipse_residual_tolerance"):
+            edge_curves[key] = defaults[key]
+        if edge_curves.get("boundary_geometry_max_candidates") == 256:
+            edge_curves["boundary_geometry_max_candidates"] = defaults["boundary_geometry_max_candidates"]
     for node_id, node in catalogue.items():
         saved = profile_by_id[node_id]
         supplied = supplied_parameters_by_id[node_id]

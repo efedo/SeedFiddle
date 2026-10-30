@@ -51,6 +51,7 @@ CPU_QT_TARGETS = (
     'tests.test_instance_mask_import',
     'tests.test_instance_mask_import_ui',
     'tests.test_manual_seed_centre_persistence',
+    'tests.test_annotation_transfer',
     'tests.test_manual_seed_centre_ui',
     'tests.test_shape_guided_fill',
     'tests.test_shape_guided_ui',

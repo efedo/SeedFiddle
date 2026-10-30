@@ -380,6 +380,8 @@ Optimization: instances.
 | Arc tangent tolerance (`boundary_orientation_tolerance_degrees`) | 20.0 | Eligible when reviewed targets are available |
 | Missing-edge floor (`boundary_missing_support_floor`) | 0.15 | Eligible when reviewed targets are available |
 | Maximum ellipse axis ratio (`boundary_max_axis_ratio`) | 2.2 | Eligible when reviewed targets are available |
+| Circle residual tolerance (`boundary_circle_residual_tolerance`) | 0.15 | Eligible when reviewed targets are available |
+| Ellipse residual tolerance (`boundary_ellipse_residual_tolerance`) | 0.12 | Eligible when reviewed targets are available |
 | Radius-prior tolerance (`boundary_radius_log_tolerance`) | 0.45 | Eligible when reviewed targets are available |
 | Centre-vote influence (`boundary_center_vote_weight`) | 0.35 | Eligible when reviewed targets are available |
 | Centre-vote blur / diameter (`boundary_center_vote_blur_fraction`) | 0.08 | Eligible when reviewed targets are available |
@@ -388,7 +390,7 @@ Optimization: instances.
 | Non-physical discount (`boundary_nonphysical_edge_discount`) | 0.8 | Eligible when reviewed targets are available |
 | Lightness-polarity boost (`boundary_polarity_boost`) | 0.2 | Eligible when reviewed targets are available |
 | Accepted-boundary minimum (`boundary_minimum_confidence`) | 0.12 | Eligible when reviewed targets are available |
-| Maximum oval candidates (`boundary_geometry_max_candidates`) | 256 | Eligible when reviewed targets are available |
+| Maximum oval candidates (`boundary_geometry_max_candidates`) | 2048 | Eligible when reviewed targets are available |
 | GPU working dimension (`boundary_working_maximum_dimension`) | 1280 | Frozen analysis resolution and resource policy. |
 
 ## Boundary confidence and normals (`boundary_normals`)

@@ -60,8 +60,10 @@ class ManualSeedCentres:
     """User-edited centre markers with an explicit image-coordinate frame.
 
     ``augment`` preserves automatic markers except for those within 0.45 seed
-    diameter of a manual point. ``replace_automatic`` uses the supplied points
-    as the complete editable marker set. Applied instance annotations remain a
+    diameter of a manual point or of a ``suppressed_xy`` point, which records an
+    automatic centre the user removed. ``replace_automatic`` disables automatic
+    detection: the supplied points are the complete marker set and suppressed
+    points are irrelevant. Applied instance annotations remain a
     separate full-mask authority in both modes. Baseline analysis resolves
     ``source_image`` points through the current calibration; the low-level
     procedural API receives ``corrected_image`` points in its supplied raster.
@@ -70,6 +72,7 @@ class ManualSeedCentres:
     centres_xy: tuple[tuple[float, float], ...] = ()
     mode: ManualSeedCentreMode = ManualSeedCentreMode.AUGMENT
     coordinate_space: ManualSeedCentreSpace = ManualSeedCentreSpace.CORRECTED_IMAGE
+    suppressed_xy: tuple[tuple[float, float], ...] = ()
 
     def __post_init__(self) -> None:
         try:
@@ -85,17 +88,22 @@ class ManualSeedCentres:
                 "Manual centre coordinate space must be 'source_image' or "
                 "'corrected_image'."
             ) from error
-        normalized: list[tuple[float, float]] = []
-        for centre in self.centres_xy:
-            if len(centre) != 2:
-                raise ValueError("Each manual seed centre must contain x and y.")
-            x, y = float(centre[0]), float(centre[1])
-            if not np.isfinite(x) or not np.isfinite(y):
-                raise ValueError("Manual seed-centre coordinates must be finite.")
-            normalized.append((x, y))
-        object.__setattr__(self, "centres_xy", tuple(normalized))
+
+        def normalized(points) -> tuple[tuple[float, float], ...]:
+            values: list[tuple[float, float]] = []
+            for centre in points:
+                if len(centre) != 2:
+                    raise ValueError("Each manual seed centre must contain x and y.")
+                x, y = float(centre[0]), float(centre[1])
+                if not np.isfinite(x) or not np.isfinite(y):
+                    raise ValueError("Manual seed-centre coordinates must be finite.")
+                values.append((x, y))
+            return tuple(values)
+
+        object.__setattr__(self, "centres_xy", normalized(self.centres_xy))
         object.__setattr__(self, "mode", mode)
         object.__setattr__(self, "coordinate_space", coordinate_space)
+        object.__setattr__(self, "suppressed_xy", normalized(self.suppressed_xy))
 
     def translated(self, dx: float, dy: float) -> ManualSeedCentres:
         """Return the same edits translated into another raster frame."""
@@ -104,16 +112,20 @@ class ManualSeedCentres:
             tuple((x + float(dx), y + float(dy)) for x, y in self.centres_xy),
             self.mode,
             self.coordinate_space,
+            tuple((x + float(dx), y + float(dy)) for x, y in self.suppressed_xy),
         )
 
     def in_coordinate_space(
         self,
         centres_xy: tuple[tuple[float, float], ...],
         coordinate_space: ManualSeedCentreSpace,
+        suppressed_xy: tuple[tuple[float, float], ...] = (),
     ) -> ManualSeedCentres:
         """Return these edit semantics with transformed point coordinates."""
 
-        return ManualSeedCentres(centres_xy, self.mode, coordinate_space)
+        return ManualSeedCentres(
+            centres_xy, self.mode, coordinate_space, suppressed_xy
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1651,9 +1663,10 @@ def procedural_seed_instances_from_prepared(
         validated_oval_centres is not None
         and settings.centre_validated_oval_weight > 0.0
     ):
-        # Accepted oval centres have already passed perimeter coverage,
-        # tangent-agreement, size, ovality, and duplicate checks in the
-        # proposal-independent boundary-confirmation node.  Fuse them as
+        # Accepted oval centres have already passed boundary-coverage,
+        # outline-edge, size, axis-ratio and duplicate checks in the
+        # boundary-confirmation node, which never sees procedural proposals
+        # or annotations.  Fuse them as
         # positive-only evidence so an incomplete oval fit cannot suppress the
         # material/depth fallback and so no annotation raster enters inference.
         oval_support = np.clip(
@@ -1787,6 +1800,16 @@ def procedural_seed_instances_from_prepared(
         manual_seed_centres is not None
         and manual_seed_centres.mode is ManualSeedCentreMode.REPLACE_AUTOMATIC
     )
+    # Automatic centres the user removed. They block automatic markers exactly
+    # like a manual point does, without adding a marker of their own.
+    suppressed = (
+        np.empty((0, 2), np.float64)
+        if manual_seed_centres is None or replace_automatic
+        else np.asarray(manual_seed_centres.suppressed_xy, np.float64).reshape(-1, 2)
+        * float(scale)
+    )
+    blocking_x = np.concatenate((manual_x, suppressed[:, 0]))
+    blocking_y = np.concatenate((manual_y, suppressed[:, 1]))
 
     # In a dense dish, regional-max NMS alone can discard several adjacent
     # genuine centres whenever one maximum is only slightly stronger.  Use the
@@ -1817,12 +1840,12 @@ def procedural_seed_instances_from_prepared(
                 # of the calibrated automatic count. Including it in both the
                 # target and anchor set preserves that automatic population
                 # while preventing a supplemental point from landing beside it.
-                target_count=maximum_markers + len(manual_x),
+                target_count=maximum_markers + len(blocking_x),
                 anchor_x=np.concatenate(
-                    (annotation_x, manual_x, automatic_x)
+                    (annotation_x, blocking_x, automatic_x)
                 ),
                 anchor_y=np.concatenate(
-                    (annotation_y, manual_y, automatic_y)
+                    (annotation_y, blocking_y, automatic_y)
                 ),
             )
         )
@@ -1834,12 +1857,12 @@ def procedural_seed_instances_from_prepared(
         automatic_x = np.empty(0, np.int32)
         automatic_y = np.empty(0, np.int32)
         automatic_scores = np.empty(0, np.float32)
-    elif len(manual_x) and len(automatic_x):
+    elif len(blocking_x) and len(automatic_x):
         suppression_squared = (
             diameter * MANUAL_CENTRE_SUPPRESSION_DIAMETER_FRACTION
         ) ** 2
         keep_automatic = np.ones(len(automatic_x), dtype=bool)
-        for x, y in zip(manual_x, manual_y, strict=True):
+        for x, y in zip(blocking_x, blocking_y, strict=True):
             keep_automatic &= (
                 (automatic_x - x) ** 2 + (automatic_y - y) ** 2
                 > suppression_squared

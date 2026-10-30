@@ -72,14 +72,20 @@ responsive. Shutdown polls worker completion; cancellation occurs at safe bounda
 and between learned-model tiles.
 
 `persistence/project_analysis.py` stores fingerprinted project masters that reference
-mutable working sidecars. `persistence/snapshot.py` separately packages verified
+per-image annotation sidecars. A saved project's sidecars live in its own
+`name.seedfiddle-annotations/` folder (`persistence/project_annotations.py`): edits go
+to its `unsaved/` subfolder and Save copies them in, so projects never share
+annotations. The loose workspace and untitled projects write to the shared
+`projects/` folders instead. `persistence/annotation_transfer.py` moves chosen
+annotations between projects as a zip bundle matched by image SHA-256.
+`persistence/snapshot.py` separately packages verified
 content copies and restores a relocated working master. Supplementary audit evidence
 is retained with its original identity; restoration does not silently reassign
 review decisions or optimization targets to changed source/result identities.
 
 Project documents (version 7, reading 1–6) retain the loaded pipeline workflow,
 added node instances, immutable reference-graph metadata, editable native working
-recipes and bounded model-asset descriptors. Analysis settings are version 23.
+recipes and bounded model-asset descriptors. Analysis settings are version 25.
 Historical checkpoint digests do not imply restored or verified arrays.
 
 `export/results.py` defines authoritative method selection, unavailable-vs-empty

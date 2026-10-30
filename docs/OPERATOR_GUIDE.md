@@ -29,23 +29,57 @@ of this guide. Splitter sizes and the annotation panel position are remembered.
   **Open recent project**, **Save project** (`Ctrl+S`) and **Save project as…**.
 - **File → Open images…** (`Ctrl+O`) adds images. Set the verified species in the
   **Image** tab. Species starts *Unknown / unassigned* and is never inferred.
-- A project master refers to shared, mutable sidecar files (annotations, models).
-  For an immutable revision use **File → Snapshots → Create snapshot…**: it copies
+- For an immutable revision use **File → Snapshots → Create snapshot…**: it copies
   and verifies images, annotations, manual centres, enabled model checkpoints and
   the pinned species library, and writes its completion index last. **Create
   snapshot with reference checkpoints…** also includes saved pipeline checkpoints.
   **Restore snapshot…** creates a separate verified working copy and reports its
   path; open that with **File → Open project…**. Missing or modified components
   prevent restoration.
-- **File → Import / export** loads or saves an analysis-settings profile and saves
-  the current image viewport (`Ctrl+Alt+E`).
+- **File → Import / export** loads or saves an analysis-settings profile, exports
+  or imports annotations (below) and saves the current image viewport
+  (`Ctrl+Alt+E`).
 - Replacing an image file in place invalidates its cached calculations. Existing
   annotations will not silently bind to the new bytes: restore the original file or
   start a fresh project and re-validate the references.
 
-Models and native recipe inputs used by a project are copied into
-`native-models/` beneath the workspace root on save. Keep that folder when you move
-a project; moving only the project JSON does not copy its dependencies.
+### What is saved where
+
+For a project saved as `name.seedfiddle-project.json`:
+
+| What | Where | Written |
+|---|---|---|
+| Node settings and wiring, the image list with file fingerprints, species, canvas layout, recipes | `name.seedfiddle-project.json` | On **Save project** |
+| Manual seed centres and reference layers (materials, seed outlines and seed traits), one file per image | `name.seedfiddle-annotations/manual-seed-centres/` and `…/reference-regions/` beside the project file | On **Save project** |
+| Annotation edits made since the last save | `name.seedfiddle-annotations/unsaved/` | As you edit |
+| Optimisation targets, policy and history | `name.seedfiddle-project.optimization*.json` beside the project file | When the optimiser runs |
+| Models and native recipe inputs | `native-models/` beneath the workspace folder | On **Save project** |
+
+Each project owns its annotations, so editing an image in one project never changes
+another. Annotation edits count as unsaved project changes: **Save project** copies
+them into the project's folder, and discarding the changes deletes them. If Seed
+Fiddle closes unexpectedly, opening the project offers to restore them.
+
+Without a saved project (the loose workspace at startup, or a new untitled
+project) annotation edits are written as you make them to the workspace's shared
+`projects/manual-seed-centres/` and `projects/reference-regions/` folders, and the
+first **Save project** copies them into the new project's folder. A project saved
+by an earlier version still points at those shared folders. It opens marked as
+modified, and the next save copies its files into its own folder. The shared files
+are left in place.
+
+A project with annotations must be saved inside the workspace folder, because its
+annotation folder sits beside the project file. Move the project file, its
+annotation folder and `native-models/` together.
+
+### Moving annotations between projects
+
+**File → Import / export → Export annotations…** lists the images that have manual
+seed centres or reference layers. Choose the images and kinds and save a
+`.seedfiddle-annotations.zip` file. In the other project, **Import annotations…**
+matches the file's annotations to images by exact file contents, so the same image
+files must be in that project. Imported annotations replace the same kind of
+annotation on that image and stay unsaved until you save the project.
 
 ## Pipelines
 
@@ -174,9 +208,9 @@ analysis first if the corrected frame is not yet available.
 Choose **Materials** (or **Paint Foreground references…** when a result reports
 missing Foreground evidence), pick Background, Foreground or Other, and paint the region.
 Use the exclusion controls only where a class model should ignore an area. **Apply
-+ save** applies the draft to analysis and saves the per-image sidecar. If saving
-fails, the applied state stays in memory and the failure is reported; **Save
-project** retries.
++ save** applies the draft to analysis and keeps it with the image's annotations
+(see [What is saved where](#what-is-saved-where)). If writing it fails, the applied
+state stays in memory and the failure is reported; **Save project** retries.
 
 ### Seed outlines
 
@@ -203,7 +237,7 @@ annotations is a history boundary, and history has count and size limits.
 | State or command | Meaning |
 |---|---|
 | Draft | Editable or imported labels, separate from those used by analysis. |
-| **Apply + save** | Uses the labels in analysis and saves the sidecar. **Save project** also records the sidecar digest. |
+| **Apply + save** | Uses the labels in analysis and keeps them with the image's annotations. In a saved project they are recorded by **Save project**. |
 | **Learning → Seed outlines → Import bundled seed outlines…** | Loads the source-bound bundled labels for this image as an undoable draft. Imported outlines are not ground truth until reviewed. |
 | **Import seed outlines from file…** | Loads a lossless categorical PNG, TIFF or NPZ whose size exactly matches the corrected image. |
 | **Export seed outlines…** | Writes the applied labels as a 16-bit PNG in corrected coordinates. Apply a draft first to include it. |
@@ -211,6 +245,27 @@ annotations is a history boundary, and history has count and size limits.
 Only connected, complete, shape-reviewed, non-excluded outlines supervise physical
 contours, optimisation and training. Saving progress does not approve an
 incomplete contour.
+
+### Manual seed centres
+
+Select the Procedural seed separation node and choose **Edit centres on image**.
+Click empty space to add a centre, drag a marker to move it, and right-click or
+press Delete to remove it. Each gesture is kept with the image's annotations
+(recorded by **Save project** in a saved project) and recomputes only procedural
+separation and what depends on it.
+
+| Marker | Meaning |
+|---|---|
+| Hollow cyan circle | Automatic centre found by the procedural node |
+| Filled yellow circle | Manual centre you added or moved |
+| Grey × | Automatic centre you moved or removed; detection stays suppressed there. Delete it to restore detection. |
+| Magenta square | Centre locked by an applied seed annotation |
+
+**Mode** sets how manual centres combine with automatic detection. **Augment
+automatic** keeps detection on and adds your centres, for correcting a few seeds.
+**Replace automatic** turns detection off so only your manual centres (and
+annotation-locked ones) seed instances, for marking every seed by hand. Replace
+starts from your manual centres and never copies automatic ones.
 
 ## Results and export
 
@@ -271,7 +326,8 @@ the canvases match; different canvases need the original transform or new
 annotations. Keep the original archive.
 
 Closing waits for running work, then asks to save, discard or cancel any drafts.
-A failed save keeps edits in memory.
+A failed save keeps edits in memory. Annotation edits not yet saved to a project
+are also kept in its `unsaved/` folder, which the next open offers to restore.
 
 ## Learning
 

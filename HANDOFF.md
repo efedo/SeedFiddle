@@ -54,10 +54,10 @@ work, families F01–F22). See [README.md](README.md) for the user view and
 .\.venv\Scripts\python.exe .\seed_vision.py --no-bootstrap
 .\.venv\Scripts\python.exe -m tests                  # core subset
 .\.venv\Scripts\python.exe -m tests tests.test_gui_layout   # focused module
-.\.venv\Scripts\python.exe -m tests --full           # 649 units, ~14 min, 3 workers
+.\.venv\Scripts\python.exe -m tests --full           # 657 units, ~13 min, 3 workers
 ```
 
-The last full run (23 October 2026) passed all 649 units with the 4 expected
+The last full run (29 October 2026) passed all 657 units with the 4 expected
 skips. Wall time over 15 minutes is reported as an advisory warning only; a run
 fails on test outcomes or an unaccounted unit, and a worker that writes no
 journal entry for `--stall-seconds` (default 900) is stopped. Details are in
@@ -92,6 +92,14 @@ old `test-runs/` and `test-temp/` directories and never touches the list above.
   `git checkout`/`git restore` of an LF file rewrites it as CRLF and fails the
   acceptance tests without any content change. Restore such a file by
   converting it back to LF, not with git.
+- **Annotation storage is per project.** A saved project's manual centres and
+  reference layers live in `name.seedfiddle-annotations/` beside its project file;
+  edits go to its `unsaved/` subfolder until Save copies them in. The main window
+  swaps `_reference_region_store` and `_manual_seed_centre_store` per project
+  (`_install_annotation_stores`), so UI code must find an image's file through
+  `_project_reference_sidecar_paths` / `_project_manual_centre_sidecar_paths`, not
+  by constructing a store on the workspace root. Only the loose workspace and
+  untitled projects use the shared `projects/` folders.
 - **Non-ASCII paths.** `cv2.imread` fails on them on Windows; always use
   `seedvision.persistence.image_decoding.read_image`.
 - **Offscreen Qt screenshots** render boxes unless `QT_QPA_FONTDIR=C:/Windows/Fonts`.
@@ -106,9 +114,15 @@ old `test-runs/` and `test-temp/` directories and never touches the list above.
 ## Open work
 
 - **Seed detection quality.** Procedural separation undercounts touching seeds
-  (about 5× on the benchmark image). Cellpose-SAM looked right by eye and is now an
-  optional, disabled-by-default node (see the operator guide's Cellpose-SAM
-  section). Reviewed reference masks are the blocker for any quantitative claim. See
+  (about 5× on the benchmark image). Against Cellpose-SAM masks as a stand-in
+  reference, its markers mostly land on seeds; the loss is in its instance filters
+  (area and concavity limits scaled by the seed-diameter estimate, which runs about
+  1.4× the seeds' equivalent diameter on packed images), so a different centre
+  source does not help. The fitted seed ovals of Seed-boundary confirmation find
+  roughly half the seeds on packed images and most on sparse ones. Cellpose-SAM
+  looked right by eye and is now an optional, disabled-by-default node (see the
+  operator guide's Cellpose-SAM section). Reviewed reference masks are the blocker
+  for any quantitative claim. See
   [docs/SEED_DETECTION_EVALUATION.md](docs/SEED_DETECTION_EVALUATION.md).
 - **Laboratory gates L01–L04** (reviewed corpus, physical/colour measurement,
   trait definitions, operator study) are external and still open; see

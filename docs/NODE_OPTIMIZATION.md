@@ -33,8 +33,9 @@ targets.
    Each pass tries every control one step either side of its current value, and
    each further pass halves the step. A gain under 0.00001 in mean loss (below
    the five decimals the progress dialog shows) does not count. A node stops
-   early after a pass that improves nothing, and a control whose candidates did
-   not move the loss is not searched again with smaller steps.
+   early after a pass that improves nothing. Every pass searches every control,
+   because an accepted value for one control can change how much another
+   matters.
 6. Inspect the proposal, per-image losses and before/after instance overlays.
    Apply installs one shared set of project parameters. Cancel or reject keeps
    existing settings. Save the project to persist accepted parameter values.

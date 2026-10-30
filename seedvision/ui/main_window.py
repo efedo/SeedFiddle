@@ -78,6 +78,7 @@ from seedvision.ui.work_control import WorkController
 from seedvision.ui.results import ResultsController
 from seedvision.ui.persistence_jobs import ResponsiveReferenceRegionStore, run_persistence
 from seedvision.ui.annotation_panel import AnnotationPanel, CurrentPageStack
+from seedvision.ui.annotation_transfer import AnnotationTransferController
 from seedvision.diagnostics import (
     LOGGER,
     current_crash_log_path,
@@ -112,6 +113,7 @@ from seedvision.persistence import (
     SeedInstanceAnnotation,
     SpeciesLibraryPin,
     analysis_settings_profile_from_graph,
+    annotation_folder,
     apply_analysis_settings_profile,
     load_analysis_settings_profile,
     load_bundled_instance_mask,
@@ -119,6 +121,13 @@ from seedvision.persistence import (
     read_source_raster_shape,
     save_analysis_settings_profile,
     file_sha256,
+    project_annotation_directory,
+)
+from seedvision.persistence.project_annotations import (
+    UNSAVED_ANNOTATIONS_FOLDER,
+    copy_annotation_file,
+    discard_unsaved_annotations,
+    unsaved_annotation_files,
 )
 from seedvision.reference_library import (
     SPECIES_LIBRARY_EXTENSION,
@@ -225,13 +234,25 @@ class _ManualSeedCentreState:
 
     centres_source_xy: np.ndarray
     mode: str = "augment"
+    # Automatic centres removed in Augment mode; unused by Replace automatic.
+    suppressed_source_xy: np.ndarray | None = None
 
     def __post_init__(self) -> None:
-        values = np.asarray(self.centres_source_xy, dtype=np.float64).reshape(-1, 2)
-        values = values.copy()
-        values.flags.writeable = False
-        object.__setattr__(self, "centres_source_xy", values)
+        for name in ("centres_source_xy", "suppressed_source_xy"):
+            raw = getattr(self, name)
+            values = np.asarray(
+                () if raw is None else raw, dtype=np.float64
+            ).reshape(-1, 2).copy()
+            values.flags.writeable = False
+            object.__setattr__(self, name, values)
         object.__setattr__(self, "mode", str(self.mode))
+
+    def same_edits(self, other: "_ManualSeedCentreState") -> bool:
+        return (
+            self.mode == other.mode
+            and np.array_equal(self.centres_source_xy, other.centres_source_xy)
+            and np.array_equal(self.suppressed_source_xy, other.suppressed_source_xy)
+        )
 VIEWER_NODE_MODES = {
     "project": "raw_image",
     "image_selector": "raw_image",
@@ -1301,7 +1322,8 @@ class _ImageListDelegate(QStyledItemDelegate):
         return super().editorEvent(event, model, option, index)
 
 
-class MainWindow(ResultsController, WorkController, ReferenceFrameController, OptimizationController, QMainWindow):
+class MainWindow(ResultsController, WorkController, ReferenceFrameController, OptimizationController,
+                 AnnotationTransferController, QMainWindow):
     """Main desktop window for visual pipeline control and seed review."""
 
     ANALYSIS_CACHE_CUDA_BUDGET_BYTES = 2 * 1024**3
@@ -1335,8 +1357,16 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._installing_project = False
         self._project_dirty = False
         self._recent_project_paths = self._read_recent_project_paths()
-        self._reference_region_store = ResponsiveReferenceRegionStore(root, self)
-        self._manual_seed_centre_store = ManualSeedCentreStore(root)
+        # Annotation edits are written to these two stores. In a saved project
+        # they are the project's unsaved folder; otherwise the workspace's
+        # shared folders (see _install_annotation_stores).
+        self._workspace_reference_region_store = ResponsiveReferenceRegionStore(
+            root, self
+        )
+        self._workspace_manual_seed_centre_store = ManualSeedCentreStore(root)
+        self._reference_region_store = self._workspace_reference_region_store
+        self._manual_seed_centre_store = self._workspace_manual_seed_centre_store
+        self._project_annotation_directory: Path | None = None
         self._project_analysis_store = ProjectAnalysisStore(root)
         self._species_library_service = SpeciesLibraryService()
         self._project_species_library_pin: SpeciesLibraryPin | None = None
@@ -1669,6 +1699,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         lines = [
             f"Master: {master}",
             f"State: {save_state}",
+            self._annotation_storage_summary(),
             f"Images: {available_count:,} available; {unresolved_count:,} unresolved",
             (
                 "Species library: none pinned"
@@ -1754,6 +1785,29 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 f"{self._mask_pixel_count(draft_labels):,} interior pixels"
             )
         return "\n".join(lines)
+
+    def _annotation_storage_summary(self) -> str:
+        """Say where this session's annotation edits are kept."""
+
+        directory = self._project_annotation_directory
+        if directory is None:
+            shared = self._workspace_reference_region_store.directory.parent
+            if self._project_tracking_enabled:
+                return (
+                    f"Annotations: in the shared workspace folder {shared} until "
+                    "the project is first saved"
+                )
+            return f"Annotations: saved as you edit, in the shared folder {shared}"
+        line = f"Annotations: {directory}"
+        legacy = self._legacy_annotation_count()
+        if legacy:
+            line += (
+                f"; {legacy} file(s) are still in the shared workspace folder "
+                "until the next Save"
+            )
+        if self._project_dirty:
+            line += f"; edits since the last Save are in its {UNSAVED_ANNOTATIONS_FOLDER} folder"
+        return line
 
     def _refresh_project_node(self) -> None:
         """Synchronize project context in every active workflow."""
@@ -1931,35 +1985,230 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             selected_overlay=str(self.overlay_combo.currentData() or "raw_image"),
         )
 
-    def _project_image_specs(self) -> tuple[ProjectImageSpec, ...]:
+    def _project_image_specs(
+        self, annotation_paths: dict[tuple[str, str], Path]
+    ) -> tuple[ProjectImageSpec, ...]:
+        """Describe every listed image with the archives Save copied for it."""
+
         specs: list[ProjectImageSpec] = []
         for index in range(self.image_list.count()):
             item = self.image_list.item(index)
             path = Path(item.data(Qt.ItemDataRole.UserRole)).resolve()
             key = _path_identity(path)
-            include_references = key not in self._withheld_reference_sidecars
-            include_centres = key not in self._withheld_manual_centre_sidecars
+            references = annotation_paths.get((key, REFERENCE_REGIONS_SIDECAR))
+            centres = annotation_paths.get((key, MANUAL_SEED_CENTRES_SIDECAR))
             specs.append(
                 ProjectImageSpec(
                     path,
                     read_source_raster_shape(path),
-                    include_reference_regions=include_references,
-                    include_manual_seed_centres=include_centres,
-                    reference_regions_path=(
-                        self._project_reference_sidecar_paths.get(key)
-                        if include_references
-                        else None
-                    ),
-                    manual_seed_centres_path=(
-                        self._project_manual_centre_sidecar_paths.get(key)
-                        if include_centres
-                        else None
-                    ),
+                    include_reference_regions=references is not None,
+                    include_manual_seed_centres=centres is not None,
+                    reference_regions_path=references,
+                    manual_seed_centres_path=centres,
                     biological_context=self._effective_biological_context(path),
                     capture_group_id=self._project_capture_group_id,
                 )
             )
         return tuple(specs)
+
+    def _install_annotation_stores(self, project_path: Path | None) -> None:
+        """Point annotation edits at a saved project's unsaved folder.
+
+        A loose workspace or untitled project has no folder of its own, so its
+        edits go straight to the workspace's shared ``projects/`` folders.
+        """
+
+        if project_path is None:
+            self._project_annotation_directory = None
+            self._reference_region_store = self._workspace_reference_region_store
+            self._manual_seed_centre_store = self._workspace_manual_seed_centre_store
+            return
+        directory = project_annotation_directory(project_path)
+        self._project_annotation_directory = directory
+        self._reference_region_store = ResponsiveReferenceRegionStore(
+            self._root,
+            self,
+            annotation_folder(directory, REFERENCE_REGIONS_SIDECAR, unsaved=True),
+        )
+        self._manual_seed_centre_store = ManualSeedCentreStore(
+            self._root,
+            annotation_folder(directory, MANUAL_SEED_CENTRES_SIDECAR, unsaved=True),
+        )
+
+    def _saved_annotation_stores(
+        self, project_path: Path
+    ) -> tuple[ReferenceRegionStore, ManualSeedCentreStore]:
+        """Return the stores Save writes for one project file."""
+
+        directory = project_annotation_directory(project_path)
+        return (
+            ResponsiveReferenceRegionStore(
+                self._root,
+                self,
+                annotation_folder(directory, REFERENCE_REGIONS_SIDECAR),
+            ),
+            ManualSeedCentreStore(
+                self._root,
+                annotation_folder(directory, MANUAL_SEED_CENTRES_SIDECAR),
+            ),
+        )
+
+    def _project_annotation_sources(
+        self,
+    ) -> dict[tuple[str, str], tuple[Path, Path]]:
+        """Return each listed image's current archive for each annotation kind.
+
+        Withheld archives are left out; Save keeps their original references.
+        A loose workspace or untitled project also offers the shared archive of
+        an image it never opened, so the first Save carries it over.
+        """
+
+        sources: dict[tuple[str, str], tuple[Path, Path]] = {}
+        for index in range(self.image_list.count()):
+            image = Path(
+                self.image_list.item(index).data(Qt.ItemDataRole.UserRole)
+            ).resolve()
+            key = _path_identity(image)
+            for kind, withheld, recorded, store in (
+                (
+                    REFERENCE_REGIONS_SIDECAR,
+                    self._withheld_reference_sidecars,
+                    self._project_reference_sidecar_paths,
+                    self._reference_region_store,
+                ),
+                (
+                    MANUAL_SEED_CENTRES_SIDECAR,
+                    self._withheld_manual_centre_sidecars,
+                    self._project_manual_centre_sidecar_paths,
+                    self._manual_seed_centre_store,
+                ),
+            ):
+                if key in withheld:
+                    continue
+                archive = recorded.get(key)
+                if archive is None:
+                    if self._project_manifest_sidecar_policy_active:
+                        continue
+                    archive = store.path_for(image)
+                    if not archive.is_file():
+                        continue
+                archive = Path(archive).resolve()
+                if not archive.is_file():
+                    raise ProjectAnalysisError(
+                        f"The {kind.replace('_', ' ')} file for {image.name} is "
+                        f"missing: {archive}"
+                    )
+                sources[(key, kind)] = (image, archive)
+        return sources
+
+    @staticmethod
+    def _copy_project_annotations(
+        sources: dict[tuple[str, str], tuple[Path, Path]],
+        stores: dict[str, ReferenceRegionStore | ManualSeedCentreStore],
+    ) -> dict[tuple[str, str], Path]:
+        """Copy each kept archive into the destination project's folder."""
+
+        copied: dict[tuple[str, str], Path] = {}
+        for (key, kind), (image, archive) in sources.items():
+            target = stores[kind].path_for(image).resolve()
+            if archive != target:
+                copy_annotation_file(archive, target)
+            copied[(key, kind)] = target
+        return copied
+
+    def _legacy_annotation_count(self) -> int:
+        """Count kept annotation files that live outside this project's folder."""
+
+        directory = self._project_annotation_directory
+        if directory is None:
+            return 0
+        directory = directory.resolve()
+        return sum(
+            key not in withheld and not Path(path).resolve().is_relative_to(directory)
+            for withheld, recorded in (
+                (
+                    self._withheld_reference_sidecars,
+                    self._project_reference_sidecar_paths,
+                ),
+                (
+                    self._withheld_manual_centre_sidecars,
+                    self._project_manual_centre_sidecar_paths,
+                ),
+            )
+            for key, path in recorded.items()
+        )
+
+    def _recover_unsaved_annotations(self, images) -> int:
+        """Offer a previous session's unsaved annotation edits for this project.
+
+        Returns the number of images whose edits were restored.
+        """
+
+        directory = self._project_annotation_directory
+        if directory is None:
+            return 0
+        drafts = {path.resolve() for path in unsaved_annotation_files(directory)}
+        if not drafts:
+            return 0
+        matches: list[tuple[str, str, Path]] = []
+        for image in images:
+            key = _path_identity(image.path)
+            for kind, store in (
+                (REFERENCE_REGIONS_SIDECAR, self._reference_region_store),
+                (MANUAL_SEED_CENTRES_SIDECAR, self._manual_seed_centre_store),
+            ):
+                draft = store.path_for(image.path).resolve()
+                if draft in drafts:
+                    matches.append((key, kind, draft))
+        image_count = len({key for key, _, _ in matches})
+        unmatched = len(drafts) - len(matches)
+        answer = QMessageBox.question(
+            self,
+            "Restore unsaved annotation edits?",
+            f"This project has annotation edits for {image_count} image(s) that "
+            "were never saved, probably because Seed Fiddle closed unexpectedly. "
+            "Restore them as unsaved changes? Discard deletes them."
+            + (
+                f"\n\n{unmatched} edit(s) belong to images that are not available "
+                "and cannot be restored."
+                if unmatched
+                else ""
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Discard,
+            QMessageBox.StandardButton.Yes,
+        )
+        if answer == QMessageBox.StandardButton.Discard:
+            self._discard_unsaved_project_annotations()
+            return 0
+        for key, kind, draft in matches:
+            if kind == REFERENCE_REGIONS_SIDECAR:
+                self._project_reference_sidecar_paths[key] = draft
+                self._project_unbound_reference_loads.add(key)
+                self._withheld_reference_sidecars.discard(key)
+                self._project_unresolved_reference_sidecars.discard(key)
+            else:
+                self._project_manual_centre_sidecar_paths[key] = draft
+                self._project_manual_centre_loads.add(key)
+                self._withheld_manual_centre_sidecars.discard(key)
+                self._project_unresolved_manual_centre_sidecars.discard(key)
+        return image_count
+
+    def _discard_unsaved_project_annotations(self) -> None:
+        """Delete the open project's unsaved annotation edits."""
+
+        directory = self._project_annotation_directory
+        if directory is None:
+            return
+        try:
+            discard_unsaved_annotations(directory)
+        except OSError as error:
+            QMessageBox.warning(
+                self,
+                "Could not delete unsaved annotation edits",
+                "They remain in "
+                f"{directory / UNSAVED_ANNOTATIONS_FOLDER} and will be offered "
+                f"again when the project is opened.\n\n{error}",
+            )
 
     def _instance_generation_source(self, key: str):
         return self._draft_instance_generation_sources.get(
@@ -2017,7 +2266,22 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             ),
         )
 
-    def _retry_unsaved_project_sidecars(self, keys: set[str] | None = None) -> bool:
+    def _retry_unsaved_project_sidecars(
+        self,
+        keys: set[str] | None = None,
+        *,
+        stores: tuple[ReferenceRegionStore, ManualSeedCentreStore] | None = None,
+    ) -> bool:
+        """Write annotations whose earlier save failed into ``stores``.
+
+        ``stores`` defaults to where edits are written now; Save passes the
+        destination project's own folders.
+        """
+
+        reference_store, centre_store = stores or (
+            self._reference_region_store,
+            self._manual_seed_centre_store,
+        )
         for key in tuple(self._unsaved_reference_sidecars):
             if keys is not None and key not in keys:
                 continue
@@ -2032,7 +2296,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 self._set_project_dirty()
                 return False
             try:
-                self._reference_region_store.save(
+                reference_store.save(
                     path, self._reference_bundle_for_project_key(key, path)
                 )
             except (InstanceMaskImportError, ReferenceRegionError, OSError) as error:
@@ -2052,8 +2316,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             self._project_unresolved_reference_sidecars.discard(key)
             self._pending_unbound_reference_bundles.pop(key, None)
             self._project_unbound_reference_loads.add(key)
-            self._project_reference_sidecar_paths[key] = (
-                self._reference_region_store.path_for(path)
+            self._project_reference_sidecar_paths[key] = reference_store.path_for(
+                path
             )
             self._set_reference_region_load_status(
                 key,
@@ -2076,11 +2340,12 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 self._set_project_dirty()
                 return False
             try:
-                self._manual_seed_centre_store.save(
+                centre_store.save(
                     path,
                     state.centres_source_xy,
                     mode=state.mode,
                     source_shape=read_source_raster_shape(path),
+                    suppressed_xy=state.suppressed_source_xy,
                 )
             except (
                 InstanceMaskImportError,
@@ -2100,8 +2365,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             self._withheld_manual_centre_sidecars.discard(key)
             self._project_unresolved_manual_centre_sidecars.discard(key)
             self._project_manual_centre_loads.add(key)
-            self._project_manual_centre_sidecar_paths[key] = (
-                self._manual_seed_centre_store.path_for(path)
+            self._project_manual_centre_sidecar_paths[key] = centre_store.path_for(
+                path
             )
         return True
 
@@ -2150,11 +2415,53 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             self._project_tracking_enabled = True
             self._set_project_dirty()
             self._update_project_chrome()
-        if not self._retry_unsaved_project_sidecars():
+        destination = Path(destination).expanduser().resolve()
+        annotation_directory = project_annotation_directory(destination)
+        saved_reference_store, saved_centre_store = self._saved_annotation_stores(
+            destination
+        )
+        try:
+            has_annotations = bool(
+                self._unsaved_reference_sidecars
+                or self._unsaved_manual_centre_sidecars
+                or self._project_annotation_sources()
+            )
+        except ProjectAnalysisError as error:
+            QMessageBox.critical(self, "Could not save project", str(error))
+            self._set_project_dirty()
+            return False
+        if has_annotations and not annotation_directory.is_relative_to(
+            self._root.resolve()
+        ):
+            QMessageBox.critical(
+                self,
+                "Could not save project",
+                "Save the project inside the workspace folder:\n"
+                f"{self._root}\n\nIts annotations are kept in "
+                f"{annotation_directory.name} beside the project file, so that "
+                "folder must be inside the workspace too.",
+            )
+            self._set_project_dirty()
+            return False
+        if not self._retry_unsaved_project_sidecars(
+            stores=(saved_reference_store, saved_centre_store)
+        ):
             return False
         selected_image = self.image_view.image_path
         try:
-            image_specs = self._project_image_specs()
+            annotation_paths = run_persistence(
+                self,
+                partial(
+                    self._copy_project_annotations,
+                    self._project_annotation_sources(),
+                    {
+                        REFERENCE_REGIONS_SIDECAR: saved_reference_store,
+                        MANUAL_SEED_CENTRES_SIDECAR: saved_centre_store,
+                    },
+                ),
+                "Copying annotations into the project…",
+            )
+            image_specs = self._project_image_specs(annotation_paths)
             captured = run_persistence(self, partial(self._project_analysis_store.capture,
                 analysis_settings=analysis_settings_profile_from_graph(self.pipeline),
                 images=image_specs,
@@ -2246,6 +2553,29 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._project_tracking_enabled = True
         self._set_project_path(saved)
         self._remember_recent_project(saved)
+        # From now on edits go to this project's unsaved folder and annotations
+        # load only from the files the project records.
+        previous_directory = self._project_annotation_directory
+        self._install_annotation_stores(saved)
+        for (key, kind), path in annotation_paths.items():
+            if kind == REFERENCE_REGIONS_SIDECAR:
+                self._project_reference_sidecar_paths[key] = path
+                self._project_unbound_reference_loads.add(key)
+            else:
+                self._project_manual_centre_sidecar_paths[key] = path
+                self._project_manual_centre_loads.add(key)
+        self._project_manifest_sidecar_policy_active = True
+        for directory in {previous_directory, self._project_annotation_directory}:
+            if directory is None:
+                continue
+            try:
+                discard_unsaved_annotations(directory)
+            except OSError as error:
+                LOGGER.warning(
+                    "Could not delete saved annotation edits in %s: %s",
+                    directory,
+                    error,
+                )
         unresolved = bool(
             self._project_unresolved_image_records
             or self._project_unresolved_reference_sidecars
@@ -2361,7 +2691,10 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             return False
         if answer == QMessageBox.StandardButton.Save:
             return self._save_project()
-        return answer == QMessageBox.StandardButton.Discard
+        if answer == QMessageBox.StandardButton.Discard:
+            self._discard_unsaved_project_annotations()
+            return True
+        return False
 
     @staticmethod
     def _project_issue_summary(load_result) -> str:
@@ -2438,6 +2771,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             self._installing_project = False
             return False
         self._clear_project_session_state()
+        self._install_annotation_stores(source)
 
         ui_state = loaded.document.ui_state
         catalogue = {**self.pipeline.nodes, **self.pipeline.unused_nodes}
@@ -2560,6 +2894,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 self._withheld_manual_centre_sidecars.add(key)
                 if centres is not None:
                     self._project_unresolved_manual_centre_sidecars.add(key)
+        recovered = self._recover_unsaved_annotations(available_images)
+        legacy = self._legacy_annotation_count()
         for image in available_images:
             self._add_image(
                 image.path, open_now=False, mark_project_dirty=False
@@ -2577,7 +2913,9 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._project_tracking_enabled = True
         self._set_project_path(source)
         self._remember_recent_project(source)
-        self._set_project_dirty(bool(loaded.issues))
+        # Annotation files outside the project's folder are copied in by the
+        # next Save; restored edits are not saved yet either.
+        self._set_project_dirty(bool(loaded.issues or legacy or recovered))
         selected_overlay = (
             ui_state.selected_overlay
             if ui_state is not None and ui_state.selected_overlay
@@ -2612,6 +2950,17 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.statusBar().showMessage(
             f"Opened project {source} with {len(available_images)} available image(s)"
             + (f" and {len(loaded.issues)} file issue(s)." if loaded.issues else ".")
+            + (
+                f" Restored unsaved annotation edits for {recovered} image(s)."
+                if recovered
+                else ""
+            )
+            + (
+                f" {legacy} annotation file(s) are still in the shared workspace "
+                "folder; Save copies them into this project's folder."
+                if legacy
+                else ""
+            )
         )
         return True
 
@@ -2730,6 +3079,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._project_reference_sidecar_paths.clear()
         self._project_manual_centre_sidecar_paths.clear()
         self._project_manifest_sidecar_policy_active = False
+        self._install_annotation_stores(None)
         self._withheld_reference_sidecars.clear()
         self._withheld_manual_centre_sidecars.clear()
         self._project_unresolved_reference_sidecars.clear()
@@ -3141,6 +3491,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.save_project_as_action = QAction("Save project as…", self)
         self.save_project_as_action.setShortcut(QKeySequence.StandardKey.SaveAs)
         self.save_project_as_action.triggered.connect(self._save_project_as)
+        self._init_annotation_transfer()
 
         self.open_action = QAction("Open images…", self)
         self.open_action.setShortcut(QKeySequence.StandardKey.Open)
@@ -3413,6 +3764,9 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         transfer_menu.addAction(self.load_analysis_settings_action)
         transfer_menu.addAction(self.save_analysis_settings_action)
         transfer_menu.addSeparator()
+        transfer_menu.addAction(self.export_annotations_action)
+        transfer_menu.addAction(self.import_annotations_action)
+        transfer_menu.addSeparator()
         transfer_menu.addAction(self.save_viewport_action)
         snapshot_menu = file_menu.addMenu("Snapshots")
         for action in self.snapshot_actions:
@@ -3623,9 +3977,9 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             ("Trace continuity", "edge_trace_continuity"),
             ("Trace gap confidence", "edge_trace_gap_confidence"),
             ("Radius confirmation", "edge_radius_confirmation"),
-            ("Edge circular-arc support", "edge_circle_fit"),
-            ("Edge-oval perimeters", "edge_ellipse_fit"),
-            ("Circular-arc fit residual", "edge_fit_residual"),
+            ("Edge agreement with fitted circles", "edge_circle_fit"),
+            ("Edge agreement with fitted ellipses", "edge_ellipse_fit"),
+            ("Edge shape-fit residual", "edge_fit_residual"),
             ("Raw boundary centre-vote field", "edge_centre_votes"),
             (
                 "Fit-validated oval-centre probability",
@@ -3634,7 +3988,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             ("Seed material inside edges", "edge_semantic_sides"),
             ("Rejected edge reasons", "edge_rejections"),
             ("Raw centre-vote peak markers", "edge_fit_geometry"),
-            ("Most likely edge ovals", "edge_oval_hypotheses"),
+            ("Fitted seed ovals", "edge_oval_hypotheses"),
             ("Final seed-boundary confidence", "seed_edge_curves"),
             ("Seed-material mask", "procedural_seed_mask"),
             ("Physical boundary cost", "procedural_boundary_cost"),
@@ -6546,6 +6900,10 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             ),
             ManualSeedCentreMode(state.mode),
             ManualSeedCentreSpace.SOURCE_IMAGE,
+            tuple(
+                (float(x), float(y))
+                for x, y in state.suppressed_source_xy
+            ),
         )
 
     def _unet_settings(self) -> UNetPipelineSettings:
@@ -7957,7 +8315,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                     self._project_unresolved_manual_centre_sidecars.add(key)
             return False
         self._manual_seed_centre_states[key] = _ManualSeedCentreState(
-            stored.centres_xy, stored.mode
+            stored.centres_xy, stored.mode, stored.suppressed_xy
         )
         self._unsaved_manual_centre_sidecars.discard(key)
         self._withheld_manual_centre_sidecars.discard(key)
@@ -7999,6 +8357,14 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             state.centres_source_xy, result.calibration.affine_matrix
         )
 
+    def _manual_seed_suppressed_in_corrected_coordinates(
+        self, key: str, result
+    ) -> np.ndarray:
+        state = self._manual_seed_centre_state(key)
+        return self._project_manual_seed_centres(
+            state.suppressed_source_xy, result.calibration.affine_matrix
+        )
+
     def _manual_seed_centres_in_source_coordinates(
         self, corrected_xy: np.ndarray, result
     ) -> np.ndarray:
@@ -8036,13 +8402,15 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         state = self._manual_seed_centre_state(key)
         if result is None:
             result = self._analyses.get(key)
-        corrected = (
-            np.empty((0, 2), np.float64)
-            if result is None
-            else self._manual_seed_centres_in_corrected_coordinates(key, result)
-        )
+        if result is None:
+            corrected = suppressed = np.empty((0, 2), np.float64)
+        else:
+            corrected = self._manual_seed_centres_in_corrected_coordinates(key, result)
+            suppressed = self._manual_seed_suppressed_in_corrected_coordinates(
+                key, result
+            )
         self.image_view.set_manual_seed_centres(
-            corrected, mode=state.mode, render=render
+            corrected, mode=state.mode, suppressed_xy=suppressed, render=render
         )
 
     def _persist_manual_seed_centres(
@@ -8057,6 +8425,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 state.centres_source_xy,
                 mode=state.mode,
                 source_shape=read_source_raster_shape(path),
+                suppressed_xy=state.suppressed_source_xy,
             )
         except (ManualSeedCentreStoreError, OSError) as error:
             self._unsaved_manual_centre_sidecars.add(key)
@@ -8079,9 +8448,9 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         )
         return destination
 
-    @Slot(object, str, str)
+    @Slot(object, object, str, str)
     def _manual_seed_centres_edited(
-        self, corrected_xy: object, mode: str, label: str
+        self, corrected_xy: object, suppressed_xy: object, mode: str, label: str
     ) -> None:
         key = self._current_image_key()
         result = None if key is None else self._analyses.get(key)
@@ -8094,13 +8463,21 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             source_xy = self._manual_seed_centres_in_source_coordinates(
                 np.asarray(corrected_xy, dtype=np.float64), result
             )
+            suppressed_source_xy = (
+                np.empty((0, 2), np.float64)
+                if mode == "replace_automatic"
+                else self._manual_seed_centres_in_source_coordinates(
+                    np.asarray(suppressed_xy, dtype=np.float64).reshape(-1, 2),
+                    result,
+                )
+            )
         except (OSError, ValueError) as error:
             self.statusBar().showMessage(str(error))
             self._sync_manual_seed_centres_to_view(key, result, render=True)
             return
         self._apply_manual_seed_centre_state(
             key,
-            _ManualSeedCentreState(source_xy, mode),
+            _ManualSeedCentreState(source_xy, mode, suppressed_source_xy),
             label=label,
             record_undo=True,
         )
@@ -8115,9 +8492,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
     ) -> None:
         self._catalogue_context_changed()
         previous = self._manual_seed_centre_state(key)
-        if previous.mode == state.mode and np.array_equal(
-            previous.centres_source_xy, state.centres_source_xy
-        ):
+        if previous.same_edits(state):
             self._sync_procedural_centres_controls()
             return
         if record_undo:
@@ -8145,6 +8520,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             NodeStatus.COMPLETE,
             f"Manual annotations; {len(state.centres_source_xy):,} centre point(s); "
             + (
+                f"{len(state.suppressed_source_xy):,} removed automatic centre(s); "
                 "augmenting automatic markers"
                 if state.mode == "augment"
                 else "replacing automatic markers"
@@ -8539,6 +8915,9 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             return
         self.statusBar().showMessage(
             f"Saved applied reference regions for {path.name} to {destination}."
+            if self._project_annotation_directory is None
+            else f"Kept applied reference regions for {path.name} as an unsaved "
+            "project edit. Save the project to record them."
         )
 
     def _persist_applied_reference_regions(
@@ -11615,15 +11994,17 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         current = self._manual_seed_centre_state(key)
         if current.mode == mode:
             return
+        # Manual centres carry over; automatic centres are never copied, so
+        # Replace starts from the user's own points (often none) and Augment
+        # resumes automatic detection. Undo restores removed-centre edits.
+        corrected = self._manual_seed_centres_in_corrected_coordinates(key, result)
         if mode == "replace_automatic":
-            corrected = self.image_view.editable_procedural_marker_centres()
-            label = "switched to Replace automatic using surviving centres"
+            label = "switched to Replace automatic; automatic centre detection is off"
         else:
-            corrected = self._manual_seed_centres_in_corrected_coordinates(
-                key, result
-            )
-            label = "switched to Augment automatic"
-        self._manual_seed_centres_edited(corrected, mode, label)
+            label = "switched to Augment automatic; automatic centre detection is on"
+        self._manual_seed_centres_edited(
+            corrected, np.empty((0, 2), np.float64), mode, label
+        )
 
     def _sync_procedural_centres_controls(self) -> None:
         if not hasattr(self, "pipeline_inspector"):
@@ -11665,13 +12046,14 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             status = "Run procedural inference to inspect and edit its actual markers."
         elif state.mode == "augment":
             status = (
-                f"{len(state.centres_source_xy):,} manual override(s); automatic "
-                "markers remain enabled."
+                f"{len(state.centres_source_xy):,} manual centre(s) and "
+                f"{len(state.suppressed_source_xy):,} removed automatic centre(s); "
+                "automatic centre detection is on."
             )
         else:
             status = (
-                f"{len(state.centres_source_xy):,} replacement marker(s); automatic "
-                "marker discovery is disabled."
+                f"{len(state.centres_source_xy):,} manual centre(s); automatic "
+                "centre detection is off, so only these centres seed instances."
             )
         self.pipeline_inspector.set_procedural_centres_state(
             mode=state.mode,
@@ -13106,12 +13488,12 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             ),
             "edge_radius_confirmation": (
                 "Hue is fitted radius ratio (half to twice nominal across the hue "
-                "wheel); brightness is the stronger of circular-arc support and weighted "
-                "centre-vote support."
+                "wheel); brightness is the strongest of circular-arc support, agreement "
+                "with a fitted seed circle or ellipse, and weighted centre-vote support."
             ),
-            "edge_circle_fit": "Per edge pixel: how well a seed-sized circular arc through that pixel, along its tangent, is supported by neighbouring edges. Only ridge pixels carry a value.",
-            "edge_ellipse_fit": "The perimeters of the accepted edge ovals (the same ovals as Most likely edge ovals), painted with each oval's confidence. Not a per-edge fit: no seed proposals exist at this stage.",
-            "edge_fit_residual": "Per traced edge pixel: one minus its circular-arc support, so bright edges are poorly explained by a seed-sized arc.",
+            "edge_circle_fit": "Per traced edge pixel: how well it lies on, and runs along, the circle fitted to the nearest seed proposal. Brightness is the fit's score times closeness within the circle residual tolerance. Round seeds are bright; elongated seeds are dim here and bright in the ellipse view.",
+            "edge_ellipse_fit": "Per traced edge pixel: how well it lies on, and runs along, the ellipse fitted to the nearest seed proposal (the outlines in Fitted seed ovals). Brightness is the fit's score times closeness within the ellipse residual tolerance. Dark edges belong to no fitted seed, such as coat texture, debris or seeds the fitter missed.",
+            "edge_fit_residual": "Per traced edge pixel: one minus the best of its circular-arc support and its agreement with a fitted circle or ellipse. Bright edges are explained by no seed-shaped outline.",
             "edge_centre_votes": "Normal/radius votes with seed-scaled tangent offsets accumulated from fragmented oriented traces; bright maxima are raw oval-centre hypotheses before perimeter validation.",
             "oval_centre_probability": "Fit-validated probability that a pixel is the centre of a plausible oval supported by distributed curved-edge and tangent evidence. Blue is low; red is high.",
             "edge_semantic_sides": "Per edge pixel: how seed-like the side its best arc fit treats as the seed interior is (seed material just inside, non-seed material just outside). Bright edges enclose seed material; dark edges have background on their inner side. It boosts but never gates an edge.",
@@ -13119,16 +13501,17 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 "Hue categorizes rejection: weak hysteresis, junction/short trace, "
                 "poor continuity, implausible shape/radius, or low combined confidence."
             ),
-            "edge_fit_geometry": "Raw reverse-transform centre peaks before full oval validation; compact geometry transfers only when selected.",
-            "edge_oval_hypotheses": "Proposal-independent ovals reconstructed backward from curved edge fragments. Brighter, thicker cyan outlines have stronger distributed perimeter and tangent support.",
+            "edge_fit_geometry": "Centre-vote maxima: the seed proposals that the oval fitter starts from, before fitting and duplicate removal. Compact geometry transfers only when selected.",
+            "edge_oval_hypotheses": "Ellipses fitted to the boundary around each centre-vote maximum, after duplicate removal. Brighter, thicker cyan outlines have boundary hits more evenly around them, more of their outline on oriented traced edges and more seed material inside.",
             "seed_edge_curves": (
                 "Final seed-boundary confidence after ridge thinning, oriented trace "
                 "continuity, dense arc radii, centre voting, circular-arc support, "
+                "agreement with seed outlines fitted at the vote maxima, "
                 "and soft semantic/lightness confirmation."
             ),
             "procedural_seed_mask": "Thresholded seed material after dish-margin removal and seed-sized enclosed coat-hole filling.",
             "procedural_boundary_cost": "Normalized physical boundary cost fused from edges, sensor/noise, ridges and local shadow.",
-            "procedural_centres": "Marker likelihood from smoothed material, physical-boundary depth, blurred flattened grayscale, and positive support from proposal-independent fit-validated oval centres; dots are the markers actually used. Raw centre votes are a separate pre-validation diagnostic in Seed-boundary confirmation. When saved manual centres replace automatic ones, the dots are those manual centres and this likelihood selects nothing.",
+            "procedural_centres": "Marker likelihood from smoothed material, physical-boundary depth, blurred flattened grayscale, and positive support from the centres of seed ovals fitted in Seed-boundary confirmation; dots are the markers actually used. Raw centre votes are a separate diagnostic in Seed-boundary confirmation. When saved manual centres replace automatic ones, the dots are those manual centres and this likelihood selects nothing.",
             "procedural_instances": "Marker-controlled watershed instance identities. Dot colour runs red to green with per-instance confidence. Click a coloured seed to outline it and show its area, maximum width, concavity, protrusion, solidity, axis ratio and score in the Procedural node panel.",
             "procedural_confidence": "Per-instance marker, boundary and calibrated-area confidence mapped back onto every assigned pixel.",
             "procedural_concavity": "Convex-hull deficit for each retained instance, scaled to the configured hard concavity cutoff; brighter regions are more internally concave.",
@@ -13271,7 +13654,47 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             or "likelihood" in mode
         ):
             text = "Scale key: black = low displayed probability/evidence; white or maximum semantic-colour brightness = high. " + text
+        if mode in {"procedural_centres", "procedural_instances"}:
+            text += " " + self._procedural_marker_key()
         self.overlay_legend_label.setText(text)
+
+    def _procedural_marker_key(self) -> str:
+        """Name each centre-marker style with its count on the current image."""
+
+        key = self._current_image_key()
+        result = None if key is None else self._analyses.get(key)
+        procedural = getattr(result, "procedural_instances", None)
+        sources = np.asarray(
+            getattr(procedural, "marker_sources", ()), dtype=object
+        ).reshape(-1)
+        counts = {
+            name: sum(
+                self.image_view._normalised_procedural_marker_source(value) == name
+                for value in sources
+            )
+            for name in ("automatic", "manual", "annotation")
+        }
+        state = (
+            self._default_manual_seed_centre_state()
+            if key is None
+            else self._manual_seed_centre_state(key)
+        )
+        text = (
+            f"Centre markers: hollow cyan = automatic ({counts['automatic']:,}); "
+            f"filled yellow = manual ({counts['manual']:,}); magenta square = "
+            f"locked to an applied annotation ({counts['annotation']:,})"
+        )
+        if state.mode == "augment":
+            text += (
+                f"; grey \u00d7 = removed automatic centre "
+                f"({len(state.suppressed_source_xy):,}). Automatic detection is on."
+            )
+        else:
+            text += (
+                ". Replace automatic is on: automatic detection is off and only "
+                "manual centres are used."
+            )
+        return text
 
     def _mark_analysis_complete(self, result) -> None:
         node_timings = getattr(result, "node_timings_seconds", {})
@@ -13947,7 +14370,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             ),
         )
         manual_state = self._manual_seed_centre_state(key)
-        if len(manual_state.centres_source_xy):
+        if len(manual_state.centres_source_xy) or manual_state.mode != "augment":
             reference_node = self.pipeline.node("project")
             reference_node.status_detail += (
                 f"; centres {len(manual_state.centres_source_xy):,} "
@@ -14051,7 +14474,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             "reference_seed_traits": "Fitting isolated coat-pattern and reviewed condition material prototypes",
             "reference_edge_probability": "Classifying physical and apparent edges from reviewed examples",
             "edge_traces": "Linking orientation-compatible ridge fragments",
-            "seed_edge_curves": "Voting backward from curved edges and fitting proposal-independent ovals",
+            "seed_edge_curves": "Voting backward from curved edges and fitting seed ovals at the vote maxima",
             "background_likelihood": "Estimating the likely colour range",
             "refined_background_likelihood": "Evaluating foreground, background, and Other texture rays",
             "boundary_normals": "Estimating boundary confidence and normals",
@@ -14866,6 +15289,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 }:
                     event.ignore()
                     return
+                if answer == QMessageBox.StandardButton.Discard:
+                    self._discard_unsaved_project_annotations()
 
         self._pending_analysis_key = None
         self._pending_analysis_scope = None

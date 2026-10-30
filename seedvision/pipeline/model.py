@@ -1550,6 +1550,8 @@ def build_default_pipeline() -> PipelineGraph:
         ParameterSpec("boundary_orientation_tolerance_degrees", "Arc tangent tolerance", "float", 2.0, 60.0, 1.0, "Angular tolerance between observed and predicted tangents along an arc."),
         ParameterSpec("boundary_missing_support_floor", "Missing-edge floor", "float", 0.0, 0.75, 0.01, "Support retained for an occluded or locally missing arc sample instead of making it a hard failure."),
         ParameterSpec("boundary_max_axis_ratio", "Maximum ellipse axis ratio", "float", 1.0, 4.0, 0.05, "Largest seed ellipse axis ratio accepted as plausible."),
+        ParameterSpec("boundary_circle_residual_tolerance", "Circle residual tolerance", "float", 0.02, 0.80, 0.01, "Relative radial distance from a fitted seed circle at which a boundary hit loses most of its fit weight. It also sets how far from the circle an edge pixel still counts as on it."),
+        ParameterSpec("boundary_ellipse_residual_tolerance", "Ellipse residual tolerance", "float", 0.02, 0.80, 0.01, "Relative radial distance from a fitted seed ellipse at which a boundary hit loses most of its fit weight. It also sets how far from the ellipse an edge pixel still counts as on it."),
         ParameterSpec("boundary_radius_log_tolerance", "Radius-prior tolerance", "float", 0.05, 1.5, 0.05, "Log-space width of the soft global-diameter agreement term."),
         ParameterSpec("boundary_center_vote_weight", "Centre-vote influence", "float", 0.0, 1.0, 0.05, "Contribution from orientation-aware normal votes for compatible seed centres."),
         ParameterSpec("boundary_center_vote_blur_fraction", "Centre-vote blur / diameter", "float", 0.005, 0.30, 0.005, "Seed-relative smoothing of fragmented-arc centre votes."),
@@ -1557,8 +1559,8 @@ def build_default_pipeline() -> PipelineGraph:
         ParameterSpec("boundary_instance_edge_influence", "Instance-edge influence", "float", 0.0, 1.0, 0.05, "Soft influence of edge-supported physical prototype compatibility on final confirmed curves."),
         ParameterSpec("boundary_nonphysical_edge_discount", "Non-physical discount", "float", 0.0, 1.0, 0.05, "Suppression applied only where a true image edge has edge-supported Non-physical prototype compatibility."),
         ParameterSpec("boundary_polarity_boost", "Lightness-polarity boost", "float", 0.0, 1.0, 0.05, "Optional confidence boost when the fitted interior brightens away from the boundary; never a hard requirement."),
-        ParameterSpec("boundary_minimum_confidence", "Accepted-boundary minimum", "float", 0.0, 1.0, 0.01, "Final confidence below which a ridge is categorized in the rejection-reason overlay."),
-        ParameterSpec("boundary_geometry_max_candidates", "Maximum oval candidates", "int", 16, 1024, 16, "Maximum reverse-vote maxima fitted on the GPU and retained for the oval-derived centre field and compact geometry overlay; only compact geometry is downloaded when viewed."),
+        ParameterSpec("boundary_minimum_confidence", "Accepted-boundary minimum", "float", 0.0, 1.0, 0.01, "Smallest score of a fitted seed oval that is kept, and the final confidence below which a ridge is categorized in the rejection-reason overlay."),
+        ParameterSpec("boundary_geometry_max_candidates", "Maximum oval candidates", "int", 16, 4096, 16, "Most centre-vote maxima fitted with an ellipse and a circle on the GPU. Too few leaves seeds unfitted on crowded images; only compact geometry is downloaded when viewed."),
         ParameterSpec("boundary_working_maximum_dimension", "GPU working dimension", "int", 512, 4096, 128, "Maximum boundary-tracing dimension. Float tensors are resized only on GPU and full-resolution overlays remain GPU-resident until viewed."),
     )
     boundary_normal_parameters = (
@@ -1662,7 +1664,7 @@ def build_default_pipeline() -> PipelineGraph:
         ParameterSpec("centre_material_weight", "Centre material weight", "float", 0.0, 1.0, 0.02, "Contribution of seed-scale smoothed material evidence to marker likelihood."),
         ParameterSpec("centre_distance_weight", "Centre interior-depth weight", "float", 0.0, 1.0, 0.02, "Contribution of distance from the material and semantic-boundary barriers to marker likelihood."),
         ParameterSpec("centre_flattened_grayscale_weight", "Blurred flattened-gray weight", "float", 0.0, 1.0, 0.02, "Contribution of seed-scale blurred illumination-flattened grayscale contrast. Both dark and light coat centres are retained, while fine coat patterns are averaged before marker selection."),
-        ParameterSpec("centre_validated_oval_weight", "Validated oval-centre weight", "float", 0.0, 1.0, 0.02, "Positive-only contribution of proposal-independent centres whose fitted ovals passed perimeter coverage, tangent, size, ovality, and duplicate checks. Zero preserves the legacy procedural centre calculation."),
+        ParameterSpec("centre_validated_oval_weight", "Validated oval-centre weight", "float", 0.0, 1.0, 0.02, "Positive-only contribution of the centres of seed ovals fitted in Seed-boundary confirmation, which passed its boundary-coverage, outline-edge, size, axis-ratio and duplicate checks. Zero preserves the legacy procedural centre calculation."),
         ParameterSpec("centre_minimum_separation_fraction", "Marker spacing / diameter", "float", 0.10, 1.00, 0.01, "Minimum automatic marker spacing in ordinary and crowded seed material."),
         ParameterSpec("sparse_centre_minimum_separation_fraction", "Sparse marker spacing / diameter", "float", 0.10, 1.00, 0.01, "Stricter marker spacing used when seed material covers less than 35% of the dish."),
         ParameterSpec("sparse_seed_area_fraction", "Expected sparse seed area / diameter²", "float", 0.05, 2.00, 0.01, "Nominal occupied area per seed used to estimate the marker-count cap when seed material covers less than 55% of the dish. Smaller values retain more automatic markers."),
@@ -2760,6 +2762,8 @@ def build_default_pipeline() -> PipelineGraph:
                 "boundary_orientation_tolerance_degrees": 20.0,
                 "boundary_missing_support_floor": 0.15,
                 "boundary_max_axis_ratio": 2.20,
+                "boundary_circle_residual_tolerance": 0.15,
+                "boundary_ellipse_residual_tolerance": 0.12,
                 "boundary_radius_log_tolerance": 0.45,
                 "boundary_center_vote_weight": 0.35,
                 "boundary_center_vote_blur_fraction": 0.08,
@@ -2768,7 +2772,7 @@ def build_default_pipeline() -> PipelineGraph:
                 "boundary_nonphysical_edge_discount": 0.80,
                 "boundary_polarity_boost": 0.20,
                 "boundary_minimum_confidence": 0.12,
-                "boundary_geometry_max_candidates": 256,
+                "boundary_geometry_max_candidates": 2048,
                 "boundary_working_maximum_dimension": 1280,
             },
             parameter_specs=boundary_trace_parameters,
@@ -2779,7 +2783,7 @@ def build_default_pipeline() -> PipelineGraph:
                 ("boundary_minimum_confidence", "Accept â‰¥"),
             ),
             output_ports=(
-                ("oval_hypotheses", "Most likely edge ovals"),
+                ("oval_hypotheses", "Fitted seed ovals"),
                 (
                     "oval_centre_probability",
                     "Fit-validated oval-centre probability",
@@ -2791,11 +2795,14 @@ def build_default_pipeline() -> PipelineGraph:
             },
             details=(
                 "Every trace is checked against a dense radius bank with many samples "
-                "across each candidate arc; missing edge samples are tolerated. Normal "
-                "centre votes reinforce fragmented arcs. Vote maxima gather compatible "
-                "curved fragments into proposal-independent oval fits, which are checked "
-                "for distributed perimeter coverage, tangent agreement, plausible size "
-                "and axis ratio before they contribute centre probability. Background/"
+                "across each candidate arc; missing edge samples are tolerated, and the "
+                "supported arcs vote for seed centres. Each vote maximum is a seed "
+                "proposal: rays from it find the seed boundary, and an ellipse and a "
+                "circle are fitted to the hits with outlier down-weighting, then refitted "
+                "from the fitted centre. Fits are scored by boundary coverage, oriented "
+                "edges on the outline and enclosed seed material, and duplicates are "
+                "removed. An edge pixel lying on a fitted outline is confirmed by that "
+                "outline; accepted ovals also form the centre probability. Background/"
                 "foreground side consistency and inward lightening can boost confidence "
                 "but never define the boundary."
             ),
@@ -2955,7 +2962,7 @@ def build_default_pipeline() -> PipelineGraph:
                 "long, continuous, seed-scale convex traces add geometric support. Internal "
                 "coat texture is therefore suppressed instead of being counted repeatedly. "
                 "Seed-scale blurred illumination-flattened grayscale, material geometry, "
-                "boundary-interior depth, and proposal-independent fit-validated oval centres "
+                "boundary-interior depth, and the centres of fitted seed ovals "
                 "propose centres. Applied instance masks are "
                 "withheld from automatic markers and output shapes; only explicit manual "
                 "centre points may constrain marker placement. A "
@@ -3924,6 +3931,8 @@ def build_default_pipeline() -> PipelineGraph:
                 "Oval geometry fit",
                 (
                     "boundary_max_axis_ratio",
+                    "boundary_circle_residual_tolerance",
+                    "boundary_ellipse_residual_tolerance",
                 ),
             ),
             (

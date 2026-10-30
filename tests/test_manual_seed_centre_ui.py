@@ -81,10 +81,10 @@ class ManualSeedCentreUiTests(unittest.TestCase):
             view.show()
             self.application.processEvents()
             view.fit_image()
-            edits: list[tuple[np.ndarray, str, str]] = []
+            edits: list[tuple[np.ndarray, np.ndarray, str, str]] = []
             view.manual_seed_centres_edited.connect(
-                lambda values, mode, label: edits.append(
-                    (np.asarray(values).copy(), mode, label)
+                lambda values, suppressed, mode, label: edits.append(
+                    (np.asarray(values).copy(), np.asarray(suppressed).copy(), mode, label)
                 )
             )
 
@@ -99,7 +99,8 @@ class ManualSeedCentreUiTests(unittest.TestCase):
                     view.viewport(), Qt.MouseButton.LeftButton, pos=add
                 )
                 np.testing.assert_allclose(edits[-1][0], ((70.0, 60.0),), atol=0.6)
-                self.assertEqual(edits[-1][1], "augment")
+                self.assertEqual(edits[-1][1].shape, (0, 2))
+                self.assertEqual(edits[-1][2], "augment")
 
                 # Dragging a manual marker preserves its current mode.
                 view._analysis_result = self._procedural_result(
@@ -118,10 +119,10 @@ class ManualSeedCentreUiTests(unittest.TestCase):
                     view.viewport(), Qt.MouseButton.LeftButton, pos=end
                 )
                 np.testing.assert_allclose(edits[-1][0], ((80.0, 72.0),), atol=0.8)
-                self.assertEqual(edits[-1][1], "augment")
+                self.assertEqual(edits[-1][2], "augment")
 
-                # Dragging an automatic marker seeds Replace with every
-                # surviving non-annotation marker, then moves only the hit one.
+                # Dragging an automatic marker changes only that centre: the
+                # moved point becomes manual and its old position suppressed.
                 view._analysis_result = self._procedural_result(
                     ((25.0, 25.0), (80.0, 72.0)), (0, 1)
                 )
@@ -137,13 +138,13 @@ class ManualSeedCentreUiTests(unittest.TestCase):
                 QTest.mouseRelease(
                     view.viewport(), Qt.MouseButton.LeftButton, pos=end
                 )
-                self.assertEqual(edits[-1][1], "replace_automatic")
+                self.assertEqual(edits[-1][2], "augment")
                 np.testing.assert_allclose(
-                    edits[-1][0], ((38.0, 31.0), (80.0, 72.0)), atol=0.8
+                    edits[-1][0], ((80.0, 72.0), (38.0, 31.0)), atol=0.8
                 )
+                np.testing.assert_allclose(edits[-1][1], ((25.0, 25.0),), atol=0.6)
 
-                # Right-deleting an automatic marker has the same safe mode
-                # conversion and retains the other real marker.
+                # Right-deleting an automatic marker suppresses only that one.
                 view._analysis_result = self._procedural_result(
                     ((25.0, 25.0), (80.0, 72.0)), (0, 1)
                 )
@@ -154,8 +155,27 @@ class ManualSeedCentreUiTests(unittest.TestCase):
                 QTest.mouseClick(
                     view.viewport(), Qt.MouseButton.RightButton, pos=automatic
                 )
-                self.assertEqual(edits[-1][1], "replace_automatic")
+                self.assertEqual(edits[-1][2], "augment")
                 np.testing.assert_allclose(edits[-1][0], ((80.0, 72.0),), atol=0.6)
+                np.testing.assert_allclose(edits[-1][1], ((25.0, 25.0),), atol=0.6)
+
+                # Right-deleting the grey removed-centre marker restores
+                # automatic detection there.
+                view._analysis_result = self._procedural_result(
+                    ((80.0, 72.0),), (1,)
+                )
+                view.set_manual_seed_centres(
+                    np.asarray(((80.0, 72.0),)),
+                    mode="augment",
+                    suppressed_xy=np.asarray(((25.0, 25.0),)),
+                    render=False,
+                )
+                QTest.mouseClick(
+                    view.viewport(), Qt.MouseButton.RightButton, pos=automatic
+                )
+                self.assertEqual(edits[-1][2], "augment")
+                np.testing.assert_allclose(edits[-1][0], ((80.0, 72.0),), atol=0.6)
+                self.assertEqual(edits[-1][1].shape, (0, 2))
 
             view.close()
 
@@ -193,6 +213,7 @@ class ManualSeedCentreUiTests(unittest.TestCase):
             ):
                 window._manual_seed_centres_edited(
                     np.asarray(((25.0, 22.0),), dtype=np.float64),
+                    np.empty((0, 2), np.float64),
                     "augment",
                     "added manual seed centre",
                 )
@@ -254,16 +275,13 @@ class ManualSeedCentreUiTests(unittest.TestCase):
             ):
                 window._pipeline_node_selected("procedural_instances")
                 window._sync_procedural_centres_controls()
-                # The combo is a real Qt action: Augment -> Replace copies all
-                # currently editable markers before disabling discovery.
+                # The combo is a real Qt action: Augment -> Replace turns off
+                # automatic detection and copies no automatic markers.
                 inspector.procedural_centres_mode_combo.setCurrentIndex(replace_index)
                 self.application.processEvents()
                 replacement = window._manual_seed_centre_states[key]
                 self.assertEqual(replacement.mode, "replace_automatic")
-                np.testing.assert_allclose(
-                    replacement.centres_source_xy,
-                    ((20.0, 30.0), (70.0, 65.0)),
-                )
+                self.assertEqual(replacement.centres_source_xy.shape, (0, 2))
 
                 QTest.mouseClick(
                     inspector.procedural_centres_undo_button,
@@ -279,6 +297,7 @@ class ManualSeedCentreUiTests(unittest.TestCase):
                 window.image_view._analysis_result = result
                 window._manual_seed_centres_edited(
                     np.asarray(((44.0, 42.0),)),
+                    np.asarray(((20.0, 30.0),)),
                     "augment",
                     "added manual seed centre",
                 )
@@ -289,6 +308,7 @@ class ManualSeedCentreUiTests(unittest.TestCase):
                 reset = window._manual_seed_centre_states[key]
                 self.assertEqual(reset.mode, "augment")
                 self.assertEqual(reset.centres_source_xy.shape, (0, 2))
+                self.assertEqual(reset.suppressed_source_xy.shape, (0, 2))
 
             self.assertEqual(analyze.call_count, 4)
             loaded = ManualSeedCentreStore(root).load_if_present(image_path, (100, 100))
@@ -325,6 +345,7 @@ class ManualSeedCentreUiTests(unittest.TestCase):
             ):
                 window._manual_seed_centres_edited(
                     np.asarray(((44.0, 41.0),)),
+                    np.empty((0, 2), np.float64),
                     "augment",
                     "added manual seed centre",
                 )
