@@ -225,7 +225,7 @@ class SeedCropArtifactTests(unittest.TestCase):
                                                   seed_ids=(1, 99), padding_px=0)
             stderr, stdout = io.StringIO(), io.StringIO()
             with patch('sys.argv', ['analyze_pilot.py', '--project', 'unused', '--seed-crop-padding-px', '0']), \
-                 patch('scripts.analyze_pilot.run_project', return_value=[output]), \
+                 patch('scripts.analyze_pilot.require_runtime_ready'),                  patch('seedvision.export.project_runner.run_project', return_value=[output]), \
                  redirect_stderr(stderr), redirect_stdout(stdout):
                 self.assertEqual(main(), 0)
             self.assertIn(str(output), stdout.getvalue())
