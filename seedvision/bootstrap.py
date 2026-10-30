@@ -47,10 +47,18 @@ class Dependency:
 class BootstrapConfiguration:
     python: PythonRequirement
     packages: tuple[Dependency, ...]
+    cellpose_dependencies: tuple[str, ...] = ()
 
     @property
     def required_packages(self) -> tuple[Dependency, ...]:
         return tuple(package for package in self.packages if package.required)
+
+    @property
+    def cellpose(self) -> Dependency | None:
+        return next(
+            (package for package in self.packages if package.distribution == "cellpose"),
+            None,
+        )
 
 
 @dataclass(frozen=True)
@@ -95,6 +103,7 @@ class RuntimeReport:
     python_compatible: bool
     dependency_checks: tuple[DependencyCheck, ...]
     torch_probe: TorchProbeResult | None = None
+    opencv_conflict: str | None = None
 
     @property
     def ready(self) -> bool:
@@ -138,6 +147,13 @@ class RuntimeReport:
             if check.dependency.required and not check.compatible
         )
 
+    @property
+    def cellpose_missing(self) -> bool:
+        return any(
+            check.dependency.distribution == "cellpose" and not check.compatible
+            for check in self.dependency_checks
+        )
+
 
 _VERSION_PATTERN = re.compile(r"^\s*(\d+)(?:\.(\d+))?(?:\.(\d+))?")
 
@@ -168,6 +184,7 @@ def load_configuration(root: Path) -> BootstrapConfiguration:
     try:
         python = PythonRequirement(**raw["python"])
         packages = tuple(Dependency(**item) for item in raw["packages"])
+        cellpose_dependencies = tuple(raw.get("cellpose_dependencies", ()))
     except (KeyError, TypeError) as error:
         raise BootstrapError(
             f"Dependency manifest {manifest_path} has an invalid schema: {error}"
@@ -177,7 +194,13 @@ def load_configuration(root: Path) -> BootstrapConfiguration:
         raise BootstrapError("The dependency manifest does not list any packages.")
     if any(type(package.requires_cuda) is not bool for package in packages):
         raise BootstrapError("Dependency manifest requires_cuda values must be booleans.")
-    return BootstrapConfiguration(python=python, packages=packages)
+    if any(type(spec) is not str for spec in cellpose_dependencies):
+        raise BootstrapError("Dependency manifest cellpose_dependencies must be strings.")
+    return BootstrapConfiguration(
+        python=python,
+        packages=packages,
+        cellpose_dependencies=cellpose_dependencies,
+    )
 
 
 def inspect_dependency(
@@ -247,6 +270,28 @@ def inspect_dependency(
     )
 
 
+def opencv_conflict(
+    version_getter: Callable[[str], str] = importlib.metadata.version,
+) -> str | None:
+    """Describe a headless OpenCV installed beside the GUI build, if any.
+
+    Both distributions install the same cv2 module, so whichever was installed last
+    silently replaces the other's files.
+    """
+
+    try:
+        gui = version_getter("opencv-python")
+        headless = version_getter("opencv-python-headless")
+    except importlib.metadata.PackageNotFoundError:
+        return None
+    return (
+        f"opencv-python-headless {headless} is installed beside opencv-python {gui} "
+        "and overwrites its cv2 module. Run: python -m pip uninstall -y "
+        "opencv-python-headless, then python -m pip install --force-reinstall "
+        f"--no-deps opencv-python=={gui}"
+    )
+
+
 def inspect_runtime(
     configuration: BootstrapConfiguration,
     *,
@@ -309,6 +354,7 @@ def inspect_runtime(
         python_compatible=python_compatible,
         dependency_checks=tuple(checks),
         torch_probe=torch_probe,
+        opencv_conflict=opencv_conflict(),
     )
 
 
@@ -333,9 +379,14 @@ def format_report(report: RuntimeReport, configuration: BootstrapConfiguration) 
                 "UPDATE" if check.installed else "MISSING"
             )
         version = check.version or "unknown"
+        detail = check.detail
+        if marker == "OPTIONAL":
+            detail += f"; {check.dependency.purpose}"
         lines.append(
-            f"  [{marker}] {check.dependency.distribution} {version} - {check.detail}"
+            f"  [{marker}] {check.dependency.distribution} {version} - {detail}"
         )
+    if report.opencv_conflict:
+        lines.append(f"Conflict: {report.opencv_conflict}")
     if any(check.dependency.requires_cuda for check in report.dependency_checks):
         probe = report.torch_probe
         if probe is None:
@@ -412,6 +463,7 @@ def build_pip_command(
     wheelhouse: Path,
     offline: bool,
     index_url: str | None = None,
+    no_deps: bool = False,
 ) -> list[str]:
     specs = tuple(install_specs)
     if not specs:
@@ -435,6 +487,8 @@ def build_pip_command(
         command.extend(("--find-links", str(wheelhouse)))
     if index_url and not offline:
         command.extend(("--index-url", index_url))
+    if no_deps:
+        command.append("--no-deps")
     command.extend(specs)
     return command
 
@@ -498,6 +552,114 @@ def install_dependencies(
             index_url=index_url,
         )
         run_checked(command, description="install Seed Fiddle runtime dependencies")
+
+
+def installed_version(python_executable: Path | str, distribution: str) -> str | None:
+    """Ask the selected interpreter for an installed distribution's version."""
+
+    script = (
+        "import importlib.metadata, sys\n"
+        "try:\n"
+        "    print(importlib.metadata.version(sys.argv[1]))\n"
+        "except importlib.metadata.PackageNotFoundError:\n"
+        "    pass\n"
+    )
+    try:
+        result = subprocess.run(
+            (str(python_executable), "-c", script, distribution),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise BootstrapError(
+            f"Could not read the {distribution} version from {python_executable}: {error}"
+        ) from error
+    if result.returncode != 0:
+        raise BootstrapError(
+            f"Could not read the {distribution} version from {python_executable}: "
+            f"{result.stderr.strip() or f'exit code {result.returncode}'}"
+        )
+    return result.stdout.strip() or None
+
+
+def pytorch_index_url(torch_version: str) -> str | None:
+    """The PyTorch wheel index named by a build's local label, such as cu126."""
+
+    _, _, label = torch_version.partition("+")
+    return f"https://download.pytorch.org/whl/{label}" if label else None
+
+
+def cellpose_install_commands(
+    python_executable: Path | str,
+    configuration: BootstrapConfiguration,
+    torch_version: str,
+    *,
+    root: Path,
+    offline: bool,
+) -> list[list[str]]:
+    """Pip commands that add Cellpose-SAM without replacing PyTorch or OpenCV.
+
+    torchvision comes from the installed PyTorch build's index, and pinning that
+    build in the same request makes pip choose the torchvision release made for it.
+    Cellpose goes last and without dependencies: its list names
+    opencv-python-headless, which would replace the cv2 module of opencv-python.
+    Its other dependencies are the manifest's pins.
+    """
+
+    cellpose = configuration.cellpose
+    if cellpose is None:
+        raise BootstrapError("The dependency manifest does not list cellpose.")
+    wheelhouse = root / "wheels"
+    commands = [
+        build_pip_command(
+            python_executable,
+            ("torchvision", f"torch=={torch_version}"),
+            wheelhouse=wheelhouse,
+            offline=offline,
+            index_url=pytorch_index_url(torch_version),
+        )
+    ]
+    if configuration.cellpose_dependencies:
+        commands.append(
+            build_pip_command(
+                python_executable,
+                configuration.cellpose_dependencies,
+                wheelhouse=wheelhouse,
+                offline=offline,
+            )
+        )
+    commands.append(
+        build_pip_command(
+            python_executable,
+            (cellpose.install_spec,),
+            wheelhouse=wheelhouse,
+            offline=offline,
+            no_deps=True,
+        )
+    )
+    return commands
+
+
+def install_cellpose(
+    python_executable: Path | str,
+    configuration: BootstrapConfiguration,
+    *,
+    root: Path,
+    offline: bool,
+) -> None:
+    torch_version = installed_version(python_executable, "torch")
+    if torch_version is None:
+        raise BootstrapError("PyTorch is not installed, so Cellpose-SAM cannot be added.")
+    for command in cellpose_install_commands(
+        python_executable,
+        configuration,
+        torch_version,
+        root=root,
+        offline=offline,
+    ):
+        run_checked(command, description="install Cellpose-SAM")
 
 
 def probe_torch(

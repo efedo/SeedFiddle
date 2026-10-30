@@ -19,10 +19,14 @@ from seedvision.bootstrap import (
     RuntimeReport,
     TorchProbeResult,
     build_pip_command,
+    cellpose_install_commands,
+    format_report,
+    install_cellpose,
     install_dependencies,
     inspect_dependency,
     inspect_runtime,
     load_configuration,
+    opencv_conflict,
     probe_torch,
     version_is_compatible,
     version_key,
@@ -215,13 +219,25 @@ class PipCommandTests(unittest.TestCase):
         self.assertIn("--index-url", second_command)
         self.assertIn("torch==2.14.1+cu126", second_command)
 
+    def check_test_command_can_skip_dependency_resolution(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            command = build_pip_command(
+                "python.exe",
+                ("cellpose==4.2.1.1",),
+                wheelhouse=Path(temporary_directory),
+                offline=False,
+                no_deps=True,
+            )
+        self.assertLess(command.index("--no-deps"), command.index("cellpose==4.2.1.1"))
+
     def test_workflow_lifecycle(self):
-        """5 related PipCommandTests scenarios, each with private fixture state."""
+        """6 related PipCommandTests scenarios, each with private fixture state."""
         self.scenario(self.check_test_online_command_can_prefer_local_wheels)
         self.scenario(self.check_test_offline_command_disables_package_indexes)
         self.scenario(self.check_test_offline_cuda_pin_cannot_be_satisfied_by_cpu_torch_wheel)
         self.scenario(self.check_test_online_command_can_select_the_cuda_wheel_index)
         self.scenario(self.check_test_online_install_separates_default_and_cuda_indexes)
+        self.scenario(self.check_test_command_can_skip_dependency_resolution)
 
     def test_validation_and_recovery(self):
         """1 related PipCommandTests scenarios, each with private fixture state."""
@@ -239,6 +255,14 @@ class ManifestTests(unittest.TestCase):
         )
         cellpose = next(item for item in configuration.packages if item.distribution == "cellpose")
         self.assertFalse(cellpose.required)
+        self.assertIs(configuration.cellpose, cellpose)
+        # Cellpose's own list minus PyTorch, torchvision, NumPy and the headless
+        # OpenCV that would replace opencv-python's cv2.
+        self.assertEqual(
+            {spec.partition("==")[0] for spec in configuration.cellpose_dependencies},
+            {"scipy", "natsort", "tifffile", "tqdm", "fastremap", "imagecodecs",
+             "roifile", "fill-voids", "segment_anything"},
+        )
         self.assertEqual(configuration.python.recommended, "3.12")
         self.assertEqual(configuration.python.minimum, "3.12.0")
         self.assertEqual(configuration.python.maximum_exclusive, "3.16.0")
@@ -405,6 +429,104 @@ class ManifestTests(unittest.TestCase):
             ["immature", "split", "wrinkled", "stained"],
         )
         self.assertTrue(traits["visible_face_only"])
+
+
+@functional_units
+class CellposeInstallTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.configuration = load_configuration(Path(__file__).resolve().parents[1])
+
+    def check_test_install_keeps_pytorch_and_gui_opencv(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            torchvision, dependencies, cellpose = cellpose_install_commands(
+                "python.exe",
+                self.configuration,
+                "2.13.0+cu126",
+                root=Path(temporary_directory),
+                offline=False,
+            )
+        self.assertIn("torchvision", torchvision)
+        self.assertIn("torch==2.13.0+cu126", torchvision)
+        self.assertEqual(
+            torchvision[torchvision.index("--index-url") + 1],
+            "https://download.pytorch.org/whl/cu126",
+        )
+        self.assertIn("natsort==8.4.0", dependencies)
+        self.assertNotIn("--no-deps", dependencies)
+        self.assertEqual(cellpose[-2:], ["--no-deps", "cellpose==4.2.1.1"])
+        for command in (torchvision, dependencies, cellpose):
+            self.assertFalse(any("opencv" in part for part in command))
+
+    def check_test_install_matches_the_target_pytorch_build(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory, \
+             patch("seedvision.bootstrap.installed_version", return_value="2.15.0+cu132") as version, \
+             patch("seedvision.bootstrap.run_checked") as run_checked:
+            install_cellpose(
+                "target.exe",
+                self.configuration,
+                root=Path(temporary_directory),
+                offline=False,
+            )
+        version.assert_called_once_with("target.exe", "torch")
+        commands = [call.args[0] for call in run_checked.call_args_list]
+        self.assertEqual(len(commands), 3)
+        self.assertTrue(all(command[0] == "target.exe" for command in commands))
+        self.assertIn("https://download.pytorch.org/whl/cu132", commands[0])
+        self.assertIn("torch==2.15.0+cu132", commands[0])
+        self.assertIn("cellpose==4.2.1.1", commands[-1])
+
+    def check_test_install_without_pytorch_changes_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory, \
+             patch("seedvision.bootstrap.installed_version", return_value=None), \
+             patch("seedvision.bootstrap.run_checked") as run_checked:
+            with self.assertRaises(BootstrapError):
+                install_cellpose(
+                    "target.exe",
+                    self.configuration,
+                    root=Path(temporary_directory),
+                    offline=False,
+                )
+        run_checked.assert_not_called()
+
+    def check_test_diagnostics_report_a_headless_opencv_beside_the_gui_build(self) -> None:
+        both = {"opencv-python": "5.0.0.93", "opencv-python-headless": "5.0.0.93"}
+
+        def version(name: str) -> str:
+            if name not in both:
+                raise importlib.metadata.PackageNotFoundError(name)
+            return both[name]
+
+        conflict = opencv_conflict(version)
+        self.assertIn("overwrites its cv2 module", conflict)
+        self.assertIn("opencv-python==5.0.0.93", conflict)
+        del both["opencv-python-headless"]
+        self.assertIsNone(opencv_conflict(version))
+
+        cellpose = self.configuration.cellpose
+        report = RuntimeReport(
+            python_version="3.15.2",
+            python_executable="python.exe",
+            architecture_bits=64,
+            in_virtual_environment=True,
+            python_compatible=True,
+            dependency_checks=(
+                DependencyCheck(cellpose, False, False, None, "not installed"),
+            ),
+            opencv_conflict=conflict,
+        )
+        output = format_report(report, self.configuration)
+        self.assertIn("[OPTIONAL] cellpose unknown - not installed; Cellpose-SAM", output)
+        self.assertIn("--no-cellpose", output)
+        self.assertIn(f"Conflict: {conflict}", output)
+        self.assertTrue(report.cellpose_missing)
+
+    def test_workflow_lifecycle(self):
+        """4 Cellpose-SAM installation scenarios, each with private fixture state."""
+        self.scenario(self.check_test_install_keeps_pytorch_and_gui_opencv)
+        self.scenario(self.check_test_install_matches_the_target_pytorch_build)
+        self.scenario(self.check_test_install_without_pytorch_changes_nothing)
+        self.scenario(self.check_test_diagnostics_report_a_headless_opencv_beside_the_gui_build)
 
 
 class CudaRuntimeTests(unittest.TestCase):

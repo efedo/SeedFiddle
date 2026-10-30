@@ -65,29 +65,22 @@ All commands run from the repository root with the project `.venv`.
    per-image F1 and PQ; total count error, splits and merges), the run facts
    copied from each `<stem>.run.json`, and the overlay paths.
 
-## Cellpose-SAM spike (experimental, not an application feature)
+## Cellpose-SAM predictions
 
 `scripts/predict_cellpose_instances.py` runs the pretrained Cellpose-SAM
 `cpsam` model zero-shot on the dish crops exported in step 1 and writes
-source-frame masks for the harness. It is **not** part of the desktop
-application and must not be installed into the project `.venv`: `cellpose`
-depends on `opencv-python-headless`, which overwrites the `cv2` package the
-application pins. Use a scratch virtual environment layered on the project
-site-packages instead, for example:
+source-frame masks for the harness. It uses the `cellpose` package that
+`seed_vision.py` installs into the project `.venv` (see Cellpose-SAM in the
+operator guide):
 
 ```powershell
-.venv\Scripts\python.exe -m venv %TEMP%\cpvenv
-echo D:\Programming\SeedFiddle\.venv\Lib\site-packages > %TEMP%\cpvenv\Lib\site-packages\_project_venv.pth
-%TEMP%\cpvenv\Scripts\python.exe -m pip install --no-deps cellpose scipy natsort tifffile tqdm fastremap imagecodecs roifile fill-voids segment_anything
-%TEMP%\cpvenv\Scripts\python.exe -m pip install --no-deps torchvision --index-url https://download.pytorch.org/whl/cu126
-%TEMP%\cpvenv\Scripts\python.exe scripts\predict_cellpose_instances.py --frames artifacts\instance-benchmark\predictions\procedural --output artifacts\instance-benchmark\predictions --diameters default 48 estimated
+.venv\Scripts\python.exe scripts\predict_cellpose_instances.py --frames artifacts\instance-benchmark\predictions\procedural --output artifacts\instance-benchmark\predictions --diameters default 48 estimated
 ```
 
 Each diameter hint writes its own `cellpose-sam-<hint>` directory, which is
 scored with `--predictions cellpose-sam-48=...` exactly like the procedural
 output. The first run downloads the `cpsam` weights (about 1.3 GB) into
-`~/.cellpose/models`. Confirm the application is unaffected afterwards with
-`python seed_vision.py --diagnostics`.
+`~/.cellpose/models`.
 
 ## Tests
 

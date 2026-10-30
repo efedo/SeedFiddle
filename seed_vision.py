@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import subprocess
 import sys
@@ -19,6 +20,7 @@ from seedvision.bootstrap import (  # noqa: E402 - intentionally after ROOT setu
     create_virtual_environment,
     format_report,
     inspect_runtime,
+    install_cellpose,
     install_dependencies,
     load_configuration,
     project_venv_python,
@@ -50,6 +52,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--offline",
         action="store_true",
         help="install only from compatible wheels in the local wheels directory",
+    )
+    parser.add_argument(
+        "--no-cellpose",
+        action="store_true",
+        help="do not install the optional Cellpose-SAM package",
     )
     parser.add_argument(
         "--diagnostics",
@@ -175,11 +182,75 @@ def _confirm_install(environment: str, specs: Sequence[str]) -> bool:
     return answer in {"y", "yes"}
 
 
+def _cellpose_specs(configuration) -> tuple[str, ...]:
+    """What a Cellpose-SAM install adds, as listed for consent."""
+
+    return (
+        "torchvision (the release made for the installed PyTorch build)",
+        *configuration.cellpose_dependencies,
+        f"{configuration.cellpose.install_spec} (without opencv-python-headless)",
+    )
+
+
+def _confirm_cellpose(specs: Sequence[str]) -> bool:
+    if not sys.stdin.isatty():
+        return False
+    print("\nCellpose-SAM seed instances need the optional cellpose package.")
+    print(f"Target: {sys.executable}")
+    print("Packages:")
+    for spec in specs:
+        print(f"  - {spec}")
+    answer = input("Install them now? [Y/n]: ").strip().lower()
+    return answer in {"", "y", "yes"}
+
+
+def _install_cellpose(python_executable: Path | str, configuration, *, offline: bool) -> None:
+    """Install Cellpose-SAM; a failure is reported and never blocks launch."""
+
+    try:
+        install_cellpose(python_executable, configuration, root=ROOT, offline=offline)
+    except BootstrapError as error:
+        from seedvision.diagnostics import LOGGER
+
+        LOGGER.warning("Cellpose-SAM installation failed: %s", error)
+        print(
+            f"\nCellpose-SAM was not installed: {error}\nSeed Fiddle starts without "
+            "it; pass --no-cellpose to stop installing it.",
+            file=sys.stderr,
+        )
+        return
+    importlib.invalidate_caches()
+
+
+def _offer_cellpose(args, bootstrap_mode: str, configuration) -> None:
+    """Add the missing Cellpose-SAM package to a ready runtime before launch."""
+
+    if bootstrap_mode == "never":
+        return
+    if bootstrap_mode == "auto":
+        # Like the required packages, auto mode changes only the project .venv
+        # unless --environment current names this interpreter.
+        install = (
+            args.environment == "current"
+            or Path(sys.executable).resolve() == project_venv_python(ROOT).resolve()
+        )
+    else:
+        install = _confirm_cellpose(_cellpose_specs(configuration))
+    if not install:
+        print(
+            "Cellpose-SAM is not installed; Seed Fiddle starts without it. "
+            "Pass --no-cellpose to stop offering it."
+        )
+        return
+    _install_cellpose(sys.executable, configuration, offline=args.offline)
+
+
 def _run_with_interpreter(
     python_executable: Path | str,
     *,
     offline: bool,
     bootstrap: str,
+    no_cellpose: bool = False,
     forwarded_arguments: Sequence[str] = (),
 ) -> int:
     command = [
@@ -192,6 +263,8 @@ def _run_with_interpreter(
     ]
     if offline:
         command.append("--offline")
+    if no_cellpose:
+        command.append("--no-cellpose")
     command.extend(forwarded_arguments)
     try:
         return subprocess.call(command)
@@ -520,6 +593,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             learning_result = _run_learning_action(args)
             if learning_result is not None:
                 return learning_result
+            if not args.no_cellpose and report.cellpose_missing:
+                _offer_cellpose(args, bootstrap_mode, configuration)
             return _launch_application()
 
         # If a local environment already exists, auto mode gives it first chance
@@ -534,6 +609,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 venv_python,
                 offline=args.offline,
                 bootstrap=bootstrap_mode,
+                no_cellpose=args.no_cellpose,
                 forwarded_arguments=_learning_arguments(args),
             )
 
@@ -566,12 +642,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             report.in_virtual_environment
             and Path(sys.executable).resolve() == project_venv_python(ROOT).resolve()
         )
+        new_environment = environment == "venv" and not running_in_project_venv
         dependencies = (
             configuration.required_packages
-            if environment == "venv" and not running_in_project_venv
+            if new_environment
             else report.packages_to_install
         )
         specs = tuple(dependency.install_spec for dependency in dependencies)
+        with_cellpose = not args.no_cellpose and (
+            new_environment or report.cellpose_missing
+        )
+        if with_cellpose:
+            specs += _cellpose_specs(configuration)
         if bootstrap_mode == "ask" and not _confirm_install(environment, specs):
             print("No changes were made.")
             return 2
@@ -588,10 +670,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             root=ROOT,
             offline=args.offline,
         )
+        if with_cellpose:
+            _install_cellpose(target_python, configuration, offline=args.offline)
         return _run_with_interpreter(
             target_python,
             offline=args.offline,
             bootstrap="never",
+            no_cellpose=args.no_cellpose,
             forwarded_arguments=_learning_arguments(args),
         )
     except BootstrapError as error:

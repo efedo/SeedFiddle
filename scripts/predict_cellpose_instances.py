@@ -1,17 +1,16 @@
-"""Zero-shot Cellpose-SAM spike on the calibrated dish crops exported by the procedural run.
+"""Zero-shot Cellpose-SAM masks on the calibrated dish crops exported by the procedural run.
 
-This is an experiment, not an application feature: it runs in a scratch
-environment that has ``cellpose>=4`` installed (the project ``.venv`` must not
-receive ``opencv-python-headless``). It needs the ``<stem>.dish.png`` and
+It uses the ``cellpose`` package that ``seed_vision.py`` installs into the project
+``.venv`` without ``opencv-python-headless``. It needs the ``<stem>.dish.png`` and
 ``<stem>.frame.json`` files written by ``predict_procedural_instances.py`` so both
 methods see exactly the same calibrated RGB dish crop, runs the pretrained
 ``cpsam`` model with each requested diameter hint, drops labels whose centroid
 lies outside the detected dish, warps the labels back to the photograph's
 source frame and writes ``<variant>/<stem>.instances.png`` (``uint16``).
 
-Example (scratch venv layered on the project venv)::
+Example::
 
-    <scratch>\\Scripts\\python.exe scripts\\predict_cellpose_instances.py \\
+    .venv\\Scripts\\python.exe scripts\\predict_cellpose_instances.py \\
         --frames artifacts/instance-benchmark/predictions/procedural \\
         --output artifacts/instance-benchmark/predictions \\
         --diameters default 48 estimated

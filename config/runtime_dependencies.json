@@ -54,8 +54,19 @@
       "install_spec": "cellpose==4.2.1.1",
       "minimum": "4.2.0",
       "maximum_exclusive": "5.0.0",
-      "purpose": "optional Cellpose-SAM seed instances; install manually as described in docs/OPERATOR_GUIDE.md",
+      "purpose": "Cellpose-SAM seed instances; seed_vision.py installs it unless --no-cellpose is given",
       "required": false
     }
+  ],
+  "cellpose_dependencies": [
+    "scipy==1.18.1",
+    "natsort==8.4.0",
+    "tifffile==2026.10.15",
+    "tqdm==4.70.1",
+    "fastremap==1.21.0",
+    "imagecodecs==2026.10.10",
+    "roifile==2026.9.22",
+    "fill-voids==2.1.2",
+    "segment_anything==1.0"
   ]
 }

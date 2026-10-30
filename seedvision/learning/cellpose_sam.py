@@ -36,8 +36,9 @@ DEFAULT_MODEL = "cpsam_v2"
 _CELLPOSE_DIAMETER_PX = 30.0
 _FLOW_ITERATIONS = 200
 INSTALL_HINT = (
-    "Install it into the project environment without its headless OpenCV "
-    "dependency; see Cellpose-SAM in docs/OPERATOR_GUIDE.md."
+    "Start Seed Fiddle once with seed_vision.py from a terminal, without "
+    "--no-bootstrap or --no-cellpose, to install it; see Cellpose-SAM in "
+    "docs/OPERATOR_GUIDE.md."
 )
 
 

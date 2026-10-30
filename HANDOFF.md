@@ -54,10 +54,10 @@ work, families F01–F22). See [README.md](README.md) for the user view and
 .\.venv\Scripts\python.exe .\seed_vision.py --no-bootstrap
 .\.venv\Scripts\python.exe -m tests                  # core subset
 .\.venv\Scripts\python.exe -m tests tests.test_gui_layout   # focused module
-.\.venv\Scripts\python.exe -m tests --full           # 657 units, ~13 min, 3 workers
+.\.venv\Scripts\python.exe -m tests --full           # 665 units, ~13 min, 3 workers
 ```
 
-The last full run (29 October 2026) passed all 657 units with the 4 expected
+The last full run (30 October 2026) passed all 665 units with the 4 expected
 skips. Wall time over 15 minutes is reported as an advisory warning only; a run
 fails on test outcomes or an unaccounted unit, and a worker that writes no
 journal entry for `--stall-seconds` (default 900) is stopped. Details are in
@@ -120,8 +120,9 @@ old `test-runs/` and `test-temp/` directories and never touches the list above.
   1.4× the seeds' equivalent diameter on packed images), so a different centre
   source does not help. The fitted seed ovals of Seed-boundary confirmation find
   roughly half the seeds on packed images and most on sparse ones. Cellpose-SAM
-  looked right by eye and is now an optional, disabled-by-default node (see the
-  operator guide's Cellpose-SAM section). Reviewed reference masks are the blocker
+  looked right by eye and is now an optional, disabled-by-default node whose
+  package the launcher installs unless `--no-cellpose` is given (see the operator
+  guide's Cellpose-SAM section). Reviewed reference masks are the blocker
   for any quantitative claim. See
   [docs/SEED_DETECTION_EVALUATION.md](docs/SEED_DETECTION_EVALUATION.md).
 - **Laboratory gates L01–L04** (reviewed corpus, physical/colour measurement,

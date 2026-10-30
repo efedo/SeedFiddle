@@ -38,6 +38,7 @@ class EntrypointTests(unittest.TestCase):
         self.assertEqual(arguments.environment, "auto")
         self.assertEqual(arguments.bootstrap, "ask")
         self.assertFalse(arguments.offline)
+        self.assertFalse(arguments.no_cellpose)
 
     def check_test_failed_cuda_readiness_blocks_launch_and_diagnostics_returns_nonzero(self) -> None:
         import seed_vision
@@ -124,11 +125,13 @@ class EntrypointTests(unittest.TestCase):
             python_compatible=True,
             architecture_bits=64,
             in_virtual_environment=False,
+            cellpose_missing=False,
             torch_probe=None,
         )
         with patch("seed_vision.inspect_runtime", return_value=report), \
              patch("seed_vision.format_report", return_value="CPU-only PyTorch"), \
              patch("seed_vision.install_dependencies") as install, \
+             patch("seed_vision.install_cellpose") as install_cellpose, \
              patch("seed_vision._run_with_interpreter", return_value=2) as rerun:
             with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
                 status = seed_vision.main(
@@ -141,6 +144,80 @@ class EntrypointTests(unittest.TestCase):
             (torch,),
         )
         self.assertEqual(rerun.call_args.kwargs["bootstrap"], "never")
+        install_cellpose.assert_not_called()
+
+    def check_test_ready_launch_adds_cellpose_unless_told_not_to(self) -> None:
+        import seed_vision
+
+        report = types.SimpleNamespace(ready=True, cellpose_missing=True)
+        with patch("seed_vision.inspect_runtime", return_value=report), \
+             patch("seed_vision.install_cellpose") as install, \
+             patch("seed_vision._confirm_cellpose", return_value=False) as confirm, \
+             patch("seed_vision._launch_application", return_value=0) as launch:
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                statuses = [
+                    seed_vision.main(["--environment", "current", "--bootstrap", "auto"]),
+                    seed_vision.main(["--environment", "current", "--bootstrap", "auto",
+                                      "--no-cellpose"]),
+                    seed_vision.main(["--environment", "current", "--no-bootstrap"]),
+                    seed_vision.main(["--environment", "current"]),
+                ]
+        self.assertEqual(statuses, [0, 0, 0, 0])
+        self.assertEqual(launch.call_count, 4)
+        install.assert_called_once()
+        self.assertEqual(install.call_args.args[0], sys.executable)
+        # The default ask mode offered it once and the answer was no.
+        confirm.assert_called_once()
+
+    def check_test_failed_cellpose_install_still_launches(self) -> None:
+        import seed_vision
+        from seedvision.bootstrap import BootstrapError
+
+        report = types.SimpleNamespace(ready=True, cellpose_missing=True)
+        errors = io.StringIO()
+        with patch("seed_vision.inspect_runtime", return_value=report), \
+             patch("seed_vision.install_cellpose",
+                   side_effect=BootstrapError("no torchvision wheel")), \
+             patch("seed_vision._launch_application", return_value=0) as launch:
+            with redirect_stdout(io.StringIO()), redirect_stderr(errors):
+                status = seed_vision.main(["--environment", "current", "--bootstrap", "auto"])
+        self.assertEqual(status, 0)
+        launch.assert_called_once_with()
+        self.assertIn("Cellpose-SAM was not installed: no torchvision wheel", errors.getvalue())
+
+    def check_test_new_environment_gets_cellpose_after_required_packages(self) -> None:
+        import seed_vision
+
+        report = types.SimpleNamespace(
+            ready=False,
+            packages_to_install=(types.SimpleNamespace(install_spec="PySide6==6.11.1"),),
+            python_compatible=True,
+            architecture_bits=64,
+            in_virtual_environment=False,
+            cellpose_missing=False,
+            torch_probe=None,
+        )
+        missing_venv = Path("missing-venv") / "python.exe"
+        order = []
+        with patch("seed_vision.inspect_runtime", return_value=report), \
+             patch("seed_vision.format_report", return_value="PySide6 missing"), \
+             patch("seed_vision.project_venv_python", return_value=missing_venv), \
+             patch("seed_vision.create_virtual_environment", return_value="venv.exe"), \
+             patch("seed_vision.install_dependencies",
+                   side_effect=lambda *a, **k: order.append("required")), \
+             patch("seed_vision.install_cellpose",
+                   side_effect=lambda *a, **k: order.append("cellpose")) as install_cellpose, \
+             patch("seed_vision._run_with_interpreter", return_value=0) as rerun:
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                status = seed_vision.main(["--environment", "venv", "--bootstrap", "auto"])
+                skipped_status = seed_vision.main(
+                    ["--environment", "venv", "--bootstrap", "auto", "--no-cellpose"]
+                )
+        self.assertEqual((status, skipped_status), (0, 0))
+        self.assertEqual(order, ["required", "cellpose", "required"])
+        self.assertEqual(install_cellpose.call_args.args[0], "venv.exe")
+        self.assertFalse(rerun.call_args_list[0].kwargs["no_cellpose"])
+        self.assertTrue(rerun.call_args_list[1].kwargs["no_cellpose"])
 
     def check_test_cpu_learning_maintenance_does_not_require_a_gpu(self) -> None:
         import seed_vision
@@ -243,6 +320,12 @@ class EntrypointTests(unittest.TestCase):
         self.scenario(self.check_test_importing_entrypoint_does_not_import_gui_or_ml_packages)
         self.scenario(self.check_test_parser_defaults_to_safe_interactive_bootstrap)
         self.scenario(self.check_test_application_starts_main_window_maximized)
+
+    def test_cellpose_installation(self):
+        """3 Cellpose-SAM launch scenarios, each with isolated bootstrap mocks."""
+        self.scenario(self.check_test_ready_launch_adds_cellpose_unless_told_not_to)
+        self.scenario(self.check_test_failed_cellpose_install_still_launches)
+        self.scenario(self.check_test_new_environment_gets_cellpose_after_required_packages)
 
     def test_cuda_readiness_enforcement(self):
         """6 readiness scenarios, each with isolated bootstrap mocks."""

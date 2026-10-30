@@ -36,7 +36,9 @@ py -3.12 .\seed_vision.py --environment venv --bootstrap auto
 ```
 
 The first launch can create `.venv` and install the pinned packages from
-[requirements-runtime.txt](requirements-runtime.txt) after asking. Later launches:
+[requirements-runtime.txt](requirements-runtime.txt) after asking. It also adds the
+optional Cellpose-SAM package unless `--no-cellpose` is given, and a later launch
+without `--no-bootstrap` offers it if it is still missing. Later launches:
 
 ```powershell
 .\.venv\Scripts\python.exe .\seed_vision.py --no-bootstrap

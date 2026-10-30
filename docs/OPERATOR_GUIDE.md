@@ -45,7 +45,9 @@ python seed_vision.py --environment current --no-bootstrap
 `--environment current` keeps the explicitly selected interpreter and
 `--no-bootstrap` prevents package installation. Diagnostics remain available when
 readiness fails and return a nonzero status, with package-build and device-execution
-details and suggested next steps.
+details and suggested next steps. A launch that may install packages also adds the
+optional Cellpose-SAM package when it is missing (see [Cellpose-SAM](#cellpose-sam));
+`--no-cellpose` leaves it out.
 
 ## The window
 
@@ -416,26 +418,26 @@ restricted loader.
 **Cellpose-SAM seed instances** (Seed detection category of the Default seed
 analysis) runs the pretrained Cellpose-SAM model zero-shot on the calibrated colour
 crop. It needs no training or checkpoint, but it needs the optional `cellpose`
-package, which the launcher reports and never installs.
+package, which `seed_vision.py` installs when it is missing unless `--no-cellpose`
+is given. In the default `--bootstrap ask` mode it lists the packages and asks
+(Enter accepts); `--bootstrap auto` installs without asking into the project
+`.venv`, or into the current interpreter with `--environment current`;
+`--no-bootstrap` never installs. A first launch that creates `.venv` lists it with
+the required packages. The install:
 
-Install it into the project environment from the repository root. Cellpose's own
-dependency list pulls in `opencv-python-headless`, which would replace the GUI
-OpenCV build, so install it without dependencies and add the rest explicitly:
+- adds torchvision from the installed PyTorch build's wheel index (`cu126`,
+  `cu132` and so on), pinned against that build so pip picks the torchvision
+  release made for it and leaves PyTorch alone;
+- adds Cellpose's other dependencies at the `cellpose_dependencies` pins in
+  `config/runtime_dependencies.json`;
+- adds `cellpose` last and without dependencies, because its list names
+  `opencv-python-headless`, which would replace the `cv2` module of the GUI OpenCV
+  build.
 
-```powershell
-.venv\Scripts\python -m pip install --no-deps torchvision==0.29.1 --index-url https://download.pytorch.org/whl/cu126
-.venv\Scripts\python -m pip install --no-deps cellpose==4.2.1.1
-.venv\Scripts\python -m pip install scipy natsort tifffile fastremap fill_voids imagecodecs roifile segment_anything tqdm
-```
-
-For the CUDA 13.2 / PyTorch 2.15.0 option, install its matching torchvision:
-
-```powershell
-.venv\Scripts\python -m pip install --no-deps torchvision==0.29.2 --index-url https://download.pytorch.org/whl/cu132
-```
-
-Keep torchvision and Cellpose optional; do not install their dependencies in a
-way that replaces the selected CUDA-enabled PyTorch or GUI OpenCV build.
+`--offline` takes all of these from `wheels/`. A failed install is reported and
+logged, and Seed Fiddle starts without the node. `--diagnostics` lists `cellpose`
+as *OPTIONAL* while it is missing, and reports a *Conflict* with the repair
+commands when `opencv-python-headless` is installed beside `opencv-python`.
 
 To run it:
 
