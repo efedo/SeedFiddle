@@ -68,6 +68,26 @@ fixture bundle with the same repository-relative paths and restore missing files
 with `--fixtures-from D:\SeedFiddle-test-fixtures` (existing files are never
 overwritten). [HANDOFF.md](../HANDOFF.md) lists every entry the suite needs.
 
+The application runtime and frozen PlantCV reference environment serve different
+purposes. Python 3.12 remains the application baseline; Python 3.15 is permitted by
+the runtime gate when compatible dependencies are already installed, but the
+baseline pins are not guaranteed to provision a fresh Python 3.15 environment.
+The PlantCV lock belongs to its isolated Python 3.12 reference environment. Its
+raw working-tree bytes must retain the CRLF representation pinned by
+`environment.lockfile_sha256` and the reference runner; `.gitattributes` enforces
+that representation on fresh checkouts, including with `core.autocrlf=false`.
+Existing checkouts and downloaded copies that still have LF endings can check and
+repair the verified line-ending-only mismatch using the interpreter containing
+the application dependencies:
+
+```powershell
+python scripts/repair_reference_lock.py
+python scripts/repair_reference_lock.py --repair
+```
+
+The check is read-only. Repair writes only when CRLF conversion reproduces the
+existing checksum; it does not change packages or provenance records.
+
 The `cuda`, `acceptance` and full selections also need the pinned PlantCV
 environment at `artifacts\plantcv-reference-env\` and its sources under
 `artifacts\reference-sources\`; see [benchmark reports](BENCHMARK_REPORTS.md) for

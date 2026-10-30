@@ -9,6 +9,44 @@ cannot support see [Current status](CURRENT_STATUS.md).
 > Physical units and unvalidated traits are withheld, and an uncalibrated score is
 > not a probability of being correct.
 
+## Runtime and CUDA readiness
+
+Normal desktop, batch-analysis, and GPU-learning operation requires a supported
+NVIDIA GPU, a compatible NVIDIA driver, an NVIDIA CUDA-enabled PyTorch build, and
+a successful small CUDA calculation. Startup diagnostics check the PyTorch build
+and actual device execution separately. CPU-only and ROCm builds are rejected;
+when a valid NVIDIA CUDA build cannot use the GPU, diagnostics report the hardware
+or driver failure instead of repeatedly reinstalling PyTorch.
+
+Python 3.12 remains the application baseline. Python 3.15 is accepted by the
+runtime gate when compatible dependencies are already installed; the baseline
+pins are not a promise that a fresh Python 3.15 environment can be provisioned.
+Use the same Python interpreter for pip, diagnostics, analysis and launch. On
+Windows with Python 3.15, these are supported CUDA wheel installation options:
+
+```powershell
+python -m pip install --upgrade "torch==2.15.0+cu132" --index-url https://download.pytorch.org/whl/cu132
+python -m pip install --upgrade "torch==2.14.1+cu126" --index-url https://download.pytorch.org/whl/cu126
+```
+
+CUDA 13.2 supports Blackwell GPUs but requires a compatible newer NVIDIA driver.
+CUDA 12.6 is an option for GPUs and drivers it supports, but does not cover
+Blackwell. A working newer CUDA-enabled PyTorch build is accepted; Seed Fiddle
+does not replace it just to match the preferred CUDA 12.6 installation pin.
+Confirm dependencies and run a real device calculation:
+
+```powershell
+python -m pip check
+python -c "import torch; x=torch.tensor([1.0,2.0,3.0],device='cuda'); y=((x+2)*3).sum(); torch.cuda.synchronize(); print(torch.cuda.get_device_name(0), y.item())"
+python seed_vision.py --environment current --no-bootstrap --diagnostics
+python seed_vision.py --environment current --no-bootstrap
+```
+
+`--environment current` keeps the explicitly selected interpreter and
+`--no-bootstrap` prevents package installation. Diagnostics remain available when
+readiness fails and return a nonzero status, with package-build and device-execution
+details and suggested next steps.
+
 ## The window
 
 | Area | Purpose |
@@ -376,10 +414,19 @@ dependency list pulls in `opencv-python-headless`, which would replace the GUI
 OpenCV build, so install it without dependencies and add the rest explicitly:
 
 ```powershell
-.venv\Scripts\python -m pip install --no-deps torchvision==0.28.0 --index-url https://download.pytorch.org/whl/cu126
+.venv\Scripts\python -m pip install --no-deps torchvision==0.29.1 --index-url https://download.pytorch.org/whl/cu126
 .venv\Scripts\python -m pip install --no-deps cellpose==4.2.1.1
 .venv\Scripts\python -m pip install scipy natsort tifffile fastremap fill_voids imagecodecs roifile segment_anything tqdm
 ```
+
+For the CUDA 13.2 / PyTorch 2.15.0 option, install its matching torchvision:
+
+```powershell
+.venv\Scripts\python -m pip install --no-deps torchvision==0.29.2 --index-url https://download.pytorch.org/whl/cu132
+```
+
+Keep torchvision and Cellpose optional; do not install their dependencies in a
+way that replaces the selected CUDA-enabled PyTorch or GUI OpenCV build.
 
 To run it:
 
