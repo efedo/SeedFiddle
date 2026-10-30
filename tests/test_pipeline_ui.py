@@ -399,6 +399,124 @@ class PipelineCanvasTests(CatalogueTestCase):
         self.assertNotIn("review", scope)
         self.assertNotIn("measurements", scope)
 
+    def check_test_run_to_a_disabled_node_enables_it_or_says_why(self) -> None:
+        from unittest.mock import patch
+
+        from PySide6.QtWidgets import QMessageBox
+
+        window = controls_window(self)
+        node = window.pipeline.node("cellpose_sam_instances")
+        self.assertFalse(node.enabled)
+        installed = "seedvision.learning.cellpose_sam.cellpose_installed"
+        with (
+            patch(installed, return_value=False),
+            patch.object(QMessageBox, "warning") as warning,
+            patch.object(window, "_analyze_current_image") as analyze,
+        ):
+            self.assertEqual(
+                window._disabled_node_detail(node.identifier),
+                "Disabled; needs the optional cellpose package",
+            )
+            window._run_pipeline_to_node(node.identifier)
+        self.assertEqual(warning.call_args.args[1], "Cellpose-SAM is not installed")
+        analyze.assert_not_called()
+        self.assertFalse(node.enabled)
+
+        window.pipeline_documents.set_frozen(True)
+        with (
+            patch(installed, return_value=True),
+            patch.object(window, "_analyze_current_image") as analyze,
+        ):
+            window._run_pipeline_to_node(node.identifier)
+        analyze.assert_not_called()
+        self.assertFalse(node.enabled)
+        self.assertIn("Clear Lock", window.statusBar().currentMessage())
+
+        window.pipeline_documents.set_frozen(False)
+        with (
+            patch(installed, return_value=True),
+            patch.object(window, "_analyze_current_image") as analyze,
+        ):
+            self.assertEqual(
+                window._disabled_node_detail(node.identifier),
+                "Disabled; enable to run Cellpose-SAM",
+            )
+            window._run_pipeline_to_node(node.identifier)
+        self.assertTrue(node.enabled)
+        arguments = analyze.call_args.kwargs
+        self.assertEqual(arguments["dirty_nodes"], {node.identifier})
+        self.assertIn("seed_scale_estimation", arguments["enabled_node_scope"])
+
+    def check_test_seed_boundary_status_says_why_no_seed_was_found(self) -> None:
+        import torch
+
+        from seedvision.pipeline import NodeStatus
+        from seedvision.ui.main_window import _seed_boundary_status
+
+        def geometry(votes, ovals):
+            return SimpleNamespace(
+                vote_confidence=torch.tensor(votes), oval_confidence=torch.tensor(ovals)
+            )
+
+        status, detail = _seed_boundary_status(
+            152, geometry([0.9, 0.5, 0.1], [0.7, 0.0, 0.0]), 84.3, "isolated reference seeds"
+        )
+        self.assertEqual(status, NodeStatus.COMPLETE)
+        self.assertEqual(
+            detail,
+            "1 seed ovals fitted at 2 centre-vote peaks; "
+            "152 strongly supported boundary pixels",
+        )
+        status, detail = _seed_boundary_status(
+            0, geometry([0.9, 0.5], [0.0, 0.0]), 164.6, "dish fallback"
+        )
+        self.assertEqual(status, NodeStatus.WARNING)
+        self.assertEqual(
+            detail,
+            "No seed oval passed the fit checks at 2 centre-vote peaks. "
+            "Check the seed diameter, 165 px from dish fallback.",
+        )
+        status, detail = _seed_boundary_status(
+            0, geometry([0.1], [0.0]), 164.6, "dish fallback"
+        )
+        self.assertEqual(status, NodeStatus.WARNING)
+        self.assertTrue(detail.startswith("No centre-vote peaks"))
+        self.assertEqual(
+            _seed_boundary_status(5, None, 80.0, "dish fallback"),
+            (NodeStatus.COMPLETE, "5 strongly supported boundary pixels"),
+        )
+
+    def check_test_run_to_node_result_says_no_instance_node_ran(self) -> None:
+        window = controls_window(self)
+        key = window._current_image_key()
+        result = SimpleNamespace(image_path=window.image_view.image_path)
+        missing = "No enabled instance analysis has completed. Run an instance node."
+        window._analysis_scopes[key] = frozenset({"layout_detection", "seed_edge_curves"})
+        self.assertIn("no instance node ran", window._scoped_run_reason(result, missing))
+        self.assertIsNone(window._scoped_run_reason(result, ""))
+        window._analysis_scopes[key] = frozenset({"seed_edge_curves", "procedural_instances"})
+        self.assertIsNone(window._scoped_run_reason(result, missing))
+        window._analysis_scopes[key] = None
+        self.assertIsNone(window._scoped_run_reason(result, missing))
+
+    def check_test_node_menu_offers_to_enable_a_disabled_node(self) -> None:
+        from unittest.mock import MagicMock, patch
+
+        window = controls_window(self)
+
+        def labels(node_id: str) -> list[str]:
+            item = window.pipeline_canvas.node_items[node_id]
+            with patch("seedvision.ui.pipeline_canvas.QMenu") as menu:
+                item.contextMenuEvent(MagicMock())
+            return [call.args[0] for call in menu.return_value.addAction.call_args_list]
+
+        self.assertEqual(labels("procedural_instances"), ["Run to node"])
+        self.assertEqual(labels("cellpose_sam_instances"), ["Enable and run to node"])
+        window.pipeline_documents.set_frozen(True)
+        self.assertEqual(
+            labels("cellpose_sam_instances"), ["Run to node (clear Lock to enable it)"]
+        )
+
     def check_test_analysis_cache_is_lru_bounded_and_gpu_jobs_are_serialized(self) -> None:
         import numpy as np
         import torch
@@ -4328,11 +4446,15 @@ class PipelineCanvasTests(CatalogueTestCase):
         self.scenario(self.check_test_instance_annotations_apply_separately_from_reference_masks, labelled=False)
 
     def test_workflow_lifecycle(self):
-        """53 related PipelineCanvasTests scenarios, each with private fixture state."""
+        """57 related PipelineCanvasTests scenarios, each with private fixture state."""
         self.scenario(self.check_test_canvas_contains_default_nodes_and_live_edges)
         self.scenario(self.check_test_current_image_name_is_in_pane_and_list_selection_tracks_it)
         self.scenario(self.check_test_switching_images_selects_the_lowest_empty_seed_id)
         self.scenario(self.check_test_run_to_node_scopes_execution_to_enabled_ancestors)
+        self.scenario(self.check_test_run_to_a_disabled_node_enables_it_or_says_why)
+        self.scenario(self.check_test_node_menu_offers_to_enable_a_disabled_node)
+        self.scenario(self.check_test_seed_boundary_status_says_why_no_seed_was_found)
+        self.scenario(self.check_test_run_to_node_result_says_no_instance_node_ran)
         self.scenario(self.check_test_analysis_cache_is_lru_bounded_and_gpu_jobs_are_serialized)
         self.scenario(self.check_test_node_cards_support_typed_blueprint_controls_and_time_footers)
         self.scenario(self.check_test_manual_overlap_is_allowed_and_auto_arrange_removes_it)

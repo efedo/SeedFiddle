@@ -906,11 +906,7 @@ class PipelineGraph:
                 labels = dict(node.input_ports)
                 missing = ", ".join(labels[port_id] for port_id in missing_ports)
                 raise ValueError(f"Reconnect required input(s) first: {missing}.")
-            disabled_upstream = tuple(
-                upstream_id
-                for upstream_id in self._required_enabled_upstream(node_id)
-                if not self.node(upstream_id).enabled
-            )
+            disabled_upstream = self.disabled_upstream(node_id)
             if disabled_upstream:
                 titles = ", ".join(
                     self.node(upstream_id).title for upstream_id in disabled_upstream
@@ -936,6 +932,15 @@ class PipelineGraph:
         self.revision += 1
         self.invalidate(affected, preserve_bypassed=True)
         return affected
+
+    def disabled_upstream(self, node_id: str) -> tuple[str, ...]:
+        """Required upstream nodes that are disabled and so keep this one off."""
+
+        return tuple(
+            upstream_id
+            for upstream_id in self._required_enabled_upstream(node_id)
+            if not self.node(upstream_id).enabled
+        )
 
     def _required_enabled_upstream(self, node_id: str) -> tuple[str, ...]:
         optional = set(self.node(node_id).optional_enabled_input_ports)

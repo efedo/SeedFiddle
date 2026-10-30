@@ -143,7 +143,14 @@ values.
 
 - **Run pipeline** (`Ctrl+R`) calculates the current image; **Stop** (`Ctrl+.`)
   requests cancellation at the next safe boundary and discards obsolete outputs.
-  Right-click a node for **Run to node**.
+  Right-click a node for **Run to node**, which runs it and its enabled upstream
+  nodes only. On a disabled node it reads **Enable and run to node** and enables the
+  node first; if the node cannot be enabled (a missing optional package or
+  checkpoint, an unconnected input or a disabled upstream node) a message says why.
+  While **Lock** is set it reads **Run to node (clear Lock to enable it)**.
+- A disabled node's status says why it is off: its own reason, *requires* a named
+  disabled upstream node, *disabled by disconnected input*, or a missing optional
+  package.
 - While running, the activity panel shows the current node, whether it was
   recomputed or reused, and the elapsed time. A failed, partial or unavailable
   result shows its reason and selects the affected node. Read that reason before
@@ -332,7 +339,9 @@ Open **Results…** (`Ctrl+Shift+E`, or the button in the right panel).
 completed runs, which can be reviewed, acknowledged or exported as JSON.
 
 *Unavailable* means mandatory evidence or an instance result is missing. It is
-never reported as zero seeds.
+never reported as zero seeds. After **Run to node** on a node before every instance
+node, the count reads *Not run*: nothing failed, and **Run pipeline** produces the
+count.
 
 ## Optimisation
 
@@ -430,8 +439,10 @@ way that replaces the selected CUDA-enabled PyTorch or GUI OpenCV build.
 
 To run it:
 
-1. Clear **Lock**, select the node and tick **Enabled**. If the package is missing,
-   a message says so and the node stays disabled.
+1. Clear **Lock**, select the node and tick **Enabled**, or right-click it and
+   choose **Enable and run to node**. If the package is missing, a message says so
+   and the node stays disabled; its status then reads *needs the optional cellpose
+   package*.
 2. **Run pipeline**. The first run downloads the `cpsam_v2` weights (about
    1.2 GB) into `~/.cellpose/models`, or `CELLPOSE_LOCAL_MODELS_PATH` if set, and
    loading them takes several seconds. Later runs reuse the loaded model.

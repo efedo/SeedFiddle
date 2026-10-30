@@ -1458,6 +1458,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._species_library_dialog = None
         self._pending_analysis_key: str | None = None
         self._pending_analysis_scope: frozenset[str] | None = None
+        # Run to node limits a run to one node's ancestors; None is a full run.
+        self._analysis_scopes: dict[str, frozenset[str] | None] = {}
         self._thread_pool = QThreadPool(self)
         # A single CUDA context gains no useful throughput from full-image jobs
         # competing in parallel, while their peak allocations readily add up to
@@ -7099,6 +7101,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         task.signals.cancelled.connect(self._analysis_cancelled)
         task.signals.node_progress.connect(self._analysis_node_progress)
         self._active_tasks[key] = task
+        self._analysis_scopes[key] = enabled_node_scope
         self._image_run_outcomes.pop(key, None)
         now = monotonic()
         self._analysis_activities[key] = _AnalysisActivity(
@@ -7142,11 +7145,17 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         if node_id not in self.pipeline.nodes:
             return
         node = self.pipeline.node(node_id)
-        if not node.enabled or not node.implemented:
-            self.statusBar().showMessage(
-                f"{node.title} is disabled and cannot be run."
-            )
+        if not node.implemented:
+            self.statusBar().showMessage(f"{node.title} is planned and cannot be run yet.")
             return
+        if not node.enabled:
+            # The node menu offers Enable and run to node. Enabling reports any
+            # refusal itself, so a node that stays disabled simply stops here.
+            if not self._pipeline_editing_allowed():
+                return
+            self._pipeline_enabled_changed(node_id, True)
+            if not node.enabled:
+                return
         scope: set[str] = set()
         pending = [node_id]
         while pending:
@@ -7356,7 +7365,9 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             else None
         )
         if unavailable:
-            self.statusBar().showMessage(unavailable)
+            self.statusBar().showMessage(
+                self._scoped_run_reason(result, unavailable) or unavailable
+            )
         elif learned_result is not None:
             self.statusBar().showMessage(
                 f"Generated {learned_result.count:,} reviewable learned instances "
@@ -7593,6 +7604,20 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         )
         self._start_pending_analysis()
 
+    def _scoped_run_reason(self, result, unavailable: str) -> str | None:
+        """Why a Run to node result has no seed count, when that is the cause."""
+
+        from seedvision.learning.instance_selection import INSTANCE_NODE_IDS
+
+        scope = self._analysis_scopes.get(_path_identity(result.image_path))
+        if unavailable and scope is not None and not scope & set(INSTANCE_NODE_IDS):
+            # Run to node stopped before every instance node; nothing failed.
+            return (
+                "Ran to the selected node only, so no instance node ran. "
+                "Run the pipeline for a seed count."
+            )
+        return None
+
     def _show_analysis_result(self, result) -> None:
         if self.pipeline_workflow.active:
             self.pipeline_workflow.select_node(self.pipeline_workflow._selected)
@@ -7726,7 +7751,10 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         from seedvision.export.results import select_result
         method, selected_result, unavailable = select_result(result,
             {identifier for identifier,node in self.pipeline.nodes.items() if node.enabled})
-        self.count_label.setText('Unavailable' if unavailable else f'{selected_result.count:,} proposed seeds')
+        not_run = self._scoped_run_reason(result, unavailable)
+        unavailable = not_run or unavailable
+        self.count_label.setText('Not run' if not_run else 'Unavailable' if unavailable
+                                 else f'{selected_result.count:,} proposed seeds')
         self.crowding_label.setText(f'Method: {method or "none"}. Review decisions before reporting a count.')
         self.warning_label.setText("\n".join(filter(None,(unavailable,*result.warnings))))
         self.warning_label.setVisible(bool(unavailable or result.warnings))
@@ -14280,8 +14308,12 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         )
         self.pipeline.set_status(
             "seed_edge_curves",
-            NodeStatus.COMPLETE,
-            f"{supported_curve_pixels:,} strongly supported boundary pixels",
+            *_seed_boundary_status(
+                supported_curve_pixels,
+                result.layers.edge_fit_geometry,
+                result.estimated_seed_diameter_px,
+                result.seed_diameter_source,
+            ),
         )
         backend = result.advanced.backend
         colour_distribution = _format_class_distribution(
@@ -14330,7 +14362,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 self.pipeline.set_status(
                     node.identifier,
                     NodeStatus.BYPASSED,
-                    self.pipeline.disabled_status_detail(node.identifier),
+                    self._disabled_node_detail(node.identifier),
                 )
         self.pipeline_canvas.refresh()
         self.pipeline_inspector.refresh_status()
@@ -14407,7 +14439,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 self.pipeline.set_status(
                     node_id,
                     NodeStatus.BYPASSED,
-                    self.pipeline.disabled_status_detail(node_id),
+                    self._disabled_node_detail(node_id),
                 )
         self.pipeline.set_status("seed_edge_curves", NodeStatus.IDLE, "Ready")
         for node_id in ADVANCED_NODE_MODES:
@@ -14439,7 +14471,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 self.pipeline.set_status(
                     node.identifier,
                     NodeStatus.BYPASSED,
-                    self.pipeline.disabled_status_detail(node.identifier),
+                    self._disabled_node_detail(node.identifier),
                 )
         self.pipeline_canvas.refresh()
         self.pipeline_inspector.refresh_status()
@@ -14517,7 +14549,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         for node_id in targets & details.keys():
             if not self.pipeline.node(node_id).enabled:
                 self.pipeline.set_status(
-                    node_id, NodeStatus.BYPASSED, self.pipeline.disabled_status_detail(node_id)
+                    node_id, NodeStatus.BYPASSED, self._disabled_node_detail(node_id)
                 )
             elif (
                 node_id == "refined_background_likelihood"
@@ -14952,6 +14984,20 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             "are disabled until their required inputs are reconnected."
         )
 
+    def _disabled_node_detail(self, node_id: str) -> str:
+        """The graph's reason a node is off, or a missing optional package."""
+
+        detail = self.pipeline.disabled_status_detail(node_id)
+        if (
+            node_id == "cellpose_sam_instances"
+            and detail == self.pipeline.node(node_id).disabled_detail
+        ):
+            from seedvision.learning.cellpose_sam import cellpose_installed
+
+            if not cellpose_installed():
+                return "Disabled; needs the optional cellpose package"
+        return detail
+
     @Slot(str, bool)
     def _pipeline_enabled_changed(self, node_id: str, enabled: bool) -> None:
         if not self._pipeline_editing_allowed():
@@ -15040,7 +15086,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 self.pipeline.set_status(
                     affected_id,
                     NodeStatus.BYPASSED,
-                    self.pipeline.disabled_status_detail(affected_id),
+                    self._disabled_node_detail(affected_id),
                 )
         self.pipeline_canvas.refresh(affected)
         self.pipeline_inspector.set_node(self.pipeline.node(node_id))
@@ -15351,6 +15397,31 @@ def _background_profile_detail(profile, prefix: str) -> str:
         f"{profile.sample_count:,} px ({profile.sample_fraction:.1%}); "
         f"{max(1, len(profile.component_centres_lab))} colour mode(s){mode_detail}; "
         f"{profile.refinement_iterations} refinement round(s)"
+    )
+
+
+def _seed_boundary_status(
+    supported_pixels: int, geometry, diameter_px: float, diameter_source: str
+) -> tuple[NodeStatus, str]:
+    """Seed-boundary confirmation's status, saying why it found no seed."""
+
+    detail = f"{supported_pixels:,} strongly supported boundary pixels"
+    if geometry is None:
+        return NodeStatus.COMPLETE, detail
+    # Two counts are compact metadata; the geometry stays on the device.
+    fitted_ovals = int((geometry.oval_confidence > 0).sum())
+    vote_peaks = int((geometry.vote_confidence >= 0.20).sum())
+    if fitted_ovals:
+        return NodeStatus.COMPLETE, (
+            f"{fitted_ovals:,} seed ovals fitted at {vote_peaks:,} centre-vote peaks; {detail}"
+        )
+    cause = (
+        f"No seed oval passed the fit checks at {vote_peaks:,} centre-vote peaks"
+        if vote_peaks
+        else "No centre-vote peaks: no traced edges curve around a seed"
+    )
+    return NodeStatus.WARNING, (
+        f"{cause}. Check the seed diameter, {diameter_px:.0f} px from {diameter_source}."
     )
 
 

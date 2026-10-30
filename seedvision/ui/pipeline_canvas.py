@@ -998,8 +998,16 @@ class PipelineNodeItem(QGraphicsObject):
             event.accept()
             return
         menu = QMenu()
-        run_to = menu.addAction("Run to node")
-        run_to.setEnabled(self.node.enabled and self.node.implemented)
+        if self.node.enabled or not self.node.implemented:
+            run_to = menu.addAction("Run to node")
+            run_to.setEnabled(self.node.enabled and self.node.implemented)
+        elif self._editing_locked:
+            run_to = menu.addAction("Run to node (clear Lock to enable it)")
+            run_to.setEnabled(False)
+        else:
+            # Enabling explains any refusal: a missing package or checkpoint,
+            # an unconnected input or a disabled upstream node.
+            run_to = menu.addAction("Enable and run to node")
         selected = menu.exec(event.screenPos())
         if selected is run_to:
             self._run_to_callback(self.node.identifier)
