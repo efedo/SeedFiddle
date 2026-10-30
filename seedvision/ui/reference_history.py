@@ -88,6 +88,10 @@ class RasterUndoHistory:
         return self._redo_entries[-1].context if self._redo_entries else None
 
     @property
+    def redo_label(self) -> str | None:
+        return self._redo_entries[-1].label if self._redo_entries else None
+
+    @property
     def limit(self) -> int:
         return self._limit
 

@@ -258,7 +258,7 @@ class ReferenceGraphReadOnlyTests(CatalogueTestCase):
         node = graph.node("procedural_instances")
         inspector.set_node(node)
         inspector.enable_unified_optimization()
-        inspector.set_optimization_context(ready=True, busy=False)
+        inspector.set_optimization_context(ready=True)
         graph_facts = self._analytic_snapshot(graph)
 
         self.assertTrue(inspector.enabled_checkbox.isHidden())

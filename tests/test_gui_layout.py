@@ -145,8 +145,83 @@ class GuiLayoutTests(unittest.TestCase):
         self.window._pipeline_node_selected("background_likelihood")
         self.assertIs(tabs.currentWidget(), self.window.metadata_scroll)
 
+    def check_test_image_list_marks_a_run_without_a_count(self) -> None:
+        from types import SimpleNamespace
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QListWidgetItem
+        from seedvision.ui.main_window import _path_identity
+
+        source = Path(self._directory.name) / "images" / "plate.png"
+        item = QListWidgetItem(source.name)
+        item.setData(Qt.ItemDataRole.UserRole, str(source))
+        self.window.image_list.addItem(item)
+        key = _path_identity(source)
+        analysis = SimpleNamespace(
+            procedural_instances=object(), layers=SimpleNamespace(foreground_colour_profile=None)
+        )
+        self.window._analyses[key] = analysis
+        self.addCleanup(self.window._analyses.pop, key, None)
+        self.window._update_analysis_availability()
+        self.assertTrue(item.data(Qt.ItemDataRole.AccessibleDescriptionRole).startswith(
+            "Computed; no count: Foreground evidence is missing"))
+        analysis.layers.foreground_colour_profile = object()
+        self.window._update_analysis_availability()
+        self.assertEqual(item.data(Qt.ItemDataRole.AccessibleDescriptionRole), "Computed; review available")
+
+    def check_test_run_stop_and_inspector_share_one_work_state(self) -> None:
+        window = self.window
+        window._pipeline_node_selected("procedural_instances")
+        status = window.pipeline_inspector.optimization_status
+        self.assertFalse(window.stop_action.isEnabled())
+        window._procedural_fit_task = object()
+        try:
+            window._update_analysis_availability()
+            self.assertTrue(window.stop_action.isEnabled())
+            self.assertFalse(window.analyze_action.isEnabled())
+            window.pipeline_workflow.sync_buttons()
+            self.assertFalse(window.analyze_action.isEnabled())
+            self.assertEqual(status.text(), "Wait for the current calculation to finish.")
+            window._optimization_task = object()
+            window._update_analysis_availability()
+            self.assertEqual(status.text(), "Optimisation is running.")
+        finally:
+            window._procedural_fit_task = window._optimization_task = None
+        window._update_analysis_availability()
+        self.assertFalse(window.stop_action.isEnabled())
+        self.assertNotIn("running", status.text())
+
+    def check_test_disabled_nodes_say_why_they_are_bypassed(self) -> None:
+        from seedvision.pipeline import build_default_pipeline
+
+        graph = build_default_pipeline()
+        self.assertEqual(
+            graph.disabled_status_detail("cellpose_sam_instances"), "Disabled; enable to run Cellpose-SAM"
+        )
+        source = graph.node("frequency_noise_masks")
+        graph.set_enabled("frequency_noise_masks", False)
+        self.assertEqual(source.status_detail, "Disabled")
+        self.assertEqual(
+            graph.node("reference_texture_prototypes").status_detail, f"Disabled; requires {source.title}"
+        )
+
+    def check_test_foreground_readiness_button_opens_foreground_painting(self) -> None:
+        from unittest.mock import patch
+
+        button = self.window.reference_readiness_button
+        foreground = self.window.foreground_point_button
+        self.assertEqual(button.text(), "Paint Foreground references…")
+        self.assertFalse(foreground.isEnabled())
+        button.click()
+        self.assertEqual(self.window._selected_pipeline_node, "background_likelihood")
+        self.assertFalse(foreground.isChecked())
+        foreground.setEnabled(True)
+        self.addCleanup(foreground.setEnabled, False)
+        with patch.object(foreground, "setChecked") as check:
+            button.click()
+        check.assert_called_once_with(True)
+
     def test_workflow_lifecycle(self):
-        """10 related GuiLayoutTests scenarios, each with private fixture state."""
+        """14 related GuiLayoutTests scenarios, each with private fixture state."""
         self.scenario(self.check_test_every_shortcut_is_unique)
         self.scenario(self.check_test_toolbar_keeps_run_view_and_annotation_controls_only)
         self.scenario(self.check_test_menus_group_commands_and_end_file_with_exit)
@@ -157,6 +232,10 @@ class GuiLayoutTests(unittest.TestCase):
         self.scenario(self.check_test_spin_decimals_never_round_a_value)
         self.scenario(self.check_test_node_cards_fold_viewer_outputs_behind_an_expander)
         self.scenario(self.check_test_right_panel_pins_results_above_node_and_image_tabs)
+        self.scenario(self.check_test_image_list_marks_a_run_without_a_count)
+        self.scenario(self.check_test_run_stop_and_inspector_share_one_work_state)
+        self.scenario(self.check_test_disabled_nodes_say_why_they_are_bypassed)
+        self.scenario(self.check_test_foreground_readiness_button_opens_foreground_painting)
 
 
 if __name__ == "__main__":

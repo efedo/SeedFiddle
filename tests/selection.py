@@ -77,6 +77,7 @@ CPU_QT_TARGETS = (
     'tests.test_resources',
     'tests.test_benchmark_checkpoints',
     'tests.test_benchmark_manifest',
+    'tests.test_benchmark_instances',
     'tests.test_peer_feature_register',
     'tests.test_peer_recipe_catalogue',
     'tests.test_catalogue_source_fidelity',

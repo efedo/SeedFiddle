@@ -70,6 +70,8 @@
 ## Directory notes
 
 - [Seed-instance reference masks](../seed-instance-references/README.md)
+- [Seed-instance benchmark](INSTANCE_BENCHMARK.md): scoring predicted masks against the
+  unreviewed reference pre-annotations, plus the experimental Cellpose-SAM spike.
 - [Learned checkpoints](../models/README.md)
 - [Offline wheelhouse](../wheels/README.md)
 - [Development prompt notes](../seedfiddle_prompts.md): dated requests, not a defect

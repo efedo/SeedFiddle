@@ -3543,6 +3543,16 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.undo_reference_edit_action.triggered.connect(
             self._undo_active_reference_edit
         )
+        self.redo_reference_action = QAction("Redo annotation edit", self)
+        self.redo_reference_action.setShortcut("Ctrl+Shift+Z")
+        self.redo_reference_action.setShortcutContext(
+            Qt.ShortcutContext.WindowShortcut
+        )
+        self.redo_reference_action.setEnabled(False)
+        self.redo_reference_action.triggered.connect(
+            self._redo_active_reference_edit
+        )
+        self.addAction(self.redo_reference_action)
 
         self.analyze_action = QAction("Run pipeline", self)
         self.analyze_action.setShortcut("Ctrl+R")
@@ -6252,16 +6262,10 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         return label
 
     def _background_work_is_active(self) -> bool:
+        # A modal persistence job cannot be stopped, so it is not stoppable work.
         return bool(
             getattr(self, '_persistence_job', None) is not None
-            or getattr(getattr(self, 'pipeline_workflow', None), '_job', None) is not None
-            or getattr(self, '_result_export_task', None) is not None
-            or getattr(self, '_optimization_task', None) is not None
-            or self._active_tasks
-            or self._learning_training_task is not None
-            or self._procedural_fit_task is not None
-            or self._reference_edge_fit_task is not None
-            or self._species_library_build_task is not None
+            or self._stoppable_work_is_active()
         )
 
     def _exclusive_background_work_is_active(self) -> bool:
@@ -8184,7 +8188,14 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.reference_undo_button.setToolTip(tooltip)
         self.undo_reference_edit_action.setEnabled(available)
         self.undo_reference_edit_action.setText(
-            "Undo reference edit" if next_label is None else f"Undo {next_label}"
+            "Undo annotation edit" if next_label is None else f"Undo {next_label}"
+        )
+        redo_label = None if history is None else history.redo_label
+        self.redo_reference_action.setEnabled(
+            active and has_result and not running and redo_label is not None
+        )
+        self.redo_reference_action.setText(
+            "Redo annotation edit" if redo_label is None else f"Redo {redo_label}"
         )
 
     @Slot()
@@ -8193,6 +8204,13 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             self._undo_instance_reference_edit()
         elif self.paint_background_action.isChecked():
             self._undo_reference_mask_edit()
+
+    @Slot()
+    def _redo_active_reference_edit(self) -> None:
+        if self.annotate_instances_action.isChecked():
+            self._undo_instance_reference_edit(redo=True)
+        elif self.paint_background_action.isChecked():
+            self._undo_reference_mask_edit(redo=True)
 
     def _undo_reference_mask_edit(self, *, redo=False) -> None:
         key = self._current_image_key()
@@ -14312,7 +14330,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 self.pipeline.set_status(
                     node.identifier,
                     NodeStatus.BYPASSED,
-                    "Disabled by pipeline dependency",
+                    self.pipeline.disabled_status_detail(node.identifier),
                 )
         self.pipeline_canvas.refresh()
         self.pipeline_inspector.refresh_status()
@@ -14389,11 +14407,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 self.pipeline.set_status(
                     node_id,
                     NodeStatus.BYPASSED,
-                    (
-                        "Disabled in the unused-node toolbox"
-                        if not self.pipeline.is_active(node_id)
-                        else "Disabled by pipeline dependency"
-                    ),
+                    self.pipeline.disabled_status_detail(node_id),
                 )
         self.pipeline.set_status("seed_edge_curves", NodeStatus.IDLE, "Ready")
         for node_id in ADVANCED_NODE_MODES:
@@ -14425,7 +14439,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 self.pipeline.set_status(
                     node.identifier,
                     NodeStatus.BYPASSED,
-                    "Disabled by pipeline dependency",
+                    self.pipeline.disabled_status_detail(node.identifier),
                 )
         self.pipeline_canvas.refresh()
         self.pipeline_inspector.refresh_status()
@@ -14503,7 +14517,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         for node_id in targets & details.keys():
             if not self.pipeline.node(node_id).enabled:
                 self.pipeline.set_status(
-                    node_id, NodeStatus.BYPASSED, "Disabled by pipeline dependency"
+                    node_id, NodeStatus.BYPASSED, self.pipeline.disabled_status_detail(node_id)
                 )
             elif (
                 node_id == "refined_background_likelihood"
@@ -15026,7 +15040,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 self.pipeline.set_status(
                     affected_id,
                     NodeStatus.BYPASSED,
-                    "Disabled by pipeline dependency",
+                    self.pipeline.disabled_status_detail(affected_id),
                 )
         self.pipeline_canvas.refresh(affected)
         self.pipeline_inspector.set_node(self.pipeline.node(node_id))
@@ -15083,7 +15097,9 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
 
     def _update_analysis_availability(self) -> None:
         from PySide6.QtWidgets import QStyle
+        from seedvision.export.results import select_result
         draft_keys = self._unapplied_project_draft_keys()
+        enabled_nodes = {identifier for identifier, node in self.pipeline.nodes.items() if node.enabled}
         for index in range(self.image_list.count()):
             item = self.image_list.item(index)
             source = item.data(Qt.ItemDataRole.UserRole)
@@ -15093,6 +15109,9 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 status, icon = ('Save required' if unsaved else 'Unapplied edits'), QStyle.StandardPixmap.SP_MessageBoxWarning
             elif key in self._active_tasks:
                 status, icon = 'Computing', QStyle.StandardPixmap.SP_BrowserReload
+            elif key in self._analyses and (unavailable := select_result(self._analyses[key], enabled_nodes)[2]):
+                # A completed run that selected no instances is not a reviewable result.
+                status, icon = f'Computed; no count: {unavailable}', QStyle.StandardPixmap.SP_MessageBoxWarning
             elif key in self._analyses:
                 status, icon = getattr(self,'_image_review_states',{}).get(key,'Computed; review available'), QStyle.StandardPixmap.SP_DialogApplyButton
             elif key in self._image_run_outcomes:
@@ -15103,22 +15122,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             item.setToolTip(str(source)+'\n'+status)
             item.setData(Qt.ItemDataRole.AccessibleDescriptionRole,status)
         path = self.image_view.image_path
-        running = (
-            getattr(self, '_optimization_task', None) is not None
-            or bool(getattr(getattr(self, 'catalogue_nodes', None), 'busy', False))
-            or getattr(getattr(self, 'pipeline_workflow', None), '_job', None) is not None
-            or bool(self._active_tasks)
-            or self._learning_training_task is not None
-            or self._procedural_fit_task is not None
-            or self._reference_edge_fit_task is not None
-            or self._species_library_build_task is not None
-        )
-        available = (
-            path is not None
-            and not running
-        )
-        self.analyze_button.setEnabled(available)
-        self.analyze_action.setEnabled(available)
+        running = self._sync_run_controls()
         if hasattr(self, 'optimize_project_action'):
             self.optimize_project_action.setEnabled(not running and self._project_tracking_enabled)
             self.import_optimization_targets_action.setEnabled(not running and path is not None)
@@ -15130,7 +15134,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                          or self._applied_foreground_exclusion_masks or self._applied_physical_edge_reference_masks
                          or self._applied_non_edge_reference_masks or self._optimization_targets
                          or self._current_project_path.with_suffix('.optimization-targets.json').exists())),
-                busy=running,
+                busy=('Optimisation is running.' if getattr(self, '_optimization_task', None) is not None
+                      else 'Wait for the current calculation to finish.' if running else ''),
             )
         if hasattr(self, "train_learning_model_action"):
             self.train_learning_model_action.setEnabled(not running)

@@ -937,7 +937,7 @@ class PipelineInspector(QWidget):
         self._node: PipelineNode | None = None
         self._unified_optimization = False
         self._optimization_ready = False
-        self._optimization_busy = False
+        self._optimization_busy = ''
         self._analysis_result = None
         self._parameter_widgets: list[QWidget] = []
         self._parameter_section_labels: list[QLabel] = []
@@ -1648,8 +1648,9 @@ class PipelineInspector(QWidget):
         self.reference_edge_fit_container.hide()
         self._refresh_optimization()
 
-    def set_optimization_context(self, *, ready: bool, busy: bool) -> None:
-        self._optimization_ready, self._optimization_busy = bool(ready), bool(busy)
+    def set_optimization_context(self, *, ready: bool, busy: str = '') -> None:
+        """``busy`` names the running work that blocks optimisation; empty when idle."""
+        self._optimization_ready, self._optimization_busy = bool(ready), busy
         self._refresh_optimization()
 
     def _refresh_optimization(self) -> None:
@@ -1668,7 +1669,7 @@ class PipelineInspector(QWidget):
         text = contract.reason or ''
         if contract.searchable:
             text = ('Parameters are locked. Unlock to optimise.' if self._editing_locked else
-                    'Optimisation is running.' if self._optimization_busy else
+                    self._optimization_busy if self._optimization_busy else
                     'Save a project and apply references to enable optimisation.' if not self._optimization_ready else
                     'Choose images and a budget, then review the proposal before applying it.')
         self.optimization_status.setText(text)

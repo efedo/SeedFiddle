@@ -135,6 +135,7 @@ class PipelineNode:
     inline_parameters: tuple[tuple[str, str], ...] = ()
     calculation_seconds: float | None = None
     default_parameters: dict[str, Any] = field(init=False, repr=False)
+    disabled_detail: str = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         # Keep an immutable-by-convention snapshot for the inspector's Reset
@@ -142,6 +143,13 @@ class PipelineNode:
         # never mutate a shared default object.
         self.parameters = dict(self.parameters)
         self.default_parameters = dict(self.parameters)
+        # Runtime status updates overwrite status_detail; keep the authored
+        # reason an off-by-default node gives for being switched off.
+        self.disabled_detail = (
+            self.status_detail
+            if not self.enabled and self.status_detail.startswith("Disabled")
+            else "Disabled"
+        )
         self.input_port_types = dict(self.input_port_types)
         self.output_port_types = dict(self.output_port_types)
 
@@ -924,7 +932,6 @@ class PipelineGraph:
                 affected_node = self.node(affected_id)
                 affected_node.enabled = False
                 affected_node.status = NodeStatus.BYPASSED
-                affected_node.status_detail = "Disabled by pipeline dependency"
                 self._connection_suspended.discard(affected_id)
         self.revision += 1
         self.invalidate(affected, preserve_bypassed=True)
@@ -934,6 +941,20 @@ class PipelineGraph:
         optional = set(self.node(node_id).optional_enabled_input_ports)
         return tuple(dict.fromkeys(connection.source for connection in self.connections
             if connection.target == node_id and connection.target_port not in optional))
+
+    def disabled_status_detail(self, node_id: str) -> str:
+        """Say why a disabled node is bypassed: a lost input, a disabled source, or its own reason."""
+
+        if node_id in self._connection_suspended:
+            return "Disabled by disconnected input"
+        blocking = [
+            self.node(upstream_id).title
+            for upstream_id in self._required_enabled_upstream(node_id)
+            if not self.node(upstream_id).enabled
+        ]
+        if blocking:
+            return f"Disabled; requires {', '.join(blocking)}"
+        return self.node(node_id).disabled_detail
 
     def set_status(
         self, node_id: str, status: NodeStatus, detail: str = ""
@@ -953,7 +974,7 @@ class PipelineGraph:
             node = self.node(node_id)
             if preserve_bypassed and not node.enabled:
                 node.status = NodeStatus.BYPASSED
-                node.status_detail = "Bypassed"
+                node.status_detail = self.disabled_status_detail(node_id)
             elif not node.implemented:
                 node.status = NodeStatus.PLANNED
                 node.status_detail = "Planned"
@@ -4848,12 +4869,14 @@ def build_default_pipeline() -> PipelineGraph:
         node.bypassable = True
         node.status = NodeStatus.BYPASSED
         node.status_detail = "Disabled by default while this branch is under review"
+        node.disabled_detail = node.status_detail
     for node_id in ("lightening_gradient_ceiling", "darkening_gradient_ceiling"):
         node = graph.node(node_id)
         node.enabled = False
         node.bypassable = True
         node.status = NodeStatus.BYPASSED
         node.status_detail = "Optional thresholded surface-gradient diagnostic"
+        node.disabled_detail = node.status_detail
     # Preserve experimental or unfinished branches and all of their authored
     # wiring without making them part of the default executable graph. The node
     # editor exposes every removed node through its unused-node toolbox.
