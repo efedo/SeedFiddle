@@ -46,11 +46,22 @@ class StoredManualSeedCentres:
 
 
 class ManualSeedCentreStore:
-    """Atomically save small per-image centre edits beneath the project root."""
+    """Atomically save small per-image centre edits beneath the project root.
 
-    def __init__(self, project_root: Path | str) -> None:
+    Without ``directory`` the store is the loose workspace's shared folder. A
+    saved project passes the folder it owns; image identities stay relative to
+    the workspace root either way.
+    """
+
+    def __init__(
+        self, project_root: Path | str, directory: Path | str | None = None
+    ) -> None:
         self.project_root = Path(project_root).resolve()
-        self.directory = self.project_root / "projects" / "manual-seed-centres"
+        self.directory = (
+            self.project_root / "projects" / "manual-seed-centres"
+            if directory is None
+            else Path(directory).resolve()
+        )
 
     def image_identity(self, image_path: Path | str) -> str:
         resolved = Path(image_path).resolve()

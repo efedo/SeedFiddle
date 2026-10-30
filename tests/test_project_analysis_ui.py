@@ -971,6 +971,7 @@ class ProjectAnalysisUiTests(CatalogueTestCase):
             ProjectAnalysisStore,
             ProjectFileStatus,
             ReferenceRegionError,
+            project_annotation_directory,
         )
         from seedvision.ui.main_window import _ManualSeedCentreState
 
@@ -1046,8 +1047,8 @@ class ProjectAnalysisUiTests(CatalogueTestCase):
                 self.assertTrue(window._save_project())
                 self.assertNotIn(key, window._unsaved_reference_sidecars)
                 self.assertNotIn(key, window._unsaved_manual_centre_sidecars)
-                self.assertTrue(window._reference_region_store.path_for(image).is_file())
-                self.assertTrue(window._manual_seed_centre_store.path_for(image).is_file())
+                self.assertFalse(window._reference_region_store.path_for(image).exists())
+                self.assertFalse(window._manual_seed_centre_store.path_for(image).exists())
                 loaded = ProjectAnalysisStore(root).load(destination)
                 self.assertEqual(len(loaded.images), 1)
                 reference = loaded.images[0].sidecar(REFERENCE_REGIONS_SIDECAR)
@@ -1057,6 +1058,9 @@ class ProjectAnalysisUiTests(CatalogueTestCase):
                 assert reference is not None and centres is not None
                 self.assertEqual(reference.status, ProjectFileStatus.AVAILABLE)
                 self.assertEqual(centres.status, ProjectFileStatus.AVAILABLE)
+                folder = project_annotation_directory(destination)
+                self.assertTrue(reference.path.is_relative_to(folder))
+                self.assertTrue(centres.path.is_relative_to(folder))
                 self.assertFalse(window._project_dirty)
             finally:
                 self._dispose(window)
@@ -1217,7 +1221,10 @@ class ProjectAnalysisUiTests(CatalogueTestCase):
                     window._manual_seed_centre_states[key].centres_source_xy,
                     ((9.5, 11.25),),
                 )
-                self.assertFalse(window._project_dirty)
+                # Its files are still in the shared workspace folder, which the
+                # next Save copies into the project's own folder.
+                self.assertEqual(window._legacy_annotation_count(), 2)
+                self.assertTrue(window._project_dirty)
             finally:
                 self._dispose(window)
 
@@ -1638,7 +1645,7 @@ class ProjectAnalysisUiTests(CatalogueTestCase):
             finally:
                 self._dispose(window)
 
-    def check_test_explicit_noncanonical_sidecar_loads_and_locator_is_preserved_until_resaved(self) -> None:
+    def check_test_explicit_noncanonical_sidecar_loads_then_save_copies_it_into_the_project(self) -> None:
         from seedvision.persistence import (
             REFERENCE_REGIONS_SIDECAR,
             ProjectAnalysisStore,
@@ -1646,6 +1653,7 @@ class ProjectAnalysisUiTests(CatalogueTestCase):
             ReferenceRegionBundle,
             ReferenceRegionStore,
             analysis_settings_profile_from_graph,
+            project_annotation_directory,
         )
         from seedvision.pipeline import build_default_pipeline
 
@@ -1692,14 +1700,17 @@ class ProjectAnalysisUiTests(CatalogueTestCase):
                     window._pending_unbound_reference_bundles[key].foreground,
                     mask,
                 )
+                explicit_bytes = explicit.read_bytes()
                 self.assertTrue(window._save_project())
-                preserved = store.load(project_path)
-                preserved_sidecar = preserved.images[0].sidecar(
-                    REFERENCE_REGIONS_SIDECAR
-                )
-                self.assertIsNotNone(preserved_sidecar)
-                assert preserved_sidecar is not None
-                self.assertEqual(preserved_sidecar.path, explicit.resolve())
+                copied = store.load(project_path)
+                copied_sidecar = copied.images[0].sidecar(REFERENCE_REGIONS_SIDECAR)
+                self.assertIsNotNone(copied_sidecar)
+                assert copied_sidecar is not None
+                project_folder = project_annotation_directory(project_path)
+                self.assertTrue(copied_sidecar.path.is_relative_to(project_folder))
+                self.assertEqual(copied_sidecar.path.read_bytes(), explicit_bytes)
+                self.assertEqual(explicit.read_bytes(), explicit_bytes)
+                self.assertEqual(window._legacy_annotation_count(), 0)
 
                 window._resolve_pending_project_reference_bundle(
                     key,
@@ -1710,9 +1721,10 @@ class ProjectAnalysisUiTests(CatalogueTestCase):
                         ),
                     ),
                 )
-                self.assertIsNotNone(
-                    window._persist_applied_reference_regions(automatic=False)
-                )
+                persisted = window._persist_applied_reference_regions(automatic=False)
+                self.assertIsNotNone(persisted)
+                assert persisted is not None
+                self.assertTrue(persisted.is_relative_to(project_folder / "unsaved"))
                 window._set_project_dirty()
                 self.assertTrue(window._save_project())
                 rebound = store.load(project_path)
@@ -1721,11 +1733,10 @@ class ProjectAnalysisUiTests(CatalogueTestCase):
                 )
                 self.assertIsNotNone(rebound_sidecar)
                 assert rebound_sidecar is not None
-                self.assertEqual(
-                    rebound_sidecar.path,
-                    reference_store.path_for(image).resolve(),
-                )
-                self.assertTrue(explicit.is_file())
+                self.assertEqual(rebound_sidecar.path, copied_sidecar.path)
+                self.assertFalse((project_folder / "unsaved").exists())
+                self.assertEqual(explicit.read_bytes(), explicit_bytes)
+                self.assertFalse(reference_store.path_for(image).exists())
             finally:
                 self._dispose(window)
 
@@ -1779,7 +1790,8 @@ class ProjectAnalysisUiTests(CatalogueTestCase):
                 key = str(image.resolve()).casefold()
                 self.assertIn(key, window._pending_unbound_reference_bundles)
                 self.assertNotIn(key, window._applied_foreground_reference_masks)
-                self.assertFalse(window._project_dirty)
+                # The archive is in the shared workspace folder until Save.
+                self.assertTrue(window._project_dirty)
 
                 matching_result = SimpleNamespace(
                     image_path=image,
@@ -1822,6 +1834,303 @@ class ProjectAnalysisUiTests(CatalogueTestCase):
             finally:
                 self._dispose(window)
 
+    @staticmethod
+    def _centres(*points):
+        from seedvision.ui.main_window import _ManualSeedCentreState
+
+        return _ManualSeedCentreState(np.asarray(points, dtype=np.float64), "augment")
+
+    def check_test_each_project_keeps_its_own_annotations_until_save(self) -> None:
+        from PySide6.QtWidgets import QMessageBox
+
+        from seedvision.persistence import (
+            MANUAL_SEED_CENTRES_SIDECAR,
+            ManualSeedCentreStore,
+            ProjectAnalysisStore,
+            annotation_folder,
+            project_annotation_directory,
+        )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image = self._write_image(root / "images" / "capture.png")
+            shared = ManualSeedCentreStore(root).save(
+                image,
+                np.asarray(((5.0, 6.0),), dtype=np.float64),
+                mode="augment",
+                source_shape=(36, 48),
+            )
+            shared_bytes = shared.read_bytes()
+            window = self._window(root)
+            try:
+                first = root / "projects" / "first.seedfiddle-project.json"
+                self.assertTrue(window._write_project(first))
+                first_folder = project_annotation_directory(first)
+                saved_first = ManualSeedCentreStore(
+                    root, annotation_folder(first_folder, MANUAL_SEED_CENTRES_SIDECAR)
+                ).path_for(image)
+                # The first Save copies the loose workspace's file into the project.
+                self.assertEqual(saved_first.read_bytes(), shared_bytes)
+
+                key = window._current_image_key()
+                with patch.object(window, "_analyze_current_image"):
+                    window._apply_manual_seed_centre_state(
+                        key, self._centres((20.0, 15.0)), label="moved", record_undo=True
+                    )
+                unsaved = window._manual_seed_centre_store.path_for(image)
+                self.assertTrue(unsaved.is_relative_to(first_folder / "unsaved"))
+                self.assertTrue(unsaved.is_file())
+                self.assertEqual(saved_first.read_bytes(), shared_bytes)
+                self.assertEqual(shared.read_bytes(), shared_bytes)
+                self.assertTrue(window._project_dirty)
+
+                second = root / "projects" / "second.seedfiddle-project.json"
+                self.assertTrue(window._write_project(second))
+                self.assertFalse((first_folder / "unsaved").exists())
+                self.assertEqual(saved_first.read_bytes(), shared_bytes)
+                record = (
+                    ProjectAnalysisStore(root)
+                    .load(second)
+                    .images[0]
+                    .sidecar(MANUAL_SEED_CENTRES_SIDECAR)
+                )
+                self.assertIsNotNone(record)
+                assert record is not None
+                self.assertTrue(
+                    record.path.is_relative_to(project_annotation_directory(second))
+                )
+
+                with patch.object(
+                    window, "_confirm_project_replacement", return_value=True
+                ):
+                    self.assertTrue(window._open_project(first))
+                np.testing.assert_allclose(
+                    window._manual_seed_centre_states[key].centres_source_xy,
+                    ((5.0, 6.0),),
+                )
+                self.assertFalse(window._project_dirty)
+
+                with patch.object(window, "_analyze_current_image"):
+                    window._apply_manual_seed_centre_state(
+                        key, self._centres((30.0, 25.0)), label="moved", record_undo=True
+                    )
+                self.assertTrue((first_folder / "unsaved").is_dir())
+                with patch.object(
+                    QMessageBox,
+                    "warning",
+                    return_value=QMessageBox.StandardButton.Discard,
+                ):
+                    self.assertTrue(window._confirm_project_replacement())
+                self.assertFalse((first_folder / "unsaved").exists())
+                self.assertEqual(saved_first.read_bytes(), shared_bytes)
+            finally:
+                self._dispose(window)
+
+    def check_test_unsaved_annotation_edits_are_offered_after_an_unexpected_exit(self) -> None:
+        from PySide6.QtWidgets import QMessageBox
+
+        from seedvision.persistence import (
+            MANUAL_SEED_CENTRES_SIDECAR,
+            ProjectAnalysisStore,
+            project_annotation_directory,
+        )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._write_image(root / "images" / "capture.png")
+            project = root / "projects" / "recover.seedfiddle-project.json"
+            unsaved = project_annotation_directory(project) / "unsaved"
+            window = self._window(root)
+            try:
+                self.assertTrue(window._write_project(project))
+                key = window._current_image_key()
+                with patch.object(window, "_analyze_current_image"):
+                    window._apply_manual_seed_centre_state(
+                        key, self._centres((12.0, 9.0)), label="added", record_undo=True
+                    )
+            finally:
+                # Closing without the save prompt leaves the edit behind, as a
+                # crash would.
+                self._dispose(window)
+            self.assertTrue(any(unsaved.rglob("*.npz")))
+
+            window = self._window(root)
+            try:
+                with (
+                    patch.object(
+                        window, "_confirm_project_replacement", return_value=True
+                    ),
+                    patch.object(
+                        QMessageBox,
+                        "question",
+                        return_value=QMessageBox.StandardButton.Discard,
+                    ) as question,
+                ):
+                    self.assertTrue(window._open_project(project))
+                question.assert_called_once()
+                self.assertFalse(unsaved.exists())
+                self.assertEqual(
+                    len(window._manual_seed_centre_state(key).centres_source_xy), 0
+                )
+                self.assertFalse(window._project_dirty)
+
+                with patch.object(window, "_analyze_current_image"):
+                    window._apply_manual_seed_centre_state(
+                        key, self._centres((12.0, 9.0)), label="added", record_undo=True
+                    )
+                with (
+                    patch.object(
+                        window, "_confirm_project_replacement", return_value=True
+                    ),
+                    patch.object(
+                        QMessageBox,
+                        "question",
+                        return_value=QMessageBox.StandardButton.Yes,
+                    ),
+                ):
+                    self.assertTrue(window._open_project(project))
+                np.testing.assert_allclose(
+                    window._manual_seed_centre_states[key].centres_source_xy,
+                    ((12.0, 9.0),),
+                )
+                self.assertTrue(window._project_dirty)
+                self.assertTrue(window._save_project())
+                self.assertFalse(unsaved.exists())
+                record = (
+                    ProjectAnalysisStore(root)
+                    .load(project)
+                    .images[0]
+                    .sidecar(MANUAL_SEED_CENTRES_SIDECAR)
+                )
+                self.assertIsNotNone(record)
+                assert record is not None
+                self.assertTrue(
+                    record.path.is_relative_to(project_annotation_directory(project))
+                )
+            finally:
+                self._dispose(window)
+
+    def check_test_annotations_move_between_projects_only_by_export_and_import(self) -> None:
+        from PySide6.QtWidgets import QDialog, QFileDialog
+
+        from seedvision.persistence import (
+            MANUAL_SEED_CENTRES_SIDECAR,
+            REFERENCE_REGIONS_SIDECAR,
+            ManualSeedCentreStore,
+            ProjectAnalysisStore,
+            ProjectFileStatus,
+            ReferenceRegionBundle,
+            ReferenceRegionStore,
+            project_annotation_directory,
+            read_annotation_bundle,
+        )
+        from seedvision.ui.annotation_transfer import AnnotationSelectionDialog
+        from seedvision.ui.main_window import _path_identity
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            first = self._write_image(root / "images" / "a.png", colour="#6b5941")
+            second = self._write_image(root / "images" / "b.png", colour="#7c694e")
+            centres = ManualSeedCentreStore(root).save(
+                first,
+                np.asarray(((11.5, 13.25),), dtype=np.float64),
+                mode="augment",
+                source_shape=(36, 48),
+            )
+            foreground = np.zeros((36, 48), dtype=bool)
+            foreground[4:16, 6:20] = True
+            references = ReferenceRegionStore(root).save(
+                second,
+                ReferenceRegionBundle(
+                    source_to_corrected=np.eye(3), shape=(36, 48), foreground=foreground
+                ),
+            )
+            window = self._window(root)
+            try:
+                source_project = root / "projects" / "source.seedfiddle-project.json"
+                self.assertTrue(window._write_project(source_project))
+                source_files = sorted(
+                    project_annotation_directory(source_project).rglob("*.npz")
+                )
+                self.assertEqual(len(source_files), 2)
+                source_bytes = [path.read_bytes() for path in source_files]
+                # From here on only the source project holds these annotations.
+                centres.unlink()
+                references.unlink()
+
+                bundle = root / "transfer.seedfiddle-annotations.zip"
+                with (
+                    patch.object(
+                        AnnotationSelectionDialog,
+                        "exec",
+                        return_value=QDialog.DialogCode.Accepted,
+                    ),
+                    patch.object(
+                        QFileDialog, "getSaveFileName", return_value=(str(bundle), "")
+                    ),
+                ):
+                    window._export_annotations()
+                self.assertEqual(
+                    {(entry.image_name, entry.kind) for entry in read_annotation_bundle(bundle)},
+                    {
+                        ("a.png", MANUAL_SEED_CENTRES_SIDECAR),
+                        ("b.png", REFERENCE_REGIONS_SIDECAR),
+                    },
+                )
+
+                self.assertTrue(window._new_project())
+                window._add_image(first, open_now=False)
+                window._add_image(second, open_now=False)
+                window._open_path(first)
+                target_project = root / "projects" / "target.seedfiddle-project.json"
+                self.assertTrue(window._write_project(target_project))
+                target_folder = project_annotation_directory(target_project)
+                self.assertEqual(list(target_folder.rglob("*.npz")), [])
+
+                with (
+                    patch.object(
+                        AnnotationSelectionDialog,
+                        "exec",
+                        return_value=QDialog.DialogCode.Accepted,
+                    ),
+                    patch.object(
+                        QFileDialog, "getOpenFileName", return_value=(str(bundle), "")
+                    ),
+                ):
+                    window._import_annotations()
+                first_key = _path_identity(first)
+                self.assertTrue(window._project_dirty)
+                self.assertTrue(
+                    window._project_manual_centre_sidecar_paths[first_key].is_relative_to(
+                        target_folder / "unsaved"
+                    )
+                )
+                np.testing.assert_allclose(
+                    window._manual_seed_centre_states[first_key].centres_source_xy,
+                    ((11.5, 13.25),),
+                )
+
+                self.assertTrue(window._save_project())
+                loaded = ProjectAnalysisStore(root).load(target_project)
+                by_name = {image.path.name: image for image in loaded.images}
+                centre_record = by_name["a.png"].sidecar(MANUAL_SEED_CENTRES_SIDECAR)
+                reference_record = by_name["b.png"].sidecar(REFERENCE_REGIONS_SIDECAR)
+                self.assertIsNotNone(centre_record)
+                self.assertIsNotNone(reference_record)
+                assert centre_record is not None and reference_record is not None
+                for record in (centre_record, reference_record):
+                    self.assertEqual(record.status, ProjectFileStatus.AVAILABLE)
+                    self.assertTrue(record.path.is_relative_to(target_folder))
+                restored = ReferenceRegionStore(root).load_project_archive(
+                    second, reference_record.path, None
+                )
+                np.testing.assert_array_equal(restored.foreground, foreground)
+                self.assertEqual(
+                    [path.read_bytes() for path in source_files], source_bytes
+                )
+            finally:
+                self._dispose(window)
+
     def test_workflow_lifecycle(self):
         """15 related ProjectAnalysisUiTests scenarios, each with private fixture state."""
         self.scenario(self.check_test_actions_and_profile_load_replace_only_portable_analysis_state)
@@ -1838,7 +2147,13 @@ class ProjectAnalysisUiTests(CatalogueTestCase):
         self.scenario(self.check_test_changed_valid_sidecars_load_but_keep_master_dirty)
         self.scenario(self.check_test_degraded_save_preserves_unresolved_record_until_locator_is_readded)
         self.scenario(self.check_test_new_project_image_does_not_capture_unseen_loose_sidecars)
-        self.scenario(self.check_test_explicit_noncanonical_sidecar_loads_and_locator_is_preserved_until_resaved)
+        self.scenario(self.check_test_explicit_noncanonical_sidecar_loads_then_save_copies_it_into_the_project)
+
+    def test_project_owned_annotations(self):
+        """3 related ProjectAnalysisUiTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_each_project_keeps_its_own_annotations_until_save)
+        self.scenario(self.check_test_unsaved_annotation_edits_are_offered_after_an_unexpected_exit)
+        self.scenario(self.check_test_annotations_move_between_projects_only_by_export_and_import)
 
     def test_validation_and_recovery(self):
         """8 related ProjectAnalysisUiTests scenarios, each with private fixture state."""

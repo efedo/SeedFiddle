@@ -46,8 +46,8 @@ def run_persistence(window, callback, title='Saving verified data…'):
 
 
 class ResponsiveReferenceRegionStore(ReferenceRegionStore):
-    def __init__(self, root, window):
-        super().__init__(root)
+    def __init__(self, root, window, directory=None):
+        super().__init__(root, directory)
         self.window = window
 
     def save(self, *args, **kwargs):

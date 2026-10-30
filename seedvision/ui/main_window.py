@@ -78,6 +78,7 @@ from seedvision.ui.work_control import WorkController
 from seedvision.ui.results import ResultsController
 from seedvision.ui.persistence_jobs import ResponsiveReferenceRegionStore, run_persistence
 from seedvision.ui.annotation_panel import AnnotationPanel, CurrentPageStack
+from seedvision.ui.annotation_transfer import AnnotationTransferController
 from seedvision.diagnostics import (
     LOGGER,
     current_crash_log_path,
@@ -112,6 +113,7 @@ from seedvision.persistence import (
     SeedInstanceAnnotation,
     SpeciesLibraryPin,
     analysis_settings_profile_from_graph,
+    annotation_folder,
     apply_analysis_settings_profile,
     load_analysis_settings_profile,
     load_bundled_instance_mask,
@@ -119,6 +121,13 @@ from seedvision.persistence import (
     read_source_raster_shape,
     save_analysis_settings_profile,
     file_sha256,
+    project_annotation_directory,
+)
+from seedvision.persistence.project_annotations import (
+    UNSAVED_ANNOTATIONS_FOLDER,
+    copy_annotation_file,
+    discard_unsaved_annotations,
+    unsaved_annotation_files,
 )
 from seedvision.reference_library import (
     SPECIES_LIBRARY_EXTENSION,
@@ -1313,7 +1322,8 @@ class _ImageListDelegate(QStyledItemDelegate):
         return super().editorEvent(event, model, option, index)
 
 
-class MainWindow(ResultsController, WorkController, ReferenceFrameController, OptimizationController, QMainWindow):
+class MainWindow(ResultsController, WorkController, ReferenceFrameController, OptimizationController,
+                 AnnotationTransferController, QMainWindow):
     """Main desktop window for visual pipeline control and seed review."""
 
     ANALYSIS_CACHE_CUDA_BUDGET_BYTES = 2 * 1024**3
@@ -1347,8 +1357,16 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._installing_project = False
         self._project_dirty = False
         self._recent_project_paths = self._read_recent_project_paths()
-        self._reference_region_store = ResponsiveReferenceRegionStore(root, self)
-        self._manual_seed_centre_store = ManualSeedCentreStore(root)
+        # Annotation edits are written to these two stores. In a saved project
+        # they are the project's unsaved folder; otherwise the workspace's
+        # shared folders (see _install_annotation_stores).
+        self._workspace_reference_region_store = ResponsiveReferenceRegionStore(
+            root, self
+        )
+        self._workspace_manual_seed_centre_store = ManualSeedCentreStore(root)
+        self._reference_region_store = self._workspace_reference_region_store
+        self._manual_seed_centre_store = self._workspace_manual_seed_centre_store
+        self._project_annotation_directory: Path | None = None
         self._project_analysis_store = ProjectAnalysisStore(root)
         self._species_library_service = SpeciesLibraryService()
         self._project_species_library_pin: SpeciesLibraryPin | None = None
@@ -1681,6 +1699,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         lines = [
             f"Master: {master}",
             f"State: {save_state}",
+            self._annotation_storage_summary(),
             f"Images: {available_count:,} available; {unresolved_count:,} unresolved",
             (
                 "Species library: none pinned"
@@ -1766,6 +1785,29 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 f"{self._mask_pixel_count(draft_labels):,} interior pixels"
             )
         return "\n".join(lines)
+
+    def _annotation_storage_summary(self) -> str:
+        """Say where this session's annotation edits are kept."""
+
+        directory = self._project_annotation_directory
+        if directory is None:
+            shared = self._workspace_reference_region_store.directory.parent
+            if self._project_tracking_enabled:
+                return (
+                    f"Annotations: in the shared workspace folder {shared} until "
+                    "the project is first saved"
+                )
+            return f"Annotations: saved as you edit, in the shared folder {shared}"
+        line = f"Annotations: {directory}"
+        legacy = self._legacy_annotation_count()
+        if legacy:
+            line += (
+                f"; {legacy} file(s) are still in the shared workspace folder "
+                "until the next Save"
+            )
+        if self._project_dirty:
+            line += f"; edits since the last Save are in its {UNSAVED_ANNOTATIONS_FOLDER} folder"
+        return line
 
     def _refresh_project_node(self) -> None:
         """Synchronize project context in every active workflow."""
@@ -1943,35 +1985,230 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             selected_overlay=str(self.overlay_combo.currentData() or "raw_image"),
         )
 
-    def _project_image_specs(self) -> tuple[ProjectImageSpec, ...]:
+    def _project_image_specs(
+        self, annotation_paths: dict[tuple[str, str], Path]
+    ) -> tuple[ProjectImageSpec, ...]:
+        """Describe every listed image with the archives Save copied for it."""
+
         specs: list[ProjectImageSpec] = []
         for index in range(self.image_list.count()):
             item = self.image_list.item(index)
             path = Path(item.data(Qt.ItemDataRole.UserRole)).resolve()
             key = _path_identity(path)
-            include_references = key not in self._withheld_reference_sidecars
-            include_centres = key not in self._withheld_manual_centre_sidecars
+            references = annotation_paths.get((key, REFERENCE_REGIONS_SIDECAR))
+            centres = annotation_paths.get((key, MANUAL_SEED_CENTRES_SIDECAR))
             specs.append(
                 ProjectImageSpec(
                     path,
                     read_source_raster_shape(path),
-                    include_reference_regions=include_references,
-                    include_manual_seed_centres=include_centres,
-                    reference_regions_path=(
-                        self._project_reference_sidecar_paths.get(key)
-                        if include_references
-                        else None
-                    ),
-                    manual_seed_centres_path=(
-                        self._project_manual_centre_sidecar_paths.get(key)
-                        if include_centres
-                        else None
-                    ),
+                    include_reference_regions=references is not None,
+                    include_manual_seed_centres=centres is not None,
+                    reference_regions_path=references,
+                    manual_seed_centres_path=centres,
                     biological_context=self._effective_biological_context(path),
                     capture_group_id=self._project_capture_group_id,
                 )
             )
         return tuple(specs)
+
+    def _install_annotation_stores(self, project_path: Path | None) -> None:
+        """Point annotation edits at a saved project's unsaved folder.
+
+        A loose workspace or untitled project has no folder of its own, so its
+        edits go straight to the workspace's shared ``projects/`` folders.
+        """
+
+        if project_path is None:
+            self._project_annotation_directory = None
+            self._reference_region_store = self._workspace_reference_region_store
+            self._manual_seed_centre_store = self._workspace_manual_seed_centre_store
+            return
+        directory = project_annotation_directory(project_path)
+        self._project_annotation_directory = directory
+        self._reference_region_store = ResponsiveReferenceRegionStore(
+            self._root,
+            self,
+            annotation_folder(directory, REFERENCE_REGIONS_SIDECAR, unsaved=True),
+        )
+        self._manual_seed_centre_store = ManualSeedCentreStore(
+            self._root,
+            annotation_folder(directory, MANUAL_SEED_CENTRES_SIDECAR, unsaved=True),
+        )
+
+    def _saved_annotation_stores(
+        self, project_path: Path
+    ) -> tuple[ReferenceRegionStore, ManualSeedCentreStore]:
+        """Return the stores Save writes for one project file."""
+
+        directory = project_annotation_directory(project_path)
+        return (
+            ResponsiveReferenceRegionStore(
+                self._root,
+                self,
+                annotation_folder(directory, REFERENCE_REGIONS_SIDECAR),
+            ),
+            ManualSeedCentreStore(
+                self._root,
+                annotation_folder(directory, MANUAL_SEED_CENTRES_SIDECAR),
+            ),
+        )
+
+    def _project_annotation_sources(
+        self,
+    ) -> dict[tuple[str, str], tuple[Path, Path]]:
+        """Return each listed image's current archive for each annotation kind.
+
+        Withheld archives are left out; Save keeps their original references.
+        A loose workspace or untitled project also offers the shared archive of
+        an image it never opened, so the first Save carries it over.
+        """
+
+        sources: dict[tuple[str, str], tuple[Path, Path]] = {}
+        for index in range(self.image_list.count()):
+            image = Path(
+                self.image_list.item(index).data(Qt.ItemDataRole.UserRole)
+            ).resolve()
+            key = _path_identity(image)
+            for kind, withheld, recorded, store in (
+                (
+                    REFERENCE_REGIONS_SIDECAR,
+                    self._withheld_reference_sidecars,
+                    self._project_reference_sidecar_paths,
+                    self._reference_region_store,
+                ),
+                (
+                    MANUAL_SEED_CENTRES_SIDECAR,
+                    self._withheld_manual_centre_sidecars,
+                    self._project_manual_centre_sidecar_paths,
+                    self._manual_seed_centre_store,
+                ),
+            ):
+                if key in withheld:
+                    continue
+                archive = recorded.get(key)
+                if archive is None:
+                    if self._project_manifest_sidecar_policy_active:
+                        continue
+                    archive = store.path_for(image)
+                    if not archive.is_file():
+                        continue
+                archive = Path(archive).resolve()
+                if not archive.is_file():
+                    raise ProjectAnalysisError(
+                        f"The {kind.replace('_', ' ')} file for {image.name} is "
+                        f"missing: {archive}"
+                    )
+                sources[(key, kind)] = (image, archive)
+        return sources
+
+    @staticmethod
+    def _copy_project_annotations(
+        sources: dict[tuple[str, str], tuple[Path, Path]],
+        stores: dict[str, ReferenceRegionStore | ManualSeedCentreStore],
+    ) -> dict[tuple[str, str], Path]:
+        """Copy each kept archive into the destination project's folder."""
+
+        copied: dict[tuple[str, str], Path] = {}
+        for (key, kind), (image, archive) in sources.items():
+            target = stores[kind].path_for(image).resolve()
+            if archive != target:
+                copy_annotation_file(archive, target)
+            copied[(key, kind)] = target
+        return copied
+
+    def _legacy_annotation_count(self) -> int:
+        """Count kept annotation files that live outside this project's folder."""
+
+        directory = self._project_annotation_directory
+        if directory is None:
+            return 0
+        directory = directory.resolve()
+        return sum(
+            key not in withheld and not Path(path).resolve().is_relative_to(directory)
+            for withheld, recorded in (
+                (
+                    self._withheld_reference_sidecars,
+                    self._project_reference_sidecar_paths,
+                ),
+                (
+                    self._withheld_manual_centre_sidecars,
+                    self._project_manual_centre_sidecar_paths,
+                ),
+            )
+            for key, path in recorded.items()
+        )
+
+    def _recover_unsaved_annotations(self, images) -> int:
+        """Offer a previous session's unsaved annotation edits for this project.
+
+        Returns the number of images whose edits were restored.
+        """
+
+        directory = self._project_annotation_directory
+        if directory is None:
+            return 0
+        drafts = {path.resolve() for path in unsaved_annotation_files(directory)}
+        if not drafts:
+            return 0
+        matches: list[tuple[str, str, Path]] = []
+        for image in images:
+            key = _path_identity(image.path)
+            for kind, store in (
+                (REFERENCE_REGIONS_SIDECAR, self._reference_region_store),
+                (MANUAL_SEED_CENTRES_SIDECAR, self._manual_seed_centre_store),
+            ):
+                draft = store.path_for(image.path).resolve()
+                if draft in drafts:
+                    matches.append((key, kind, draft))
+        image_count = len({key for key, _, _ in matches})
+        unmatched = len(drafts) - len(matches)
+        answer = QMessageBox.question(
+            self,
+            "Restore unsaved annotation edits?",
+            f"This project has annotation edits for {image_count} image(s) that "
+            "were never saved, probably because Seed Fiddle closed unexpectedly. "
+            "Restore them as unsaved changes? Discard deletes them."
+            + (
+                f"\n\n{unmatched} edit(s) belong to images that are not available "
+                "and cannot be restored."
+                if unmatched
+                else ""
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Discard,
+            QMessageBox.StandardButton.Yes,
+        )
+        if answer == QMessageBox.StandardButton.Discard:
+            self._discard_unsaved_project_annotations()
+            return 0
+        for key, kind, draft in matches:
+            if kind == REFERENCE_REGIONS_SIDECAR:
+                self._project_reference_sidecar_paths[key] = draft
+                self._project_unbound_reference_loads.add(key)
+                self._withheld_reference_sidecars.discard(key)
+                self._project_unresolved_reference_sidecars.discard(key)
+            else:
+                self._project_manual_centre_sidecar_paths[key] = draft
+                self._project_manual_centre_loads.add(key)
+                self._withheld_manual_centre_sidecars.discard(key)
+                self._project_unresolved_manual_centre_sidecars.discard(key)
+        return image_count
+
+    def _discard_unsaved_project_annotations(self) -> None:
+        """Delete the open project's unsaved annotation edits."""
+
+        directory = self._project_annotation_directory
+        if directory is None:
+            return
+        try:
+            discard_unsaved_annotations(directory)
+        except OSError as error:
+            QMessageBox.warning(
+                self,
+                "Could not delete unsaved annotation edits",
+                "They remain in "
+                f"{directory / UNSAVED_ANNOTATIONS_FOLDER} and will be offered "
+                f"again when the project is opened.\n\n{error}",
+            )
 
     def _instance_generation_source(self, key: str):
         return self._draft_instance_generation_sources.get(
@@ -2029,7 +2266,22 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             ),
         )
 
-    def _retry_unsaved_project_sidecars(self, keys: set[str] | None = None) -> bool:
+    def _retry_unsaved_project_sidecars(
+        self,
+        keys: set[str] | None = None,
+        *,
+        stores: tuple[ReferenceRegionStore, ManualSeedCentreStore] | None = None,
+    ) -> bool:
+        """Write annotations whose earlier save failed into ``stores``.
+
+        ``stores`` defaults to where edits are written now; Save passes the
+        destination project's own folders.
+        """
+
+        reference_store, centre_store = stores or (
+            self._reference_region_store,
+            self._manual_seed_centre_store,
+        )
         for key in tuple(self._unsaved_reference_sidecars):
             if keys is not None and key not in keys:
                 continue
@@ -2044,7 +2296,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 self._set_project_dirty()
                 return False
             try:
-                self._reference_region_store.save(
+                reference_store.save(
                     path, self._reference_bundle_for_project_key(key, path)
                 )
             except (InstanceMaskImportError, ReferenceRegionError, OSError) as error:
@@ -2064,8 +2316,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             self._project_unresolved_reference_sidecars.discard(key)
             self._pending_unbound_reference_bundles.pop(key, None)
             self._project_unbound_reference_loads.add(key)
-            self._project_reference_sidecar_paths[key] = (
-                self._reference_region_store.path_for(path)
+            self._project_reference_sidecar_paths[key] = reference_store.path_for(
+                path
             )
             self._set_reference_region_load_status(
                 key,
@@ -2088,7 +2340,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 self._set_project_dirty()
                 return False
             try:
-                self._manual_seed_centre_store.save(
+                centre_store.save(
                     path,
                     state.centres_source_xy,
                     mode=state.mode,
@@ -2113,8 +2365,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             self._withheld_manual_centre_sidecars.discard(key)
             self._project_unresolved_manual_centre_sidecars.discard(key)
             self._project_manual_centre_loads.add(key)
-            self._project_manual_centre_sidecar_paths[key] = (
-                self._manual_seed_centre_store.path_for(path)
+            self._project_manual_centre_sidecar_paths[key] = centre_store.path_for(
+                path
             )
         return True
 
@@ -2163,11 +2415,53 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             self._project_tracking_enabled = True
             self._set_project_dirty()
             self._update_project_chrome()
-        if not self._retry_unsaved_project_sidecars():
+        destination = Path(destination).expanduser().resolve()
+        annotation_directory = project_annotation_directory(destination)
+        saved_reference_store, saved_centre_store = self._saved_annotation_stores(
+            destination
+        )
+        try:
+            has_annotations = bool(
+                self._unsaved_reference_sidecars
+                or self._unsaved_manual_centre_sidecars
+                or self._project_annotation_sources()
+            )
+        except ProjectAnalysisError as error:
+            QMessageBox.critical(self, "Could not save project", str(error))
+            self._set_project_dirty()
+            return False
+        if has_annotations and not annotation_directory.is_relative_to(
+            self._root.resolve()
+        ):
+            QMessageBox.critical(
+                self,
+                "Could not save project",
+                "Save the project inside the workspace folder:\n"
+                f"{self._root}\n\nIts annotations are kept in "
+                f"{annotation_directory.name} beside the project file, so that "
+                "folder must be inside the workspace too.",
+            )
+            self._set_project_dirty()
+            return False
+        if not self._retry_unsaved_project_sidecars(
+            stores=(saved_reference_store, saved_centre_store)
+        ):
             return False
         selected_image = self.image_view.image_path
         try:
-            image_specs = self._project_image_specs()
+            annotation_paths = run_persistence(
+                self,
+                partial(
+                    self._copy_project_annotations,
+                    self._project_annotation_sources(),
+                    {
+                        REFERENCE_REGIONS_SIDECAR: saved_reference_store,
+                        MANUAL_SEED_CENTRES_SIDECAR: saved_centre_store,
+                    },
+                ),
+                "Copying annotations into the project…",
+            )
+            image_specs = self._project_image_specs(annotation_paths)
             captured = run_persistence(self, partial(self._project_analysis_store.capture,
                 analysis_settings=analysis_settings_profile_from_graph(self.pipeline),
                 images=image_specs,
@@ -2259,6 +2553,29 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._project_tracking_enabled = True
         self._set_project_path(saved)
         self._remember_recent_project(saved)
+        # From now on edits go to this project's unsaved folder and annotations
+        # load only from the files the project records.
+        previous_directory = self._project_annotation_directory
+        self._install_annotation_stores(saved)
+        for (key, kind), path in annotation_paths.items():
+            if kind == REFERENCE_REGIONS_SIDECAR:
+                self._project_reference_sidecar_paths[key] = path
+                self._project_unbound_reference_loads.add(key)
+            else:
+                self._project_manual_centre_sidecar_paths[key] = path
+                self._project_manual_centre_loads.add(key)
+        self._project_manifest_sidecar_policy_active = True
+        for directory in {previous_directory, self._project_annotation_directory}:
+            if directory is None:
+                continue
+            try:
+                discard_unsaved_annotations(directory)
+            except OSError as error:
+                LOGGER.warning(
+                    "Could not delete saved annotation edits in %s: %s",
+                    directory,
+                    error,
+                )
         unresolved = bool(
             self._project_unresolved_image_records
             or self._project_unresolved_reference_sidecars
@@ -2374,7 +2691,10 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             return False
         if answer == QMessageBox.StandardButton.Save:
             return self._save_project()
-        return answer == QMessageBox.StandardButton.Discard
+        if answer == QMessageBox.StandardButton.Discard:
+            self._discard_unsaved_project_annotations()
+            return True
+        return False
 
     @staticmethod
     def _project_issue_summary(load_result) -> str:
@@ -2451,6 +2771,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             self._installing_project = False
             return False
         self._clear_project_session_state()
+        self._install_annotation_stores(source)
 
         ui_state = loaded.document.ui_state
         catalogue = {**self.pipeline.nodes, **self.pipeline.unused_nodes}
@@ -2573,6 +2894,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 self._withheld_manual_centre_sidecars.add(key)
                 if centres is not None:
                     self._project_unresolved_manual_centre_sidecars.add(key)
+        recovered = self._recover_unsaved_annotations(available_images)
+        legacy = self._legacy_annotation_count()
         for image in available_images:
             self._add_image(
                 image.path, open_now=False, mark_project_dirty=False
@@ -2590,7 +2913,9 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._project_tracking_enabled = True
         self._set_project_path(source)
         self._remember_recent_project(source)
-        self._set_project_dirty(bool(loaded.issues))
+        # Annotation files outside the project's folder are copied in by the
+        # next Save; restored edits are not saved yet either.
+        self._set_project_dirty(bool(loaded.issues or legacy or recovered))
         selected_overlay = (
             ui_state.selected_overlay
             if ui_state is not None and ui_state.selected_overlay
@@ -2625,6 +2950,17 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.statusBar().showMessage(
             f"Opened project {source} with {len(available_images)} available image(s)"
             + (f" and {len(loaded.issues)} file issue(s)." if loaded.issues else ".")
+            + (
+                f" Restored unsaved annotation edits for {recovered} image(s)."
+                if recovered
+                else ""
+            )
+            + (
+                f" {legacy} annotation file(s) are still in the shared workspace "
+                "folder; Save copies them into this project's folder."
+                if legacy
+                else ""
+            )
         )
         return True
 
@@ -2743,6 +3079,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._project_reference_sidecar_paths.clear()
         self._project_manual_centre_sidecar_paths.clear()
         self._project_manifest_sidecar_policy_active = False
+        self._install_annotation_stores(None)
         self._withheld_reference_sidecars.clear()
         self._withheld_manual_centre_sidecars.clear()
         self._project_unresolved_reference_sidecars.clear()
@@ -3154,6 +3491,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.save_project_as_action = QAction("Save project as…", self)
         self.save_project_as_action.setShortcut(QKeySequence.StandardKey.SaveAs)
         self.save_project_as_action.triggered.connect(self._save_project_as)
+        self._init_annotation_transfer()
 
         self.open_action = QAction("Open images…", self)
         self.open_action.setShortcut(QKeySequence.StandardKey.Open)
@@ -3415,6 +3753,9 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         transfer_menu = file_menu.addMenu("Import / export")
         transfer_menu.addAction(self.load_analysis_settings_action)
         transfer_menu.addAction(self.save_analysis_settings_action)
+        transfer_menu.addSeparator()
+        transfer_menu.addAction(self.export_annotations_action)
+        transfer_menu.addAction(self.import_annotations_action)
         transfer_menu.addSeparator()
         transfer_menu.addAction(self.save_viewport_action)
         snapshot_menu = file_menu.addMenu("Snapshots")
@@ -8556,6 +8897,9 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             return
         self.statusBar().showMessage(
             f"Saved applied reference regions for {path.name} to {destination}."
+            if self._project_annotation_directory is None
+            else f"Kept applied reference regions for {path.name} as an unsaved "
+            "project edit. Save the project to record them."
         )
 
     def _persist_applied_reference_regions(
@@ -14940,6 +15284,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 }:
                     event.ignore()
                     return
+                if answer == QMessageBox.StandardButton.Discard:
+                    self._discard_unsaved_project_annotations()
 
         self._pending_analysis_key = None
         self._pending_analysis_scope = None
