@@ -244,8 +244,8 @@ only after the workflow and resource envelope pass.
 
 ## Current verification baseline
 
-The full suite (`python -m tests --full`, 649 units in three isolated worker
-processes) passed on 23 October 2026 with the four expected skips. The four frozen
+The full suite (`python -m tests --full`, 665 units in three isolated worker
+processes) passed on 1 November 2026 with the three expected skips. The four frozen
 numerical acceptance baselines and the 223 frozen recipe profiles are unchanged.
 See [docs/TESTING.md](docs/TESTING.md). Engineering tests do not establish
 scientific accuracy.

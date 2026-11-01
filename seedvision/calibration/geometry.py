@@ -164,7 +164,9 @@ def detect_dish(
     """Locate the Petri dish using its circular rim and the pilot layout prior.
 
     The layout prior is intentionally weak: it is used to select among CUDA
-    candidates, not to invent a result when no circular rim is present.
+    candidates, not to invent a result when no circular rim is present. With a
+    ruler scale, a rim whose exterior edge falls outside the calibrated
+    diameter tolerance is replaced by the best closed rim of that size.
     """
 
     if image is None or image.ndim != 3 or image.shape[2] < 3:
@@ -198,10 +200,10 @@ def detect_dish(
         and settings.expected_outer_diameter_mm > 0.0
     ):
         # The photographed layout includes a ruler and a consistent exterior
-        # dish diameter. Use that calibrated physical size to prevent the
-        # generic circle bank from treating a crowded seed-mass boundary as
-        # glass, then require the outer member of the resolved pair to remain
-        # within the editable physical tolerance.
+        # dish diameter. Use that calibrated physical size to steer the
+        # generic circle bank away from a crowded seed-mass boundary, then
+        # require the outer member of the resolved pair to remain within the
+        # editable physical tolerance.
         calibrated_expected_outer_radius = (
             float(pixels_per_mm)
             * settings.expected_outer_diameter_mm
@@ -240,17 +242,19 @@ def detect_dish(
         )
     center_step = max(3.0, small_height / 115.0)
     radius_step = max(2.0, (maximum_radius - minimum_radius) / 36.0)
-    x_values = torch.arange(
+    x_range = (
         max(maximum_radius, expected_x - small_width * 0.16),
-        min(small_width - maximum_radius, expected_x + small_width * 0.16) + 0.1,
-        center_step,
-        device=context.device,
+        min(small_width - maximum_radius, expected_x + small_width * 0.16),
+    )
+    y_range = (
+        max(maximum_radius, expected_y - small_height * 0.16),
+        min(small_height - maximum_radius, expected_y + small_height * 0.16),
+    )
+    x_values = torch.arange(
+        x_range[0], x_range[1] + 0.1, center_step, device=context.device
     )
     y_values = torch.arange(
-        max(maximum_radius, expected_y - small_height * 0.16),
-        min(small_height - maximum_radius, expected_y + small_height * 0.16) + 0.1,
-        center_step,
-        device=context.device,
+        y_range[0], y_range[1] + 0.1, center_step, device=context.device
     )
     radius_values = torch.arange(
         minimum_radius,
@@ -260,13 +264,7 @@ def detect_dish(
     )
     if not x_values.numel() or not y_values.numel() or not radius_values.numel():
         raise CalibrationDetectionError("Petri-dish search geometry is empty.")
-    grid_x, grid_y, grid_radius = torch.meshgrid(
-        x_values, y_values, radius_values, indexing="ij"
-    )
-    candidates = torch.stack(
-        (grid_x.reshape(-1), grid_y.reshape(-1), grid_radius.reshape(-1)),
-        dim=1,
-    )
+    candidates = _circle_candidates(x_values, y_values, radius_values)
     angles = torch.arange(0, 192, device=context.device, dtype=torch.float32)
     angles *= 2.0 * torch.pi / 192.0
     cosine, sine = torch.cos(angles), torch.sin(angles)
@@ -275,20 +273,8 @@ def detect_dish(
     best_support = torch.tensor(0.0, device=context.device)
     for start in range(0, len(candidates), 2048):
         candidate = candidates[start : start + 2048]
-        radius = candidate[:, 2:3]
-        sample_x = candidate[:, 0:1] + radius * cosine[None]
-        sample_y = candidate[:, 1:2] + radius * sine[None]
-        sampled_edge = bilinear_sample(edge, sample_x, sample_y)
-        sampled_x = bilinear_sample(gradient_x, sample_x, sample_y)
-        sampled_y = bilinear_sample(gradient_y, sample_x, sample_y)
-        alignment = torch.abs(
-            sampled_x * cosine[None] + sampled_y * sine[None]
-        ) / torch.sqrt(sampled_x.square() + sampled_y.square() + 1e-6)
-        angular_support = sampled_edge * alignment.square()
-        sector_support = angular_support.reshape(-1, 12, 16).mean(dim=2)
-        support = (
-            angular_support.mean(dim=1) * 0.65
-            + torch.quantile(sector_support, 0.25, dim=1) * 0.35
+        support = _rim_support(
+            _angular_rim_support(edge, gradient_x, gradient_y, candidate, cosine, sine)
         )
         error = (
             torch.abs(candidate[:, 0] - expected_x) / small_width
@@ -301,9 +287,9 @@ def detect_dish(
             # it is not infallible: a partly occluded ruler or a perspective
             # correction can bias px/mm while the circular glass rim remains
             # exceptionally clear.  Keep the physical diameter as a soft
-            # tie-breaker instead of excluding every circle outside a narrow
-            # calibrated interval.  The full-circle sector statistic above is
-            # what prevents a crowded seed-mass edge from winning.
+            # tie-breaker here.  A crowded seed mass can still outscore faint
+            # glass, so a resolved rim outside the calibrated tolerance is
+            # replaced after the rim-pair stage below.
             calibrated_minimum_radius, calibrated_maximum_radius = (
                 calibrated_primary_radius_range
             )
@@ -320,11 +306,6 @@ def detect_dish(
     if best_candidate is None or float(best_support.item()) < minimum_support:
         raise CalibrationDetectionError("Petri-dish rim not found.")
     selected = best_candidate.detach().cpu().numpy()
-    error = float(
-        abs(selected[0] - expected_x) / small_width
-        + abs(selected[1] - expected_y) / small_height
-        + 1.5 * abs(selected[2] - expected_radius) / small_height
-    )
     inverse_scale = 1.0 / scale
     (
         lower_radius_small,
@@ -348,8 +329,8 @@ def detect_dish(
         )
     )
     # If the visual profile cannot resolve two coherent rims, retry with the
-    # calibrated outer interval as a fallback. A successfully detected visual
-    # pair is never moved merely to agree with a potentially biased ruler.
+    # calibrated outer interval as a fallback. A visual pair whose outer edge
+    # agrees with the ruler within the tolerance is kept as detected.
     if not rim_pair_detected and calibrated_outer_radius_range is not None:
         calibrated_pair = _detect_petri_rim_pair(
             edge,
@@ -372,6 +353,57 @@ def detect_dish(
                 upper_support,
                 rim_pair_detected,
             ) = calibrated_pair
+    if calibrated_outer_radius_range is not None and not (
+        calibrated_outer_radius_range[0]
+        <= float(upper_radius_small)
+        <= calibrated_outer_radius_range[1]
+    ):
+        # The selected circle was not the glass: a seed mass, or arcs of the
+        # colour card, outscored a faint rim. Search again among closed rims
+        # of the calibrated size. Keep the visual result when the best of
+        # them lacks the support required of a rim, or shows rim evidence on
+        # less than half its circumference: a ruler or vessel size that
+        # disagrees with the glass yields circles that merely graze it.
+        rim_candidate, rim_support, rim_coverage = _search_calibrated_rim(
+            edge,
+            gradient_x,
+            gradient_y,
+            cosine,
+            sine,
+            x_range,
+            y_range,
+            calibrated_outer_radius_range,
+            center_step,
+            (expected_x, expected_y),
+            minimum_support,
+        )
+        if float(rim_support.item()) >= minimum_support and rim_coverage >= 0.5:
+            best_support = rim_support
+            selected = rim_candidate.detach().cpu().numpy()
+            (
+                lower_radius_small,
+                upper_radius_small,
+                lower_support,
+                upper_support,
+                rim_pair_detected,
+            ) = _detect_petri_rim_pair(
+                edge,
+                gradient_x,
+                gradient_y,
+                float(selected[0]),
+                float(selected[1]),
+                float(selected[2]),
+                minimum_radius,
+                maximum_radius,
+                settings,
+                context,
+                outer_radius_range=calibrated_outer_radius_range,
+            )
+    error = float(
+        abs(selected[0] - expected_x) / small_width
+        + abs(selected[1] - expected_y) / small_height
+        + 1.5 * abs(selected[2] - expected_radius) / small_height
+    )
     ellipse_fit = _fit_mild_dish_ellipse(
         edge,
         float(selected[0]),
@@ -432,6 +464,139 @@ def detect_dish(
         ellipse_angle_degrees=float(ellipse_angle_degrees),
         ellipse_confidence=float(ellipse_confidence),
     )
+
+
+def _circle_candidates(x_values, y_values, radius_values):
+    """Every (centre x, centre y, radius) combination as one candidate row."""
+
+    import torch
+
+    grid_x, grid_y, grid_radius = torch.meshgrid(
+        x_values, y_values, radius_values, indexing="ij"
+    )
+    return torch.stack(
+        (grid_x.reshape(-1), grid_y.reshape(-1), grid_radius.reshape(-1)),
+        dim=1,
+    )
+
+
+def _angular_rim_support(edge, gradient_x, gradient_y, candidate, cosine, sine):
+    """Radially aligned edge strength at each angle around each candidate circle."""
+
+    import torch
+
+    radius = candidate[:, 2:3]
+    sample_x = candidate[:, 0:1] + radius * cosine[None]
+    sample_y = candidate[:, 1:2] + radius * sine[None]
+    sampled_edge = bilinear_sample(edge, sample_x, sample_y)
+    sampled_x = bilinear_sample(gradient_x, sample_x, sample_y)
+    sampled_y = bilinear_sample(gradient_y, sample_x, sample_y)
+    alignment = torch.abs(
+        sampled_x * cosine[None] + sampled_y * sine[None]
+    ) / torch.sqrt(sampled_x.square() + sampled_y.square() + 1e-6)
+    return sampled_edge * alignment.square()
+
+
+def _rim_support(angular_support):
+    """Mean rim support, tempered by the weaker quarter of twelve sectors."""
+
+    import torch
+
+    sector_support = angular_support.reshape(len(angular_support), 12, -1).mean(dim=2)
+    return (
+        angular_support.mean(dim=1) * 0.65
+        + torch.quantile(sector_support, 0.25, dim=1) * 0.35
+    )
+
+
+def _search_calibrated_rim(
+    edge,
+    gradient_x,
+    gradient_y,
+    cosine,
+    sine,
+    x_range: tuple[float, float],
+    y_range: tuple[float, float],
+    radius_range: tuple[float, float],
+    center_step: float,
+    expected_center: tuple[float, float],
+    minimum_support: float,
+):
+    """Find the closed dish rim among circles of the calibrated exterior size.
+
+    Faint glass can carry less edge support than circles that borrow strong
+    arcs from the seed mass or the colour card, but it shows all the way
+    round. Each circle's support is therefore weighted by the fraction of its
+    circumference with rim evidence. A thin rim is missed by circles a few
+    pixels off it, so centres are searched three times more finely than in
+    the generic bank.
+
+    Coverage saturates a few pixels either side of the rim, so it chooses the
+    dish but cannot centre it. The chosen circle is then moved, within about
+    3 mm, to the position of greatest unweighted support: a circle concentric
+    with the glass lies along all of its edges at once.
+    Returns the selected (x, y, radius) row, its unweighted support and the
+    fraction of its circumference with rim evidence.
+    """
+
+    import torch
+
+    device = edge.device
+    height, width = edge.shape[-2:]
+    expected_x, expected_y = expected_center
+    # A sector counts as covered once it reaches two thirds of the support
+    # required of a whole rim.
+    covered_support = minimum_support * 2.0 / 3.0
+
+    def best(candidates, *, choose_dish: bool):
+        best_score, best_candidate, best_support, best_coverage = None, None, None, None
+        for start in range(0, len(candidates), 2048):
+            candidate = candidates[start : start + 2048]
+            angular_support = _angular_rim_support(
+                edge, gradient_x, gradient_y, candidate, cosine, sine
+            )
+            support = _rim_support(angular_support)
+            sectors = angular_support.reshape(len(candidate), 24, -1).mean(dim=2)
+            coverage = (sectors >= covered_support).float().mean(dim=1)
+            score = support
+            if choose_dish:
+                # The layout prior is half the generic search's weight: with
+                # the size fixed it only separates the dish from partial
+                # circles, and must not overrule a dish placed away from the
+                # usual position.
+                error = (
+                    torch.abs(candidate[:, 0] - expected_x) / width
+                    + torch.abs(candidate[:, 1] - expected_y) / height
+                )
+                score = support * coverage - error * 0.11
+            index = torch.argmax(score)
+            if best_score is None or score[index] > best_score:
+                best_score = score[index]
+                best_candidate = candidate[index]
+                best_support = support[index]
+                best_coverage = coverage[index]
+        return best_candidate, best_support, best_coverage
+
+    step = max(1.0, center_step / 3.0)
+    radius_step = max(1.0, (radius_range[1] - radius_range[0]) / 12.0)
+    radius_values = torch.arange(
+        radius_range[0], radius_range[1] + 0.01, radius_step, device=device
+    )
+    dish, _, _ = best(
+        _circle_candidates(
+            torch.arange(x_range[0], x_range[1] + 0.1, step, device=device),
+            torch.arange(y_range[0], y_range[1] + 0.1, step, device=device),
+            radius_values,
+        ),
+        choose_dish=True,
+    )
+    reach = max(step, (radius_range[0] + radius_range[1]) * 0.5 * 0.06)
+    offsets = torch.arange(-reach, reach + 0.01, 1.0, device=device)
+    candidate, support, coverage = best(
+        _circle_candidates(dish[0] + offsets, dish[1] + offsets, radius_values),
+        choose_dish=False,
+    )
+    return candidate, support, float(coverage.item())
 
 
 def _fit_mild_dish_ellipse(

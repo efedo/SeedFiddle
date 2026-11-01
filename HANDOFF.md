@@ -57,7 +57,7 @@ work, families F01–F22). See [README.md](README.md) for the user view and
 .\.venv\Scripts\python.exe -m tests --full           # 665 units, ~13 min, 3 workers
 ```
 
-The last full run (31 October 2026) passed all 665 units with the 4 expected
+The last full run (1 November 2026) passed all 665 units with the 3 expected
 skips. Wall time over 15 minutes is reported as an advisory warning only; a run
 fails on test outcomes or an unaccounted unit, and a worker that writes no
 journal entry for `--stall-seconds` (default 900) is stopped. Details are in

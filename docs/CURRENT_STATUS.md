@@ -84,10 +84,9 @@ Operation-level detail: [feature register](plantcv_smpts_features.json) and
 
 ## Verification
 
-`python -m tests --full` runs 649 functional units in three isolated processes
-and passed on 23 October 2026 with four expected skips (an absent eleven-image
-pilot batch, an opt-in fill diagnostic, a case-sensitive-filesystem check and a
-symlink-privilege check). The four frozen numerical acceptance baselines and 223
+`python -m tests --full` runs 665 functional units in three isolated processes
+and passed on 1 November 2026 with three expected skips (an opt-in fill
+diagnostic, a case-sensitive-filesystem check and a symlink-privilege check). The four frozen numerical acceptance baselines and 223
 frozen recipe profiles are unchanged. See [TESTING.md](TESTING.md).
 
 ## Work needed for laboratory readiness

@@ -49,15 +49,15 @@ cannot produce a pass.
 - **Time budget is advisory.** The report records whether the run stayed under
   1,000 units and 900 seconds and prints a warning if not; it does not change the
   verdict.
-- **Skips.** Four are expected on Windows: the absent eleven-image pilot batch, the
-  opt-in fill-image diagnostic (`SEEDFIDDLE_RUN_FILL_IMAGE_DIAGNOSTIC=1`), a
-  case-sensitive filesystem check and a directory-symlink privilege check.
+- **Skips.** Three are expected on Windows: the opt-in fill-image diagnostic
+  (`SEEDFIDDLE_RUN_FILL_IMAGE_DIAGNOSTIC=1`), a case-sensitive filesystem check
+  and a directory-symlink privilege check.
 - Worker logs and journals go to `artifacts\test-runs\<run-id>\`; temporary
   directories to `artifacts\test-temp\`. Clear old ones with
   `scripts\prune_artifacts.py --older-than 7 --delete` (dry run without `--delete`).
 
-The last full run (23 October 2026) passed 649/649 units in about 10–14 minutes
-with the four expected skips.
+The last full run (1 November 2026) passed 665/665 units in about 12 minutes
+with the three expected skips.
 
 ## Prerequisites and frozen fixtures
 

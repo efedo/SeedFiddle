@@ -181,42 +181,114 @@ class ImageCalibrationTests(unittest.TestCase):
         self.assertLessEqual(dish.outer_radius_y, dish.radius)
         self.assertLess(top, bottom)
 
-    def check_test_pilot_batch_rims_match_the_calibrated_96_mm_outer_edges(self) -> None:
-        import cv2
-        from pathlib import Path
+    @staticmethod
+    def _faint_rim_scene(*, seed_mass: bool = True):
+        """A thin, low-contrast glass rim (r 200) around a dark seed mass (r 150)."""
 
-        from seedvision.calibration.geometry import detect_dish
+        import cv2
+        import numpy as np
+
+        image = np.full((800, 1200, 3), 235, dtype=np.uint8)
+        cv2.circle(image, (700, 330), 200, (165, 165, 165), 2, cv2.LINE_AA)
+        cv2.circle(image, (700, 330), 192, (205, 205, 205), 2, cv2.LINE_AA)
+        if seed_mass:
+            cv2.circle(image, (712, 322), 150, (60, 60, 60), -1, cv2.LINE_AA)
+        return image
+
+    def check_test_faint_rim_replaces_an_enclosed_seed_mass_with_a_ruler_scale(self) -> None:
+        from unittest import mock
+
+        from seedvision.calibration import geometry
+
+        with mock.patch.object(
+            geometry, "_search_calibrated_rim", wraps=geometry._search_calibrated_rim
+        ) as search:
+            dish = geometry.detect_dish(self._faint_rim_scene(), pixels_per_mm=200 / 48.0)
+        # The generic bank prefers the much stronger seed-mass edge; only the
+        # calibrated search recovers the glass.
+        search.assert_called_once()
+        self.assertLessEqual(abs(dish.center_x - 700), 2)
+        self.assertLessEqual(abs(dish.center_y - 330), 2)
+        self.assertGreaterEqual(dish.outer_radius, 198)
+        self.assertLessEqual(dish.outer_radius, 204)
+        self.assertLess(dish.inner_radius, dish.outer_radius)
+        self.assertTrue(dish.rim_pair_detected)
+
+    def check_test_rim_agreeing_with_the_ruler_or_contradicting_it_clearly_is_kept(self) -> None:
+        from unittest import mock
+
+        from seedvision.calibration import geometry
+
+        image = self._faint_rim_scene(seed_mass=False)
+        uncalibrated = geometry.detect_dish(image)
+        for pixels_per_mm, searches in ((200 / 48.0, 0), (230 / 48.0, 1)):
+            with self.subTest(pixels_per_mm=pixels_per_mm), mock.patch.object(
+                geometry, "_search_calibrated_rim", wraps=geometry._search_calibrated_rim
+            ) as search:
+                dish = geometry.detect_dish(image, pixels_per_mm=pixels_per_mm)
+                # A 230 px ruler radius disagrees with the clear 200 px glass;
+                # circles of that size only graze it, so the glass is kept.
+                self.assertEqual(search.call_count, searches)
+                self.assertEqual(
+                    (dish.center_x, dish.center_y, dish.outer_radius),
+                    (uncalibrated.center_x, uncalibrated.center_y, uncalibrated.outer_radius),
+                )
+
+    def check_test_fixture_rims_match_the_calibrated_96_mm_dish(self) -> None:
+        """Fixtures where a seed mass or colour-card arcs outscored faint glass.
+
+        Centres were read on a millimetre grid (about 1 mm accuracy).
+        IMG_9632c is a control whose rim the generic search already resolves.
+        """
+
+        import cv2
+        import numpy as np
+        from pathlib import Path
+        from unittest import mock
+
+        from seedvision.calibration import geometry
         from seedvision.calibration.image import calibrate_image
         from seedvision.cuda import CudaContext
 
-        root = Path(__file__).resolve().parents[1]
-        paths = sorted((root / "images").glob("*.JPG"))
-        if not all(path.exists() for path in paths):
+        reviewed_centres = {
+            "IMG_9403.JPG": (4100, 2262),
+            "IMG_9636c.JPG": (1934, 842),
+            "IMG_9641c.JPG": (1952, 871),
+            "IMG_9668c.JPG": (1939, 860),
+            "IMG_9719.JPG": (3787, 1669),
+            "IMG_9632c.JPG": None,
+        }
+        root = Path(__file__).resolve().parents[1] / "images"
+        if not all((root / name).exists() for name in reviewed_centres):
             self.skipTest("Petri-rim regression fixtures are not present")
-        if len(paths) != 11:
-            self.skipTest("The complete eleven-image pilot batch is not present")
         context = CudaContext.resolve()
-        for path in paths:
-            image = cv2.imread(str(path), cv2.IMREAD_COLOR)
-            calibration = calibrate_image(image, cuda_context=context)
-            dish = detect_dish(
-                calibration.corrected_bgr,
-                cuda_context=context,
-                image_tensor=calibration.gpu_corrected_bgr,
-                pixels_per_mm=calibration.pixels_per_mm,
+        for name, centre in reviewed_centres.items():
+            calibration = calibrate_image(
+                cv2.imread(str(root / name), cv2.IMREAD_COLOR), cuda_context=context
             )
-            with self.subTest(path=path.name):
-                self.assertIsNotNone(calibration.pixels_per_mm)
-                inner_radius_mm = dish.inner_radius / calibration.pixels_per_mm
-                outer_radius_mm = dish.outer_radius / calibration.pixels_per_mm
-                self.assertGreaterEqual(inner_radius_mm, 43.5)
-                self.assertLessEqual(inner_radius_mm, 47.0)
-                self.assertGreaterEqual(outer_radius_mm, 47.0)
-                self.assertLessEqual(outer_radius_mm, 49.2)
+            with self.subTest(path=name), mock.patch.object(
+                geometry, "_search_calibrated_rim", wraps=geometry._search_calibrated_rim
+            ) as search:
+                dish = geometry.detect_dish(
+                    calibration.corrected_bgr,
+                    cuda_context=context,
+                    image_tensor=calibration.gpu_corrected_bgr,
+                    pixels_per_mm=calibration.pixels_per_mm,
+                )
+                pixels_per_mm = calibration.pixels_per_mm
+                self.assertIsNotNone(pixels_per_mm)
+                self.assertEqual(search.call_count, 0 if centre is None else 1)
+                exterior_diameter_mm = sum(dish.outer_axes) / pixels_per_mm
+                self.assertGreaterEqual(exterior_diameter_mm, 92.5)
+                self.assertLessEqual(exterior_diameter_mm, 99.5)
+                self.assertLess(dish.inner_radius, dish.outer_radius)
                 self.assertTrue(dish.rim_pair_detected)
+                if centre is not None:
+                    offset = np.hypot(dish.center_x - centre[0], dish.center_y - centre[1])
+                    self.assertLessEqual(offset / pixels_per_mm, 2.5)
 
-    def test_pilot_batch_rims_match_the_calibrated_96_mm_outer_edges(self):
-        self.scenario(self.check_test_pilot_batch_rims_match_the_calibrated_96_mm_outer_edges, labelled=False)
+    def test_fixture_rims_match_the_calibrated_96_mm_dish(self):
+        self.scenario(self.check_test_fixture_rims_match_the_calibrated_96_mm_dish, labelled=False)
 
     def test_validation_and_recovery(self):
         """2 related ImageCalibrationTests scenarios, each with private fixture state."""
@@ -224,9 +296,11 @@ class ImageCalibrationTests(unittest.TestCase):
         self.scenario(self.check_test_missing_references_produce_a_safe_uncalibrated_result)
 
     def test_workflow_lifecycle(self):
-        """2 related ImageCalibrationTests scenarios, each with private fixture state."""
+        """4 related ImageCalibrationTests scenarios, each with private fixture state."""
         self.scenario(self.check_test_swatch_grid_snaps_to_shared_printed_edges)
         self.scenario(self.check_test_mild_elliptical_rim_is_retained_with_conservative_bounds)
+        self.scenario(self.check_test_faint_rim_replaces_an_enclosed_seed_mass_with_a_ruler_scale)
+        self.scenario(self.check_test_rim_agreeing_with_the_ruler_or_contradicting_it_clearly_is_kept)
 
 
 if __name__ == "__main__":

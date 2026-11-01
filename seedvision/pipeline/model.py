@@ -1151,7 +1151,7 @@ def build_default_pipeline() -> PipelineGraph:
         ParameterSpec("expected_center_y_fraction", "Expected centre Y", "float", 0.05, 0.95, 0.01, "Weak selection prior as a fraction of image height."),
         ParameterSpec("expected_radius_fraction", "Fallback radius / height", "float", 0.05, 0.48, 0.005, "Fallback selection prior used only when a calibrated ruler scale or physical dish diameter is unavailable."),
         ParameterSpec("expected_outer_diameter_mm", "Expected outer diameter", "float", 0.0, 1000.0, 1.0, "Expected physical diameter of the exterior Petri-dish edge. Set to zero to use only the image-relative fallback radius."),
-        ParameterSpec("calibrated_outer_radius_tolerance_fraction", "Outer diameter tolerance", "float", 0.0, 0.25, 0.005, "Allowed fractional deviation of the exterior glass edge from the ruler-calibrated expected radius."),
+        ParameterSpec("calibrated_outer_radius_tolerance_fraction", "Outer diameter tolerance", "float", 0.0, 0.25, 0.005, "Allowed fractional deviation of the exterior glass edge from the ruler-calibrated expected radius. A detected edge outside it triggers a search for a closed rim of the calibrated size."),
         ParameterSpec("rim_pair_search_fraction", "Dual-rim search / radius", "float", 0.03, 0.30, 0.005, "Radial range searched around the selected Petri-dish rim for the second concentric glass edge."),
         ParameterSpec("rim_pair_min_separation_fraction", "Minimum rim separation", "float", 0.005, 0.29, 0.005, "Smallest accepted separation between lower and upper glass edges, relative to dish radius."),
         ParameterSpec("rim_pair_max_separation_fraction", "Maximum rim separation", "float", 0.01, 0.30, 0.005, "Largest accepted separation between lower and upper glass edges, relative to dish radius."),
@@ -1798,11 +1798,16 @@ def build_default_pipeline() -> PipelineGraph:
                 "The corrected image is reduced to the configured maximum dimension, "
                 "converted to grayscale, and Gaussian-blurred on the tensor device. "
                 "A CUDA circular bank scores radial-gradient support across the configured radius interval. "
-                "When ruler scale is available, the editable physical outer-diameter prior excludes "
-                "smaller circular seed-mass boundaries; otherwise the image-relative radius prior is used. "
+                "When ruler scale is available, the physical outer diameter weakly favours circles of "
+                "that size; otherwise the image-relative radius prior is used. "
                 "The selected primary rim then seeds a dense "
                 "concentric radial-profile search that resolves the lower/inner and "
                 "upper/outer glass edges. "
+                "If that outer edge lies outside the outer-diameter tolerance, because a crowded seed "
+                "mass or colour-card arcs outscored faint glass, the rim is searched again among "
+                "circles of the calibrated size, each weighted by how much of its circumference shows "
+                "rim evidence. The visual result is kept when no such circle shows rim evidence on at "
+                "least half its circumference. "
                 "Both edges are retained for layout review; the outer edge defines the complete "
                 "vessel extent and is the radius supplied to every downstream analysis node. "
                 "A bounded ellipse refinement retains mild camera-view ovality and uses the "
