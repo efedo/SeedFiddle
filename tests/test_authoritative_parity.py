@@ -1,4 +1,5 @@
 """Real native CUDA analysis, desktop/batch identity and exact review portability."""
+from tests.review_fixtures import dispose_window, open_workspace_images
 from dataclasses import replace
 from hashlib import sha256
 import inspect
@@ -63,8 +64,8 @@ class AuthoritativeParityTests(unittest.TestCase):
         self.reference_transform = np.array([[1., 0., 2.], [0., 1., 1.], [0., 0., 1.]])
         self.save_project()
         from seedvision.ui.main_window import MainWindow
-        self.window = MainWindow(self.root)
-        self.addCleanup(self.window.close)
+        self.window = open_workspace_images(MainWindow(self.root))
+        self.addCleanup(dispose_window, self.window)
         self.key = str(self.source.resolve()).casefold()
         self.window._current_image_key = lambda: self.key
         self.install_profile()

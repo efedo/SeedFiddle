@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from tests.review_fixtures import open_workspace_images
 from tests.functional_units import functional_units
 
 from tests.review_fixtures import dispose_window
@@ -38,7 +39,7 @@ class InstanceMaskImportUiTests(unittest.TestCase):
         image = QImage(80, 60, QImage.Format.Format_RGB888)
         image.fill(QColor("#8b927f"))
         self.assertTrue(image.save(str(self.image_path)))
-        self.window = MainWindow(self.root)
+        self.window = open_workspace_images(MainWindow(self.root))
         self.addCleanup(dispose_window, self.window)
         self.window.image_view.set_overlay_mode("none")
         self.result = SimpleNamespace(

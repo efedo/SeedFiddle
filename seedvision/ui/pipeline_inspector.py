@@ -1006,6 +1006,14 @@ class PipelineInspector(QWidget):
         self.status_label = QLabel("", self)
         self.status_label.setWordWrap(True)
         self.status_label.setStyleSheet(f"color: {self._secondary_colour};")
+        self.lock_notice = QLabel(
+            "Locked: settings are read-only. Clear Lock edits in the pipeline "
+            "toolbar to change them.", self
+        )
+        self.lock_notice.setObjectName("pipelineLockNotice")
+        self.lock_notice.setWordWrap(True)
+        self.lock_notice.setStyleSheet(f"color: {self._secondary_colour}; font-style: italic;")
+        self.lock_notice.setVisible(False)
         self.project_info_container = QWidget(self)
         project_info_layout = QVBoxLayout(self.project_info_container)
         project_info_layout.setContentsMargins(0, 5, 0, 5)
@@ -1371,6 +1379,7 @@ class PipelineInspector(QWidget):
         parameters_header_layout.addWidget(self.reset_parameters_button)
         self.parameters_header.setVisible(False)
         layout.addWidget(self.title_label)
+        layout.addWidget(self.lock_notice)
         layout.addWidget(self.overlay_combo)
         layout.addWidget(self.description_label)
         layout.addWidget(self.method_heading)
@@ -1617,6 +1626,7 @@ class PipelineInspector(QWidget):
             self.set_node(self._node)
 
     def _apply_editing_lock(self) -> None:
+        self.lock_notice.setVisible(self._editing_locked and not self.read_only)
         if not self._editing_locked:
             return
         self.enabled_checkbox.setEnabled(False)

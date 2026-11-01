@@ -8,9 +8,9 @@ A project ``name.seedfiddle-project.json`` keeps its per-image annotations in
 - ``unsaved/`` holds edits made since that Save, so a crash does not lose them.
   Save copies them into the folders above; Discard deletes them.
 
-A loose workspace and an untitled project have no such folder. Their edits go
-to the workspace's shared ``projects/`` folders, and the first Save copies them
-into the new project's folder.
+An untitled project has no such folder. Its edits go to the workspace's shared
+``projects/`` folders, and the first Save copies them into the new project's
+folder.
 """
 
 from __future__ import annotations

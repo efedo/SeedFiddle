@@ -140,9 +140,7 @@ class ImageListControlsTests(unittest.TestCase):
                      patch.object(window, "_retry_unsaved_project_sidecars", return_value=False):
                     self.assertFalse(window._remove_image(second))
                 controller = window.pipeline_workflow
-                controller.selector.setCurrentIndex(next(
-                    index for index in range(1, controller.selector.count())
-                    if controller.selector.itemData(index).recipe_id == "plantcv_seed_binary_working"))
+                controller.select_template("plantcv_seed_binary_working")
                 controller.result = SimpleNamespace(node=unittest.mock.Mock(side_effect=StopIteration))
                 controller.facts.setPlainText("Old image result")
                 with patch.object(QMessageBox, "warning", return_value=QMessageBox.StandardButton.Discard):

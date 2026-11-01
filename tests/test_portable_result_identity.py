@@ -1,5 +1,6 @@
 """Actual relocated native results, artifact facts and private review history."""
 
+from tests.review_fixtures import dispose_window, open_workspace_images
 from tests.functional_units import functional_units
 from copy import deepcopy
 from dataclasses import replace
@@ -190,7 +191,7 @@ class PortableAuthoritativeTests(unittest.TestCase):
         return Path(temporary.name)
 
     def relocate(self, base, snapshot):
-        self.window.close()
+        dispose_window(self.window)
         original = self.root.resolve()
         self.assertTrue(original.is_relative_to(base.parent.resolve()))
         self.assertNotEqual(original, base.resolve())
@@ -204,8 +205,8 @@ class PortableAuthoritativeTests(unittest.TestCase):
         self.source = loaded.images[0].path
         self.key = str(self.source.resolve()).casefold()
         from seedvision.ui.main_window import MainWindow
-        self.window = MainWindow(self.root)
-        self.addCleanup(self.window.close)
+        self.window = open_workspace_images(MainWindow(self.root))
+        self.addCleanup(dispose_window, self.window)
         self.window._current_image_key = lambda: self.key
         self.install_profile()
 

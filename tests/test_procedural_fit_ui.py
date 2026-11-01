@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from tests.review_fixtures import open_workspace_images
 import os
 import unittest
 from dataclasses import replace
@@ -32,7 +33,7 @@ class ProceduralFitMainWindowTests(unittest.TestCase):
             "seedvision.ui.main_window.ReferenceRegionStore.load_if_present",
             return_value=None,
         ):
-            window = MainWindow(ROOT)
+            window = open_workspace_images(MainWindow(ROOT))
         # Exercise completion behavior in an explicitly editable pipeline.
         window.pipeline_documents.set_frozen(False)
         def dispose() -> None:
@@ -51,8 +52,6 @@ class ProceduralFitMainWindowTests(unittest.TestCase):
         window._draft_instance_annotations.pop(key, None)
         window._instance_annotations_dirty.discard(key)
         window._instance_continuity_cache.pop(key, None)
-        window._project_tracking_enabled = True
-        window._update_project_chrome()
         return window, key
 
     @staticmethod

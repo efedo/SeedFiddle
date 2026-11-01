@@ -65,10 +65,15 @@ of this guide. Splitter sizes and the annotation panel position are remembered.
 
 ## Projects and images
 
-- **File → New project** (`Ctrl+N`), **Open project…** (`Ctrl+Shift+O`),
-  **Open recent project**, **Save project** (`Ctrl+S`) and **Save project as…**.
-- **File → Open images…** (`Ctrl+O`) adds images. Set the verified species in the
-  **Image** tab. Species starts *Unknown / unassigned* and is never inferred.
+- Seed Fiddle always works in a project. It starts in a new, empty, untitled
+  project; images are added to the open project and saved with it.
+- **File → New project** (`Ctrl+N`), **Open project…** (`Ctrl+Shift+O`), **Save
+  project** (`Ctrl+S`) and **Save project as…**. The eight most recent projects are
+  listed by number near the bottom of the **File** menu; choose one to open it
+  again. Same-named projects show their folder, and hovering shows the full path.
+- **File → Open images…** (`Ctrl+O`) adds images to the project. Set the verified
+  species in the **Image** tab. Species starts *Unknown / unassigned* and is never
+  inferred.
 - For an immutable revision use **File → Snapshots → Create snapshot…**: it copies
   and verifies images, annotations, manual centres, enabled model checkpoints and
   the pinned species library, and writes its completion index last. **Create
@@ -100,13 +105,12 @@ another. Annotation edits count as unsaved project changes: **Save project** cop
 them into the project's folder, and discarding the changes deletes them. If Seed
 Fiddle closes unexpectedly, opening the project offers to restore them.
 
-Without a saved project (the loose workspace at startup, or a new untitled
-project) annotation edits are written as you make them to the workspace's shared
-`projects/manual-seed-centres/` and `projects/reference-regions/` folders, and the
-first **Save project** copies them into the new project's folder. A project saved
-by an earlier version still points at those shared folders. It opens marked as
-modified, and the next save copies its files into its own folder. The shared files
-are left in place.
+Until a new project is first saved, annotation edits are written as you make them
+to the workspace's shared `projects/manual-seed-centres/` and
+`projects/reference-regions/` folders, and the first **Save project** copies them
+into the new project's folder. A project saved by an earlier version still points
+at those shared folders. It opens marked as modified, and the next save copies its
+files into its own folder. The shared files are left in place.
 
 A project with annotations must be saved inside the workspace folder, because its
 annotation folder sits beside the project file. Move the project file, its
@@ -130,16 +134,24 @@ Images list choose the same current image.
 
 ### Choosing and locking
 
-Choose a pipeline from the selector at the top of the Pipeline view: **Default seed
-analysis**, the PlantCV colour-card correction, the three PlantCV seed workflows
-(fixed binary, adaptive mean, Otsu) and the SMPTS paper reconstruction. Thirteen
-more are under **… → Other pipelines** (extended thresholds, Naive Bayes, K-means,
-calibrated and recovery variants).
+Choose a pipeline from the **Pipeline** list at the top of the Pipeline view. It
+holds every pipeline under headings: **Seed Fiddle** (Default seed analysis,
+experimental core recovery), **Seed analysis** (the PlantCV seed workflows, the
+calibrated seed analyses and the SMPTS paper reconstruction), **Thresholds and
+classifiers** (extended thresholds, Naive Bayes, K-means) and **Colour
+correction**. Working copies saved in the project are listed under **Saved in this
+project**.
 
-A loaded pipeline is **Locked**: running, backend choice, layout and inspection
-work, but parameters, wiring and bypass state cannot change. Clear **Lock** to edit.
-Factory pipelines are never overwritten; re-selecting one restores its original
-values.
+Choosing a factory pipeline loads a fresh copy and arranges its nodes
+automatically. Factory pipelines are never overwritten; re-selecting one restores
+its original values and layout. A project or pipeline file opens with the layout it
+was saved with. Returning to Default seed analysis keeps the project's own graph,
+including its layout.
+
+A loaded pipeline is locked. **Lock edits** (beside the list) is ticked: running,
+inspecting outputs, arranging nodes and choosing backends work, but parameters,
+wiring, bypass state and added nodes cannot change, and the **Node** tab says so.
+Clear **Lock edits** to edit.
 
 ### Running
 
@@ -149,7 +161,8 @@ values.
   nodes only. On a disabled node it reads **Enable and run to node** and enables the
   node first; if the node cannot be enabled (a missing optional package or
   checkpoint, an unconnected input or a disabled upstream node) a message says why.
-  While **Lock** is set it reads **Run to node (clear Lock to enable it)**.
+  While **Lock edits** is set it reads **Run to node (clear Lock edits to enable
+  it)**.
 - A disabled node's status says why it is off: its own reason, *requires* a named
   disabled upstream node, *disabled by disconnected input*, or a missing optional
   package.
@@ -182,14 +195,15 @@ On the canvas:
   show.
 - With the pipeline unlocked, **Add node** inserts a catalogue node. **… → Remove
   selected added node** removes an added node and its private inputs.
-- **Tools** offers **Auto arrange**, **Move to unused**, **Bundle cables** and **Route
-  around nodes**; **Fit**, **100%** and **−** control the canvas zoom.
+- **Auto arrange** lays the nodes out in dependency columns. **Move to unused**,
+  **Bundle cables** and **Route around nodes** sit beside it, or under **Tools** when
+  the pane is narrow; **Fit**, **100%** and **−** control the canvas zoom.
 - `Ctrl+K` finds a node by name and frames it with its neighbours.
 
 ### Pipeline-specific inputs
 
 - **Foreground region.** Working binary, adaptive-mean and Otsu threshold nodes and
-  the SMPTS intersection node accept a rectangular region. Clear **Lock**, then use
+  the SMPTS intersection node accept a rectangular region. Clear **Lock edits**, then use
   **Select foreground region…** to draw it, or enter it in the node's settings as
   `[left, top, right, bottom]` in that node's input pixels (right and bottom
   excluded); `null` means the whole frame. Foreground outside the rectangle is set
@@ -209,7 +223,7 @@ On the canvas:
   (parent xy = local xy + crop origin). The **Chip size calibration** stage converts
   sizes to card units when a chip size is set; otherwise sizes stay in pixels.
 
-### Saving pipelines and layouts
+### Saving pipelines
 
 The Pipeline header has **Save**, **Export** and the **…** menu:
 
@@ -217,8 +231,8 @@ The Pipeline header has **Save**, **Export** and the **…** menu:
   enabled state, backend choices, layout and referenced assets, but no pixels or
   results). It needs a name different from any factory. **… → Load pipeline…**
   opens one; referenced assets that are missing are reported.
-- **Load layout…** / **Save layout as…** change node positions only and keep cached
-  results.
+- Node positions are saved with the project and with each pipeline file, and are
+  restored when either is opened. Moving nodes never invalidates cached results.
 - **Export run…** writes the completed run (including partial runs) to a new folder
   with `native-results.json`, output checkpoints and any selected model bytes.
 - **Recorded run QC…** reviews and acknowledges recorded run outcomes.
@@ -347,7 +361,7 @@ count.
 
 ## Optimisation
 
-Save the project, apply the intended references and clear **Lock**. Use
+Save the project, apply the intended references and clear **Lock edits**. Use
 **Analysis → Optimise → Optimise all pipeline nodes…** to search every eligible
 node in pipeline order, or a node's own **Optimise this node…** button to search
 only that node. A node stops early once a full pass improves nothing at the
@@ -441,7 +455,7 @@ commands when `opencv-python-headless` is installed beside `opencv-python`.
 
 To run it:
 
-1. Clear **Lock**, select the node and tick **Enabled**, or right-click it and
+1. Clear **Lock edits**, select the node and tick **Enabled**, or right-click it and
    choose **Enable and run to node**. If the package is missing, a message says so
    and the node stays disabled; its status then reads *needs the optional cellpose
    package*.

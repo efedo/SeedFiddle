@@ -37,9 +37,7 @@ class PipelineWorkflowUiTests(CatalogueTestCase):
         self.directory.cleanup()
 
     def select_binary(self):
-        index = next(i for i in range(1, self.controller.selector.count())
-            if self.controller.selector.itemData(i).recipe_id == 'plantcv_seed_binary_working')
-        self.controller.selector.setCurrentIndex(index)
+        self.controller.select_template('plantcv_seed_binary_working')
         self.assertTrue(self.controller.active)
         self.window.pipeline_documents.set_frozen(False)
         return self.controller.workflow
@@ -135,7 +133,7 @@ class PipelineWorkflowUiTests(CatalogueTestCase):
         self.assertTrue(self.controller.facts.isHidden())
         self.assertEqual(self.controller.facts.toPlainText(), '')
         self.seed_old_display()
-        self.controller.selector.setCurrentIndex(0)
+        self.controller.select_template(None)
         self.assertIs(self.window.pipeline_canvas.graph, default)
         self.assertFalse(self.controller.active)
         self.assertTrue(self.window.pipeline_inspector._unified_optimization)
@@ -162,13 +160,31 @@ class PipelineWorkflowUiTests(CatalogueTestCase):
         self.assertFalse(hasattr(self.controller, 'stop_button'))
         actions = self.window.workflow_toolbar.actions()
         self.assertIs(actions[actions.index(self.window.analyze_action)+1], self.window.stop_action)
-        identifiers = {self.controller.selector.itemData(index).recipe_id
-            for index in range(1, self.controller.selector.count())}
-        self.assertEqual(identifiers, {'plantcv_color_card_correct_color', 'plantcv_seed_binary_working',
-            'plantcv_seed_mean_working', 'plantcv_seed_otsu_working', 'smpts_paper_fixed_mean'})
+        # One grouped list holds every pipeline; the … menu has no pipeline submenu.
+        from seedvision.ui.pipeline_workflow import ENTRY_KIND
+        selector = self.controller.selector
+        templates = [index for index in range(selector.count()) if selector.itemData(index, ENTRY_KIND) == 'template']
+        self.assertEqual({getattr(selector.itemData(index), 'recipe_id', None) for index in templates},
+                         {None} | {recipe.recipe_id for recipe in self.controller._all_templates})
+        headings = [selector.itemText(index) for index in range(selector.count())
+                    if selector.itemData(index, ENTRY_KIND) == 'heading']
+        self.assertEqual(headings, ['SEED FIDDLE', 'SEED ANALYSIS', 'THRESHOLDS AND CLASSIFIERS', 'COLOUR CORRECTION'])
+        self.assertFalse(any(selector.model().item(index).isEnabled() for index in range(selector.count())
+                             if selector.itemData(index, ENTRY_KIND) == 'heading'))
+        self.assertFalse(any(action.menu() for action in self.controller.more_button.menu().actions()))
+        self.assertEqual(selector.currentIndex(), self.controller.index_of(None))
         self.window.resize(1050, 650)
         self.application.processEvents()
         self.assertGreaterEqual(self.controller.strip.width(), self.controller.strip.sizeHint().width())
+        # The lock keeps its full label until every optional strip widget is hidden.
+        lock = self.window.pipeline_documents.freeze_button
+        if lock.text() == 'Lock':
+            self.assertTrue(self.controller.save_button.isHidden())
+        self.window.resize(1440, 900)
+        self.application.processEvents()
+        self.assertEqual(lock.text(), 'Lock edits')
+        self.window.resize(1050, 650)
+        self.application.processEvents()
         self.assertEqual(self.controller.export_menu_action.isVisible(), self.controller.export_button.isHidden())
         self.assertTrue(self.window.pipeline_canvas.add_node_button.isVisible())
         self.assertLessEqual(self.controller.strip.geometry().right(), self.window.pipeline_canvas.control_bar.width())
@@ -349,20 +365,36 @@ class PipelineWorkflowUiTests(CatalogueTestCase):
         self.assertIs(self.window.pipeline_canvas.graph, self.window.pipeline)
         self.assertFalse(self.controller.active)
         self.assertEqual(self.controller._copies, {})
-        self.assertEqual(self.controller.selector.currentIndex(), 0)
+        self.assertEqual(self.controller.selector.currentIndex(), self.controller.index_of(None))
         self.assert_display_cleared()
 
     def check_test_install_reopened_workflow_updates_selector(self):
         from seedvision.pipeline.workflows import create_workflow
-        recipe = self.controller.selector.itemData(3)
-        self.controller.install(create_workflow(recipe))
-        self.assertEqual(self.controller.selector.currentIndex(), 3)
+        index = self.controller.index_of('plantcv_seed_mean_working')
+        self.controller.install(create_workflow(self.controller.selector.itemData(index)))
+        self.assertEqual(self.controller.selector.currentIndex(), index)
         self.assertIs(self.window.pipeline_canvas.graph, self.controller.graph)
 
+    def check_test_templates_are_arranged_when_chosen_and_reloads_keep_their_layout(self):
+        canvas = self.window.pipeline_canvas
+        # The startup project's Default seed analysis is laid out in columns.
+        self.assertEqual({round(node.x) % 270 for node in self.window.pipeline.nodes.values()}, {0})
+        with patch.object(canvas, 'auto_arrange', wraps=canvas.auto_arrange) as arrange:
+            workflow = self.select_binary()
+            arrange.assert_called_once_with()
+            self.assertEqual({round(node.x) % 270 for node in self.controller.graph.nodes.values()}, {0})
+            identifier = workflow.recipe.stages[-1].stage_id
+            canvas.node_items[identifier].setPos(1234.0, -567.0)
+            arrange.reset_mock()
+            # Installing a working copy, as Open project and Load pipeline do, keeps its layout.
+            self.controller.install(self.controller.sync_graph())
+            arrange.assert_not_called()
+        node = self.controller.graph.node(identifier)
+        self.assertEqual((node.x, node.y), (1234.0, -567.0))
+        self.assertTrue(canvas.auto_arrange_button.isVisibleTo(canvas.control_bar))
+
     def check_test_correction_inputs_are_contextual_and_source_is_current_image(self):
-        index = next(i for i in range(1, self.controller.selector.count())
-            if self.controller.selector.itemData(i).recipe_id == 'plantcv_color_card_correct_color')
-        self.controller.selector.setCurrentIndex(index)
+        self.controller.select_template('plantcv_color_card_correct_color')
         self.window.pipeline_documents.set_frozen(False)
         from PySide6.QtWidgets import QPushButton
         texts = {w.text() for w in self.controller.node_actions.findChildren(QPushButton)}
@@ -401,7 +433,7 @@ class PipelineWorkflowUiTests(CatalogueTestCase):
         self.assertTrue(destination.is_file())
         import json
         self.assertEqual(json.loads(destination.read_text())['node_instances'][0].get('selected_node'), entry.target_node)
-        self.controller.selector.setCurrentIndex(0)
+        self.controller.select_template(None)
         with patch.object(self.window, '_confirm_project_replacement', return_value=True), patch.object(QMessageBox, 'warning'), patch.object(QMessageBox, 'critical') as critical:
             self.assertTrue(self.window._open_project(destination))
             critical.assert_not_called()
@@ -428,8 +460,7 @@ class PipelineWorkflowUiTests(CatalogueTestCase):
         editor.deleteLater()
 
     def check_test_range_colorspace_change_adapts_bounds_field_count(self):
-        recipe = next(recipe for recipe in self.controller._all_templates if recipe.recipe_id == 'plantcv_threshold_custom_range')
-        self.controller.load_recipe(recipe)
+        self.controller.select_template('plantcv_threshold_custom_range')
         self.window.pipeline_documents.set_frozen(False)
         stage = next(s for s in self.controller.workflow.recipe.stages if s.operation_id == 'threshold.custom_range')
         self.controller.parameter_changed(stage.stage_id, 'channel', 'CMYK')
@@ -455,7 +486,7 @@ class PipelineWorkflowUiTests(CatalogueTestCase):
     def test_workflow_lifecycle(self):
         self.scenario(self.check_test_shared_project_nodes_and_two_way_image_selection)
         self.scenario(self.check_test_shared_workspace_controls_and_preparation_failure)
-        """15 related PipelineWorkflowUiTests scenarios, each with private fixture state."""
+        """16 related PipelineWorkflowUiTests scenarios, each with private fixture state."""
         self.scenario(self.check_test_actual_selector_swaps_canvas_and_restores_default_graph)
         self.scenario(self.check_test_startup_pipeline_toolbar_and_compact_workflow_choices)
         self.scenario(self.check_test_typed_controls_and_choice_edit_reach_engine_contract)
@@ -465,6 +496,7 @@ class PipelineWorkflowUiTests(CatalogueTestCase):
         self.scenario(self.check_test_same_path_reopen_reuses_unchanged_source_and_clears_changed_source)
         self.scenario(self.check_test_project_reset_restores_default_and_drops_copies)
         self.scenario(self.check_test_install_reopened_workflow_updates_selector)
+        self.scenario(self.check_test_templates_are_arranged_when_chosen_and_reloads_keep_their_layout)
         self.scenario(self.check_test_correction_inputs_are_contextual_and_source_is_current_image)
         self.scenario(self.check_test_actual_save_and_open_restore_native_working_values)
         self.scenario(self.check_test_structured_points_preserve_fractional_values)

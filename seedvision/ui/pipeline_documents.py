@@ -1,4 +1,7 @@
-"""Freeze state and explicit file commands for the native Pipeline workspace."""
+"""Edit lock and pipeline file commands for the native Pipeline workspace.
+
+Node layouts are not separate files: projects and pipeline files carry them.
+"""
 from dataclasses import replace
 from pathlib import Path
 
@@ -7,9 +10,15 @@ from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QCheckBox, QFileDialog, QInputDialog, QMessageBox
 
 from seedvision.persistence.pipeline_documents import (
-    PIPELINE_EXTENSION, LAYOUT_EXTENSION, PipelineDocumentError,
+    PIPELINE_EXTENSION, PipelineDocumentError,
     PipelineDocumentStore, PipelineLayoutDocument, _name_key, _pipeline_name,
 )
+
+LOCK_TOOLTIP = (
+    'While ticked, node parameters, connections, bypass state and added nodes '
+    'cannot change, so a loaded pipeline is not altered by accident. Running, '
+    'inspecting outputs, arranging nodes and choosing backends still work. '
+    'Pipelines load locked; clear it to edit.')
 
 
 class PipelineDocumentsController(QObject):
@@ -28,25 +37,18 @@ class PipelineDocumentsController(QObject):
         self.current_path = None
         self.current_name = 'Custom pipeline'
         self.factory_name = None
-        self.freeze_action = QAction('Locked', window)
-        self.freeze_action.setCheckable(True)
-        self.freeze_action.setChecked(True)
-        self.freeze_action.setToolTip(
-            'Lock node parameters and connections. Running, backend selection, layout and inspection remain available.')
-        self.freeze_action.toggled.connect(self.set_frozen)
-        self.freeze_button = QCheckBox('Lock', window)
+        self.freeze_button = QCheckBox('Lock edits', window)
         self.freeze_button.setObjectName('pipelineFreezeButton')
-        self.freeze_button.setToolTip(self.freeze_action.toolTip())
+        self.freeze_button.setToolTip(LOCK_TOOLTIP)
+        # A pane too narrow for the full label shows the short one.
+        self.freeze_button.setProperty('fullText', 'Lock edits')
+        self.freeze_button.setProperty('compactText', 'Lock')
         self.freeze_button.setChecked(True)
         self.freeze_button.toggled.connect(self.set_frozen)
         self.load_pipeline_action = QAction('Load pipeline…', window)
         self.load_pipeline_action.triggered.connect(self.choose_pipeline)
         self.save_pipeline_action = QAction('Save pipeline as…', window)
         self.save_pipeline_action.triggered.connect(self.choose_pipeline_save)
-        self.load_layout_action = QAction('Load layout…', window)
-        self.load_layout_action.triggered.connect(self.choose_layout)
-        self.save_layout_action = QAction('Save layout as…', window)
-        self.save_layout_action.triggered.connect(self.choose_layout_save)
 
     @property
     def frozen(self):
@@ -56,12 +58,12 @@ class PipelineDocumentsController(QObject):
         frozen = bool(frozen)
         changed = frozen != self._frozen
         self._frozen = frozen
-        with QSignalBlocker(self.freeze_action):
-            self.freeze_action.setChecked(frozen)
-            self.freeze_action.setText('Locked' if frozen else 'Editable')
         with QSignalBlocker(self.freeze_button):
             self.freeze_button.setChecked(frozen)
         if changed:
+            self.window.statusBar().showMessage(
+                'Pipeline locked: parameters and connections are read-only.' if frozen
+                else 'Pipeline unlocked: parameters and connections can be edited.')
             self.frozen_changed.emit(frozen)
 
     def loaded(self, factory_name=None, *, name=None, path=None):
@@ -77,7 +79,7 @@ class PipelineDocumentsController(QObject):
 
     def can_edit(self):
         if self._frozen:
-            self.window.statusBar().showMessage('Pipeline is locked. Clear Lock to edit node parameters and connections.')
+            self.window.statusBar().showMessage('Pipeline is locked. Clear Lock edits to change node parameters and connections.')
             return False
         return True
 
@@ -172,33 +174,6 @@ class PipelineDocumentsController(QObject):
         window._set_project_dirty()
         return missing
 
-    def load_layout(self, path):
-        if self._busy():
-            self.window.statusBar().showMessage('Wait for current work to finish before loading a layout.')
-            return False
-        try:
-            document = self.store.load_layout(path)
-            missing = self.apply_layout(document)
-        except (ValueError, TypeError, KeyError, OSError, RecursionError) as error:
-            self._error('Could not load layout', error)
-            return False
-        self.window.statusBar().showMessage(
-            f'Loaded pipeline layout from {path}.'
-            + (f' {len(missing)} node ID(s) are absent from this pipeline.' if missing else ''))
-        return True
-
-    def save_layout_as(self, path):
-        if self._busy():
-            self.window.statusBar().showMessage('Wait for current work to finish before saving a layout.')
-            return False
-        try:
-            self.store.save_layout(self.capture_layout(), path)
-        except (ValueError, TypeError, KeyError, OSError, RecursionError) as error:
-            self._error('Could not save layout', error)
-            return False
-        self.window.statusBar().showMessage(f'Saved pipeline layout to {path}.')
-        return True
-
     def choose_pipeline(self):
         path, _ = QFileDialog.getOpenFileName(self.window, 'Load pipeline', '',
                                              f'Seed Fiddle pipelines (*{PIPELINE_EXTENSION})')
@@ -222,16 +197,3 @@ class PipelineDocumentsController(QObject):
         if path and not path.casefold().endswith(PIPELINE_EXTENSION):
             path += PIPELINE_EXTENSION
         return bool(path) and self.save_pipeline_as(path, name)
-
-    def choose_layout(self):
-        path, _ = QFileDialog.getOpenFileName(self.window, 'Load pipeline layout', '',
-                                             f'Seed Fiddle layouts (*{LAYOUT_EXTENSION})')
-        return bool(path) and self.load_layout(path)
-
-    def choose_layout_save(self):
-        path, _ = QFileDialog.getSaveFileName(
-            self.window, 'Save pipeline layout', str(self.window._root / ('pipeline' + LAYOUT_EXTENSION)),
-            f'Seed Fiddle layouts (*{LAYOUT_EXTENSION})')
-        if path and not path.casefold().endswith(LAYOUT_EXTENSION):
-            path += LAYOUT_EXTENSION
-        return bool(path) and self.save_layout_as(path)

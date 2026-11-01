@@ -1,4 +1,5 @@
 
+from tests.review_fixtures import dispose_window, open_workspace_images
 from tests.functional_units import functional_units
 import json
 import os
@@ -197,7 +198,7 @@ class SeedCropArtifactTests(unittest.TestCase):
                 raise CropExportCancelled('Stopped at the export boundary.')
             raise AssertionError('The window did not forward Stop to crop export.')
         with TemporaryDirectory() as directory:
-            window = MainWindow(Path(directory))
+            window = open_workspace_images(MainWindow(Path(directory)))
             analysis = _analysis()
             task = _CropExportTask(directory, analysis, result_report(analysis), (1,), 0)
             window._result_export_task = task
@@ -209,7 +210,7 @@ class SeedCropArtifactTests(unittest.TestCase):
                 app.processEvents()
             self.assertEqual(received, [True])
             window._result_export_task = None
-            window.close()
+            dispose_window(window)
 
 
     def check_test_batch_cli_surfaces_partial_crop_manifest(self):

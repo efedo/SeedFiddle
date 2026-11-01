@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from tests.review_fixtures import dispose_window, open_workspace_images
 from tests.functional_units import functional_units
 
 import os
@@ -187,7 +188,7 @@ class ManualSeedCentreUiTests(unittest.TestCase):
             root = Path(temporary)
             image_path = root / "images" / "capture.png"
             self._write_image(image_path, size=(80, 60))
-            window = MainWindow(root)
+            window = open_workspace_images(MainWindow(root))
             key = window._current_image_key()
             self.assertIsNotNone(key)
             assert key is not None
@@ -241,7 +242,7 @@ class ManualSeedCentreUiTests(unittest.TestCase):
             assert stored is not None
             np.testing.assert_allclose(stored.centres_xy, ((10.0, 10.0),))
             self.assertEqual(stored.mode, "augment")
-            window.close()
+            dispose_window(window)
 
     def check_test_qt_mode_switch_undo_and_reset_are_autosaved_per_image(self) -> None:
         from PySide6.QtCore import Qt
@@ -254,7 +255,7 @@ class ManualSeedCentreUiTests(unittest.TestCase):
             root = Path(temporary)
             image_path = root / "images" / "capture.png"
             self._write_image(image_path)
-            window = MainWindow(root)
+            window = open_workspace_images(MainWindow(root))
             key = window._current_image_key()
             self.assertIsNotNone(key)
             assert key is not None
@@ -316,7 +317,7 @@ class ManualSeedCentreUiTests(unittest.TestCase):
             assert loaded is not None
             self.assertEqual(loaded.mode, "augment")
             self.assertEqual(loaded.centres_xy.shape, (0, 2))
-            window.close()
+            dispose_window(window)
 
     def check_test_autosave_failure_keeps_the_edit_and_still_recomputes(self) -> None:
         from seedvision.ui.main_window import MainWindow, QMessageBox
@@ -325,7 +326,7 @@ class ManualSeedCentreUiTests(unittest.TestCase):
             root = Path(temporary)
             image_path = root / "images" / "capture.png"
             self._write_image(image_path)
-            window = MainWindow(root)
+            window = open_workspace_images(MainWindow(root))
             key = window._current_image_key()
             self.assertIsNotNone(key)
             assert key is not None
@@ -358,7 +359,7 @@ class ManualSeedCentreUiTests(unittest.TestCase):
             )
             analyze.assert_called_once()
             self.assertIn("save failed", window.statusBar().currentMessage())
-            window.close()
+            dispose_window(window)
 
     def check_test_running_node_switch_and_image_switch_stop_qt_edit_mode(self) -> None:
         from seedvision.ui.main_window import MainWindow
@@ -369,7 +370,7 @@ class ManualSeedCentreUiTests(unittest.TestCase):
             second = root / "images" / "b.png"
             self._write_image(first)
             self._write_image(second)
-            window = MainWindow(root)
+            window = open_workspace_images(MainWindow(root))
             key = window._current_image_key()
             self.assertIsNotNone(key)
             assert key is not None
@@ -404,7 +405,7 @@ class ManualSeedCentreUiTests(unittest.TestCase):
                 window._open_path(second)
                 self.assertFalse(window.image_view.manual_seed_centre_editing)
 
-            window.close()
+            dispose_window(window)
 
     def test_workflow_lifecycle(self):
         """2 related ManualSeedCentreUiTests scenarios, each with private fixture state."""

@@ -19,7 +19,7 @@ from PySide6.QtWidgets import QApplication, QComboBox, QMainWindow, QMessageBox
 
 from seedvision.persistence.analysis_settings import analysis_settings_profile_from_graph
 from seedvision.persistence.pipeline_documents import (
-    PIPELINE_EXTENSION, LAYOUT_EXTENSION, PipelineDocument, PipelineDocumentError,
+    PIPELINE_EXTENSION, PipelineDocument, PipelineDocumentError,
     PipelineDocumentStore, PipelineLayoutDocument,
 )
 from seedvision.persistence.reference_models import ReferenceModelAsset
@@ -205,9 +205,8 @@ class PipelineDocumentTests(CatalogueTestCase):
             graph.node('project').calculation_seconds = 12.1
             layout = PipelineLayoutDocument((('project', 231.5, -98.0), ('absent-stable-id', 1, 2)),
                                             selected_node='project', selected_output='raw_image', bundle_cables=True)
-            layout_path = store.save_layout(layout, root / ('arrangement' + LAYOUT_EXTENSION))
             with patch.object(graph, 'invalidate', wraps=graph.invalidate) as invalidate:
-                self.assertTrue(controller.load_layout(layout_path))
+                self.assertIn('absent-stable-id', controller.apply_layout(layout))
             invalidate.assert_not_called()
             self.assertEqual((graph.node('project').x, graph.node('project').y), (231.5, -98.0))
             self.assertIs(window._analysis_caches['test-image'], cached)
@@ -216,7 +215,6 @@ class PipelineDocumentTests(CatalogueTestCase):
             self.assertEqual(graph.revision, revision)
             self.assertEqual(analysis_settings_profile_from_graph(graph), profile)
             self.assertTrue(controller.frozen)
-            self.assertTrue(controller.save_layout_as(root / ('resaved' + LAYOUT_EXTENSION)))
             window.close()
             self.application.processEvents()
 

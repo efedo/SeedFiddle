@@ -48,9 +48,9 @@ class StoredManualSeedCentres:
 class ManualSeedCentreStore:
     """Atomically save small per-image centre edits beneath the project root.
 
-    Without ``directory`` the store is the loose workspace's shared folder. A
-    saved project passes the folder it owns; image identities stay relative to
-    the workspace root either way.
+    Without ``directory`` the store is the workspace's shared folder, used by an
+    untitled project. A saved project passes the folder it owns; image
+    identities stay relative to the workspace root either way.
     """
 
     def __init__(

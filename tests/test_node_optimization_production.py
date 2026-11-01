@@ -3,7 +3,6 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 import os
-from unittest.mock import patch
 
 import cv2
 import numpy as np
@@ -22,14 +21,14 @@ class ProductionOptimizationTests(unittest.TestCase):
         """One bounded real UI -> frozen samples -> production fit witness."""
         os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
         from PySide6.QtWidgets import QApplication
-        from seedvision.ui.main_window import MainWindow, _path_identity
+        from seedvision.ui.main_window import _path_identity
         from seedvision.ui.optimization import FitTask
         from tests.review_fixtures import isolated_window, dispose_window
         app = QApplication.instance() or QApplication([])
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            with patch.object(MainWindow, '_load_workspace_images'):
-                window = isolated_window(Path(__file__).resolve().parents[1], settings_path=root / 'ui.ini')
+            window = isolated_window(Path(__file__).resolve().parents[1], settings_path=root / 'ui.ini',
+                                     images=False)
             try:
                 window._project_tracking_enabled = False
                 window._project_species_library_pin = None

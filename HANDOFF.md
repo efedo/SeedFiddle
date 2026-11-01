@@ -57,7 +57,7 @@ work, families F01–F22). See [README.md](README.md) for the user view and
 .\.venv\Scripts\python.exe -m tests --full           # 665 units, ~13 min, 3 workers
 ```
 
-The last full run (30 October 2026) passed all 665 units with the 4 expected
+The last full run (31 October 2026) passed all 665 units with the 4 expected
 skips. Wall time over 15 minutes is reported as an advisory warning only; a run
 fails on test outcomes or an unaccounted unit, and a worker that writes no
 journal entry for `--stall-seconds` (default 900) is stopped. Details are in
@@ -98,8 +98,8 @@ old `test-runs/` and `test-temp/` directories and never touches the list above.
   swaps `_reference_region_store` and `_manual_seed_centre_store` per project
   (`_install_annotation_stores`), so UI code must find an image's file through
   `_project_reference_sidecar_paths` / `_project_manual_centre_sidecar_paths`, not
-  by constructing a store on the workspace root. Only the loose workspace and
-  untitled projects use the shared `projects/` folders.
+  by constructing a store on the workspace root. Only untitled projects use the
+  shared `projects/` folders.
 - **Non-ASCII paths.** `cv2.imread` fails on them on Windows; always use
   `seedvision.persistence.image_decoding.read_image`.
 - **Offscreen Qt screenshots** render boxes unless `QT_QPA_FONTDIR=C:/Windows/Fonts`.

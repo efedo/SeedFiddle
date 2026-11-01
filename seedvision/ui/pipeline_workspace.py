@@ -27,8 +27,7 @@ def initialize_pipeline_files(window):
     window.pipeline_workflow.strip.layout().insertWidget(2, documents.freeze_button)
     menu = window.pipeline_workflow.more_button.menu()
     first = menu.actions()[0] if menu.actions() else None
-    for action in (documents.load_pipeline_action, documents.save_pipeline_action,
-                   documents.load_layout_action, documents.save_layout_action):
+    for action in (documents.load_pipeline_action, documents.save_pipeline_action):
         menu.insertAction(first, action)
     documents.frozen_changed.connect(lambda frozen: apply_freeze(window, frozen))
     documents.pipeline_saved.connect(lambda document, path: pipeline_saved(window, document))

@@ -27,7 +27,7 @@ The typed graph owns every calculation parameter. `ParameterSpec` validates valu
 the edited node and its dependents only, preserving bypass state. The calculation
 engine in `segmentation/baseline.py` caches results per node and recomputes a node
 only when its own inputs or parameters change; display-only state (overlay,
-opacity, card positions, layout files) never invalidates analytical caches.
+opacity, card positions) never invalidates analytical caches.
 Engine stages whose names differ from graph node IDs are mapped in
 `pipeline/node_aliases.py`, and `tests/test_node_vocabulary.py` keeps the two
 vocabularies aligned.
@@ -65,7 +65,7 @@ node-local cache.
 `ui/main_window.py` remains the native coordinator. Bounded responsibilities are
 extracted into `ui/results.py` (results, run history, snapshots, toolbar),
 `pipeline_canvas.py`, `pipeline_inspector.py`, `pipeline_workflow.py` (factory
-pipeline loading and node actions), `pipeline_documents.py` (Lock and pipeline/layout
+pipeline loading and node actions), `pipeline_documents.py` (Lock edits and pipeline
 files), `help_menu.py`, `reference_frames.py`, `work_control.py`,
 `persistence_jobs.py` and `optimization.py`. Workers compute/save while Qt remains
 responsive. Shutdown polls worker completion; cancellation occurs at safe boundaries
@@ -75,7 +75,7 @@ and between learned-model tiles.
 per-image annotation sidecars. A saved project's sidecars live in its own
 `name.seedfiddle-annotations/` folder (`persistence/project_annotations.py`): edits go
 to its `unsaved/` subfolder and Save copies them in, so projects never share
-annotations. The loose workspace and untitled projects write to the shared
+annotations. An untitled project writes to the shared
 `projects/` folders instead. `persistence/annotation_transfer.py` moves chosen
 annotations between projects as a zip bundle matched by image SHA-256.
 `persistence/snapshot.py` separately packages verified

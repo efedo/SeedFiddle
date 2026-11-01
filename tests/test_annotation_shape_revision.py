@@ -1,4 +1,5 @@
 
+from tests.review_fixtures import open_workspace_images
 from tests.functional_units import functional_units
 
 from tests.review_fixtures import dispose_window
@@ -228,7 +229,7 @@ class AnnotationWidgetTests(unittest.TestCase):
             image = QImage(100, 80, QImage.Format.Format_RGB888)
             image.fill(0)
             image.save(str(root / "images" / "example.png"))
-            window = MainWindow(root)
+            window = open_workspace_images(MainWindow(root))
             try:
                 key = window._current_image_key()
                 self.assertIsNotNone(key)
@@ -373,7 +374,7 @@ class AnnotationWidgetTests(unittest.TestCase):
         from PySide6.QtCore import Qt, QPoint
         from PySide6.QtTest import QTest
         from seedvision.ui.main_window import MainWindow
-        window = MainWindow(Path(__file__).resolve().parents[1])
+        window = open_workspace_images(MainWindow(Path(__file__).resolve().parents[1]))
         try:
             # Exercise remembered user sizing with enough image space. Small
             # screens deliberately constrain the palette to their viewport.

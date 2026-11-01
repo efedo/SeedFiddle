@@ -24,11 +24,9 @@ class NodeOptimizationUITests(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication([])
 
     def window(self, directory):
-        from seedvision.ui.main_window import MainWindow
         from tests.review_fixtures import isolated_window
-        with patch.object(MainWindow, '_load_workspace_images'):
-            window = isolated_window(Path(__file__).resolve().parents[1],
-                                     settings_path=Path(directory) / 'ui.ini')
+        window = isolated_window(Path(__file__).resolve().parents[1],
+                                 settings_path=Path(directory) / 'ui.ini', images=False)
         def dispose():
             window._optimization_task = None
             window._project_tracking_enabled = False

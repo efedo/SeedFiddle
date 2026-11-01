@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from tests.review_fixtures import open_workspace_images
 from tests.review_fixtures import dispose_window
 
 import os
@@ -34,7 +35,7 @@ class InstanceContinuityUiTests(unittest.TestCase):
         image = QImage(80, 60, QImage.Format.Format_RGB32)
         image.fill(QColor("white"))
         self.assertTrue(image.save(str(image_path)))
-        self.window = MainWindow(self.root)
+        self.window = open_workspace_images(MainWindow(self.root))
         self.addCleanup(dispose_window, self.window)
         self.window.image_view._analysis_result = SimpleNamespace()
 

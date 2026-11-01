@@ -1349,10 +1349,9 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             )
         self._application_settings = QSettings("Seed Fiddle", "Seed Fiddle", self)
         self._current_project_path: Path | None = None
-        # The repository image folder remains a convenient loose workspace on
-        # startup. Project dirty tracking begins after New, Open, or the first
-        # successful Save Project, so legacy review sessions are not mistaken
-        # for an unsaved master document.
+        # Every session works in a project: construction ends by starting an
+        # untitled one. Dirty tracking starts there, so building the window
+        # is not mistaken for an edit.
         self._project_tracking_enabled = False
         self._installing_project = False
         self._project_dirty = False
@@ -1573,10 +1572,10 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             self._refresh_analysis_activity_panel
         )
         self._analysis_activity_timer.start()
-        self.pipeline_canvas.select_node(self._selected_pipeline_node)
-        self._load_workspace_images()
-        if self.image_view.image_path is None:
-            self.statusBar().showMessage("Ready — add a laboratory image to begin.")
+        self._install_new_project()
+        self.statusBar().showMessage(
+            "New untitled project — add laboratory images with Open images… to begin."
+        )
 
     def _read_recent_project_paths(self) -> list[Path]:
         raw = self._application_settings.value(
@@ -1620,7 +1619,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._recent_project_paths.insert(0, resolved)
         del self._recent_project_paths[self.MAX_RECENT_PROJECTS :]
         self._store_recent_project_paths()
-        if hasattr(self, "recent_projects_menu"):
+        if hasattr(self, "_recent_projects_end"):
             self._refresh_recent_projects_menu()
 
     def _forget_recent_project(self, path: Path) -> None:
@@ -1634,7 +1633,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             return
         self._recent_project_paths = retained
         self._store_recent_project_paths()
-        if hasattr(self, "recent_projects_menu"):
+        if hasattr(self, "_recent_projects_end"):
             self._refresh_recent_projects_menu()
 
     def _set_project_path(self, path: Path | None) -> None:
@@ -1653,43 +1652,31 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._update_project_chrome()
 
     def _update_project_chrome(self) -> None:
-        if not self._project_tracking_enabled:
-            self.setWindowTitle("Seed Fiddle")
-            if hasattr(self, "project_status_label"):
-                self.project_status_label.setText("Project: none")
-                self.project_status_label.setToolTip(
-                    "Loose workspace — use Save Project to create a master file."
-                )
-        else:
-            name = (
-                self._current_project_path.name
+        name = (
+            self._current_project_path.name
+            if self._current_project_path is not None
+            else "Untitled"
+        )
+        modified = " *" if self._project_dirty else ""
+        self.setWindowTitle(f"Seed Fiddle — {name}{modified}")
+        if hasattr(self, "project_status_label"):
+            self.project_status_label.setText(f"Project: {name}{modified}")
+            self.project_status_label.setToolTip(
+                str(self._current_project_path)
                 if self._current_project_path is not None
-                else "Untitled"
+                else "No master project file has been saved yet."
             )
-            modified = " *" if self._project_dirty else ""
-            self.setWindowTitle(f"Seed Fiddle — {name}{modified}")
-            if hasattr(self, "project_status_label"):
-                self.project_status_label.setText(f"Project: {name}{modified}")
-                self.project_status_label.setToolTip(
-                    str(self._current_project_path)
-                    if self._current_project_path is not None
-                    else "No master project file has been saved yet."
-                )
         self._refresh_project_node()
 
     def _project_summary_text(self) -> str:
         """Return the live master/image/annotation inventory for the root node."""
 
-        if self._project_tracking_enabled:
-            master = (
-                str(self._current_project_path)
-                if self._current_project_path is not None
-                else "Untitled — not yet saved"
-            )
-            save_state = "Modified" if self._project_dirty else "Saved"
-        else:
-            master = "Loose workspace — no project master"
-            save_state = "Not tracked"
+        master = (
+            str(self._current_project_path)
+            if self._current_project_path is not None
+            else "Untitled — not yet saved"
+        )
+        save_state = "Modified" if self._project_dirty else "Saved"
         available_count = len(self._image_paths)
         unresolved_count = len(self._project_unresolved_image_records)
         path = getattr(getattr(self, "image_view", None), "image_path", None)
@@ -1794,12 +1781,10 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         directory = self._project_annotation_directory
         if directory is None:
             shared = self._workspace_reference_region_store.directory.parent
-            if self._project_tracking_enabled:
-                return (
-                    f"Annotations: in the shared workspace folder {shared} until "
-                    "the project is first saved"
-                )
-            return f"Annotations: saved as you edit, in the shared folder {shared}"
+            return (
+                f"Annotations: in the shared workspace folder {shared} until "
+                "the project is first saved"
+            )
         line = f"Annotations: {directory}"
         legacy = self._legacy_annotation_count()
         if legacy:
@@ -1890,7 +1875,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         if context.image.identifier not in self._project_original_image_records:
             self._project_original_image_records[context.image.identifier] = context.image
             self._project_original_image_order += (context.image.identifier,)
-        self._project_tracking_enabled = True
         self._set_project_dirty()
         return captured
 
@@ -1907,7 +1891,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._project_native_recipes = updated
         self.pipeline_workflow.refresh_saved(updated)
         self._retain_selected_correction_bindings()
-        self._project_tracking_enabled = True
         self._set_project_dirty()
 
     @Slot(object)
@@ -1943,13 +1926,23 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             pipeline_workflow=self.pipeline_workflow.workflow, node_instances=self.catalogue_nodes.instances)
 
     def _refresh_recent_projects_menu(self) -> None:
-        self.recent_projects_menu.clear()
-        if not self._recent_project_paths:
-            empty = self.recent_projects_menu.addAction("No recent projects")
-            empty.setEnabled(False)
-            return
-        for path in self._recent_project_paths:
-            action = self.recent_projects_menu.addAction(path.name)
+        """List recent project masters, newest first, directly in the File menu."""
+
+        menu = self._menus["file"]
+        for action in self.recent_project_actions:
+            menu.removeAction(action)
+            action.deleteLater()
+        self.recent_project_actions = []
+        names = [
+            path.name.removesuffix(PROJECT_ANALYSIS_EXTENSION)
+            for path in self._recent_project_paths
+        ]
+        for number, (path, name) in enumerate(
+            zip(self._recent_project_paths, names), start=1
+        ):
+            # Same-named masters in different folders also show their folder.
+            label = name if names.count(name) == 1 else f"{name} ({path.parent.name})"
+            action = QAction(f"&{number} {label}", self)
             action.setToolTip(str(path))
             action.setStatusTip(str(path))
             action.triggered.connect(
@@ -1957,6 +1950,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                     self._open_recent_project(project_path)
                 )
             )
+            menu.insertAction(self._recent_projects_end, action)
+            self.recent_project_actions.append(action)
 
     def _open_recent_project(self, path: Path) -> None:
         if not path.is_file():
@@ -2016,8 +2011,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
     def _install_annotation_stores(self, project_path: Path | None) -> None:
         """Point annotation edits at a saved project's unsaved folder.
 
-        A loose workspace or untitled project has no folder of its own, so its
-        edits go straight to the workspace's shared ``projects/`` folders.
+        An untitled project has no folder of its own, so its edits go straight
+        to the workspace's shared ``projects/`` folders.
         """
 
         if project_path is None:
@@ -2061,8 +2056,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         """Return each listed image's current archive for each annotation kind.
 
         Withheld archives are left out; Save keeps their original references.
-        A loose workspace or untitled project also offers the shared archive of
-        an image it never opened, so the first Save carries it over.
+        An untitled project also offers the shared archive of an image it never
+        opened, so the first Save carries it over.
         """
 
         sources: dict[tuple[str, str], tuple[Path, Path]] = {}
@@ -2413,10 +2408,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         )
 
     def _write_project(self, destination: Path) -> bool:
-        if not self._project_tracking_enabled:
-            self._project_tracking_enabled = True
-            self._set_project_dirty()
-            self._update_project_chrome()
         destination = Path(destination).expanduser().resolve()
         annotation_directory = project_annotation_directory(destination)
         saved_reference_store, saved_centre_store = self._saved_annotation_stores(
@@ -2552,7 +2543,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             if document.selected_image_id in self._project_unresolved_image_records
             else None
         )
-        self._project_tracking_enabled = True
         self._set_project_path(saved)
         self._remember_recent_project(saved)
         # From now on edits go to this project's unsaved folder and annotations
@@ -2912,7 +2902,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             else None
         )
 
-        self._project_tracking_enabled = True
         self._set_project_path(source)
         self._remember_recent_project(source)
         # Annotation files outside the project's folder are copied in by the
@@ -2970,6 +2959,13 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
     def _new_project(self) -> bool:
         if not self._confirm_project_replacement():
             return False
+        self._install_new_project()
+        self.statusBar().showMessage("Created a new untitled project.")
+        return True
+
+    def _install_new_project(self) -> None:
+        """Replace the session with an empty, untitled, unmodified project."""
+
         default_graph = build_default_pipeline()
         default_profile = analysis_settings_profile_from_graph(default_graph)
         default_positions = {
@@ -2987,6 +2983,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             self.pipeline_canvas.set_cable_bundling_enabled(False)
             self.pipeline_canvas.set_obstacle_routing_enabled(False)
         selected = self.pipeline_canvas.rebuild_from_graph("seed_scale_estimation")
+        # A template is laid out fresh; only a saved layout is restored as is.
+        self.pipeline_canvas.auto_arrange()
         if selected is not None:
             self._selected_pipeline_node = selected
             self.pipeline_inspector.set_node(self.pipeline.node(selected))
@@ -3002,8 +3000,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._update_analysis_availability()
         self._sync_background_controls()
         self._installing_project = False
-        self.statusBar().showMessage("Created a new untitled project.")
-        return True
 
     def _clear_project_session_state(self) -> None:
         """Purge every image-local value before installing another project."""
@@ -3683,9 +3679,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         file_menu = self.menuBar().addMenu("&File")
         file_menu.addAction(self.new_project_action)
         file_menu.addAction(self.open_project_action)
-        self.recent_projects_menu = QMenu("Open recent project", file_menu)
-        file_menu.addMenu(self.recent_projects_menu)
-        self._refresh_recent_projects_menu()
         file_menu.addAction(self.save_project_action)
         file_menu.addAction(self.save_project_as_action)
         file_menu.addSeparator()
@@ -3755,7 +3748,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             self.open_project_action,
         ):
             file_menu.addAction(action)
-        file_menu.addMenu(self.recent_projects_menu)
         file_menu.addAction(self.save_project_action)
         file_menu.addAction(self.save_project_as_action)
         file_menu.addSeparator()
@@ -3774,6 +3766,11 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         for action in self.snapshot_actions:
             snapshot_menu.addAction(action)
         file_menu.addSeparator()
+        # Recent projects sit between these separators; an empty list
+        # collapses them into one.
+        self.recent_project_actions = []
+        self._recent_projects_end = file_menu.addSeparator()
+        self._refresh_recent_projects_menu()
         file_menu.addAction(self.exit_action)
 
         edit_menu = menus["edit"]
@@ -6436,18 +6433,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         if hasattr(self, 'pipeline_documents'):
             self.pipeline_documents.set_frozen(True)
         return True
-
-    def _load_workspace_images(self) -> None:
-        image_dir = self._root / "images"
-        if not image_dir.is_dir():
-            return
-        paths = sorted(
-            path for path in image_dir.iterdir() if path.suffix.lower() in SUPPORTED_SUFFIXES
-        )
-        for path in paths:
-            self._add_image(path, open_now=False, mark_project_dirty=False)
-        if paths:
-            self._open_path(paths[0])
 
     def _choose_images(self) -> None:
         patterns = " ".join(f"*{suffix}" for suffix in sorted(SUPPORTED_SUFFIXES))
@@ -12103,14 +12088,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         annotations = (
             None if key is None else self._applied_instance_annotations.get(key)
         )
-        if not self._project_tracking_enabled:
-            QMessageBox.information(
-                self,
-                "Create a project first",
-                "Save or create a project before fitting edge parameters. Accepted "
-                "values are project-local and are persisted by Save Project.",
-            )
-            return
         if (
             key is None
             or result is None
@@ -12407,13 +12384,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 False, "Open and analyse an image before fitting."
             )
             return
-        if not self._project_tracking_enabled:
-            self.pipeline_inspector.set_procedural_fit_eligibility(
-                False,
-                "Create or save a project before fitting; fitted settings belong only "
-                "to that project's analysis graph.",
-            )
-            return
         if not self.pipeline.is_active("procedural_instances") or not (
             self.pipeline.node("procedural_instances").enabled
         ):
@@ -12471,8 +12441,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
 
         self._sync_procedural_fit_controls()
         if (
-            not self._project_tracking_enabled
-            or self._procedural_fit_task is not None
+            self._procedural_fit_task is not None
             or self._reference_edge_fit_task is not None
             or self._learning_training_task is not None
             or self._active_tasks
@@ -15170,11 +15139,11 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         path = self.image_view.image_path
         running = self._sync_run_controls()
         if hasattr(self, 'optimize_project_action'):
-            self.optimize_project_action.setEnabled(not running and self._project_tracking_enabled)
+            self.optimize_project_action.setEnabled(not running)
             self.import_optimization_targets_action.setEnabled(not running and path is not None)
             self.optimization_history_action.setEnabled(not running and self._current_project_path is not None)
             self.pipeline_inspector.set_optimization_context(
-                ready=bool(self._project_tracking_enabled and self._current_project_path
+                ready=bool(self._current_project_path
                     and (self._applied_instance_annotations or self._applied_foreground_reference_masks
                          or self._applied_background_reference_masks or self._applied_background_exclusion_masks
                          or self._applied_foreground_exclusion_masks or self._applied_physical_edge_reference_masks
@@ -15283,60 +15252,55 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             self._shutdown_timer.start()
             event.ignore()
             return
-        if not self._project_tracking_enabled:
-            if not self._resolve_unapplied_project_drafts(recompute=False):
-                event.ignore()
-                return
         if not self._retry_unsaved_project_sidecars():
             event.ignore()
             return
-        if self._project_tracking_enabled:
-            has_unsaved_state = bool(
-                self._project_dirty or self._unapplied_project_draft_keys()
+        has_unsaved_state = bool(
+            self._project_dirty or self._unapplied_project_draft_keys()
+        )
+        if has_unsaved_state and self._background_work_is_active():
+            QMessageBox.information(
+                self,
+                "Project work is still running",
+                "Wait for the current analysis, training, or parameter fit to "
+                "finish before closing a modified project.",
             )
-            if has_unsaved_state and self._background_work_is_active():
-                QMessageBox.information(
-                    self,
-                    "Project work is still running",
-                    "Wait for the current analysis, training, or parameter fit to "
-                    "finish before closing a modified project.",
-                )
+            event.ignore()
+            return
+        if not self._resolve_unapplied_project_drafts(recompute=False):
+            event.ignore()
+            return
+        if self._project_dirty:
+            answer = QMessageBox.warning(
+                self,
+                "Save changes before closing?",
+                "The project master has unsaved changes. Save them before "
+                "closing Seed Fiddle?",
+                QMessageBox.StandardButton.Save
+                | QMessageBox.StandardButton.Discard
+                | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if answer == QMessageBox.StandardButton.Cancel:
                 event.ignore()
                 return
-            if not self._resolve_unapplied_project_drafts(recompute=False):
+            if answer == QMessageBox.StandardButton.Save:
+                saved = (
+                    self._write_project(self._current_project_path)
+                    if self._current_project_path is not None
+                    else self._save_project_as(drafts_resolved=True)
+                )
+                if not saved:
+                    event.ignore()
+                    return
+            if answer not in {
+                QMessageBox.StandardButton.Save,
+                QMessageBox.StandardButton.Discard,
+            }:
                 event.ignore()
                 return
-            if self._project_dirty:
-                answer = QMessageBox.warning(
-                    self,
-                    "Save changes before closing?",
-                    "The project master has unsaved changes. Save them before "
-                    "closing Seed Fiddle?",
-                    QMessageBox.StandardButton.Save
-                    | QMessageBox.StandardButton.Discard
-                    | QMessageBox.StandardButton.Cancel,
-                    QMessageBox.StandardButton.Cancel,
-                )
-                if answer == QMessageBox.StandardButton.Cancel:
-                    event.ignore()
-                    return
-                if answer == QMessageBox.StandardButton.Save:
-                    saved = (
-                        self._write_project(self._current_project_path)
-                        if self._current_project_path is not None
-                        else self._save_project_as(drafts_resolved=True)
-                    )
-                    if not saved:
-                        event.ignore()
-                        return
-                if answer not in {
-                    QMessageBox.StandardButton.Save,
-                    QMessageBox.StandardButton.Discard,
-                }:
-                    event.ignore()
-                    return
-                if answer == QMessageBox.StandardButton.Discard:
-                    self._discard_unsaved_project_annotations()
+            if answer == QMessageBox.StandardButton.Discard:
+                self._discard_unsaved_project_annotations()
 
         self._pending_analysis_key = None
         self._pending_analysis_scope = None

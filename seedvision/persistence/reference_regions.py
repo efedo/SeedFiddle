@@ -121,9 +121,9 @@ def file_sha256(path: Path | str) -> str:
 class ReferenceRegionStore:
     """Save and restore per-image reference layers beneath the project root.
 
-    Without ``directory`` the store is the loose workspace's shared folder. A
-    saved project passes the folder it owns; image identities stay relative to
-    the workspace root either way.
+    Without ``directory`` the store is the workspace's shared folder, used by an
+    untitled project. A saved project passes the folder it owns; image
+    identities stay relative to the workspace root either way.
     """
 
     def __init__(

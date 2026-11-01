@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from tests.review_fixtures import dispose_window, open_workspace_images
 from tests.functional_units import functional_units
 
 import os
@@ -203,8 +204,8 @@ class SelectedInstanceMainWindowTests(unittest.TestCase):
             image = QImage(96, 72, QImage.Format.Format_RGB32)
             image.fill(QColor("white"))
             self.assertTrue(image.save(str(image_path)))
-            window = MainWindow(root)
-            self.addCleanup(window.close)
+            window = open_workspace_images(MainWindow(root))
+            self.addCleanup(dispose_window, window)
 
             selector = window.instance_visibility_combo
             self.assertEqual(selector.currentData(), "all")

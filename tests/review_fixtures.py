@@ -41,12 +41,32 @@ def _workflow_templates(key, builder):
     return templates, tuple(recipe.to_json() for recipe in templates)
 
 
-def isolated_window(root, *, reuse_templates=True, settings_path=None, editable=True):
+def open_workspace_images(window):
+    """Add the photographs in ``<root>/images`` to the window's untitled project.
+
+    Seed Fiddle starts with an empty project. Fixtures that work on the
+    committed photographs add them as Open images… would, open the first one
+    and leave the fixture project unmodified.
+    """
+    from seedvision.ui.main_window import SUPPORTED_SUFFIXES
+    folder = window._root / 'images'
+    paths = sorted(path for path in folder.iterdir()
+                   if path.suffix.lower() in SUPPORTED_SUFFIXES) if folder.is_dir() else []
+    for path in paths:
+        window._add_image(path, open_now=False, mark_project_dirty=False)
+    if paths:
+        window._open_path(paths[0], mark_project_dirty=False)
+    window._set_project_dirty(False)
+    return window
+
+
+def isolated_window(root, *, reuse_templates=True, settings_path=None, editable=True, images=True):
     """Fresh desktop state with local settings and optional immutable templates.
 
     Factory/source-validation witnesses can opt out. An explicitly mocked
     catalogue remains in control rather than being replaced by this fixture.
     Legacy edit fixtures explicitly unfreeze; startup-lock witnesses pass editable=False.
+    ``images`` adds the root's ``images/`` photographs (see open_workspace_images).
     """
     from contextlib import ExitStack
     from unittest.mock import Mock, patch
@@ -65,6 +85,8 @@ def isolated_window(root, *, reuse_templates=True, settings_path=None, editable=
                 raise AssertionError('Shared workflow templates were changed before construction')
             stack.enter_context(patch.object(workflows, 'workflow_catalogue', return_value=templates))
         window = MainWindow(root)
+        if images:
+            open_workspace_images(window)
         if templates is not None:
             if tuple(recipe.to_json() for recipe in templates) != identities:
                 raise AssertionError('Window construction changed shared workflow templates')

@@ -1,5 +1,6 @@
 """Annotation centroids and radial hilum metadata must never become predictions."""
 
+from tests.review_fixtures import dispose_window, open_workspace_images
 from tests.functional_units import functional_units
 import os
 from pathlib import Path
@@ -75,8 +76,8 @@ class AnnotationCentresUiTests(unittest.TestCase):
         image = QImage(160, 120, QImage.Format.Format_RGB888)
         image.fill(0xffffff)
         self.assertTrue(image.save(str(path)))
-        window = MainWindow(root)
-        self.addCleanup(window.close)
+        window = open_workspace_images(MainWindow(root))
+        self.addCleanup(dispose_window, window)
         return window, path
 
     def check_test_compact_seed_selector_and_no_routine_explanatory_labels(self):

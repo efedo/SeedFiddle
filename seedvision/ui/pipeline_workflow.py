@@ -21,6 +21,24 @@ from seedvision.segmentation import PipelineAnalysisCache
 from seedvision.ui.native_workflow_helpers import configure_native_parameters, configure_foreground_regions, native_preview_image
 
 
+# The Pipeline list, in order. A factory template missing here is listed under
+# "Other", so a new one is never hidden. None is the Default seed analysis.
+TEMPLATE_GROUPS = (
+    ('Seed Fiddle', (None, 'seedfiddle_experimental_core_recovery')),
+    ('Seed analysis', ('plantcv_seed_binary_working', 'plantcv_seed_mean_working',
+        'plantcv_seed_otsu_working', 'plantcv_calibrated_seed_binary', 'plantcv_calibrated_seed_mean',
+        'plantcv_calibrated_seed_otsu', 'plantcv_calibrated_seed_range', 'smpts_paper_fixed_mean')),
+    ('Thresholds and classifiers', ('plantcv_threshold_gaussian', 'plantcv_threshold_dual_channels',
+        'plantcv_threshold_texture', 'plantcv_threshold_triangle', 'plantcv_threshold_custom_range',
+        'plantcv_naive_bayes_classifier', 'plantcv_kmeans_predict_masks')),
+    ('Colour correction', ('plantcv_automatic_color_card', 'plantcv_color_card_correct_color')),
+)
+SAVED_HEADING = 'Saved in this project'
+# Item role: 'heading', 'template' (fresh factory copy), 'saved' (project
+# working copy) or 'current' (an installed pipeline matching no entry).
+ENTRY_KIND = Qt.ItemDataRole.UserRole + 1
+
+
 class _Signals(QObject):
     completed = Signal(object)
     progress = Signal(str, str, str)
@@ -172,17 +190,27 @@ class PipelineWorkflowController(QObject):
         self.selector.view().setMinimumWidth(360)
         self.selector.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.selector.setObjectName('pipelineWorkflowSelector')
-        self.selector.addItem('Default seed analysis', None)
         from seedvision.pipeline.workflows import workflow_catalogue
         self._all_templates = workflow_catalogue()
-        primary = ('plantcv_color_card_correct_color', 'plantcv_seed_binary_working',
-            'plantcv_seed_mean_working', 'plantcv_seed_otsu_working', 'smpts_paper_fixed_mean')
         by_id = {recipe.recipe_id: recipe for recipe in self._all_templates}
-        for identifier in primary:
-            recipe = by_id[identifier]
-            self.selector.addItem(recipe.title, recipe)
-            self.selector.setItemData(self.selector.count()-1, recipe.description, Qt.ItemDataRole.ToolTipRole)
-        self._catalogue_count = self.selector.count()
+        listed = {identifier for _, identifiers in TEMPLATE_GROUPS for identifier in identifiers}
+        groups = [*TEMPLATE_GROUPS, ('Other', tuple(recipe.recipe_id for recipe in self._all_templates
+                                                    if recipe.recipe_id not in listed))]
+        for heading, identifiers in groups:
+            present = [identifier for identifier in identifiers if identifier is None or identifier in by_id]
+            if present:
+                self._add_heading(heading)
+            for identifier in present:
+                if identifier is None:
+                    self.selector.addItem('Default seed analysis', None)
+                    self.selector.setItemData(self.selector.count()-1, 'template', ENTRY_KIND)
+                    continue
+                recipe = by_id[identifier]
+                self.selector.addItem(recipe.title, recipe)
+                self.selector.setItemData(self.selector.count()-1, 'template', ENTRY_KIND)
+                self.selector.setItemData(self.selector.count()-1, recipe.description, Qt.ItemDataRole.ToolTipRole)
+        with QSignalBlocker(self.selector):
+            self.selector.setCurrentIndex(self.index_of(None))
         row.addWidget(self.selector)
         self.save_button = QToolButton(self.strip)
         self.save_button.setText('Save')
@@ -194,10 +222,6 @@ class PipelineWorkflowController(QObject):
         self.more_button.setText('…')
         self.more_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         menu = QMenu(self.more_button)
-        alternatives = menu.addMenu('Other pipelines')
-        for recipe in self._all_templates:
-            if recipe.recipe_id not in primary:
-                alternatives.addAction(recipe.title, lambda checked=False, recipe=recipe: self.load_recipe(recipe))
         menu.addAction('Import legacy recipe…', self.open_saved)
         menu.addAction('Source and availability…', self.show_source)
         self.export_menu_action = menu.addAction('Export run…', self.export)
@@ -240,6 +264,30 @@ class PipelineWorkflowController(QObject):
     def active(self):
         return self.workflow is not None
 
+    def _add_heading(self, text, position=None, kind='heading'):
+        """A bold, unselectable group heading in the Pipeline list."""
+        position = self.selector.count() if position is None else position
+        self.selector.insertItem(position, text.upper())
+        self.selector.setItemData(position, kind, ENTRY_KIND)
+        item = self.selector.model().item(position)
+        item.setFlags(Qt.ItemFlag.NoItemFlags)
+        font = item.font()
+        font.setBold(True)
+        item.setFont(font)
+
+    def _entries(self, *kinds):
+        return [index for index in range(self.selector.count())
+                if self.selector.itemData(index, ENTRY_KIND) in kinds]
+
+    def index_of(self, recipe_id):
+        """The list index of a factory template; None is the Default seed analysis."""
+        return next(index for index in self._entries('template')
+                    if getattr(self.selector.itemData(index), 'recipe_id', None) == recipe_id)
+
+    def select_template(self, recipe_id):
+        """Load a fresh copy of a factory template, as choosing it in the list does."""
+        self.selector.setCurrentIndex(self.index_of(recipe_id))
+
     def sync_buttons(self):
         busy = self._job is not None or bool(getattr(getattr(self.window, 'catalogue_nodes', None), 'busy', False))
         self.selector.setEnabled(not busy)
@@ -267,6 +315,9 @@ class PipelineWorkflowController(QObject):
         widgets = [layout.itemAt(index).widget() for index in range(layout.count())
                    if layout.itemAt(index).widget() is not None]
         shown = set(widgets)
+        shortened = [widget for widget in widgets if widget.property('compactText')]
+        for widget in shortened:
+            widget.setText(widget.property('fullText'))
         margins = layout.contentsMargins()
         def required():
             return (margins.left() + margins.right() + max(0, len(shown) - 1) * layout.spacing()
@@ -276,52 +327,60 @@ class PipelineWorkflowController(QObject):
             if required() <= available:
                 break
             shown.discard(widget)
+        for widget in shortened:
+            if required() > available:
+                widget.setText(widget.property('compactText'))
         for widget in (self.workflow_label, self.export_button, self.save_button):
             if widget.isHidden() == (widget in shown):
                 widget.setVisible(widget in shown)
         self.export_menu_action.setVisible(self.export_button.isHidden())
 
-    def load_recipe(self, recipe):
-        from seedvision.pipeline.workflows import create_workflow
-        if self.active:
-            self.sync_graph()
-            self._copies[self.workflow.source_recipe.identity.recipe_sha256] = self.workflow
-        workflow = create_workflow(recipe)
-        if hasattr(self.window, 'pipeline_backends'):
-            workflow = replace(workflow, backend_default=self.window.pipeline_backends.default)
-        self.install(workflow)
-
     def select_workflow(self, index):
         from seedvision.pipeline.workflows import create_workflow
+        kind = self.selector.itemData(index, ENTRY_KIND)
+        if kind in ('heading', 'saved-heading'):
+            # Only reachable programmatically; a heading stands for its first entry.
+            self.selector.setCurrentIndex(index + 1)
+            return
         recipe = self.selector.itemData(index)
         if self.active:
             self.sync_graph()
             self._copies[self.workflow.source_recipe.identity.recipe_sha256] = self.workflow
         else:
             self._default_selection = self.window._selected_pipeline_node
-        workflow = None if recipe is None else (create_workflow(recipe) if index < self._catalogue_count else self._copies.get(recipe.identity.recipe_sha256, create_workflow(recipe)))
-        if workflow is not None and index < self._catalogue_count and hasattr(self.window, 'pipeline_backends'):
+        template = kind == 'template'
+        workflow = None if recipe is None else (create_workflow(recipe) if template else self._copies.get(recipe.identity.recipe_sha256, create_workflow(recipe)))
+        if workflow is not None and template and hasattr(self.window, 'pipeline_backends'):
             workflow = replace(workflow, backend_default=self.window.pipeline_backends.default)
         self.install(workflow)
+        if workflow is not None and template:
+            # A template is laid out fresh; saved layouts load as they were.
+            self.window.pipeline_canvas.auto_arrange()
 
     def install(self, workflow):
         if not self.active:
             self._default_selection = self.window._selected_pipeline_node
-        self.stop()
+        # Cancel only running work: an idle Stop would hold back queued analyses.
+        if self._job is not None or self.window._stoppable_work_is_active():
+            self.stop()
         self._generation += 1
         self.workflow = workflow
         with QSignalBlocker(self.selector):
-            for item in range(self.selector.count()-1, -1, -1):
-                if self.selector.itemData(item, Qt.ItemDataRole.UserRole + 1) == 'current':
-                    self.selector.removeItem(item)
-            index = 0
+            for item in reversed(self._entries('current')):
+                self.selector.removeItem(item)
+            index = self.index_of(None)
             if workflow is not None:
-                index = next((i for i in range(1, self.selector.count())
-                    if self.selector.itemData(i).identity.recipe_sha256 == workflow.source_recipe.identity.recipe_sha256), -1)
+                source = workflow.source_recipe
+                entries = [(i, self.selector.itemData(i)) for i in self._entries('template', 'saved')]
+                entries = [(i, recipe) for i, recipe in entries if recipe is not None]
+                # A node-action variant keeps its template's recipe ID.
+                index = next((i for i, recipe in entries
+                              if recipe.identity.recipe_sha256 == source.identity.recipe_sha256),
+                             next((i for i, recipe in entries if recipe.recipe_id == source.recipe_id), -1))
                 if index < 0:
-                    self.selector.addItem('Current · '+workflow.recipe.title, workflow.source_recipe)
+                    self.selector.addItem('Current · '+workflow.recipe.title, source)
                     index = self.selector.count() - 1
-                    self.selector.setItemData(index, 'current', Qt.ItemDataRole.UserRole + 1)
+                    self.selector.setItemData(index, 'current', ENTRY_KIND)
             self.selector.setCurrentIndex(index)
         self.clear_result_display()
         self.activity = ''
@@ -432,11 +491,21 @@ class PipelineWorkflowController(QObject):
     def refresh_saved(self, recipes=()):
         from seedvision.pipeline.workflows import create_workflow
         with QSignalBlocker(self.selector):
-            while self.selector.count() > self._catalogue_count:
-                self.selector.removeItem(self.selector.count()-1)
+            for item in reversed(self._entries('saved', 'saved-heading', 'current')):
+                self.selector.removeItem(item)
             for recipe in recipes:
-                self.selector.addItem('Saved · '+recipe.title, recipe)
+                self._add_saved(recipe)
                 self._copies[recipe.identity.recipe_sha256] = create_workflow(recipe)
+
+    def _add_saved(self, recipe):
+        """List a project working copy under its own heading, after the templates."""
+        if not self._entries('saved-heading'):
+            current = self._entries('current')
+            self._add_heading(SAVED_HEADING, current[0] if current else None, 'saved-heading')
+        position = max(self._entries('saved-heading', 'saved')) + 1
+        self.selector.insertItem(position, 'Saved · '+recipe.title, recipe)
+        self.selector.setItemData(position, 'saved', ENTRY_KIND)
+        return position
 
     def clear_result_display(self):
         """Release computed display products without removing node controls."""
@@ -1094,9 +1163,10 @@ class PipelineWorkflowController(QObject):
         except (ValueError, OSError, NotImplementedError) as error:
             self.window.statusBar().showMessage(str(error))
             return
-        self.selector.addItem('Saved · '+recipe.title, recipe)
+        with QSignalBlocker(self.selector):
+            position = self._add_saved(recipe)
         self._copies[recipe.identity.recipe_sha256] = workflow
-        self.selector.setCurrentIndex(self.selector.count()-1)
+        self.selector.setCurrentIndex(position)
 
     def export(self):
         catalogue = getattr(self.window, 'catalogue_nodes', None)

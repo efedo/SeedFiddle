@@ -290,7 +290,7 @@ class OptimizationController:
             return
         if self._background_work_is_active():
             return
-        if not self._project_tracking_enabled or self._current_project_path is None:
+        if self._current_project_path is None:
             QMessageBox.information(self, 'Save a project first', 'Optimization settings and their history belong to a saved project.')
             return
         try:

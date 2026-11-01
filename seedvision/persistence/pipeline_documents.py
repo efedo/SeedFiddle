@@ -24,7 +24,6 @@ from seedvision.persistence.reference_models import (
 from seedvision.pipeline.workflows import PipelineWorkflow
 
 PIPELINE_EXTENSION = '.seedfiddle-pipeline.json'
-LAYOUT_EXTENSION = '.seedfiddle-layout.json'
 MAX_DOCUMENT_BYTES = 24 * 1024 * 1024
 MAX_LAYOUT_NODES = 4096
 
@@ -318,14 +317,6 @@ class PipelineDocumentStore:
 
     def load_pipeline(self, path):
         return PipelineDocument.from_dict(_read(path))
-
-    def save_layout(self, document, path):
-        if not isinstance(document, PipelineLayoutDocument):
-            raise PipelineDocumentError('Expected a layout document.')
-        return _atomic_write(self._destination(path, LAYOUT_EXTENSION), document.to_dict())
-
-    def load_layout(self, path):
-        return PipelineLayoutDocument.from_dict(_read(path))
 
 
 def _read(path):

@@ -128,11 +128,13 @@ runtime summary).
 
 ## Work through an image
 
-1. **File → Open images…** (`Ctrl+O`) or open a saved project. Set the verified
-   species in the **Image** tab; species is operator metadata and is never inferred.
-2. Choose a pipeline from the selector at the top of the Pipeline view; more are
-   under **… → Other pipelines**. A loaded pipeline is **Locked**: clear **Lock** to
-   edit node parameters or wiring.
+1. Seed Fiddle starts in a new untitled project. Add images with **File → Open
+   images…** (`Ctrl+O`), or open a saved project (the File menu lists recent ones).
+   Set the verified species in the **Image** tab; species is operator metadata and
+   is never inferred.
+2. Choose a pipeline from the grouped **Pipeline** list at the top of the Pipeline
+   view. A loaded pipeline is locked: clear **Lock edits** to edit node parameters
+   or wiring.
 3. Paint material references (**Materials**: Background, Foreground, Other) and,
    where useful, seed outlines (**Seeds**). Missing required evidence makes a result
    *unavailable*; it is never reported as zero seeds.

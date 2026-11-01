@@ -38,9 +38,7 @@ class PipelineWorkspaceFileTests(CatalogueTestCase):
         self.temporary.cleanup()
 
     def binary(self):
-        index = next(index for index in range(1, self.presenter.selector.count())
-                     if self.presenter.selector.itemData(index).recipe_id == 'plantcv_seed_binary_working')
-        self.presenter.selector.setCurrentIndex(index)
+        self.presenter.select_template('plantcv_seed_binary_working')
         return next(stage.stage_id for stage in self.presenter.workflow.recipe.stages
                     if stage.operation_id == 'threshold.binary')
 
@@ -57,6 +55,15 @@ class PipelineWorkspaceFileTests(CatalogueTestCase):
         self.assertTrue(self.window.pipeline_canvas.editing_locked)
         self.assertTrue(self.window.pipeline_inspector.editing_locked)
         self.assertFalse(self.window.pipeline_inspector.reset_parameters_button.isEnabled())
+        # The lock says what it does, and the inspector says why controls are disabled.
+        self.assertEqual(self.files.freeze_button.property('fullText'), 'Lock edits')
+        self.assertIn(self.files.freeze_button.text(), ('Lock edits', 'Lock'))
+        self.assertIn('cannot change', self.files.freeze_button.toolTip())
+        inspector = self.window.pipeline_inspector
+        self.assertTrue(inspector.lock_notice.isVisibleTo(inspector))
+        commands = [action.text() for action in self.presenter.more_button.menu().actions()]
+        self.assertNotIn('Load layout…', commands)
+        self.assertNotIn('Save layout as…', commands)
         self.presenter.parameter_changed(identifier, 'threshold', 119)
         self.window.pipeline_canvas._inline_parameter_changed(identifier, 'threshold', 121)
         self.assertEqual(graph.node(identifier).parameters, before)
@@ -81,6 +88,9 @@ class PipelineWorkspaceFileTests(CatalogueTestCase):
         with self.assertRaisesRegex(ValueError, 'editable'):
             self.window._activate_trait_model(self.root / 'not-read.json')
         self.files.set_frozen(False)
+        self.assertFalse(inspector.lock_notice.isVisibleTo(inspector))
+        self.assertIn('unlocked', self.window.statusBar().currentMessage())
+        self.files.set_frozen(False)
         self.presenter.parameter_changed(identifier, 'threshold', 119)
         self.assertEqual(self.presenter.workflow.recipe.parameters_for_runner(identifier)['threshold'], 119)
 
@@ -97,7 +107,7 @@ class PipelineWorkspaceFileTests(CatalogueTestCase):
         self.assertFalse(destination.exists())
         self.assertTrue(self.files.save_pipeline_as(destination, 'My seed comparison'))
         self.assertEqual(self.presenter.workflow.display_state['pipeline_name'], 'My seed comparison')
-        self.presenter.selector.setCurrentIndex(0)
+        self.presenter.select_template(None)
         self.binary()
         self.assertTrue(self.files.frozen)
         self.assertEqual(self.presenter.workflow.source_recipe.to_json(), original)
@@ -130,10 +140,8 @@ class PipelineWorkspaceFileTests(CatalogueTestCase):
         sentinel = object()
         cache.values['retained-fixture-product'] = sentinel
         revision = self.window.pipeline_canvas.graph.revision
-        layout_path = self.root / 'alternate.seedfiddle-layout.json'
         layout = replace(self.files.capture_layout(), positions=((second, 1800.0, -420.0),))
-        self.files.store.save_layout(layout, layout_path)
-        self.assertTrue(self.files.load_layout(layout_path))
+        self.files.apply_layout(layout)
         self.assertIs(component.result, cached_result)
         self.assertIs(component.cache, cache)
         self.assertIs(cache.values['retained-fixture-product'], sentinel)

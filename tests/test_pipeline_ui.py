@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from tests.review_fixtures import open_workspace_images
 from tests.catalogue_fixtures import CatalogueTestCase
 
 from tests.functional_units import functional_units
@@ -114,7 +115,7 @@ class PipelineCanvasTests(CatalogueTestCase):
     def check_test_current_image_name_is_in_pane_and_list_selection_tracks_it(self) -> None:
         from seedvision.ui.main_window import MainWindow
 
-        window = MainWindow(ROOT)
+        window = open_workspace_images(MainWindow(ROOT))
         window.pipeline_documents.set_frozen(False)
         path = window.image_view.image_path
         self.assertIsNotNone(path)
@@ -142,7 +143,7 @@ class PipelineCanvasTests(CatalogueTestCase):
         from seedvision.segmentation import PipelineAnalysisCache
         from seedvision.ui.main_window import MainWindow
 
-        window = MainWindow(ROOT)
+        window = open_workspace_images(MainWindow(ROOT))
         window.pipeline_documents.set_frozen(False)
         key = window._current_image_key()
         if key is None:
@@ -219,7 +220,7 @@ class PipelineCanvasTests(CatalogueTestCase):
             def cancellation_requested(self) -> bool:
                 return self.cancelled
 
-        window = MainWindow(ROOT)
+        window = open_workspace_images(MainWindow(ROOT))
         window.pipeline_documents.set_frozen(False)
         previous_path = window.image_view.image_path
         if previous_path is None:
@@ -339,7 +340,7 @@ class PipelineCanvasTests(CatalogueTestCase):
             def cancellation_requested(self) -> bool:
                 return self.cancelled
 
-        window = MainWindow(ROOT)
+        window = open_workspace_images(MainWindow(ROOT))
         window.pipeline_documents.set_frozen(False)
         previous_path = window.image_view.image_path
         if previous_path is None:
@@ -514,7 +515,7 @@ class PipelineCanvasTests(CatalogueTestCase):
         self.assertEqual(labels("cellpose_sam_instances"), ["Enable and run to node"])
         window.pipeline_documents.set_frozen(True)
         self.assertEqual(
-            labels("cellpose_sam_instances"), ["Run to node (clear Lock to enable it)"]
+            labels("cellpose_sam_instances"), ["Run to node (clear Lock edits to enable it)"]
         )
 
     def check_test_analysis_cache_is_lru_bounded_and_gpu_jobs_are_serialized(self) -> None:
@@ -1062,7 +1063,7 @@ class PipelineCanvasTests(CatalogueTestCase):
         path = ROOT / "images" / "IMG_9670c.JPG"
         if not path.exists():
             self.skipTest("Pilot image is not present")
-        window = MainWindow(ROOT)
+        window = open_workspace_images(MainWindow(ROOT))
         window.pipeline_documents.set_frozen(False)
         succeeded, error = window.image_view.load_image(path)
         self.assertTrue(succeeded, error)
@@ -1110,7 +1111,7 @@ class PipelineCanvasTests(CatalogueTestCase):
     def check_test_project_node_displays_live_project_image_and_annotation_information(self) -> None:
         from seedvision.ui.main_window import MainWindow
 
-        window = MainWindow(ROOT)
+        window = open_workspace_images(MainWindow(ROOT))
         window.pipeline_documents.set_frozen(False)
         window.pipeline_canvas.select_node("project")
         self.application.processEvents()
@@ -1648,7 +1649,7 @@ class PipelineCanvasTests(CatalogueTestCase):
     def check_test_image_and_pipeline_share_a_split_workspace(self) -> None:
 
         window = controls_window(self)
-        self.assertEqual(window.windowTitle(), "Seed Fiddle")
+        self.assertEqual(window.windowTitle(), "Seed Fiddle — Untitled")
         self.assertEqual(window.workspace_splitter.count(), 2)
         self.assertIs(window.workspace_splitter.widget(0), window.image_display_stack)
         self.assertIs(window.image_display_stack.currentWidget(), window.image_view)
@@ -2289,7 +2290,7 @@ class PipelineCanvasTests(CatalogueTestCase):
 
         from seedvision.ui.main_window import MainWindow
 
-        window = MainWindow(ROOT)
+        window = open_workspace_images(MainWindow(ROOT))
         window.pipeline_documents.set_frozen(False)
         key = window._current_image_key()
         if key is None or window.image_view.image_size is None:
@@ -2487,7 +2488,7 @@ class PipelineCanvasTests(CatalogueTestCase):
         with patch.object(
             MainWindow, "_auto_load_reference_regions", return_value=False
         ):
-            window = MainWindow(ROOT)
+            window = open_workspace_images(MainWindow(ROOT))
             window.pipeline_documents.set_frozen(False)
         key = window._current_image_key()
         if key is None:
@@ -2537,7 +2538,7 @@ class PipelineCanvasTests(CatalogueTestCase):
         with patch.object(
             MainWindow, "_auto_load_reference_regions", return_value=False
         ):
-            window = MainWindow(ROOT)
+            window = open_workspace_images(MainWindow(ROOT))
             window.pipeline_documents.set_frozen(False)
         key = window._current_image_key()
         if key is None:
@@ -2602,7 +2603,7 @@ class PipelineCanvasTests(CatalogueTestCase):
         )
         warning_patcher.start()
         self.addCleanup(warning_patcher.stop)
-        window = MainWindow(ROOT)
+        window = open_workspace_images(MainWindow(ROOT))
         window.pipeline_documents.set_frozen(False)
         path = ROOT / "images" / "IMG_0002c.JPG"
         key = str(path.resolve()).casefold()
@@ -4056,7 +4057,7 @@ class PipelineCanvasTests(CatalogueTestCase):
         from seedvision.pipeline import NodeStatus
         from seedvision.ui.main_window import MainWindow
 
-        window = MainWindow(ROOT)
+        window = open_workspace_images(MainWindow(ROOT))
         window.pipeline_documents.set_frozen(False)
         # This controller test uses the real repository fixtures. Persistence is
         # covered against an isolated project root in test_reference_persistence.
@@ -4164,7 +4165,7 @@ class PipelineCanvasTests(CatalogueTestCase):
 
         from seedvision.ui.main_window import MainWindow
 
-        window = MainWindow(ROOT)
+        window = open_workspace_images(MainWindow(ROOT))
         window.pipeline_documents.set_frozen(False)
         # Do not let this controller test overwrite a developer's local archive.
         window._persist_applied_reference_regions = (
@@ -4804,7 +4805,7 @@ class PipelineCanvasTests(CatalogueTestCase):
         self.assertEqual(len(view._overlay_items), 0)
         view.close()
 
-        window = MainWindow(ROOT)
+        window = open_workspace_images(MainWindow(ROOT))
         window.pipeline_documents.set_frozen(False)
         window._mark_analysis_complete(result)
         for node_id in (

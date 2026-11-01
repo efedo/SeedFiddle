@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from tests.review_fixtures import open_workspace_images
 from tests.catalogue_fixtures import CatalogueTestCase
 
 from tests.functional_units import functional_units
@@ -386,7 +387,7 @@ class ReferenceRegionMainWindowTests(CatalogueTestCase):
     def _save_complete_snapshot(self, root: Path, image_path: Path) -> None:
         from seedvision.ui.main_window import MainWindow
 
-        window = MainWindow(root)
+        window = open_workspace_images(MainWindow(root))
         key = window._current_image_key()
         self.assertIsNotNone(key)
         assert key is not None
@@ -428,7 +429,7 @@ class ReferenceRegionMainWindowTests(CatalogueTestCase):
             self._write_image(image_path, "#38684a")
             self._save_complete_snapshot(root, image_path)
 
-            restored = MainWindow(root)
+            restored = open_workspace_images(MainWindow(root))
             install_test_frame(restored)
             key = restored._current_image_key()
             self.assertIsNotNone(key)
@@ -495,7 +496,7 @@ class ReferenceRegionMainWindowTests(CatalogueTestCase):
             )
 
             with patch("seedvision.ui.main_window.QMessageBox.warning") as warning:
-                window = MainWindow(root)
+                window = open_workspace_images(MainWindow(root))
             key = _path_identity(image_path)
             self.assertIn(key, window._pending_unbound_reference_bundles)
             self.assertNotIn(key, window._applied_foreground_reference_masks)
@@ -535,7 +536,7 @@ class ReferenceRegionMainWindowTests(CatalogueTestCase):
                 ReferenceRegionBundle(shape=saved_shape, foreground=foreground),
             )
             original_bytes = archive.read_bytes()
-            window = MainWindow(root)
+            window = open_workspace_images(MainWindow(root))
             key = _path_identity(image_path)
             self.assertIn(key, window._pending_unbound_reference_bundles)
             result = SimpleNamespace(
@@ -580,7 +581,7 @@ class ReferenceRegionMainWindowTests(CatalogueTestCase):
                 first_path,
                 ReferenceRegionBundle(source_to_corrected=np.eye(3),shape=(48, 64), background=old),
             )
-            window = MainWindow(root)
+            window = open_workspace_images(MainWindow(root))
             key = window._current_image_key()
             self.assertIsNotNone(key)
             assert key is not None
@@ -631,7 +632,7 @@ class ReferenceRegionMainWindowTests(CatalogueTestCase):
                 ),
             )
 
-            window = MainWindow(root)
+            window = open_workspace_images(MainWindow(root))
             key = window._current_image_key()
             self.assertIsNotNone(key)
             assert key is not None
@@ -681,7 +682,7 @@ class ReferenceRegionMainWindowTests(CatalogueTestCase):
             image_path = root / "images" / "capture.png"
             self._write_image(image_path, "#38684a")
             self._save_complete_snapshot(root, image_path)
-            window = MainWindow(root)
+            window = open_workspace_images(MainWindow(root))
             key = window._current_image_key()
             self.assertIsNotNone(key)
             assert key is not None
@@ -726,7 +727,7 @@ class ReferenceRegionMainWindowTests(CatalogueTestCase):
             self._write_image(image_path, "#8b4038")
 
             with patch("seedvision.ui.main_window.QMessageBox.warning") as warning:
-                rejected = MainWindow(root)
+                rejected = open_workspace_images(MainWindow(root))
             key = rejected._current_image_key()
             self.assertIsNotNone(key)
             assert key is not None
@@ -744,7 +745,7 @@ class ReferenceRegionMainWindowTests(CatalogueTestCase):
             root = Path(temporary)
             image_path = root / "images" / "capture.png"
             self._write_image(image_path, "#38684a")
-            window = MainWindow(root)
+            window = open_workspace_images(MainWindow(root))
             key = window._current_image_key()
             self.assertIsNotNone(key)
             assert key is not None
@@ -763,7 +764,7 @@ class ReferenceRegionMainWindowTests(CatalogueTestCase):
             root = Path(temporary)
             image_path = root / "images" / "capture.png"
             self._write_image(image_path, "#38684a")
-            window = MainWindow(root)
+            window = open_workspace_images(MainWindow(root))
             key = window._current_image_key()
             self.assertIsNotNone(key)
             assert key is not None
@@ -793,7 +794,7 @@ class ReferenceRegionMainWindowTests(CatalogueTestCase):
             self.assertEqual(loaded.annotation_origin, "manual")
             dispose_window(window)
 
-            restored = MainWindow(root)
+            restored = open_workspace_images(MainWindow(root))
             install_test_frame(restored)
             restored_key = restored._current_image_key()
             self.assertIsNotNone(restored_key)
@@ -812,7 +813,7 @@ class ReferenceRegionMainWindowTests(CatalogueTestCase):
             root = Path(temporary)
             image_path = root / "images" / "capture.png"
             self._write_image(image_path, "#38684a")
-            window = MainWindow(root)
+            window = open_workspace_images(MainWindow(root))
             key = window._current_image_key()
             self.assertIsNotNone(key)
             assert key is not None

@@ -706,13 +706,11 @@ class ProjectAnalysisUiTests(CatalogueTestCase):
                         "ruler_length_mm"
                     ],
                 )
+                # A new project lays the Default seed analysis out afresh.
+                ruler = window.pipeline.node("ruler_detection")
+                self.assertNotEqual((ruler.x, ruler.y), (-600.0, 700.0))
                 self.assertEqual(
-                    window.pipeline.node("ruler_detection").x,
-                    defaults.node("ruler_detection").x,
-                )
-                self.assertEqual(
-                    window.pipeline.node("ruler_detection").y,
-                    defaults.node("ruler_detection").y,
+                    {round(node.x) % 270 for node in window.pipeline.nodes.values()}, {0}
                 )
                 self.assertFalse(window.pipeline_canvas.cable_bundling_enabled)
                 self.assertFalse(window.pipeline_canvas.obstacle_routing_enabled)
@@ -751,7 +749,6 @@ class ProjectAnalysisUiTests(CatalogueTestCase):
                     root / "projects" / "busy.seedfiddle-project.json",
                 )
                 before_revision = window.pipeline.revision
-                window._project_tracking_enabled = True
                 window._set_project_path(project_path)
                 window._active_tasks["busy"] = object()
                 window._update_analysis_availability()
@@ -796,6 +793,48 @@ class ProjectAnalysisUiTests(CatalogueTestCase):
                 self.assertTrue(window.save_project_as_action.isEnabled())
             finally:
                 window._active_tasks.clear()
+                self._dispose(window)
+
+    def check_test_startup_is_an_untitled_project_and_file_menu_lists_recent_projects(self) -> None:
+        from tests.review_fixtures import isolated_window
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image = self._write_image(root / "images" / "capture.png")
+            window = isolated_window(root, images=False)
+            try:
+                # Images are only ever opened into a project, never listed at startup.
+                self.assertEqual(window.image_list.count(), 0)
+                self.assertIsNone(window._current_project_path)
+                self.assertFalse(window._project_dirty)
+                self.assertEqual(window.windowTitle(), "Seed Fiddle — Untitled")
+                self.assertIn("Untitled — not yet saved", window._project_summary_text())
+                window._add_image(image, open_now=True)
+                self.assertEqual(window.windowTitle(), "Seed Fiddle — Untitled *")
+
+                paths = []
+                for folder in ("a", "b", "c"):
+                    name = "analysis" if folder != "c" else "trial"
+                    path = root / folder / f"{name}.seedfiddle-project.json"
+                    path.parent.mkdir()
+                    path.write_text("{}", encoding="utf-8")
+                    window._remember_recent_project(path)
+                    paths.insert(0, path.resolve())
+                self.assertEqual(
+                    [action.text() for action in window.recent_project_actions],
+                    ["&1 trial", "&2 analysis (b)", "&3 analysis (a)"],
+                )
+                actions = window._menus["file"].actions()
+                self.assertLess(
+                    actions.index(window.recent_project_actions[-1]),
+                    actions.index(window.exit_action),
+                )
+                self.assertFalse(any(action.menu() is not None and "recent" in action.text().casefold()
+                                     for action in actions))
+                with patch.object(window, "_open_project") as open_project:
+                    window.recent_project_actions[1].trigger()
+                open_project.assert_called_once_with(paths[1])
+            finally:
                 self._dispose(window)
 
     def check_test_changed_source_cancel_is_nonmutating_and_failed_paths_are_not_recent(self) -> None:
@@ -1869,7 +1908,7 @@ class ProjectAnalysisUiTests(CatalogueTestCase):
                 saved_first = ManualSeedCentreStore(
                     root, annotation_folder(first_folder, MANUAL_SEED_CENTRES_SIDECAR)
                 ).path_for(image)
-                # The first Save copies the loose workspace's file into the project.
+                # The first Save copies the shared folder's file into the project.
                 self.assertEqual(saved_first.read_bytes(), shared_bytes)
 
                 key = window._current_image_key()
@@ -2156,9 +2195,10 @@ class ProjectAnalysisUiTests(CatalogueTestCase):
         self.scenario(self.check_test_annotations_move_between_projects_only_by_export_and_import)
 
     def test_validation_and_recovery(self):
-        """8 related ProjectAnalysisUiTests scenarios, each with private fixture state."""
+        """9 related ProjectAnalysisUiTests scenarios, each with private fixture state."""
         self.scenario(self.check_test_incompatible_profile_is_rejected_before_confirmation_and_is_atomic)
         self.scenario(self.check_test_changed_source_cancel_is_nonmutating_and_failed_paths_are_not_recent)
+        self.scenario(self.check_test_startup_is_an_untitled_project_and_file_menu_lists_recent_projects)
         self.scenario(self.check_test_live_source_corruption_aborts_master_save_without_replacing_it)
         self.scenario(self.check_test_unavailable_selected_image_survives_fallback_until_user_selects)
         self.scenario(self.check_test_failed_applied_and_manual_sidecar_autosaves_are_retried_before_master_save)

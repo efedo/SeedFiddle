@@ -1,5 +1,6 @@
 """Actual frozen CUDA trait predictions must reach the native review widgets."""
 
+from tests.review_fixtures import dispose_window, open_workspace_images
 from tests.functional_units import functional_units
 import json
 import os
@@ -46,8 +47,8 @@ class TraitReviewUiTests(unittest.TestCase):
         self.valid = torch.ones((1, 1, 24, 24), device='cuda', dtype=torch.bool)
         self.cache = {}
         from seedvision.ui.main_window import MainWindow
-        self.window = MainWindow(self.root)
-        self.addCleanup(self.window.close)
+        self.window = open_workspace_images(MainWindow(self.root))
+        self.addCleanup(dispose_window, self.window)
         self.window.pipeline.node('trait_classifier').enabled = True
 
     def classify(self, threshold=0, path=None):

@@ -1002,7 +1002,7 @@ class PipelineNodeItem(QGraphicsObject):
             run_to = menu.addAction("Run to node")
             run_to.setEnabled(self.node.enabled and self.node.implemented)
         elif self._editing_locked:
-            run_to = menu.addAction("Run to node (clear Lock to enable it)")
+            run_to = menu.addAction("Run to node (clear Lock edits to enable it)")
             run_to.setEnabled(False)
         else:
             # Enabling explains any refusal: a missing package or checkpoint,
@@ -1528,8 +1528,12 @@ class PipelineCanvas(QGraphicsView):
             *editing_buttons, *zoom_controls
         )) + 80
         compact = width < required
+        # Auto arrange and Add node stay on the bar; Tools holds the rest.
+        kept = [self.auto_arrange_button]
+        if self._catalogue_provider is not None:
+            kept.append(self.unused_nodes_button)
         for button in self._editing_buttons:
-            visible = not compact or (button is self.unused_nodes_button and self._catalogue_provider is not None)
+            visible = not compact or button in kept
             if self.read_only and button in (
                 self.move_to_unused_button,
                 self.unused_nodes_button,
@@ -1538,8 +1542,7 @@ class PipelineCanvas(QGraphicsView):
             button.setVisible(visible)
         self.tools_button.setVisible(compact)
         minimum_row = sum(button.sizeHint().width() for button in zoom_controls) + self.tools_button.sizeHint().width() + 60
-        if self._catalogue_provider is not None:
-            minimum_row += self.unused_nodes_button.sizeHint().width() + 5
+        minimum_row += sum(button.sizeHint().width() + 5 for button in kept if button.isVisibleTo(self.control_bar))
         stacked = self._workflow_controls is not None and width < self._workflow_controls.sizeHint().width() + minimum_row
         if stacked != self._workflow_stacked:
             self._controls_layout.removeWidget(self._workflow_controls)
@@ -2114,7 +2117,7 @@ class PipelineCanvas(QGraphicsView):
             self.unused_nodes_button.setToolTip("")
             return
         if self._editing_locked:
-            self.unused_nodes_button.setToolTip('Unlock the pipeline to add nodes.')
+            self.unused_nodes_button.setToolTip('Clear Lock edits to add nodes.')
         elif self._catalogue_provider is not None:
             self.unused_nodes_button.setToolTip('Add a catalogue node with its required inputs. Selecting an existing node adds another independent instance.')
         # The button reads "Add node", so entries name only the node.
