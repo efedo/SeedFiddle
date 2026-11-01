@@ -247,6 +247,91 @@ class InstanceMaskImportUiTests(unittest.TestCase):
         )
         self.assertNotIn(self.key, self.window._instance_undo_histories)
 
+    def _with_cellpose(self, crop: np.ndarray, *, offset=(10, 5)) -> None:
+        count = int(crop.max())
+        self.result.crop_offset = offset
+        self.result.source_sha256 = "c" * 64
+        self.result.cellpose_sam_instances = SimpleNamespace(
+            labels=crop,
+            centres_xy=np.zeros((count, 2), dtype=np.float32),
+            checkpoint_id="C:/models/cpsam_v2#sha256=" + "d" * 64,
+        )
+        self.window._sync_background_controls()
+
+    def check_test_cellpose_seeds_copy_into_an_undoable_outline_draft(self) -> None:
+        from PySide6.QtWidgets import QMenu, QMessageBox
+
+        action = self.window.copy_cellpose_outlines_action
+        self.assertIn("Seed outlines", [menu.title() for menu in action.associatedObjects()
+                                         if isinstance(menu, QMenu)])
+        self.assertFalse(action.isEnabled())
+        with patch.object(QMessageBox, "information") as information:
+            self.window._copy_cellpose_instances_to_outlines()
+        information.assert_called_once()
+        self.assertNotIn(self.key, self.window._draft_instance_annotations)
+
+        crop = np.zeros((20, 30), dtype=np.int32)
+        crop[2:8, 3:9] = 1
+        crop[10:18, 15:25] = 2
+        self._with_cellpose(crop)
+        self.assertTrue(action.isEnabled())
+        action.trigger()
+
+        expected = np.zeros((60, 80), dtype=np.uint16)
+        expected[5:25, 10:40] = crop
+        np.testing.assert_array_equal(self.window._draft_instance_annotations[self.key], expected)
+        origin = self.window._draft_instance_annotation_origins[self.key]
+        self.assertEqual(origin, "cellpose-sam;weights-sha256=" + "d" * 64)
+        self.assertNotIn("models", origin)
+        self.assertEqual(self.window._instance_generation_source(self.key), "c" * 64)
+        self.assertTrue(self.window.annotate_instances_action.isChecked())
+        self.assertEqual(self.window._instance_undo_histories[self.key].next_label,
+                         "Cellpose-SAM seed outlines")
+        message = self.window.statusBar().currentMessage()
+        self.assertIn("Copied 2 Cellpose-SAM seed(s)", message)
+        self.assertIn("unreviewed", message)
+
+        self.window._undo_instance_reference_edit()
+        current = self.window._draft_instance_annotations.get(
+            self.key, self.window._applied_instance_annotations.get(self.key))
+        self.assertTrue(current is None or not np.any(current))
+
+    def check_test_cellpose_seeds_add_to_or_replace_existing_outlines(self) -> None:
+        existing = np.zeros((60, 80), dtype=np.uint16)
+        existing[5:13, 11:19] = 3
+        self.window._set_instance_draft_state(self.key, existing, "manual:existing")
+        crop = np.zeros((20, 30), dtype=np.int32)
+        crop[1:7, 2:8] = 1  # inside the existing outline once placed
+        crop[10:18, 15:25] = 2
+        self._with_cellpose(crop)
+        predicted = np.zeros((60, 80), dtype=np.uint16)
+        predicted[5:25, 10:40] = crop
+
+        with patch.object(self.window, "_ask_cellpose_outline_mode", return_value=None) as ask:
+            self.window._copy_cellpose_instances_to_outlines()
+        ask.assert_called_once_with(1)
+        np.testing.assert_array_equal(self.window._draft_instance_annotations[self.key], existing)
+        self.assertNotIn(self.key, self.window._instance_undo_histories)
+
+        with patch.object(self.window, "_ask_cellpose_outline_mode", return_value="add"):
+            self.window._copy_cellpose_instances_to_outlines()
+        merged = self.window._draft_instance_annotations[self.key]
+        np.testing.assert_array_equal(merged[existing > 0], existing[existing > 0])
+        np.testing.assert_array_equal(merged == 4, predicted == 2)
+        self.assertEqual(set(np.unique(merged)), {0, 3, 4})
+        self.assertIn("Added 1 Cellpose-SAM seed(s)", self.window.statusBar().currentMessage())
+
+        with patch.object(self.window, "_ask_cellpose_outline_mode", return_value="add"):
+            self.window._copy_cellpose_instances_to_outlines()
+        np.testing.assert_array_equal(self.window._draft_instance_annotations[self.key], merged)
+        self.assertIn("already outlined", self.window.statusBar().currentMessage())
+
+        with patch.object(self.window, "_ask_cellpose_outline_mode", return_value="replace"):
+            self.window._copy_cellpose_instances_to_outlines()
+        np.testing.assert_array_equal(self.window._draft_instance_annotations[self.key], predicted)
+        self.window._undo_instance_reference_edit()
+        np.testing.assert_array_equal(self.window._draft_instance_annotations[self.key], merged)
+
     def check_test_training_export_readiness_and_revision_identity(self) -> None:
         from PySide6.QtWidgets import QDialog, QMessageBox
         from seedvision.persistence.reference_regions import SeedInstanceAnnotation
@@ -330,13 +415,15 @@ class InstanceMaskImportUiTests(unittest.TestCase):
         self.assertIn('disk save failed', self.window.instance_annotation_confirmation_label.text())
 
     def test_workflow_lifecycle(self):
-        """6 related InstanceMaskImportUiTests scenarios, each with private fixture state."""
+        """8 related InstanceMaskImportUiTests scenarios, each with private fixture state."""
         self.scenario(self.check_test_panel_import_is_draft_with_provenance_warning_and_undo)
         self.scenario(self.check_test_bundle_import_is_explicit_and_preserves_applied_labels)
         self.scenario(self.check_test_no_bundle_explains_explicit_file_import)
         self.scenario(self.check_test_explicit_file_chooser_bypasses_an_available_bundle)
         self.scenario(self.check_test_training_export_readiness_and_revision_identity)
         self.scenario(self.check_test_seed_label_export_uses_applied_16_bit_labels)
+        self.scenario(self.check_test_cellpose_seeds_copy_into_an_undoable_outline_draft)
+        self.scenario(self.check_test_cellpose_seeds_add_to_or_replace_existing_outlines)
 
     def test_validation_and_recovery(self):
         """2 related InstanceMaskImportUiTests scenarios, each with private fixture state."""

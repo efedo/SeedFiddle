@@ -329,8 +329,48 @@ class InstanceMaskImportTests(unittest.TestCase):
             imported = load_corrected_instance_mask(mask_path, (6, 9))
             np.testing.assert_array_equal(imported.labels, labels)
 
+    def check_test_predicted_crop_instances_become_corrected_outlines(self) -> None:
+        from seedvision.annotation.predicted_instances import (
+            add_unoutlined_instances,
+            outlines_from_crop_instances,
+        )
+
+        crop = np.zeros((6, 8), dtype=np.int32)
+        crop[1:3, 1:3] = 1
+        crop[3:6, 4:8] = 2
+        placed = outlines_from_crop_instances(crop, (5, 2), (12, 15))
+        self.assertEqual(placed.dtype, np.uint16)
+        self.assertEqual(placed.shape, (12, 15))
+        np.testing.assert_array_equal(placed[2:8, 5:13], crop)
+        self.assertEqual(int(np.count_nonzero(placed)), int(np.count_nonzero(crop)))
+        with self.assertRaisesRegex(ValueError, "outside the corrected image"):
+            outlines_from_crop_instances(crop, (8, 2), (12, 15))
+        with self.assertRaisesRegex(ValueError, "16-bit"):
+            outlines_from_crop_instances(np.full((2, 2), 70000, np.int32), (0, 0), (4, 4))
+
+        # Seed 1 is already outlined (as ID 4, a little larger), seed 2 is
+        # mostly free but overlaps the drawn outline, seed 3 is mostly covered.
+        existing = np.zeros((10, 10), dtype=np.uint16)
+        existing[0:4, 0:4] = 4
+        existing[6:10, 0:3] = 9
+        predicted = np.zeros((10, 10), dtype=np.int32)
+        predicted[1:3, 1:3] = 1
+        predicted[3:6, 3:8] = 2
+        predicted[6:9, 1:4] = 3
+        merged, added = add_unoutlined_instances(existing, predicted)
+        self.assertEqual(added, 1)
+        # Existing outlines keep their IDs and pixels; only free pixels are taken.
+        np.testing.assert_array_equal(merged[existing > 0], existing[existing > 0])
+        self.assertEqual(set(np.unique(merged)), {0, 4, 9, 10})
+        self.assertEqual(int(np.count_nonzero(merged == 10)), int(np.count_nonzero((predicted == 2) & (existing == 0))))
+        unchanged, none_added = add_unoutlined_instances(merged, predicted)
+        self.assertEqual(none_added, 0)
+        np.testing.assert_array_equal(unchanged, merged)
+        with self.assertRaisesRegex(ValueError, "one frame"):
+            add_unoutlined_instances(existing, predicted[:5])
+
     def test_workflow_lifecycle(self):
-        """7 related InstanceMaskImportTests scenarios, each with private fixture state."""
+        """8 related InstanceMaskImportTests scenarios, each with private fixture state."""
         self.scenario(self.check_test_corrected_png_tiff_and_npz_preserve_sparse_ids_exactly)
         self.scenario(self.check_test_source_shape_and_corrected_masks_decode_from_non_ascii_paths)
         self.scenario(self.check_test_bundled_source_mask_is_fingerprint_bound_and_warped_nearest)
@@ -338,6 +378,7 @@ class InstanceMaskImportTests(unittest.TestCase):
         self.scenario(self.check_test_bundled_manifest_requires_partition_counts_to_sum_to_total)
         self.scenario(self.check_test_bundled_warp_must_preserve_every_nonzero_identifier)
         self.scenario(self.check_test_no_current_image_manifest_entry_returns_none)
+        self.scenario(self.check_test_predicted_crop_instances_become_corrected_outlines)
 
     def test_validation_and_recovery(self):
         """2 related InstanceMaskImportTests scenarios, each with private fixture state."""

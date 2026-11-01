@@ -3639,6 +3639,17 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.choose_instance_labels_action.triggered.connect(
             self._choose_instance_mask_file
         )
+        self.copy_cellpose_outlines_action = QAction(
+            "Copy Cellpose-SAM seeds to outlines", self
+        )
+        self.copy_cellpose_outlines_action.setEnabled(False)
+        self.copy_cellpose_outlines_action.setToolTip(
+            "Turn this image's Cellpose-SAM seed instances into an undoable, unreviewed "
+            "seed-outline draft. Review every outline, then apply the draft."
+        )
+        self.copy_cellpose_outlines_action.triggered.connect(
+            self._copy_cellpose_instances_to_outlines
+        )
         self.save_instance_labels_action = QAction(
             "Export seed outlines…", self
         )
@@ -3800,6 +3811,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         for action in (
             self.load_instance_labels_action,
             self.choose_instance_labels_action,
+            self.copy_cellpose_outlines_action,
             self.save_instance_labels_action,
             self.export_learning_sample_action,
         ):
@@ -9364,6 +9376,10 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         )
         self.load_instance_labels_action.setEnabled(has_result and not running)
         self.choose_instance_labels_action.setEnabled(has_result and not running)
+        cellpose = getattr(self.image_view._analysis_result, "cellpose_sam_instances", None)
+        self.copy_cellpose_outlines_action.setEnabled(
+            not running and cellpose is not None and len(cellpose.centres_xy) > 0
+        )
         self.load_instance_reference_button.setEnabled(has_result and not running)
         self.choose_instance_mask_button.setEnabled(has_result and not running)
         self.save_instance_labels_action.setEnabled(
@@ -11391,8 +11407,99 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
     def _load_instance_labels(self) -> None:
         self._load_instance_reference_mask()
 
+    @Slot()
+    def _copy_cellpose_instances_to_outlines(self) -> None:
+        """Turn the current Cellpose-SAM seeds into an unreviewed outline draft."""
+
+        context = self._instance_mask_import_context()
+        if context is None:
+            return
+        image_path, result, corrected_shape = context
+        cellpose = getattr(result, "cellpose_sam_instances", None)
+        if cellpose is None or not len(cellpose.centres_xy):
+            QMessageBox.information(
+                self,
+                "No Cellpose-SAM seeds",
+                "Enable the Cellpose-SAM seed instances node and run the analysis "
+                "of this image first.",
+            )
+            return
+        from seedvision.annotation.predicted_instances import (
+            add_unoutlined_instances,
+            outlines_from_crop_instances,
+        )
+
+        key = self._current_image_key()
+        predicted = outlines_from_crop_instances(
+            cellpose.labels, result.crop_offset, corrected_shape
+        )
+        existing = self._instance_reference_state(key)[0]
+        mode = "replace"
+        if np.any(existing):
+            mode = self._ask_cellpose_outline_mode(len(self._instance_ids(existing)))
+            if mode is None:
+                return
+        labels, added = (
+            add_unoutlined_instances(existing, predicted)
+            if mode == "add"
+            else (predicted, len(cellpose.centres_xy))
+        )
+        if mode == "add" and not added:
+            self.statusBar().showMessage(
+                "Every Cellpose-SAM seed is already outlined; the draft is unchanged."
+            )
+            return
+        # Record the weights digest, not their machine-specific path.
+        _, marked, weights = cellpose.checkpoint_id.rpartition("#sha256=")
+        imported = ImportedInstanceMask(
+            labels=labels,
+            source_path=image_path,
+            coordinate_space="corrected",
+            origin="cellpose-sam" + (f";weights-sha256={weights}" if marked else ""),
+            reviewed=False,
+        )
+        if not self._install_imported_instance_mask(
+            imported,
+            generation_source=getattr(result, "source_sha256", None),
+            undo_label="Cellpose-SAM seed outlines",
+            confirm_replace=False,
+        ):
+            return
+        self.statusBar().showMessage(
+            (f"Added {added:,} Cellpose-SAM seed(s) that were not yet outlined; "
+             "existing outlines are unchanged."
+             if mode == "add"
+             else f"Copied {added:,} Cellpose-SAM seed(s) into the seed-outline draft.")
+            + " The draft is unreviewed: inspect every outline, then apply it."
+        )
+
+    def _ask_cellpose_outline_mode(self, existing_count: int) -> str | None:
+        """Ask how Cellpose-SAM seeds join existing outlines: 'add', 'replace' or None."""
+
+        box = QMessageBox(
+            QMessageBox.Icon.Question,
+            "Copy Cellpose-SAM seeds",
+            f"This image already has {existing_count:,} seed outline(s).\n\n"
+            "Add missing seeds keeps every existing outline and adds only the "
+            "Cellpose-SAM seeds that are mostly not outlined yet. Replace outlines "
+            "discards the current outlines. Either change can be undone until you "
+            "apply the draft.",
+            QMessageBox.StandardButton.Cancel,
+            self,
+        )
+        add = box.addButton("Add missing seeds", QMessageBox.ButtonRole.AcceptRole)
+        replace = box.addButton("Replace outlines", QMessageBox.ButtonRole.DestructiveRole)
+        box.setDefaultButton(add)
+        box.exec()
+        return {add: "add", replace: "replace"}.get(box.clickedButton())
+
     def _install_imported_instance_mask(
-        self, imported: ImportedInstanceMask, *, generation_source=None
+        self,
+        imported: ImportedInstanceMask,
+        *,
+        generation_source=None,
+        undo_label: str = "imported seed labels",
+        confirm_replace: bool = True,
     ) -> bool:
         """Install one already-validated mask as a reviewable, undoable draft."""
 
@@ -11407,7 +11514,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 "The selected seed labels are already the current draft."
             )
             return False
-        if np.any(before[0]):
+        if confirm_replace and np.any(before[0]):
             answer = QMessageBox.question(
                 self,
                 "Replace seed-label draft",
@@ -11421,7 +11528,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 return False
         if not self._record_instance_undo(
             key,
-            "imported seed labels",
+            undo_label,
             before,
             (labels,),
             before_origin=before_origin,

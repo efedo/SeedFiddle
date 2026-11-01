@@ -301,6 +301,7 @@ annotations is a history boundary, and history has count and size limits.
 | **Apply + save** | Uses the labels in analysis and keeps them with the image's annotations. In a saved project they are recorded by **Save project**. |
 | **Learning → Seed outlines → Import bundled seed outlines…** | Loads the source-bound bundled labels for this image as an undoable draft. Imported outlines are not ground truth until reviewed. |
 | **Import seed outlines from file…** | Loads a lossless categorical PNG, TIFF or NPZ whose size exactly matches the corrected image. |
+| **Copy Cellpose-SAM seeds to outlines** | Turns this image's [Cellpose-SAM](#cellpose-sam) seeds into an undoable, unreviewed draft. When the image already has outlines, **Add missing seeds** keeps them and adds only Cellpose seeds that are mostly not outlined yet (on unoutlined pixels, with new IDs); **Replace outlines** discards them. |
 | **Export seed outlines…** | Writes the applied labels as a 16-bit PNG in corrected coordinates. Apply a draft first to include it. |
 
 Only connected, complete, shape-reviewed, non-excluded outlines supervise physical
@@ -484,7 +485,11 @@ Controls:
   to it. These controls re-decode the cached flows without rerunning the network.
 
 The output is unvalidated: no reviewed reference masks exist yet, so treat every
-instance as a proposal to review.
+instance as a proposal to review. To start a reviewed reference from it, use
+**Learning → Seed outlines → Copy Cellpose-SAM seeds to outlines** (see
+[Seed outlines](#seed-outlines)), correct the draft and apply it. Seeds whose centre
+lies outside the detected dish are missing from the copy, so check the dish outline
+first.
 
 ## Batch processing
 
