@@ -3,7 +3,7 @@
 The suite is plain `unittest`, run through a parallel runner in `tests/__main__.py`.
 Related scenarios are grouped into *functional units* (one `test_workflow_lifecycle`
 or `test_validation_and_recovery` method that runs several private scenarios), so
-649 units cover roughly 2,800 original test methods.
+665 units cover roughly 2,800 original test methods.
 
 ## Commands
 
@@ -56,7 +56,7 @@ cannot produce a pass.
   directories to `artifacts\test-temp\`. Clear old ones with
   `scripts\prune_artifacts.py --older-than 7 --delete` (dry run without `--delete`).
 
-The last full run (1 November 2026) passed 665/665 units in about 12 minutes
+The last full run (2 November 2026) passed 665/665 units in about 13 minutes
 with the three expected skips.
 
 ## Prerequisites and frozen fixtures

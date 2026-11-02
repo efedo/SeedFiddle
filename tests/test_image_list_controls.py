@@ -113,6 +113,7 @@ class ImageListControlsTests(unittest.TestCase):
                 foreground[2:8, 5:11] = True
                 window._draft_foreground_reference_masks[key] = foreground
                 window._reference_masks_dirty.add(key)
+                window._reference_transforms[key] = np.eye(3)
                 with patch.object(window, "_background_work_is_active", return_value=True), \
                      patch.object(QMessageBox, "information") as busy:
                     self.assertFalse(window._remove_image(first))

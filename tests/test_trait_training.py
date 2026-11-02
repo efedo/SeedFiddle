@@ -153,9 +153,9 @@ class TraitTrainingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Duplicate'):
             read_trait_manifest(self.path)
 
-    def check_test_file_hash_and_missing_transform_reject_before_cuda_extraction(self):
+    def check_test_file_hash_mismatch_rejects_before_cuda_extraction(self):
         item = self.payload['examples'][0]
-        _, archive = self.reference(item, transform=None)
+        _, archive = self.reference(item)
         with patch('seedvision.learning.trait_training.extract_trait_features', side_effect=AssertionError('extraction ran')):
             for field in ('image_sha256', 'archive_sha256'):
                 saved = item['input'][field]
@@ -163,8 +163,6 @@ class TraitTrainingTests(unittest.TestCase):
                 with self.subTest(field=field), self.assertRaisesRegex(ValueError, 'SHA256 mismatch'):
                     materialize_trait_evidence(self.manifest())
                 item['input'][field] = saved
-            with self.assertRaisesRegex(ValueError, 'recorded.*transform'):
-                materialize_trait_evidence(self.manifest())
 
     def check_test_actual_duplicate_mask_aliases_cannot_cross_splits(self):
         first, last = self.payload['examples'][0], self.payload['examples'][-1]
@@ -333,7 +331,7 @@ class TraitTrainingTests(unittest.TestCase):
     def test_validation_and_recovery(self):
         """7 related TraitTrainingTests scenarios, each with private fixture state."""
         self.scenario(self.check_test_manifest_and_controls_reject_before_any_raster_or_optimizer)
-        self.scenario(self.check_test_file_hash_and_missing_transform_reject_before_cuda_extraction)
+        self.scenario(self.check_test_file_hash_mismatch_rejects_before_cuda_extraction)
         self.scenario(self.check_test_known_generation_mismatch_rejects_before_raster_decode)
         self.scenario(self.check_test_review_boundary_and_source_support_are_actual_eligibility_guards)
         self.scenario(self.check_test_cancellation_during_evidence_training_calibration_preserves_old_output)

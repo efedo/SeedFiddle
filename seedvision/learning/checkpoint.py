@@ -67,7 +67,7 @@ def load_checkpoint(path: Path | str, *, device="cpu"):
     if int(payload.get("checkpoint_version", -1)) != CHECKPOINT_VERSION:
         raise ValueError(f"Unsupported learned-model checkpoint: {source}")
     family = ModelFamily(payload["family"])
-    feature_spec = FeatureStackSpec(**({'version': 1} | payload["feature_spec"]))
+    feature_spec = FeatureStackSpec.from_payload(payload["feature_spec"])
     configuration = dict(payload["model_configuration"])
     if int(configuration["input_channels"]) != feature_spec.input_channels:
         raise ValueError("Checkpoint feature and model input-channel counts disagree.")

@@ -48,7 +48,7 @@ class BackendOutcomeTests(unittest.TestCase):
         self.assertEqual(outcomes.read_native_outcomes(json.dumps(json.loads(raw))), ledger)
         self.assertEqual(result_report(analysis)['proposed_count'], 0)
 
-    def check_test_cellpose_dependency_outcome_is_third_party_and_legacy_ledgers_still_read(self):
+    def check_test_cellpose_dependency_outcome_is_third_party_and_ledgers_must_list_it(self):
         analysis = self.analysis()
         raw = self.capture(analysis, {'unet_instances': ('unavailable', 'checkpoint_missing', None, None),
                                       'cellpose_sam_instances': ('unavailable', 'dependency_missing', None, None)},
@@ -63,9 +63,10 @@ class BackendOutcomeTests(unittest.TestCase):
             mutate(payload['outcomes']['cellpose_sam_instances'])
             with self.assertRaises(ValueError):
                 outcomes.read_native_outcomes(json.dumps(payload))
-        legacy = json.loads(raw)
-        del legacy['outcomes']['cellpose_sam_instances']
-        self.assertNotIn('cellpose_sam_instances', outcomes.read_native_outcomes(json.dumps(legacy))['outcomes'])
+        incomplete = json.loads(raw)
+        del incomplete['outcomes']['cellpose_sam_instances']
+        with self.assertRaises(ValueError):
+            outcomes.read_native_outcomes(json.dumps(incomplete))
 
     def check_test_legacy_is_unknown_diagnostics_do_not_hash_and_outcome_changes_stale_review(self):
         analysis = self.analysis()
@@ -148,7 +149,7 @@ class BackendOutcomeTests(unittest.TestCase):
     def test_validation_and_recovery(self):
         """6 related BackendOutcomeTests scenarios, each with private fixture state."""
         self.scenario(self.check_test_available_empty_missing_and_disabled_are_distinct_and_round_trip)
-        self.scenario(self.check_test_cellpose_dependency_outcome_is_third_party_and_legacy_ledgers_still_read)
+        self.scenario(self.check_test_cellpose_dependency_outcome_is_third_party_and_ledgers_must_list_it)
         self.scenario(self.check_test_legacy_is_unknown_diagnostics_do_not_hash_and_outcome_changes_stale_review)
         self.scenario(self.check_test_nonselected_prediction_mutation_and_forged_producer_states_reject)
         self.scenario(self.check_test_malformed_inventory_states_counts_frames_and_duplicate_keys_reject)

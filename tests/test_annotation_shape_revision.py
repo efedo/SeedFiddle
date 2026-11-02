@@ -122,7 +122,7 @@ class ShapeRevisionTests(unittest.TestCase):
         a, b = [np.quantile(s.boundary_curvature_times_diameter, [.1, .5, .9]) for s in summaries]
         np.testing.assert_allclose(a, b, atol=.5)
 
-    def check_test_archive_round_trip_and_version_four_default(self):
+    def check_test_archive_round_trip_requires_every_annotation_field(self):
         from PySide6.QtGui import QImage
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -134,42 +134,26 @@ class ShapeRevisionTests(unittest.TestCase):
             labels[5:15, 8:22] = 1
             item = replace(reviewed(), outline_visibility="partly_occluded", full_length_visible=True)
             store = ReferenceRegionStore(root)
-            store.save(path, ReferenceRegionBundle(labels.shape, annotated_seeds=labels, seed_annotations=(item,)))
+            store.save(path, ReferenceRegionBundle(labels.shape, annotated_seeds=labels, seed_annotations=(item,),
+                                                   source_to_corrected=np.eye(3)))
             self.assertTrue(store.load_if_present(path, expected_shape=labels.shape).seed_annotations[0].full_length_visible)
             from dataclasses import asdict
             old = asdict(item)
             old.pop("full_length_visible")
             old["conditions"] = []
-            loaded = _seed_annotations_from_payload([old], frozenset({1}), version=4)
-            self.assertFalse(loaded[0].full_length_visible)
-
-    def check_test_old_top_fraction_profile_migrates_without_retaining_control(self):
-        from seedvision.pipeline import build_default_pipeline
-        from seedvision.persistence import (analysis_settings_profile_from_graph,
-            analysis_settings_profile_to_payload, analysis_settings_profile_from_payload,
-            apply_analysis_settings_profile)
-        graph = build_default_pipeline()
-        payload = analysis_settings_profile_to_payload(analysis_settings_profile_from_graph(graph))
-        payload["version"] = 17
-        node = next(n for n in payload["nodes"] if n["id"] == "seed_scale_estimation")
-        node["parameters"]["annotated_seed_top_fraction"] = .25
-        payload["connections"] = [c for c in payload["connections"] if c["target_port"] != "reference_curvature"]
-        apply_analysis_settings_profile(graph, analysis_settings_profile_from_payload(payload))
-        self.assertNotIn("annotated_seed_top_fraction", graph.node("seed_scale_estimation").parameters)
-        for target in ("edge_traces", "seed_edge_curves"):
-            self.assertTrue(any(c.target == target and c.target_port == "reference_curvature" for c in graph.connections))
+            with self.assertRaisesRegex(ValueError, "invalid schema"):
+                _seed_annotations_from_payload([old], frozenset({1}))
 
     def test_curvature_prior_changes_only_trace_and_downstream_cache(self):
         self.scenario(self.check_test_curvature_prior_changes_only_trace_and_downstream_cache, labelled=False)
 
     def test_workflow_lifecycle(self):
-        """6 related ShapeRevisionTests scenarios, each with private fixture state."""
+        """5 related ShapeRevisionTests scenarios, each with private fixture state."""
         self.scenario(self.check_test_old_shape_libraries_cannot_be_relabelled_after_source_exclusion)
         self.scenario(self.check_test_ellipse_major_axis_orientation_and_residual_match_outline)
         self.scenario(self.check_test_partial_full_length_contributes_only_size_and_not_shape)
         self.scenario(self.check_test_visibility_must_be_explicit_even_for_large_uncropped_mask)
-        self.scenario(self.check_test_archive_round_trip_and_version_four_default)
-        self.scenario(self.check_test_old_top_fraction_profile_migrates_without_retaining_control)
+        self.scenario(self.check_test_archive_round_trip_requires_every_annotation_field)
 
     def test_validation_and_recovery(self):
         """1 related ShapeRevisionTests scenarios, each with private fixture state."""

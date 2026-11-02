@@ -300,6 +300,7 @@ class AnnotationCentresUiTests(unittest.TestCase):
         window._undo_instance_reference_edit()
         np.testing.assert_array_equal(window.image_view._instance_annotations, labels)
         np.testing.assert_allclose(window._draft_seed_annotations[key][1].hilum_direction, expected)
+        window._reference_transforms[key] = np.eye(3)
         with patch.object(window, "_analyze_current_image"):
             window._apply_instance_annotations()
         restored = ReferenceRegionStore(image_path.parent.parent).load_if_present(image_path, labels.shape)

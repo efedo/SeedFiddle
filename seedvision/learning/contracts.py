@@ -63,12 +63,24 @@ class FeatureStackSpec:
             raise ValueError("The species vocabulary must begin with 'unknown'.")
         if len(set(self.species)) != len(self.species):
             raise ValueError("Species vocabulary entries must be unique.")
-        if self.version not in {1, 2}:
-            raise ValueError("Unsupported feature-stack specification version.")
-        if self.version == 1 and 'foreground_colour' in self.channels:
-            raise ValueError('Legacy foreground feature semantics are ambiguous. Re-export the dataset with feature specification v2 and retrain; do not relabel old tensors or checkpoints.')
+        if self.version != 2:
+            raise ValueError(
+                f"Unsupported feature-stack specification version {self.version}. "
+                "Export the dataset again with this application and retrain."
+            )
         if not 8.0 <= float(self.nominal_seed_diameter_px) <= 256.0:
             raise ValueError("Nominal seed diameter must be between 8 and 256 pixels.")
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, object]) -> "FeatureStackSpec":
+        """Rebuild a saved specification, which must record its version."""
+
+        if "version" not in payload:
+            raise ValueError(
+                "The saved feature-stack specification records no version. "
+                "Export the dataset again with this application and retrain."
+            )
+        return cls(**payload)
 
     @property
     def input_channels(self) -> int:

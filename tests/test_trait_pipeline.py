@@ -288,30 +288,6 @@ class TraitPipelineTests(unittest.TestCase):
                 result_report(self.analysis(prediction))
         self.assertEqual(requested, [_MAX_MODEL_BYTES+1, _MAX_MODEL_BYTES+1])
 
-    def check_test_version_twenty_one_profile_adopts_only_disabled_classifier_defaults(self):
-        from seedvision.persistence.analysis_settings import (
-            analysis_settings_profile_from_graph, analysis_settings_profile_to_payload,
-            analysis_settings_profile_from_payload, apply_analysis_settings_profile,
-            IncompatibleAnalysisSettingsProfile,
-        )
-        payload = analysis_settings_profile_to_payload(analysis_settings_profile_from_graph(build_default_pipeline()))
-        payload['nodes'] = [node for node in payload['nodes'] if node['id'] != 'trait_classifier']
-        payload['connections'] = [edge for edge in payload['connections'] if edge['target'] != 'trait_classifier']
-        for version in (20, 21):
-            legacy = json.loads(json.dumps(payload))
-            legacy['version'] = version
-            graph = build_default_pipeline()
-            graph.node('trait_classifier').parameters['trait_model_path'] = 'unrelated-current-choice.json'
-            apply_analysis_settings_profile(graph, analysis_settings_profile_from_payload(legacy))
-            self.assertFalse(graph.node('trait_classifier').enabled)
-            self.assertEqual(graph.node('trait_classifier').parameters['trait_model_path'], 'None')
-            self.assertEqual(graph.missing_input_ports('trait_classifier'), ())
-            legacy['nodes'] = [node for node in legacy['nodes'] if node['id'] != 'deskew_colour']
-            with self.assertRaisesRegex(IncompatibleAnalysisSettingsProfile, 'missing nodes'):
-                apply_analysis_settings_profile(build_default_pipeline(), analysis_settings_profile_from_payload(legacy))
-        with self.assertRaisesRegex(IncompatibleAnalysisSettingsProfile, 'missing nodes'):
-            apply_analysis_settings_profile(build_default_pipeline(), analysis_settings_profile_from_payload(payload))
-
     def check_test_missing_model_becoming_available_requires_reanalysis_before_export(self):
         path = self.root / 'later.json'
         prediction, _ = self.run_classifier(path=path)
@@ -412,7 +388,7 @@ class TraitPipelineTests(unittest.TestCase):
         self.assertFalse((self.root / 'stale-crops').exists())
 
     def test_workflow_lifecycle(self):
-        """10 related TraitPipelineTests scenarios, each with private fixture state."""
+        """9 related TraitPipelineTests scenarios, each with private fixture state."""
         self.scenario(self.check_test_selected_method_preference_is_shared_and_filters_disabled_branches)
         self.scenario(self.check_test_actual_cuda_resize_colour_features_predict_without_raster_download)
         self.scenario(self.check_test_threshold_only_reuses_features_and_scores_then_identical_run_reuses_result)
@@ -420,7 +396,6 @@ class TraitPipelineTests(unittest.TestCase):
         self.scenario(self.check_test_graph_settings_roundtrip_and_authored_dependencies)
         self.scenario(self.check_test_classifier_enables_with_alternative_branches_and_required_inputs_remain_honest)
         self.scenario(self.check_test_native_worker_forwards_classifier_settings)
-        self.scenario(self.check_test_version_twenty_one_profile_adopts_only_disabled_classifier_defaults)
         self.scenario(self.check_test_saved_project_batch_forwards_model_and_threshold_and_persists_traits)
         self.scenario(self.check_test_file_analysis_cache_and_crops_use_stored_classifier_revision)
 

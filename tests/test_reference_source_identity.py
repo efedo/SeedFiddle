@@ -57,22 +57,6 @@ class ReferenceSourceArchiveTests(unittest.TestCase):
                     self.assertEqual(int(archive['version']), 7)
                     self.assertEqual('annotation_snapshot_source_sha256' in archive.files, known is not None)
 
-    def check_test_every_legacy_version_preserves_binding_without_inventing_generation(self):
-        destination, payload = self.payload()
-        payload['seed_annotations_json'] = np.asarray('[]')
-        payload['annotation_snapshot_source_sha256'] = np.asarray(self.digest)
-        for version in range(1, 7):
-            with self.subTest(version=version):
-                payload['version'] = np.asarray(version, np.uint16)
-                payload['boundary'] = np.zeros(self.labels.shape, np.uint8)
-                self.write_payload(destination, payload)
-                loaded = self.store.load_if_present(self.image)
-                self.assertEqual(loaded.archive_source_sha256, self.digest)
-                self.assertIsNone(loaded.annotation_snapshot_source_sha256)
-                self.store.save(self.image, loaded)
-                restored = self.store.load_if_present(self.image)
-                self.assertIsNone(restored.annotation_snapshot_source_sha256)
-
     def check_test_reprojection_preserves_both_source_identities(self):
         bundle = replace(self.bundle, archive_source_sha256=self.digest,
             annotation_snapshot_source_sha256=self.digest)
@@ -132,9 +116,8 @@ class ReferenceSourceArchiveTests(unittest.TestCase):
                     self.store.load_if_present(self.image)
 
     def test_workflow_lifecycle(self):
-        """4 related ReferenceSourceArchiveTests scenarios, each with private fixture state."""
+        """3 related ReferenceSourceArchiveTests scenarios, each with private fixture state."""
         self.scenario(self.check_test_v7_round_trip_preserves_known_generation_and_unknown_history)
-        self.scenario(self.check_test_every_legacy_version_preserves_binding_without_inventing_generation)
         self.scenario(self.check_test_reprojection_preserves_both_source_identities)
         self.scenario(self.check_test_replaced_source_cannot_rebind_loaded_snapshot_or_overwrite_archive)
 

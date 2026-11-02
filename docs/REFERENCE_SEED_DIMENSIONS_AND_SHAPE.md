@@ -21,7 +21,7 @@ implemented contract includes:
 
 - persisted per-seed shape review, outline visibility, flat/oblique/side/
   uncertain pose, physical-seed identity, exclusion reason, hilum point, and
-  optional hilum direction, with old archives migrating to unknown/unreviewed;
+  optional hilum direction;
 - exact maximum-Feret span, a robust main-body ellipse, body length and width,
   ovality, area and ellipse-relative area, non-ellipticity, asymmetry, solidity,
   exterior concavity, protrusion, neck/thin-extension diagnostics, localized

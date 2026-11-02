@@ -300,6 +300,7 @@ class ReferenceUndoUiTests(CatalogueTestCase):
     def check_test_apply_and_revert_are_history_barriers(self) -> None:
         self._activate_reference_mode()
         key = self._key()
+        self.window._reference_transforms[key] = np.eye(3)
         height, width = self._shape()
         foreground = np.zeros((height, width), dtype=bool)
         foreground[12:20, 18:28] = True

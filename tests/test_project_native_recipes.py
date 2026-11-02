@@ -61,47 +61,17 @@ class ProjectNativeRecipeTests(CatalogueTestCase):
             native_recipes=selected, destination=workspace/'test.seedfiddle-project.json')
         return workspace, master, graphs, selected
 
-    def check_test_schema5_roundtrip_preserves_overlapping_history_and_working_selections(self):
+    def check_test_roundtrip_preserves_overlapping_history_and_working_selections(self):
         workspace, master, history, native = self.project()
         loaded = ProjectAnalysisStore(workspace).load(master)
         self.assertFalse(loaded.issues)
-        self.assertEqual(json.loads(master.read_bytes())['version'], 6)
+        self.assertEqual(json.loads(master.read_bytes())['version'], 7)
         self.assertEqual(loaded.document.reference_graphs, history)
         self.assertEqual(loaded.document.native_recipes, native)
         self.assertEqual(working.recipe_key(history[0].recipe), working.recipe_key(native[0]))
         self.assertNotEqual(history[0].recipe.identity, native[0].identity)
         self.assertNotEqual(history[0].recipe.layout, native[0].layout)
         self.assertEqual(len(loaded.document.reference_model_assets), 2)
-
-    def check_test_schemas1_through4_migrate_without_fabricated_working_recipes(self):
-        workspace, master, _, _ = self.project((), historical=False)
-        store = ProjectAnalysisStore(workspace)
-        current = json.loads(master.read_bytes())
-        for version in range(1, 5):
-            payload = deepcopy(current)
-            payload['version'] = version
-            payload.pop('correction_bindings')
-            payload.pop('native_recipes')
-            if version < 4:
-                payload.pop('reference_model_assets')
-            if version < 3:
-                payload.pop('reference_graphs')
-            if version == 1:
-                payload['project'] = {key: payload['project'][key] for key in ('species', 'selected_image')}
-                for row in payload['images']:
-                    row.pop('biological_context')
-                    row.pop('capture_group_id')
-            legacy = workspace/f'v{version}.seedfiddle-project.json'
-            legacy.write_text(json.dumps(payload), encoding='utf-8')
-            with self.subTest(version=version):
-                document = store.load(legacy).document
-                self.assertEqual(document.native_recipes, ())
-                migrated = store.save(document, workspace/f'migrated{version}.seedfiddle-project.json')
-                self.assertEqual(json.loads(migrated.read_bytes())['native_recipes'], [])
-                payload['native_recipes'] = []
-                legacy.write_text(json.dumps(payload), encoding='utf-8')
-                with self.assertRaisesRegex(InvalidProjectAnalysis, 'unknown field'):
-                    store.load(legacy)
 
     def check_test_invalid_working_metadata_leaves_master_and_model_reads_untouched(self):
         workspace, master, _, native = self.project()
@@ -184,9 +154,6 @@ class ProjectNativeRecipeTests(CatalogueTestCase):
         self.assertFalse(list((workspace/'native-models').glob('*.incomplete')))
 
 
-
-
-
     def check_test_unknown_native_recipe_failure_is_explicit_and_preserves_history(self):
         workspace, master, history, _ = self.project(())
         document = ProjectAnalysisStore(workspace).load(master).document
@@ -240,9 +207,8 @@ class ProjectNativeRecipeTests(CatalogueTestCase):
 
 
     def test_workflow_lifecycle(self):
-        """5 related ProjectNativeRecipeTests scenarios, each with private fixture state."""
-        self.scenario(self.check_test_schema5_roundtrip_preserves_overlapping_history_and_working_selections)
-        self.scenario(self.check_test_schemas1_through4_migrate_without_fabricated_working_recipes)
+        """4 related ProjectNativeRecipeTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_roundtrip_preserves_overlapping_history_and_working_selections)
         self.scenario(self.check_test_same_selection_in_both_collections_deduplicates_binding_and_object)
         self.scenario(self.check_test_removing_working_selection_prunes_only_its_binding)
         self.scenario(self.check_test_selection_replaces_same_key_atomically_and_preserves_other_recipes)

@@ -70,7 +70,7 @@ class LearningManifest:
             raise ValueError(f"Unsupported learning-manifest version in {source}.")
         return cls(
             dataset_id=str(payload["dataset_id"]),
-            feature_spec=FeatureStackSpec(**({'version': 1} | payload["feature_spec"])),
+            feature_spec=FeatureStackSpec.from_payload(payload["feature_spec"]),
             samples=tuple(LearningSample(**item) for item in payload["samples"]),
             provenance=str(payload.get("provenance", "observational")),
             scientific_validation_eligible=bool(

@@ -127,12 +127,6 @@ class CriticalIntegrityTests(unittest.TestCase):
         self.assertEqual(rotated[3,5],37)
         np.testing.assert_array_equal(reproject_raster(shifted,shift,np.eye(3),labels.shape),labels)
 
-    def check_test_legacy_reference_bundle_requires_alignment_review(self):
-        from seedvision.annotation.coordinates import reproject_bundle
-        from seedvision.persistence.reference_regions import ReferenceRegionBundle
-        with self.assertRaisesRegex(ValueError,'Legacy'):
-            reproject_bundle(ReferenceRegionBundle(shape=(8,8)),np.eye(3),(8,8))
-
     def check_test_saved_reference_transform_round_trip(self):
         from seedvision.persistence.reference_regions import ReferenceRegionStore, ReferenceRegionBundle
         with TemporaryDirectory() as directory:
@@ -155,10 +149,13 @@ class CriticalIntegrityTests(unittest.TestCase):
         analysis.layers.foreground_colour_profile = object()
         self.assertEqual(result_report(analysis)['proposed_count'],0)
 
-    def check_test_legacy_ambiguous_foreground_recipe_is_rejected(self):
-        with self.assertRaisesRegex(ValueError,'Re-export'):
-            FeatureStackSpec(version=1)
-        self.assertEqual(FeatureStackSpec(version=1,channels=('lab_l',)).version,1)
+    def check_test_earlier_feature_specifications_are_rejected(self):
+        for payload in ({'version': 1}, {'version': 1, 'channels': ['lab_l']}):
+            with self.subTest(payload=payload), self.assertRaisesRegex(ValueError, 'Export the dataset again'):
+                FeatureStackSpec.from_payload(payload)
+        with self.assertRaisesRegex(ValueError, 'records no version'):
+            FeatureStackSpec.from_payload({'channels': ['lab_l']})
+        self.assertEqual(FeatureStackSpec.from_payload({'version': 2}).version, 2)
 
     def sample(self, path, **overrides):
         spec = FeatureStackSpec(include_species_planes=False)
@@ -282,16 +279,15 @@ class CriticalIntegrityTests(unittest.TestCase):
         self.scenario(self.check_test_custom_pickle_checkpoint_is_rejected_without_execution)
         self.scenario(self.check_test_decoder_selection_rejects_held_out_group_overlap)
         self.scenario(self.check_test_results_distinguish_missing_evidence_from_empty_region)
-        self.scenario(self.check_test_legacy_ambiguous_foreground_recipe_is_rejected)
+        self.scenario(self.check_test_earlier_feature_specifications_are_rejected)
         self.scenario(self.check_test_failed_component_replacement_preserves_complete_old_revision)
         self.scenario(self.check_test_failed_manifest_switch_preserves_old_revision)
         self.scenario(self.check_test_duplicate_content_rejected_before_model_load)
 
     def test_workflow_lifecycle(self):
-        """10 related CriticalIntegrityTests scenarios, each with private fixture state."""
+        """9 related CriticalIntegrityTests scenarios, each with private fixture state."""
         self.scenario(self.check_test_streamed_evaluation_both_families_and_hybrid)
         self.scenario(self.check_test_reference_transport_same_canvas_translation_and_rotation)
-        self.scenario(self.check_test_legacy_reference_bundle_requires_alignment_review)
         self.scenario(self.check_test_saved_reference_transform_round_trip)
         self.scenario(self.check_test_component_edit_is_detected)
         self.scenario(self.check_test_dataset_cache_does_not_retain_an_oversized_sample)

@@ -383,11 +383,10 @@ independent validation. Details: [Node optimisation](NODE_OPTIMIZATION.md).
 
 ## References and recovery
 
-New reference archives record the source-to-corrected transform, so a calibration
-change reprojects labels exactly. Archives with an unknown legacy transform are
-withheld. **Analysis → Reference alignment…** offers an explicit overlay review when
-the canvases match; different canvases need the original transform or new
-annotations. Keep the original archive.
+Reference archives record the source-to-corrected transform, so a calibration
+change reprojects labels exactly. Seed Fiddle opens only the current file formats:
+a project, settings profile, reference archive or seed-centre file written by an
+earlier format is refused with an unsupported-version message rather than migrated.
 
 Closing waits for running work, then asks to save, discard or cancel any drafts.
 A failed save keeps edits in memory. Annotation edits not yet saved to a project
@@ -424,9 +423,9 @@ python -m seedvision.model_io.convert_plantcv_kmeans model.fit model.json
 ```
 
 Feature specification v2 means raw Foreground colour evidence in both inference
-and export. Version 1 foreground recipes are ambiguous and must be re-exported and
-retrained. Checkpoints load only tensor and primitive state through PyTorch's
-restricted loader.
+and export. Datasets and checkpoints recorded with version 1 are refused: export
+the dataset again and retrain. Checkpoints load only tensor and primitive state
+through PyTorch's restricted loader.
 
 ## Cellpose-SAM
 

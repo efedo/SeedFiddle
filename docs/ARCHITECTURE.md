@@ -83,9 +83,12 @@ content copies and restores a relocated working master. Supplementary audit evid
 is retained with its original identity; restoration does not silently reassign
 review decisions or optimization targets to changed source/result identities.
 
-Project documents (version 7, reading 1–6) retain the loaded pipeline workflow,
-added node instances, immutable reference-graph metadata, editable native working
-recipes and bounded model-asset descriptors. Analysis settings are version 25.
+Project documents (version 7) retain the loaded pipeline workflow, added node
+instances, immutable reference-graph metadata, editable native working recipes and
+bounded model-asset descriptors. Analysis settings are version 25, reference-region
+archives version 7, seed-centre files version 2 and learning feature specifications
+version 2. Each reader accepts only its current version and refuses earlier files
+rather than migrating them.
 Historical checkpoint digests do not imply restored or verified arrays.
 
 `export/results.py` defines authoritative method selection, unavailable-vs-empty

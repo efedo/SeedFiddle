@@ -11,7 +11,7 @@ from seedvision.benchmarking.recipes import DependencyContract, RecipeProvenance
 from seedvision.benchmarking.native_recipe import run_native_recipe, NativeRecipeError
 from seedvision.segmentation.baseline import PipelineAnalysisCache
 from tests.test_native_recipe import selected_recipe, fixture, FRAME, SOURCE, PREPARATION
-from seedvision.persistence.project_analysis import ProjectAnalysisDocument, _document_payload, _document_from_payload
+from seedvision.persistence.project_analysis import InvalidProjectAnalysis, ProjectAnalysisDocument, _document_payload, _document_from_payload
 from tests import test_project_analysis_persistence as project_test
 
 
@@ -49,7 +49,7 @@ class PipelineWorkflowTests(CatalogueTestCase):
     def workflow(self):
         return create_workflow(selected_recipe())
 
-    def test_roundtrip_and_old_project_default(self):
+    def test_roundtrip_and_project_without_workflow_record(self):
         workflow = replace(self.workflow(), display_state={'selected_node': 'pcv_seed_binary_median_blur',
             'selected_output': 'gray_image', 'image_visible': True, 'pipeline_visible': False})
         graph = workflow_graph(workflow)
@@ -83,9 +83,10 @@ class PipelineWorkflowTests(CatalogueTestCase):
         document = ProjectAnalysisDocument(project_test.ProjectAnalysisPersistenceTests._profile(), (), pipeline_workflow=edited)
         payload = _document_payload(document)
         self.assertEqual(_document_from_payload(payload).pipeline_workflow, edited)
-        payload['version'] = 6
+        self.assertIsNone(_document_from_payload(_document_payload(replace(document, pipeline_workflow=None))).pipeline_workflow)
         del payload['pipeline_workflow']
-        self.assertIsNone(_document_from_payload(payload).pipeline_workflow)
+        with self.assertRaises(InvalidProjectAnalysis):
+            _document_from_payload(payload)
 
     def test_source_and_working_operation_contracts_reject_tampering(self):
         workflow = self.workflow()

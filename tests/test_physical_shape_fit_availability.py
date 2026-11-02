@@ -204,12 +204,13 @@ class PhysicalShapeFitAvailabilityTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'not representable'):
             model.fit_species_dimensions_shape_bank((replace(item, measurement=tuple(vector)),))
 
-    def check_test_component_payload_roundtrip_legacy_and_invalid_reasons(self):
+    def check_test_component_payload_roundtrip_and_invalid_reasons(self):
         component = bank(measurements(1e-79)).components[0]
         payload = storage._shape_component_payload(component)
         self.assertEqual(storage._shape_component_from_payload(json.loads(json.dumps(payload, allow_nan=False))), component)
-        legacy = dict(payload); legacy.pop('physical_fit_unavailability_reason')
-        self.assertIsNone(storage._shape_component_from_payload(legacy).physical_fit_unavailability_reason)
+        incomplete = dict(payload); incomplete.pop('physical_fit_unavailability_reason')
+        with self.assertRaisesRegex(ValueError, 'invalid schema'):
+            storage._shape_component_from_payload(incomplete)
         for changes in ({'physical_dimensions_available': True}, {'physical_fit_unavailability_reason': 'invented'}):
             with self.assertRaisesRegex(ValueError, 'unavailability reason'):
                 storage._shape_component_from_payload(dict(payload, **changes))
@@ -233,30 +234,6 @@ class PhysicalShapeFitAvailabilityTests(unittest.TestCase):
             self.assertEqual(arrays['dimensions_shape.measurements'].dtype, np.float64)
             self.assertEqual(loaded.dimensions_shape.components[0].source_count, 2)
 
-    def check_test_legacy_library_digest_is_verified_before_absent_reason_defaults(self):
-        fitted = bank(measurements())
-        with tempfile.TemporaryDirectory() as temporary:
-            store = storage.SpeciesLibraryStore(Path(temporary) / 'libraries')
-            published = store.publish(SpeciesLibraryArtifact(manifest(2), dimensions_shape=fitted))
-            m = published.manifest
-            directory = store.version_path(m.species_id, m.library_id, m.version)
-            path = directory / storage.MANIFEST_NAME
-            payload = json.loads(path.read_text(encoding='utf-8'))
-            for item in payload['bank_metadata']['banks']['dimensions_shape']['components']:
-                item.pop('physical_fit_unavailability_reason')
-            arrays, _ = storage._artifact_arrays(published)
-            payload['content_sha256'] = storage._content_digest(payload, arrays)
-            path.write_text(json.dumps(payload, allow_nan=False), encoding='utf-8')
-            stored_bytes = path.read_bytes()
-            pin = SpeciesLibraryPin(m.library_id, m.version, m.species_id, payload['content_sha256'])
-            loaded = store.load(pin)
-            self.assertIsNone(loaded.dimensions_shape.components[0].physical_fit_unavailability_reason)
-            self.assertEqual(path.read_bytes(), stored_bytes)
-            payload['bank_metadata']['banks']['dimensions_shape']['components'][0]['mean'][0] += 1
-            path.write_text(json.dumps(payload, allow_nan=False), encoding='utf-8')
-            with self.assertRaisesRegex(storage.InvalidSpeciesLibrary, 'content hash'):
-                store.load(pin)
-
     def check_test_unknown_component_fields_and_nonfinite_predictive_intervals_reject(self):
         component = bank(measurements()).components[0]
         payload = storage._shape_component_payload(component)
@@ -268,7 +245,7 @@ class PhysicalShapeFitAvailabilityTests(unittest.TestCase):
             replace(component, predictive_interval_95=tuple(intervals))
 
     def test_workflow_lifecycle(self):
-        """14 related PhysicalShapeFitAvailabilityTests scenarios, each with private fixture state."""
+        """13 related PhysicalShapeFitAvailabilityTests scenarios, each with private fixture state."""
         self.scenario(self.check_test_real_calibrated_area_covariance_overflow_retains_all_dimensionless_groups)
         self.scenario(self.check_test_positive_physical_variance_underflow_retains_normalized_error)
         self.scenario(self.check_test_physical_covariance_underflow_is_detected_without_measurement_errors)
@@ -282,10 +259,9 @@ class PhysicalShapeFitAvailabilityTests(unittest.TestCase):
         self.scenario(self.check_test_mixed_updates_clear_reason_only_when_successful_physical_shell_exists)
         self.scenario(self.check_test_unrelated_fitting_error_and_unrepresentable_fallback_propagate)
         self.scenario(self.check_test_real_library_publish_load_preserves_reason_counts_and_float64_evidence)
-        self.scenario(self.check_test_legacy_library_digest_is_verified_before_absent_reason_defaults)
 
     def test_validation_and_recovery(self):
         """3 related PhysicalShapeFitAvailabilityTests scenarios, each with private fixture state."""
         self.scenario(self.check_test_parent_predictive_sum_overflow_has_dedicated_numeric_failure)
-        self.scenario(self.check_test_component_payload_roundtrip_legacy_and_invalid_reasons)
+        self.scenario(self.check_test_component_payload_roundtrip_and_invalid_reasons)
         self.scenario(self.check_test_unknown_component_fields_and_nonfinite_predictive_intervals_reject)

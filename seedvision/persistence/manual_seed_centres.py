@@ -16,8 +16,6 @@ from seedvision.persistence.reference_regions import file_sha256
 
 
 MANUAL_SEED_CENTRE_VERSION = 2
-# Version two adds the automatic centres removed in Augment mode.
-_READABLE_MANUAL_SEED_CENTRE_VERSIONS = frozenset((1, MANUAL_SEED_CENTRE_VERSION))
 MANUAL_SEED_CENTRE_MODES = frozenset(("augment", "replace_automatic"))
 
 
@@ -197,6 +195,7 @@ class ManualSeedCentreStore:
                     "coordinate_space",
                     "mode",
                     "centres_xy",
+                    "suppressed_xy",
                 )
                 missing = [name for name in required if name not in archive.files]
                 if missing:
@@ -204,9 +203,10 @@ class ManualSeedCentreStore:
                         f"Manual-centre archive is missing {missing[0]!r}: {source}"
                     )
                 version = _scalar_int(archive["version"], "version")
-                if version not in _READABLE_MANUAL_SEED_CENTRE_VERSIONS:
+                if version != MANUAL_SEED_CENTRE_VERSION:
                     raise InvalidManualSeedCentreArchive(
-                        f"Unsupported manual-centre version {version} in {source}."
+                        f"Unsupported manual-centre version {version} in {source}; "
+                        f"this application reads only version {MANUAL_SEED_CENTRE_VERSION}."
                     )
                 identity = _scalar_text(archive["image_identity"], "image identity")
                 if not identity or "\x00" in identity:
@@ -254,14 +254,8 @@ class ManualSeedCentreStore:
                     saved_shape,
                     InvalidManualSeedCentreArchive,
                 )
-                if version >= 2 and "suppressed_xy" not in archive.files:
-                    raise InvalidManualSeedCentreArchive(
-                        f"Manual-centre archive is missing 'suppressed_xy': {source}"
-                    )
                 suppressed = _validated_centres(
-                    np.asarray(archive["suppressed_xy"])
-                    if version >= 2
-                    else np.empty((0, 2), np.float64),
+                    np.asarray(archive["suppressed_xy"]),
                     saved_shape,
                     InvalidManualSeedCentreArchive,
                 )

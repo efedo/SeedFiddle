@@ -173,7 +173,7 @@ class ProjectUiState:
 
 @dataclass(frozen=True, slots=True)
 class ProjectAnalysisDocument:
-    """Immutable compact content of one version-six project master."""
+    """Immutable compact content of one project master."""
 
     analysis_settings: AnalysisSettingsProfile
     images: tuple[ProjectImageRecord, ...]
@@ -934,7 +934,7 @@ def _document_payload(document: ProjectAnalysisDocument) -> dict[str, object]:
         raise InvalidProjectAnalysis(f'Invalid embedded correction bindings: {error}') from error
     payload: dict[str, object] = {
         "format": PROJECT_ANALYSIS_FORMAT,
-        "version": PROJECT_ANALYSIS_VERSION if document.pipeline_workflow is not None or document.node_instances else 6,
+        "version": PROJECT_ANALYSIS_VERSION,
         "reference_graphs": graph_payload,
         "reference_model_assets": [asset.to_dict() for asset in model_assets],
         "native_recipes": native_payload,
@@ -956,9 +956,8 @@ def _document_payload(document: ProjectAnalysisDocument) -> dict[str, object]:
             ),
         },
         "images": images,
+        "pipeline_workflow": _workflow_payload(document.pipeline_workflow),
     }
-    if document.pipeline_workflow is not None or document.node_instances:
-        payload["pipeline_workflow"] = _workflow_payload(document.pipeline_workflow)
     if document.node_instances:
         payload["node_instances"] = instance_payload
     if document.ui_state is not None:
@@ -972,23 +971,21 @@ def _document_from_payload(payload: object) -> ProjectAnalysisDocument:
         raise InvalidProjectAnalysis(
             f"Unsupported project format {root.get('format')!r}."
         )
-    if not _exact_int(root.get("version")) or root["version"] not in {1, 2, 3, 4, 5, 6, PROJECT_ANALYSIS_VERSION}:
+    if not _exact_int(root.get("version")) or root["version"] != PROJECT_ANALYSIS_VERSION:
         raise InvalidProjectAnalysis(
-            f"Unsupported project version {root.get('version')!r}."
+            f"Unsupported project version {root.get('version')!r}; this application "
+            f"reads only version {PROJECT_ANALYSIS_VERSION}."
         )
-    project_version = int(root["version"])
-    root_required = {"format", "version", "analysis_settings", "project", "images"}
-    if project_version >= 3:
-        root_required.add("reference_graphs")
-    if project_version >= 4:
-        root_required.add("reference_model_assets")
-    if project_version >= 5:
-        root_required.add("native_recipes")
-    if project_version >= 6:
-        root_required.add("correction_bindings")
-    if project_version >= 7:
-        root_required.add("pipeline_workflow")
-    _keys(root, required=root_required, optional={"ui", "node_instances"} if project_version >= 7 else {"ui"}, name="project master")
+    _keys(
+        root,
+        required={
+            "format", "version", "analysis_settings", "project", "images",
+            "reference_graphs", "reference_model_assets", "native_recipes",
+            "correction_bindings", "pipeline_workflow",
+        },
+        optional={"ui", "node_instances"},
+        name="project master",
+    )
     node_instances = _instances_from_payload(root.get('node_instances', []))
     try:
         settings = analysis_settings_profile_from_payload(root["analysis_settings"])
@@ -1000,14 +997,10 @@ def _document_from_payload(payload: object) -> ProjectAnalysisDocument:
     project = _object(root["project"], "project metadata")
     _keys(
         project,
-        required=(
-            {"species", "selected_image"}
-            if project_version == 1
-            else {
-                "species", "selected_image", "species_library",
-                "biological_context", "capture_group_id",
-            }
-        ),
+        required={
+            "species", "selected_image", "species_library",
+            "biological_context", "capture_group_id",
+        },
         optional=set(),
         name="project metadata",
     )
@@ -1015,24 +1008,12 @@ def _document_from_payload(payload: object) -> ProjectAnalysisDocument:
     selected = project["selected_image"]
     if selected is not None:
         selected = _digest_text(selected, "selected image identifier")
-    species_library = (
-        None
-        if project_version == 1
-        else _library_pin_from_payload(project["species_library"])
+    species_library = _library_pin_from_payload(project["species_library"])
+    biological_context = _biological_context_from_payload(
+        project["biological_context"], "project"
     )
-    biological_context = (
-        None
-        if project_version == 1
-        else _biological_context_from_payload(
-            project["biological_context"], "project"
-        )
-    )
-    capture_group_id = (
-        None
-        if project_version == 1
-        else _validated_context_identifier(
-            project["capture_group_id"], "project capture group"
-        )
+    capture_group_id = _validated_context_identifier(
+        project["capture_group_id"], "project capture group"
     )
     raw_images = root["images"]
     if not isinstance(raw_images, list):
@@ -1048,14 +1029,10 @@ def _document_from_payload(payload: object) -> ProjectAnalysisDocument:
         image = _object(raw_image, f"image {index}")
         _keys(
             image,
-            required=(
-                {"id", "source", "image_sha256", "source_shape", "sidecars"}
-                if project_version == 1
-                else {
-                    "id", "source", "image_sha256", "source_shape", "sidecars",
-                    "biological_context", "capture_group_id",
-                }
-            ),
+            required={
+                "id", "source", "image_sha256", "source_shape", "sidecars",
+                "biological_context", "capture_group_id",
+            },
             optional=set(),
             name=f"image {index}",
         )
@@ -1113,19 +1090,11 @@ def _document_from_payload(payload: object) -> ProjectAnalysisDocument:
                 source=ProjectFileReference(location, stored_path, digest),
                 source_shape=shape,
                 sidecars=tuple(sidecars),
-                biological_context=(
-                    None
-                    if project_version == 1
-                    else _biological_context_from_payload(
-                        image["biological_context"], f"image {index}"
-                    )
+                biological_context=_biological_context_from_payload(
+                    image["biological_context"], f"image {index}"
                 ),
-                capture_group_id=(
-                    None
-                    if project_version == 1
-                    else _validated_context_identifier(
-                        image["capture_group_id"], f"image {index} capture group"
-                    )
+                capture_group_id=_validated_context_identifier(
+                    image["capture_group_id"], f"image {index} capture group"
                 ),
             )
         )
@@ -1137,18 +1106,14 @@ def _document_from_payload(payload: object) -> ProjectAnalysisDocument:
     if "ui" in root:
         ui_state = _ui_from_payload(root["ui"], known_nodes)
     try:
-        reference_graphs = (
-            reference_graphs_from_payload(root["reference_graphs"])
-            if project_version >= 3
-            else ()
-        )
-        native_recipes = native_recipes_from_payload(root['native_recipes']) if project_version >= 5 else ()
-        reference_model_assets = (reference_model_assets_from_payload(root['reference_model_assets'], reference_graphs,
-                                                                     native_recipes, _workflow_from_payload(root.get("pipeline_workflow")), node_instances)
-                                  if project_version >= 4 else ())
-        correction_bindings = (correction_bindings_from_payload(root['correction_bindings'], tuple(images),
-                                                               reference_graphs, native_recipes, pipeline_workflow=_workflow_from_payload(root.get("pipeline_workflow")), node_instances=node_instances)
-                               if project_version >= 6 else ())
+        reference_graphs = reference_graphs_from_payload(root["reference_graphs"])
+        native_recipes = native_recipes_from_payload(root['native_recipes'])
+        reference_model_assets = reference_model_assets_from_payload(
+            root['reference_model_assets'], reference_graphs, native_recipes,
+            _workflow_from_payload(root["pipeline_workflow"]), node_instances)
+        correction_bindings = correction_bindings_from_payload(
+            root['correction_bindings'], tuple(images), reference_graphs, native_recipes,
+            pipeline_workflow=_workflow_from_payload(root["pipeline_workflow"]), node_instances=node_instances)
     except ReferenceGraphPersistenceError as error:
         raise InvalidProjectAnalysis(
             f"Invalid project reference graph metadata: {error}"
@@ -1169,7 +1134,7 @@ def _document_from_payload(payload: object) -> ProjectAnalysisDocument:
         reference_graphs=reference_graphs,
         reference_model_assets=reference_model_assets,
         native_recipes=native_recipes,
-        pipeline_workflow=_workflow_from_payload(root.get("pipeline_workflow")),
+        pipeline_workflow=_workflow_from_payload(root["pipeline_workflow"]),
         node_instances=node_instances,
         correction_bindings=correction_bindings,
     )

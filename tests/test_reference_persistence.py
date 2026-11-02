@@ -36,7 +36,7 @@ class ReferenceRegionStoreTests(CatalogueTestCase):
             image_path.write_bytes(b"unchanged source image bytes")
             labels = np.zeros((12, 12), np.uint16)
             labels[2:10, 2:10] = 7
-            bundle = ReferenceRegionBundle(
+            bundle = ReferenceRegionBundle(source_to_corrected=np.eye(3), 
                 shape=labels.shape,
                 annotated_seeds=labels,
                 seed_annotations=(
@@ -73,7 +73,7 @@ class ReferenceRegionStoreTests(CatalogueTestCase):
 
             destination = store.save(
                 image_path,
-                ReferenceRegionBundle(
+                ReferenceRegionBundle(source_to_corrected=np.eye(3), 
                     shape=shape,
                     background=background,
                     foreground=foreground,
@@ -138,43 +138,6 @@ class ReferenceRegionStoreTests(CatalogueTestCase):
                 self.assertIn("annotation_species", archive.files)
             self.assertEqual(tuple(destination.parent.glob("*.tmp")), ())
 
-    def check_test_version_two_archive_loads_with_no_semantic_seed_labels(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            image_path = root / "capture.png"
-            image_path.write_bytes(b"legacy source")
-            shape = (7, 9)
-            instances = np.zeros(shape, dtype=np.uint16)
-            instances[2:5, 3:6] = 4
-            store = ReferenceRegionStore(root)
-            destination = store.save(
-                image_path,
-                ReferenceRegionBundle(
-                    shape=shape,
-                    annotated_seeds=instances,
-                    seed_annotations=(
-                        SeedInstanceAnnotation(4, "white"),
-                    ),
-                    annotation_species="lupinus_mutabilis",
-                ),
-            )
-            with np.load(destination, allow_pickle=False) as archive:
-                payload = {
-                    name: np.array(archive[name])
-                    for name in archive.files
-                    if name not in {"seed_annotations_json", "annotation_species"}
-                }
-            payload["version"] = np.asarray(2, dtype=np.uint16)
-            with destination.open("wb") as stream:
-                np.savez_compressed(stream, **payload)
-
-            loaded = store.load_if_present(image_path, shape)
-
-            self.assertIsNotNone(loaded)
-            assert loaded is not None
-            self.assertEqual(loaded.seed_annotations, ())
-            self.assertEqual(loaded.annotation_species, "")
-
     def check_test_semantic_labels_must_reference_extant_seed_ids(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -205,7 +168,7 @@ class ReferenceRegionStoreTests(CatalogueTestCase):
             with self.assertRaisesRegex(ValueError, "conditions_reviewed"):
                 store.save(
                     image_path,
-                    ReferenceRegionBundle(
+                    ReferenceRegionBundle(source_to_corrected=np.eye(3), 
                         shape=(4, 5),
                         annotated_seeds=instances,
                         seed_annotations=(
@@ -219,34 +182,6 @@ class ReferenceRegionStoreTests(CatalogueTestCase):
                         annotation_species="lupinus_mutabilis",
                     ),
                 )
-
-    def check_test_version_one_boundary_layer_is_validated_but_retired(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            image_path = root / "capture.png"
-            image_path.write_bytes(b"legacy source")
-            shape = (7, 9)
-            store = ReferenceRegionStore(root)
-            destination = store.save(
-                image_path,
-                ReferenceRegionBundle(shape=shape),
-            )
-            with np.load(destination, allow_pickle=False) as archive:
-                payload = {name: np.array(archive[name]) for name in archive.files}
-            boundary = np.zeros(shape, dtype=np.uint8)
-            boundary[2, 3] = 1
-            boundary[4, 5] = 2
-            payload["version"] = np.asarray(1, dtype=np.uint16)
-            payload["boundary"] = boundary
-            with destination.open("wb") as stream:
-                np.savez_compressed(stream, **payload)
-
-            loaded = store.load_if_present(image_path, shape)
-
-            self.assertIsNotNone(loaded)
-            assert loaded is not None
-            self.assertIsNone(loaded.physical_edge)
-            self.assertIsNone(loaded.non_edge)
 
     def check_test_changed_image_is_rejected_before_reference_rasters_are_used(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -308,7 +243,7 @@ class ReferenceRegionStoreTests(CatalogueTestCase):
             store = ReferenceRegionStore(root)
             destination = store.save(
                 image_path,
-                ReferenceRegionBundle(
+                ReferenceRegionBundle(source_to_corrected=np.eye(3), 
                     shape=(7, 9),
                     foreground=np.ones((7, 9), dtype=bool),
                 ),
@@ -346,18 +281,16 @@ class ReferenceRegionStoreTests(CatalogueTestCase):
             self.assertNotEqual(store.path_for(first), store.path_for(second))
 
     def test_validation_and_recovery(self):
-        """6 related ReferenceRegionStoreTests scenarios, each with private fixture state."""
+        """5 related ReferenceRegionStoreTests scenarios, each with private fixture state."""
         self.scenario(self.check_test_invalid_shape_review_names_seed_and_required_repair)
-        self.scenario(self.check_test_version_one_boundary_layer_is_validated_but_retired)
         self.scenario(self.check_test_changed_image_is_rejected_before_reference_rasters_are_used)
         self.scenario(self.check_test_invalid_categorical_archive_is_rejected)
         self.scenario(self.check_test_corrupt_archive_is_rejected)
         self.scenario(self.check_test_invalid_archive_can_be_backed_up_and_replaced_with_empty_current_shape)
 
     def test_workflow_lifecycle(self):
-        """5 related ReferenceRegionStoreTests scenarios, each with private fixture state."""
+        """4 related ReferenceRegionStoreTests scenarios, each with private fixture state."""
         self.scenario(self.check_test_round_trip_preserves_material_and_instance_outputs_only)
-        self.scenario(self.check_test_version_two_archive_loads_with_no_semantic_seed_labels)
         self.scenario(self.check_test_semantic_labels_must_reference_extant_seed_ids)
         self.scenario(self.check_test_selected_condition_requires_explicit_review)
         self.scenario(self.check_test_same_named_external_images_receive_distinct_paths)
@@ -515,55 +448,6 @@ class ReferenceRegionMainWindowTests(CatalogueTestCase):
                 window._applied_foreground_reference_masks[key], foreground
             )
             self.assertNotIn(key, window._withheld_reference_sidecars)
-            dispose_window(window)
-
-    def check_test_genuine_loose_shape_mismatch_offers_backup_and_empty_replacement(self) -> None:
-        from types import SimpleNamespace
-
-        from seedvision.ui.main_window import MainWindow, _path_identity
-
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            image_path = root / "images" / "capture.png"
-            self._write_image(image_path, "#38684a")
-            saved_shape = (54, 70)
-            corrected_shape = (56, 72)
-            foreground = np.zeros(saved_shape, dtype=bool)
-            foreground[8:24, 13:31] = True
-            store = ReferenceRegionStore(root)
-            archive = store.save(
-                image_path,
-                ReferenceRegionBundle(shape=saved_shape, foreground=foreground),
-            )
-            original_bytes = archive.read_bytes()
-            window = open_workspace_images(MainWindow(root))
-            key = _path_identity(image_path)
-            self.assertIn(key, window._pending_unbound_reference_bundles)
-            result = SimpleNamespace(
-                image_path=image_path,
-                calibration=SimpleNamespace(affine_matrix=np.eye(3),
-                    corrected_bgr=np.zeros((*corrected_shape, 3), np.uint8)
-                ),
-            )
-            dialog = MagicMock()
-            replace_button = object()
-            keep_button = object()
-            dialog.addButton.side_effect = (replace_button, keep_button)
-            dialog.clickedButton.return_value = replace_button
-
-            with patch(
-                "seedvision.ui.main_window.QMessageBox", return_value=dialog
-            ) as message_box:
-                affected = window._resolve_pending_project_reference_bundle(
-                    key, result
-                )
-
-            self.assertEqual(affected, set())
-            message_box.assert_not_called()
-            self.assertEqual(archive.read_bytes(), original_bytes)
-            self.assertIn(key, window._withheld_reference_sidecars)
-            self.assertIn(key, window._pending_unbound_reference_bundles)
-            self.assertNotIn(key, window._applied_foreground_reference_masks)
             dispose_window(window)
 
     def check_test_switching_images_keeps_newer_unsaved_in_memory_applied_state(self) -> None:
@@ -852,9 +736,8 @@ class ReferenceRegionMainWindowTests(CatalogueTestCase):
             dispose_window(window)
 
     def test_workflow_lifecycle(self):
-        """8 related ReferenceRegionMainWindowTests scenarios, each with private fixture state."""
+        """7 related ReferenceRegionMainWindowTests scenarios, each with private fixture state."""
         self.scenario(self.check_test_saved_snapshot_automatically_loads_as_immutable_applied_state)
-        self.scenario(self.check_test_genuine_loose_shape_mismatch_offers_backup_and_empty_replacement)
         self.scenario(self.check_test_switching_images_keeps_newer_unsaved_in_memory_applied_state)
         self.scenario(self.check_test_association_panel_explains_pending_corrected_seed_annotations)
         self.scenario(self.check_test_empty_applied_snapshot_overwrites_an_older_nonempty_archive)

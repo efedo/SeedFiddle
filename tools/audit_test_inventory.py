@@ -24,10 +24,11 @@ TIMINGS = ROOT / 'artifacts' / 'test-suite-cleanup-full-v2-timings.json'
 # their own explicit scope declarations. Method scenarios and check expressions
 # are always extracted separately; a module purpose is not a coverage claim.
 PURPOSES = dict(line.split(' | ', 1) for line in '''advanced_analysis | Advanced image layers and CUDA analysis products
-analysis_settings_persistence | Analysis settings serialization, migration, normalization and private workspace state
+analysis_settings_persistence | Analysis settings serialization, normalization and private workspace state
 annotation_edge_sources | Annotation tools select the intended edge evidence and clear obsolete sources
 annotation_shape_revision | Shape review revisions, visibility and reference-library updates
 annotation_tools | Annotation drawing, brush geometry, region operations and instance tools
+annotation_transfer | Project annotation folders, unsaved drafts and annotation bundle export, restore and manifest validation
 assignment_budget | Assignment metrics and segmentation matching respect explicit work budgets
 benchmark_checkpoints | Checkpoint identities, array limits, manifests, storage and corruption rejection
 benchmark_conformance | Comparison metrics, tolerances and checkpoint conformance reports
@@ -108,7 +109,7 @@ plantcv_watershed_diagnostic | CUDA watershed diagnostic labels, plots and bound
 procedural_fit | Procedural seed fitting, search behavior and geometric evidence
 procedural_fit_ui | Procedural fit controls and result application
 procedural_instances | CUDA procedural instance splitting, ownership and analysis integration
-project_analysis_persistence | Project analysis settings, image locators, migration and atomic persistence
+project_analysis_persistence | Project analysis settings, image locators and atomic persistence
 project_analysis_ui | Project analysis save/reopen, dirty state, selections and desktop guards
 reference_capture | Public reference capture sessions, manifests and publication failures
 reference_checkpoint_inspection | Reference checkpoint inspection and graph-stage evidence
@@ -122,7 +123,7 @@ reference_history | Reference history revision selection and UI presentation
 reference_library | Reference library aggregation, extraction, contracts and persistence
 reference_mask_inspection | Saved public mask stage inspection
 reference_mask_stage | Public mask-stage capture and checkpoint identity
-reference_persistence | Reference region sidecars, migration, source binding and desktop lifecycle
+reference_persistence | Reference region sidecars, source binding and desktop lifecycle
 reference_preprocessing | Public preprocessing chains, capture, controls and cache identity
 reference_runner | Isolated PlantCV worker requests, limits, transport and failure outcomes
 reference_seed_chain | Actual public seed-chain composition, controls and cancellation

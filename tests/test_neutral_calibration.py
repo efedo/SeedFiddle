@@ -255,40 +255,17 @@ class NeutralSettingsTests(unittest.TestCase):
                               lambda v: c.CalibrationSettings(neutral_patch_selection=v, apply_colour_balance=False)):
                 with self.subTest(raw=raw), self.assertRaises(ValueError): normalize(raw)
 
-    def check_test_version20_migration_preserves_all_old_flags_values_and_connections(self):
-        from seedvision.persistence import (analysis_settings_profile_from_graph, analysis_settings_profile_to_payload,
-            analysis_settings_profile_from_payload, apply_analysis_settings_profile, ANALYSIS_SETTINGS_VERSION)
-        from seedvision.pipeline import build_default_pipeline
-        graph = build_default_pipeline()
-        graph.node('background_likelihood').enabled = False
-        for node_id in graph.downstream('background_likelihood', recursive=True):
-            graph.node(node_id).enabled = False
-        graph.set_parameter('ruler_detection', 'minor_tick_mm', 2.)
-        graph.disconnect(next(w for w in graph.connections if w.target == 'procedural_instances' and w.source == 'project'))
-        before = analysis_settings_profile_to_payload(analysis_settings_profile_from_graph(graph))
-        old = deepcopy(before); old['version'] = 20
-        # A real v20 catalogue predates the opt-in trait classifier. Its absent
-        # node/connections migrate additively, without altering old controls.
-        old['nodes'] = [node for node in old['nodes'] if node['id'] != 'trait_classifier']
-        old['connections'] = [wire for wire in old['connections'] if wire['target'] != 'trait_classifier']
-        params = next(n for n in old['nodes'] if n['id'] == 'deskew_colour')['parameters']
-        del params['neutral_patch_selection']; del params['neutral_sample_frame']
-        target = build_default_pipeline()
-        apply_analysis_settings_profile(target, analysis_settings_profile_from_payload(old))
-        self.assertEqual(analysis_settings_profile_to_payload(analysis_settings_profile_from_graph(target)), before)
-        self.assertEqual(before['version'], ANALYSIS_SETTINGS_VERSION)
-
-    def check_test_current_and_version20_catalogues_remain_strict(self):
+    def check_test_current_catalogue_remains_strict(self):
         from seedvision.persistence import (analysis_settings_profile_from_graph, analysis_settings_profile_to_payload,
             analysis_settings_profile_from_payload, apply_analysis_settings_profile, IncompatibleAnalysisSettingsProfile)
         from seedvision.pipeline import build_default_pipeline
         base = analysis_settings_profile_to_payload(analysis_settings_profile_from_graph(build_default_pipeline()))
-        for version, mutate in ((21, lambda p: next(n for n in p['nodes'] if n['id']=='deskew_colour')['parameters'].pop('neutral_patch_selection')),
-                                (20, lambda p: next(n for n in p['nodes'] if n['id']=='deskew_colour')['parameters'].pop('max_deskew_degrees')),
-                                (20, lambda p: p['connections'].pop()),
-                                (20, lambda p: p['nodes'].pop())):
-            payload = deepcopy(base); payload['version'] = version; mutate(payload)
-            with self.subTest(version=version), self.assertRaises(IncompatibleAnalysisSettingsProfile):
+        for name, mutate in (('neutral parameter', lambda p: next(n for n in p['nodes'] if n['id']=='deskew_colour')['parameters'].pop('neutral_patch_selection')),
+                             ('deskew parameter', lambda p: next(n for n in p['nodes'] if n['id']=='deskew_colour')['parameters'].pop('max_deskew_degrees')),
+                             ('connection', lambda p: p['connections'].pop()),
+                             ('node', lambda p: p['nodes'].pop())):
+            payload = deepcopy(base); mutate(payload)
+            with self.subTest(missing=name), self.assertRaises(IncompatibleAnalysisSettingsProfile):
                 apply_analysis_settings_profile(build_default_pipeline(), analysis_settings_profile_from_payload(payload))
 
     def check_test_inspector_disables_and_reenables_neutral_controls_without_rebinding(self):
@@ -340,10 +317,9 @@ class NeutralSettingsTests(unittest.TestCase):
             finally: view.close(); app.processEvents()
 
     def test_workflow_lifecycle(self):
-        """6 related NeutralSettingsTests scenarios, each with private fixture state."""
+        """5 related NeutralSettingsTests scenarios, each with private fixture state."""
         self.scenario(self.check_test_selection_parser_is_shared_canonical_and_strict)
-        self.scenario(self.check_test_version20_migration_preserves_all_old_flags_values_and_connections)
-        self.scenario(self.check_test_current_and_version20_catalogues_remain_strict)
+        self.scenario(self.check_test_current_catalogue_remains_strict)
         self.scenario(self.check_test_inspector_disables_and_reenables_neutral_controls_without_rebinding)
         self.scenario(self.check_test_new_controls_reach_calculation_settings_and_have_fixed_reference_disposition)
         self.scenario(self.check_test_raw_and_corrected_overlays_label_stable_grid_ids_and_used_patch)

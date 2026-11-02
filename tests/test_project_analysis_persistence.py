@@ -65,7 +65,7 @@ class ProjectAnalysisPersistenceTests(CatalogueTestCase):
         foreground[1:3, 2:5] = True
         references = ReferenceRegionStore(root).save(
             image,
-            ReferenceRegionBundle(shape=shape, foreground=foreground),
+            ReferenceRegionBundle(source_to_corrected=np.eye(3), shape=shape, foreground=foreground),
         )
         centres = ManualSeedCentreStore(root).save(
             image,
@@ -161,7 +161,7 @@ class ProjectAnalysisPersistenceTests(CatalogueTestCase):
             payload = json.loads(destination.read_text(encoding="utf-8"))
             self.assertEqual(
                 set(payload),
-                {"format", "version", "analysis_settings", "project", "images", "ui", "reference_graphs", "reference_model_assets", "native_recipes", "correction_bindings"},
+                {"format", "version", "analysis_settings", "project", "images", "ui", "reference_graphs", "reference_model_assets", "native_recipes", "correction_bindings", "pipeline_workflow"},
             )
             self.assertEqual(
                 set(payload["images"][0]),
@@ -179,62 +179,6 @@ class ProjectAnalysisPersistenceTests(CatalogueTestCase):
             self.assertNotIn("corrected_bgr", encoded)
             self.assertNotIn("occupancy_likelihood", encoded)
             self.assertLess(destination.stat().st_size, 512 * 1024)
-
-    def check_test_project_v1_and_v2_migrate_to_v3_and_v2_rejects_injected_graph_fields(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary) / "workspace"
-            image = self._source(root / "images" / "capture.jpg", (8, 11), 75)
-            store = ProjectAnalysisStore(root)
-            current_path = store.capture_and_save(
-                analysis_settings=self._profile(),
-                images=(ProjectImageSpec(image, (8, 11)),),
-            )
-            current = json.loads(current_path.read_text(encoding="utf-8"))
-            settings = current["analysis_settings"]
-
-            version_two = copy.deepcopy(current)
-            version_two["version"] = 2
-            del version_two["reference_graphs"]
-            del version_two['reference_model_assets']
-            del version_two['native_recipes']
-            del version_two['correction_bindings']
-            version_two_path = root / "projects" / f"version-two{PROJECT_ANALYSIS_EXTENSION}"
-            version_two_path.write_text(json.dumps(version_two), encoding="utf-8")
-
-            version_one = copy.deepcopy(version_two)
-            version_one["version"] = 1
-            version_one["project"] = {
-                "species": version_one["project"]["species"],
-                "selected_image": version_one["project"]["selected_image"],
-            }
-            for record in version_one["images"]:
-                record.pop("biological_context")
-                record.pop("capture_group_id")
-            version_one_path = root / "projects" / f"version-one{PROJECT_ANALYSIS_EXTENSION}"
-            version_one_path.write_text(json.dumps(version_one), encoding="utf-8")
-
-            for legacy_path in (version_one_path, version_two_path):
-                with self.subTest(version=legacy_path.name):
-                    loaded = store.load(legacy_path)
-                    self.assertEqual(loaded.document.reference_graphs, ())
-                    self.assertEqual(
-                        analysis_settings_profile_to_payload(loaded.document.analysis_settings),
-                        settings,
-                    )
-                    migrated_path = store.save(
-                        loaded.document,
-                        root / "projects" / f"migrated-{legacy_path.name}",
-                    )
-                    migrated = json.loads(migrated_path.read_text(encoding="utf-8"))
-                    self.assertEqual(migrated["version"], 6)
-                    self.assertEqual(migrated["reference_graphs"], [])
-
-            injected = copy.deepcopy(version_two)
-            injected["reference_graphs"] = []
-            injected_path = root / "projects" / f"injected{PROJECT_ANALYSIS_EXTENSION}"
-            injected_path.write_text(json.dumps(injected), encoding="utf-8")
-            with self.assertRaisesRegex(InvalidProjectAnalysis, "unknown field"):
-                store.load(injected_path)
 
     def check_test_moving_the_complete_workspace_preserves_relative_images_and_sidecars(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -677,7 +621,7 @@ class ProjectAnalysisPersistenceTests(CatalogueTestCase):
             foreground[2:5, 3:7] = True
             references = ReferenceRegionStore(root).save(
                 image,
-                ReferenceRegionBundle(
+                ReferenceRegionBundle(source_to_corrected=np.eye(3), 
                     shape=corrected_shape,
                     foreground=foreground,
                 ),
@@ -797,8 +741,7 @@ class ProjectAnalysisPersistenceTests(CatalogueTestCase):
         self.scenario(self.check_test_foreign_absolute_path_is_never_probed_as_a_native_path)
 
     def test_validation_and_recovery(self):
-        """9 related ProjectAnalysisPersistenceTests scenarios, each with private fixture state."""
-        self.scenario(self.check_test_project_v1_and_v2_migrate_to_v3_and_v2_rejects_injected_graph_fields)
+        """8 related ProjectAnalysisPersistenceTests scenarios, each with private fixture state."""
         self.scenario(self.check_test_missing_and_changed_files_are_structured_issues_not_schema_failures)
         self.scenario(self.check_test_strict_schema_rejects_unknown_fields_traversal_duplicates_and_nan)
         self.scenario(self.check_test_failed_atomic_replace_preserves_the_previous_master_and_cleans_temp)

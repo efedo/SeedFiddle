@@ -48,7 +48,7 @@ def reproject_annotations(annotations, old_transform, new_transform):
 
 def reproject_bundle(bundle, new_transform, shape):
     if bundle.source_to_corrected is None:
-        raise ValueError('Legacy references have no coordinate transform. Review their alignment before binding them to the current calibration.')
+        raise ValueError('References without a calibration transform cannot be reprojected.')
     old = bundle.source_to_corrected
     fields = {name:reproject_raster(getattr(bundle,name),old,new_transform,shape) for name in
               ('background','foreground','other','physical_edge','non_edge','annotated_seeds')}

@@ -1026,6 +1026,7 @@ class ProjectAnalysisUiTests(CatalogueTestCase):
                 self.assertIsNotNone(key)
                 assert key is not None
 
+                window._reference_transforms[key] = np.eye(3)
                 foreground = np.zeros((36, 48), dtype=bool)
                 foreground[6:18, 8:21] = True
                 window._draft_foreground_reference_masks[key] = foreground
@@ -1444,6 +1445,7 @@ class ProjectAnalysisUiTests(CatalogueTestCase):
                 replacement.flags.writeable = False
                 window._applied_foreground_reference_masks[key] = replacement
                 window._reference_layer_shapes[key] = (36, 48)
+                window._reference_transforms[key] = np.eye(3)
                 self.assertIsNotNone(
                     window._persist_applied_reference_regions(automatic=False)
                 )

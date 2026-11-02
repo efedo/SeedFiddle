@@ -15,8 +15,6 @@ BACKENDS = {
 # Cellpose-SAM is a third-party pretrained model, not a native reimplementation.
 MODES = {node: 'native_compatible' for node in BACKENDS}
 MODES['cellpose_sam_instances'] = 'third_party_pretrained'
-# Ledgers captured before the Cellpose-SAM node existed lack its record.
-_LEGACY_BACKENDS = frozenset(BACKENDS) - {'cellpose_sam_instances'}
 _UNAVAILABLE = {'procedural_instances': 'foreground_missing', 'unet_instances': 'checkpoint_missing',
                 'stardist_instances': 'checkpoint_missing', 'cellpose_sam_instances': 'dependency_missing'}
 _FIELDS = {'backend_id', 'backend_version', 'mode', 'enabled', 'state',
@@ -91,7 +89,7 @@ def _unique(pairs):
 
 
 def read_native_outcomes(captured):
-    """Read a bounded strict ledger; legacy absence stays explicitly unknown."""
+    """Read a bounded strict ledger; an absent ledger stays explicitly unknown."""
     if captured is None:
         return {'contract': CONTRACT, 'evidence_state': 'not_recorded', 'outcomes': None}
     if not isinstance(captured, str) or len(captured.encode('utf-8')) > 1024 * 1024:
@@ -104,7 +102,7 @@ def read_native_outcomes(captured):
     if not isinstance(payload, dict) or set(payload) != {'contract', 'outcomes'} or payload['contract'] != CONTRACT:
         raise ValueError('Unsupported backend outcome contract.')
     records = payload['outcomes']
-    if not isinstance(records, dict) or set(records) not in (set(BACKENDS), set(_LEGACY_BACKENDS)):
+    if not isinstance(records, dict) or set(records) != set(BACKENDS):
         raise ValueError('Native backend inventory is incomplete.')
     for node, record in records.items():
         if not isinstance(record, dict) or set(record) != _FIELDS:

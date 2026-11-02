@@ -19,7 +19,6 @@ import numpy as np
 
 REFERENCE_REGION_VERSION = 7
 _MATERIAL_CLASSES = frozenset((0, 1, 2, 3))
-_BOUNDARY_CLASSES = frozenset((0, 1, 2))
 
 
 class ReferenceRegionError(ValueError):
@@ -77,10 +76,12 @@ class SeedInstanceAnnotation:
 class ReferenceRegionBundle:
     """The active reference layers in full image coordinates.
 
-    ``physical_edge`` and ``non_edge`` are retained only as a source-compatible
-    bridge for version-one callers.  Version-two archives do not persist them:
-    physical and non-physical edge supervision is derived deterministically
-    from ``annotated_seeds``.
+    ``physical_edge`` and ``non_edge`` exist only in memory. Archives do not
+    persist them: physical and non-physical edge supervision is derived
+    deterministically from ``annotated_seeds``.
+
+    ``source_to_corrected`` records the calibration frame the layers were drawn
+    in. Only an archive without any annotation may omit it.
     """
 
     shape: tuple[int, int]
@@ -188,6 +189,13 @@ class ReferenceRegionStore:
         annotation_species = _validated_identifier_or_empty(
             bundle.annotation_species, "annotation species"
         )
+        if bundle.source_to_corrected is None and (
+            background.any() or foreground.any() or other.any() or instances.any()
+        ):
+            raise ReferenceRegionError(
+                "Annotated references require the calibration transform of the "
+                "image they were drawn on."
+            )
         from seedvision.annotation.coordinates import validated_transform
         transform = np.empty((0,0),np.float64) if bundle.source_to_corrected is None else validated_transform(bundle.source_to_corrected)
 
@@ -395,9 +403,10 @@ class ReferenceRegionStore:
                         f"Saved reference archive is missing 'version': {source}"
                     )
                 version = _scalar_int(archive["version"], "version")
-                if version not in {1, 2, 3, 4, 5, 6, REFERENCE_REGION_VERSION}:
+                if version != REFERENCE_REGION_VERSION:
                     raise InvalidReferenceArchive(
-                        f"Unsupported reference-region version {version} in {source}."
+                        f"Unsupported reference-region version {version} in {source}; "
+                        f"this application reads only version {REFERENCE_REGION_VERSION}."
                     )
                 required = [
                     "version",
@@ -408,11 +417,11 @@ class ReferenceRegionStore:
                     "material",
                     "annotated_seeds",
                     "annotation_origin",
+                    "seed_annotations_json",
+                    "annotation_species",
+                    "source_to_corrected",
+                    "coordinate_space",
                 ]
-                if version == 1:
-                    required.append("boundary")
-                if version >= 6:
-                    required.extend(("source_to_corrected", "coordinate_space"))
                 for name in required:
                     if name not in archive.files:
                         raise InvalidReferenceArchive(
@@ -446,7 +455,7 @@ class ReferenceRegionStore:
                         image, source, saved_digest, actual_digest
                     )
                 snapshot_digest = None
-                if version >= 7 and 'annotation_snapshot_source_sha256' in archive.files:
+                if 'annotation_snapshot_source_sha256' in archive.files:
                     snapshot_digest = validated_source_sha256(_scalar_text(
                         archive['annotation_snapshot_source_sha256'], 'annotation snapshot source SHA-256'),
                         'annotation snapshot source SHA-256')
@@ -459,13 +468,12 @@ class ReferenceRegionStore:
                     )
                 )
                 transform = None
-                if version >= 6:
-                    from seedvision.annotation.coordinates import validated_transform
-                    space = _scalar_text(archive['coordinate_space'],'coordinate space')
-                    if space == 'corrected_image':
-                        transform = validated_transform(archive['source_to_corrected'])
-                    elif space != 'unbound' or archive['source_to_corrected'].size:
-                        raise InvalidReferenceArchive('Invalid reference coordinate-frame metadata.')
+                from seedvision.annotation.coordinates import validated_transform
+                space = _scalar_text(archive['coordinate_space'],'coordinate space')
+                if space == 'corrected_image':
+                    transform = validated_transform(archive['source_to_corrected'])
+                elif space != 'unbound' or archive['source_to_corrected'].size:
+                    raise InvalidReferenceArchive('Invalid reference coordinate-frame metadata.')
                 if expected is not None and saved_shape != expected:
                     raise InvalidReferenceArchive(
                         "Saved reference dimensions "
@@ -473,32 +481,18 @@ class ReferenceRegionStore:
                         f"{expected[1]}×{expected[0]}: {source}"
                     )
                 material = np.asarray(archive["material"])
-                legacy_boundary = (
-                    np.asarray(archive["boundary"])
-                    if version == 1
-                    else None
-                )
                 instances = np.asarray(archive["annotated_seeds"])
                 annotation_origin = _scalar_text(
                     archive["annotation_origin"], "annotation origin"
                 )
-                if version >= 3:
-                    for name in ("seed_annotations_json", "annotation_species"):
-                        if name not in archive.files:
-                            raise InvalidReferenceArchive(
-                                f"Saved reference archive is missing {name!r}: {source}"
-                            )
-                    seed_annotations_text = _scalar_text(
-                        archive["seed_annotations_json"],
-                        "seed annotations",
-                    )
-                    annotation_species = _scalar_text(
-                        archive["annotation_species"],
-                        "annotation species",
-                    )
-                else:
-                    seed_annotations_text = "[]"
-                    annotation_species = ""
+                seed_annotations_text = _scalar_text(
+                    archive["seed_annotations_json"],
+                    "seed annotations",
+                )
+                annotation_species = _scalar_text(
+                    archive["annotation_species"],
+                    "annotation species",
+                )
         except ImageFingerprintMismatch:
             raise
         except InvalidReferenceArchive:
@@ -512,18 +506,16 @@ class ReferenceRegionStore:
         material = _categorical_raster(
             material, shape, _MATERIAL_CLASSES, "material", source
         )
-        if legacy_boundary is not None:
-            # Validate old data so a corrupt version-one file is not silently
-            # accepted, but intentionally discard the retired painted layer.
-            _categorical_raster(
-                legacy_boundary, shape, _BOUNDARY_CLASSES, "boundary", source
-            )
         try:
             instances = _instance_labels(instances, shape)
         except ReferenceRegionError as error:
             raise InvalidReferenceArchive(
                 f"Invalid annotated-seed raster in {source}: {error}"
             ) from error
+        if transform is None and (material.any() or instances.any()):
+            raise InvalidReferenceArchive(
+                f"Annotated reference archive records no calibration transform: {source}"
+            )
         try:
             decoded_annotations = json.loads(seed_annotations_text)
         except (TypeError, ValueError) as error:
@@ -534,7 +526,6 @@ class ReferenceRegionStore:
             seed_annotations = _seed_annotations_from_payload(
                 decoded_annotations,
                 frozenset(int(value) for value in np.unique(instances) if value),
-                version=version,
             )
             annotation_species = _validated_identifier_or_empty(
                 annotation_species, "annotation species"
@@ -704,35 +695,31 @@ def _validated_seed_annotations(
     return tuple(sorted(normalized, key=lambda item: item.seed_id))
 
 
+_SEED_ANNOTATION_KEYS = frozenset((
+    "seed_id",
+    "coat_pattern",
+    "conditions",
+    "conditions_reviewed",
+    "shape_reviewed",
+    "outline_visibility",
+    "pose",
+    "hilum_point",
+    "hilum_direction",
+    "physical_seed_id",
+    "shape_exclusion_reason",
+    "full_length_visible",
+))
+
+
 def _seed_annotations_from_payload(
     payload: object,
     extant_seed_ids: frozenset[int],
-    *,
-    version: int = REFERENCE_REGION_VERSION,
 ) -> tuple[SeedInstanceAnnotation, ...]:
     if not isinstance(payload, list):
         raise ReferenceRegionError("Seed annotations must be a JSON list.")
     values: list[SeedInstanceAnnotation] = []
     for item in payload:
-        legacy_keys = {
-            "seed_id",
-            "coat_pattern",
-            "conditions",
-            "conditions_reviewed",
-        }
-        current_keys = legacy_keys | {
-            "shape_reviewed",
-            "outline_visibility",
-            "pose",
-            "hilum_point",
-            "hilum_direction",
-            "physical_seed_id",
-            "shape_exclusion_reason",
-        }
-        expected_keys = current_keys if version >= 4 else legacy_keys
-        if version >= 5:
-            expected_keys = expected_keys | {"full_length_visible"}
-        if not isinstance(item, dict) or set(item) != expected_keys:
+        if not isinstance(item, dict) or set(item) != _SEED_ANNOTATION_KEYS:
             raise ReferenceRegionError("A seed annotation has an invalid schema.")
         if not isinstance(item["conditions"], list) or not all(
             isinstance(condition, str) for condition in item["conditions"]
@@ -749,28 +736,22 @@ def _seed_annotations_from_payload(
                 coat_pattern=coat,
                 conditions=tuple(item["conditions"]),
                 conditions_reviewed=item["conditions_reviewed"],
-                shape_reviewed=(False if version < 4 else item["shape_reviewed"]),
-                full_length_visible=(False if version < 5 else item["full_length_visible"]),
-                outline_visibility=(
-                    "unknown" if version < 4 else item["outline_visibility"]
-                ),
-                pose="unknown" if version < 4 else item["pose"],
+                shape_reviewed=item["shape_reviewed"],
+                full_length_visible=item["full_length_visible"],
+                outline_visibility=item["outline_visibility"],
+                pose=item["pose"],
                 hilum_point=(
                     None
-                    if version < 4 or item["hilum_point"] is None
+                    if item["hilum_point"] is None
                     else tuple(item["hilum_point"])
                 ),
                 hilum_direction=(
                     None
-                    if version < 4 or item["hilum_direction"] is None
+                    if item["hilum_direction"] is None
                     else tuple(item["hilum_direction"])
                 ),
-                physical_seed_id=(
-                    None if version < 4 else item["physical_seed_id"]
-                ),
-                shape_exclusion_reason=(
-                    None if version < 4 else item["shape_exclusion_reason"]
-                ),
+                physical_seed_id=item["physical_seed_id"],
+                shape_exclusion_reason=item["shape_exclusion_reason"],
             )
         )
     return _validated_seed_annotations(values, extant_seed_ids)

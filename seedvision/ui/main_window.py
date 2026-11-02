@@ -3804,7 +3804,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         optimise_menu.addAction(self.optimize_project_action)
         optimise_menu.addAction(self.import_optimization_targets_action)
         optimise_menu.addAction(self.optimization_history_action)
-        analysis_menu.addAction(self.reference_alignment_action)
 
         learning_menu = menus["learning"]
         outlines_menu = learning_menu.addMenu("Seed outlines")
@@ -8608,15 +8607,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         from dataclasses import replace
         from seedvision.annotation.coordinates import reproject_bundle
         if bundle.source_to_corrected is None:
-            populated = any(value is not None and np.any(value) for value in
-                (bundle.background, bundle.foreground, bundle.other, bundle.annotated_seeds,
-                 bundle.physical_edge, bundle.non_edge))
-            if populated:
-                self._pending_unbound_reference_bundles[key] = bundle
-                self._withheld_reference_sidecars.add(key)
-                self._set_reference_region_load_status(key, "withheld",
-                    "Legacy coordinates are unknown. Use Analysis > Review legacy reference alignment before applying these regions.")
-                return set()
+            # Only an archive without annotations omits its calibration frame.
             bundle = replace(bundle, shape=corrected_shape,
                 source_to_corrected=result.calibration.affine_matrix)
         bundle = reproject_bundle(bundle, result.calibration.affine_matrix, corrected_shape)
@@ -8986,8 +8977,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             background=self._applied_background_reference_masks.get(key),
             foreground=self._applied_foreground_reference_masks.get(key),
             other=self._applied_background_exclusion_masks.get(key),
-            # Retired manual boundary classes remain readable from legacy
-            # archives, but new snapshots no longer perpetuate them.
+            # Retired manual boundary classes are never persisted.
             physical_edge=None,
             non_edge=None,
             annotated_seeds=self._applied_instance_annotations.get(key),

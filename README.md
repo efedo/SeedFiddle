@@ -162,7 +162,7 @@ Add `--seed-crop-padding-px 4` to also write per-seed image/mask crops.
 
 ```powershell
 .\.venv\Scripts\python.exe -m tests            # core regression subset (24 units)
-.\.venv\Scripts\python.exe -m tests --full     # all 649 units, about 14 minutes
+.\.venv\Scripts\python.exe -m tests --full     # all 665 units, about 13 minutes
 .\.venv\Scripts\python.exe scripts\generate_node_catalogue.py --check
 ```
 

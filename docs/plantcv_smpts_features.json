@@ -28142,7 +28142,7 @@
               "tests/test_catalogue_source_fidelity.py::test_validation_and_recovery",
               "tests/test_catalogue_source_fidelity.py::test_workflow_lifecycle",
               "tests/test_catalogue_source_fidelity.py::test_workflow_lifecycle",
-              "tests/test_pipeline_workflows.py::test_roundtrip_and_old_project_default",
+              "tests/test_pipeline_workflows.py::test_roundtrip_and_project_without_workflow_record",
               "tests/test_pipeline_workflows.py::test_source_and_working_operation_contracts_reject_tampering",
               "tests/test_pipeline_workflows.py::test_real_run_to_node_rewire_bypass_and_layout_cache",
               "tests/test_reference_graph_persistence.py::test_workflow_lifecycle",

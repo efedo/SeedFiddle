@@ -76,27 +76,7 @@ class ReferenceModelAssetTests(CatalogueTestCase):
         self.assertEqual(len(loaded.document.reference_model_assets), 2)
         self.assertEqual(len(list((workspace/'native-models').iterdir())), 1)
         self.assertEqual(len({asset.path for asset in loaded.document.reference_model_assets}), 1)
-        self.assertEqual(json.loads(master.read_bytes())['version'], 6)
-
-    def check_test_legacy_v3_migrates_metadata_without_inventing_model_closure(self):
-        workspace, master, graphs = self.project()
-        payload = json.loads(master.read_bytes())
-        payload['version'] = 3
-        payload.pop('correction_bindings')
-        payload.pop('reference_model_assets')
-        payload.pop('native_recipes')
-        master.write_text(json.dumps(payload), encoding='utf-8')
-        store = ProjectAnalysisStore(workspace)
-        loaded = store.load(master)
-        self.assertEqual(loaded.document.reference_model_assets, ())
-        self.assertEqual(loaded.document.reference_graphs, graphs)
-        store.save(loaded.document, master)
-        self.assertEqual(json.loads(master.read_bytes())['reference_model_assets'], [])
-        with self.assertRaises(ValueError):
-            assets.verify_reference_model_assets(workspace, (), graphs, require_complete=True)
-        snapshot = create_snapshot(workspace, master, self.root/'snapshots')
-        portable = ProjectAnalysisStore(snapshot).load(snapshot/'snapshot.seedfiddle-project.json')
-        self.assertEqual(len(portable.document.reference_model_assets), 1)
+        self.assertEqual(json.loads(master.read_bytes())['version'], 7)
 
     def check_test_invalid_or_stale_binding_never_replaces_master(self):
         workspace, master, graphs = self.project()
@@ -255,12 +235,6 @@ class ReferenceModelAssetTests(CatalogueTestCase):
         self.assertFalse((self.root/'restore').exists())
 
 
-
-
-
-
-
-
     def _assert_legacy_archive(self, version):
         from seedvision.benchmarking.checkpoints import load_checkpoint, publish_checkpoint
         result = run_native_recipe_path(self.recipe, self.source)
@@ -302,14 +276,9 @@ class ReferenceModelAssetTests(CatalogueTestCase):
         self.assertTrue(arrays)
 
 
-
-
-
-
     def test_workflow_lifecycle(self):
-        """5 related ReferenceModelAssetTests scenarios, each with private fixture state."""
+        """4 related ReferenceModelAssetTests scenarios, each with private fixture state."""
         self.scenario(self.check_test_capture_preserves_history_and_deduplicates_exact_objects)
-        self.scenario(self.check_test_legacy_v3_migrates_metadata_without_inventing_model_closure)
         self.scenario(self.check_test_aggregate_bounds_precede_any_model_read_or_copy)
         self.scenario(self.check_test_foreign_origin_requires_verified_local_transport)
         self.scenario(self.check_test_model_growth_during_snapshot_read_stays_bounded)
