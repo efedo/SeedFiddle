@@ -3,7 +3,7 @@
 The suite is plain `unittest`, run through a parallel runner in `tests/__main__.py`.
 Related scenarios are grouped into *functional units* (one `test_workflow_lifecycle`
 or `test_validation_and_recovery` method that runs several private scenarios), so
-665 units cover roughly 2,800 original test methods.
+666 units cover roughly 2,800 original test methods.
 
 ## Commands
 
@@ -49,6 +49,20 @@ cannot produce a pass.
 - **Time budget is advisory.** The report records whether the run stayed under
   1,000 units and 900 seconds and prints a warning if not; it does not change the
   verdict.
+- **Workers end without interpreter shutdown.** Once its report and journal are
+  on disk, a worker ends itself with its result code (`tests/worker.py`). Closing a
+  window only hides it, and its own signal connections keep it alive, so a worker
+  holds every window its tests opened: up to about 180,000 widgets and 8 GB.
+  Deleting them at shutdown took over four minutes after the last test, because
+  each deletion costs more the more widgets are still alive. On Windows the worker
+  uses `TerminateProcess`, because `os._exit` still unloads DLLs and that crashes
+  after a long run. As a result, a crash during worker shutdown cannot fail a run,
+  and temporary directories that tests leave open stay in `artifacts\test-temp\`
+  until pruned.
+- **Do not delete windows between tests.** It looks like the direct cure, but once
+  the toolbar scenario of `tests.test_reference_edge_toolbar_revision` has deleted
+  its `MainWindow`, the next `PipelineCanvas` fails with an access violation, even
+  if `gc.collect()` runs in between. The cause is not yet known.
 - **Skips.** Three are expected on Windows: the opt-in fill-image diagnostic
   (`SEEDFIDDLE_RUN_FILL_IMAGE_DIAGNOSTIC=1`), a case-sensitive filesystem check
   and a directory-symlink privilege check.
@@ -56,8 +70,10 @@ cannot produce a pass.
   directories to `artifacts\test-temp\`. Clear old ones with
   `scripts\prune_artifacts.py --older-than 7 --delete` (dry run without `--delete`).
 
-The last full run (2 November 2026) passed 665/665 units in about 13 minutes
-with the three expected skips.
+The last full runs (3 November 2026) covered all 666 units in 10-12 minutes with
+the three expected skips. They ran from a git worktree, so the two acceptance units
+bound to the checkout path failed (see [HANDOFF.md](../HANDOFF.md)) and every other
+unit passed.
 
 ## Prerequisites and frozen fixtures
 

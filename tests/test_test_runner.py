@@ -208,6 +208,14 @@ class TestRunnerTests(unittest.TestCase):
             self.assertFalse(merged['passed'])
             self.assertFalse(merged['all_discovered_units_accounted_for'])
 
+    def test_worker_ends_with_its_code_and_flushed_output_but_no_interpreter_shutdown(self):
+        script=("import atexit\nfrom tests.worker import end_without_shutdown\n"
+            "atexit.register(print,'interpreter shutdown ran')\n"
+            "print('flushed',end='')\nend_without_shutdown(7)\n")
+        process=subprocess.run([sys.executable,'-c',script],cwd=ROOT,capture_output=True,text=True,timeout=30)
+        self.assertEqual(process.returncode,7,process.stderr)
+        self.assertEqual(process.stdout,'flushed')
+
     def test_partition_is_complete_and_fixture_timings_preserve_lifecycle(self):
         class Item:
             def __init__(self, identifier): self.identifier = identifier

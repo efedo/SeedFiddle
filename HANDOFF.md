@@ -54,11 +54,13 @@ work, families F01–F22). See [README.md](README.md) for the user view and
 .\.venv\Scripts\python.exe .\seed_vision.py --no-bootstrap
 .\.venv\Scripts\python.exe -m tests                  # core subset
 .\.venv\Scripts\python.exe -m tests tests.test_gui_layout   # focused module
-.\.venv\Scripts\python.exe -m tests --full           # 665 units, ~13 min, 3 workers
+.\.venv\Scripts\python.exe -m tests --full           # 666 units, 10-12 min, 3 workers
 ```
 
-The last full run (2 November 2026) passed all 665 units with the 3 expected
-skips. Wall time over 15 minutes is reported as an advisory warning only; a run
+The last full runs (3 November 2026) covered all 666 units in 10-12 minutes with
+the 3 expected skips. They ran from a git worktree, so the two acceptance units
+bound to the checkout path failed (see Gotchas) and every other unit passed.
+Wall time over 15 minutes is reported as an advisory warning only; a run
 fails on test outcomes or an unaccounted unit, and a worker that writes no
 journal entry for `--stall-seconds` (default 900) is stopped. Details are in
 [docs/TESTING.md](docs/TESTING.md).
@@ -87,6 +89,15 @@ old `test-runs/` and `test-temp/` directories and never touches the list above.
   bytes of reviewed calculation sources (for example
   `seedvision/benchmarking/reference_runner.py`). Do not edit those files without
   a reviewed provenance update; a cosmetic change fails the suite.
+- **Acceptance identities bind the checkout path.** `_code_record` in
+  `seedvision/benchmarking/native_recipe.py` hashes each function's `co_filename`,
+  so `tests.test_reader_acceptance` and `tests.test_recipe_acceptance` pass only
+  from `D:\Programming\SeedFiddle`. From a git worktree they report a JSON
+  acceptance mismatch on the preparation identities, whatever the code.
+- **Closed test windows stay alive.** Their own signal connections keep them alive,
+  so a full-suite worker ends itself without interpreter shutdown, which would spend
+  minutes deleting them. Deleting them between tests crashes a later canvas; see
+  [docs/TESTING.md](docs/TESTING.md).
 - **Line endings.** Provenance digests are of the raw working-tree bytes, and the
   reviewed sources are a mix of LF and CRLF files. With `core.autocrlf=true`, a
   `git checkout`/`git restore` of an LF file rewrites it as CRLF and fails the

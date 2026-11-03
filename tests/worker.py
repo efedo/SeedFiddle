@@ -1,9 +1,29 @@
 """Internal isolated unittest worker; the full controller owns its manifest."""
 from pathlib import Path
 import json
+import os
 import sys
 import time
 import unittest
+
+
+def end_without_shutdown(code):
+    """End the process once the report and journal are on disk.
+
+    Tests close windows without deleting them, and the windows' own connections
+    keep them alive, so interpreter shutdown would delete them all. That took
+    minutes in the worker with the most widgets, and nothing reads the outcome.
+    On Windows, os._exit still unloads DLLs, which crashes after a long run.
+    """
+    sys.stdout.flush()
+    sys.stderr.flush()
+    if os.name=='nt':
+        import ctypes
+        kernel32=ctypes.WinDLL('kernel32')
+        kernel32.GetCurrentProcess.restype=ctypes.c_void_p
+        kernel32.TerminateProcess.argtypes=(ctypes.c_void_p,ctypes.c_uint)
+        kernel32.TerminateProcess(kernel32.GetCurrentProcess(),code)
+    os._exit(code)
 
 
 def main(argv=None):
@@ -48,4 +68,4 @@ def main(argv=None):
     return run([*ids,'-v','--jobs','1','--report',str(report)])
 
 
-if __name__=='__main__':raise SystemExit(main())
+if __name__=='__main__':end_without_shutdown(main())
