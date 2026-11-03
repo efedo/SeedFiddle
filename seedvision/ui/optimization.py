@@ -64,8 +64,7 @@ class OptimizationDialog(QDialog):
                             else 'Optimise all pipeline nodes')
         self.resize(840, 650)
         layout = QVBoxLayout(self)
-        intro = QLabel('In-sample project adaptation — not independent validation.\n'
-            'Only checked nodes are searched, in pipeline order; downstream nodes use each accepted proposal.\n'
+        intro = QLabel('Only checked nodes are searched, in pipeline order; downstream nodes use each accepted proposal.\n'
             'Only complete, shape-reviewed instances are eligible. Physical facts, scoring costs,\n'
             'reference-source policies and resolution limits stay fixed. You review the result before applying.')
         intro.setWordWrap(True)
@@ -115,7 +114,7 @@ class OptimizationDialog(QDialog):
             item = QListWidgetItem(f'{node.title}: {len(contract.searchable)} parameters; {contract.objective or contract.reason}; {readiness}')
             item.setData(Qt.ItemDataRole.UserRole, key)
             item.setToolTip(OBJECTIVE_DESCRIPTIONS.get(contract.objective, contract.reason)
-                + '\nEqual weight per image; lower is better. In-sample adaptation.\n\nSearchable controls:\n' + '\n'.join(contract.searchable)
+                + '\nEqual weight per image; lower is better.\n\nSearchable controls:\n' + '\n'.join(contract.searchable)
                 + '\n\nFixed controls:\n' + '\n'.join(f'{name}: {reason}' for name, reason in contract.fixed)
                 + '\n\nImage readiness:\n' + '\n'.join(f'{sample.path.name}: {reason or "Ready"}'
                     for sample, reason in zip(samples, reasons)))
@@ -384,7 +383,7 @@ class OptimizationController:
         try:
             write_record(journal, record)
             write_record(archive, record)
-            if stale or report.cancelled or task.stop.is_set() or not self._pipeline_editing_allowed():
+            if stale or report.cancelled or task.stop.is_set() or not self._pipeline_editable():
                 self.statusBar().showMessage('Optimization discarded: cancelled or project inputs changed. History was saved.')
                 return
             rows = sorted(report.nodes, key=lambda row: row.status == 'skipped')
@@ -397,7 +396,7 @@ class OptimizationController:
             before = mean(report.final_before.values()) if report.final_before else None
             after = mean(report.final_after.values()) if report.final_after else None
             regressions = sum(value > report.final_before[key] + 1e-9 for key,value in report.final_after.items() if key in report.final_before)
-            summary = QLabel(f'{len(report.changes)} node(s) improved. This is in-sample adaptation.\n'
+            summary = QLabel(f'{len(report.changes)} node(s) improved.\n'
                 f'Final mean instance loss: {before} → {after}. Increased loss on {regressions} image(s).\n\n'
                 'Inspect previews and details below. Applying changes shared settings for every project image.')
             summary.setWordWrap(True)
@@ -423,8 +422,8 @@ class OptimizationController:
                 write_record(archive, record)
                 return
             # Recheck after review: a modal dialog can still process queued events.
-            if not self._pipeline_editing_allowed():
-                record['disposition'] = 'kept original (frozen)'
+            if not self._pipeline_editable():
+                record['disposition'] = 'kept original (default pipeline)'
                 write_record(journal, record)
                 write_record(archive, record)
                 return

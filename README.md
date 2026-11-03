@@ -110,8 +110,9 @@ launching; the final command launches Seed Fiddle.
 
 ## The window
 
-- **Images** (left): the project's images. Hover an image for its status; the ✕
-  removes it from the project.
+- **Images** (left): the project's images as thumbnails, with the open image
+  highlighted and each image's species (the **Species** button switches that off).
+  Hover an image for its status; the ✕ removes it from the project.
 - **Image** and **Pipeline** views (centre): the selected overlay on the image, and
   the node graph. Toggle either with `Ctrl+1` / `Ctrl+2`; both are visible by default.
 - **Reference annotation** panel: a movable overlay over the image when you choose
@@ -133,8 +134,8 @@ runtime summary).
    Set the verified species in the **Image** tab; species is operator metadata and
    is never inferred.
 2. Choose a pipeline from the grouped **Pipeline** list at the top of the Pipeline
-   view. A loaded pipeline is locked: clear **Lock edits** to edit node parameters
-   or wiring.
+   view. Default pipelines are locked: editing one offers an editable copy under a
+   name you choose.
 3. Paint material references (**Materials**: Background, Foreground, Other) and,
    where useful, seed outlines (**Seeds**). Missing required evidence makes a result
    *unavailable*; it is never reported as zero seeds.
@@ -162,7 +163,7 @@ Add `--seed-crop-padding-px 4` to also write per-seed image/mask crops.
 
 ```powershell
 .\.venv\Scripts\python.exe -m tests            # core regression subset (24 units)
-.\.venv\Scripts\python.exe -m tests --full     # all 665 units, about 13 minutes
+.\.venv\Scripts\python.exe -m tests --full     # all 669 units, about 13 minutes
 .\.venv\Scripts\python.exe scripts\generate_node_catalogue.py --check
 ```
 

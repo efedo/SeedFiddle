@@ -1,4 +1,4 @@
-"""Edit lock and pipeline file commands for the native Pipeline workspace.
+"""Default-pipeline lock, named copies and pipeline file commands for the Pipeline workspace.
 
 Node layouts are not separate files: projects and pipeline files carry them.
 """
@@ -6,26 +6,27 @@ from dataclasses import replace
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QSignalBlocker, Signal
-from PySide6.QtGui import QAction
-from PySide6.QtWidgets import QCheckBox, QFileDialog, QInputDialog, QMessageBox
+from PySide6.QtWidgets import QFileDialog, QInputDialog, QMessageBox
 
 from seedvision.persistence.pipeline_documents import (
     PIPELINE_EXTENSION, PipelineDocumentError,
     PipelineDocumentStore, PipelineLayoutDocument, _name_key, _pipeline_name,
 )
 
-LOCK_TOOLTIP = (
-    'While ticked, node parameters, connections, bypass state and added nodes '
-    'cannot change, so a loaded pipeline is not altered by accident. Running, '
-    'inspecting outputs, arranging nodes and choosing backends still work. '
-    'Pipelines load locked; clear it to edit.')
+COPY_ERRORS = (ValueError, TypeError, KeyError, OSError, RecursionError, NotImplementedError)
 
 
 class PipelineDocumentsController(QObject):
-    """Own editing permission; callers guard their calculation mutation routes."""
+    """Decide what may be edited; callers guard their calculation mutation routes.
 
-    frozen_changed = Signal(bool)
-    pipeline_saved = Signal(object, object)
+    A default pipeline is always locked. An editable pipeline is a named copy in
+    ``custom``: the working graph holds the current one, whose entry is ``None``,
+    and every other copy is held as a complete ``PipelineDocument``.
+    """
+
+    lock_changed = Signal(bool)
+    named = Signal(str)
+    copies_changed = Signal()
 
     def __init__(self, window, *, capture, install, store=None):
         super().__init__(window)
@@ -33,55 +34,156 @@ class PipelineDocumentsController(QObject):
         self._capture = capture
         self._install = install
         self.store = store or PipelineDocumentStore(window._root)
-        self._frozen = True
+        self._locked = True
+        self.custom = {}
         self.current_path = None
         self.current_name = 'Custom pipeline'
         self.factory_name = None
-        self.freeze_button = QCheckBox('Lock edits', window)
-        self.freeze_button.setObjectName('pipelineFreezeButton')
-        self.freeze_button.setToolTip(LOCK_TOOLTIP)
-        # A pane too narrow for the full label shows the short one.
-        self.freeze_button.setProperty('fullText', 'Lock edits')
-        self.freeze_button.setProperty('compactText', 'Lock')
-        self.freeze_button.setChecked(True)
-        self.freeze_button.toggled.connect(self.set_frozen)
-        self.load_pipeline_action = QAction('Load pipeline…', window)
-        self.load_pipeline_action.triggered.connect(self.choose_pipeline)
-        self.save_pipeline_action = QAction('Save pipeline as…', window)
-        self.save_pipeline_action.triggered.connect(self.choose_pipeline_save)
 
     @property
-    def frozen(self):
-        return self._frozen
+    def locked(self):
+        return self._locked
 
-    def set_frozen(self, frozen=True):
-        frozen = bool(frozen)
-        changed = frozen != self._frozen
-        self._frozen = frozen
-        with QSignalBlocker(self.freeze_button):
-            self.freeze_button.setChecked(frozen)
-        if changed:
-            self.window.statusBar().showMessage(
-                'Pipeline locked: parameters and connections are read-only.' if frozen
-                else 'Pipeline unlocked: parameters and connections can be edited.')
-            self.frozen_changed.emit(frozen)
+    @property
+    def active_copy(self):
+        """The current copy's name, or None while a default pipeline is loaded."""
+        return None if self._locked else self.current_name
+
+    @property
+    def stored_copies(self):
+        """Every copy but the current one, whose state is the working graph."""
+        return tuple(document for name, document in self.custom.items()
+                     if document is not None and name != self.active_copy)
+
+    def set_stored_copies(self, documents):
+        """Replace the copies with those of the project being opened."""
+        self.custom = {document.name: document for document in documents}
+        self.copies_changed.emit()
 
     def loaded(self, factory_name=None, *, name=None, path=None):
         """Call after every template/project load, including cached graph copies."""
         self.factory_name = factory_name
         self.current_name = name or factory_name or 'Custom pipeline'
         self.current_path = None if path is None else Path(path).resolve()
-        was_frozen = self.frozen
-        self.set_frozen(True)
+        self._locked = name is None or _name_key(name) in self.store.factory_names
+        # Only a caller that replaced the graph without keeping its copy leaves one behind.
+        self.custom = {key: value for key, value in self.custom.items() if value is not None}
+        if not self._locked:
+            self.custom[name] = None
+        self.copies_changed.emit()
         # Reapply locks when the graph/inspector changed but the flag did not.
-        if was_frozen:
-            self.frozen_changed.emit(True)
+        self.lock_changed.emit(self._locked)
 
     def can_edit(self):
-        if self._frozen:
-            self.window.statusBar().showMessage('Pipeline is locked. Clear Lock edits to change node parameters and connections.')
+        """True when the current pipeline may change, offering a copy of a default one.
+
+        Accepting moves the working graph onto the copy, so the caller's edit
+        continues there. Declining leaves the default pipeline unchanged.
+        """
+        return not self._locked or self.offer_copy()
+
+    def offer_copy(self):
+        answer = QMessageBox.question(self.window, 'Default pipeline',
+            'Default pipelines cannot be edited.\n\n'
+            f'Would you like to create an editable copy of {self.current_name}?',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes)
+        if answer != QMessageBox.StandardButton.Yes:
+            self.window.statusBar().showMessage(f'{self.current_name} was not changed.')
+            return False
+        name = self._ask_name('Create editable copy', self.unique_name(self.current_name + ' copy'))
+        if name is None:
+            self.window.statusBar().showMessage(f'{self.current_name} was not changed.')
+            return False
+        self.create_copy(name)
+        return True
+
+    def create_copy(self, name):
+        """Make the working graph the named copy; nothing needs recalculating."""
+        name = self._validated_name(name)
+        source = self.current_name
+        self.stash_current()
+        self.current_name, self.current_path = name, None
+        self._locked = False
+        self.custom[name] = None
+        self.named.emit(name)
+        self.copies_changed.emit()
+        self.lock_changed.emit(False)
+        self.window.statusBar().showMessage(f'Created {name}, an editable copy of {source}.')
+
+    def rename_current(self):
+        """Rename a copy; a default pipeline cannot be renamed, so it offers a copy instead."""
+        if self._locked:
+            return self.offer_copy()
+        old = self.current_name
+        name = self._ask_name('Rename pipeline', old, exclude=old)
+        if name is None or name == old:
+            return False
+        self.custom = {(name if key == old else key): value for key, value in self.custom.items()}
+        self.current_name, self.current_path = name, None
+        self.named.emit(name)
+        self.copies_changed.emit()
+        self.window.statusBar().showMessage(f'Renamed {old} to {name}.')
+        return True
+
+    def stash_current(self):
+        """Keep the working copy so the list can return to it. False if it cannot be captured."""
+        if self._locked:
+            return True
+        try:
+            self.custom[self.current_name] = self._capture(self.current_name)
+        except COPY_ERRORS as error:
+            self._error('Could not keep this pipeline', error)
             return False
         return True
+
+    def activate(self, name):
+        """Replace the working graph with a stored copy."""
+        document = self.custom[name]
+        try:
+            if self._install(document) is False:
+                return False
+        except COPY_ERRORS as error:
+            self._error('Could not load pipeline', error)
+            return False
+        self.loaded(self._factory_of(document), name=name)
+        return True
+
+    def unique_name(self, name):
+        """``name``, numbered if the project already has a pipeline called that."""
+        candidate, number = name, 2
+        taken = {_name_key(key) for key in self.custom} | set(self.store.factory_names)
+        while _name_key(candidate) in taken:
+            candidate, number = f'{name} {number}', number + 1
+        return candidate
+
+    def _ask_name(self, title, initial, *, exclude=None):
+        """Ask until the name is valid. A refused name is kept so it can be corrected."""
+        label, text = 'Pipeline name:', initial
+        while True:
+            text, accepted = QInputDialog.getText(self.window, title, label, text=text)
+            if not accepted:
+                return None
+            try:
+                return self._validated_name(text.strip(), exclude=exclude)
+            except PipelineDocumentError as error:
+                label = f'{error}\n\nPipeline name:'
+
+    def _validated_name(self, name, *, exclude=None):
+        if not name:
+            raise PipelineDocumentError('Enter a name for the pipeline.')
+        _pipeline_name(name)
+        key = _name_key(name)
+        if key in self.store.factory_names:
+            raise PipelineDocumentError(f'{name} is a default pipeline. Choose another name.')
+        if any(_name_key(other) == key for other in self.custom if other != exclude):
+            raise PipelineDocumentError(f'This project already has a pipeline called {name}.')
+        return name
+
+    @staticmethod
+    def _factory_of(document):
+        return ('Default seed analysis' if document.pipeline_workflow is None
+                else document.pipeline_workflow.source_recipe.title)
 
     def _busy(self):
         return (self.window._background_work_is_active()
@@ -97,28 +199,33 @@ class PipelineDocumentsController(QObject):
             return False
         try:
             document = self.store.load_pipeline(path)
+            if not self.stash_current():
+                return False
             if self._install(document) is False:
                 return False
             statuses = document.asset_statuses(self.window._root)
-        except (ValueError, TypeError, KeyError, OSError, RecursionError, NotImplementedError) as error:
+        except COPY_ERRORS as error:
             self._error('Could not load pipeline', error)
             return False
-        factory = ('Default seed analysis' if document.pipeline_workflow is None
-                   else document.pipeline_workflow.source_recipe.title)
-        self.loaded(factory, name=document.name, path=path)
+        name = self.unique_name(document.name)
+        self.loaded(self._factory_of(document), name=name, path=path)
+        if name != document.name:
+            self.named.emit(name)
         unavailable = sum(row['status'] not in ('available', 'unchecked') for row in statuses)
         self.window.statusBar().showMessage(
-            f'Loaded pipeline {document.name}; calculations are frozen.'
+            f'Loaded pipeline {name}.'
             + (f' {unavailable} referenced asset(s) remain unavailable.' if unavailable else ''))
         return True
 
     def save_pipeline_as(self, path, name):
+        """Publish the working graph to a file and carry on under that name, as Save As does."""
         if self._busy():
             self.window.statusBar().showMessage('Wait for current work to finish before saving a pipeline.')
             return False
         try:
             if self.factory_name is not None and _name_key(name) == _name_key(self.factory_name):
                 raise PipelineDocumentError('Choose a distinct custom name for a factory-derived pipeline.')
+            self._validated_name(name, exclude=self.active_copy)
             document = self._capture(name)
             if document.name != name:
                 document = replace(document, name=name)
@@ -126,8 +233,15 @@ class PipelineDocumentsController(QObject):
         except (ValueError, TypeError, KeyError, OSError, RecursionError) as error:
             self._error('Could not save pipeline', error)
             return False
-        self.current_name, self.current_path = name, destination
-        self.pipeline_saved.emit(document, destination)
+        if name != self.active_copy:
+            if not self.stash_current():
+                return False
+            self.current_name, self._locked = name, False
+            self.custom[name] = None
+            self.named.emit(name)
+            self.copies_changed.emit()
+            self.lock_changed.emit(False)
+        self.current_path = destination
         self.window.statusBar().showMessage(f'Saved pipeline {name} to {destination}.')
         return True
 

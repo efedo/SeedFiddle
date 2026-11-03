@@ -23,8 +23,7 @@ class TraitTrainingDialog(QDialog):
         self._accepted_request = None
         layout = QVBoxLayout(self)
         explanation = QLabel('Load explicit trait definitions, permitted truth and isolated train/calibration groups. '
-            'Inputs may be supplied twenty-column features or reviewed reference-seed archives. '
-            'Training diagnostics do not establish biological validity.', self)
+            'Inputs may be supplied twenty-column features or reviewed reference-seed archives.', self)
         explanation.setWordWrap(True)
         layout.addWidget(explanation)
         form = QFormLayout()

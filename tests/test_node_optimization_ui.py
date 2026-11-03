@@ -63,7 +63,7 @@ class NodeOptimizationUITests(unittest.TestCase):
         inspector.set_optimization_context(ready=True)
         inspector.set_editing_locked(True)
         self.assertFalse(inspector.optimization_button.isEnabled())
-        self.assertIn('Parameters are locked', inspector.optimization_status.text())
+        self.assertIn('Default pipelines are locked', inspector.optimization_status.text())
 
     def check_test_project_command_and_dispatch_are_connected(self):
         from seedvision.ui.pipeline_inspector import PipelineInspector

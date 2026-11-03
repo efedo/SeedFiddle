@@ -91,18 +91,24 @@ The **Learning** menu makes the ordinary workflow self-contained:
 2. Save the full-resolution seed-label PNG when annotation will span sessions.
    Loading that PNG restores it as a draft for the same corrected image; a
    dimension mismatch is rejected rather than resampled silently.
-3. Export to a learning dataset. Assign a biological lot/capture group and an
-   image-level split. The dialog prevents a group already assigned to one split
-   from being exported into another. Record the annotator/reviewer and mark the
-   mask reviewed only after a seed-by-seed check.
-4. Audit the manifest. Training accepts reviewed `train` and `validation`
-   samples only. The `test` split is excluded from training and decoder tuning.
+3. Choose **Train or refine U-Net / StarDist…**. Its table lists every project
+   image with seed outlines and assigns an image-level split automatically, holding
+   out about one image in five per species and never a species' largest. Each image
+   starts in its own lot/capture group; give related captures one group and they
+   keep one split. Name the annotator/reviewer and mark a mask reviewed only after a
+   seed-by-seed check.
+4. Training asks before using samples not marked reviewed, recording that choice
+   in the checkpoint. It analyses any image that needs it with only the stages the
+   model's inputs depend on, saves each sample into a new dataset folder under
+   `learning-data/`, and audits the manifest. The `test` split is excluded from
+   training and decoder tuning.
 5. Train a new U-Net or StarDist checkpoint, or select a compatible initial
    checkpoint to refine. Refinement must write a new file so its input checkpoint
    remains recoverable. Training runs off the GUI thread, reports epoch losses,
    can be cancelled between batches, retains the best validation-loss
    checkpoint, writes a provenance-bearing JSON report, and can activate the
-   result in the corresponding DAG node.
+   result in the corresponding DAG node. A cancelled run keeps its best checkpoint
+   so far, but writes no report and activates nothing.
 6. Tune decoder settings on validation data and evaluate exactly once on the
    frozen test set using the launcher evaluation commands retained in the
    historical command reference. Follow `SCIENTIFIC_VALIDATION_PROTOCOL.md` for

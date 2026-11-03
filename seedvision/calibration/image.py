@@ -18,6 +18,7 @@ from seedvision.calibration.neutral import (
 import numpy as np
 
 from seedvision.calibration.geometry import CalibrationDetectionError
+from seedvision.timing import raise_if_analysis_cancelled
 from seedvision.cuda import (
     CudaContext,
     bgr_to_gray,
@@ -712,6 +713,7 @@ def detect_ruler(
     best_pair: tuple[float, float] | None = None
     pair_score = -1.0
     for first in candidate_v.detach().cpu().tolist():
+        raise_if_analysis_cancelled()
         for second in candidate_v.detach().cpu().tolist():
             separation = abs(second - first)
             if not minimum_width <= separation <= maximum_width:
@@ -2476,6 +2478,7 @@ def _fit_ruler_outline_quadrilateral(
         best: tuple[float, float, float] | None = None
         normalized_u = (sample_columns.astype(np.float64) - center_u) / span_u
         for drift in total_drifts:
+            raise_if_analysis_cancelled()
             row_drift = drift * normalized_u
             for offset in offsets:
                 rows = np.rint(base_row + direction * offset + row_drift).astype(
@@ -2550,6 +2553,7 @@ def _fit_ruler_outline_quadrilateral(
         normalized_v = (sample_rows.astype(np.float64) - center_v) / span_v
         best: tuple[float, float, float] | None = None
         for drift in drifts:
+            raise_if_analysis_cancelled()
             column_drift = drift * normalized_v
             for intercept in intercepts:
                 columns = np.rint(intercept + column_drift).astype(np.int32)
@@ -2885,6 +2889,7 @@ def _regular_tick_span(
     ) -> np.ndarray:
         sampled = np.zeros(sample_positions.shape, np.float64)
         for offset_scale in offset_scales:
+            raise_if_analysis_cancelled()
             offset = radii[:, None, None] * float(offset_scale)
             values_at_offset = np.interp(
                 (sample_positions + offset).reshape(-1),

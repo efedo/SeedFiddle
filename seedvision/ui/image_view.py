@@ -8,7 +8,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from PySide6.QtCore import QEvent, QLineF, QPoint, QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QLineF, QPoint, QPointF, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QBrush,
     QColor,
@@ -38,7 +38,8 @@ from PySide6.QtWidgets import (
 )
 
 from seedvision.ui.canvas_controls import style_canvas_control_bar
-from seedvision.annotation.geometry import annotation_centres, outward_hilum_direction
+from seedvision.annotation.geometry import annotation_centres, annotation_median_length, outward_hilum_direction
+from seedvision.segmentation.procedural import MARKER_REJECTION_LABELS
 from seedvision.visualization import ADVANCED_OVERLAY_LABELS
 from seedvision.resources import release_host_caches
 from seedvision.annotation import (
@@ -526,13 +527,19 @@ class _InstanceAnnotationTileItem(QGraphicsItem):
         painter.restore()
 
 
-class _InstanceCentreItem(QGraphicsItem):
-    """One lightweight display item for constant-screen-size annotation centres."""
+# Display-only seed centre markers span this fraction of the typical seed length.
+CENTRE_MARKER_SEED_FRACTION = 1.0 / 3.0
 
-    def __init__(self, centres, shape):
+
+class _InstanceCentreItem(QGraphicsItem):
+    """One lightweight display item for annotation centres, sized to the seeds."""
+
+    def __init__(self, centres, shape, seed_length):
         super().__init__()
         self.centres = dict(centres)
-        self._bounds = QRectF(0, 0, shape[1], shape[0]).adjusted(-160, -160, 160, 160)
+        self.arm = float(seed_length) * CENTRE_MARKER_SEED_FRACTION / 2.0
+        margin = 160.0 + self.arm
+        self._bounds = QRectF(0, 0, shape[1], shape[0]).adjusted(-margin, -margin, margin, margin)
         self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemUsesExtendedStyleOption)
         self.setToolTip("Painted seed-area centroids; partial masks use the visible area. Not detection markers.")
@@ -542,8 +549,9 @@ class _InstanceCentreItem(QGraphicsItem):
 
     def paint(self, painter, option, widget=None):
         scale = max(0.05, np.hypot(painter.worldTransform().m11(), painter.worldTransform().m12()))
-        radius = 5.0 / scale
-        exposed = option.exposedRect.adjusted(-radius, -radius, radius, radius)
+        radius = self.arm
+        margin = radius + 4.0 / scale
+        exposed = option.exposedRect.adjusted(-margin, -margin, margin, margin)
         path = QPainterPath()
         for x, y in self.centres.values():
             if not exposed.contains(QPointF(x, y)):
@@ -552,11 +560,37 @@ class _InstanceCentreItem(QGraphicsItem):
             path.lineTo(x + radius, y)
             path.moveTo(x, y - radius)
             path.lineTo(x, y + radius)
-        for colour, width in (("#121820", 4.0), ("#ffffff", 1.5)):
+        # Strokes thin with a small marker, so it stays a plus rather than a blob.
+        on_screen = radius * scale
+        for colour, width in (("#121820", max(1.0, min(4.0, on_screen * 0.8))),
+                              ("#ffffff", max(0.5, min(1.5, on_screen * 0.3)))):
             pen = QPen(QColor(colour), width)
             pen.setCosmetic(True)
             painter.setPen(pen)
             painter.drawPath(path)
+
+
+class _ElidingLabel(QLabel):
+    """A label that can shrink, keeping its whole text and eliding what it paints."""
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802 - Qt override
+        metrics = self.fontMetrics()
+        width = min(metrics.horizontalAdvance(self.text()), metrics.averageCharWidth() * 6)
+        return QSize(width, super().minimumSizeHint().height())
+
+    def paintEvent(self, event) -> None:  # noqa: N802 - Qt override
+        metrics = self.fontMetrics()
+        area = self.contentsRect()
+        if metrics.horizontalAdvance(self.text()) <= area.width():
+            super().paintEvent(event)
+            return
+        painter = QPainter(self)
+        painter.setPen(self.palette().windowText().color())
+        painter.drawText(
+            area,
+            self.alignment(),
+            metrics.elidedText(self.text(), Qt.TextElideMode.ElideMiddle, area.width()),
+        )
 
 
 class ImageView(QGraphicsView):
@@ -656,6 +690,7 @@ class ImageView(QGraphicsView):
         self._instance_preview_items = []
         self._instance_annotation_overlay_item = None
         self._instance_centres_cache = None
+        self._instance_median_seed_length = 0.0
         self._instance_live_stroke_path: QPainterPath | None = None
         self._instance_live_stroke_item = None
         self._reference_live_stroke_path: QPainterPath | None = None
@@ -714,8 +749,8 @@ class ImageView(QGraphicsView):
         controls = QHBoxLayout(self.zoom_controls)
         controls.setContentsMargins(8, 4, 8, 4)
         controls.setSpacing(5)
-        heading = QLabel("Image zoom", self.zoom_controls)
-        self.current_file_label = QLabel("No image selected", self.zoom_controls)
+        self.header_layout = controls
+        self.current_file_label = _ElidingLabel("No image selected", self.zoom_controls)
         self.current_file_label.setObjectName("currentImageFileLabel")
         self.current_file_label.setAlignment(
             Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter
@@ -744,15 +779,17 @@ class ImageView(QGraphicsView):
         self.actual_size_button.setText("100%")
         self.actual_size_button.setToolTip("Show one image pixel per screen pixel")
         self.actual_size_button.clicked.connect(self.actual_size)
-        controls.addWidget(heading)
         controls.addStretch(1)
-        controls.addWidget(self.current_file_label, 2)
+        controls.addWidget(self.current_file_label)
         controls.addStretch(1)
-        controls.addWidget(self.zoom_out_button)
-        controls.addWidget(self.zoom_label)
-        controls.addWidget(self.zoom_in_button)
-        controls.addWidget(self.fit_button)
-        controls.addWidget(self.actual_size_button)
+        self._zoom_buttons = QHBoxLayout()
+        self._zoom_buttons.setSpacing(controls.spacing())
+        self._zoom_buttons.addWidget(self.zoom_out_button)
+        self._zoom_buttons.addWidget(self.zoom_label)
+        self._zoom_buttons.addWidget(self.zoom_in_button)
+        self._zoom_buttons.addWidget(self.fit_button)
+        self._zoom_buttons.addWidget(self.actual_size_button)
+        controls.addLayout(self._zoom_buttons)
         style_canvas_control_bar(self.zoom_controls, "imageZoomControls")
         self.zoom_controls.raise_()
 
@@ -1142,6 +1179,7 @@ class ImageView(QGraphicsView):
         self._image_path = path
         self.current_file_label.setText(path.name)
         self.current_file_label.setToolTip(str(path))
+        self._fit_header_controls()
         if self.isVisible():
             self.fit_image()
         else:
@@ -1161,6 +1199,7 @@ class ImageView(QGraphicsView):
         self._image_path = None
         self.current_file_label.setText("No image selected")
         self.current_file_label.setToolTip("")
+        self._fit_header_controls()
         self._background_reference_mask = None
         self._foreground_reference_mask = None
         self._background_exclusion_mask = None
@@ -1741,6 +1780,7 @@ class ImageView(QGraphicsView):
     def instance_centres(self) -> dict[int, tuple[float, float]]:
         if self._instance_centres_cache is None:
             self._instance_centres_cache = annotation_centres(self._instance_annotations)
+            self._instance_median_seed_length = annotation_median_length(self._instance_annotations)
         return self._instance_centres_cache
 
     def instance_centre(self, identifier: int):
@@ -2161,7 +2201,7 @@ class ImageView(QGraphicsView):
                         source_shape=procedural.source_shape,
                     )
                     if self._overlay_mode == "procedural_centres":
-                        self._render_procedural_centres(result)
+                        self._render_procedural_centres(result, show_rejected=True)
             if self._overlay_mode != "procedural_reference_error":
                 # The reference-error raster already encodes the compared
                 # annotation. Drawing categorical seed paint over it would
@@ -2484,7 +2524,7 @@ class ImageView(QGraphicsView):
         item.setZValue(10)
         self._overlay_items.append(item)
 
-    def _render_procedural_centres(self, result) -> None:
+    def _render_procedural_centres(self, result, *, show_rejected: bool = False) -> None:
         if self._manual_seed_centre_editing:
             # The editor renders the same real watershed markers with source
             # semantics and hit targets after the selected raster overlay.
@@ -2492,8 +2532,37 @@ class ImageView(QGraphicsView):
         procedural = getattr(result, "procedural_instances", None)
         if procedural is None:
             return
-        for record in self._procedural_marker_records(include_current_manual=False):
-            self._render_manual_seed_centre_marker(record, editing=False)
+        diameter = float(getattr(result, "estimated_seed_diameter_px", 0.0) or 0.0)
+        seed_radius = diameter * CENTRE_MARKER_SEED_FRACTION / 2.0 if diameter > 0.0 else None
+        # Rejected proposals go underneath, so a used marker is never covered.
+        records = self._rejected_proposal_records(result) if show_rejected else []
+        records += self._procedural_marker_records(include_current_manual=False)
+        for record in records:
+            self._render_manual_seed_centre_marker(record, editing=False, seed_radius=seed_radius)
+
+    @staticmethod
+    def _rejected_proposal_records(result) -> list[dict[str, object]]:
+        """Describe proposals that left no seed, in full corrected coordinates."""
+
+        procedural = getattr(result, "procedural_instances", None)
+        centres = np.asarray(
+            getattr(procedural, "rejected_marker_centres_xy", ()), dtype=np.float64
+        ).reshape(-1, 2)
+        if not len(centres):
+            return []
+        offset_x, offset_y = result.crop_offset
+        return [
+            {
+                "point": QPointF(float(x + offset_x), float(y + offset_y)),
+                "source": "proposal",
+                "manual_index": None,
+                "result_index": None,
+                "reason": reason,
+            }
+            for (x, y), reason in zip(
+                centres, procedural.rejected_marker_reasons, strict=True
+            )
+        ]
 
     @staticmethod
     def _normalised_procedural_marker_source(value: object) -> str:
@@ -2637,8 +2706,14 @@ class ImageView(QGraphicsView):
             self._render_manual_seed_centre_marker(record, editing=True)
 
     def _render_manual_seed_centre_marker(
-        self, record: dict[str, object], *, editing: bool
+        self,
+        record: dict[str, object],
+        *,
+        editing: bool,
+        seed_radius: float | None = None,
     ) -> None:
+        """Editor markers keep a grabbable screen size; others can follow the image."""
+
         point = record["point"]
         source = str(record["source"])
         selected = False
@@ -2658,6 +2733,7 @@ class ImageView(QGraphicsView):
             "annotation": QColor("#ff55de"),
             "rejected": QColor("#ff4545"),
             "suppressed": QColor("#d0d0d0"),
+            "proposal": QColor("#ff9f40"),
         }
         colour = colours.get(source, colours["automatic"])
         pen = QPen(QColor("#ffffff") if selected else colour, 3.0 if selected else 2.0)
@@ -2667,7 +2743,9 @@ class ImageView(QGraphicsView):
             if source in {"manual", "annotation"}
             else Qt.BrushStyle.NoBrush
         )
-        radius = 7.0 if editing else 5.0
+        follows_image = not editing and seed_radius is not None
+        radius = seed_radius if follows_image else 7.0 if editing else 5.0
+        unit = radius / 5.0 if follows_image else 1.0
         items: list[QGraphicsItem] = []
         if source == "annotation":
             item = self._scene.addRect(
@@ -2694,15 +2772,16 @@ class ImageView(QGraphicsView):
             dark_pen.setCosmetic(True)
             items.extend(
                 (
-                    self._scene.addLine(-3.5, 0.0, 3.5, 0.0, dark_pen),
-                    self._scene.addLine(0.0, -3.5, 0.0, 3.5, dark_pen),
+                    self._scene.addLine(-3.5 * unit, 0.0, 3.5 * unit, 0.0, dark_pen),
+                    self._scene.addLine(0.0, -3.5 * unit, 0.0, 3.5 * unit, dark_pen),
                 )
             )
-        elif source in {"rejected", "suppressed"}:
+        elif source in {"rejected", "suppressed", "proposal"}:
+            cross = 5.0 * unit
             items.extend(
                 (
-                    self._scene.addLine(-5.0, -5.0, 5.0, 5.0, pen),
-                    self._scene.addLine(-5.0, 5.0, 5.0, -5.0, pen),
+                    self._scene.addLine(-cross, -cross, cross, cross, pen),
+                    self._scene.addLine(-cross, cross, cross, -cross, pen),
                 )
             )
         tooltips = {
@@ -2711,14 +2790,18 @@ class ImageView(QGraphicsView):
             "manual": "Manual procedural watershed marker. Drag to adjust; right-click or Delete removes it.",
             "annotation": "Locked marker from an applied seed-instance annotation. Edit the annotation to move it.",
             "rejected": str(record.get("reason") or "Rejected manual marker."),
+            "proposal": "Rejected proposal: "
+            + MARKER_REJECTION_LABELS.get(str(record.get("reason")), str(record.get("reason")))
+            + ".",
         }
         for marker_item in items:
             marker_item.setPos(point)
             marker_item.setFlag(
-                QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True
+                QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, not follows_image
             )
             marker_item.setOpacity(1.0 if editing else self._overlay_opacity)
-            marker_item.setZValue(46 if editing else 15)
+            # Above painted seeds, which would otherwise tint every marker.
+            marker_item.setZValue(46 if editing else 34)
             marker_item.setToolTip(tooltips[source])
             marker_item.setData(0, "manual-seed-centre-marker")
             self._overlay_items.append(marker_item)
@@ -3838,7 +3921,7 @@ class ImageView(QGraphicsView):
             centres = {i: centre for i, centre in centres.items() if i == self._active_instance_id}
         if not centres:
             return
-        item = _InstanceCentreItem(centres, self._instance_annotations.shape)
+        item = _InstanceCentreItem(centres, self._instance_annotations.shape, self._instance_median_seed_length)
         item.setData(0, "annotation-centres")
         item.setData(1, "reference-annotation")
         item.setOpacity(self._annotation_opacity)
@@ -4831,9 +4914,51 @@ class ImageView(QGraphicsView):
             self._zoom_steps += direction
         event.accept()
 
+    def dock_header_controls(self, controls) -> None:
+        """Show controls shared with another display at the left of this header."""
+
+        self.header_layout.insertWidget(0, controls)
+        self._fit_header_controls()
+        self.updateGeometry()
+
+    def _fit_header_controls(self) -> None:
+        """Share the header's free width between docked controls and the file name.
+
+        The controls narrow before the name elides, down to a usable selector and the
+        slider; only then does the name give way, down to what stays readable.
+        """
+
+        layout = self.header_layout
+        controls = layout.itemAt(0).widget()
+        if controls is None:
+            return
+        label = self.current_file_label
+        margins = layout.contentsMargins()
+        free = (self._header_width() - margins.left() - margins.right() - 2 * layout.spacing()
+                - self._zoom_buttons.sizeHint().width())
+        width = max(
+            min(controls.preferred_width(), free - label.sizeHint().width()),
+            min(controls.comfortable_width(), free - label.fontMetrics().averageCharWidth() * 10),
+            controls.minimumSizeHint().width(),
+        )
+        controls.offer_width(width)
+        label.setMaximumWidth(max(free - width, label.minimumSizeHint().width()))
+
+    def _header_width(self) -> int:
+        # The viewport, so a vertical scroll bar never covers the zoom buttons.
+        return max(120, self.viewport().width())
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802 - Qt override
+        # The header is placed by hand, so its layout cannot widen this pane itself.
+        hint = super().minimumSizeHint()
+        header = (self.zoom_controls.minimumSizeHint().width() + self.verticalScrollBar().sizeHint().width()
+                  + 2 * self.frameWidth())
+        return QSize(max(hint.width(), header), hint.height())
+
     def resizeEvent(self, event) -> None:  # noqa: N802 - Qt override
         super().resizeEvent(event)
-        self.zoom_controls.setGeometry(0, 0, max(120, self.width()), 38)
+        self._fit_header_controls()
+        self.zoom_controls.setGeometry(0, 0, self._header_width(), 38)
         self._layout_calculating_banner()
         self._layout_instance_continuity_warning()
         self._layout_context_panel()

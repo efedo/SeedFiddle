@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from tests.review_fixtures import open_workspace_images
+from tests.review_fixtures import editable_copy, open_workspace_images
 import os
 import unittest
 from dataclasses import replace
@@ -35,7 +35,7 @@ class ProceduralFitMainWindowTests(unittest.TestCase):
         ):
             window = open_workspace_images(MainWindow(ROOT))
         # Exercise completion behavior in an explicitly editable pipeline.
-        window.pipeline_documents.set_frozen(False)
+        editable_copy(window)
         def dispose() -> None:
             window._project_tracking_enabled = False
             window._project_dirty = False

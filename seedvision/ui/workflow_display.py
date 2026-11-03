@@ -24,14 +24,10 @@ class WorkflowDisplay:
             'Blend the selected output over its input image.' if self.blend_available
             else 'Opacity requires an image in the same coordinate frame as this output.')
         # These are workspace controls, independent of the selected recipe.
-        for action in (window.opacity_toolbar_label_action,
-                       window.overlay_opacity_slider_action, window.overlay_opacity_label_action):
-            action.setVisible(True)
-        for widget in (window.opacity_toolbar_label, window.overlay_opacity_slider,
-                       window.overlay_opacity_label):
-            widget.show()
+        window.overlay_header_controls.set_opacity_visible(True)
         for action in (window.hsv_value_toolbar_label_action, window.hsv_value_slider_action,
-                       window.hsv_value_label_action, window.hsv_peak_button_action):
+                       window.hsv_value_label_action, window.hsv_peak_button_action,
+                       window.hsv_separator_action):
             action.setVisible(False)
         key = window._current_image_key()
         editable = window._analyses.get(key or '') is not None
@@ -69,10 +65,8 @@ class WorkflowDisplay:
                     action.setEnabled(node is not None and port.name in node.outputs)
                     action.triggered.connect(lambda _checked=False, sid=stage.stage_id, name=port.name:
                         self.show_output(sid, name))
-        window.overlay_button.setText(window.overlay_button.fontMetrics().elidedText(
-            self.title, Qt.TextElideMode.ElideRight, window.overlay_button.maximumWidth() - 28))
-        window.overlay_button.setAccessibleName(self.title)
-        window.overlay_button.setToolTip(self.title + '\nChoose the source image, annotation image, or a calculated node output.')
+        window.overlay_header_controls.set_title(
+            self.title, 'Choose the source image, annotation image, or a calculated node output.')
 
     def show_source(self):
         controller, window = self.controller, self.window

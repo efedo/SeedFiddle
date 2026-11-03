@@ -73,8 +73,7 @@ def show_about(window) -> None:
         window,
         "About Seed Fiddle",
         f"<b>Seed Fiddle</b> {__version__}<br>"
-        "Native desktop seed-image analysis with PyTorch CUDA and PySide6.<br>"
-        "Results are approximate proposals for correction, not validated counts.",
+        "Native desktop seed-image analysis with PyTorch CUDA and PySide6.",
     )
 
 

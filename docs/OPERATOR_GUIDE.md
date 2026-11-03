@@ -53,9 +53,9 @@ optional Cellpose-SAM package when it is missing (see [Cellpose-SAM](#cellpose-s
 
 | Area | Purpose |
 |---|---|
-| Toolbar | **Run pipeline**, **Stop**, **Image** / **Pipeline** view toggles, overlay controls, and **Materials** / **Seeds** annotation modes. |
-| Images (left) | Images in the project. Icons show calculated, computed and unsaved states; hover for the text status. The ✕ on hover removes an image from the project. |
-| Image view | The selected overlay on the current image. Drag to pan, scroll to zoom. |
+| Toolbar | **Run pipeline**, **Stop**, **Image** / **Pipeline** view toggles, **HSV value** for colour-gamut overlays, and **Materials** / **Seeds** annotation modes with their visibility and opacity. |
+| Images (left) | Images in the project, each with a thumbnail. The filled row is the image open in the viewer. A click or arrow key only moves the outlined list cursor; double-click or `Enter` opens that image. A badge on the thumbnail shows that an image is computing, computed, or needs attention; no badge means analysis is still required. Each row also names its image's species: the species saved for that image, otherwise the project's **Species** selector. It sits under the name in a narrow panel, abbreviating the genus if it must (*L. mexicanus*), and becomes its own column once the panel is dragged to about 300 pixels wide. Switch it off with the **Species** button above the list or the list's right-click menu; the choice is remembered for the next session and is not part of the project. Hover for the text status and the full species. A crossed thumbnail means the file could not be read, and its tooltip gives the reason. The ✕ on hover removes an image from the project. |
+| Image view | The selected overlay on the current image. Drag to pan, scroll to zoom. Its dark header holds **Overlay** and **Overlay opacity** on the left, the file name, and the zoom buttons on the right. |
 | Pipeline view | The node graph for the current image. Both views are visible by default; `Ctrl+1` and `Ctrl+2` toggle each, `Ctrl+3` shows both. |
 | Reference annotation panel | Floats over the image while **Materials** or **Seeds** is active; drag its title to move it and the corner grip to resize it. |
 | Right panel | Result summary, **Results…** and, when Foreground evidence is missing, **Paint Foreground references…** at the top; below, the **Node** tab (inspector for the selected node) and the **Image** tab (file, dimensions, species, analysis device and calibration evidence). |
@@ -139,30 +139,45 @@ holds every pipeline under headings: **Seed Fiddle** (Default seed analysis,
 experimental core recovery), **Seed analysis** (the PlantCV seed workflows, the
 calibrated seed analyses and the SMPTS paper reconstruction), **Thresholds and
 classifiers** (extended thresholds, Naive Bayes, K-means) and **Colour
-correction**. Working copies saved in the project are listed under **Saved in this
-project**.
+correction**. Your own editable copies are listed under **Saved in this project**.
+Hover over a factory pipeline in the list for its description and evidence caveats,
+such as an original source being unavailable.
 
 Choosing a factory pipeline loads a fresh copy and arranges its nodes
 automatically. Factory pipelines are never overwritten; re-selecting one restores
 its original values and layout. A project or pipeline file opens with the layout it
-was saved with. Returning to Default seed analysis keeps the project's own graph,
-including its layout.
+was saved with. Returning to Default seed analysis from a factory pipeline keeps the
+project's own graph, including its layout; leaving an editable copy of it restores
+the factory values and layout, and the edits stay in the copy.
 
-A loaded pipeline is locked. **Lock edits** (beside the list) is ticked: running,
-inspecting outputs, arranging nodes and choosing backends work, but parameters,
-wiring, bypass state and added nodes cannot change, and the **Node** tab says so.
-Clear **Lock edits** to edit.
+Default pipelines (Default seed analysis and the factory pipelines) are always locked
+and cannot be renamed. Running, inspecting outputs, arranging nodes and choosing
+backends work. Parameter editors, wiring and the **Enabled** checkbox are read-only,
+and the **Node** tab says so and links to making a copy.
+
+**Add node**, **Move to unused**, **… → Remove selected added node** and the rename
+button beside the list stay available. Using one says that default pipelines cannot
+be edited and asks whether to create an editable copy, as do **Enable and run to
+node**, the background toolbar checkboxes, loading a settings profile and activating
+a trait model. **Yes** asks for a name, then loads the copy under **Saved in this
+project** and carries out what you asked for; nothing needs recalculating. **No**, or
+cancelling the name, leaves the default pipeline unchanged. A blank name, one already
+used in the project and the name of a default pipeline are refused, and the prompt
+asks again.
+
+On an editable copy the rename button renames it. The project file keeps every copy
+and reopens on the one you were using; choose one in the list to return to it.
 
 ### Running
 
 - **Run pipeline** (`Ctrl+R`) calculates the current image; **Stop** (`Ctrl+.`)
-  requests cancellation at the next safe boundary and discards obsolete outputs.
+  takes effect before the next GPU operation, or within the long CPU-only steps, and
+  discards that image's partial outputs.
   Right-click a node for **Run to node**, which runs it and its enabled upstream
   nodes only. On a disabled node it reads **Enable and run to node** and enables the
   node first; if the node cannot be enabled (a missing optional package or
   checkpoint, an unconnected input or a disabled upstream node) a message says why.
-  While **Lock edits** is set it reads **Run to node (clear Lock edits to enable
-  it)**.
+  On a default pipeline it offers an editable copy first.
 - A disabled node's status says why it is off: its own reason, *requires* a named
   disabled upstream node, *disabled by disconnected input*, or a missing optional
   package.
@@ -193,8 +208,9 @@ On the canvas:
 - Node cards show their main outputs. Viewer-only outputs are folded behind a
   "▸ n more views" row; click it to expand or fold them. Connected outputs always
   show.
-- With the pipeline unlocked, **Add node** inserts a catalogue node. **… → Remove
-  selected added node** removes an added node and its private inputs.
+- **Add node** inserts a catalogue node; a check marks each node the pipeline
+  already uses. **… → Remove selected added node** removes an added node and its
+  private inputs. On a default pipeline both offer an editable copy first.
 - **Auto arrange** lays the nodes out in dependency columns. **Move to unused**,
   **Bundle cables** and **Route around nodes** sit beside it, or under **Tools** when
   the pane is narrow; **Fit**, **100%** and **−** control the canvas zoom.
@@ -203,7 +219,7 @@ On the canvas:
 ### Pipeline-specific inputs
 
 - **Foreground region.** Working binary, adaptive-mean and Otsu threshold nodes and
-  the SMPTS intersection node accept a rectangular region. Clear **Lock edits**, then use
+  the SMPTS intersection node accept a rectangular region. On an editable copy, use
   **Select foreground region…** to draw it, or enter it in the node's settings as
   `[left, top, right, bottom]` in that node's input pixels (right and bottom
   excluded); `null` means the whole frame. Foreground outside the rectangle is set
@@ -225,33 +241,47 @@ On the canvas:
 
 ### Saving pipelines
 
-The Pipeline header has **Save**, **Export** and the **…** menu:
+Three compact icons sit beside the **Pipeline** list: the pencil renames the pipeline,
+the folder loads one from a file and the disk saves one to a file. Hover over an icon
+for its name. **Export** and the **…** menu follow them.
 
-- **Save** writes a custom pipeline file (calculation settings, node IDs, wiring,
+- The disk writes a custom pipeline file (calculation settings, node IDs, wiring,
   enabled state, backend choices, layout and referenced assets, but no pixels or
-  results). It needs a name different from any factory. **… → Load pipeline…**
-  opens one; referenced assets that are missing are reported.
+  results). It needs a name different from any default pipeline, and work carries on
+  in an editable copy of that name. The folder opens a file as an editable copy,
+  numbering its name if the project already has that one; referenced assets that are
+  missing are reported. Neither offers a copy first, because neither changes a default
+  pipeline.
 - Node positions are saved with the project and with each pipeline file, and are
   restored when either is opened. Moving nodes never invalidates cached results.
 - **Export run…** writes the completed run (including partial runs) to a new folder
   with `native-results.json`, output checkpoints and any selected model bytes.
-- **Recorded run QC…** reviews and acknowledges recorded run outcomes.
-- **Replay selected saved stage…** reruns one supported node from an exported run
-  folder and reports match or mismatch with a fresh preview. A computational match
-  does not certify source conformance or laboratory accuracy.
-- **Source and availability…** explains a factory pipeline's provenance and which
-  stages are unresolved (for example, original SMPTS source is unavailable).
-- **Import legacy recipe…** loads an older saved recipe file.
+- The **…** menu holds **Remove selected added node**, and **Export run…** when a
+  narrow pane hides the **Export** button.
 
 ## Viewing outputs
 
-The **Overlay** menu lists **Source image**, **Calibrated image and annotations**,
-and every available output grouped by node; type in its filter field to narrow the
-list. **Opacity** blends a mask or label output over a matching RGB image (same
-dimensions and frame). HSV controls appear only where they are meaningful.
+The overlay controls sit at the left of the image view's header, and stay there when
+a pipeline's node output or the source image replaces the image view. The **Overlay**
+menu lists **Source image**, **Calibrated image and annotations**, and every
+available output grouped by node; type in its filter field to narrow the list.
+**Overlay opacity** blends a mask or label output over a matching RGB image (same
+dimensions and frame). The toolbar's HSV controls appear only where they are
+meaningful. The header belongs to the image pane, so hiding that pane hides it too.
 
-Toolbar zoom keeps the viewport centre; the mouse wheel zooms about the pointer.
-`F` fits the image and `1` shows actual size.
+When the pane narrows, the header gives up width in this order: the opacity slider and
+label shorten, the overlay name is shortened, the labels and percentage go, the file
+name is shortened with an ellipsis in its middle, and in the narrowest panes the slider
+goes. The zoom buttons always stay. Hover for the full overlay name or file path, and
+widen the pane to get a hidden slider back.
+
+The header's zoom buttons keep the viewport centre; the mouse wheel zooms about the
+pointer. `F` fits the image and `1` shows actual size.
+
+The **Procedural centre likelihood** overlay rings every watershed marker proposal.
+Plain rings are the markers that became seeds. Orange crossed rings are proposals
+that left no seed; hover one for its reason, and read the totals per reason in the
+legend.
 
 **Save current image viewport** (`Ctrl+Alt+E`) saves the displayed pixels with a
 caption giving the overlay name, interpretation key and a pixel-scale bar. It does
@@ -292,6 +322,9 @@ Choose **Seeds**. Then:
    **Clear location** removes it. Direction is derived from the painted centroid.
 6. **Apply + save**.
 
+A cross marks each painted seed's centroid. It scales with the image and spans a
+third of the median seed length, so crowded seeds stay visible when zoomed out.
+
 `Ctrl+Z` / `Ctrl+Shift+Z` undo and redo annotation edits. Applying or reprojecting
 annotations is a history boundary, and history has count and size limits.
 
@@ -301,12 +334,14 @@ annotations is a history boundary, and history has count and size limits.
 | **Apply + save** | Uses the labels in analysis and keeps them with the image's annotations. In a saved project they are recorded by **Save project**. |
 | **Learning → Seed outlines → Import bundled seed outlines…** | Loads the source-bound bundled labels for this image as an undoable draft. Imported outlines are not ground truth until reviewed. |
 | **Import seed outlines from file…** | Loads a lossless categorical PNG, TIFF or NPZ whose size exactly matches the corrected image. |
-| **Copy Cellpose-SAM seeds to outlines** | Turns this image's [Cellpose-SAM](#cellpose-sam) seeds into an undoable, unreviewed draft. When the image already has outlines, **Add missing seeds** keeps them and adds only Cellpose seeds that are mostly not outlined yet (on unoutlined pixels, with new IDs); **Replace outlines** discards them. |
+| **Copy Cellpose-SAM seeds to outlines** | Turns this image's [Cellpose-SAM](#cellpose-sam) seeds into an undoable draft. When the image already has outlines, **Add missing seeds** keeps them and adds only Cellpose seeds that are mostly not outlined yet (on unoutlined pixels, with new IDs); **Replace outlines** discards them. |
 | **Export seed outlines…** | Writes the applied labels as a 16-bit PNG in corrected coordinates. Apply a draft first to include it. |
 
-Only connected, complete, shape-reviewed, non-excluded outlines supervise physical
-contours, optimisation and training. Saving progress does not approve an
-incomplete contour.
+Optimisation and species libraries use only connected, complete, shape-reviewed,
+non-excluded outlines. Training and reference texture prototypes use every connected,
+non-excluded outline, reviewed or not: an unlabelled seed would train as background, and
+reviewed seeds alone can sit in one part of the image. Saving progress does not approve
+an incomplete contour.
 
 ### Manual seed centres
 
@@ -322,6 +357,10 @@ separation and what depends on it.
 | Filled yellow circle | Manual centre you added or moved |
 | Grey × | Automatic centre you moved or removed; detection stays suppressed there. Delete it to restore detection. |
 | Magenta square | Centre locked by an applied seed annotation |
+
+Markers keep a constant screen size while you edit, so they stay easy to grab.
+Outside the editor they scale with the image and span a third of the estimated
+seed diameter.
 
 **Mode** sets how manual centres combine with automatic detection. **Augment
 automatic** keeps detection on and adds your centres, for correcting a few seeds.
@@ -362,7 +401,7 @@ count.
 
 ## Optimisation
 
-Save the project, apply the intended references and clear **Lock edits**. Use
+Save the project, apply the intended references and work on an editable copy. Use
 **Analysis → Optimise → Optimise all pipeline nodes…** to search every eligible
 node in pipeline order, or a node's own **Optimise this node…** button to search
 only that node. A node stops early once a full pass improves nothing at the
@@ -394,16 +433,25 @@ are also kept in its `unsaved/` folder, which the next open offers to restore.
 
 ## Learning
 
-- **Learning → Seed outlines → Add image to training dataset…** exports a normalised
-  crop, model features, seed labels, derived boundary targets and a manifest entry.
-  It reports incomplete, unreviewed or excluded outlines and unapplied drafts first,
-  and refuses to omit them silently. Export needs verified species and an explicit
-  biological or capture group; related captures must share a split.
-- **Audit learning dataset…** verifies component hashes, duplicate content and
-  grouping.
-- **Train or refine U-Net / StarDist…** trains a learned instance model. Learned
-  nodes are disabled by default and need a compatible checkpoint. See
-  [learned instance segmentation](LEARNED_INSTANCE_SEGMENTATION.md).
+- **Train or refine U-Net / StarDist…** builds its own dataset and trains on it. Its
+  table lists every project image with seed outlines, with its seed count and species,
+  and assigns **Training** and **Validation**: about one image in five per species,
+  never a species' largest. Every image starts in its own group. Give related captures
+  the same group, and they keep one split. An image with disconnected or excluded seeds
+  or an unapplied draft stays listed with the reason and cannot be used, because a seed
+  left out would train as background. Tick **Reviewed** only for an image a person
+  checked seed by seed; seeds need no per-seed review.
+- Train asks before using images not marked **Reviewed** and records that choice with
+  the model. It then analyses any image that needs it, using only the pipeline stages
+  the model's inputs come from, saves normalised crops, model features, seed labels and
+  derived boundary targets, verifies the dataset's hashes, duplicate content and
+  grouping, and starts training. **Cancel** works at any point: before training it
+  returns to the image you were on and trains nothing; during training, where **Stop**
+  does the same, it ends after the current batch, keeps the best checkpoint so far and
+  activates nothing. Each run, cancelled or not, writes its own folder under
+  `learning-data/`, which can be deleted once it is no longer wanted. Learned nodes are
+  disabled by default and need a compatible checkpoint.
+  See [learned instance segmentation](LEARNED_INSTANCE_SEGMENTATION.md).
 - **Train object-level seed traits…** and **Activate frozen seed-trait model…**: see
   [seed-trait training](TRAIT_CLASSIFIER_TRAINING.md).
 - **Train PlantCV probability model…** trains a Naive Bayes model from a sampled RGB
@@ -455,8 +503,9 @@ commands when `opencv-python-headless` is installed beside `opencv-python`.
 
 To run it:
 
-1. Clear **Lock edits**, select the node and tick **Enabled**, or right-click it and
-   choose **Enable and run to node**. If the package is missing, a message says so
+1. On an editable copy, select the node and tick **Enabled**, or right-click it and
+   choose **Enable and run to node**, which on a default pipeline offers an editable
+   copy first. If the package is missing, a message says so
    and the node stays disabled; its status then reads *needs the optional cellpose
    package*.
 2. **Run pipeline**. The first run downloads the `cpsam_v2` weights (about

@@ -148,7 +148,7 @@ class PipelineDocumentTests(CatalogueTestCase):
             with self.assertRaises(PipelineDocumentError):
                 PipelineLayoutDocument((('project', float('nan'), 0),))
 
-    def check_test_controller_loads_frozen_and_layout_does_not_invalidate_calculations(self):
+    def check_test_controller_locks_defaults_and_layout_does_not_invalidate_calculations(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
             window = QMainWindow()
@@ -176,29 +176,30 @@ class PipelineDocumentTests(CatalogueTestCase):
             controller = PipelineDocumentsController(window, capture=lambda name: replace(document, name=name),
                                                       install=install, store=store)
             locks = Mock()
-            controller.frozen_changed.connect(locks)
+            controller.lock_changed.connect(locks)
             live_name = {'value': 'Original live name'}
-            controller.pipeline_saved.connect(lambda document, path: live_name.update(value=document.name))
-            self.assertTrue(controller.frozen)
-            self.assertFalse(controller.can_edit())
-            controller.set_frozen(False)
+            controller.named.connect(lambda name: live_name.update(value=name))
+            self.assertTrue(controller.locked)
+            with patch.object(QMessageBox, 'question', return_value=QMessageBox.StandardButton.No):
+                self.assertFalse(controller.can_edit())
+            controller.create_copy('Editable inspection')
             self.assertTrue(controller.can_edit())
             controller.loaded('Official source')
-            self.assertTrue(controller.frozen)
+            self.assertTrue(controller.locked)
             self.assertTrue(locks.call_args.args[0])
             with patch.object(QMessageBox, 'warning'):
                 self.assertFalse(controller.save_pipeline_as(root / ('copy' + PIPELINE_EXTENSION), 'Official source'))
                 self.assertFalse(controller.load_pipeline(root / 'does-not-exist.json'))
                 with patch.object(store, 'save_pipeline', side_effect=PipelineDocumentError('Simulated save failure')):
                     self.assertFalse(controller.save_pipeline_as(root / ('copy' + PIPELINE_EXTENSION), 'Custom failed name'))
-            self.assertEqual(live_name['value'], 'Original live name')
+            self.assertEqual(live_name['value'], 'Editable inspection')
             self.assertEqual(controller.current_name, 'Official source')
             install.assert_not_called()
             self.assertTrue(controller.save_pipeline_as(root / ('copy' + PIPELINE_EXTENSION), 'Custom saved name'))
             self.assertEqual(live_name['value'], 'Custom saved name')
             self.assertTrue(controller.load_pipeline(path))
             install.assert_called_once()
-            self.assertTrue(controller.frozen)
+            self.assertFalse(controller.locked)
             revision, edges = graph.revision, graph.connections
             cached = object()
             window._analysis_caches = {'test-image': cached}
@@ -214,7 +215,7 @@ class PipelineDocumentTests(CatalogueTestCase):
             self.assertIs(graph.connections, edges)
             self.assertEqual(graph.revision, revision)
             self.assertEqual(analysis_settings_profile_from_graph(graph), profile)
-            self.assertTrue(controller.frozen)
+            self.assertFalse(controller.locked)
             window.close()
             self.application.processEvents()
 
@@ -226,4 +227,4 @@ class PipelineDocumentTests(CatalogueTestCase):
     def test_validation_and_recovery(self):
         """2 related PipelineDocumentTests scenarios, each with private fixture state."""
         self.scenario(self.check_test_invalid_files_atomic_failure_and_factory_names_cannot_replace_existing_bytes)
-        self.scenario(self.check_test_controller_loads_frozen_and_layout_does_not_invalidate_calculations)
+        self.scenario(self.check_test_controller_locks_defaults_and_layout_does_not_invalidate_calculations)

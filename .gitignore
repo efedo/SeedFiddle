@@ -7,6 +7,8 @@ projects/
 # Saved scratch projects at the repository root; real fixtures live under tests/.
 /analysis*.seedfiddle-project.json
 artifacts/
+# Train writes one dataset folder per run.
+learning-data/
 *.log
 build/
 dist/

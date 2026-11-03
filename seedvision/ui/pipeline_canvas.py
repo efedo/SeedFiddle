@@ -44,7 +44,7 @@ from PySide6.QtWidgets import (
 )
 
 from seedvision.pipeline import NodeStatus, PipelineConnection, PipelineGraph, PipelineNode, category_rank
-from seedvision.ui.canvas_controls import style_canvas_control_bar
+from seedvision.ui.canvas_controls import CHECK_ICON_SIZE, blank_icon, check_icon, style_canvas_control_bar
 from seedvision.ui.spin_format import spin_decimals
 
 
@@ -1001,12 +1001,10 @@ class PipelineNodeItem(QGraphicsObject):
         if self.node.enabled or not self.node.implemented:
             run_to = menu.addAction("Run to node")
             run_to.setEnabled(self.node.enabled and self.node.implemented)
-        elif self._editing_locked:
-            run_to = menu.addAction("Run to node (clear Lock edits to enable it)")
-            run_to.setEnabled(False)
         else:
             # Enabling explains any refusal: a missing package or checkpoint,
-            # an unconnected input or a disabled upstream node.
+            # an unconnected input or a disabled upstream node. On a locked
+            # pipeline the window offers an editable copy first.
             run_to = menu.addAction("Enable and run to node")
         selected = menu.exec(event.screenPos())
         if selected is run_to:
@@ -1182,6 +1180,7 @@ class PipelineCanvas(QGraphicsView):
         self._initial_focus_node_id = initial_focus_node_id
         self._workflow_controls = None
         self._catalogue_provider = None
+        self._edit_guard = None
         self._preserve_initial_layout = bool(preserve_initial_layout)
         self.graph = graph
         self._scene = QGraphicsScene(self)
@@ -1378,6 +1377,32 @@ class PipelineCanvas(QGraphicsView):
     def editing_locked(self) -> bool:
         return self._editing_locked
 
+    def set_edit_guard(self, guard) -> None:
+        """Ask ``guard`` before a locked canvas adds or removes a node."""
+        self._edit_guard = guard
+
+    def _node_edit_allowed(self) -> bool:
+        if self.read_only:
+            return False
+        if not self._editing_locked:
+            return True
+        # Accepting the guard's offer unlocks this canvas before it returns.
+        return self._edit_guard is not None and bool(self._edit_guard())
+
+    def _refresh_move_to_unused(self) -> None:
+        """Enabled for an optional node, and always while locked: using it explains the lock."""
+        selected = next(
+            (
+                item.node.identifier
+                for item in self._scene.selectedItems()
+                if isinstance(item, PipelineNodeItem)
+            ),
+            None,
+        )
+        self.move_to_unused_button.setEnabled(
+            self._editing_locked or selected in self.OPTIONAL_TOOLBOX_NODE_IDS
+        )
+
     def set_editing_locked(self, locked: bool) -> None:
         """Lock analytical edits while retaining layout, selection and execution."""
         self._editing_locked = bool(locked)
@@ -1389,6 +1414,7 @@ class PipelineCanvas(QGraphicsView):
         for item in self.edge_items:
             item._read_only = self.read_only or self._editing_locked
         self._refresh_unused_node_toolbox()
+        self._refresh_move_to_unused()
 
     def set_node_catalogue(self, provider, add_callback) -> None:
         """A searchable, colour-coded picker for independent catalogue instances."""
@@ -1408,6 +1434,7 @@ class PipelineCanvas(QGraphicsView):
         self.node_catalogue_list = QListWidget(panel)
         self.node_catalogue_list.setMinimumSize(320, 280)
         self.node_catalogue_list.setMaximumHeight(460)
+        self.node_catalogue_list.setIconSize(CHECK_ICON_SIZE)
         box.addWidget(self.node_catalogue_list)
         action = QWidgetAction(self.add_node_menu)
         action.setDefaultWidget(panel)
@@ -1426,6 +1453,8 @@ class PipelineCanvas(QGraphicsView):
 
     def _populate_node_catalogue(self) -> None:
         self.node_catalogue_list.clear()
+        # A fixed icon column lines every name up, whatever the font.
+        present_icon, absent_icon = check_icon('#1768ad'), blank_icon(CHECK_ICON_SIZE)
         grouped: dict[str, list[dict]] = {}
         for entry in self._catalogue_provider():
             grouped.setdefault(entry.get('category', '') or 'Other', []).append(entry)
@@ -1441,7 +1470,7 @@ class PipelineCanvas(QGraphicsView):
             self.node_catalogue_list.addItem(header)
             for entry in entries:
                 count = entry.get('count', int(entry['present']))
-                item = QListWidgetItem(('✓ ' if entry['present'] else '') + entry['title'])
+                item = QListWidgetItem(present_icon if entry['present'] else absent_icon, entry['title'])
                 item.setData(Qt.ItemDataRole.UserRole, entry['key'])
                 item.setData(Qt.ItemDataRole.UserRole + 1, category)
                 item.setForeground(QColor('#1768ad' if entry['present'] else '#218044'))
@@ -1475,7 +1504,7 @@ class PipelineCanvas(QGraphicsView):
                 item.setHidden(category not in visible_categories)
 
     def _add_catalogue_item(self, item) -> None:
-        if self.read_only or self._editing_locked:
+        if self.read_only:
             return
         if item.data(self.CATALOGUE_HEADER_ROLE) is not None:
             return
@@ -1635,7 +1664,7 @@ class PipelineCanvas(QGraphicsView):
         self._create_connection_preview()
         self._populate(resolve_overlaps=False)
         self._refresh_unused_node_toolbox()
-        self.move_to_unused_button.setEnabled(False)
+        self._refresh_move_to_unused()
         if selected_id is not None:
             self.select_node(selected_id)
         return selected_id
@@ -2112,12 +2141,12 @@ class PipelineCanvas(QGraphicsView):
         self.unused_nodes_menu.clear()
         count = len(self.graph.unused_nodes)
         self.unused_nodes_button.setText('Add node')
-        self.unused_nodes_button.setEnabled((bool(count) or self._catalogue_provider is not None) and not self.read_only and not self._editing_locked)
+        self.unused_nodes_button.setEnabled((bool(count) or self._catalogue_provider is not None) and not self.read_only)
         if self.read_only:
             self.unused_nodes_button.setToolTip("")
             return
         if self._editing_locked:
-            self.unused_nodes_button.setToolTip('Clear Lock edits to add nodes.')
+            self.unused_nodes_button.setToolTip('Add a catalogue node. Default pipelines cannot be edited, so this offers an editable copy first.')
         elif self._catalogue_provider is not None:
             self.unused_nodes_button.setToolTip('Add a catalogue node with its required inputs. Selecting an existing node adds another independent instance.')
         # The button reads "Add node", so entries name only the node.
@@ -2132,7 +2161,7 @@ class PipelineCanvas(QGraphicsView):
             )
 
     def _restore_unused_node(self, node_id: str) -> None:
-        if self.read_only or self._editing_locked:
+        if not self._node_edit_allowed():
             return
         self.graph.restore_unused_node(node_id)
         self.node_items.clear()
@@ -2146,17 +2175,16 @@ class PipelineCanvas(QGraphicsView):
         self.unused_node_restored.emit(node_id)
 
     def _shelve_selected_optional_node(self) -> None:
-        if self.read_only or self._editing_locked:
+        if not self._node_edit_allowed():
             return
         selected = [
             item
             for item in self._scene.selectedItems()
             if isinstance(item, PipelineNodeItem)
         ]
-        if not selected:
-            return
-        node_id = selected[0].node.identifier
+        node_id = selected[0].node.identifier if selected else None
         if node_id not in self.OPTIONAL_TOOLBOX_NODE_IDS:
+            self.connection_error.emit("Select an optional node to move it to Unused nodes.")
             return
         self.graph.shelve_node(node_id)
         shelved = self.graph.node(node_id)
@@ -2170,7 +2198,7 @@ class PipelineCanvas(QGraphicsView):
         self._create_connection_preview()
         self._populate()
         self._refresh_unused_node_toolbox()
-        self.move_to_unused_button.setEnabled(False)
+        self._refresh_move_to_unused()
         self.unused_node_shelved.emit(node_id)
 
     def _resolve_all_overlaps(self) -> None:
@@ -2293,9 +2321,7 @@ class PipelineCanvas(QGraphicsView):
                 and selected_id
                 in (edge.connection.source, edge.connection.target)
             )
-        self.move_to_unused_button.setEnabled(
-            selected_id in self.OPTIONAL_TOOLBOX_NODE_IDS
-        )
+        self._refresh_move_to_unused()
         if selected_id is not None:
             self.node_selected.emit(selected_id)
 

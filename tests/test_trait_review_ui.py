@@ -117,6 +117,7 @@ class TraitReviewUiTests(unittest.TestCase):
             self.assertIn(self.model.model_sha256, cell['tooltip'])
         self.assertIn('1 assigned, 1 abstained', observed['summary'])
         self.assertNotIn('trait assignments withheld', observed['summary'])
+        self.assertNotIn('validation', observed['summary'])
         self.assertEqual(json.dumps(self.window._current_report(self.analysis), sort_keys=True), before)
         destination = export_report(self.root / 'exports', self.analysis, report)
         stored = json.loads((destination / 'results.json').read_text(encoding='utf-8'))

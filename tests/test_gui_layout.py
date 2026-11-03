@@ -9,6 +9,10 @@ from tempfile import TemporaryDirectory
 import unittest
 
 
+# Wide enough for every header control in full, even with offscreen Qt's wide box glyphs.
+WIDE_WINDOW = 2400
+
+
 @functional_units
 class GuiLayoutTests(unittest.TestCase):
     @classmethod
@@ -189,6 +193,20 @@ class GuiLayoutTests(unittest.TestCase):
         window._update_analysis_availability()
         self.assertFalse(window.stop_action.isEnabled())
         self.assertNotIn("running", status.text())
+        # A stopped analysis says so, instead of reading as a superseded one.
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from seedvision.pipeline import NodeStatus
+
+        path = Path("capture.jpg")
+        window.pipeline.set_status("layout_detection", NodeStatus.RUNNING, "Running")
+        window._stop_current_work()
+        with patch.object(window.image_view, "_image_path", path):
+            window._finish_analysis_cancellation(path, window.pipeline.revision)
+        self.assertEqual(window.statusBar().currentMessage(), "Stopped analysis of capture.jpg.")
+        node = window.pipeline.node("layout_detection")
+        self.assertEqual((node.status, node.status_detail), (NodeStatus.IDLE, "Stopped"))
 
     def check_test_disabled_nodes_say_why_they_are_bypassed(self) -> None:
         from seedvision.pipeline import build_default_pipeline
@@ -220,8 +238,178 @@ class GuiLayoutTests(unittest.TestCase):
             button.click()
         check.assert_called_once_with(True)
 
+    def _settled(self, width: int) -> None:
+        self.window.resize(width, 700)
+        for _ in range(6):
+            self.application.processEvents()
+
+    def _pane_edges(self, widget) -> tuple[int, int]:
+        left = widget.mapTo(self.window.image_display_stack, widget.rect().topLeft()).x()
+        return left, left + widget.width()
+
+    def check_test_overlay_controls_sit_at_the_left_of_the_image_header(self) -> None:
+        from PySide6.QtGui import QColor
+        from PySide6.QtWidgets import QLabel
+        from seedvision.ui.canvas_controls import CANVAS_CONTROL_BACKGROUND
+
+        window, view = self.window, self.window.image_view
+        window.show()
+        self._settled(WIDE_WINDOW)
+        controls = window.overlay_header_controls
+        self.assertIs(controls.parentWidget(), view.zoom_controls)
+        self.assertIs(view.header_layout.itemAt(0).widget(), controls)
+        for widget in (window.overlay_button, window.overlay_opacity_slider, window.overlay_opacity_label):
+            self.assertTrue(widget.isVisible())
+            self.assertTrue(controls.isAncestorOf(widget))
+            self.assertFalse(window.workflow_toolbar.isAncestorOf(widget))
+        labels = {label.text() for label in view.zoom_controls.findChildren(QLabel) if label.isVisible()}
+        self.assertNotIn("Image zoom", labels)
+        self.assertLessEqual({"Overlay:", "Overlay opacity:", "68%"}, labels)
+        # Controls, then file name, then zoom, all on the header's one row.
+        order = (controls, view.current_file_label, view.zoom_out_button, view.actual_size_button)
+        edges = [self._pane_edges(widget) for widget in order]
+        self.assertEqual(edges, sorted(edges))
+        self.assertLessEqual(view.zoom_controls.rect().height(), view.viewportMargins().top())
+        self.assertTrue(view.zoom_controls.rect().contains(controls.geometry()))
+        # Light text on the dark header, as a platform style would otherwise not give it.
+        background = QColor(CANVAS_CONTROL_BACKGROUND).lightness()
+        for label in (controls.selector_heading, controls.opacity_heading, window.overlay_opacity_label):
+            self.assertGreater(label.palette().windowText().color().lightness(), background + 100)
+        # Behaviour did not move with it: the slider blends and the button still opens the menu.
+        self.assertIs(window.overlay_button.menu(), window.overlay_menu)
+        window.overlay_opacity_slider.setValue(23)
+        self.assertEqual(window.overlay_opacity_label.text(), "23%")
+        self.assertAlmostEqual(view._overlay_opacity, 0.23)
+
+    def check_test_toolbar_closes_up_after_the_overlay_controls_left(self) -> None:
+        window = self.window
+        window.show()
+        self._settled(WIDE_WINDOW)
+
+        def visible_separators_touch() -> bool:
+            visible = [action for action in window.workflow_toolbar.actions() if action.isVisible()]
+            return any(left.isSeparator() and right.isSeparator() for left, right in zip(visible, visible[1:]))
+
+        actions = window.workflow_toolbar.actions()
+        self.assertFalse(visible_separators_touch())
+        self.assertFalse(window.hsv_separator_action.isVisible())
+        self.assertLess(actions.index(window.image_workspace_action), actions.index(window.paint_background_action))
+        window._sync_overlay_display_controls("background_colour_gamut")
+        self.assertTrue(window.hsv_value_slider.isVisible())
+        self.assertTrue(window.hsv_separator_action.isVisible())
+        self.assertFalse(visible_separators_touch())
+        # A full-pane overlay cannot be blended, so opacity leaves the header with it.
+        self.assertTrue(window.overlay_button.isVisible())
+        self.assertFalse(window.overlay_opacity_slider.isVisible())
+        self.assertFalse(window.overlay_header_controls.opacity_heading.isVisible())
+        window._sync_overlay_display_controls("raw_image")
+        self.application.processEvents()
+        self.assertFalse(window.hsv_value_slider.isVisible())
+        self.assertFalse(window.hsv_separator_action.isVisible())
+        self.assertFalse(visible_separators_touch())
+        self.assertTrue(window.overlay_opacity_slider.isVisible())
+        self.assertTrue(window.overlay_header_controls.opacity_heading.isVisible())
+        # The annotation controls stayed and still work.
+        self.assertTrue(window.workflow_toolbar.isAncestorOf(window.annotation_opacity_slider))
+        window.annotation_opacity_slider.setValue(31)
+        self.assertEqual(window.annotation_opacity_label.text(), "31%")
+        self.assertAlmostEqual(window.image_view._annotation_opacity, 0.31)
+
+    def check_test_image_header_never_overlaps_at_narrow_widths(self) -> None:
+        from PySide6.QtCore import Qt
+
+        window, view = self.window, self.window.image_view
+        controls = window.overlay_header_controls
+        file_name = "Scanner_export_batch_seven_soybean_plate_2026-11-03_IMG_0002c.JPG"
+        title = "Cellpose-SAM seed instances"
+        window.show()
+        self._settled(WIDE_WINDOW)
+        controls.set_title(title, "Choose an overlay.")
+        self.assertEqual(window.overlay_button.accessibleName(), title)
+        self.assertIn(title, window.overlay_button.toolTip())
+        for name in ("IMG_0002c.JPG", file_name):
+            view.current_file_label.setText(name)
+            view._fit_header_controls()
+            for width in (WIDE_WINDOW, 1540, 1280, 1100, 1000, window.minimumWidth()):
+                self._settled(width)
+                row = [widget for widget in (
+                    controls.selector_heading, window.overlay_button, controls.opacity_heading,
+                    controls.short_opacity_heading, window.overlay_opacity_slider, window.overlay_opacity_label,
+                    view.current_file_label, view.zoom_out_button, view.zoom_label, view.zoom_in_button,
+                    view.fit_button, view.actual_size_button,
+                ) if widget.isVisible()]
+                with self.subTest(file=name, width=width, shown=[w.objectName() or type(w).__name__ for w in row]):
+                    # The selector, the file name and every zoom button always stay.
+                    for widget in (window.overlay_button, view.current_file_label, view.zoom_out_button,
+                                   view.zoom_label, view.zoom_in_button, view.fit_button, view.actual_size_button):
+                        self.assertIn(widget, row)
+                        self.assertGreater(widget.width(), 0)
+                    edges = [self._pane_edges(widget) for widget in row]
+                    for (_, right), (left, _) in zip(edges, edges[1:]):
+                        self.assertLessEqual(right, left)
+                    self.assertLessEqual(edges[-1][1], window.image_display_stack.width())
+                    self.assertEqual(view.current_file_label.text(), name)
+                    self.assertEqual(window.overlay_button.accessibleName(), title)
+        # A wide pane shows a short overlay name and the file name in full.
+        view.current_file_label.setText("IMG_0002c.JPG")
+        view._fit_header_controls()
+        controls.set_title("Raw image", "Choose an overlay.")
+        self._settled(WIDE_WINDOW)
+        self.assertEqual(window.overlay_button.text(), "Raw image")
+        self.assertTrue(controls.selector_heading.isVisible())
+        self.assertTrue(controls.opacity_heading.isVisible())
+        self.assertGreaterEqual(view.current_file_label.width(), view.current_file_label.sizeHint().width())
+        # A vertical scroll bar takes its width from the header, not from the zoom buttons.
+        view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+        self._settled(window.minimumWidth())
+        self.assertLessEqual(self._pane_edges(view.actual_size_button)[1], view.viewport().width())
+        self.assertLessEqual(self._pane_edges(view.zoom_controls)[1], view.viewport().width())
+        self.assertLessEqual(self._pane_edges(window.overlay_button)[1], self._pane_edges(view.current_file_label)[0])
+        # The header's minimum fits the panes' minimums inside the smallest window.
+        side_panels = sum(window.main_splitter.widget(index).minimumWidth() for index in (0, 2))
+        self.assertLessEqual(side_panels + window.image_display_stack.minimumSizeHint().width(), window.minimumWidth())
+
+    def check_test_overlay_controls_follow_the_showing_display(self) -> None:
+        window, view = self.window, self.window.image_view
+        preview = window.pipeline_workflow.preview
+        controls = window.overlay_header_controls
+        window.show()
+        self._settled(WIDE_WINDOW)
+        window.overlay_opacity_slider.setValue(41)
+        window.overlay_opacity_slider.setEnabled(True)
+        window.image_display_stack.setCurrentWidget(preview)
+        self.application.processEvents()
+        self.assertTrue(preview.isAncestorOf(controls))
+        self.assertFalse(view.isAncestorOf(controls))
+        self.assertIs(preview.header_layout.itemAt(0).widget(), controls)
+        self.assertTrue(window.overlay_button.isVisible())
+        self.assertTrue(window.overlay_opacity_slider.isVisible())
+        self.assertEqual(window.overlay_opacity_slider.value(), 41)
+        self.assertTrue(window.overlay_opacity_slider.isEnabled())
+        self.assertLessEqual(self._pane_edges(controls)[0], 8)
+        # A long message wraps below the header instead of narrowing these controls.
+        preview.message.setText("Run this independent node on the selected project image to inspect outputs. " * 3)
+        self._settled(1000)
+        self.assertEqual(preview.header_layout.parentWidget().height(), 38)
+        self.assertGreater(window.overlay_button.width(), 0)
+        self._settled(WIDE_WINDOW)
+        window.image_display_stack.setCurrentWidget(view)
+        self.application.processEvents()
+        self.assertIs(controls.parentWidget(), view.zoom_controls)
+        self.assertIs(view.header_layout.itemAt(0).widget(), controls)
+        self.assertIsNone(preview.header_layout.itemAt(0).widget())
+        self.assertEqual(window.overlay_opacity_slider.value(), 41)
+        self.assertTrue(window.overlay_button.isVisible())
+        # They go with the image pane; the pipeline can be shown alone.
+        window.image_workspace_action.setChecked(False)
+        self.application.processEvents()
+        self.assertFalse(window.overlay_button.isVisible())
+        window.image_workspace_action.setChecked(True)
+        self.application.processEvents()
+        self.assertTrue(window.overlay_button.isVisible())
+
     def test_workflow_lifecycle(self):
-        """14 related GuiLayoutTests scenarios, each with private fixture state."""
+        """18 related GuiLayoutTests scenarios, each with private fixture state."""
         self.scenario(self.check_test_every_shortcut_is_unique)
         self.scenario(self.check_test_toolbar_keeps_run_view_and_annotation_controls_only)
         self.scenario(self.check_test_menus_group_commands_and_end_file_with_exit)
@@ -236,6 +424,10 @@ class GuiLayoutTests(unittest.TestCase):
         self.scenario(self.check_test_run_stop_and_inspector_share_one_work_state)
         self.scenario(self.check_test_disabled_nodes_say_why_they_are_bypassed)
         self.scenario(self.check_test_foreground_readiness_button_opens_foreground_painting)
+        self.scenario(self.check_test_overlay_controls_sit_at_the_left_of_the_image_header)
+        self.scenario(self.check_test_toolbar_closes_up_after_the_overlay_controls_left)
+        self.scenario(self.check_test_image_header_never_overlaps_at_narrow_widths)
+        self.scenario(self.check_test_overlay_controls_follow_the_showing_display)
 
 
 if __name__ == "__main__":

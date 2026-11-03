@@ -56,10 +56,10 @@ def export_analysis_sample(
     import torch.nn.functional as functional
 
     corrected_labels = np.asarray(corrected_instance_labels)
-    from seedvision.annotation.eligibility import eligible_instances
-    eligible = eligible_instances(corrected_labels, seed_annotations)
+    from seedvision.annotation.eligibility import connected_instances
+    eligible = connected_instances(corrected_labels, seed_annotations)
     if not np.array_equal(eligible, corrected_labels):
-        raise ValueError('Learning export requires complete, connected, shape-reviewed contours for every supplied seed. Partial/unreviewed shapes cannot define physical-boundary truth.')
+        raise ValueError('Learning export requires a connected contour for every supplied seed, with no shape exclusions.')
     if feature_spec.include_species_planes and (not species_reviewed or feature_spec.species_index(species) == 0):
         raise ValueError('Species-conditioned features require reviewed, assigned species metadata. Choose a verified species or export an explicitly unconditioned feature specification.')
     corrected_shape = result.calibration.corrected_bgr.shape[:2]

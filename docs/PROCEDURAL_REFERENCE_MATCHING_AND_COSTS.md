@@ -85,8 +85,8 @@ missing a seed. Loss is not artificially capped at 1. The missed-seed cost,
 overreach amplitude/distance scale, and concavity surcharge are user controls;
 they are fixed during optimization and cannot be tuned away by the fitter.
 
-Overlay alpha is total pixel cost / **4**, capped at 1, followed by the toolbar
-opacity. This fixed scale is not renormalized to an image's maximum or to the
+Overlay alpha is total pixel cost / **4**, capped at 1, followed by the overlay
+opacity slider. This fixed scale is not renormalized to an image's maximum or to the
 chosen penalty weight. Colour identifies the strongest cost term, with magenta
 marking a nonzero concavity surcharge. Exact unsaturated pixel costs remain in
 the comparison result and are tested against the fitter's totals. Counts of

@@ -1456,6 +1456,97 @@ class NodeTimingRecorderTests(unittest.TestCase):
         with self.assertRaises(AnalysisCancelled):
             recorder.start("second")
 
+    def test_cancellation_stops_before_the_next_torch_call_inside_a_node(self) -> None:
+        import torch
+        from seedvision.timing import (
+            AnalysisCancelled,
+            analysis_cancellation_checks,
+            raise_if_analysis_cancelled,
+        )
+
+        cancelled = False
+        with analysis_cancellation_checks(lambda: cancelled):
+            values = torch.ones(3)
+            self.assertEqual(float(torch.sum(values)), 3.0)
+            raise_if_analysis_cancelled()
+            cancelled = True
+            with self.assertRaises(AnalysisCancelled):
+                torch.sum(values)
+            with self.assertRaises(AnalysisCancelled):
+                values + 1
+            with self.assertRaises(AnalysisCancelled):
+                raise_if_analysis_cancelled()
+        # Leaving the analysis removes the checks though cancellation stays requested.
+        self.assertEqual(float(torch.sum(values)), 3.0)
+        raise_if_analysis_cancelled()
+
+    def test_cancellation_checks_stay_on_the_analysis_thread(self) -> None:
+        from threading import Thread
+        import torch
+        from seedvision.timing import analysis_cancellation_checks, raise_if_analysis_cancelled
+
+        results = []
+
+        def other_thread():
+            raise_if_analysis_cancelled()
+            results.append(float(torch.sum(torch.ones(2))))
+
+        with analysis_cancellation_checks(lambda: True):
+            worker = Thread(target=other_thread)
+            worker.start()
+            worker.join()
+        self.assertEqual(results, [2.0])
+
+    def test_analysis_without_a_cancellation_callback_has_no_checks(self) -> None:
+        from torch.overrides import _get_current_function_mode
+        from seedvision.timing import analysis_cancellation_checks, cancellable_analysis
+
+        with analysis_cancellation_checks(None):
+            self.assertIsNone(_get_current_function_mode())
+
+        @cancellable_analysis
+        def analysis(value, *, cancellation_requested=None):
+            return value, cancellation_requested, _get_current_function_mode()
+
+        self.assertEqual(analysis(1), (1, None, None))
+        requested = lambda: False
+        value, forwarded, mode = analysis(2, cancellation_requested=requested)
+        self.assertEqual((value, forwarded), (2, requested))
+        self.assertIsNotNone(mode)
+        self.assertIsNone(_get_current_function_mode())
+
+    def test_stop_ends_a_real_analysis_inside_the_running_node(self) -> None:
+        from unittest.mock import patch
+        from seedvision.calibration import image as calibration
+        from seedvision.calibration.geometry import DishDetectionSettings
+        from seedvision.segmentation.baseline import analyze_image
+        from seedvision.timing import AnalysisCancelled
+        from tests.test_neutral_calibration import fixture, ruler
+
+        image, card = fixture()
+        enabled = frozenset(node.identifier for node in build_default_pipeline().nodes.values() if node.enabled)
+        events = []
+        stopped = []
+
+        def progress(node_id, state):
+            events.append((node_id, state))
+            if (node_id, state) == ("edge_gradients", "started"):
+                stopped.append(True)
+
+        with patch.object(calibration, "detect_colour_card", return_value=card), \
+             patch.object(calibration, "detect_ruler", side_effect=ruler), \
+             self.assertRaises(AnalysisCancelled):
+            analyze_image(
+                image,
+                enabled_nodes=enabled,
+                calibration_settings=calibration.CalibrationSettings(apply_perspective_correction=False),
+                dish_settings=DishDetectionSettings(expected_outer_diameter_mm=0),
+                progress_callback=progress,
+                cancellation_requested=lambda: bool(stopped),
+            )
+        self.assertIn(("edge_gradients", "started"), events)
+        self.assertNotIn(("edge_gradients", "completed"), events)
+
 
 @functional_units
 class BaselineSettingsTests(unittest.TestCase):

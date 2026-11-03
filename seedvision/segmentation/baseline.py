@@ -44,6 +44,7 @@ from seedvision.segmentation.procedural import (
 from seedvision.segmentation.procedural_fit import procedural_reference_error_map
 from seedvision.learning.cellpose_sam import CellposeSamSettings
 from seedvision.learning.contracts import LearnedInstanceResult, ModelFamily
+from seedvision.learning.instance_selection import select_instances
 from seedvision.learning.pipeline import (
     StarDistPipelineSettings,
     UNetPipelineSettings,
@@ -86,7 +87,12 @@ from seedvision.visualization import (
     build_advanced_analysis_layers,
     build_analysis_layers,
 )
-from seedvision.timing import AnalysisCancelled, NodeTimingRecorder
+from seedvision.timing import (
+    AnalysisCancelled,
+    NodeTimingRecorder,
+    cancellable_analysis,
+    raise_if_analysis_cancelled,
+)
 from seedvision.visualization.advanced import (
     local_lighting_evidence_tensors,
     sensor_noise_likelihood_tensor,
@@ -628,6 +634,7 @@ def analyze_path(
     )
 
 
+@cancellable_analysis
 def analyze_image(
     image: np.ndarray,
     *,
@@ -741,6 +748,7 @@ def analyze_image(
     if reference_transform is not None:
         from seedvision.annotation.coordinates import reproject_raster, reproject_annotations, reproject_bundle
         def transport(value):
+            raise_if_analysis_cancelled()
             return reproject_raster(value, reference_transform, calibration.affine_matrix, analysis_image.shape[:2])
         background_reference_mask = transport(background_reference_mask)
         foreground_reference_mask = transport(foreground_reference_mask)
@@ -774,6 +782,7 @@ def analyze_image(
         seed_instance_annotations, analysis_image.shape[:2]
     )
     from seedvision.export.calibration_facts import calibration_facts
+    raise_if_analysis_cancelled()
     reviewed_inputs = prepare_reviewed_inputs(seed_instance_annotations,
         (item for item in seed_instance_traits if hasattr(item, 'seed_id')),
         context=reviewed_measurement_context(_source_sha256, analysis_image,
@@ -785,6 +794,7 @@ def analyze_image(
     seed_instance_annotations = reviewed_inputs.labels
     seed_instance_traits = reviewed_inputs.annotations
     from seedvision.export.analysis_inputs import capture_analysis_inputs
+    raise_if_analysis_cancelled()
     analysis_inputs_json = capture_analysis_inputs(
         masks={'instances': seed_instance_annotations, 'foreground': foreground_reference_mask,
                'background': background_reference_mask, 'foreground_exclusion': foreground_exclusion_mask,
@@ -2473,7 +2483,6 @@ def analyze_image(
 
     trait_result = None
     if enabled_nodes is not None and 'trait_classifier' in enabled_nodes:
-        from seedvision.learning.instance_selection import select_instances
         from seedvision.learning.trait_pipeline import TraitClassifierSettings, run_trait_classifier
         selected_method, selected_instances, _ = select_instances(unet=unet_result,
             stardist=stardist_result, cellpose=cellpose_result,
@@ -2513,14 +2522,7 @@ def analyze_image(
     else:
         crowding = "low"
 
-    warnings = [
-        "Learned instances are not publication-validated; review and correction are required."
-        if unet_result is not None or stardist_result is not None or cellpose_result is not None
-        else "Untrained procedural instances; review and correction are required."
-        if procedural_result is not None
-        else "Untrained classical proposals; review and correction are required."
-    ]
-    warnings.extend(calibration.warnings)
+    warnings = list(calibration.warnings)
     if layers.background_mode == "disabled":
         warnings.append(
             "Background colour and noise-frequency analysis were disabled for this run."
@@ -2559,19 +2561,13 @@ def analyze_image(
         warnings.append(
             "Reference seeds were not isolated reliably; seed size was estimated from the dish."
         )
-    if crowding != "low":
-        warnings.append(
-            "Touching/overlapping seeds make the proposal count especially uncertain."
-        )
-    if procedural_result is not None:
-        low_confidence_fraction = float(
-            np.mean(procedural_result.instance_confidences < 0.55)
-        ) if procedural_result.count else 1.0
-        if low_confidence_fraction >= 0.20:
-            warnings.append(
-                "Procedural instance separation contains substantial low-confidence "
-                "structure; review the confidence overlay before using its count."
-            )
+    _, reported_instances, _ = select_instances(unet=unet_result,
+        stardist=stardist_result, cellpose=cellpose_result,
+        procedural=procedural_result, enabled=enabled_nodes,
+        foreground_available=layers.foreground_colour_profile is not None)
+    confidence_warning = _procedural_confidence_warning(reported_instances, procedural_result)
+    if confidence_warning:
+        warnings.append(confidence_warning)
 
     measured_timings = timings.finalize()
     node_timings_seconds = (
@@ -2684,6 +2680,22 @@ def analyze_image(
         node_cache.last_reused_nodes = tuple(dict.fromkeys(reused))
         node_cache.node_timings_seconds = node_timings_seconds
     return result
+
+
+def _procedural_confidence_warning(reported_instances, procedural_result) -> str | None:
+    """Flag weak procedural separation only when it supplies the reported count."""
+    if (
+        procedural_result is None
+        or reported_instances is not procedural_result
+        or not procedural_result.count
+    ):
+        return None
+    low_confidence_fraction = float(
+        np.mean(procedural_result.instance_confidences < 0.55)
+    )
+    if low_confidence_fraction < 0.20:
+        return None
+    return f"{low_confidence_fraction:.0%} of procedural instances are below 55% confidence."
 
 
 def _dish_crop(
@@ -3059,6 +3071,7 @@ def _reference_seed_diameter(
         ]
     ] = []
     for index in candidates:
+        raise_if_analysis_cancelled()
         fitted_item = _refine_reference_seed_component(
             crop,
             labels_host == int(index),
@@ -3290,18 +3303,23 @@ def _annotated_seed_diameter_measurements(
     values = np.asarray(labels)
     if values.ndim != 2 or not np.issubdtype(values.dtype, np.integer):
         raise ValueError("Annotated seed IDs must be a two-dimensional integer raster.")
-    identifiers = np.unique(values)
-    identifiers = identifiers[identifiers > 0]
+    # One pass finds every seed's bounds; searching per seed scales with the image.
+    rows, columns = np.nonzero(values > 0)
+    identifiers, owners = np.unique(values[rows, columns], return_inverse=True)
+    height, width = values.shape
+    left, top = np.full(len(identifiers), width), np.full(len(identifiers), height)
+    right, bottom = np.full(len(identifiers), -1), np.full(len(identifiers), -1)
+    np.minimum.at(left, owners, columns)
+    np.maximum.at(right, owners, columns)
+    np.minimum.at(top, owners, rows)
+    np.maximum.at(bottom, owners, rows)
     measurements: list[SeedDiameterMeasurement] = []
     by_id = {item.seed_id: item for item in annotations}
-    height, width = values.shape
-    for identifier_value in identifiers.tolist():
+    for index, identifier_value in enumerate(identifiers.tolist()):
+        raise_if_analysis_cancelled()
         identifier = int(identifier_value)
-        rows, columns = np.nonzero(values == identifier)
-        if not len(rows):
-            continue
-        x0, x1 = int(columns.min()), int(columns.max()) + 1
-        y0, y1 = int(rows.min()), int(rows.max()) + 1
+        x0, x1 = int(left[index]), int(right[index]) + 1
+        y0, y1 = int(top[index]), int(bottom[index]) + 1
         local = np.asarray(
             values[y0:y1, x0:x1] == identifier, dtype=np.uint8
         )

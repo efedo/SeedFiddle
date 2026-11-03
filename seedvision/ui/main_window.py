@@ -6,7 +6,7 @@ import html
 import json
 import os
 import weakref
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
@@ -15,7 +15,6 @@ from time import monotonic
 
 import numpy as np
 from PySide6.QtCore import (
-    QEvent,
     QObject,
     QRunnable,
     QSettings,
@@ -27,7 +26,7 @@ from PySide6.QtCore import (
     Signal,
     Slot,
 )
-from PySide6.QtGui import QAction, QKeySequence, QPalette
+from PySide6.QtGui import QAction, QIcon, QKeySequence, QPalette
 from PySide6.QtWidgets import (
     QButtonGroup,
     QComboBox,
@@ -56,9 +55,6 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QSplitter,
     QStackedWidget,
-    QStyle,
-    QStyledItemDelegate,
-    QStyleOptionViewItem,
     QTabWidget,
     QToolBar,
     QToolButton,
@@ -148,6 +144,7 @@ from seedvision.annotation import (
     trait_display_name,
     summarize_instance_continuity,
 )
+from seedvision.segmentation.procedural import MARKER_REJECTION_LABELS
 from seedvision.segmentation import (
     AdvancedAnalysisSettings,
     AnalysisLayerSettings,
@@ -168,14 +165,18 @@ from seedvision.segmentation import (
     procedural_seed_instances_from_prepared,
 )
 from seedvision.visualization import ADVANCED_NODE_MODES, ADVANCED_OVERLAY_LABELS
+from seedvision.ui.image_list import (
+    IMAGE_OPEN_ROLE, IMAGE_SPECIES_ROLE, ImageListDelegate, ImageThumbnailLoader,
+)
 from seedvision.ui.image_view import ImageView, SUPPORTED_SUFFIXES
+from seedvision.ui.overlay_header import OverlayHeaderControls
 from seedvision.ui.reference_history import RasterUndoHistory
 from seedvision.ui.learning_workflow import (
-    LearningExportDialog,
     LearningTrainingDialog,
     LearningTrainingRequest,
     format_learning_audit,
 )
+from seedvision.ui.training_dataset import TrainingDatasetController
 from seedvision.ui.pipeline_canvas import PipelineCanvas
 from seedvision.ui.trait_training_workflow import TraitTrainingDialog, TraitTrainingTask
 from seedvision.ui.pipeline_inspector import PipelineInspector
@@ -301,7 +302,6 @@ NON_SELECTABLE_OVERLAY_MODES = frozenset(
 
 OVERLAY_NODE_OWNERS = {
     "raw_image": "image_selector",
-    "calibrated_image": "ruler_detection",
     "deskew_colour": "deskew_colour",
     "colour_reference": "deskew_colour",
     "ruler_evidence": "ruler_detection",
@@ -717,7 +717,7 @@ class _AnalysisTask(QRunnable):
         self._cancel_outcome_factory = None
 
     def cancel(self) -> None:
-        """Request a stop when the computation next reaches a node boundary."""
+        """Request a stop before the next PyTorch call or cancellation check."""
 
         self._cancel_requested.set()
 
@@ -1289,41 +1289,8 @@ def _reference_summary_html(
     return " ".join(chips)
 
 
-class _ImageListDelegate(QStyledItemDelegate):
-    """Keep native image rows while reserving a small removal target."""
-
-    remove_requested = Signal(object)
-
-    @staticmethod
-    def remove_rect(rect):
-        target = rect.adjusted(rect.width() - 24, 2, -2, -2)
-        return target
-
-    def paint(self, painter, option, index):
-        native = QStyleOptionViewItem(option)
-        native.rect = option.rect.adjusted(0, 0, -26, 0)
-        super().paint(painter, native, index)
-        # Draw the removal target only where the pointer or selection is, so a
-        # long list does not show a column of identical close buttons.
-        if option.state & (QStyle.StateFlag.State_MouseOver | QStyle.StateFlag.State_Selected):
-            icon = option.widget.style().standardIcon(QStyle.StandardPixmap.SP_TitleBarCloseButton)
-            icon.paint(painter, self.remove_rect(option.rect), Qt.AlignmentFlag.AlignCenter)
-
-    def editorEvent(self, event, model, option, index):
-        if (
-            event.type() in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonRelease,
-                             QEvent.Type.MouseButtonDblClick)
-            and event.button() == Qt.MouseButton.LeftButton
-            and self.remove_rect(option.rect).contains(event.position().toPoint())
-        ):
-            if event.type() == QEvent.Type.MouseButtonRelease:
-                self.remove_requested.emit(index.data(Qt.ItemDataRole.UserRole))
-            return True
-        return super().editorEvent(event, model, option, index)
-
-
 class MainWindow(ResultsController, WorkController, ReferenceFrameController, OptimizationController,
-                 AnnotationTransferController, QMainWindow):
+                 AnnotationTransferController, TrainingDatasetController, QMainWindow):
     """Main desktop window for visual pipeline control and seed review."""
 
     ANALYSIS_CACHE_CUDA_BUDGET_BYTES = 2 * 1024**3
@@ -1331,6 +1298,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
     REFERENCE_UNDO_LIMIT = 20
     MAX_RECENT_PROJECTS = 8
     RECENT_PROJECTS_SETTINGS_KEY = "projects/recentFiles"
+    IMAGE_SPECIES_SETTINGS_KEY = "review-ui/images-species-column"
 
     def __init__(self, root: Path, parent=None) -> None:
         super().__init__(parent)
@@ -1539,10 +1507,12 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.image_list.setAlternatingRowColors(True)
         # Hover state drives the per-row removal target in the delegate.
         self.image_list.setMouseTracking(True)
+        self.image_list.setUniformItemSizes(True)
         self.image_list.itemActivated.connect(self._open_list_item)
         self.pipeline_inspector.image_selection_requested.connect(self._select_pipeline_image)
         self.pipeline_inspector.species_library_requested.connect(self._open_species_library_manager)
-        self._image_list_delegate = _ImageListDelegate(self.image_list)
+        self._image_thumbnails = ImageThumbnailLoader(self)
+        self._image_list_delegate = ImageListDelegate(self._image_thumbnails, self.image_list)
         self._image_list_delegate.remove_requested.connect(
             lambda filename: self._remove_image(Path(filename))
         )
@@ -2469,6 +2439,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 native_recipes=self._project_native_recipes,
                 pipeline_workflow=self.pipeline_workflow.sync_graph(),
                 node_instances=self.catalogue_nodes.snapshot_instances(),
+                active_pipeline=self.pipeline_documents.active_copy,
+                custom_pipelines=self.pipeline_documents.stored_copies,
                 correction_bindings=tuple(binding for binding in self._project_correction_bindings
                     if binding.image_id not in self._project_unresolved_image_records),
                 existing_correction_bindings=self._project_correction_bindings,
@@ -2509,6 +2481,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 native_recipes=captured.native_recipes,
                 pipeline_workflow=captured.pipeline_workflow,
                 node_instances=captured.node_instances,
+                active_pipeline=captured.active_pipeline,
+                custom_pipelines=captured.custom_pipelines,
                 correction_bindings=captured.correction_bindings+tuple(binding
                     for binding in self._project_correction_bindings
                     if binding.image_id in self._project_unresolved_image_records),
@@ -2813,8 +2787,9 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             self._pipeline_held_model_assets = ()
             self._pipeline_held_correction_bindings = ()
             loaded_workflow = loaded.document.pipeline_workflow
+            self.pipeline_documents.set_stored_copies(loaded.document.custom_pipelines)
             self.pipeline_documents.loaded('Default seed analysis' if loaded_workflow is None else loaded_workflow.source_recipe.title,
-                name=None if loaded_workflow is None else loaded_workflow.display_state.get("pipeline_name"))
+                name=loaded.document.active_pipeline or (None if loaded_workflow is None else loaded_workflow.display_state.get("pipeline_name")))
             self.pipeline_backends.refresh()
         self._project_correction_bindings = loaded.document.correction_bindings
         species = loaded.document.species or 'unknown'
@@ -3010,6 +2985,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.pipeline_workflow.install(None)
         self.pipeline_workflow._copies.clear()
         self.pipeline_workflow.refresh_saved()
+        if hasattr(self, 'pipeline_documents'):
+            self.pipeline_documents.set_stored_copies(())
         if hasattr(self, '_optimization_targets'):
             self._optimization_targets.clear()
 
@@ -3096,6 +3073,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._project_correction_bindings = ()
         self._image_paths.clear()
         self.image_list.clear()
+        self._image_thumbnails.clear()
         self._analysis_activities.clear()
 
         self.image_view.clear_image()
@@ -3606,16 +3584,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             self._instance_annotation_editing_changed
         )
 
-        self.export_learning_sample_action = QAction(
-            "Add image to training dataset…", self
-        )
-        self.export_learning_sample_action.setEnabled(False)
-        self.export_learning_sample_action.setToolTip(
-            "Run analysis, apply seed labels, and review complete connected outlines first. "
-            "This action adds dataset files; training is a separate Learning action.")
-        self.export_learning_sample_action.triggered.connect(
-            self._export_learning_sample
-        )
 
         self.load_instance_labels_action = QAction(
             "Import bundled seed outlines…", self
@@ -3623,7 +3591,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.load_instance_labels_action.setEnabled(False)
         self.load_instance_labels_action.setToolTip(
             "Import source-bound bundled seed labels as an undoable draft. "
-            "Review the outlines and apply the draft to use it in analysis."
+            "Apply the draft to use it in analysis."
         )
         self.load_instance_labels_action.triggered.connect(
             self._load_instance_reference_mask
@@ -3644,8 +3612,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         )
         self.copy_cellpose_outlines_action.setEnabled(False)
         self.copy_cellpose_outlines_action.setToolTip(
-            "Turn this image's Cellpose-SAM seed instances into an undoable, unreviewed "
-            "seed-outline draft. Review every outline, then apply the draft."
+            "Turn this image's Cellpose-SAM seed instances into an undoable "
+            "seed-outline draft. Apply the draft to use it in analysis."
         )
         self.copy_cellpose_outlines_action.triggered.connect(
             self._copy_cellpose_instances_to_outlines
@@ -3659,12 +3627,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             "Apply drafts before exporting their changes.")
         self.save_instance_labels_action.triggered.connect(
             self._save_instance_labels
-        )
-        self.audit_learning_dataset_action = QAction(
-            "Audit learning dataset…", self
-        )
-        self.audit_learning_dataset_action.triggered.connect(
-            self._audit_learning_dataset
         )
         self.train_learning_model_action = QAction(
             "Train or refine U-Net / StarDist…", self
@@ -3714,9 +3676,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         learning_menu.addAction(self.load_instance_labels_action)
         learning_menu.addAction(self.choose_instance_labels_action)
         learning_menu.addAction(self.save_instance_labels_action)
-        learning_menu.addAction(self.export_learning_sample_action)
         learning_menu.addSeparator()
-        learning_menu.addAction(self.audit_learning_dataset_action)
         learning_menu.addAction(self.train_learning_model_action)
         learning_menu.addAction(self.train_trait_model_action)
         learning_menu.addAction(self.activate_trait_model_action)
@@ -3812,12 +3772,10 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             self.choose_instance_labels_action,
             self.copy_cellpose_outlines_action,
             self.save_instance_labels_action,
-            self.export_learning_sample_action,
         ):
             outlines_menu.addAction(action)
         learning_menu.addSeparator()
         for action in (
-            self.audit_learning_dataset_action,
             self.train_learning_model_action,
             self.train_trait_model_action,
             self.activate_trait_model_action,
@@ -3832,7 +3790,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         install_help_actions(self, menus["help"])
 
     def _build_overlay_controls(self) -> None:
-        """Create the compact viewer controls shared by the top toolbar."""
+        """Create the compact viewer controls shared by the image displays' headers."""
 
         self.overlay_combo = QComboBox(self)
         # Kept as the single state model (and for keyboard/accessibility
@@ -3858,13 +3816,32 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.overlay_button.setToolTip(
             "Choose a calculating node, then one of the overlays that node owns."
         )
+        self.overlay_opacity_slider = QSlider(Qt.Orientation.Horizontal, self)
+        self.overlay_opacity_slider.setRange(0, 100)
+        self.overlay_opacity_slider.setValue(68)
+        self.overlay_opacity_slider.setEnabled(False)
+        self.overlay_opacity_slider.setMinimumWidth(54)
+        self.overlay_opacity_slider.setMaximumWidth(102)
+        self.overlay_opacity_slider.setToolTip(
+            "Opacity of the selected overlay; does not change analysis."
+        )
+        self.overlay_opacity_slider.valueChanged.connect(
+            self._overlay_opacity_changed
+        )
+        self.overlay_opacity_label = QLabel("68%", self)
+        self.overlay_opacity_label.setMinimumWidth(36)
+        self.overlay_header_controls = OverlayHeaderControls(
+            self.overlay_button,
+            self.overlay_opacity_slider,
+            self.overlay_opacity_label,
+            self,
+        )
         self._overlay_entries: list[tuple[str, str]] = [
             ("Raw image", "raw_image"),
             ("Detected colour swatches", "colour_reference"),
             ("Deskewed colour image + swatches", "deskew_colour"),
             ("Ruler evidence", "ruler_evidence"),
             ("Detected ruler", "ruler_detection"),
-            ("Calibrated image & 5 cm scale", "calibrated_image"),
             ("Detected vessel layout", "layout_detection"),
             ("Hue only", "hue_only"),
             ("Wavelet detail 1", "wavelet_detail_1"),
@@ -4039,16 +4016,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.overlay_button.setEnabled(False)
         self.overlay_combo.currentIndexChanged.connect(self._overlay_changed)
 
-        self.overlay_opacity_slider = QSlider(Qt.Orientation.Horizontal, self)
-        self.overlay_opacity_slider.setRange(0, 100)
-        self.overlay_opacity_slider.setValue(68)
-        self.overlay_opacity_slider.setEnabled(False)
-        self.overlay_opacity_slider.valueChanged.connect(
-            self._overlay_opacity_changed
-        )
-        self.overlay_opacity_label = QLabel("68%", self)
-        self.overlay_opacity_label.setMinimumWidth(36)
-
         self.hsv_value_slider = QSlider(Qt.Orientation.Horizontal, self)
         self.hsv_value_slider.setRange(0, 100)
         self.hsv_value_slider.setValue(75)
@@ -4175,17 +4142,9 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                     )
                     if mode == selected_mode:
                         selected_label = label
-        self.overlay_button.setText(
-            self.overlay_button.fontMetrics().elidedText(
-                selected_label,
-                Qt.TextElideMode.ElideRight,
-                self.overlay_button.maximumWidth() - 28,
-            )
-        )
-        self.overlay_button.setAccessibleName(selected_label)
-        self.overlay_button.setToolTip(
-            f"{selected_label}\n"
-            "Choose a calculating node, then one of the overlays that node owns."
+        self.overlay_header_controls.set_title(
+            selected_label,
+            "Choose a calculating node, then one of the overlays that node owns.",
         )
 
     def _filter_overlay_menu(self, text: str) -> None:
@@ -4944,7 +4903,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         )
         self.load_instance_reference_button.setToolTip(
             "Import source-bound bundled seed labels as an undoable draft. "
-            "Review and apply the draft to use it in analysis."
+            "Apply the draft to use it in analysis."
         )
         self.load_instance_reference_button.clicked.connect(
             self._load_instance_reference_mask
@@ -5593,35 +5552,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         )
         self.workflow_toolbar.addSeparator()
 
-        overlay_controls = QWidget(self.workflow_toolbar)
-        overlay_controls.setObjectName("overlayToolbarControls")
-        overlay_controls.setSizePolicy(
-            QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred
-        )
-        overlay_layout = QHBoxLayout(overlay_controls)
-        overlay_layout.setContentsMargins(0, 0, 0, 0)
-        overlay_layout.setSpacing(3)
-        overlay_label = QLabel("Overlay:", overlay_controls)
-        overlay_label.setObjectName("overlayToolbarLabel")
-        overlay_layout.addWidget(overlay_label)
-        overlay_layout.addWidget(self.overlay_button)
-        self.workflow_toolbar.addWidget(overlay_controls)
-        self.workflow_toolbar.addSeparator()
-
-        self.opacity_toolbar_label = QLabel("Overlay opacity:", self.workflow_toolbar)
-        self.opacity_toolbar_label.setObjectName("opacityToolbarLabel")
-        self.overlay_opacity_slider.setMinimumWidth(54)
-        self.overlay_opacity_slider.setMaximumWidth(102)
-        self.opacity_toolbar_label_action = self.workflow_toolbar.addWidget(
-            self.opacity_toolbar_label
-        )
-        self.overlay_opacity_slider_action = self.workflow_toolbar.addWidget(
-            self.overlay_opacity_slider
-        )
-        self.overlay_opacity_label_action = self.workflow_toolbar.addWidget(
-            self.overlay_opacity_label
-        )
-
         self.hsv_value_toolbar_label = QLabel("HSV value:", self.workflow_toolbar)
         self.hsv_value_toolbar_label.setObjectName("hsvValueToolbarLabel")
         self.hsv_value_slider.setMinimumWidth(90)
@@ -5638,14 +5568,16 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.hsv_peak_button_action = self.workflow_toolbar.addWidget(
             self.hsv_peak_button
         )
+        # Shown with the HSV group, so an empty group leaves no double separator.
+        self.hsv_separator_action = self.workflow_toolbar.addSeparator()
         for action in (
             self.hsv_value_toolbar_label_action,
             self.hsv_value_slider_action,
             self.hsv_value_label_action,
             self.hsv_peak_button_action,
+            self.hsv_separator_action,
         ):
             action.setVisible(False)
-        self.workflow_toolbar.addSeparator()
         self.annotate_toolbar_label = QLabel("Annotate:", self.workflow_toolbar)
         self.workflow_toolbar.addWidget(self.annotate_toolbar_label)
         self.workflow_toolbar.addAction(self.paint_background_action)
@@ -5674,6 +5606,12 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.workflow_toolbar.addWidget(self.annotation_opacity_label)
         self.addToolBar(self.workflow_toolbar)
 
+    def _dock_overlay_controls(self, _index: int = 0) -> None:
+        """Keep the overlay controls in the header of whichever display is showing."""
+
+        self.image_display_stack.currentWidget().dock_header_controls(self.overlay_header_controls)
+        self.overlay_header_controls.show()
+
     def _build_layout(self) -> None:
         self.workspace_splitter = QSplitter(Qt.Orientation.Vertical, self)
         from seedvision.ui.pipeline_workflow import PipelineWorkflowController
@@ -5682,6 +5620,11 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.image_display_stack = QStackedWidget(self)
         self.image_display_stack.addWidget(self.image_view)
         self.image_display_stack.addWidget(self.pipeline_workflow.preview)
+        self.image_display_stack.currentChanged.connect(self._dock_overlay_controls)
+        self.overlay_header_controls.width_preference_changed.connect(
+            self.image_view._fit_header_controls
+        )
+        self._dock_overlay_controls()
         self.workspace_splitter.addWidget(self.image_display_stack)
         self.workspace_splitter.addWidget(self.pipeline_canvas)
         self.workspace_splitter.setStretchFactor(0, 3)
@@ -5697,6 +5640,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         splitter.setStretchFactor(1, 1)
         splitter.setStretchFactor(2, 0)
         splitter.setSizes((225, 1020, 380))
+        # The image header's controls keep their room however large the fonts are.
+        self.setMinimumWidth(max(self.minimumWidth(), splitter.minimumSizeHint().width()))
         self.annotation_workspace = QWidget(self)
         workspace_layout = QVBoxLayout(self.annotation_workspace)
         workspace_layout.setContentsMargins(0, 0, 0, 0)
@@ -5725,8 +5670,14 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         initialize_pipeline_files(self)
 
     def _pipeline_editing_allowed(self):
+        """Guard a request made by the user; a default pipeline offers an editable copy."""
         documents = getattr(self, "pipeline_documents", None)
         return documents is None or documents.can_edit()
+
+    def _pipeline_editable(self):
+        """Check without asking, for work that finishes after the user requested it."""
+        documents = getattr(self, "pipeline_documents", None)
+        return documents is None or not documents.locked
 
     def _install_catalogue_canvas(self, graph) -> None:
         if self.pipeline_canvas.graph is graph:
@@ -5759,6 +5710,19 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         heading.setStyleSheet("font-size: 16px; font-weight: 600;")
         heading_row = QHBoxLayout()
         heading_row.addWidget(heading, 1)
+        self.image_species_action = QAction("Show species in the Images list", self)
+        self.image_species_action.setIconText("Species")
+        self.image_species_action.setCheckable(True)
+        self.image_species_action.setChecked(self._application_settings.value(
+            self.IMAGE_SPECIES_SETTINGS_KEY, True, type=bool))
+        self.image_species_action.toggled.connect(self._image_species_toggled)
+        self._image_list_delegate.set_show_species(self.image_species_action.isChecked())
+        self.image_list.setContextMenuPolicy(Qt.ContextMenuPolicy.ActionsContextMenu)
+        self.image_list.addAction(self.image_species_action)
+        self.image_species_button = QToolButton(images)
+        self.image_species_button.setObjectName("imageSpeciesButton")
+        self.image_species_button.setDefaultAction(self.image_species_action)
+        heading_row.addWidget(self.image_species_button)
         self.open_images_button = QToolButton(images)
         self.open_images_button.setObjectName("openImagesButton")
         self.open_images_button.setDefaultAction(self.open_action)
@@ -5896,7 +5860,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         calibration_form.addRow("Colour card", self.colour_status_label)
         calibration_form.addRow("Ruler", self.ruler_status_label)
         calibration_form.addRow("Deskew", self.deskew_status_label)
-        calibration_form.addRow("Directional ruler scale (unvalidated metric geometry)", self.scale_status_label)
+        calibration_form.addRow("Directional ruler scale", self.scale_status_label)
         calibration_form.addRow("Vessel layout", self.dish_status_label)
         calibration_form.addRow("Reference seeds", self.reference_status_label)
         calibration_layout.addLayout(calibration_form)
@@ -5919,8 +5883,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         baseline_layout.addWidget(self.count_label)
         self.crowding_label = self._muted_label("No result")
         baseline_layout.addWidget(self.crowding_label)
-        # Shows run state and result warnings only; the standing disclaimer
-        # lives in the results dialog where the counts are reviewed.
+        # Shows run state and result warnings only.
         self.warning_label = self._muted_label("")
         self.warning_label.setWordWrap(True)
         self.warning_label.hide()
@@ -6384,6 +6347,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         )
         if answer != QMessageBox.StandardButton.Yes:
             return False
+        if not self._pipeline_editing_allowed():
+            return False
         attempt = begin_preflight(source, 'settings_profile', 'desktop_profile_install')
         try:
             result = apply_analysis_settings_profile(self.pipeline, profile)
@@ -6392,8 +6357,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             QMessageBox.critical(self, "Incompatible analysis settings", diagnostic)
             return False
         if not result.changed:
-            if hasattr(self, 'pipeline_documents'):
-                self.pipeline_documents.set_frozen(True)
             self.statusBar().showMessage(
                 f"{source.name} already matches the current analysis settings."
             )
@@ -6441,8 +6404,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.statusBar().showMessage(
             f"Loaded analysis settings from {source}; {detail}."
         )
-        if hasattr(self, 'pipeline_documents'):
-            self.pipeline_documents.set_frozen(True)
         return True
 
     def _choose_images(self) -> None:
@@ -6478,6 +6439,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             item = QListWidgetItem(resolved.name)
             item.setData(Qt.ItemDataRole.UserRole, str(resolved))
             item.setToolTip(str(resolved))
+            item.setData(IMAGE_SPECIES_ROLE, self._image_species_text(key))
             self.image_list.addItem(item)
             if mark_project_dirty:
                 self._set_project_dirty()
@@ -6487,6 +6449,19 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
     def _open_list_item(self, item: QListWidgetItem) -> None:
         self._open_path(Path(item.data(Qt.ItemDataRole.UserRole)))
         self.image_workspace_action.setChecked(True)
+
+    def _image_species_toggled(self, visible: bool) -> None:
+        self._application_settings.setValue(self.IMAGE_SPECIES_SETTINGS_KEY, visible)
+        self._image_list_delegate.set_show_species(visible)
+
+    def _image_species_text(self, key: str) -> str:
+        """Name the species recorded for one image, or the project's if it has none."""
+
+        context = self._project_image_biological_contexts.get(key)
+        species = context.species_id if context is not None else self.species_combo.currentText()
+        if species in {"", "unknown", self.species_combo.itemText(0)}:
+            return "Unassigned"
+        return self._seed_trait_catalogue.for_species(species).display_name
 
     def _remove_image(self, path: Path) -> bool:
         """Forget a workspace image and its live state without deleting files."""
@@ -6610,7 +6585,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         if self._pending_analysis_key == key:
             self._pending_analysis_key = None
             self._pending_analysis_scope = None
-        self._image_paths.pop(key)
+        self._image_thumbnails.forget(str(self._image_paths.pop(key)))
         self.image_list.takeItem(row)
 
         if selected:
@@ -6673,6 +6648,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             if item_path is not None and _path_identity(Path(item_path)) == _path_identity(path):
                 self.image_list.setCurrentItem(item)
                 self.image_list.scrollToItem(item)
+                self._image_thumbnails.refresh(item_path)
                 break
         width, height = self.image_view.image_size or (0, 0)
         self.dimensions_label.setText(f"{width:,} × {height:,} px")
@@ -7176,6 +7152,9 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
 
         if getattr(self, '_stop_requested', False) or getattr(self, '_closing_after_work', False):
             return
+        if self._training_dataset_build is not None:
+            # The build starts its own runs, limited to what its samples need.
+            return
         if (
             self._active_tasks
             or getattr(self, '_optimization_task', None) is not None
@@ -7284,6 +7263,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 f"panel: {type(error).__name__}: {error}",
                 pipeline_revision,
             )
+            return
+        self._advance_training_dataset_build()
 
     def _install_completed_analysis(self, result, pipeline_revision: int) -> None:
         path = result.image_path
@@ -7366,20 +7347,19 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             )
         elif learned_result is not None:
             self.statusBar().showMessage(
-                f"Generated {learned_result.count:,} reviewable learned instances "
-                f"for {path.name}; scientific validation is still required."
+                f"Generated {learned_result.count:,} learned instances for {path.name}."
             )
         elif (
             self.pipeline.is_active("procedural_instances")
             and result.procedural_instances is not None
         ):
             self.statusBar().showMessage(
-                f"Generated {result.procedural_instances.count:,} reviewable procedural "
+                f"Generated {result.procedural_instances.count:,} procedural "
                 f"instances for {path.name}."
             )
         elif self.pipeline.is_active("identification"):
             self.statusBar().showMessage(
-                f"Generated {result.count:,} approximate proposals for {path.name}."
+                f"Generated {result.count:,} proposals for {path.name}."
             )
         else:
             self.statusBar().showMessage(
@@ -7486,6 +7466,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._finish_analysis_failure(path, error, pipeline_revision)
 
     def _finish_analysis_failure(self, path, error, pipeline_revision):
+        if self._training_dataset_build is not None:
+            self._training_dataset_build.failed = True
         key = _path_identity(path)
         activity = self._analysis_activities.get(key)
         task = self._active_tasks.get(key)
@@ -7514,6 +7496,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             # image and must never open a stale modal warning.
             self._update_analysis_availability()
             self._start_pending_analysis()
+            self._advance_training_dataset_build()
             return
         if self.image_view.image_path == path:
             self.image_view.clear_analysis()
@@ -7559,6 +7542,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             "Analysis failed",
             f"{path}\n\n{error}{diagnostic_log_note()}",
         )
+        self._advance_training_dataset_build()
 
     @Slot(str, int)
     def _analysis_cancelled(self, path_text: str, pipeline_revision: int) -> None:
@@ -7587,7 +7571,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                     self.pipeline.set_status(
                         node_id,
                         NodeStatus.IDLE,
-                        "Superseded run cancelled; updated rerun queued",
+                        "Stopped" if self._stop_requested
+                        else "Superseded run cancelled; updated rerun queued",
                     )
                     changed.append(node_id)
             if changed:
@@ -7596,9 +7581,12 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._update_analysis_availability()
         self._refresh_analysis_activity_panel()
         self.statusBar().showMessage(
-            f"Cancelled superseded analysis for {path.name}; starting latest request."
+            f"Stopped analysis of {path.name}."
+            if self._stop_requested
+            else f"Cancelled superseded analysis for {path.name}; starting latest request."
         )
         self._start_pending_analysis()
+        self._advance_training_dataset_build()
 
     def _scoped_run_reason(self, result, unavailable: str) -> str | None:
         """Why a Run to node result has no seed count, when that is the cause."""
@@ -7751,14 +7739,20 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         unavailable = not_run or unavailable
         self.count_label.setText('Not run' if not_run else 'Unavailable' if unavailable
                                  else f'{selected_result.count:,} proposed seeds')
-        self.crowding_label.setText(f'Method: {method or "none"}. Review decisions before reporting a count.')
+        self.crowding_label.setText(f'Method: {method or "none"}')
         self.warning_label.setText("\n".join(filter(None,(unavailable,*result.warnings))))
         self.warning_label.setVisible(bool(unavailable or result.warnings))
         self.reference_readiness_button.setVisible(bool(unavailable and 'Foreground' in unavailable))
         self._sync_background_controls()
         self._sync_procedural_centres_controls()
         if pending_reference_affected:
-            self._analyze_current_image(dirty_nodes=pending_reference_affected)
+            self._rerun_for_loaded_references(key, pending_reference_affected)
+
+    def _rerun_for_loaded_references(self, key: str, affected: set[str]) -> None:
+        """Rerun what the finished run covered, so Run to node and Train stay scoped."""
+        self._analyze_current_image(
+            dirty_nodes=affected, enabled_node_scope=self._analysis_scopes.get(key)
+        )
 
     def _sync_directional_overlay_choices(self, result) -> None:
         selected = str(self.overlay_combo.currentData() or "")
@@ -9354,16 +9348,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         )
         self.save_reference_regions_action.setEnabled(can_save_references)
         self.save_reference_regions_button.setEnabled(can_save_references)
-        self.export_learning_sample_action.setEnabled(
-            has_result
-            and not running
-            and not annotations_dirty
-            and bool(
-                self._mask_pixel_count(
-                    self._applied_instance_annotations.get(key or "")
-                )
-            )
-        )
         self.load_instance_labels_action.setEnabled(has_result and not running)
         self.choose_instance_labels_action.setEnabled(has_result and not running)
         cellpose = getattr(self.image_view._analysis_result, "cellpose_sam_instances", None)
@@ -9607,6 +9591,9 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
 
     @Slot(bool)
     def _keep_perimeter_background_reference_toggled(self, keep: bool) -> None:
+        if not self._pipeline_editing_allowed():
+            self._sync_background_controls()
+            return
         self.image_view.set_automatic_background_reference_visible(keep)
         self._pipeline_parameter_changed(
             "background_likelihood",
@@ -11193,105 +11180,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         return bool(np.array_equal(first, second))
 
     @Slot()
-    def _export_learning_sample(self) -> None:
-        """Persist applied labels and the exact corrected model inputs."""
-
-        key = self._current_image_key()
-        if key is None:
-            return
-        result = self._analyses.get(key)
-        labels = self._applied_instance_annotations.get(key)
-        path = self.image_view.image_path
-        if result is None or labels is None or path is None or not np.any(labels):
-            QMessageBox.warning(
-                self,
-                "Nothing to export",
-                "Run the analysis and apply at least one complete seed-instance mask first.",
-            )
-            return
-        from seedvision.annotation.eligibility import eligible_instances
-        annotations = tuple(self._applied_seed_annotations.get(key, {}).values())
-        eligible = eligible_instances(labels, annotations)
-        applied_ids = set(np.unique(labels)) - {0}
-        eligible_ids = set(np.unique(eligible)) - {0}
-        excluded_ids = sorted(applied_ids - eligible_ids)
-        draft = key in self._instance_annotations_dirty or key in self._reference_masks_dirty
-        readiness = (f'{len(eligible_ids)} complete, shape-reviewed seed outline(s); '
-            f'{len(excluded_ids)} excluded; ' + ('unapplied draft present.' if draft else 'no unapplied draft.'))
-        if excluded_ids or draft:
-            QMessageBox.warning(self, "Training dataset export is not ready", readiness + "\n\n"
-                + ("Review complete connected outlines and clear shape exclusions for seed IDs: "
-                    + ', '.join(map(str, excluded_ids)) + '.\n' if excluded_ids else '')
-                + ("Apply or discard the draft first.\n" if draft else '')
-                + "No seeds were exported or silently omitted.")
-            return
-        identifier_base = path.stem
-        identifier = identifier_base
-        revision = 1
-        destination = self._root / "learning-data"
-        manifest_path = destination / "manifest.json"
-        try:
-            from seedvision.learning.data import LearningManifest
-            existing = {sample.identifier for sample in LearningManifest.load(manifest_path).samples} if manifest_path.is_file() else set()
-        except Exception as error:
-            QMessageBox.warning(self, "Invalid training dataset manifest", str(error))
-            return
-        while identifier in existing or (destination / '.learning-revisions' / identifier).exists():
-            revision += 1
-            identifier = f"{identifier_base}_r{revision}"
-        dialog = LearningExportDialog(
-            default_directory=destination,
-            default_identifier=identifier,
-            default_group=self._project_capture_group_id or '',
-            default_revision=str(revision),
-            parent=self,
-        )
-        summary = QLabel(readiness + "\nThis adds a normalized image crop, input features, seed labels, "
-            "derived boundary targets, and a manifest entry. Training is a separate Learning action.", dialog)
-        summary.setWordWrap(True)
-        dialog.layout().insertWidget(1, summary)
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
-        options = dialog.options()
-        try:
-            from seedvision.learning.export import export_analysis_sample
-
-            sample = run_persistence(self, partial(export_analysis_sample,
-                result,
-                labels,
-                options.manifest_path,
-                dataset_id=options.dataset_id,
-                identifier=options.identifier,
-                species=self.species_combo.currentText(),
-                group=options.group,
-                species_reviewed=options.species_reviewed,
-                split=options.split,
-                reviewed=options.reviewed,
-                seed_annotations=tuple(self._applied_seed_annotations.get(key, {}).values()),
-                annotation_author=options.annotation_author,
-                annotation_revision=options.annotation_revision,
-                notes=(
-                    "Exported from applied Seed Fiddle instance annotations; "
-                    f"draft origin={self._applied_instance_annotation_origins.get(key, 'manual')}; "
-                    + (options.notes or "no additional notes")
-                ),
-            ), 'Preparing verified project data…')
-        except Exception as error:  # noqa: BLE001 - user-facing export boundary
-            QMessageBox.critical(self, "Learning export failed", str(error))
-            return
-        QMessageBox.information(
-            self,
-            "Added to training dataset",
-            f"Added {sample.identifier} to:\n{options.manifest_path}\n\n"
-            "Saved the normalized crop, features, seed labels, derived boundary targets, and manifest. "
-            "Use Train or refine in Learning to train a model.\n\n"
-            + (
-                "This sample is reviewed and eligible for its assigned split."
-                if sample.reviewed
-                else "This sample remains unreviewed. Load and inspect its label mask, then export a reviewed revision before training."
-            ),
-        )
-    @Slot()
     def _save_instance_labels(self) -> None:
         key = self._current_image_key()
         path = self.image_view.image_path
@@ -11460,7 +11348,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
              "existing outlines are unchanged."
              if mode == "add"
              else f"Copied {added:,} Cellpose-SAM seed(s) into the seed-outline draft.")
-            + " The draft is unreviewed: inspect every outline, then apply it."
+            + " Apply the draft to use it in analysis."
         )
 
     def _ask_cellpose_outline_mode(self, existing_count: int) -> str | None:
@@ -11540,7 +11428,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         review_text = (
             "reviewed"
             if imported.reviewed is True
-            else "unreviewed; inspect every instance"
+            else "unreviewed"
         )
         external = (
             ""
@@ -11552,26 +11440,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             f"undoable draft ({review_text}). IDs were preserved exactly."
         )
         return True
-
-    @Slot()
-    def _audit_learning_dataset(self) -> None:
-        selected, _ = QFileDialog.getOpenFileName(
-            self,
-            "Choose learning manifest",
-            str(self._root / "learning-data" / "manifest.json"),
-            "JSON (*.json)",
-        )
-        if not selected:
-            return
-        try:
-            from seedvision.learning.data import audit_manifest
-
-            audit = audit_manifest(selected)
-        except Exception as error:  # noqa: BLE001 - user-facing audit boundary
-            QMessageBox.critical(self, "Learning dataset audit failed", str(error))
-            return
-        method = QMessageBox.information if audit["valid"] else QMessageBox.warning
-        method(self, "Learning dataset audit", format_learning_audit(audit))
 
     @Slot()
     def _open_species_library_manager(self) -> None:
@@ -11869,39 +11737,74 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 "Wait for the current analysis or training run to finish.",
             )
             return
-        dialog = LearningTrainingDialog(project_root=self._root, parent=self)
+        if self.pipeline_workflow.active:
+            QMessageBox.information(
+                self,
+                "Choose the default pipeline",
+                "Training analyses its images with Default seed analysis. "
+                "Choose it in the pipeline list first.",
+            )
+            return
+        try:
+            images = self._training_images()
+        except Exception as error:  # noqa: BLE001 - user-facing read boundary
+            QMessageBox.critical(self, "Could not read seed outlines", str(error))
+            return
+        if not images:
+            QMessageBox.information(
+                self,
+                "No seed outlines",
+                "Paint seed outlines on at least two project images, then train.",
+            )
+            return
+        dialog = LearningTrainingDialog(
+            project_root=self._root,
+            images=images,
+            species_names=tuple(
+                self.species_combo.itemText(index)
+                for index in range(1, self.species_combo.count())
+            ),
+            parent=self,
+        )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         request = dialog.request()
+        unreviewed = [image.identifier for image in request.images if not image.reviewed]
+        if unreviewed:
+            answer = QMessageBox.question(
+                self,
+                "Train on unreviewed samples?",
+                f"Not marked human-reviewed: {', '.join(unreviewed)}.\n\n"
+                "Train on them anyway? The model records this choice.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+            request = replace(
+                request,
+                configuration=replace(request.configuration, allow_unreviewed=True),
+            )
+        self._start_training_dataset_build(request)
+
+    def _train_on_built_dataset(self, request: LearningTrainingRequest) -> None:
+        """Audit the dataset just built, then train on it."""
+
         try:
-            from seedvision.learning.data import LearningManifest, audit_manifest
+            from seedvision.learning.data import audit_manifest
 
             audit = audit_manifest(request.manifest_path)
-            manifest = LearningManifest.load(request.manifest_path)
         except Exception as error:  # noqa: BLE001 - user-facing audit boundary
             QMessageBox.critical(self, "Learning dataset audit failed", str(error))
             return
-        errors = list(audit["errors"])
-        if audit["splits"].get("train", 0) < 1:
-            errors.append("At least one reviewed training sample is required.")
-        if audit["splits"].get("validation", 0) < 1:
-            errors.append("At least one independently grouped validation sample is required.")
-        supervised = tuple(
-            sample for sample in manifest.samples if sample.split in {"train", "validation"}
-        )
-        if any(not sample.reviewed for sample in supervised):
-            errors.append("Every training/validation sample must be marked human-reviewed.")
-        if errors:
-            failed_audit = dict(audit)
-            failed_audit["errors"] = errors
-            failed_audit["valid"] = False
+        if audit["errors"]:
             QMessageBox.warning(
-                self, "Dataset is not ready for training", format_learning_audit(failed_audit)
+                self, "Dataset is not ready for training", format_learning_audit(audit)
             )
             return
         task = _LearningTrainingTask(request)
         progress = QProgressDialog(
-            "Preparing reviewed learning tiles…",
+            "Preparing learning tiles…",
             "Cancel",
             0,
             request.configuration.epochs,
@@ -11952,8 +11855,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._finish_learning_training_ui()
         if request is None:
             return
-        if not self._pipeline_editing_allowed():
-            self.statusBar().showMessage(f'Training saved {request.output_path}; pipeline is frozen, so activation was skipped.')
+        if not self._pipeline_editable():
+            self.statusBar().showMessage(f'Training saved {request.output_path}; default pipelines cannot be edited, so activation was skipped.')
             self._start_pending_analysis()
             return
         node_id = (
@@ -11974,13 +11877,13 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.pipeline_canvas.refresh(affected or (node_id,))
         self.pipeline_canvas.select_node(node_id)
         self.pipeline_inspector.set_node(self.pipeline.node(node_id))
+        self.statusBar().showMessage(f"Training finished; saved {request.output_path.name}.")
         QMessageBox.information(
             self,
             "Training completed",
             f"Best epoch: {report['best_epoch']}\n"
             f"Best validation loss: {report['best_validation_loss']:.6f}\n"
-            f"Checkpoint: {request.output_path}\n\n"
-            "This checkpoint still requires evaluation on a frozen, independently reviewed test split.",
+            f"Checkpoint: {request.output_path}",
         )
         key = self._current_image_key()
         if request.activate_after_training and key is not None and key in self._analysis_caches:
@@ -12212,9 +12115,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         answer = QMessageBox.question(
             self,
             "Fit and apply instance-derived edge parameters?",
-            "This is an in-sample fit to physical contours and internal edge candidates "
-            "derived from the currently applied seed instances. It is useful for project "
-            "adaptation but is not independent validation.\n\nIf the search finds a "
+            "This fits to physical contours and internal edge candidates derived from "
+            "the currently applied seed instances.\n\nIf the search finds a "
             "genuine improvement, its best values will be applied immediately to the "
             "Reference edges node and recomputed for this project. Save Project records "
             "them in the master file.",
@@ -12292,7 +12194,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._finish_reference_edge_fit_ui()
         if task is None:
             return
-        if not self._pipeline_editing_allowed():
+        if not self._pipeline_editable():
             self._start_pending_analysis()
             return
         current_annotations = self._applied_instance_annotations.get(task.image_key)
@@ -12558,7 +12460,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             return
 
         warnings = [
-            "This is an image-local, in-sample adjustment—not scientific validation.",
             "The annotations are withheld as watershed markers during fitting. "
             + (
                 "You declared that the applied annotations cover the whole dish, so "
@@ -12699,8 +12600,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             is not task.annotation_source
         )
         self._finish_procedural_fit_ui()
-        if not self._pipeline_editing_allowed():
-            self.pipeline_inspector.set_procedural_fit_result_summary('Fit completed; pipeline is frozen, so settings were kept.')
+        if not self._pipeline_editable():
+            self.pipeline_inspector.set_procedural_fit_result_summary('Fit completed; default pipelines cannot be edited, so settings were kept.')
             self._start_pending_analysis()
             return
         if stale:
@@ -13125,23 +13026,13 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         }
         gamut = mode in gamut_modes
         full_pane = gamut or mode == "reference_texture_prototypes"
-        for action in (
-            self.opacity_toolbar_label_action,
-            self.overlay_opacity_slider_action,
-            self.overlay_opacity_label_action,
-        ):
-            action.setVisible(not full_pane)
-        for control in (
-            self.opacity_toolbar_label,
-            self.overlay_opacity_slider,
-            self.overlay_opacity_label,
-        ):
-            control.setVisible(not full_pane)
+        self.overlay_header_controls.set_opacity_visible(not full_pane)
         for action in (
             self.hsv_value_toolbar_label_action,
             self.hsv_value_slider_action,
             self.hsv_value_label_action,
             self.hsv_peak_button_action,
+            self.hsv_separator_action,
         ):
             action.setVisible(gamut)
         for control in (
@@ -13182,10 +13073,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         legends = {
             "raw_image": (
                 "Original decoded image before deskew, colour balance, or scale overlay."
-            ),
-            "calibrated_image": (
-                "Deskewed, neutral-balanced analysis image with its assigned "
-                "absolute metric scale bar."
             ),
             "deskew_colour": (
                 "Geometrically corrected image; neutral balance follows the selected controls. Cyan outlines the "
@@ -13605,7 +13492,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             ),
             "procedural_seed_mask": "Thresholded seed material after dish-margin removal and seed-sized enclosed coat-hole filling.",
             "procedural_boundary_cost": "Normalized physical boundary cost fused from edges, sensor/noise, ridges and local shadow.",
-            "procedural_centres": "Marker likelihood from smoothed material, physical-boundary depth, blurred flattened grayscale, and positive support from the centres of seed ovals fitted in Seed-boundary confirmation; dots are the markers actually used. Raw centre votes are a separate diagnostic in Seed-boundary confirmation. When saved manual centres replace automatic ones, the dots are those manual centres and this likelihood selects nothing.",
+            "procedural_centres": "Marker likelihood from smoothed material, physical-boundary depth, blurred flattened grayscale, and positive support from the centres of seed ovals fitted in Seed-boundary confirmation; rings are the markers actually used and crossed rings are proposals that left no seed, each with its reason on hover. Raw centre votes are a separate diagnostic in Seed-boundary confirmation. When saved manual centres replace automatic ones, the rings are those manual centres and this likelihood selects nothing.",
             "procedural_instances": "Marker-controlled watershed instance identities. Dot colour runs red to green with per-instance confidence. Click a coloured seed to outline it and show its area, maximum width, concavity, protrusion, solidity, axis ratio and score in the Procedural node panel.",
             "procedural_confidence": "Per-instance marker, boundary and calibrated-area confidence mapped back onto every assigned pixel.",
             "procedural_concavity": "Convex-hull deficit for each retained instance, scaled to the configured hard concavity cutoff; brighter regions are more internally concave.",
@@ -13618,19 +13505,19 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             "unet_distance": "Learned normalized distance from seed interior pixels to their physical boundary.",
             "unet_uncertainty": "Aleatoric uncertainty aggregated across the U-Net dense tasks.",
             "unet_instances": "Pattern-aware marker-controlled watershed identities decoded from the five-head U-Net.",
-            "unet_confidence": "Per-instance U-Net confidence mapped onto decoded pixels; it is not a validation guarantee.",
+            "unet_confidence": "Per-instance U-Net confidence mapped onto decoded pixels.",
             "stardist_object_probability": "Learned probability that a pixel is a suitable centre for a star-convex seed polygon.",
             "stardist_radial_uncertainty": "Learned uncertainty of the StarDist radial boundary regression.",
             "stardist_instances": "Star-convex seed polygons retained after score ordering and overlap-aware non-maximum suppression.",
-            "stardist_confidence": "Per-polygon StarDist score mapped onto decoded pixels; it is not a validation guarantee.",
+            "stardist_confidence": "Per-polygon StarDist score mapped onto decoded pixels.",
             "cellpose_sam_cell_probability": "Pretrained Cellpose-SAM probability that a pixel belongs to a seed, before flow following.",
             "cellpose_sam_instances": "Cellpose-SAM seed masks recovered by following the predicted flows, clipped to the dish.",
-            "cellpose_sam_confidence": "Mean Cellpose-SAM cell probability inside each mask; it is not a validation guarantee.",
+            "cellpose_sam_confidence": "Mean Cellpose-SAM cell probability inside each mask.",
             "boundary_confidence": "Dormant legacy diagnostic, disabled and shelved by default: bypassed output is black. If explicitly restored and enabled, hue is the directed boundary normal (0° = 360°) and brightness is confidence.",
             "boundary_magnitude": "Dormant legacy diagnostic, disabled and shelved by default: bypassed output is black. If explicitly restored and enabled, brightness is the material-morphology/lightness boundary confidence.",
             "touching_split_likelihood": "High values mark shallow foreground necks and concave distance-transform saddles that may separate touching seeds.",
             "ellipse_likelihood": "Hue is axial ellipse orientation (0° = 180°); brightness is seed-radius boundary and structure-tensor support.",
-            "proposal_disagreement": "Variation among CUDA ring, distance-peak, interior, and ellipse evidence; bright regions merit review.",
+            "proposal_disagreement": "Variation among CUDA ring, distance-peak, interior, and ellipse evidence; bright regions disagree most.",
             "instance_assignment_confidence": "Confidence that a provisional instance owns each pixel after boundary and label-contact penalties.",
             "contested_pixels": "Pixels bordering two different provisional instance labels.",
             "contact_graph": "Shared-boundary likelihood plus vector links between proposals close enough to touch or overlap.",
@@ -13749,10 +13636,10 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         ):
             text = "Scale key: black = low displayed probability/evidence; white or maximum semantic-colour brightness = high. " + text
         if mode in {"procedural_centres", "procedural_instances"}:
-            text += " " + self._procedural_marker_key()
+            text += " " + self._procedural_marker_key(include_rejected=mode == "procedural_centres")
         self.overlay_legend_label.setText(text)
 
-    def _procedural_marker_key(self) -> str:
+    def _procedural_marker_key(self, *, include_rejected: bool = False) -> str:
         """Name each centre-marker style with its count on the current image."""
 
         key = self._current_image_key()
@@ -13778,6 +13665,13 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             f"filled yellow = manual ({counts['manual']:,}); magenta square = "
             f"locked to an applied annotation ({counts['annotation']:,})"
         )
+        reasons = Counter(getattr(procedural, "rejected_marker_reasons", ()))
+        if include_rejected and reasons:
+            breakdown = ", ".join(
+                f"{count:,} {MARKER_REJECTION_LABELS.get(reason, reason)}"
+                for reason, count in reasons.most_common()
+            )
+            text += f"; orange × = rejected proposal ({reasons.total():,}: {breakdown})"
         if state.mode == "augment":
             text += (
                 f"; grey \u00d7 = removed automatic centre "
@@ -13968,7 +13862,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.pipeline.set_status(
             "identification",
             NodeStatus.COMPLETE,
-            f"{result.count:,} approximate proposals",
+            f"{result.count:,} proposals",
         )
         procedural = getattr(result, "procedural_instances", None)
         if procedural is not None:
@@ -13986,7 +13880,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 "procedural_instances",
                 NodeStatus.COMPLETE,
                 f"{procedural.count:,} instances; median confidence "
-                f"{median_confidence:.0%}; {low_fraction:.0%} require review",
+                f"{median_confidence:.0%}; {low_fraction:.0%} below 55% confidence",
             )
         for node_id, learned in (
             ("unet_instances", getattr(result, "unet_instances", None)),
@@ -14007,10 +13901,9 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             )
             self.pipeline.set_status(
                 node_id,
-                NodeStatus.WARNING,
+                NodeStatus.COMPLETE,
                 f"{learned.count:,} instances; median confidence "
-                f"{median_confidence:.0%}; {low_fraction:.0%} require review; "
-                "not publication-validated",
+                f"{median_confidence:.0%}; {low_fraction:.0%} below 55% confidence",
             )
         from seedvision.export.backend_outcomes import read_native_outcomes
         backend_outcomes = read_native_outcomes(getattr(result, 'backend_outcomes_json', None))
@@ -14400,8 +14293,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             "illumination_decomposition": "Flattened grayscale plus local shadow/highlight maps ready",
             "image_quality": "Focus, clipping, exposure, and noise maps ready",
             "radial_profile": "Normalized radial coordinates and residuals ready",
-            "wrinkling": f"Mean provisional likelihood {result.advanced.mean_wrinkling_likelihood:.0%}",
-            "coat_damage": f"Mean provisional likelihood {result.advanced.mean_coat_damage_likelihood:.0%}",
+            "wrinkling": f"Mean likelihood {result.advanced.mean_wrinkling_likelihood:.0%}",
+            "coat_damage": f"Mean likelihood {result.advanced.mean_coat_damage_likelihood:.0%}",
             "pattern_decomposition": pattern_distribution,
             "colour_probabilities": colour_distribution,
             "calibration_residuals": "Reference confidence/extrapolation risk ready",
@@ -14420,8 +14313,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         )
         self.pipeline.set_status(
             "classification",
-            NodeStatus.WARNING,
-            f"Provisional seeds — colour: {colour_distribution}; pattern: {pattern_distribution}",
+            NodeStatus.COMPLETE,
+            f"Colour: {colour_distribution}; pattern: {pattern_distribution}",
         )
         for node in self.pipeline.nodes.values():
             if not node.enabled:
@@ -14756,6 +14649,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
     @Slot(str, str, object)
     def _pipeline_parameter_changed(self, node_id: str, key: str, value) -> None:
         if not self._pipeline_editing_allowed():
+            # A toolbar checkbox has already toggled; show the unchanged value.
+            self._sync_background_controls()
             return
         if self.catalogue_nodes.handles(node_id):
             self.catalogue_nodes.parameter_changed(node_id, key, value)
@@ -15183,6 +15078,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._refresh_project_node()
         self._populate_seed_coat_patterns()
         self._sync_seed_trait_controls()
+        self._update_analysis_availability()
         if self.image_view.image_path is None:
             return
         self.pipeline.set_status("metadata", NodeStatus.COMPLETE, species)
@@ -15212,6 +15108,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         from seedvision.export.results import select_result
         draft_keys = self._unapplied_project_draft_keys()
         enabled_nodes = {identifier for identifier, node in self.pipeline.nodes.items() if node.enabled}
+        open_key = self._current_image_key()
         for index in range(self.image_list.count()):
             item = self.image_list.item(index)
             source = item.data(Qt.ItemDataRole.UserRole)
@@ -15229,10 +15126,14 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             elif key in self._image_run_outcomes:
                 status, icon = 'Run did not complete; terminal record available', QStyle.StandardPixmap.SP_MessageBoxWarning
             else:
-                status, icon = 'Analysis required', QStyle.StandardPixmap.SP_FileIcon
-            item.setIcon(self.style().standardIcon(icon))
+                status, icon = 'Analysis required', None
+            if key == open_key:
+                status += '; open in the viewer'
+            item.setIcon(QIcon() if icon is None else self.style().standardIcon(icon))
             item.setToolTip(str(source)+'\n'+status)
             item.setData(Qt.ItemDataRole.AccessibleDescriptionRole,status)
+            item.setData(IMAGE_OPEN_ROLE, key == open_key)
+            item.setData(IMAGE_SPECIES_ROLE, self._image_species_text(key))
         path = self.image_view.image_path
         running = self._sync_run_controls()
         if hasattr(self, 'optimize_project_action'):
@@ -15437,6 +15338,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             self._discard_analysis_cache(key)
         self._release_unused_cuda_blocks()
         self._save_review_ui_state()
+        self._image_thumbnails.stop()
         super().closeEvent(event)
 
 

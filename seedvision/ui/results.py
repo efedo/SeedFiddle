@@ -35,7 +35,6 @@ def _trait_presentation(row, report):
                 details.append('Definition evidence: ' + definition['evidence_reference'])
         if prediction.get('model_sha256'):
             details.append('Model SHA256: ' + prediction['model_sha256'])
-        details.append('Biological accuracy has not been independently validated.')
     return text, '\n'.join(details)
 
 
@@ -349,7 +348,7 @@ class ResultsController:
                             if 'phase' in payload['identity'] else '')
                          + (payload['diagnostic'] or '') + '\n\n'
                          'No authoritative prediction or calibration was captured. '
-                         'Acknowledgment records that you reviewed this outcome; it cannot approve seeds.', dialog)
+                         'Acknowledgment records that you reviewed this outcome.', dialog)
         summary.setWordWrap(True)
         layout.addWidget(summary)
         saved = run_persistence(self, lambda: load_project_acknowledgments(
@@ -427,7 +426,7 @@ class ResultsController:
         dialog.resize(850, 450)
         layout = QVBoxLayout(dialog)
         label = QLabel('These records contain observations made during earlier attempts. '
-            'Reviewing them does not change the current analysis or approve seeds.', dialog)
+            'Reviewing them does not change the current analysis.', dialog)
         label.setWordWrap(True)
         layout.addWidget(label)
         table = QTableWidget(len(outcomes), 5, dialog)
@@ -492,9 +491,6 @@ class ResultsController:
         dialog.setWindowTitle('Review visible seed instances')
         dialog.resize(960,640)
         layout = QVBoxLayout(dialog)
-        disclaimer = QLabel('Results are approximate proposals for correction, not validated counts.', dialog)
-        disclaimer.setStyleSheet('font-weight: 600;')
-        layout.addWidget(disclaimer)
         summary = QLabel(dialog)
         summary.setWordWrap(True)
         layout.addWidget(summary)
@@ -507,9 +503,7 @@ class ResultsController:
             text = report['unavailable_reason'] or (
                 f"{report['method']}: {len(rows)} proposed; {sum(r['review']=='accepted' for r in rows)} accepted; "
                 f"{sum(r['review']=='excluded' for r in rows)} excluded. Measurements: visible 2-D pixels. "
-                f'Trait predictions: {assigned} assigned, {abstained} abstained, {unavailable_traits} unavailable. '
-                'Physical units remain withheld pending validation. Instance scores are uncalibrated; '
-                'trait predictions have no independent biological validation.')
+                f'Trait predictions: {assigned} assigned, {abstained} abstained, {unavailable_traits} unavailable.')
             from seedvision.export.backend_outcomes import outcome_descriptions
             outcomes = report['backend_outcomes']
             if outcomes['outcomes'] is not None and any(record['state'] in {'failed', 'unavailable'}
@@ -535,7 +529,7 @@ class ResultsController:
                 lines.append(f"{report['method']}: {report['proposed_count']} proposed instances in the stored report; "
                              'producer execution status was not recorded.')
             QMessageBox.information(dialog,'Method comparison','\n\n'.join(lines)+
-                '\n\nCounts are unreviewed proposals. Compare boundaries using each method overlay; agreement alone does not establish accuracy. Enable and run a missing method before comparing it.')
+                '\n\nCompare boundaries using each method overlay. Enable and run a missing method before comparing it.')
         compare.clicked.connect(compare_methods)
         layout.addWidget(compare)
         alternatives = QPushButton('Show rejected candidates',dialog)

@@ -40,7 +40,7 @@ targets.
    Apply installs one shared set of project parameters. Cancel or reject keeps
    existing settings. Save the project to persist accepted parameter values.
 
-Runs are explicitly **in-sample project adaptation, not independent validation**.
+Runs are **in-sample project adaptation, not independent validation**.
 References may train intermediate classifiers and score the resulting pipeline.
 An improvement therefore says nothing by itself about accuracy on new images.
 Model-weight training remains a separate Learning operation; these commands tune

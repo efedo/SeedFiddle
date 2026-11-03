@@ -136,7 +136,7 @@ nodes in dependency order with fixed reference objectives, production calculatio
 isolated caches, cancellation, stale-input checks, per-image losses, before/after
 overlays, proposal review, history, rollback, and project persistence.
 
-Optimization is always labelled image-local in-sample adaptation. It does not train
+Optimization is image-local in-sample adaptation. It does not train
 model weights and cannot be presented as independent validation.
 
 ### 7. Results, export, recovery, and provenance — complete

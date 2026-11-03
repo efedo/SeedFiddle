@@ -283,7 +283,6 @@ class NativeNaiveBayesTrainingDialog(QDialog):
             f"Sampling state: {metadata['rng_after']['sha256'][:16]}.\n"
             if self._run_mode == 'directories' else f'Ordered samples — {counts}.\n')
         self.status_label.setText('Ready to save. '+facts+
-            'Numerical conformance is empirical; training accuracy is not validated.\n'
             'Save creates a PlantCV TSV. Keep the selected recipe in your project to retain its training provenance.')
 
     def _stop_training(self):

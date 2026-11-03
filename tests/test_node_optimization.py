@@ -240,6 +240,23 @@ class OptimizationReferenceTests(unittest.TestCase):
         self.assertEqual(set(np.unique(result)), {0,1})
         self.assertFalse(result.flags.writeable)
 
+    def check_test_connected_instances_keep_unreviewed_seeds_and_accept_no_outlines(self):
+        from seedvision.annotation.eligibility import connected_instances
+        labels = np.zeros((20,20), np.uint16)
+        labels[2:6,2:6] = 1
+        labels[8:11,8:11] = 2
+        labels[12:14,12:14] = 3
+        labels[16:18,16:18] = 3
+        labels[2:4,12:14] = 4
+        annotations = (SeedInstanceAnnotation(1, outline_visibility='partly_occluded'),
+                       SeedInstanceAnnotation(2, shape_reviewed=True, outline_visibility='complete'),
+                       SeedInstanceAnnotation(4, shape_exclusion_reason='broken'))
+        result = connected_instances(labels, annotations)
+        self.assertEqual(set(np.unique(result)), {0,1,2})
+        self.assertFalse(result.flags.writeable)
+        # An image with no outlines yet is analysed before any can be loaded.
+        self.assertIsNone(connected_instances(None, ()))
+
     def check_test_raster_reduction_does_not_download_gpu_raster(self):
         import torch
         from seedvision.cuda.ops import GpuRaster
@@ -357,8 +374,9 @@ class OptimizationReferenceTests(unittest.TestCase):
                 self.assertIn('No nonzero', excluded[name])
 
     def test_workflow_lifecycle(self):
-        """9 related OptimizationReferenceTests scenarios, each with private fixture state."""
+        """10 related OptimizationReferenceTests scenarios, each with private fixture state."""
         self.scenario(self.check_test_only_complete_reviewed_connected_shapes_are_eligible)
+        self.scenario(self.check_test_connected_instances_keep_unreviewed_seeds_and_accept_no_outlines)
         self.scenario(self.check_test_raster_reduction_does_not_download_gpu_raster)
         self.scenario(self.check_test_target_file_is_source_and_transform_bound)
         self.scenario(self.check_test_atomic_journal_refuses_nonfinite_values_without_overwrite)

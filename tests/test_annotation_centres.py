@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from seedvision.annotation.geometry import annotation_centres, outward_hilum_direction
+from seedvision.annotation.geometry import annotation_centres, annotation_median_length, outward_hilum_direction
 
 
 @functional_units
@@ -47,8 +47,26 @@ class AnnotationGeometryTests(unittest.TestCase):
             point = (20 + delta[0], 30 + delta[1])
             np.testing.assert_allclose(outward_hilum_direction((20, 30), point), np.asarray(delta) / 5)
 
+    def check_test_median_length_is_the_long_axis_at_any_rotation(self):
+        labels = np.zeros((300, 900), np.uint16)
+        y, x = np.indices(labels.shape)
+        for identifier, (centre_x, angle) in enumerate(((100, 0.0), (300, 0.6), (500, np.pi / 2)), 1):
+            along = (x - centre_x) * np.cos(angle) + (y - 150) * np.sin(angle)
+            across = (y - 150) * np.cos(angle) - (x - centre_x) * np.sin(angle)
+            labels[(along / 40.0) ** 2 + (across / 12.0) ** 2 <= 1.0] = identifier
+        self.assertAlmostEqual(annotation_median_length(labels), 80.0, delta=1.0)
+        # A merged blob and a stray pixel do not move the median.
+        labels[50:250, 650:850] = 4
+        labels[5, 5] = 5
+        self.assertAlmostEqual(annotation_median_length(labels), 80.0, delta=1.0)
+        for empty in (None, np.zeros((0, 3), np.uint16), np.zeros((5, 7), np.uint16)):
+            self.assertEqual(annotation_median_length(empty), 0.0)
+        with self.assertRaises(ValueError):
+            annotation_median_length(np.zeros((3, 3)))
+
     def test_workflow_lifecycle(self):
-        """2 related AnnotationGeometryTests scenarios, each with private fixture state."""
+        """3 related AnnotationGeometryTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_median_length_is_the_long_axis_at_any_rotation)
         self.scenario(self.check_test_all_ids_use_area_centroids_including_disconnected_and_partial_masks)
         self.scenario(self.check_test_hilum_direction_is_outward_radial_unit_vector)
 
@@ -119,6 +137,7 @@ class AnnotationCentresUiTests(unittest.TestCase):
         view._refresh_instance_annotation_overlay()
         self.assertEqual(len(markers()), 1)
         self.assertEqual(markers()[0].centres, {1: (40., 20.), 2: (100., 80.)})
+        self.assertAlmostEqual(markers()[0].arm, annotation_median_length(labels) / 6.0)
         cached = view.instance_centres()
         with patch("seedvision.ui.image_view.annotation_centres", side_effect=AssertionError("Display-only change recalculated geometry")):
             view.set_annotation_opacity(.23)
@@ -141,6 +160,112 @@ class AnnotationCentresUiTests(unittest.TestCase):
         view.clear_image()
         self.assertEqual(markers(), [])
         self.assertEqual(view.instance_centres(), {})
+
+    def check_test_crosshairs_span_a_third_of_the_median_seed_at_every_zoom(self):
+        from PySide6.QtCore import QRectF
+        from PySide6.QtGui import QImage, QPainter
+        from PySide6.QtWidgets import QGraphicsScene
+        from seedvision.ui.image_view import _InstanceCentreItem
+
+        scene = QGraphicsScene()
+        self.addCleanup(scene.clear)
+        scene.addItem(_InstanceCentreItem({1: (200.0, 150.0)}, (300, 400), 120.0))
+        for zoom in (0.25, 1.0, 3.0):
+            width, height = int(400 * zoom), int(300 * zoom)
+            image = QImage(width, height, QImage.Format.Format_RGB32)
+            image.fill(0xff7f7f7f)
+            painter = QPainter(image)
+            scene.render(painter, QRectF(0, 0, width, height), QRectF(0, 0, 400, 300))
+            painter.end()
+            pixels = np.frombuffer(image.constBits(), np.uint8).reshape(height, image.bytesPerLine() // 4, 4)
+            columns = np.flatnonzero((pixels[:, :, :3] != 127).any(axis=2).any(axis=0))
+            # 120 px seeds give a 40 px marker; square stroke caps add up to 4 screen pixels.
+            self.assertAlmostEqual(columns[-1] - columns[0] + 1, 40.0 * zoom, delta=5.0)
+
+    def check_test_centre_markers_follow_the_image_except_in_the_editor(self):
+        from PySide6.QtCore import QPointF, QRectF
+        from PySide6.QtWidgets import QGraphicsItem
+
+        window, _ = self.make_window()
+        view = window.image_view
+        constant = QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations
+        record = {"point": QPointF(20.0, 20.0), "source": "automatic"}
+
+        def marker(**options):
+            first = len(view._overlay_items)
+            view._render_manual_seed_centre_marker(record, **options)
+            return view._overlay_items[first]
+
+        display = marker(editing=False, seed_radius=12.0)
+        self.assertFalse(display.flags() & constant)
+        self.assertEqual(display.rect(), QRectF(-12.0, -12.0, 24.0, 24.0))
+        editor = marker(editing=True, seed_radius=12.0)
+        self.assertTrue(editor.flags() & constant)
+        self.assertEqual(editor.rect(), QRectF(-7.0, -7.0, 14.0, 14.0))
+        unknown_size = marker(editing=False)
+        self.assertTrue(unknown_size.flags() & constant)
+        self.assertEqual(unknown_size.rect(), QRectF(-5.0, -5.0, 10.0, 10.0))
+
+        # 60 px estimated seeds give a 20 px marker through the real overlay path.
+        first = len(view._overlay_items)
+        with patch.object(view, "_procedural_marker_records", return_value=[record]):
+            view._render_procedural_centres(SimpleNamespace(procedural_instances=object(), estimated_seed_diameter_px=60.0))
+        self.assertEqual(view._overlay_items[first].rect(), QRectF(-10.0, -10.0, 20.0, 20.0))
+
+    def check_test_rejected_proposals_show_only_on_the_centre_overlay_with_their_reason(self):
+        from PySide6.QtCore import QPointF, QRectF
+        from PySide6.QtGui import QColor
+
+        window, _ = self.make_window()
+        view = window.image_view
+        used = {"point": QPointF(20.0, 20.0), "source": "automatic"}
+        result = SimpleNamespace(
+            crop_offset=(100, 200),
+            estimated_seed_diameter_px=60.0,
+            procedural_instances=SimpleNamespace(
+                rejected_marker_centres_xy=np.asarray([[10.0, 30.0]], np.float32),
+                rejected_marker_reasons=("instance_above_maximum_concavity",),
+            ),
+        )
+        with patch.object(view, "_procedural_marker_records", return_value=[used]):
+            # The instance overlay shows only markers in use.
+            first = len(view._overlay_items)
+            view._render_procedural_centres(result)
+            self.assertEqual(len(view._overlay_items) - first, 1)
+
+            first = len(view._overlay_items)
+            view._render_procedural_centres(result, show_rejected=True)
+            ring, *cross, marker = view._overlay_items[first:]
+            self.assertEqual(len(cross), 2)
+            self.assertEqual(ring.pos(), QPointF(110.0, 230.0))
+            self.assertEqual(ring.rect(), QRectF(-10.0, -10.0, 20.0, 20.0))
+            self.assertEqual(ring.pen().color(), QColor("#ff9f40"))
+            self.assertEqual(ring.toolTip(), "Rejected proposal: above maximum concavity.")
+            self.assertEqual(ring.zValue(), 34)
+            self.assertEqual(marker.pos(), QPointF(20.0, 20.0))
+            self.assertEqual(marker.pen().color(), QColor("#43ddff"))
+
+            # They are not editable, so the centre editor leaves them out.
+            first = len(view._overlay_items)
+            with patch.object(view, "_manual_seed_centre_editing", True):
+                view._render_procedural_centres(result, show_rejected=True)
+            self.assertEqual(len(view._overlay_items), first)
+
+        key = window._current_image_key()
+        window._analyses[key] = SimpleNamespace(procedural_instances=SimpleNamespace(
+            marker_sources=np.zeros(3, np.uint8),
+            rejected_marker_reasons=(
+                "instance_above_maximum_concavity",
+                "instance_below_minimum_area",
+                "instance_above_maximum_concavity",
+            ),
+        ))
+        self.assertIn(
+            "orange × = rejected proposal (3: 2 above maximum concavity, 1 below minimum area)",
+            window._procedural_marker_key(include_rejected=True),
+        )
+        self.assertNotIn("rejected proposal", window._procedural_marker_key())
+        window._analyses.pop(key)
 
     def check_test_annotation_palette_can_extend_beyond_image_view(self):
         from PySide6.QtCore import QPoint
@@ -365,7 +490,10 @@ class AnnotationCentresUiTests(unittest.TestCase):
         self.assertIn("9,999", window.statusBar().currentMessage())
 
     def test_workflow_lifecycle(self):
-        """8 related AnnotationCentresUiTests scenarios, each with private fixture state."""
+        """11 related AnnotationCentresUiTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_crosshairs_span_a_third_of_the_median_seed_at_every_zoom)
+        self.scenario(self.check_test_centre_markers_follow_the_image_except_in_the_editor)
+        self.scenario(self.check_test_rejected_proposals_show_only_on_the_centre_overlay_with_their_reason)
         self.scenario(self.check_test_compact_seed_selector_and_no_routine_explanatory_labels)
         self.scenario(self.check_test_crosshairs_follow_masks_selection_visibility_opacity_and_image_switch)
         self.scenario(self.check_test_annotation_palette_can_extend_beyond_image_view)

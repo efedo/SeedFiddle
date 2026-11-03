@@ -9,14 +9,29 @@ pipeline.
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass, field
 from enum import IntEnum, StrEnum
 
 import cv2
 import numpy as np
 
+from seedvision.timing import raise_if_analysis_cancelled
+
 
 MANUAL_CENTRE_SUPPRESSION_DIAMETER_FRACTION = 0.45
+
+MARKER_REJECTION_LABELS = {
+    "instance_above_maximum_concavity": "above maximum concavity",
+    "instance_below_minimum_area": "below minimum area",
+    "instance_above_maximum_area": "above maximum area",
+    "instance_above_hard_maximum_width": "above hard maximum width",
+    "instance_above_maximum_protrusion": "above maximum protrusion",
+    "instance_above_maximum_axis_ratio": "above maximum axis ratio",
+    "instance_below_minimum_solidity": "below minimum solidity",
+    "instance_missing_contour": "no contour",
+    "instance_lost_to_overlap": "lost to a better overlapping seed",
+}
 
 
 def _alternative_candidate_colour(score: float) -> np.ndarray:
@@ -276,6 +291,9 @@ class ProceduralInstanceResult:
     ``centres_xy`` are final region centroids. ``marker_centres_xy`` instead
     records the actual surviving watershed seed for each renumbered label, in
     label order, with its provenance in the aligned ``marker_sources`` array.
+    ``rejected_marker_centres_xy`` holds every other automatic or annotated
+    proposal that reached the watershed, with its reason from
+    ``MARKER_REJECTION_LABELS`` in the aligned ``rejected_marker_reasons``.
     """
 
     labels: np.ndarray
@@ -307,6 +325,10 @@ class ProceduralInstanceResult:
         default_factory=lambda: np.empty((0, 2), np.float32)
     )
     rejected_manual_centre_reasons: tuple[str, ...] = ()
+    rejected_marker_centres_xy: np.ndarray = field(
+        default_factory=lambda: np.empty((0, 2), np.float32)
+    )
+    rejected_marker_reasons: tuple[str, ...] = ()
     concavity: np.ndarray = field(
         default_factory=lambda: np.zeros((1, 1), np.uint8)
     )
@@ -980,6 +1002,16 @@ def _candidate_from_component(
         ),
         "",
     )
+
+
+def _marker_rejection_reason(rejections: list[str], had_candidate: bool) -> str:
+    """Name why a marker left no seed: a better neighbour, or its usual shape failure."""
+
+    if had_candidate:
+        return "instance_lost_to_overlap"
+    if not rejections:
+        return "instance_below_minimum_area"
+    return Counter(rejections).most_common(1)[0][0]
 
 
 def _manual_centres_at_working_scale(
@@ -1915,8 +1947,10 @@ def procedural_seed_instances_from_prepared(
         [] for _ in range(len(peak_x))
     ]
     rejection_reasons = ["instance_below_minimum_area"] * len(peak_x)
+    marker_rejections: list[list[str]] = [[] for _ in range(len(peak_x))]
     marker_radius = max(1, int(round(diameter * 0.035)))
     for hypothesis_index, threshold_scale in enumerate(threshold_scales):
+        raise_if_analysis_cancelled()
         candidate_occupancy = _material_occupancy(
             occupancy_u8,
             threshold * float(threshold_scale),
@@ -1965,9 +1999,11 @@ def procedural_seed_instances_from_prepared(
             np.maximum.at(bbox_max_x, nonzero_ids, nonzero_x)
             np.maximum.at(bbox_max_y, nonzero_ids, nonzero_y)
         for marker_index in range(len(peak_x)):
+            raise_if_analysis_cancelled()
             label_id = marker_index + 1
             if bbox_max_x[label_id] < bbox_min_x[label_id]:
                 rejection_reasons[marker_index] = "instance_below_minimum_area"
+                marker_rejections[marker_index].append("instance_below_minimum_area")
                 continue
             component_x0 = int(bbox_min_x[label_id])
             component_y0 = int(bbox_min_y[label_id])
@@ -2016,6 +2052,7 @@ def procedural_seed_instances_from_prepared(
             )
             if candidate is None:
                 rejection_reasons[marker_index] = rejection
+                marker_rejections[marker_index].append(rejection)
                 continue
             duplicate = False
             for existing in candidates_by_marker[marker_index]:
@@ -2048,6 +2085,7 @@ def procedural_seed_instances_from_prepared(
         reverse=True,
     )
     for candidate in ordered_candidates:
+        raise_if_analysis_cancelled()
         if candidate.marker_index in selected_markers:
             continue
         conflicts = False
@@ -2072,6 +2110,7 @@ def procedural_seed_instances_from_prepared(
     for _pass in range(2):
         improved = False
         for candidate in ordered_candidates:
+            raise_if_analysis_cancelled()
             if candidate.selected:
                 continue
             conflicts = [
@@ -2105,6 +2144,7 @@ def procedural_seed_instances_from_prepared(
         if not improved:
             break
     for candidate in ordered_candidates:
+        raise_if_analysis_cancelled()
         if candidate.selected or candidate.marker_index in selected_markers:
             continue
         if any(
@@ -2173,6 +2213,18 @@ def procedural_seed_instances_from_prepared(
     marker_sources = np.asarray(
         peak_sources[surviving_markers], dtype=np.uint8
     )
+    rejected_markers = np.flatnonzero(
+        ~surviving_markers & (peak_sources != int(ProceduralMarkerSource.MANUAL))
+    )
+    rejected_marker_centres = np.column_stack(
+        (peak_x[rejected_markers] / scale, peak_y[rejected_markers] / scale)
+    ).astype(np.float32)
+    rejected_marker_reasons = tuple(
+        _marker_rejection_reason(
+            marker_rejections[index], bool(candidates_by_marker[index])
+        )
+        for index in rejected_markers
+    )
 
     label_count = int(labels.max())
     if label_count:
@@ -2240,6 +2292,8 @@ def procedural_seed_instances_from_prepared(
             rejected_manual_xy, np.float32
         ).reshape(-1, 2),
         rejected_manual_centre_reasons=tuple(rejected_manual_reasons),
+        rejected_marker_centres_xy=rejected_marker_centres.reshape(-1, 2),
+        rejected_marker_reasons=rejected_marker_reasons,
         concavity=concavity_raster,
         alternative_candidates_rgba=alternative_rgba,
         candidate_scores=np.asarray(

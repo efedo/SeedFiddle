@@ -16,7 +16,9 @@ class PipelineBackendsController(QObject):
         self.global_selector.addItem('PlantCV', 'plantcv')
         self.global_selector.setFixedWidth(84)
         self.global_selector.setToolTip('Default execution backend. Native-only preparation and unsupported equivalents remain explicitly native.')
-        window.pipeline_workflow.strip.layout().insertWidget(2, self.global_selector)
+        # After the pipeline list and its compact icons.
+        row = window.pipeline_workflow.strip.layout()
+        row.insertWidget(row.indexOf(window.pipeline_workflow.save_button) + 1, self.global_selector)
         self.global_selector.currentIndexChanged.connect(self._default_changed)
         self.node_controls = QWidget(window.pipeline_inspector)
         row = QHBoxLayout(self.node_controls)

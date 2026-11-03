@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import json
+from datetime import datetime
 from pathlib import Path
+import re
 
+from PySide6.QtCore import QSignalBlocker, Qt
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -16,31 +19,45 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QMessageBox,
     QPushButton,
     QSpinBox,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
-from seedvision.learning.data import LearningManifest
 from seedvision.learning.training import TrainingConfiguration
 
 
 @dataclass(frozen=True, slots=True)
-class LearningExportOptions:
-    manifest_path: Path
-    dataset_id: str
+class TrainingImage:
+    """A project image with seed outlines, as Train first lists it."""
+
+    key: str
+    path: Path
+    seed_count: int
+    species: str = ""
+    reviewed: bool = False
+    problem: str | None = None
+    group: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class TrainingDatasetImage:
+    """One image chosen for the dataset Train builds."""
+
+    key: str
+    path: Path
     identifier: str
+    species: str
     group: str
     split: str
     reviewed: bool
-    annotation_author: str | None
-    annotation_revision: str | None
-    notes: str | None
-    species_reviewed: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +66,45 @@ class LearningTrainingRequest:
     output_path: Path
     configuration: TrainingConfiguration
     activate_after_training: bool
+    images: tuple[TrainingDatasetImage, ...] = ()
+    reviewer: str | None = None
+
+
+def default_training_splits(images) -> dict[str, str]:
+    """Hold out about one group in five per species, never a species' largest."""
+
+    groups: dict[str, list[TrainingImage]] = {}
+    for image in images:
+        groups.setdefault(image.group or image.key, []).append(image)
+    ranked = sorted(
+        groups.values(),
+        key=lambda members: (-sum(item.seed_count for item in members), members[0].path.name),
+    )
+    by_species: dict[str, list[list[TrainingImage]]] = {}
+    for members in ranked:
+        by_species.setdefault(members[0].species, []).append(members)
+    held_out = [members for species in by_species.values() for members in species[1::5]]
+    if len(ranked) > 1 and not held_out:
+        # Every species has a single group, so hold out the second largest overall.
+        held_out = [ranked[1]]
+    splits = {image.key: "train" for image in images}
+    for members in held_out:
+        for image in members:
+            splits[image.key] = "validation"
+    return splits
+
+
+def _unique_names(images) -> dict[str, str]:
+    """Name each image after its file, keeping same-named files apart."""
+
+    names: dict[str, str] = {}
+    for image in images:
+        stem = re.sub(r"[^A-Za-z0-9._-]+", "_", image.path.stem).strip("._-") or "image"
+        name, suffix = stem, 2
+        while name in names.values():
+            name, suffix = f"{stem}_{suffix}", suffix + 1
+        names[image.key] = name
+    return names
 
 
 class _PathRow(QWidget):
@@ -62,185 +118,48 @@ class _PathRow(QWidget):
         layout.addWidget(self.browse)
 
 
-class LearningExportDialog(QDialog):
-    """Collect provenance and split metadata at the point of export."""
+class LearningTrainingDialog(QDialog):
+    """Configure a new or checkpoint-refinement training run."""
+
+    IMAGE_COLUMN, SEEDS_COLUMN, SPECIES_COLUMN, GROUP_COLUMN, SPLIT_COLUMN, REVIEWED_COLUMN, NOTE_COLUMN = range(7)
 
     def __init__(
         self,
         *,
-        default_directory: Path,
-        default_identifier: str,
-        default_group: str,
-        default_revision: str,
+        project_root: Path,
+        images: tuple[TrainingImage, ...] = (),
+        species_names: tuple[str, ...] = (),
         parent=None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Export reviewed learning sample")
-        self.setMinimumWidth(610)
-        layout = QVBoxLayout(self)
-        explanation = QLabel(
-            "Export a complete instance mask and the exact model input features. "
-            "All captures from one biological lot or imaging session must keep the "
-            "same group and must never cross dataset splits.",
-            self,
-        )
-        explanation.setWordWrap(True)
-        layout.addWidget(explanation)
-
-        form = QFormLayout()
-        self.directory_row = _PathRow(self)
-        self.directory_row.edit.setText(str(default_directory))
-        self.directory_row.browse.clicked.connect(self._choose_directory)
-        self.dataset_id_edit = QLineEdit("seed-fiddle-human-annotations", self)
-        self.identifier_edit = QLineEdit(default_identifier, self)
-        self.group_edit = QLineEdit(default_group, self)
-        self.group_edit.setPlaceholderText("e.g. lot-2026-08/capture-session-a")
-        self.split_combo = QComboBox(self)
-        self.split_combo.addItem("Training", "train")
-        self.split_combo.addItem("Validation", "validation")
-        # Image-local feature adaptation cannot create an independent locked test.
-        self.revision_edit = QLineEdit(default_revision, self)
-        self.author_edit = QLineEdit(self)
-        self.author_edit.setPlaceholderText("Annotator or reviewer name")
-        self.reviewed_checkbox = QCheckBox(
-            "Complete mask has been checked seed-by-seed by a human", self
-        )
-        self.notes_edit = QLineEdit(self)
-        self.species_reviewed_checkbox = QCheckBox('I verified the selected species and biological/capture group',self)
-        form.addRow("Dataset folder", self.directory_row)
-        form.addRow("Dataset ID", self.dataset_id_edit)
-        form.addRow("Sample ID", self.identifier_edit)
-        form.addRow("Lot / capture group", self.group_edit)
-        form.addRow("Dataset split", self.split_combo)
-        form.addRow("Annotation revision", self.revision_edit)
-        form.addRow("Annotator / reviewer", self.author_edit)
-        form.addRow("Review state", self.reviewed_checkbox)
-        form.addRow('Biological metadata',self.species_reviewed_checkbox)
-        form.addRow("Notes", self.notes_edit)
-        layout.addLayout(form)
-
-        caution = QLabel(
-            "Unchecked samples may be saved for later review, but Seed Fiddle will "
-            "refuse to train from them. Test labels must remain locked until final evaluation.",
-            self,
-        )
-        caution.setWordWrap(True)
-        layout.addWidget(caution)
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Cancel
-            | QDialogButtonBox.StandardButton.Save,
-            parent=self,
-        )
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-        self.directory_row.edit.editingFinished.connect(self._load_existing_dataset)
-        self._load_existing_dataset()
-
-    def _choose_directory(self) -> None:
-        selected = QFileDialog.getExistingDirectory(
-            self, "Choose or create a learning dataset folder", self.directory_row.edit.text()
-        )
-        if selected:
-            self.directory_row.edit.setText(selected)
-            self._load_existing_dataset()
-
-    def _load_existing_dataset(self) -> None:
-        manifest_path = Path(self.directory_row.edit.text().strip()) / "manifest.json"
-        if not manifest_path.is_file():
-            self.dataset_id_edit.setReadOnly(False)
-            return
-        try:
-            dataset_id = LearningManifest.load(manifest_path).dataset_id
-        except (OSError, ValueError, KeyError, json.JSONDecodeError):
-            self.dataset_id_edit.setReadOnly(False)
-            return
-        self.dataset_id_edit.setText(dataset_id)
-        self.dataset_id_edit.setReadOnly(True)
-
-    def options(self) -> LearningExportOptions:
-        author = self.author_edit.text().strip() or None
-        revision = self.revision_edit.text().strip() or None
-        notes = self.notes_edit.text().strip() or None
-        return LearningExportOptions(
-            manifest_path=(
-                Path(self.directory_row.edit.text().strip()).expanduser() / "manifest.json"
-            ).resolve(),
-            dataset_id=self.dataset_id_edit.text().strip(),
-            identifier=self.identifier_edit.text().strip(),
-            group=self.group_edit.text().strip(),
-            split=str(self.split_combo.currentData()),
-            reviewed=self.reviewed_checkbox.isChecked(),
-            annotation_author=author,
-            annotation_revision=revision,
-            notes=notes,
-            species_reviewed=self.species_reviewed_checkbox.isChecked(),
-        )
-
-    def accept(self) -> None:
-        options = self.options()
-        if not options.species_reviewed:
-            QMessageBox.warning(self,'Biological metadata required','Verify the selected species and biological/capture group before exporting conditioned features.')
-            return
-        if not options.dataset_id or not options.identifier or not options.group:
-            QMessageBox.warning(
-                self,
-                "Incomplete learning metadata",
-                "Dataset ID, sample ID, and lot/capture group are required.",
-            )
-            return
-        if options.reviewed and not options.annotation_author:
-            QMessageBox.warning(
-                self,
-                "Reviewer required",
-                "Enter the person who checked the complete mask before marking it reviewed.",
-            )
-            return
-        if options.manifest_path.is_file():
-            try:
-                manifest = LearningManifest.load(options.manifest_path)
-            except Exception as error:  # noqa: BLE001 - user-facing validation boundary
-                QMessageBox.warning(self, "Invalid learning manifest", str(error))
-                return
-            incompatible = {
-                sample.split
-                for sample in manifest.samples
-                if sample.group == options.group and sample.split != options.split
-            }
-            if incompatible:
-                QMessageBox.warning(
-                    self,
-                    "Dataset leakage prevented",
-                    f"Group {options.group!r} already belongs to {sorted(incompatible)}. "
-                    "All related captures and revisions must remain in one split.",
-                )
-                return
-        super().accept()
-
-
-class LearningTrainingDialog(QDialog):
-    """Configure a new or checkpoint-refinement training run."""
-
-    def __init__(self, *, project_root: Path, parent=None) -> None:
-        super().__init__(parent)
         self._project_root = Path(project_root)
+        self._images = tuple(images)
+        self._species_names = tuple(species_names)
+        self._dataset_stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         self.setWindowTitle("Train or refine learned seed model")
-        self.setMinimumWidth(650)
+        self.setMinimumWidth(860)
         layout = QVBoxLayout(self)
+
+        dataset = QGroupBox("Images", self)
+        dataset_layout = QVBoxLayout(dataset)
         explanation = QLabel(
-            "Training uses only human-reviewed training and validation samples. "
-            "Choose an initial checkpoint to refine it; leave that field empty to train "
-            "a new model. The locked test split is never used here.",
-            self,
+            "Images are analysed if needed, saved as a dataset, then trained on. "
+            "Give related captures the same group: a group stays in one split.",
+            dataset,
         )
         explanation.setWordWrap(True)
-        layout.addWidget(explanation)
+        dataset_layout.addWidget(explanation)
+        self.image_table = self._build_image_table(dataset)
+        dataset_layout.addWidget(self.image_table)
+        reviewer_form = QFormLayout()
+        self.reviewer_edit = QLineEdit(dataset)
+        self.reviewer_edit.setPlaceholderText("Who checked the images marked Reviewed")
+        reviewer_form.addRow("Reviewer", self.reviewer_edit)
+        dataset_layout.addLayout(reviewer_form)
+        layout.addWidget(dataset)
 
-        paths = QGroupBox("Dataset and checkpoint", self)
+        paths = QGroupBox("Checkpoint", self)
         path_form = QFormLayout(paths)
-        self.manifest_row = _PathRow(paths)
-        self.manifest_row.edit.setText(str(self._project_root / "learning-data" / "manifest.json"))
-        self.manifest_row.browse.clicked.connect(self._choose_manifest)
         self.family_combo = QComboBox(paths)
         self.family_combo.addItem("U-Net + watershed", "unet_watershed")
         self.family_combo.addItem("StarDist", "stardist")
@@ -250,14 +169,16 @@ class LearningTrainingDialog(QDialog):
         self.initial_row = _PathRow(paths)
         self.initial_row.edit.setPlaceholderText("Optional checkpoint to refine")
         self.initial_row.browse.clicked.connect(self._choose_initial)
-        path_form.addRow("Learning manifest", self.manifest_row)
         path_form.addRow("Model", self.family_combo)
         path_form.addRow("Output checkpoint", self.output_row)
         path_form.addRow("Initial checkpoint", self.initial_row)
         layout.addWidget(paths)
 
         settings = QGroupBox("Training settings", self)
-        settings_form = QFormLayout(settings)
+        settings_layout = QVBoxLayout(settings)
+        settings_columns = QHBoxLayout()
+        first_settings = QFormLayout()
+        second_settings = QFormLayout()
         self.epochs_spin = QSpinBox(settings)
         self.epochs_spin.setRange(1, 10_000)
         self.epochs_spin.setValue(40)
@@ -289,21 +210,22 @@ class LearningTrainingDialog(QDialog):
             "Activate the trained checkpoint in its pipeline node", settings
         )
         self.activate_checkbox.setChecked(True)
-        settings_form.addRow("Maximum epochs", self.epochs_spin)
-        settings_form.addRow("Batch size", self.batch_spin)
-        settings_form.addRow("Tile size", self.tile_spin)
-        settings_form.addRow("Tiles per image / epoch", self.tiles_per_sample_spin)
-        settings_form.addRow("Learning rate", self.learning_rate_spin)
-        settings_form.addRow("StarDist rays", self.rays_spin)
-        settings_form.addRow("Base channels", self.base_channels_spin)
-        settings_form.addRow("Network depth", self.depth_spin)
-        settings_form.addRow("After training", self.activate_checkbox)
+        first_settings.addRow("Maximum epochs", self.epochs_spin)
+        first_settings.addRow("Batch size", self.batch_spin)
+        first_settings.addRow("Tile size", self.tile_spin)
+        first_settings.addRow("Tiles per image / epoch", self.tiles_per_sample_spin)
+        second_settings.addRow("Learning rate", self.learning_rate_spin)
+        second_settings.addRow("StarDist rays", self.rays_spin)
+        second_settings.addRow("Base channels", self.base_channels_spin)
+        second_settings.addRow("Network depth", self.depth_spin)
+        settings_columns.addLayout(first_settings)
+        settings_columns.addLayout(second_settings)
+        settings_layout.addLayout(settings_columns)
+        settings_layout.addWidget(self.activate_checkbox)
         layout.addWidget(settings)
 
         validation_note = QLabel(
-            "The best validation-loss checkpoint and a JSON training report are saved. "
-            "Training success is not scientific validation; final metrics require a frozen, "
-            "independently reviewed test set.",
+            "The best validation-loss checkpoint and a JSON training report are saved.",
             self,
         )
         validation_note.setWordWrap(True)
@@ -320,12 +242,126 @@ class LearningTrainingDialog(QDialog):
         self.family_combo.currentIndexChanged.connect(self._family_changed)
         self._family_changed()
 
-    def _choose_manifest(self) -> None:
-        selected, _ = QFileDialog.getOpenFileName(
-            self, "Choose learning manifest", self.manifest_row.edit.text(), "JSON (*.json)"
+    def _build_image_table(self, parent) -> QTableWidget:
+        table = QTableWidget(len(self._images), 7, parent)
+        table.setHorizontalHeaderLabels(
+            ("Image", "Seeds", "Species", "Group", "Split", "Reviewed", "Note")
         )
-        if selected:
-            self.manifest_row.edit.setText(selected)
+        table.verticalHeader().hide()
+        table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        header = table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(self.NOTE_COLUMN, QHeaderView.ResizeMode.Stretch)
+        usable = [image for image in self._images if image.problem is None]
+        splits = default_training_splits(usable)
+        names = _unique_names(self._images)
+        for row, image in enumerate(self._images):
+            enabled = image.problem is None
+            base = Qt.ItemFlag.ItemIsEnabled if enabled else Qt.ItemFlag.NoItemFlags
+            name = QTableWidgetItem(image.path.name)
+            name.setFlags(base | Qt.ItemFlag.ItemIsUserCheckable)
+            name.setCheckState(Qt.CheckState.Checked if enabled else Qt.CheckState.Unchecked)
+            table.setItem(row, self.IMAGE_COLUMN, name)
+            seeds = QTableWidgetItem(f"{image.seed_count:,}")
+            seeds.setFlags(base)
+            seeds.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            table.setItem(row, self.SEEDS_COLUMN, seeds)
+            species = QComboBox(table)
+            species.addItem("Choose…", "")
+            for option in self._species_names:
+                species.addItem(option, option)
+            species.setCurrentIndex(max(0, species.findData(image.species)))
+            species.setEnabled(enabled)
+            table.setCellWidget(row, self.SPECIES_COLUMN, species)
+            group = QTableWidgetItem(image.group or names[image.key])
+            group.setFlags(base | Qt.ItemFlag.ItemIsEditable if enabled else base)
+            table.setItem(row, self.GROUP_COLUMN, group)
+            split = QComboBox(table)
+            split.addItem("Training", "train")
+            split.addItem("Validation", "validation")
+            split.setCurrentIndex(max(0, split.findData(splits.get(image.key, "train"))))
+            split.setEnabled(enabled)
+            split.currentIndexChanged.connect(lambda _index, current=row: self._split_changed(current))
+            table.setCellWidget(row, self.SPLIT_COLUMN, split)
+            reviewed = QTableWidgetItem()
+            reviewed.setFlags(base | Qt.ItemFlag.ItemIsUserCheckable)
+            reviewed.setCheckState(
+                Qt.CheckState.Checked if image.reviewed and enabled else Qt.CheckState.Unchecked
+            )
+            table.setItem(row, self.REVIEWED_COLUMN, reviewed)
+            note = QTableWidgetItem(image.problem or "")
+            note.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            note.setToolTip(image.problem or "")
+            table.setItem(row, self.NOTE_COLUMN, note)
+        table.itemChanged.connect(self._image_item_changed)
+        table.resizeColumnsToContents()
+        table.resizeRowsToContents()
+        table.setMinimumHeight(
+            table.horizontalHeader().sizeHint().height()
+            + sum(table.rowHeight(row) for row in range(min(8, len(self._images))))
+            + 2 * table.frameWidth()
+        )
+        return table
+
+    def _group_of(self, row: int) -> str:
+        return self.image_table.item(row, self.GROUP_COLUMN).text().strip()
+
+    def _split_combo(self, row: int) -> QComboBox:
+        return self.image_table.cellWidget(row, self.SPLIT_COLUMN)
+
+    def _image_item_changed(self, item: QTableWidgetItem) -> None:
+        """Move an image into the split of any group it joins."""
+
+        if item.column() != self.GROUP_COLUMN:
+            return
+        group = self._group_of(item.row())
+        for row in range(self.image_table.rowCount()):
+            if row != item.row() and group and self._group_of(row) == group:
+                with QSignalBlocker(self._split_combo(item.row())):
+                    self._split_combo(item.row()).setCurrentIndex(self._split_combo(row).currentIndex())
+                return
+
+    def _split_changed(self, changed: int) -> None:
+        """Keep every image of a group in the split just chosen for it."""
+
+        group = self._group_of(changed)
+        for row in range(self.image_table.rowCount()):
+            if row != changed and group and self._group_of(row) == group:
+                with QSignalBlocker(self._split_combo(row)):
+                    self._split_combo(row).setCurrentIndex(self._split_combo(changed).currentIndex())
+
+    def selected_images(self) -> tuple[TrainingDatasetImage, ...]:
+        names = _unique_names(self._images)
+        selected = []
+        for row, image in enumerate(self._images):
+            if self.image_table.item(row, self.IMAGE_COLUMN).checkState() != Qt.CheckState.Checked:
+                continue
+            selected.append(TrainingDatasetImage(
+                key=image.key,
+                path=image.path,
+                identifier=names[image.key],
+                species=str(self.image_table.cellWidget(row, self.SPECIES_COLUMN).currentData()),
+                group=self._group_of(row),
+                split=str(self._split_combo(row).currentData()),
+                reviewed=self.image_table.item(row, self.REVIEWED_COLUMN).checkState() == Qt.CheckState.Checked,
+            ))
+        return tuple(selected)
+
+    @staticmethod
+    def _dataset_problem(request: LearningTrainingRequest) -> str | None:
+        images = request.images
+        splits = {image.split for image in images}
+        if "train" not in splits or "validation" not in splits:
+            return "Use at least one Training image and one Validation image."
+        unnamed = [image.path.name for image in images if not image.species]
+        if unnamed:
+            return "Choose a species for: " + ", ".join(unnamed) + "."
+        ungrouped = [image.path.name for image in images if not image.group]
+        if ungrouped:
+            return "Give a group to: " + ", ".join(ungrouped) + "."
+        if any(image.reviewed for image in images) and not request.reviewer:
+            return "Enter who checked the images marked Reviewed."
+        return None
 
     def _choose_output(self) -> None:
         selected, _ = QFileDialog.getSaveFileName(
@@ -372,7 +408,6 @@ class LearningTrainingDialog(QDialog):
         self.rays_spin.setEnabled(family == "stardist")
 
     def request(self) -> LearningTrainingRequest:
-        manifest = Path(self.manifest_row.edit.text().strip()).expanduser().resolve()
         output = Path(self.output_row.edit.text().strip()).expanduser().resolve()
         initial_text = self.initial_row.edit.text().strip()
         initial = str(Path(initial_text).expanduser().resolve()) if initial_text else None
@@ -388,11 +423,14 @@ class LearningTrainingDialog(QDialog):
             learning_rate=self.learning_rate_spin.value(),
             initial_checkpoint=initial,
         )
+        dataset = self._project_root / "learning-data" / f"{output.stem}-{self._dataset_stamp}"
         return LearningTrainingRequest(
-            manifest_path=manifest,
+            manifest_path=dataset / "manifest.json",
             output_path=output,
             configuration=configuration,
             activate_after_training=self.activate_checkbox.isChecked(),
+            images=self.selected_images(),
+            reviewer=self.reviewer_edit.text().strip() or None,
         )
 
     def accept(self) -> None:
@@ -401,8 +439,9 @@ class LearningTrainingDialog(QDialog):
         except (TypeError, ValueError) as error:
             QMessageBox.warning(self, "Invalid training settings", str(error))
             return
-        if not request.manifest_path.is_file():
-            QMessageBox.warning(self, "Manifest not found", str(request.manifest_path))
+        problem = self._dataset_problem(request)
+        if problem:
+            QMessageBox.warning(self, "Dataset is not ready for training", problem)
             return
         initial = request.configuration.initial_checkpoint
         if initial and not Path(initial).is_file():

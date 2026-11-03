@@ -7,17 +7,19 @@ from time import monotonic
 import json
 from dataclasses import replace
 from collections.abc import Mapping
+from html import escape
 
 import torch
 from PySide6.QtCore import QObject, QRunnable, QSignalBlocker, Qt, Signal, QRectF
 from PySide6.QtGui import QPixmap, QPen, QColor
-from PySide6.QtWidgets import (QComboBox, QFileDialog, QGraphicsScene, QGraphicsView,
-    QHBoxLayout, QLabel, QMenu, QMessageBox, QPushButton, QTextBrowser, QToolButton,
+from PySide6.QtWidgets import (QComboBox, QFileDialog, QFrame, QGraphicsScene, QGraphicsView,
+    QHBoxLayout, QLabel, QMenu, QPushButton, QTextBrowser, QToolButton,
     QSizePolicy, QVBoxLayout, QWidget)
 
 from seedvision.pipeline import NodeStatus
 from seedvision.pipeline.project_context import CONTEXT_NODE_IDS, workspace_graph
 from seedvision.segmentation import PipelineAnalysisCache
+from seedvision.ui.canvas_controls import COMPACT_ICON_SIZE, load_icon, rename_icon, save_icon, style_canvas_control_bar
 from seedvision.ui.native_workflow_helpers import configure_native_parameters, configure_foreground_regions, native_preview_image
 
 
@@ -34,9 +36,18 @@ TEMPLATE_GROUPS = (
     ('Colour correction', ('plantcv_automatic_color_card', 'plantcv_color_card_correct_color')),
 )
 SAVED_HEADING = 'Saved in this project'
-# Item role: 'heading', 'template' (fresh factory copy), 'saved' (project
-# working copy) or 'current' (an installed pipeline matching no entry).
+# Item role: 'heading', 'template' (fresh factory copy), 'custom' (a named,
+# editable copy), 'saved' (project recipe) or 'current' (an installed pipeline
+# matching no entry).
 ENTRY_KIND = Qt.ItemDataRole.UserRole + 1
+# The list shrinks towards its minimum only in a pane too narrow for it.
+SELECTOR_WIDTH = 260
+SELECTOR_MINIMUM_WIDTH = 120
+
+
+def _template_tooltip(recipe):
+    """A factory pipeline's description and caveats, as rich text because Qt wraps only that."""
+    return f'<p>{escape(recipe.description)}</p><p>{escape(recipe.provenance.evidence_note)}</p>'
 
 
 class _Signals(QObject):
@@ -105,23 +116,39 @@ class WorkflowPreview(QWidget):
         super().__init__(parent)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        controls = QHBoxLayout()
-        self.message = QLabel(self)
-        self.message.setWordWrap(True)
-        self.message.setTextFormat(Qt.TextFormat.PlainText)
-        controls.addWidget(self.message, 1)
-        fit = QPushButton('Fit', self)
+        layout.setSpacing(0)
+        header = QFrame(self)
+        header.setFixedHeight(38)
+        controls = QHBoxLayout(header)
+        controls.setContentsMargins(8, 4, 8, 4)
+        controls.setSpacing(5)
+        self.header_layout = controls
+        controls.addStretch(1)
+        fit = QToolButton(header)
+        fit.setText('Fit')
         fit.clicked.connect(self.fit_image)
-        actual = QPushButton('1:1', self)
+        actual = QToolButton(header)
+        actual.setText('1:1')
         actual.clicked.connect(lambda: self.view.resetTransform())
         controls.addWidget(fit)
         controls.addWidget(actual)
-        layout.addLayout(controls)
+        style_canvas_control_bar(header, 'workflowPreviewHeader')
+        layout.addWidget(header)
+        self.message = QLabel(self)
+        self.message.setWordWrap(True)
+        self.message.setTextFormat(Qt.TextFormat.PlainText)
+        self.message.setContentsMargins(8, 3, 8, 3)
+        layout.addWidget(self.message)
         self.view = _RasterView(self)
         self.view.setScene(QGraphicsScene(self.view))
         self.view.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
         self.view.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         layout.addWidget(self.view, 1)
+
+    def dock_header_controls(self, controls):
+        """Show controls shared with another display at the left of this header."""
+        self.header_layout.insertWidget(0, controls)
+        controls.offer_width(None)
 
     def clear(self):
         self.view._region_item = None
@@ -185,7 +212,7 @@ class PipelineWorkflowController(QObject):
         self.workflow_label = QLabel('Pipeline', self.strip)
         row.addWidget(self.workflow_label)
         self.selector = QComboBox(self.strip)
-        self.selector.setFixedWidth(120)
+        self.selector.setFixedWidth(SELECTOR_WIDTH)
         self.selector.setMinimumContentsLength(8)
         self.selector.view().setMinimumWidth(360)
         self.selector.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
@@ -208,27 +235,25 @@ class PipelineWorkflowController(QObject):
                 recipe = by_id[identifier]
                 self.selector.addItem(recipe.title, recipe)
                 self.selector.setItemData(self.selector.count()-1, 'template', ENTRY_KIND)
-                self.selector.setItemData(self.selector.count()-1, recipe.description, Qt.ItemDataRole.ToolTipRole)
+                self.selector.setItemData(self.selector.count()-1, _template_tooltip(recipe), Qt.ItemDataRole.ToolTipRole)
         with QSignalBlocker(self.selector):
             self.selector.setCurrentIndex(self.index_of(None))
         row.addWidget(self.selector)
-        self.save_button = QToolButton(self.strip)
-        self.save_button.setText('Save')
+        self.rename_button = self._icon_button(rename_icon(), 'Rename pipeline')
+        self.rename_button.setToolTip('Rename pipeline. Default pipelines cannot be renamed, so this offers an editable copy instead.')
+        self.load_button = self._icon_button(load_icon(), 'Load pipeline')
+        self.load_button.setToolTip('Load pipeline from a file, as an editable copy.')
+        self.save_button = self._icon_button(save_icon(), 'Save pipeline')
+        self.save_button.setToolTip('Save pipeline to a file under a new name, and carry on editing that copy.')
         self.export_button = QToolButton(self.strip)
         self.export_button.setText('Export')
-        for button in (self.save_button, self.export_button):
-            row.addWidget(button)
+        row.addWidget(self.export_button)
         self.more_button = QToolButton(self.strip)
         self.more_button.setText('…')
         self.more_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         menu = QMenu(self.more_button)
-        menu.addAction('Import legacy recipe…', self.open_saved)
-        menu.addAction('Source and availability…', self.show_source)
         self.export_menu_action = menu.addAction('Export run…', self.export)
         self.export_menu_action.setVisible(False)
-        menu.addAction('Recorded run QC…', self.show_qc)
-        self.replay_action = menu.addAction('Replay selected saved stage…', self.replay)
-        menu.addSeparator()
         self.remove_added_action = menu.addAction('Remove selected added node',
             lambda checked=False: self.window.catalogue_nodes.remove_selected())
         self.remove_added_action.setToolTip('Remove this independent instance and its private required input nodes.')
@@ -256,13 +281,22 @@ class PipelineWorkflowController(QObject):
         self.histogram.hide()
         self.selector.currentIndexChanged.connect(self.select_workflow)
         self.preview.view.region_selected.connect(self.region_selected)
-        self.save_button.clicked.connect(self.save)
         self.export_button.clicked.connect(self.export)
         self.sync_buttons()
 
     @property
     def active(self):
         return self.workflow is not None
+
+    def _icon_button(self, icon, name):
+        """A compact icon-only command; its tooltip and accessible name say what it does."""
+        button = QToolButton(self.strip)
+        button.setIcon(icon)
+        button.setIconSize(COMPACT_ICON_SIZE)
+        button.setStyleSheet('padding: 2px 3px;')
+        button.setAccessibleName(name)
+        self.strip.layout().addWidget(button)
+        return button
 
     def _add_heading(self, text, position=None, kind='heading'):
         """A bold, unselectable group heading in the Pipeline list."""
@@ -292,17 +326,18 @@ class PipelineWorkflowController(QObject):
         busy = self._job is not None or bool(getattr(getattr(self.window, 'catalogue_nodes', None), 'busy', False))
         self.selector.setEnabled(not busy)
         self.window._sync_run_controls()
+        self.load_button.setEnabled(not busy)
         self.save_button.setEnabled(not busy)
         self.export_button.setEnabled(not busy and (self.result is not None if self.active else bool(self.window._analyses)))
         catalogue = getattr(self.window, 'catalogue_nodes', None)
+        documents = getattr(self.window, 'pipeline_documents', None)
         if catalogue is not None:
-            self.remove_added_action.setEnabled(catalogue.selected_instance is not None and not busy)
+            # Always offered while locked: using it explains the lock.
+            removable = catalogue.selected_instance is not None or (documents is not None and documents.locked)
+            self.remove_added_action.setEnabled(removable and not busy)
             if catalogue.selected_instance is not None:
                 self.export_button.setEnabled(not busy and catalogue.can_export_selected)
         self.selector.setToolTip(self.selector.currentText())
-        documents = getattr(self.window, 'pipeline_documents', None)
-        if documents is not None:
-            self.remove_added_action.setEnabled(self.remove_added_action.isEnabled() and not documents.frozen)
         if hasattr(self.window, 'pipeline_backends'):
             self.window.pipeline_backends.refresh()
         self.export_menu_action.setEnabled(self.export_button.isEnabled())
@@ -315,22 +350,21 @@ class PipelineWorkflowController(QObject):
         widgets = [layout.itemAt(index).widget() for index in range(layout.count())
                    if layout.itemAt(index).widget() is not None]
         shown = set(widgets)
-        shortened = [widget for widget in widgets if widget.property('compactText')]
-        for widget in shortened:
-            widget.setText(widget.property('fullText'))
+        self.selector.setFixedWidth(SELECTOR_WIDTH)
         margins = layout.contentsMargins()
         def required():
             return (margins.left() + margins.right() + max(0, len(shown) - 1) * layout.spacing()
                     + sum(min(widget.maximumWidth(), max(widget.minimumWidth(), widget.sizeHint().width()))
                           for widget in shown))
-        for widget in (self.workflow_label, self.export_button, self.save_button):
+        # The compact icons stay: nothing else reaches their commands.
+        for widget in (self.workflow_label, self.export_button):
             if required() <= available:
                 break
             shown.discard(widget)
-        for widget in shortened:
-            if required() > available:
-                widget.setText(widget.property('compactText'))
-        for widget in (self.workflow_label, self.export_button, self.save_button):
+        excess = required() - available
+        if excess > 0:
+            self.selector.setFixedWidth(max(SELECTOR_MINIMUM_WIDTH, SELECTOR_WIDTH - excess))
+        for widget in (self.workflow_label, self.export_button):
             if widget.isHidden() == (widget in shown):
                 widget.setVisible(widget in shown)
         self.export_menu_action.setVisible(self.export_button.isHidden())
@@ -342,16 +376,34 @@ class PipelineWorkflowController(QObject):
             # Only reachable programmatically; a heading stands for its first entry.
             self.selector.setCurrentIndex(index + 1)
             return
+        documents = getattr(self.window, 'pipeline_documents', None)
+        leaving_copy = documents is not None and not documents.locked
+        if leaving_copy or kind == 'custom':
+            # A copy shares the default graph, which must not change under running work.
+            if documents._busy():
+                self.window.statusBar().showMessage('Wait for current work to finish before changing pipeline.')
+                self.sync_copies()
+                return
+            if not documents.stash_current():
+                self.sync_copies()
+                return
+        if kind == 'custom':
+            if not documents.activate(self.selector.itemData(index)):
+                self.sync_copies()
+            return
         recipe = self.selector.itemData(index)
-        if self.active:
+        if not self.active:
+            self._default_selection = self.window._selected_pipeline_node
+        elif not leaving_copy:
             self.sync_graph()
             self._copies[self.workflow.source_recipe.identity.recipe_sha256] = self.workflow
-        else:
-            self._default_selection = self.window._selected_pipeline_node
         template = kind == 'template'
         workflow = None if recipe is None else (create_workflow(recipe) if template else self._copies.get(recipe.identity.recipe_sha256, create_workflow(recipe)))
         if workflow is not None and template and hasattr(self.window, 'pipeline_backends'):
             workflow = replace(workflow, backend_default=self.window.pipeline_backends.default)
+        if leaving_copy:
+            from seedvision.ui.pipeline_workspace import leave_copy
+            leave_copy(self.window)
         self.install(workflow)
         if workflow is not None and template:
             # A template is laid out fresh; saved layouts load as they were.
@@ -368,19 +420,11 @@ class PipelineWorkflowController(QObject):
         with QSignalBlocker(self.selector):
             for item in reversed(self._entries('current')):
                 self.selector.removeItem(item)
-            index = self.index_of(None)
-            if workflow is not None:
-                source = workflow.source_recipe
-                entries = [(i, self.selector.itemData(i)) for i in self._entries('template', 'saved')]
-                entries = [(i, recipe) for i, recipe in entries if recipe is not None]
-                # A node-action variant keeps its template's recipe ID.
-                index = next((i for i, recipe in entries
-                              if recipe.identity.recipe_sha256 == source.identity.recipe_sha256),
-                             next((i for i, recipe in entries if recipe.recipe_id == source.recipe_id), -1))
-                if index < 0:
-                    self.selector.addItem('Current · '+workflow.recipe.title, source)
-                    index = self.selector.count() - 1
-                    self.selector.setItemData(index, 'current', ENTRY_KIND)
+            index = self._current_template_index()
+            if index < 0:
+                self.selector.addItem('Current · '+workflow.recipe.title, workflow.source_recipe)
+                index = self.selector.count() - 1
+                self.selector.setItemData(index, 'current', ENTRY_KIND)
             self.selector.setCurrentIndex(index)
         self.clear_result_display()
         self.activity = ''
@@ -491,21 +535,57 @@ class PipelineWorkflowController(QObject):
     def refresh_saved(self, recipes=()):
         from seedvision.pipeline.workflows import create_workflow
         with QSignalBlocker(self.selector):
-            for item in reversed(self._entries('saved', 'saved-heading', 'current')):
+            for item in reversed(self._entries('saved', 'saved-heading', 'current', 'custom')):
                 self.selector.removeItem(item)
             for recipe in recipes:
                 self._add_saved(recipe)
                 self._copies[recipe.identity.recipe_sha256] = create_workflow(recipe)
+        self.sync_copies()
 
-    def _add_saved(self, recipe):
-        """List a project working copy under its own heading, after the templates."""
+    def _add_saved_entry(self, text, data, kind):
+        """List a project pipeline under its own heading, after the templates."""
         if not self._entries('saved-heading'):
             current = self._entries('current')
             self._add_heading(SAVED_HEADING, current[0] if current else None, 'saved-heading')
-        position = max(self._entries('saved-heading', 'saved')) + 1
-        self.selector.insertItem(position, 'Saved · '+recipe.title, recipe)
-        self.selector.setItemData(position, 'saved', ENTRY_KIND)
+        position = max(self._entries('saved-heading', 'saved', 'custom')) + 1
+        self.selector.insertItem(position, text, data)
+        self.selector.setItemData(position, kind, ENTRY_KIND)
         return position
+
+    def _add_saved(self, recipe):
+        return self._add_saved_entry('Saved · '+recipe.title, recipe, 'saved')
+
+    def sync_copies(self):
+        """Match the list to the project's named copies and show the current pipeline."""
+        documents = getattr(self.window, 'pipeline_documents', None)
+        if documents is None:
+            return
+        with QSignalBlocker(self.selector):
+            for item in reversed(self._entries('custom')):
+                self.selector.removeItem(item)
+            if not self._entries('saved'):
+                for item in reversed(self._entries('saved-heading')):
+                    self.selector.removeItem(item)
+            for name in documents.custom:
+                self._add_saved_entry(name, name, 'custom')
+            index = next((item for item in self._entries('custom')
+                          if self.selector.itemData(item) == documents.active_copy), None)
+            if index is None:
+                index = self._current_template_index()
+            self.selector.setCurrentIndex(index)
+        self.selector.setToolTip(self.selector.currentText())
+
+    def _current_template_index(self):
+        """The list entry for a working graph that is not a named copy."""
+        if self.workflow is None:
+            return self.index_of(None)
+        source = self.workflow.source_recipe
+        entries = [(i, self.selector.itemData(i)) for i in self._entries('template', 'saved', 'current')]
+        entries = [(i, recipe) for i, recipe in entries if recipe is not None]
+        # A node-action variant keeps its template's recipe ID.
+        return next((i for i, recipe in entries
+                     if recipe.identity.recipe_sha256 == source.identity.recipe_sha256),
+                    next((i for i, recipe in entries if recipe.recipe_id == source.recipe_id), -1))
 
     def clear_result_display(self):
         """Release computed display products without removing node controls."""
@@ -816,7 +896,6 @@ class PipelineWorkflowController(QObject):
             self.window._refresh_project_node()
             self.window.pipeline_inspector.set_node(self.graph.node(node_id))
             self.window.pipeline_inspector.overlay_combo.hide()
-            self.replay_action.setEnabled(False)
             self.node_actions.hide()
             self.histogram.hide()
             self.facts.hide()
@@ -825,8 +904,6 @@ class PipelineWorkflowController(QObject):
             if hasattr(self.window, 'pipeline_backends'):
                 self.window.pipeline_backends.refresh()
             return
-        from seedvision.benchmarking.native_stage_replay import SUPPORTED_REPLAY_OPERATIONS
-        self.replay_action.setEnabled(self.workflow.recipe.stage(node_id).operation_id in SUPPORTED_REPLAY_OPERATIONS and self._job is None)
         self.window.pipeline_inspector.set_node(self.graph.node(node_id))
         self.window.pipeline_inspector.overlay_combo.hide()
         stage = self.workflow.recipe.stage(node_id)
@@ -976,7 +1053,7 @@ class PipelineWorkflowController(QObject):
                 button.clicked.connect(lambda checked=False, port=port: self.choose_input(port))
                 layout.addWidget(button)
         documents = getattr(self.window, "pipeline_documents", None)
-        if documents is not None and documents.frozen:
+        if documents is not None and documents.locked:
             for index in range(layout.count()):
                 layout.itemAt(index).widget().setEnabled(False)
         self.node_actions.setVisible(bool(layout.count()))
@@ -1092,8 +1169,8 @@ class PipelineWorkflowController(QObject):
             dialog.deleteLater()
         expected = 'plantcv_kmeans_predict_masks' if kind == 'kmeans' else 'plantcv_naive_bayes_classifier'
         if selected is not None and self.active and self.workflow.recipe.recipe_id == expected:
-            if not self.window._pipeline_editing_allowed():
-                self.window.statusBar().showMessage('Model saved; pipeline is frozen, so its selection was kept.')
+            if not self.window._pipeline_editable():
+                self.window.statusBar().showMessage('Model saved; default pipelines cannot be edited, so its selection was kept.')
                 return
             stage = next(stage for stage in self.workflow.recipe.stages if any(p.parameter_id == 'model_source' for p in stage.parameters))
             self.graph.node(stage.stage_id).parameters['model_source'] = selected
@@ -1138,36 +1215,6 @@ class PipelineWorkflowController(QObject):
             self.display.blend_available = False
             self.display.sync_controls()
 
-    def save(self):
-        documents = getattr(self.window, 'pipeline_documents', None)
-        if documents is not None:
-            return documents.choose_pipeline_save()
-        self.window._save_project()
-
-    def open_saved(self):
-        path, _ = QFileDialog.getOpenFileName(self.window, 'Open saved workflow', '', 'SeedFiddle workflow (*.seedfiddle-workflow.json);;SeedFiddle recipe (*.seedfiddle-recipe.json)')
-        if not path:
-            return
-        from seedvision.benchmarking.recipes import RecipeSpec
-        from seedvision.pipeline.workflows import create_workflow, PipelineWorkflow
-        from seedvision.pipeline.backend_execution import validate_backend_selection
-        try:
-            content = Path(path).read_bytes()
-            if 'source_recipe' in json.loads(content):
-                workflow = PipelineWorkflow.from_json(content)
-                recipe = workflow.source_recipe
-            else:
-                recipe = RecipeSpec.from_json(content)
-                workflow = create_workflow(recipe)
-            validate_backend_selection(workflow)
-        except (ValueError, OSError, NotImplementedError) as error:
-            self.window.statusBar().showMessage(str(error))
-            return
-        with QSignalBlocker(self.selector):
-            position = self._add_saved(recipe)
-        self._copies[recipe.identity.recipe_sha256] = workflow
-        self.selector.setCurrentIndex(position)
-
     def export(self):
         catalogue = getattr(self.window, 'catalogue_nodes', None)
         if catalogue is not None and catalogue.selected_instance is not None:
@@ -1184,48 +1231,6 @@ class PipelineWorkflowController(QObject):
             recipe, result = self.workflow.recipe, self.result
             self.start_job(lambda cancel: export_native_recipe_result(directory, recipe, result, cancel=cancel),
                 lambda path: self.window.statusBar().showMessage(f'Workflow exported to {path}'))
-
-    def show_source(self):
-        if self.window.catalogue_nodes.show_source_selected():
-            return
-        if self.active:
-            recipe = self.workflow.source_recipe
-            provenance = recipe.provenance
-            QMessageBox.information(self.window, 'Workflow source',
-                f'{recipe.title}\n{recipe.description}\n\n'
-                f'Origin: {provenance.mode.value}\nBackend: {provenance.backend_id} {provenance.backend_version}\n'
-                f'Evidence: {provenance.evidence_status.value}\n{provenance.evidence_note}\n\n'
-                'Working parameters and wiring are saved separately from source evidence.')
-
-    def show_qc(self):
-        from seedvision.ui.method_qc_dialog import MethodQCDialog
-        directory = QFileDialog.getExistingDirectory(self.window, 'Review exported workflow QC')
-        if directory:
-            try:
-                from seedvision.export.method_qc import load_method_qc, FILENAME
-                MethodQCDialog(load_method_qc(Path(directory)/FILENAME), self.window).exec()
-            except (ValueError, OSError) as error:
-                self.window.statusBar().showMessage(str(error))
-
-    def replay(self):
-        if not self.active or self._job is not None:
-            return
-        directory = QFileDialog.getExistingDirectory(self.window, 'Replay saved workflow stage')
-        if directory:
-            from seedvision.benchmarking.native_stage_replay import replay_native_stage
-            selected, identity = self._selected, self.workflow.recipe.identity
-            self.start_job(lambda cancel: replay_native_stage(directory, selected, cancel=cancel,
-                expected_recipe_identity=identity), self.replay_completed)
-
-    def replay_completed(self, result):
-        self.facts.setPlainText('Saved stage replay\n'+str(result))
-        self.facts.show()
-        stage = self.workflow.recipe.stage(self._selected)
-        ports = {p.name: p for p in stage.ports if p.direction == 'output'}
-        for name, value in result.outputs.items():
-            if name in ports and torch.is_tensor(value) and value.ndim in (2, 3) and (value.ndim == 2 or value.shape[-1] == 3):
-                self.render(value, ports[name].semantics)
-                break
 
     def add_variant(self, module, factory):
         guard = getattr(self.window, "_pipeline_editing_allowed", None)

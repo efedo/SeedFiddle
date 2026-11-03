@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 def _coverage_label(value):
-    return "legacy coverage tier (performance unvalidated)" if value == "validated" else value
+    return "legacy coverage tier" if value == "validated" else value
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
@@ -387,7 +387,7 @@ class SpeciesLibraryManagerDialog(QDialog):
 
     def published(self, pin: SpeciesLibraryPin) -> None:
         self.current_pin = pin
-        self.set_build_busy(False, "The audited immutable version was published and pinned. Performance remains unvalidated.")
+        self.set_build_busy(False, "The audited immutable version was published and pinned.")
         self.refresh()
         self.build_status_label.setText(
             "Published successfully and selected for this project."

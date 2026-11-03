@@ -189,6 +189,10 @@ class ProjectAnalysisDocument:
     correction_bindings: tuple[ProjectCorrectionBinding, ...] = ()
     pipeline_workflow: object | None = None
     node_instances: tuple = ()
+    # The name of the working pipeline when it is a named copy, and the
+    # complete documents of the project's other named copies.
+    active_pipeline: str | None = None
+    custom_pipelines: tuple = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -263,6 +267,8 @@ class ProjectAnalysisStore:
         native_recipes: tuple[RecipeSpec, ...] = (),
         pipeline_workflow=None,
         node_instances=(),
+        active_pipeline: str | None = None,
+        custom_pipelines: tuple = (),
         correction_bindings: tuple[ProjectCorrectionBinding, ...] = (),
         existing_correction_bindings: tuple[ProjectCorrectionBinding, ...] | None = None,
     ) -> ProjectAnalysisDocument:
@@ -445,6 +451,8 @@ class ProjectAnalysisStore:
             native_recipes=working_recipes,
             pipeline_workflow=pipeline_workflow,
             node_instances=node_instances,
+            active_pipeline=active_pipeline,
+            custom_pipelines=custom_pipelines,
             correction_bindings=captured_correction_bindings,
         )
         # The serializer is also the single strict document-level validator.
@@ -960,6 +968,12 @@ def _document_payload(document: ProjectAnalysisDocument) -> dict[str, object]:
     }
     if document.node_instances:
         payload["node_instances"] = instance_payload
+    if document.active_pipeline is not None:
+        payload["active_pipeline"] = _pipeline_copy_name(document.active_pipeline)
+    if document.custom_pipelines:
+        payload["custom_pipelines"] = _custom_pipelines_payload(
+            document.custom_pipelines, document.active_pipeline
+        )
     if document.ui_state is not None:
         payload["ui"] = _ui_payload(document.ui_state, known_nodes)
     return payload
@@ -983,10 +997,14 @@ def _document_from_payload(payload: object) -> ProjectAnalysisDocument:
             "reference_graphs", "reference_model_assets", "native_recipes",
             "correction_bindings", "pipeline_workflow",
         },
-        optional={"ui", "node_instances"},
+        optional={"ui", "node_instances", "active_pipeline", "custom_pipelines"},
         name="project master",
     )
     node_instances = _instances_from_payload(root.get('node_instances', []))
+    active_pipeline = root.get("active_pipeline")
+    if active_pipeline is not None:
+        _pipeline_copy_name(active_pipeline)
+    custom_pipelines = _custom_pipelines_from_payload(root.get("custom_pipelines", []), active_pipeline)
     try:
         settings = analysis_settings_profile_from_payload(root["analysis_settings"])
     except AnalysisSettingsError as error:
@@ -1136,6 +1154,8 @@ def _document_from_payload(payload: object) -> ProjectAnalysisDocument:
         native_recipes=native_recipes,
         pipeline_workflow=_workflow_from_payload(root["pipeline_workflow"]),
         node_instances=node_instances,
+        active_pipeline=active_pipeline,
+        custom_pipelines=custom_pipelines,
         correction_bindings=correction_bindings,
     )
 
@@ -1631,6 +1651,42 @@ def _instances_from_payload(value):
         return instances
     except (TypeError, ValueError, KeyError, OverflowError, RecursionError) as error:
         raise InvalidProjectAnalysis(f'Invalid pipeline node instances: {error}') from error
+
+
+def _pipeline_copy_name(value):
+    from seedvision.persistence.pipeline_documents import PipelineDocumentError, _pipeline_name
+    try:
+        return _pipeline_name(value)
+    except PipelineDocumentError as error:
+        raise InvalidProjectAnalysis(f'Invalid pipeline copy name: {error}') from error
+
+
+def _unique_pipeline_copies(documents, active_pipeline):
+    from seedvision.persistence.pipeline_documents import _name_key
+    names = [document.name for document in documents]
+    if active_pipeline is not None:
+        names.append(active_pipeline)
+    if len({_name_key(name) for name in names}) != len(names):
+        raise InvalidProjectAnalysis('Named pipeline copies must have distinct names.')
+    return documents
+
+
+def _custom_pipelines_payload(documents, active_pipeline):
+    from seedvision.persistence.pipeline_documents import PipelineDocument
+    if any(not isinstance(document, PipelineDocument) for document in documents):
+        raise InvalidProjectAnalysis('Named pipeline copies must be complete pipeline documents.')
+    return [document.to_dict() for document in _unique_pipeline_copies(documents, active_pipeline)]
+
+
+def _custom_pipelines_from_payload(value, active_pipeline):
+    from seedvision.persistence.pipeline_documents import PipelineDocument
+    if type(value) is not list:
+        raise InvalidProjectAnalysis('Named pipeline copies must be a JSON array.')
+    try:
+        documents = tuple(PipelineDocument.from_dict(row) for row in value)
+    except (TypeError, ValueError, KeyError, OverflowError, RecursionError) as error:
+        raise InvalidProjectAnalysis(f'Invalid named pipeline copy: {error}') from error
+    return _unique_pipeline_copies(documents, active_pipeline)
 
 
 def _workflow_from_payload(value):

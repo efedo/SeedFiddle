@@ -289,7 +289,7 @@ class InstanceMaskImportUiTests(unittest.TestCase):
                          "Cellpose-SAM seed outlines")
         message = self.window.statusBar().currentMessage()
         self.assertIn("Copied 2 Cellpose-SAM seed(s)", message)
-        self.assertIn("unreviewed", message)
+        self.assertIn("Apply the draft", message)
 
         self.window._undo_instance_reference_edit()
         current = self.window._draft_instance_annotations.get(
@@ -332,61 +332,254 @@ class InstanceMaskImportUiTests(unittest.TestCase):
         self.window._undo_instance_reference_edit()
         np.testing.assert_array_equal(self.window._draft_instance_annotations[self.key], merged)
 
-    def check_test_training_export_readiness_and_revision_identity(self) -> None:
-        from PySide6.QtWidgets import QDialog, QMessageBox
-        from seedvision.persistence.reference_regions import SeedInstanceAnnotation
-        from seedvision.learning.data import LearningManifest, LearningSample
-        from seedvision.learning.contracts import FeatureStackSpec
+    def _training_images(self):
+        with patch('seedvision.ui.training_dataset.run_persistence', side_effect=lambda window, call, title: call()):
+            return self.window._training_images()
+
+    def check_test_training_lists_images_and_explains_unusable_ones(self) -> None:
+        from seedvision.persistence.reference_regions import ReferenceRegionBundle, SeedInstanceAnnotation
+
+        # No outlines anywhere: nothing to train on.
+        self.assertEqual(self._training_images(), ())
         labels = np.zeros((60, 80), np.uint16)
         labels[10:20, 10:20] = 4
         labels[30:40, 30:40] = 8
         self.window._applied_instance_annotations[self.key] = labels
         self.window._applied_seed_annotations[self.key] = {
-            4: SeedInstanceAnnotation(4, shape_reviewed=True, outline_visibility='complete')}
-        with patch.object(QMessageBox, 'warning') as warning, \
-             patch('seedvision.ui.main_window.LearningExportDialog') as dialog:
-            self.window._export_learning_sample()
-        dialog.assert_not_called()
-        self.assertIn('1 excluded', warning.call_args.args[2])
-        self.assertIn('8', warning.call_args.args[2])
+            4: SeedInstanceAnnotation(4, shape_reviewed=True, outline_visibility='complete'),
+            8: SeedInstanceAnnotation(8, shape_exclusion_reason='damaged')}
+        image, = self._training_images()
+        self.assertEqual((image.key, image.seed_count), (self.key, 2))
+        self.assertIn('8', image.problem)
+        self.assertFalse(image.reviewed)
+        # Seed 8 now has no review record at all, which does not block training.
+        del self.window._applied_seed_annotations[self.key][8]
+        image, = self._training_images()
+        self.assertIsNone(image.problem)
+        self.assertFalse(image.reviewed)
         self.window._applied_seed_annotations[self.key][8] = SeedInstanceAnnotation(
             8, shape_reviewed=True, outline_visibility='complete')
+        image, = self._training_images()
+        self.assertTrue(image.reviewed)
         self.window._instance_annotations_dirty.add(self.key)
-        with patch.object(QMessageBox, 'warning') as warning:
-            self.window._export_learning_sample()
-        self.assertIn('unapplied draft', warning.call_args.args[2])
+        image, = self._training_images()
+        self.assertIn('draft', image.problem)
         self.window._instance_annotations_dirty.clear()
-        destination = self.root / 'learning-data'
-        manifest = LearningManifest('test', FeatureStackSpec(), (
-            LearningSample('capture', '', '', '', 'g', 'train', False),))
-        manifest.save(destination / 'manifest.json')
-        (destination / '.learning-revisions' / 'capture_r2').mkdir(parents=True)
-        from seedvision.ui.learning_workflow import LearningExportDialog
-        with patch('seedvision.ui.main_window.LearningExportDialog', wraps=LearningExportDialog) as constructor, \
-             patch.object(QDialog, 'exec', return_value=QDialog.DialogCode.Rejected):
-            self.window._export_learning_sample()
-        self.assertEqual(constructor.call_args.kwargs['default_identifier'], 'capture_r3')
-        self.assertEqual(constructor.call_args.kwargs['default_revision'], '3')
-        def reviewed_dialog(**kwargs):
-            dialog = LearningExportDialog(**kwargs)
-            dialog.group_edit.setText('capture-group')
-            dialog.author_edit.setText('Reviewer')
-            dialog.reviewed_checkbox.setChecked(True)
-            dialog.species_reviewed_checkbox.setChecked(True)
-            return dialog
-        with patch('seedvision.ui.main_window.LearningExportDialog', side_effect=reviewed_dialog), \
-             patch.object(QDialog, 'exec', return_value=QDialog.DialogCode.Accepted), \
-             patch('seedvision.learning.export.export_analysis_sample', return_value=SimpleNamespace(
-                 identifier='capture_r3', reviewed=True)) as exporter, \
-             patch('seedvision.ui.main_window.run_persistence', side_effect=lambda parent, call, text: call()), \
+        # A disconnected seed is named, because unlabelled pieces would train as background.
+        broken = labels.copy()
+        broken[50:55, 50:55] = 4
+        self.window._applied_instance_annotations[self.key] = broken
+        image, = self._training_images()
+        self.assertIn('4', image.problem)
+
+        # Outlines saved beside an image not yet opened are read without installing them.
+        del self.window._applied_instance_annotations[self.key]
+        del self.window._applied_seed_annotations[self.key]
+        self.window._reference_region_autoload_attempted.discard(self.key)
+        bundle = SimpleNamespace(annotated_seeds=labels, seed_annotations=(), annotation_species='soybean')
+        with patch.object(self.window._reference_region_store, 'load_if_present', return_value=bundle):
+            image, = self._training_images()
+        self.assertEqual((image.seed_count, image.species), (2, 'Soybean'))
+        self.assertNotIn(self.key, self.window._applied_instance_annotations)
+
+    def _training_request(self, *entries, **fields):
+        from seedvision.learning.training import TrainingConfiguration
+        from seedvision.ui.learning_workflow import LearningTrainingRequest
+        return LearningTrainingRequest(
+            self.root / 'learning-data' / 'run' / 'manifest.json', self.root / 'model.pt',
+            TrainingConfiguration('unet_watershed'), False, images=tuple(entries), **fields)
+
+    def _training_entry(self, identifier, reviewed=False, split='train', key=None, path=None):
+        from seedvision.ui.learning_workflow import TrainingDatasetImage
+        return TrainingDatasetImage(key or self.key, path or self.image_path, identifier, 'Soybean',
+                                    identifier, split, reviewed)
+
+    def check_test_training_asks_before_using_unreviewed_samples(self) -> None:
+        from PySide6.QtWidgets import QDialog, QMessageBox
+
+        def start(request, answer=QMessageBox.StandardButton.Cancel):
+            dialog = SimpleNamespace(exec=lambda: QDialog.DialogCode.Accepted, request=lambda: request)
+            with patch.object(self.window, '_training_images', return_value=(object(),)), \
+                 patch('seedvision.ui.main_window.LearningTrainingDialog', return_value=dialog), \
+                 patch.object(self.window, '_start_training_dataset_build') as build, \
+                 patch.object(QMessageBox, 'question', return_value=answer) as question:
+                self.window._start_learning_training()
+            return question, build
+
+        request = self._training_request(self._training_entry('kept', True), self._training_entry('checked'))
+        question, build = start(request)
+        self.assertIn('checked', question.call_args.args[2])
+        self.assertNotIn('kept', question.call_args.args[2])
+        build.assert_not_called()
+
+        question, build = start(request, QMessageBox.StandardButton.Yes)
+        question.assert_called_once()
+        self.assertTrue(build.call_args.args[0].configuration.allow_unreviewed)
+
+        question, build = start(self._training_request(self._training_entry('kept', True)))
+        question.assert_not_called()
+        self.assertFalse(build.call_args.args[0].configuration.allow_unreviewed)
+
+        # No outlines at all says so instead of opening an empty table.
+        with patch.object(self.window, '_training_images', return_value=()), \
+             patch('seedvision.ui.main_window.LearningTrainingDialog') as dialog, \
              patch.object(QMessageBox, 'information') as information:
-            self.window._export_learning_sample()
+            self.window._start_learning_training()
+        dialog.assert_not_called()
+        self.assertIn('seed outlines', information.call_args.args[2])
+
+    def _build_training_dataset(self, request, analyze, *, exporter=None, audit=None):
+        """Run a build with the analysis worker replaced; return what it called."""
+        from PySide6.QtWidgets import QMessageBox
+
+        calls = SimpleNamespace(exporter=None, task=None, critical=None, warning=None)
+
+        class Started(Exception):
+            pass
+
+        with patch('seedvision.ui.training_dataset.run_persistence', side_effect=lambda window, call, title: call()), \
+             patch('seedvision.learning.export.export_analysis_sample',
+                   **({'side_effect': exporter} if exporter else {})) as export_call, \
+             patch('seedvision.learning.data.audit_manifest',
+                   return_value=audit or {'errors': [], 'splits': {'train': 1, 'validation': 1}}), \
+             patch('seedvision.ui.main_window._LearningTrainingTask', side_effect=Started) as task, \
+             patch.object(self.window, '_analyze_current_image', side_effect=analyze) as run, \
+             patch.object(QMessageBox, 'critical') as critical, \
+             patch.object(QMessageBox, 'warning') as warning:
+            try:
+                self.window._start_training_dataset_build(request)
+            except Started:
+                pass
+            calls.exporter, calls.task, calls.critical, calls.warning, calls.run = export_call, task, critical, warning, run
+        return calls
+
+    def _training_labels(self, key=None):
+        labels = np.zeros((60, 80), np.uint16)
+        labels[10:20, 10:20] = 4
+        self.window._applied_instance_annotations[key or self.key] = labels
+        return labels
+
+    def check_test_finished_training_replaces_the_training_status(self) -> None:
+        from PySide6.QtWidgets import QMessageBox
+
+        request = self._training_request(self._training_entry('capture'))
+        self.window._learning_training_task = SimpleNamespace(request=request)
+        self.window.statusBar().showMessage('Training unet_watershed from manifest.json…')
+        with patch.object(self.window, '_pipeline_editable', return_value=True), \
+             patch.object(self.window, '_analyze_current_image'), \
+             patch.object(QMessageBox, 'information') as information:
+            self.window._learning_training_completed({'best_epoch': 1, 'best_validation_loss': 0.5})
+        information.assert_called_once()
+        self.assertIsNone(self.window._learning_training_task)
+        self.assertEqual(self.window.statusBar().currentMessage(),
+                         f'Training finished; saved {request.output_path.name}.')
+
+    def check_test_training_build_reuses_an_analysis_and_saves_each_image_then_trains(self) -> None:
+        labels = self._training_labels()
+        self.window._analysis_scopes.pop(self.key, None)
+        request = self._training_request(self._training_entry('capture', True), reviewer='Reviewer')
+        calls = self._build_training_dataset(request, lambda **kwargs: self.fail('analysis was current'))
+        calls.run.assert_not_called()
+        calls.exporter.assert_called_once()
+        self.assertIs(calls.exporter.call_args.args[0], self.result)
+        np.testing.assert_array_equal(calls.exporter.call_args.args[1], labels)
+        arguments = calls.exporter.call_args.kwargs
+        self.assertEqual(arguments['identifier'], 'capture')
+        self.assertEqual(arguments['dataset_id'], 'run')
+        self.assertEqual(arguments['split'], 'train')
+        self.assertEqual(arguments['annotation_author'], 'Reviewer')
+        self.assertTrue(arguments['reviewed'])
+        self.assertTrue(arguments['species_reviewed'])
+        calls.task.assert_called_once_with(request)
+        self.assertIsNone(self.window._training_dataset_build)
+
+    def check_test_training_build_analyses_with_only_the_features_prerequisites(self) -> None:
+        self._training_labels()
+        self.window._analyses.pop(self.key)
+        scopes = []
+
+        def analyze(*, enabled_node_scope):
+            # A completed run installs its result and moves the build on.
+            scopes.append(enabled_node_scope)
+            self.window._analyses[self.key] = self.result
+            self.window._analysis_scopes[self.key] = enabled_node_scope
+            self.window._active_tasks[self.key] = object()
+            def complete():
+                self.window._active_tasks.pop(self.key)
+                self.window._advance_training_dataset_build()
+            completions.append(complete)
+
+        completions = []
+        request = self._training_request(self._training_entry('capture'))
+        calls = self._build_training_dataset(request, analyze)
+        calls.exporter.assert_not_called()
+        self.assertIsNotNone(self.window._training_dataset_build)
+        self.assertTrue(self.window._stoppable_work_is_active())
+        self.assertIn('deskew_colour', scopes[0])
+        self.assertNotIn('unet_instances', scopes[0])
+        self.assertNotIn('procedural_instances', scopes[0])
+        with patch('seedvision.ui.training_dataset.run_persistence', side_effect=lambda window, call, title: call()), \
+             patch('seedvision.learning.export.export_analysis_sample') as exporter, \
+             patch('seedvision.learning.data.audit_manifest', return_value={'errors': []}), \
+             patch('seedvision.ui.main_window._LearningTrainingTask') as task, \
+             patch.object(self.window._thread_pool, 'start'):
+            task.return_value.signals = SimpleNamespace(**{name: SimpleNamespace(connect=lambda *_: None)
+                for name in ('progress', 'completed', 'failed', 'cancelled')})
+            completions.pop()()
         exporter.assert_called_once()
-        self.assertIs(exporter.call_args.args[0], self.result)
-        np.testing.assert_array_equal(exporter.call_args.args[1], labels)
-        self.assertTrue(exporter.call_args.kwargs['reviewed'])
-        self.assertEqual(exporter.call_args.kwargs['annotation_author'], 'Reviewer')
-        self.assertIn('Train or refine', information.call_args.args[2])
+        task.assert_called_once_with(request)
+        self.window._finish_learning_training_ui()
+        self.window._learning_training_task = None
+
+    def check_test_training_build_stops_on_failure_stop_and_bad_audit(self) -> None:
+        self._training_labels()
+        entry = self._training_entry('capture')
+
+        # Saving fails: the message names the image and no model trains.
+        calls = self._build_training_dataset(self._training_request(entry), lambda **kwargs: None,
+                                             exporter=ValueError('Disconnected seed.'))
+        self.assertIn('capture.png', calls.critical.call_args.args[2])
+        self.assertIn('Disconnected seed.', calls.critical.call_args.args[2])
+        calls.task.assert_not_called()
+        self.assertIsNone(self.window._training_dataset_build)
+
+        # The audit refuses the saved dataset: no model trains.
+        calls = self._build_training_dataset(self._training_request(entry), lambda **kwargs: None,
+                                             audit={'errors': ['Group crosses splits.']})
+        self.assertIn('Group crosses splits.', calls.warning.call_args.args[2])
+        calls.task.assert_not_called()
+
+        # Analysis never produces a result: give up instead of looping forever.
+        self.window._analyses.pop(self.key)
+        def analyze_without_result(**kwargs):
+            self.assertLess(calls_seen.append(1) or len(calls_seen), 4)
+            self.window._active_tasks[self.key] = object()
+            self.window._active_tasks.pop(self.key)
+        calls_seen = []
+        calls = self._build_training_dataset(self._training_request(entry), analyze_without_result)
+        self.assertIn('Analysis could not start', calls.critical.call_args.args[2])
+        calls.exporter.assert_not_called()
+
+        # Stop during analysis ends the build with nothing trained.
+        task = SimpleNamespace(cancel=lambda: None)
+        def analyze_then_wait(**kwargs):
+            self.window._active_tasks[self.key] = task
+        calls = self._build_training_dataset(self._training_request(entry), analyze_then_wait)
+        self.window._stop_current_work()
+        self.assertTrue(self.window._training_dataset_build.stopped)
+        self.window._active_tasks.pop(self.key)
+        self.window._advance_training_dataset_build()
+        self.assertIsNone(self.window._training_dataset_build)
+        self.assertIn('no model was trained', self.window.statusBar().currentMessage())
+        calls.task.assert_not_called()
+
+        # Failure during analysis ends it too; the analysis failure already showed its message.
+        self.window._stop_requested = False
+        calls = self._build_training_dataset(self._training_request(entry), analyze_then_wait)
+        self.window._training_dataset_build.failed = True
+        self.window._active_tasks.pop(self.key)
+        self.window._advance_training_dataset_build()
+        self.assertIsNone(self.window._training_dataset_build)
 
     def check_test_seed_label_export_uses_applied_16_bit_labels(self) -> None:
         import cv2
@@ -415,12 +608,17 @@ class InstanceMaskImportUiTests(unittest.TestCase):
         self.assertIn('disk save failed', self.window.instance_annotation_confirmation_label.text())
 
     def test_workflow_lifecycle(self):
-        """8 related InstanceMaskImportUiTests scenarios, each with private fixture state."""
+        """13 related InstanceMaskImportUiTests scenarios, each with private fixture state."""
         self.scenario(self.check_test_panel_import_is_draft_with_provenance_warning_and_undo)
         self.scenario(self.check_test_bundle_import_is_explicit_and_preserves_applied_labels)
         self.scenario(self.check_test_no_bundle_explains_explicit_file_import)
         self.scenario(self.check_test_explicit_file_chooser_bypasses_an_available_bundle)
-        self.scenario(self.check_test_training_export_readiness_and_revision_identity)
+        self.scenario(self.check_test_training_lists_images_and_explains_unusable_ones)
+        self.scenario(self.check_test_training_asks_before_using_unreviewed_samples)
+        self.scenario(self.check_test_training_build_reuses_an_analysis_and_saves_each_image_then_trains)
+        self.scenario(self.check_test_training_build_analyses_with_only_the_features_prerequisites)
+        self.scenario(self.check_test_training_build_stops_on_failure_stop_and_bad_audit)
+        self.scenario(self.check_test_finished_training_replaces_the_training_status)
         self.scenario(self.check_test_seed_label_export_uses_applied_16_bit_labels)
         self.scenario(self.check_test_cellpose_seeds_copy_into_an_undoable_outline_draft)
         self.scenario(self.check_test_cellpose_seeds_add_to_or_replace_existing_outlines)

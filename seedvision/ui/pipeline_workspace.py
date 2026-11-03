@@ -1,4 +1,4 @@
-"""Integrate standalone files and edit locks into the existing desktop workspace."""
+"""Integrate standalone files and the default-pipeline lock into the existing desktop workspace."""
 from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
@@ -24,19 +24,20 @@ def initialize_pipeline_files(window):
             factory_names=tuple(recipe.title for recipe in window.pipeline_workflow._all_templates)))
     window.pipeline_backends = PipelineBackendsController(window)
     documents = window.pipeline_documents
-    window.pipeline_workflow.strip.layout().insertWidget(2, documents.freeze_button)
-    menu = window.pipeline_workflow.more_button.menu()
-    first = menu.actions()[0] if menu.actions() else None
-    for action in (documents.load_pipeline_action, documents.save_pipeline_action):
-        menu.insertAction(first, action)
-    documents.frozen_changed.connect(lambda frozen: apply_freeze(window, frozen))
-    documents.pipeline_saved.connect(lambda document, path: pipeline_saved(window, document))
+    documents.lock_changed.connect(lambda locked: apply_lock(window, locked))
+    documents.named.connect(lambda name: pipeline_named(window, name))
+    documents.copies_changed.connect(window.pipeline_workflow.sync_copies)
+    window.pipeline_workflow.rename_button.clicked.connect(lambda checked=False: documents.rename_current())
+    window.pipeline_workflow.load_button.clicked.connect(lambda checked=False: documents.choose_pipeline())
+    window.pipeline_workflow.save_button.clicked.connect(lambda checked=False: documents.choose_pipeline_save())
+    window.pipeline_inspector.lock_notice.linkActivated.connect(lambda link: documents.offer_copy())
+    window.pipeline_canvas.set_edit_guard(window._pipeline_editing_allowed)
     documents.loaded('Default seed analysis')
 
 
-def apply_freeze(window, frozen):
-    window.pipeline_canvas.set_editing_locked(frozen)
-    window.pipeline_inspector.set_editing_locked(frozen)
+def apply_lock(window, locked):
+    window.pipeline_canvas.set_editing_locked(locked)
+    window.pipeline_inspector.set_editing_locked(locked)
     node_id = window.catalogue_nodes._selected
     if window.catalogue_nodes.handles(node_id):
         window.catalogue_nodes.select_node(node_id)
@@ -55,13 +56,33 @@ def _union(existing, incoming):
     return tuple(result.values())
 
 
-def pipeline_saved(window, document):
-    """Record a custom name only after the file has been published successfully."""
+def pipeline_named(window, name):
+    """Record the working pipeline's custom name, which a project saves with it."""
     presenter = window.pipeline_workflow
     if presenter.active:
         presenter.workflow = replace(presenter.workflow,
-            display_state=dict(presenter.workflow.display_state) | {'pipeline_name': document.name})
+            display_state=dict(presenter.workflow.display_state) | {'pipeline_name': name})
     window._set_project_dirty()
+
+
+def leave_copy(window):
+    """Clear what a copy put on the shared graph before a default pipeline takes over."""
+    from seedvision.pipeline import build_default_pipeline
+    from seedvision.persistence.pipeline_documents import PipelineLayoutDocument
+    was_default_graph = not window.pipeline_workflow.active
+    window.catalogue_nodes.set_instances(())
+    if not was_default_graph:
+        return
+    factory = build_default_pipeline()
+    result = apply_analysis_settings_profile(window.pipeline, analysis_settings_profile_from_graph(factory))
+    if result.analytical_changed:
+        for key in set(window._analysis_caches) | set(window._analyses):
+            window._cache_dirty_nodes.setdefault(key, set()).update(result.affected_node_ids)
+            window._analyses.pop(key, None)
+    PipelineLayoutDocument.from_graph(factory).apply(window.pipeline)
+    # A factory layout is arranged fresh, as at startup.
+    window.pipeline_canvas.rebuild_from_graph(window._selected_pipeline_node)
+    window.pipeline_canvas.auto_arrange()
 
 
 def capture_pipeline(window, name):
@@ -185,6 +206,9 @@ def install_pipeline(window, document):
     bindings = tuple(imported)
     _import_assets(document, window._root.resolve())
     # No user image, annotation, unresolved project record or historical run is replaced.
+    if document.pipeline_workflow is not None and not window.pipeline_documents.locked:
+        # The default graph stays behind this workflow, without the copy's positions.
+        leave_copy(window)
     window.catalogue_nodes.set_instances(())
     result = apply_analysis_settings_profile(window.pipeline, document.analysis_settings)
     if result.analytical_changed:

@@ -16,7 +16,7 @@ with counting by eye.
 | Area | Current state | Remaining evidence or work |
 |---|---|---|
 | Runtime and desktop shell | Implemented. One `seed_vision.py` launcher, native PySide6 UI, optional local environment bootstrap, diagnostics, cancellation, and responsive persistence. Image and Pipeline views side by side; menus File/Edit/Analysis/Learning/Help. | Validate the frozen dependency and hardware envelope intended for laboratory deployment. |
-| Analysis graph | Implemented. Default seed analysis plus 18 factory pipelines; pipelines load locked (**Lock edits**) and can be saved as custom pipeline files. The generated [node catalogue](NODE_CATALOGUE.md) lists every card. Node local caching and dependency based invalidation are preserved. | New controls must continue to affect calculations and receive optimization coverage or a stated exemption. |
+| Analysis graph | Implemented. Default seed analysis plus 18 factory pipelines; default pipelines stay locked, editing one offers a named copy that the project keeps, and copies can be saved as custom pipeline files. The generated [node catalogue](NODE_CATALOGUE.md) lists every card. Node local caching and dependency based invalidation are preserved. | New controls must continue to affect calculations and receive optimization coverage or a stated exemption. |
 | Calibration and image evidence | Engineering implementation complete for ruler/card detection, deskew, neutral balance, layout, material, edge, texture, lighting, and quality evidence. | Supply traceable card/camera geometry and independent measurements before enabling or claiming validated physical or colorimetric output. |
 | Material references | Implemented with Background, Foreground, and Other classes, exclusions, draft/apply/revert history, and source bound persistence. | Independently review reference policy on representative acquisition sessions. |
 | Seed annotation | Implemented with brush, edge trace, shape fill, smart fill, eraser, undo/redo, saved reference loading, seed condition/shape metadata, and one shot hilum placement. | Produce complete independently reviewed masks and trait labels. |
@@ -84,8 +84,8 @@ Operation-level detail: [feature register](plantcv_smpts_features.json) and
 
 ## Verification
 
-`python -m tests --full` runs 665 functional units in three isolated processes
-and passed on 1 November 2026 with three expected skips (an opt-in fill
+`python -m tests --full` runs 673 functional units in three isolated processes
+and passed on 3 November 2026 with three expected skips (an opt-in fill
 diagnostic, a case-sensitive-filesystem check and a symlink-privilege check). The four frozen numerical acceptance baselines and 223
 frozen recipe profiles are unchanged. See [TESTING.md](TESTING.md).
 

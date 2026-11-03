@@ -667,6 +667,57 @@ class ProceduralInstanceTests(unittest.TestCase):
             np.asarray(((78.0, 120.0),), np.float32),
         )
 
+    def check_test_every_proposal_becomes_a_marker_or_a_named_rejection(self) -> None:
+        from seedvision.segmentation.procedural import (
+            MARKER_REJECTION_LABELS,
+            _marker_rejection_reason,
+        )
+
+        valid, arguments = self._manual_centre_scene_arguments()
+        kept = procedural_seed_instances(valid, 54.0, **arguments)
+        self.assertGreater(kept.count, 0)
+        strict = dict(arguments)
+        strict["settings"] = replace(
+            arguments["settings"],
+            minimum_instance_area_fraction=1.44,
+            maximum_instance_area_fraction=1.45,
+        )
+        rejected = procedural_seed_instances(valid, 54.0, **strict)
+        self.assertEqual(rejected.count, 0)
+        self.assertEqual(len(rejected.marker_centres_xy), 0)
+        # The filter only decides each proposal's fate, so the same points
+        # are present whether they became markers or were rejected.
+        proposals = np.concatenate(
+            (kept.marker_centres_xy, kept.rejected_marker_centres_xy)
+        )
+        np.testing.assert_allclose(
+            np.sort(rejected.rejected_marker_centres_xy, axis=0),
+            np.sort(proposals, axis=0),
+        )
+        self.assertEqual(
+            len(rejected.rejected_marker_reasons),
+            len(rejected.rejected_marker_centres_xy),
+        )
+        self.assertLessEqual(
+            set(rejected.rejected_marker_reasons), set(MARKER_REJECTION_LABELS)
+        )
+
+        self.assertEqual(
+            _marker_rejection_reason(["instance_below_minimum_area"], True),
+            "instance_lost_to_overlap",
+        )
+        self.assertEqual(
+            _marker_rejection_reason(
+                [
+                    "instance_below_minimum_area",
+                    "instance_above_maximum_concavity",
+                    "instance_above_maximum_concavity",
+                ],
+                False,
+            ),
+            "instance_above_maximum_concavity",
+        )
+
     def check_test_source_centres_transform_once_to_corrected_coordinates(self) -> None:
         from types import SimpleNamespace
 
@@ -1277,7 +1328,7 @@ class ProceduralInstanceTests(unittest.TestCase):
         )
 
     def test_workflow_lifecycle(self):
-        """20 related ProceduralInstanceTests scenarios, each with private fixture state."""
+        """21 related ProceduralInstanceTests scenarios, each with private fixture state."""
         self.scenario(self.check_test_reference_cost_settings_never_change_automatic_predictions)
         self.scenario(self.check_test_alternative_candidate_colour_is_uint8_safe_at_low_scores)
         self.scenario(self.check_test_blurred_flattened_grayscale_can_drive_centre_likelihood)
@@ -1289,6 +1340,7 @@ class ProceduralInstanceTests(unittest.TestCase):
         self.scenario(self.check_test_annotations_remain_whole_mask_authority_over_manual_centres)
         self.scenario(self.check_test_marker_metadata_is_not_replaced_by_instance_centroids)
         self.scenario(self.check_test_source_centres_transform_once_to_corrected_coordinates)
+        self.scenario(self.check_test_every_proposal_becomes_a_marker_or_a_named_rejection)
         self.scenario(self.check_test_separates_touching_seed_shapes_and_exposes_diagnostics)
         self.scenario(self.check_test_dense_component_supplements_suppressed_regional_maxima)
         self.scenario(self.check_test_supplemental_markers_do_not_split_a_complete_annotation)

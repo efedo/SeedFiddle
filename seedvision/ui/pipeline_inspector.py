@@ -1007,8 +1007,8 @@ class PipelineInspector(QWidget):
         self.status_label.setWordWrap(True)
         self.status_label.setStyleSheet(f"color: {self._secondary_colour};")
         self.lock_notice = QLabel(
-            "Locked: settings are read-only. Clear Lock edits in the pipeline "
-            "toolbar to change them.", self
+            "Default pipelines cannot be edited, so these settings are read-only. "
+            '<a href="copy">Create an editable copy…</a>', self
         )
         self.lock_notice.setObjectName("pipelineLockNotice")
         self.lock_notice.setWordWrap(True)
@@ -1169,8 +1169,7 @@ class PipelineInspector(QWidget):
         self.procedural_fit_description_label = QLabel(
             "Search a small bounded set of procedural settings against the applied "
             "seed-instance masks. Matching and cost weights are shared with the "
-            "Reference matching and fitting costs section and cost overlay. "
-            "This is an image-local fit, not validation.",
+            "Reference matching and fitting costs section and cost overlay.",
             self.procedural_fit_container,
         )
         self.procedural_fit_description_label.setWordWrap(True)
@@ -1431,7 +1430,6 @@ class PipelineInspector(QWidget):
         self.title_label.setText(f"Node: {node.title}")
         self.description_label.setText(node.description)
         self.details_label.setText(node.details)
-        self.details_label.setText(node.details + '\n\nEvidence scores and model outputs are uncalibrated unless an independent calibration study is recorded. Diagnostic uncertainty maps are not confidence intervals.')
         self.method_heading.blockSignals(True)
         self.method_heading.setChecked(False)
         self.method_heading.blockSignals(False)
@@ -1678,7 +1676,7 @@ class PipelineInspector(QWidget):
             and node.implemented and self._optimization_ready and not self._optimization_busy and not self._editing_locked))
         text = contract.reason or ''
         if contract.searchable:
-            text = ('Parameters are locked. Unlock to optimise.' if self._editing_locked else
+            text = ('Default pipelines are locked. Create an editable copy to optimise.' if self._editing_locked else
                     self._optimization_busy if self._optimization_busy else
                     'Save a project and apply references to enable optimisation.' if not self._optimization_ready else
                     'Choose images and a budget, then review the proposal before applying it.')

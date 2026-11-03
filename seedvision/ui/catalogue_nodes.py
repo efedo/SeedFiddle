@@ -433,6 +433,7 @@ class CatalogueNodesController(QObject):
             return False
         component = self._component(self._selected)
         if component is None:
+            self.window.statusBar().showMessage('Select an added node to remove it.')
             return False
         if self._job is not None and self._job.token[1] == component.instance.instance_id:
             self._job.cancel.set()
@@ -863,7 +864,7 @@ class CatalogueNodesController(QObject):
                     button.clicked.connect(lambda checked=False, role=role: self.choose_input(component.instance.instance_id, role))
                     layout.addWidget(button)
         documents = getattr(self.window, "pipeline_documents", None)
-        if documents is not None and documents.frozen:
+        if documents is not None and documents.locked:
             for index in range(layout.count()):
                 layout.itemAt(index).widget().setEnabled(False)
         presenter.node_actions.setVisible(bool(layout.count()))
@@ -915,23 +916,6 @@ class CatalogueNodesController(QObject):
         directory = QFileDialog.getExistingDirectory(self.window, 'Export independent node result')
         if directory:
             self.export_instance(self._selected, directory)
-        return True
-
-    def show_source_selected(self):
-        component = self._component(self._selected)
-        if component is None:
-            return False
-        instance = component.instance
-        facts = self.window.pipeline_workflow.facts
-        if instance.workflow is None:
-            text = 'Independent native seed-analysis instance\n' + instance.catalogue_key + '\nThe selected calculation uses its own settings, cache and required ancestors.'
-        else:
-            recipe = instance.workflow.source_recipe
-            origin = recipe.provenance
-            text = (f'{recipe.title}\nOrigin: {origin.mode.value}\nBackend: {origin.backend_id} {origin.backend_version}\n'
-                    f'{origin.evidence_note}\nThis independent instance retains its registered input and connection contracts.')
-        facts.setPlainText(text)
-        facts.show()
         return True
 
     def export_instance(self, node_id, directory):

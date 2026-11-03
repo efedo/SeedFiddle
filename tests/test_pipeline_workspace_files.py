@@ -1,4 +1,4 @@
-"""Desktop freeze, factory copies and complete graph/layout file integration."""
+"""Desktop default-pipeline lock, named copies and complete graph/layout file integration."""
 
 from tests.catalogue_fixtures import CatalogueTestCase
 
@@ -16,7 +16,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 from seedvision.persistence.pipeline_documents import PipelineLayoutDocument
 from seedvision.ui.pipeline_workspace import capture_pipeline
-from tests.review_fixtures import isolated_window, dispose_window
+from tests.review_fixtures import editable_copy, isolated_window, dispose_window
 
 
 @functional_units
@@ -42,9 +42,8 @@ class PipelineWorkspaceFileTests(CatalogueTestCase):
         return next(stage.stage_id for stage in self.presenter.workflow.recipe.stages
                     if stage.operation_id == 'threshold.binary')
 
-    def check_test_freeze_guards_edits_but_allows_layout_run_and_backend_choice(self):
-        self.assertTrue(self.files.frozen)
-        self.assertTrue(self.files.freeze_button.isChecked())
+    def check_test_lock_guards_edits_but_allows_layout_run_and_backend_choice(self):
+        self.assertTrue(self.files.locked)
         self.assertFalse(hasattr(self.window, 'reference_graphs_action'))
         menus = [action.text().replace('&', '') for action in self.window.menuBar().actions()]
         self.assertNotIn('View', menus)
@@ -55,19 +54,19 @@ class PipelineWorkspaceFileTests(CatalogueTestCase):
         self.assertTrue(self.window.pipeline_canvas.editing_locked)
         self.assertTrue(self.window.pipeline_inspector.editing_locked)
         self.assertFalse(self.window.pipeline_inspector.reset_parameters_button.isEnabled())
-        # The lock says what it does, and the inspector says why controls are disabled.
-        self.assertEqual(self.files.freeze_button.property('fullText'), 'Lock edits')
-        self.assertIn(self.files.freeze_button.text(), ('Lock edits', 'Lock'))
-        self.assertIn('cannot change', self.files.freeze_button.toolTip())
+        # There is no lock control, and the inspector says why controls are disabled.
+        self.assertFalse(hasattr(self.files, 'freeze_button'))
         inspector = self.window.pipeline_inspector
         self.assertTrue(inspector.lock_notice.isVisibleTo(inspector))
         commands = [action.text() for action in self.presenter.more_button.menu().actions()]
         self.assertNotIn('Load layout…', commands)
         self.assertNotIn('Save layout as…', commands)
-        self.presenter.parameter_changed(identifier, 'threshold', 119)
+        with patch.object(QMessageBox, 'question', return_value=QMessageBox.StandardButton.No) as question:
+            self.presenter.parameter_changed(identifier, 'threshold', 119)
+            self.assertFalse(self.window.catalogue_nodes.add_entry('default:seed_scale_estimation'))
+        self.assertEqual(question.call_count, 2)
         self.window.pipeline_canvas._inline_parameter_changed(identifier, 'threshold', 121)
         self.assertEqual(graph.node(identifier).parameters, before)
-        self.assertFalse(self.window.catalogue_nodes.add_entry('default:seed_scale_estimation'))
         edges = tuple(graph.connections)
         self.window.pipeline_canvas._disconnect_connection(edges[0])
         self.assertEqual(tuple(graph.connections), edges)
@@ -84,13 +83,12 @@ class PipelineWorkspaceFileTests(CatalogueTestCase):
             self.window.pipeline_backends.global_selector.setCurrentIndex(1)
             qt_error.assert_not_called()
         self.assertEqual(self.presenter.workflow.backend_default, 'plantcv')
-        self.assertTrue(self.files.frozen)
-        with self.assertRaisesRegex(ValueError, 'editable'):
-            self.window._activate_trait_model(self.root / 'not-read.json')
-        self.files.set_frozen(False)
+        self.assertTrue(self.files.locked)
+        with patch.object(QMessageBox, 'question', return_value=QMessageBox.StandardButton.No):
+            with self.assertRaisesRegex(ValueError, 'editable'):
+                self.window._activate_trait_model(self.root / 'not-read.json')
+        editable_copy(self.window)
         self.assertFalse(inspector.lock_notice.isVisibleTo(inspector))
-        self.assertIn('unlocked', self.window.statusBar().currentMessage())
-        self.files.set_frozen(False)
         self.presenter.parameter_changed(identifier, 'threshold', 119)
         self.assertEqual(self.presenter.workflow.recipe.parameters_for_runner(identifier)['threshold'], 119)
 
@@ -98,7 +96,7 @@ class PipelineWorkspaceFileTests(CatalogueTestCase):
         identifier = self.binary()
         original = self.presenter.workflow.source_recipe.to_json()
         factory = self.presenter.workflow.source_recipe.title
-        self.files.set_frozen(False)
+        editable_copy(self.window)
         self.presenter.parameter_changed(identifier, 'threshold', 117)
         destination = self.root / 'custom.seedfiddle-pipeline.json'
         with patch.object(QMessageBox, 'warning') as warning:
@@ -109,16 +107,16 @@ class PipelineWorkspaceFileTests(CatalogueTestCase):
         self.assertEqual(self.presenter.workflow.display_state['pipeline_name'], 'My seed comparison')
         self.presenter.select_template(None)
         self.binary()
-        self.assertTrue(self.files.frozen)
+        self.assertTrue(self.files.locked)
         self.assertEqual(self.presenter.workflow.source_recipe.to_json(), original)
         self.assertNotEqual(self.presenter.workflow.recipe.parameters_for_runner(identifier)['threshold'], 117)
         self.assertTrue(self.files.load_pipeline(destination))
-        self.assertTrue(self.files.frozen)
+        self.assertFalse(self.files.locked)
         self.assertEqual(self.presenter.workflow.recipe.parameters_for_runner(identifier)['threshold'], 117)
 
     def check_test_pipeline_roundtrip_retains_independent_instances_and_layout_cache_is_inert(self):
         identifier = self.binary()
-        self.files.set_frozen(False)
+        editable_copy(self.window)
         first = self.window.catalogue_nodes.add_entry('default:seed_scale_estimation')
         second = self.window.catalogue_nodes.add_entry('default:seed_scale_estimation')
         self.assertNotEqual(first, second)
@@ -132,7 +130,7 @@ class PipelineWorkspaceFileTests(CatalogueTestCase):
         self.presenter.install(None)
         self.assertTrue(self.files.load_pipeline(destination))
         self.assertEqual(self.window.catalogue_nodes.snapshot_instances(), instances)
-        self.assertTrue(self.files.frozen)
+        self.assertFalse(self.files.locked)
         self.assertEqual(self.window.catalogue_nodes._selected, second)
         self.assertIn(identifier, self.window.pipeline_canvas.graph.nodes)
         component = self.window.catalogue_nodes._component(second)
@@ -226,8 +224,8 @@ class PipelineWorkspaceFileTests(CatalogueTestCase):
         self.window.pipeline_canvas.select_node(group[0])
         control.setCurrentIndex(control.findData('plantcv'))
         self.assertEqual({self.presenter.workflow.node_backends[node] for node in group}, {'plantcv'})
-        self.assertTrue(self.files.frozen)
-        self.files.set_frozen(False)
+        self.assertTrue(self.files.locked)
+        editable_copy(self.window)
         from seedvision.pipeline.catalogue_nodes import catalogue_entries
         entry = next(entry for entry in catalogue_entries() if entry.backend == 'native'
                      and entry.recipe.stage(entry.target_node).operation_id == 'threshold.binary')
@@ -249,11 +247,11 @@ class PipelineWorkspaceFileTests(CatalogueTestCase):
         restored = self.window.catalogue_nodes._component(added).instance.workflow
         self.assertEqual(restored.backend_default, 'plantcv')
         self.assertEqual(restored.node_backends[entry.target_node], 'native')
-        self.assertTrue(self.files.frozen)
+        self.assertFalse(self.files.locked)
 
     def test_workflow_lifecycle(self):
         """4 related PipelineWorkspaceFileTests scenarios, each with private fixture state."""
-        self.scenario(self.check_test_freeze_guards_edits_but_allows_layout_run_and_backend_choice)
+        self.scenario(self.check_test_lock_guards_edits_but_allows_layout_run_and_backend_choice)
         self.scenario(self.check_test_factory_save_as_and_fresh_template_never_modify_factory)
         self.scenario(self.check_test_pipeline_roundtrip_retains_independent_instances_and_layout_cache_is_inert)
         self.scenario(self.check_test_node_backend_updates_only_affected_execution_and_atomic_watershed)

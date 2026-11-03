@@ -65,11 +65,15 @@ node-local cache.
 `ui/main_window.py` remains the native coordinator. Bounded responsibilities are
 extracted into `ui/results.py` (results, run history, snapshots, toolbar),
 `pipeline_canvas.py`, `pipeline_inspector.py`, `pipeline_workflow.py` (factory
-pipeline loading and node actions), `pipeline_documents.py` (Lock edits and pipeline
-files), `help_menu.py`, `reference_frames.py`, `work_control.py`,
+pipeline loading and node actions), `pipeline_documents.py` (the default-pipeline lock,
+named copies and pipeline files), `image_list.py` (Images list rows and their
+thumbnails), `overlay_header.py` (the overlay selector and opacity row, docked in the
+header of whichever image display is showing), `help_menu.py`, `reference_frames.py`, `work_control.py`,
 `persistence_jobs.py` and `optimization.py`. Workers compute/save while Qt remains
 responsive. Shutdown polls worker completion; cancellation occurs at safe boundaries
-and between learned-model tiles.
+and between learned-model tiles. Thumbnails decode only for painted rows, on their own
+low-priority thread so that they never count as analysis activity, and are held only
+in a bounded in-memory cache.
 
 `persistence/project_analysis.py` stores fingerprinted project masters that reference
 per-image annotation sidecars. A saved project's sidecars live in its own

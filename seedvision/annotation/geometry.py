@@ -39,6 +39,49 @@ def annotation_centres(labels) -> dict[int, tuple[float, float]]:
             for i in np.flatnonzero(count) if i > 0}
 
 
+def annotation_median_length(labels) -> float:
+    """Median long-axis length of the painted seeds, in image pixels; 0 if none.
+
+    Uses each ID's second moments, which give the true length of a filled ellipse
+    at any rotation. The median keeps a few merged or fragmented IDs from moving it.
+    """
+    if labels is None:
+        return 0.0
+    values = np.asarray(labels)
+    if values.ndim != 2 or values.dtype.kind not in "ui":
+        raise ValueError("Seed annotation labels must be a 2-D integer raster.")
+    if not values.size:
+        return 0.0
+    maximum = int(values.max())
+    if maximum > 65535 or int(values.min()) < 0:
+        raise ValueError("Seed annotation IDs must fit uint16.")
+    if maximum == 0:
+        return 0.0
+    count = np.zeros(maximum + 1, np.float64)
+    sum_x, sum_y = np.zeros_like(count), np.zeros_like(count)
+    sum_xx, sum_yy, sum_xy = np.zeros_like(count), np.zeros_like(count), np.zeros_like(count)
+    for start in range(0, values.shape[0], 128):
+        block = values[start:start + 128]
+        y, x = np.nonzero(block)
+        ids = block[y, x].astype(np.intp, copy=False)
+        y = y + start
+        count += np.bincount(ids, minlength=maximum + 1)
+        sum_x += np.bincount(ids, weights=x, minlength=maximum + 1)
+        sum_y += np.bincount(ids, weights=y, minlength=maximum + 1)
+        sum_xx += np.bincount(ids, weights=x * x, minlength=maximum + 1)
+        sum_yy += np.bincount(ids, weights=y * y, minlength=maximum + 1)
+        sum_xy += np.bincount(ids, weights=x * y, minlength=maximum + 1)
+    present = np.flatnonzero(count[1:]) + 1
+    area = count[present]
+    mean_x, mean_y = sum_x[present] / area, sum_y[present] / area
+    # A pixel has extent, so each variance includes its own 1/12.
+    var_x = sum_xx[present] / area - mean_x * mean_x + 1.0 / 12.0
+    var_y = sum_yy[present] / area - mean_y * mean_y + 1.0 / 12.0
+    cov_xy = sum_xy[present] / area - mean_x * mean_y
+    long_axis_variance = (var_x + var_y) / 2.0 + np.hypot((var_x - var_y) / 2.0, cov_xy)
+    return float(np.median(4.0 * np.sqrt(long_axis_variance)))
+
+
 def outward_hilum_direction(centre, point):
     """Unit vector from the painted-area centroid to the hilum, or unknown."""
     if centre is None or point is None:

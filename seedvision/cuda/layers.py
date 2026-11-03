@@ -6,7 +6,7 @@ import colorsys
 from dataclasses import dataclass, field
 
 import numpy as np
-from seedvision.annotation.eligibility import eligible_instances
+from seedvision.annotation.eligibility import connected_instances
 
 from seedvision.cuda.ops import (
     CudaContext,
@@ -1187,7 +1187,7 @@ def build_cuda_analysis_layers(
                 foreground_reference_source_mask
             ),
             other_reference_mask=other_reference_mask,
-            seed_instance_annotations=eligible_instances(seed_instance_annotations, seed_instance_traits),
+            seed_instance_annotations=connected_instances(seed_instance_annotations, seed_instance_traits),
             species_library=species_library,
             cuda_context=context,
         )

@@ -30,6 +30,7 @@ class WorkController:
             getattr(getattr(self, 'catalogue_nodes', None), 'busy', False)
             or getattr(getattr(self, 'pipeline_workflow', None), '_job', None) is not None
             or self._active_tasks
+            or getattr(self, '_training_dataset_build', None) is not None
             or any(getattr(self, name, None) is not None for name in CANCELLABLE_TASKS))
 
     def _sync_run_controls(self):
@@ -46,6 +47,8 @@ class WorkController:
     def _stop_current_work(self):
         self.catalogue_nodes.stop()
         self._stop_requested = True
+        if getattr(self, '_training_dataset_build', None) is not None:
+            self._training_dataset_build.stopped = True
         self._pending_analysis_key = None
         self._pending_analysis_scope = None
         tasks = list(self._active_tasks.values()) + [getattr(self, name, None) for name in CANCELLABLE_TASKS]

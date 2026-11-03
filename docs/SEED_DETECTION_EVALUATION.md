@@ -22,7 +22,7 @@ Recommendation, in order: build a small reviewed benchmark first; run Cellpose-S
 Labelled data on hand:
 
 - `seed-instance-references/`: 11 `uint16` masks in source coordinates, every entry marked `reviewed: false` in `manifest.json` (machine pre-annotations with documented contact, count and boundary errors).
-- `learning-data/`: one sample (`IMG_0002c`), exported from applied annotations.
+- No learning dataset is committed: **Train or refine U-Net / StarDist…** writes one under `learning-data/` for each run.
 - `seedvision/learning/metrics.py` already implements `evaluate_instances` (precision, recall, F1 at IoU 0.5, mean matched IoU, panoptic quality, count error, split and merge counts, boundary F1). Nothing real has been scored with it.
 
 The observation that no pipeline matches human seed differentiation is therefore an impression rather than a measurement. A measurement is the cheapest thing to add.

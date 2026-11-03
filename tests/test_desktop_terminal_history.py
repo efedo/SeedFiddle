@@ -178,6 +178,8 @@ class DesktopTerminalHistoryTests(unittest.TestCase):
     def check_test_actual_profile_apply_after_mutation_rolls_back_graph_without_recompute(self):
         from seedvision.persistence.analysis_settings import save_analysis_settings_profile
         from PySide6.QtWidgets import QMessageBox
+        from tests.review_fixtures import editable_copy
+        editable_copy(self.window)
         original = self.window.pipeline.node('ruler_detection').parameters['ruler_length_mm']
         proposed = original + 9.
         self.graph.set_parameter('ruler_detection', 'ruler_length_mm', proposed)

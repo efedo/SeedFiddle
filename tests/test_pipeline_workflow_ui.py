@@ -13,8 +13,8 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 from PySide6.QtWidgets import QApplication, QComboBox, QSpinBox
 from PySide6.QtCore import Qt
 from seedvision.ui.main_window import MainWindow
-from seedvision.ui.pipeline_workflow import _Job
-from tests.review_fixtures import dispose_window
+from seedvision.ui.pipeline_workflow import SELECTOR_WIDTH, _Job
+from tests.review_fixtures import dispose_window, editable_copy
 from seedvision.pipeline.project_context import CONTEXT_NODE_IDS
 
 
@@ -39,7 +39,7 @@ class PipelineWorkflowUiTests(CatalogueTestCase):
     def select_binary(self):
         self.controller.select_template('plantcv_seed_binary_working')
         self.assertTrue(self.controller.active)
-        self.window.pipeline_documents.set_frozen(False)
+        editable_copy(self.window)
         return self.controller.workflow
 
     def seed_old_display(self):
@@ -84,7 +84,7 @@ class PipelineWorkflowUiTests(CatalogueTestCase):
                 self.window.pipeline_canvas.select_node('image_selector')
                 combo = self.window.pipeline_inspector.image_selector_combo
                 self.assertFalse(combo.isHidden())
-                self.assertTrue(self.window.pipeline_documents.frozen)
+                self.assertTrue(self.window.pipeline_documents.locked)
                 self.assertTrue(combo.isEnabled())
                 combo.setCurrentIndex(combo.findData(str(second)))
                 self.assertEqual(self.window.image_view.image_path, second)
@@ -155,7 +155,11 @@ class PipelineWorkflowUiTests(CatalogueTestCase):
         self.assertGreater(fraction, .27)
         self.assertLess(fraction, .39)
         self.assertIs(self.controller.strip.parent(), self.window.pipeline_canvas.control_bar)
-        self.assertLessEqual(self.controller.selector.width(), 130)
+        # The wider list keeps its left edge, with the rename button straight after it.
+        self.assertEqual(self.controller.selector.width(), SELECTOR_WIDTH)
+        layout = self.controller.strip.layout()
+        self.assertEqual(layout.indexOf(self.controller.rename_button), layout.indexOf(self.controller.selector) + 1)
+        self.assertLessEqual(self.controller.selector.geometry().right(), self.controller.rename_button.geometry().left())
         self.assertFalse(hasattr(self.controller, 'run_button'))
         self.assertFalse(hasattr(self.controller, 'stop_button'))
         actions = self.window.workflow_toolbar.actions()
@@ -172,17 +176,20 @@ class PipelineWorkflowUiTests(CatalogueTestCase):
         self.assertFalse(any(selector.model().item(index).isEnabled() for index in range(selector.count())
                              if selector.itemData(index, ENTRY_KIND) == 'heading'))
         self.assertFalse(any(action.menu() for action in self.controller.more_button.menu().actions()))
-        self.assertEqual(selector.currentIndex(), self.controller.index_of(None))
+        self.assertEqual(selector.itemData(selector.currentIndex(), ENTRY_KIND), 'custom')
+        self.assertEqual(selector.currentText(), self.window.pipeline_documents.current_name)
         self.window.resize(1050, 650)
         self.application.processEvents()
         self.assertGreaterEqual(self.controller.strip.width(), self.controller.strip.sizeHint().width())
-        # The lock keeps its full label until every optional strip widget is hidden.
-        lock = self.window.pipeline_documents.freeze_button
-        if lock.text() == 'Lock':
-            self.assertTrue(self.controller.save_button.isHidden())
+        # The list only gives up width once every optional strip widget is hidden.
+        if self.controller.selector.width() < SELECTOR_WIDTH:
+            self.assertTrue(self.controller.export_button.isHidden())
+        # The compact icons never hide: nothing else reaches their commands.
+        self.assertFalse(self.controller.load_button.isHidden())
+        self.assertFalse(self.controller.save_button.isHidden())
         self.window.resize(1440, 900)
         self.application.processEvents()
-        self.assertEqual(lock.text(), 'Lock edits')
+        self.assertEqual(self.controller.selector.width(), SELECTOR_WIDTH)
         self.window.resize(1050, 650)
         self.application.processEvents()
         self.assertEqual(self.controller.export_menu_action.isVisible(), self.controller.export_button.isHidden())
@@ -266,10 +273,6 @@ class PipelineWorkflowUiTests(CatalogueTestCase):
         restored = PipelineWorkflow.from_json(self.controller.sync_graph().to_json())
         self.assertEqual(restored.foreground_regions[threshold], (4, 5, 24, 26))
         self.assertEqual(restored.source_recipe.to_json(), original)
-        self.window.pipeline_documents.set_frozen(True)
-        self.assertFalse(self.controller.parameter_changed(threshold, 'foreground_roi_bounds_xyxy', '[1,1,2,2]'))
-        self.assertEqual(self.controller.workflow.foreground_regions[threshold], (4, 5, 24, 26))
-        self.window.pipeline_documents.set_frozen(False)
         self.controller.add_variant('native_median_roi_recipe', 'build_native_median_roi_recipe')
         self.assertEqual(self.controller.workflow.foreground_regions[threshold], (4, 5, 24, 26))
         job = _Job(lambda cancel: None, (self.controller._generation, self.window.image_view.image_path))
@@ -377,6 +380,7 @@ class PipelineWorkflowUiTests(CatalogueTestCase):
 
     def check_test_templates_are_arranged_when_chosen_and_reloads_keep_their_layout(self):
         canvas = self.window.pipeline_canvas
+        self.controller.select_template(None)
         # The startup project's Default seed analysis is laid out in columns.
         self.assertEqual({round(node.x) % 270 for node in self.window.pipeline.nodes.values()}, {0})
         with patch.object(canvas, 'auto_arrange', wraps=canvas.auto_arrange) as arrange:
@@ -395,7 +399,7 @@ class PipelineWorkflowUiTests(CatalogueTestCase):
 
     def check_test_correction_inputs_are_contextual_and_source_is_current_image(self):
         self.controller.select_template('plantcv_color_card_correct_color')
-        self.window.pipeline_documents.set_frozen(False)
+        editable_copy(self.window)
         from PySide6.QtWidgets import QPushButton
         texts = {w.text() for w in self.controller.node_actions.findChildren(QPushButton)}
         self.assertIn('Target image…', texts)
@@ -439,7 +443,8 @@ class PipelineWorkflowUiTests(CatalogueTestCase):
             critical.assert_not_called()
         self.assertTrue(self.controller.active)
         self.assertEqual(self.controller.workflow.recipe.parameters_for_runner(stage.stage_id)['threshold'], 117)
-        self.assertEqual(self.controller.selector.currentData().recipe_id, 'plantcv_seed_binary_working')
+        self.assertEqual(self.controller.workflow.source_recipe.recipe_id, 'plantcv_seed_binary_working')
+        self.assertEqual(self.controller.selector.currentText(), self.window.pipeline_documents.current_name)
         self.assertEqual(self.controller._selected, stage.stage_id)
         self.assertFalse(self.window.image_workspace_action.isChecked())
         self.assertTrue(self.window.pipeline_workspace_action.isChecked())
@@ -461,7 +466,7 @@ class PipelineWorkflowUiTests(CatalogueTestCase):
 
     def check_test_range_colorspace_change_adapts_bounds_field_count(self):
         self.controller.select_template('plantcv_threshold_custom_range')
-        self.window.pipeline_documents.set_frozen(False)
+        editable_copy(self.window)
         stage = next(s for s in self.controller.workflow.recipe.stages if s.operation_id == 'threshold.custom_range')
         self.controller.parameter_changed(stage.stage_id, 'channel', 'CMYK')
         values = self.controller.workflow.recipe.parameters_for_runner(stage.stage_id)

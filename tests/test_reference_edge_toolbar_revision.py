@@ -195,7 +195,7 @@ class ReferenceEdgeToolbarRevisionTests(CatalogueTestCase):
         self.app.processEvents()
         self.assertEqual(window.image_view._overlay_mode, "other_colour_gamut")
         self.assertTrue(window.hsv_value_slider_action.isVisible())
-        self.assertFalse(window.overlay_opacity_slider_action.isVisible())
+        self.assertTrue(window.overlay_header_controls.opacity_controls.isHidden())
 
     def check_test_other_hsv_matches_production_frequency_model_without_refitting(self):
         import cv2

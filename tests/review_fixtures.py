@@ -60,12 +60,24 @@ def open_workspace_images(window):
     return window
 
 
+def editable_copy(window, name='Test pipeline'):
+    """Put the window on a named copy, as accepting the default-pipeline offer does.
+
+    The project's unsaved state is kept: a fixture is not a user's edit.
+    """
+    documents = window.pipeline_documents
+    if documents.locked:
+        dirty = window._project_dirty
+        documents.create_copy(documents.unique_name(name))
+        window._set_project_dirty(dirty)
+
+
 def isolated_window(root, *, reuse_templates=True, settings_path=None, editable=True, images=True):
     """Fresh desktop state with local settings and optional immutable templates.
 
     Factory/source-validation witnesses can opt out. An explicitly mocked
     catalogue remains in control rather than being replaced by this fixture.
-    Legacy edit fixtures explicitly unfreeze; startup-lock witnesses pass editable=False.
+    Edit fixtures work on a named copy; startup-lock witnesses pass editable=False.
     ``images`` adds the root's ``images/`` photographs (see open_workspace_images).
     """
     from contextlib import ExitStack
@@ -92,7 +104,7 @@ def isolated_window(root, *, reuse_templates=True, settings_path=None, editable=
                 raise AssertionError('Window construction changed shared workflow templates')
     window._test_application_settings = settings
     if editable and hasattr(window, 'pipeline_documents'):
-        window.pipeline_documents.set_frozen(False)
+        editable_copy(window)
     return window
 
 

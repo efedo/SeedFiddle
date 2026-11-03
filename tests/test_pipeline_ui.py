@@ -5,7 +5,7 @@ from tests.catalogue_fixtures import CatalogueTestCase
 
 from tests.functional_units import functional_units
 
-from tests.review_fixtures import controls_window, dispose_window, isolated_window
+from tests.review_fixtures import controls_window, dispose_window, editable_copy, isolated_window
 
 import os
 import tempfile
@@ -116,7 +116,7 @@ class PipelineCanvasTests(CatalogueTestCase):
         from seedvision.ui.main_window import MainWindow
 
         window = open_workspace_images(MainWindow(ROOT))
-        window.pipeline_documents.set_frozen(False)
+        editable_copy(window)
         path = window.image_view.image_path
         self.assertIsNotNone(path)
         self.assertEqual(window.image_view.current_file_label.text(), path.name)
@@ -144,7 +144,7 @@ class PipelineCanvasTests(CatalogueTestCase):
         from seedvision.ui.main_window import MainWindow
 
         window = open_workspace_images(MainWindow(ROOT))
-        window.pipeline_documents.set_frozen(False)
+        editable_copy(window)
         key = window._current_image_key()
         if key is None:
             dispose_window(window)
@@ -221,7 +221,7 @@ class PipelineCanvasTests(CatalogueTestCase):
                 return self.cancelled
 
         window = open_workspace_images(MainWindow(ROOT))
-        window.pipeline_documents.set_frozen(False)
+        editable_copy(window)
         previous_path = window.image_view.image_path
         if previous_path is None:
             dispose_window(window)
@@ -341,7 +341,7 @@ class PipelineCanvasTests(CatalogueTestCase):
                 return self.cancelled
 
         window = open_workspace_images(MainWindow(ROOT))
-        window.pipeline_documents.set_frozen(False)
+        editable_copy(window)
         previous_path = window.image_view.image_path
         if previous_path is None:
             dispose_window(window)
@@ -400,6 +400,20 @@ class PipelineCanvasTests(CatalogueTestCase):
         self.assertNotIn("review", scope)
         self.assertNotIn("measurements", scope)
 
+    def check_test_loading_saved_references_reruns_only_the_finished_runs_scope(self) -> None:
+        from unittest.mock import patch
+
+        window = controls_window(self)
+        key = window._current_image_key()
+        scope = frozenset({"layout_detection", "reference_texture_prototypes"})
+        for finished_scope in (scope, None):
+            window._analysis_scopes[key] = finished_scope
+            with patch.object(window, "_analyze_current_image") as analyze:
+                window._rerun_for_loaded_references(key, {"reference_texture_prototypes"})
+            analyze.assert_called_once_with(
+                dirty_nodes={"reference_texture_prototypes"}, enabled_node_scope=finished_scope
+            )
+
     def check_test_run_to_a_disabled_node_enables_it_or_says_why(self) -> None:
         from unittest.mock import patch
 
@@ -423,17 +437,19 @@ class PipelineCanvasTests(CatalogueTestCase):
         analyze.assert_not_called()
         self.assertFalse(node.enabled)
 
-        window.pipeline_documents.set_frozen(True)
+        window.pipeline_documents.loaded("Default seed analysis")
         with (
             patch(installed, return_value=True),
             patch.object(window, "_analyze_current_image") as analyze,
+            patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.No) as question,
         ):
             window._run_pipeline_to_node(node.identifier)
+        question.assert_called_once()
         analyze.assert_not_called()
         self.assertFalse(node.enabled)
-        self.assertIn("Clear Lock", window.statusBar().currentMessage())
+        self.assertIn("was not changed", window.statusBar().currentMessage())
 
-        window.pipeline_documents.set_frozen(False)
+        editable_copy(window)
         with (
             patch(installed, return_value=True),
             patch.object(window, "_analyze_current_image") as analyze,
@@ -513,10 +529,9 @@ class PipelineCanvasTests(CatalogueTestCase):
 
         self.assertEqual(labels("procedural_instances"), ["Run to node"])
         self.assertEqual(labels("cellpose_sam_instances"), ["Enable and run to node"])
-        window.pipeline_documents.set_frozen(True)
-        self.assertEqual(
-            labels("cellpose_sam_instances"), ["Run to node (clear Lock edits to enable it)"]
-        )
+        # Locked, the entry stays offered: the window then offers an editable copy.
+        window.pipeline_documents.loaded("Default seed analysis")
+        self.assertEqual(labels("cellpose_sam_instances"), ["Enable and run to node"])
 
     def check_test_analysis_cache_is_lru_bounded_and_gpu_jobs_are_serialized(self) -> None:
         import numpy as np
@@ -1064,7 +1079,7 @@ class PipelineCanvasTests(CatalogueTestCase):
         if not path.exists():
             self.skipTest("Pilot image is not present")
         window = open_workspace_images(MainWindow(ROOT))
-        window.pipeline_documents.set_frozen(False)
+        editable_copy(window)
         succeeded, error = window.image_view.load_image(path)
         self.assertTrue(succeeded, error)
         node = window.pipeline.node("layout_detection")
@@ -1112,7 +1127,7 @@ class PipelineCanvasTests(CatalogueTestCase):
         from seedvision.ui.main_window import MainWindow
 
         window = open_workspace_images(MainWindow(ROOT))
-        window.pipeline_documents.set_frozen(False)
+        editable_copy(window)
         window.pipeline_canvas.select_node("project")
         self.application.processEvents()
 
@@ -1568,13 +1583,16 @@ class PipelineCanvasTests(CatalogueTestCase):
         window.pipeline_canvas.select_node("ruler_detection")
         self.application.processEvents()
         self.assertEqual(window.overlay_combo.currentData(), "ruler_detection")
-        calibrated_index = window.pipeline_inspector.overlay_combo.findData(
-            "calibrated_image"
+        self.assertEqual(
+            window.pipeline_inspector.overlay_combo.findData("calibrated_image"), -1
         )
-        self.assertGreaterEqual(calibrated_index, 0)
-        window.pipeline_inspector.overlay_combo.setCurrentIndex(calibrated_index)
+        evidence_index = window.pipeline_inspector.overlay_combo.findData(
+            "ruler_evidence"
+        )
+        self.assertGreaterEqual(evidence_index, 0)
+        window.pipeline_inspector.overlay_combo.setCurrentIndex(evidence_index)
         self.application.processEvents()
-        self.assertEqual(window.overlay_combo.currentData(), "calibrated_image")
+        self.assertEqual(window.overlay_combo.currentData(), "ruler_evidence")
         window.pipeline_canvas.select_node("deskew_colour")
         self.application.processEvents()
         self.assertEqual(window.overlay_combo.currentData(), "deskew_colour")
@@ -1667,35 +1685,34 @@ class PipelineCanvasTests(CatalogueTestCase):
 
     def check_test_overlay_selectors_group_layers_and_stay_synchronised(self) -> None:
         from PySide6.QtCore import QPoint
-        from PySide6.QtWidgets import QLabel, QWidget
 
         window = controls_window(self)
         self.assertTrue(window.overlay_combo.isHidden())
         self.assertIs(window.overlay_button.menu(), window.overlay_menu)
-        overlay_controls = window.workflow_toolbar.findChild(
-            QWidget, "overlayToolbarControls"
-        )
-        self.assertIsNotNone(overlay_controls)
-        overlay_label = overlay_controls.findChild(QLabel, "overlayToolbarLabel")
+        overlay_controls = window.overlay_header_controls
+        overlay_label = overlay_controls.selector_heading
         self.assertIs(window.overlay_button.parentWidget(), overlay_controls)
         window._select_overlay_mode("raw_image")
         window.show()
-        for width in (1440, 1050):
-            window.resize(width, 650)
-            self.application.processEvents()
-            label_right = overlay_label.mapTo(
-                overlay_controls, QPoint(overlay_label.width(), 0)
-            ).x()
-            button_left = window.overlay_button.mapTo(
-                overlay_controls, QPoint(0, 0)
-            ).x()
-            self.assertGreaterEqual(button_left - label_right, 0)
-            self.assertLessEqual(button_left - label_right, 6)
-            self.assertLessEqual(
-                window.overlay_button.width(),
-                window.overlay_button.sizeHint().width() + 2,
-            )
-            self.assertLess(window.overlay_button.width(), 220)
+        # Wide enough for the row's headings in any test font.
+        window.resize(2400, 650)
+        self.application.processEvents()
+        self.assertTrue(overlay_label.isVisible())
+        label_right = overlay_label.mapTo(
+            overlay_controls, QPoint(overlay_label.width(), 0)
+        ).x()
+        button_left = window.overlay_button.mapTo(
+            overlay_controls, QPoint(0, 0)
+        ).x()
+        self.assertGreaterEqual(button_left - label_right, 0)
+        self.assertLessEqual(button_left - label_right, 6)
+        self.assertLessEqual(
+            window.overlay_button.width(),
+            window.overlay_button.sizeHint().width() + 2,
+        )
+        window.resize(1050, 650)
+        self.application.processEvents()
+        self.assertLess(window.overlay_button.width(), 220)
         window._select_overlay_mode("reference_edge_comparison")
         self.application.processEvents()
         selected_label = window.overlay_combo.currentText().strip()
@@ -1713,6 +1730,8 @@ class PipelineCanvasTests(CatalogueTestCase):
             if action.menu() is not None
             for child in action.menu().actions()
         ))
+        window.resize(2400, 650)
+        self.application.processEvents()
         window._select_overlay_mode("raw_image")
         self.assertEqual(window.overlay_button.text(), "Raw image")
         self.assertEqual(
@@ -2102,14 +2121,16 @@ class PipelineCanvasTests(CatalogueTestCase):
             ROOT, settings_path=Path(settings_directory.name) / "settings.ini"
         )
         window.show()
+        # Wide enough for the header's opacity controls in any test font.
+        window.resize(2400, window.height())
         self.application.processEvents()
 
         toolbar_labels = {
             label.text()
             for label in window.workflow_toolbar.findChildren(QLabel)
         }
-        self.assertIn("Overlay:", toolbar_labels)
-        self.assertIn("Overlay opacity:", toolbar_labels)
+        self.assertNotIn("Overlay:", toolbar_labels)
+        self.assertNotIn("Overlay opacity:", toolbar_labels)
         self.assertIn("Annotation opacity:", toolbar_labels)
         self.assertIn("Annotate:", toolbar_labels)
         self.assertEqual(window.paint_background_action.text(), "Materials")
@@ -2131,7 +2152,7 @@ class PipelineCanvasTests(CatalogueTestCase):
         self.application.processEvents()
         self.assertTrue(window.hsv_value_slider_action.isVisible())
         self.assertTrue(window.hsv_peak_button_action.isVisible())
-        self.assertFalse(window.overlay_opacity_slider_action.isVisible())
+        self.assertTrue(window.overlay_header_controls.opacity_controls.isHidden())
         self.assertEqual(
             window.pipeline_inspector.overlay_combo.findData(
                 "foreground_colour_gamut"
@@ -2146,14 +2167,14 @@ class PipelineCanvasTests(CatalogueTestCase):
         self.application.processEvents()
         self.assertFalse(window.hsv_value_slider_action.isVisible())
         self.assertFalse(window.hsv_peak_button_action.isVisible())
-        self.assertTrue(window.overlay_opacity_slider_action.isVisible())
+        self.assertFalse(window.overlay_header_controls.opacity_controls.isHidden())
         prototype_collage = window.overlay_combo.findData(
             "reference_texture_prototypes"
         )
         self.assertGreaterEqual(prototype_collage, 0)
         window.overlay_combo.setCurrentIndex(prototype_collage)
         self.application.processEvents()
-        self.assertFalse(window.overlay_opacity_slider_action.isVisible())
+        self.assertTrue(window.overlay_header_controls.opacity_controls.isHidden())
 
         detail_labels = {
             label.text()
@@ -2291,7 +2312,7 @@ class PipelineCanvasTests(CatalogueTestCase):
         from seedvision.ui.main_window import MainWindow
 
         window = open_workspace_images(MainWindow(ROOT))
-        window.pipeline_documents.set_frozen(False)
+        editable_copy(window)
         key = window._current_image_key()
         if key is None or window.image_view.image_size is None:
             dispose_window(window)
@@ -2489,7 +2510,7 @@ class PipelineCanvasTests(CatalogueTestCase):
             MainWindow, "_auto_load_reference_regions", return_value=False
         ):
             window = open_workspace_images(MainWindow(ROOT))
-            window.pipeline_documents.set_frozen(False)
+            editable_copy(window)
         key = window._current_image_key()
         if key is None:
             dispose_window(window)
@@ -2539,7 +2560,7 @@ class PipelineCanvasTests(CatalogueTestCase):
             MainWindow, "_auto_load_reference_regions", return_value=False
         ):
             window = open_workspace_images(MainWindow(ROOT))
-            window.pipeline_documents.set_frozen(False)
+            editable_copy(window)
         key = window._current_image_key()
         if key is None:
             dispose_window(window)
@@ -2604,7 +2625,7 @@ class PipelineCanvasTests(CatalogueTestCase):
         warning_patcher.start()
         self.addCleanup(warning_patcher.stop)
         window = open_workspace_images(MainWindow(ROOT))
-        window.pipeline_documents.set_frozen(False)
+        editable_copy(window)
         path = ROOT / "images" / "IMG_0002c.JPG"
         key = str(path.resolve()).casefold()
         window.image_view._image_path = path
@@ -4058,7 +4079,7 @@ class PipelineCanvasTests(CatalogueTestCase):
         from seedvision.ui.main_window import MainWindow
 
         window = open_workspace_images(MainWindow(ROOT))
-        window.pipeline_documents.set_frozen(False)
+        editable_copy(window)
         # This controller test uses the real repository fixtures. Persistence is
         # covered against an isolated project root in test_reference_persistence.
         window._persist_applied_reference_regions = (
@@ -4166,7 +4187,7 @@ class PipelineCanvasTests(CatalogueTestCase):
         from seedvision.ui.main_window import MainWindow
 
         window = open_workspace_images(MainWindow(ROOT))
-        window.pipeline_documents.set_frozen(False)
+        editable_copy(window)
         # Do not let this controller test overwrite a developer's local archive.
         window._persist_applied_reference_regions = (
             lambda **_kwargs: ROOT / "test-reference-autosave.npz"
@@ -4447,11 +4468,12 @@ class PipelineCanvasTests(CatalogueTestCase):
         self.scenario(self.check_test_instance_annotations_apply_separately_from_reference_masks, labelled=False)
 
     def test_workflow_lifecycle(self):
-        """57 related PipelineCanvasTests scenarios, each with private fixture state."""
+        """58 related PipelineCanvasTests scenarios, each with private fixture state."""
         self.scenario(self.check_test_canvas_contains_default_nodes_and_live_edges)
         self.scenario(self.check_test_current_image_name_is_in_pane_and_list_selection_tracks_it)
         self.scenario(self.check_test_switching_images_selects_the_lowest_empty_seed_id)
         self.scenario(self.check_test_run_to_node_scopes_execution_to_enabled_ancestors)
+        self.scenario(self.check_test_loading_saved_references_reruns_only_the_finished_runs_scope)
         self.scenario(self.check_test_run_to_a_disabled_node_enables_it_or_says_why)
         self.scenario(self.check_test_node_menu_offers_to_enable_a_disabled_node)
         self.scenario(self.check_test_seed_boundary_status_says_why_no_seed_was_found)
@@ -4806,7 +4828,7 @@ class PipelineCanvasTests(CatalogueTestCase):
         view.close()
 
         window = open_workspace_images(MainWindow(ROOT))
-        window.pipeline_documents.set_frozen(False)
+        editable_copy(window)
         window._mark_analysis_complete(result)
         for node_id in (
             "ruler_detection",

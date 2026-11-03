@@ -1980,7 +1980,7 @@ def build_default_pipeline() -> PipelineGraph:
                 "ring kernels. Radius and centre-spacing limits are "
                 "editable fractions of the estimated seed diameter. "
                 "Candidates outside the configured inset from the upper/outer dish rim are discarded. "
-                "This experimental toolbox branch remains biased toward roughly round "
+                "This toolbox branch is biased toward roughly round "
                 "visible seed boundaries and is not part of the default DAG."
             ),
             parameters={
@@ -2025,9 +2025,7 @@ def build_default_pipeline() -> PipelineGraph:
                 "toolbox and enabled, nearby CUDA ring candidates are merged using the "
                 "circle node's editable distance and confidence, while separated rings "
                 "remain additional proposals. Results are sorted top-to-bottom then "
-                "left-to-right. These are untrained review proposals—not validated "
-                "instance counts—and overlaps still "
-                "require later mask correction."
+                "left-to-right. Overlaps are not resolved by this node."
             ),
             parameters={
                 "distance_confidence": 0.48,
@@ -2131,9 +2129,8 @@ def build_default_pipeline() -> PipelineGraph:
                 "deliberately excluded from this inference path so a displayed result "
                 "cannot reproduce its evaluation labels by construction. "
                 "The separate Foreground option can reuse safely inset applied interiors "
-                "as fitting examples without forcing their output values. The node remains "
-                "disabled by default until "
-                "its separation quality has been validated."
+                "as fitting examples without forcing their output values. The node is "
+                "disabled by default."
             ),
         ),
         PipelineNode(
@@ -2982,8 +2979,7 @@ def build_default_pipeline() -> PipelineGraph:
                 "limits lower scores without abrupt removal. An overlap-aware score ordering then "
                 "selects a non-overlapping candidate combination. Each shape remains a marker-controlled "
                 "watershed basin clipped by one material hypothesis—not a fitted ellipse. "
-                "This remains a review aid: unannotated edge types use neutral semantic "
-                "support, so low-confidence results must not be treated as validated counts."
+                "Unannotated edge types use neutral semantic support."
             ),
             parameters={
                 "working_maximum_dimension": 1600,
@@ -3208,8 +3204,7 @@ def build_default_pipeline() -> PipelineGraph:
                 "the calibrated colour crop: no checkpoint or training is needed. Enable "
                 "the node and run the pipeline; the first run downloads the weights once. "
                 "Network flows are cached, so threshold edits only repeat mask recovery. "
-                "Requires the optional cellpose package; results are unvalidated "
-                "proposals for review."
+                "Requires the optional cellpose package."
             ),
             enabled=False,
             bypassable=True,
@@ -3274,8 +3269,7 @@ def build_default_pipeline() -> PipelineGraph:
             ),
             details='Uses the same enabled U-Net, StarDist, Cellpose-SAM, then procedural selection as result export. '
                 'CUDA colour and visible-pixel geometry features and calibrated scores are cached separately '
-                'from threshold decisions. Invalid crop/frame/support inputs abstain. Supplied definitions '
-                'and development calibration do not establish biological validation.',
+                'from threshold decisions. Invalid crop/frame/support inputs abstain.',
             output_ports=(('predictions', 'Per-seed trait predictions'),),
             output_port_types={'predictions': 'TraitPredictions'},
         ),

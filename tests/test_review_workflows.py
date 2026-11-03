@@ -103,12 +103,25 @@ class ReviewWorkflowTests(unittest.TestCase):
         self.assertTrue(report['within_predeclared_bound'])
         self.assertFalse(report['scientifically_validated'])
 
+    def check_test_procedural_confidence_warning_describes_only_the_reported_count(self):
+        from types import SimpleNamespace
+        from seedvision.segmentation.baseline import _procedural_confidence_warning as warning
+        weak = SimpleNamespace(count=4,instance_confidences=np.array([.3,.4,.9,.9]))
+        self.assertEqual(warning(weak,weak),'50% of procedural instances are below 55% confidence.')
+        self.assertIsNone(warning(object(),weak))
+        self.assertIsNone(warning(None,None))
+        strong = SimpleNamespace(count=2,instance_confidences=np.array([.9,.9]))
+        self.assertIsNone(warning(strong,strong))
+        empty = SimpleNamespace(count=0,instance_confidences=np.array([]))
+        self.assertIsNone(warning(empty,empty))
+
     def test_workflow_lifecycle(self):
-        """4 related ReviewWorkflowTests scenarios, each with private fixture state."""
+        """5 related ReviewWorkflowTests scenarios, each with private fixture state."""
         self.scenario(self.check_test_batch_project_does_not_require_an_optional_species_library)
         self.scenario(self.check_test_snapshot_preserves_old_annotations_and_restores_relocated_project)
         self.scenario(self.check_test_result_decisions_are_bound_to_prediction_revision)
         self.scenario(self.check_test_validation_helpers_do_not_certify_science)
+        self.scenario(self.check_test_procedural_confidence_warning_describes_only_the_reported_count)
 
     def test_validation_and_recovery(self):
         """1 related ReviewWorkflowTests scenarios, each with private fixture state."""

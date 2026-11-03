@@ -16,6 +16,7 @@ from seedvision.persistence.reference_regions import SeedInstanceAnnotation
 from seedvision.measurement.lineage import (
     ReviewedMeasurementContext, ReviewedMeasurementLineage, prepare_reviewed_inputs,
 )
+from seedvision.timing import raise_if_analysis_cancelled
 from seedvision.reference_library.contracts import (
     BiologicalContext,
     SHAPE_MEASUREMENT_NAMES,
@@ -259,6 +260,7 @@ def _measure_prepared_seed_instances(
     results = []
     boundary_turns, boundary_curvatures = [], []
     for seed_id in (int(value) for value in np.unique(values) if value > 0):
+        raise_if_analysis_cancelled()
         annotation = by_id.get(seed_id, SeedInstanceAnnotation(seed_id))
         reason = _shape_ineligibility_reason(annotation)
         length_eligible = (

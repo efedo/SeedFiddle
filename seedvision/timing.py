@@ -4,11 +4,63 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import wraps
+import threading
 from time import perf_counter
 
 
 class AnalysisCancelled(RuntimeError):
-    """A background analysis was superseded at a safe node boundary."""
+    """A background analysis was stopped or superseded before it finished."""
+
+
+_analysis_thread = threading.local()
+
+
+def raise_if_analysis_cancelled() -> None:
+    """Stop a long CPU-only step; does nothing outside a cancellable analysis."""
+
+    requested = getattr(_analysis_thread, "cancellation_requested", None)
+    if requested is not None and requested():
+        raise AnalysisCancelled("Analysis stopped.")
+
+
+@contextmanager
+def analysis_cancellation_checks(requested):
+    """Check for cancellation before every PyTorch call on this thread.
+
+    The mode is thread-local, so other workers are unaffected. Analysis caches
+    are discarded on cancellation, so stopping inside a node leaves nothing stale.
+    """
+
+    if requested is None:
+        yield
+        return
+    from torch.overrides import TorchFunctionMode
+
+    class CancellationChecks(TorchFunctionMode):
+        def __torch_function__(self, func, types, args=(), kwargs=None):
+            if requested():
+                raise AnalysisCancelled("Analysis stopped.")
+            return func(*args, **(kwargs or {}))
+
+    previous = getattr(_analysis_thread, "cancellation_requested", None)
+    _analysis_thread.cancellation_requested = requested
+    try:
+        with CancellationChecks():
+            yield
+    finally:
+        _analysis_thread.cancellation_requested = previous
+
+
+def cancellable_analysis(analysis):
+    """Apply :func:`analysis_cancellation_checks` to a ``cancellation_requested`` call."""
+
+    @wraps(analysis)
+    def run(*args, cancellation_requested=None, **kwargs):
+        with analysis_cancellation_checks(cancellation_requested):
+            return analysis(*args, cancellation_requested=cancellation_requested, **kwargs)
+
+    return run
 
 
 @dataclass(slots=True)

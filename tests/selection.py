@@ -21,6 +21,7 @@ CORE_TARGETS = (
 CPU_QT_TARGETS = (
     'tests.test_pipeline_documents',
     'tests.test_pipeline_workspace_files',
+    'tests.test_default_pipeline_copies',
     'tests.test_pipeline_backend_execution.PipelineBackendPolicyTests',
     'tests.test_image_list_controls',
     'tests.test_catalogue_nodes',
