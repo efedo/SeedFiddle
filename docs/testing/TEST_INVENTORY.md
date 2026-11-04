@@ -4,9 +4,9 @@ This is a source-derived inventory of every discovered test method, audited on 2
 
 Markdown shows at most the first two assertion expressions, shortened to 260 characters. JSON retains every direct assertion expression, lexical production-call candidates, interface calls, helper references and their shared assertion evidence, loops, subtest sites, decorators and fixture calls. Dynamic dispatch and inherited fixture behavior require source inspection; this is not a manually proven call graph or an exhaustive enumeration of runtime subtest cases.
 
-Total: **673 methods in 256 test files**. A method can contain many subtests, input cases or expensive executions. Those are not separate unittest methods.
+Total: **674 methods in 256 test files**. A method can contain many subtests, input cases or expensive executions. Those are not separate unittest methods.
 
-Discovery reconciliation: exact match, 673 canonical unittest IDs; zero discovery errors.
+Discovery reconciliation: exact match, 674 canonical unittest IDs; zero discovery errors.
 
 No historical run receipt was used, so status and seconds are blank. Class setup/teardown, discovery and interpreter shutdown are not allocated to methods. A dash means no method duration was recorded, not zero cost. Runtime skips can differ by environment; their exact historical reasons are in JSON.
 
@@ -263,7 +263,7 @@ See [the multi-pass audit](../archive/TEST_INFRASTRUCTURE_AUDIT.md) for overlap,
 | [tests.test_smpts_paper](#teststest_smpts_paper) | 5 | 0.000 | Soybean paper method calculations and explicitly supported boundaries |
 | [tests.test_species_library_dialog](#teststest_species_library_dialog) | 2 | 0.000 | Species reference library desktop editing |
 | [tests.test_terminal_snapshot](#teststest_terminal_snapshot) | 2 | 0.000 | Real terminal/acknowledgment transport and private Qt historical consumers. |
-| [tests.test_test_runner](#teststest_test_runner) | 9 | 0.000 | Runner failure reporting, exhaustive tier partition and fixture lifecycle. |
+| [tests.test_test_runner](#teststest_test_runner) | 10 | 0.000 | Runner failure reporting, exhaustive tier partition and fixture lifecycle. |
 | [tests.test_threshold_conformance](#teststest_threshold_conformance) | 4 | 0.000 | Public/native threshold checkpoint comparison and conformance |
 | [tests.test_trait_classifier](#teststest_trait_classifier) | 2 | 0.000 | Software oracles for trait classification; all truth is explicitly synthetic. |
 | [tests.test_trait_pipeline](#teststest_trait_pipeline) | 2 | 0.000 | Native selection/cache/report witnesses for the frozen trait classifier. |
@@ -4698,8 +4698,9 @@ Fixtures: no class-local setup/teardown methods.
 | [`test_local_observer_keeps_real_frames_returns_c_calls_and_restores_on_error`](../../tests/test_test_runner.py#L126) | local observer keeps real frames returns c calls and restores on error | `self.assertRaisesRegex(ValueError, 'body failure'); self.assertEqual(target([1, 2]), 2)` | unrecorded / — |
 | [`test_catalogue_fixture_reuses_only_templates_and_restores_lazy_import_aliases`](../../tests/test_test_runner.py#L156) | catalogue fixture reuses only templates and restores lazy import aliases | `self.assertIs(runner.build_recipe_catalogue(), first); self.assertRaises(runner.NativeRecipeError)` | unrecorded / — |
 | [`test_invalid_module_exits_before_execution_and_reports_discovery_errors`](../../tests/test_test_runner.py#L181) | invalid module exits before execution and reports discovery errors | `self.assertEqual(process.returncode, 2, process.stderr); self.assertEqual(record['tests'], 0)` | unrecorded / — |
-| [`test_partition_is_complete_and_fixture_timings_preserve_lifecycle`](../../tests/test_test_runner.py#L211) | partition is complete and fixture timings preserve lifecycle | `self.assertEqual({k: len(v) for k, v in groups.items()}, {'cpu-qt': 1, 'cuda': 1, 'acceptance': 1}); self.assertEqual({t.id() for v in groups.values() for t in v}, {t.id() for t in items})` | unrecorded / — |
-| [`test_fixture_bundle_checks_hashes_and_never_overwrites_reviewed_files`](../../tests/test_test_runner.py#L241) | fixture bundle checks hashes and never overwrites reviewed files | `self.assertFalse(missing['passed']); self.assertTrue(restored['passed'], restored)` | unrecorded / — |
+| [`test_worker_ends_with_its_code_and_flushed_output_but_no_interpreter_shutdown`](../../tests/test_test_runner.py#L211) | worker ends with its code and flushed output but no interpreter shutdown | `self.assertEqual(process.returncode, 7, process.stderr); self.assertEqual(process.stdout, 'flushed')` | unrecorded / — |
+| [`test_partition_is_complete_and_fixture_timings_preserve_lifecycle`](../../tests/test_test_runner.py#L219) | partition is complete and fixture timings preserve lifecycle | `self.assertEqual({k: len(v) for k, v in groups.items()}, {'cpu-qt': 1, 'cuda': 1, 'acceptance': 1}); self.assertEqual({t.id() for v in groups.values() for t in v}, {t.id() for t in items})` | unrecorded / — |
+| [`test_fixture_bundle_checks_hashes_and_never_overwrites_reviewed_files`](../../tests/test_test_runner.py#L249) | fixture bundle checks hashes and never overwrites reviewed files | `self.assertFalse(missing['passed']); self.assertTrue(restored['passed'], restored)` | unrecorded / — |
 
 ## tests.test_threshold_conformance
 

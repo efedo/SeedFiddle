@@ -10,8 +10,8 @@
   "historical_timings_sha256": null,
   "historical_source_changes": [],
   "unmatched_historical_timing_ids": [],
-  "collection_status": "exact match, 673 canonical unittest IDs; zero discovery errors",
-  "test_count": 673,
+  "collection_status": "exact match, 674 canonical unittest IDs; zero discovery errors",
+  "test_count": 674,
   "test_file_count": 256,
   "core_targets": [
     "tests.test_pipeline",
@@ -26,7 +26,7 @@
     "tests.test_native_image_inputs.ImageInputContractTests"
   ],
   "core_test_count": 28,
-  "test_source_lines": 80856,
+  "test_source_lines": 80864,
   "historical_method_seconds": 0,
   "category_totals": {
     "Annotation and interactive image review": {
@@ -75,7 +75,7 @@
       "method_seconds": 0
     },
     "Startup, resources and diagnostics": {
-      "methods": 32,
+      "methods": 33,
       "files": 7,
       "method_seconds": 0
     }
@@ -8835,10 +8835,10 @@
       "file": "tests/test_test_runner.py",
       "purpose": "Runner failure reporting, exhaustive tier partition and fixture lifecycle.",
       "category": "Startup, resources and diagnostics",
-      "lines": 260,
-      "source_sha256": "23e24dbb8e8dc0c919eaa09cb4eb3243673402e56d8ca50f9241104c26d01e29",
+      "lines": 268,
+      "source_sha256": "a4e38559cacbaba4a915f2af9ff09c63135cb918e3115cf39a776a9d2e38d8a8",
       "historical_source_matches": false,
-      "test_count": 9,
+      "test_count": 10,
       "class_fixtures": {
         "TestRunnerTests": []
       },
@@ -41364,12 +41364,45 @@
       "runs_in_default_core": false
     },
     {
+      "id": "tests.test_test_runner.TestRunnerTests.test_worker_ends_with_its_code_and_flushed_output_but_no_interpreter_shutdown",
+      "file": "tests/test_test_runner.py",
+      "class": "TestRunnerTests",
+      "method": "test_worker_ends_with_its_code_and_flushed_output_but_no_interpreter_shutdown",
+      "line": 211,
+      "end_line": 217,
+      "functionality": "worker ends with its code and flushed output but no interpreter shutdown",
+      "description_basis": "method scenario name; see assertion evidence",
+      "category": "Startup, resources and diagnostics",
+      "direct_subjects": [],
+      "helper_subjects": [],
+      "calls": [
+        "subprocess.run",
+        "self.assertEqual"
+      ],
+      "direct_checks": [
+        "self.assertEqual(process.returncode, 7, process.stderr)",
+        "self.assertEqual(process.stdout, 'flushed')"
+      ],
+      "helpers": [],
+      "fixtures": [],
+      "decorators": [],
+      "class_decorators": [],
+      "subtest_sites": 0,
+      "loop_iterables": [],
+      "skip_calls": [],
+      "historical_source_matches": false,
+      "last_full_status": "unrecorded",
+      "last_full_seconds": null,
+      "skip_reason": "",
+      "runs_in_default_core": false
+    },
+    {
       "id": "tests.test_test_runner.TestRunnerTests.test_partition_is_complete_and_fixture_timings_preserve_lifecycle",
       "file": "tests/test_test_runner.py",
       "class": "TestRunnerTests",
       "method": "test_partition_is_complete_and_fixture_timings_preserve_lifecycle",
-      "line": 211,
-      "end_line": 239,
+      "line": 219,
+      "end_line": 247,
       "functionality": "partition is complete and fixture timings preserve lifecycle",
       "description_basis": "method scenario name; see assertion evidence",
       "category": "Startup, resources and diagnostics",
@@ -41434,8 +41467,8 @@
       "file": "tests/test_test_runner.py",
       "class": "TestRunnerTests",
       "method": "test_fixture_bundle_checks_hashes_and_never_overwrites_reviewed_files",
-      "line": 241,
-      "end_line": 260,
+      "line": 249,
+      "end_line": 268,
       "functionality": "fixture bundle checks hashes and never overwrites reviewed files",
       "description_basis": "method scenario name; see assertion evidence",
       "category": "Startup, resources and diagnostics",
@@ -69038,8 +69071,8 @@
     },
     {
       "file": "tests/worker.py",
-      "source_sha256": "634b08f7a1b148755e3121689c9eca6cd53b2d7ab9b9649f2bc9b886cc02b806",
-      "lines": 51,
+      "source_sha256": "3b3d36ca5ea54f05b3e732c155a2100f688d4499202f99f333333709417ea5cf",
+      "lines": 71,
       "docstring": "Internal isolated unittest worker; the full controller owns its manifest."
     }
   ]
