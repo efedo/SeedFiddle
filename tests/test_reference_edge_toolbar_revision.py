@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from tests.review_fixtures import dispose_window, open_workspace_images
+from tests.review_fixtures import dispose_window, workspace_window
 from tests.catalogue_fixtures import CatalogueTestCase
 
 from tests.functional_units import functional_units
@@ -35,10 +35,9 @@ class ReferenceEdgeToolbarRevisionTests(CatalogueTestCase):
         cls.app.setFont(cls.old_font)
 
     def check_test_toolbar_toggles_and_opacity_are_display_only(self):
-        from seedvision.ui.main_window import MainWindow
         from seedvision.persistence import analysis_settings_profile_from_graph
 
-        window = open_workspace_images(MainWindow(ROOT))
+        window = workspace_window(ROOT)
         self.addCleanup(dispose_window, window)
         window.resize(1360, 920)
         window.show()
@@ -178,9 +177,9 @@ class ReferenceEdgeToolbarRevisionTests(CatalogueTestCase):
         self.assertEqual(item.zValue(), 4.0)
 
     def check_test_colour_overlay_order_and_other_node_socket(self):
-        from seedvision.ui.main_window import MainWindow, _overlay_node_owner, _overlay_output_port_id
+        from seedvision.ui.main_window import _overlay_node_owner, _overlay_output_port_id
 
-        window = open_workspace_images(MainWindow(ROOT))
+        window = workspace_window(ROOT)
         self.addCleanup(dispose_window, window)
         entries = [(label, mode) for label, mode in window._overlay_entries
                    if _overlay_node_owner(mode) == "background_likelihood"]

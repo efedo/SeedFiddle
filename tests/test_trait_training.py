@@ -1,6 +1,6 @@
 """Synthetic native evidence, CUDA extraction, stop and publication witnesses."""
 
-from tests.review_fixtures import open_workspace_images
+from tests.review_fixtures import workspace_window
 from tests.functional_units import functional_units
 from dataclasses import replace
 import json
@@ -357,9 +357,8 @@ class TraitTrainingUITests(unittest.TestCase):
         self.path.write_text(json.dumps(compact_manifest()))
 
     def window(self):
-        from seedvision.ui.main_window import MainWindow
         from tests.review_fixtures import dispose_window
-        window = open_workspace_images(MainWindow(self.root))
+        window = workspace_window(self.root)
         self.addCleanup(lambda: dispose_window(window))
         return window
 

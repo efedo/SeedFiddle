@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from tests.review_fixtures import editable_copy, open_workspace_images
+from tests.review_fixtures import editable_copy, workspace_window
 import os
 import unittest
 from dataclasses import replace
@@ -25,15 +25,13 @@ class ProceduralFitMainWindowTests(unittest.TestCase):
         cls.application = QApplication.instance() or QApplication([])
 
     def _window_and_key(self):
-        from seedvision.ui.main_window import MainWindow
-
         # Never let a developer's ignored per-image archive open a modal or
         # influence these controller-only tests.
         with patch(
             "seedvision.ui.main_window.ReferenceRegionStore.load_if_present",
             return_value=None,
         ):
-            window = open_workspace_images(MainWindow(ROOT))
+            window = workspace_window(ROOT)
         # Exercise completion behavior in an explicitly editable pipeline.
         editable_copy(window)
         def dispose() -> None:

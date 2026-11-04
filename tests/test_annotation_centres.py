@@ -1,6 +1,6 @@
 """Annotation centroids and radial hilum metadata must never become predictions."""
 
-from tests.review_fixtures import dispose_window, open_workspace_images
+from tests.review_fixtures import dispose_window, workspace_window
 from tests.functional_units import functional_units
 import os
 from pathlib import Path
@@ -85,7 +85,6 @@ class AnnotationCentresUiTests(unittest.TestCase):
 
     def make_window(self):
         from PySide6.QtGui import QImage
-        from seedvision.ui.main_window import MainWindow
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -94,7 +93,7 @@ class AnnotationCentresUiTests(unittest.TestCase):
         image = QImage(160, 120, QImage.Format.Format_RGB888)
         image.fill(0xffffff)
         self.assertTrue(image.save(str(path)))
-        window = open_workspace_images(MainWindow(root))
+        window = workspace_window(root)
         self.addCleanup(dispose_window, window)
         return window, path
 

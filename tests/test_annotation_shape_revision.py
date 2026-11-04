@@ -1,5 +1,5 @@
 
-from tests.review_fixtures import open_workspace_images
+from tests.review_fixtures import workspace_window
 from tests.functional_units import functional_units
 
 from tests.review_fixtures import dispose_window
@@ -206,14 +206,13 @@ class AnnotationWidgetTests(unittest.TestCase):
     def check_test_no_defects_empty_selector_and_shape_fields(self):
         from PySide6.QtGui import QImage
         from PySide6.QtWidgets import QFrame, QGroupBox
-        from seedvision.ui.main_window import MainWindow
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "images").mkdir()
             image = QImage(100, 80, QImage.Format.Format_RGB888)
             image.fill(0)
             image.save(str(root / "images" / "example.png"))
-            window = open_workspace_images(MainWindow(root))
+            window = workspace_window(root)
             try:
                 key = window._current_image_key()
                 self.assertIsNotNone(key)
@@ -357,8 +356,7 @@ class AnnotationWidgetTests(unittest.TestCase):
     def check_test_brush_stack_uses_only_current_page_and_resize_is_remembered(self):
         from PySide6.QtCore import Qt, QPoint
         from PySide6.QtTest import QTest
-        from seedvision.ui.main_window import MainWindow
-        window = open_workspace_images(MainWindow(Path(__file__).resolve().parents[1]))
+        window = workspace_window(Path(__file__).resolve().parents[1])
         try:
             # Exercise remembered user sizing with enough image space. Small
             # screens deliberately constrain the palette to their viewport.

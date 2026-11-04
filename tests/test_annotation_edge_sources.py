@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from tests.review_fixtures import dispose_window, open_workspace_images
+from tests.review_fixtures import dispose_window, workspace_window
 from tests.functional_units import functional_units
 
 import os
@@ -30,7 +30,6 @@ class AnnotationEdgeSourceTests(unittest.TestCase):
             ANNOTATION_EDGE_SOURCES,
             EDGE_TRACE_EDGE_SOURCES,
         )
-        from seedvision.ui.main_window import MainWindow
 
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -40,7 +39,7 @@ class AnnotationEdgeSourceTests(unittest.TestCase):
             image.fill(QColor("white"))
             self.assertTrue(image.save(str(image_path)))
 
-            window = open_workspace_images(MainWindow(root))
+            window = workspace_window(root)
             self.addCleanup(dispose_window, window)
 
             self.assertEqual(window.edge_trace_evidence_combo.currentData(), "ridges")

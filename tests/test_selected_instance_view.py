@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from tests.review_fixtures import dispose_window, open_workspace_images
+from tests.review_fixtures import dispose_window, workspace_window
 from tests.functional_units import functional_units
 
 import os
@@ -195,8 +195,6 @@ class SelectedInstanceMainWindowTests(unittest.TestCase):
     def test_show_dropdown_plumbs_to_view_and_tracks_analysis_availability(self) -> None:
         from PySide6.QtGui import QColor, QImage
 
-        from seedvision.ui.main_window import MainWindow
-
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             image_path = root / "images" / "seed.png"
@@ -204,7 +202,7 @@ class SelectedInstanceMainWindowTests(unittest.TestCase):
             image = QImage(96, 72, QImage.Format.Format_RGB32)
             image.fill(QColor("white"))
             self.assertTrue(image.save(str(image_path)))
-            window = open_workspace_images(MainWindow(root))
+            window = workspace_window(root)
             self.addCleanup(dispose_window, window)
 
             selector = window.instance_visibility_combo

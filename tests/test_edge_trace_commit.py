@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from tests.review_fixtures import dispose_window, open_workspace_images
+from tests.review_fixtures import dispose_window, workspace_window
 from tests.functional_units import functional_units
 
 import os
@@ -160,10 +160,9 @@ class EdgeTraceCommitTests(unittest.TestCase):
 
     def check_test_fill_closed_loops_checkbox_defaults_on_and_updates_options(self) -> None:
         from seedvision.annotation import EdgeTraceOptions
-        from seedvision.ui.main_window import MainWindow
 
         with tempfile.TemporaryDirectory() as temporary_directory:
-            window = open_workspace_images(MainWindow(Path(temporary_directory)))
+            window = workspace_window(Path(temporary_directory))
             self.addCleanup(dispose_window, window)
 
             self.assertTrue(EdgeTraceOptions().fill_closed_loops)

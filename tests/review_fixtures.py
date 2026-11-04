@@ -1,5 +1,6 @@
 """Explicit review declarations for synthetic complete-outline test fixtures."""
 import numpy as np
+from contextlib import contextmanager, nullcontext
 from functools import lru_cache
 from seedvision.persistence.reference_regions import SeedInstanceAnnotation
 
@@ -41,6 +42,26 @@ def _workflow_templates(key, builder):
     return templates, tuple(recipe.to_json() for recipe in templates)
 
 
+@contextmanager
+def shared_workflow_templates():
+    """Serve the frozen recipes to windows built in this scope and check they stay unchanged.
+
+    An explicitly mocked catalogue remains in control rather than being replaced.
+    """
+    from unittest.mock import Mock, patch
+    from seedvision.pipeline import workflows
+    if isinstance(workflows.workflow_catalogue, Mock):
+        yield
+        return
+    templates, identities = _workflow_templates(_workflow_template_key(), workflows.workflow_catalogue)
+    if tuple(recipe.to_json() for recipe in templates) != identities:
+        raise AssertionError('Shared workflow templates were changed before construction')
+    with patch.object(workflows, 'workflow_catalogue', return_value=templates):
+        yield
+    if tuple(recipe.to_json() for recipe in templates) != identities:
+        raise AssertionError('Window construction changed shared workflow templates')
+
+
 def open_workspace_images(window):
     """Add the photographs in ``<root>/images`` to the window's untitled project.
 
@@ -75,37 +96,35 @@ def editable_copy(window, name='Test pipeline'):
 def isolated_window(root, *, reuse_templates=True, settings_path=None, editable=True, images=True):
     """Fresh desktop state with local settings and optional immutable templates.
 
-    Factory/source-validation witnesses can opt out. An explicitly mocked
-    catalogue remains in control rather than being replaced by this fixture.
+    Factory/source-validation witnesses can opt out.
     Edit fixtures work on a named copy; startup-lock witnesses pass editable=False.
     ``images`` adds the root's ``images/`` photographs (see open_workspace_images).
     """
-    from contextlib import ExitStack
-    from unittest.mock import Mock, patch
+    from unittest.mock import patch
     from PySide6.QtCore import QSettings
-    from seedvision.pipeline import workflows
     from seedvision.ui.main_window import MainWindow
     settings = QSettings(str(settings_path if settings_path is not None
                              else root / 'test-application-settings.ini'), QSettings.Format.IniFormat)
     settings.clear()
-    templates = None
-    with ExitStack() as stack:
-        stack.enter_context(patch('seedvision.ui.main_window.QSettings', return_value=settings))
-        if reuse_templates and not isinstance(workflows.workflow_catalogue, Mock):
-            templates, identities = _workflow_templates(_workflow_template_key(), workflows.workflow_catalogue)
-            if tuple(recipe.to_json() for recipe in templates) != identities:
-                raise AssertionError('Shared workflow templates were changed before construction')
-            stack.enter_context(patch.object(workflows, 'workflow_catalogue', return_value=templates))
+    templates = shared_workflow_templates() if reuse_templates else nullcontext()
+    with patch('seedvision.ui.main_window.QSettings', return_value=settings), templates:
         window = MainWindow(root)
         if images:
             open_workspace_images(window)
-        if templates is not None:
-            if tuple(recipe.to_json() for recipe in templates) != identities:
-                raise AssertionError('Window construction changed shared workflow templates')
     window._test_application_settings = settings
     if editable and hasattr(window, 'pipeline_documents'):
         editable_copy(window)
     return window
+
+
+def workspace_window(root):
+    """``open_workspace_images(MainWindow(root))`` on the shared frozen templates.
+
+    Unlike isolated_window, it keeps the real application settings and the locked default pipeline.
+    """
+    from seedvision.ui.main_window import MainWindow
+    with shared_workflow_templates():
+        return open_workspace_images(MainWindow(root))
 
 
 def controls_window(testcase):

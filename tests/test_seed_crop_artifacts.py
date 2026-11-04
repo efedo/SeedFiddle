@@ -1,5 +1,5 @@
 
-from tests.review_fixtures import dispose_window, open_workspace_images
+from tests.review_fixtures import dispose_window, workspace_window
 from tests.functional_units import functional_units
 import json
 import os
@@ -184,7 +184,6 @@ class SeedCropArtifactTests(unittest.TestCase):
     def check_test_window_stop_reaches_export_worker_cancellation_event(self):
         os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
         from PySide6.QtWidgets import QApplication
-        from seedvision.ui.main_window import MainWindow
         from seedvision.ui.results import _CropExportTask
         from seedvision.export.results import result_report
         from seedvision.export.crop_artifacts import CropExportCancelled
@@ -198,7 +197,7 @@ class SeedCropArtifactTests(unittest.TestCase):
                 raise CropExportCancelled('Stopped at the export boundary.')
             raise AssertionError('The window did not forward Stop to crop export.')
         with TemporaryDirectory() as directory:
-            window = open_workspace_images(MainWindow(Path(directory)))
+            window = workspace_window(Path(directory))
             analysis = _analysis()
             task = _CropExportTask(directory, analysis, result_report(analysis), (1,), 0)
             window._result_export_task = task
