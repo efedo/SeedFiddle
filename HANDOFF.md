@@ -54,10 +54,10 @@ work, families F01–F22). See [README.md](README.md) for the user view and
 .\.venv\Scripts\python.exe .\seed_vision.py --no-bootstrap
 .\.venv\Scripts\python.exe -m tests                  # core subset
 .\.venv\Scripts\python.exe -m tests tests.test_gui_layout   # focused module
-.\.venv\Scripts\python.exe -m tests --full           # 674 units, 3 workers
+.\.venv\Scripts\python.exe -m tests --full           # 681 units, 3 workers
 ```
 
-The last full run (3 November 2026) passed all 674 units with the 3 expected
+The last full run (3 November 2026) passed all 681 units with the 3 expected
 skips. Wall time over 15 minutes is reported as an advisory warning only; a run
 fails on test outcomes or an unaccounted unit, and a worker that writes no
 journal entry for `--stall-seconds` (default 900) is stopped. Details are in
@@ -93,8 +93,8 @@ old `test-runs/` and `test-temp/` directories and never touches the list above.
   from `D:\Programming\SeedFiddle`. From a git worktree they report a JSON
   acceptance mismatch on the preparation identities, whatever the code.
 - **Closed test windows stay alive.** Their own signal connections keep them alive,
-  so a full-suite worker ends itself without interpreter shutdown, which would spend
-  minutes deleting them. Deleting them between tests crashes a later canvas; see
+  so the test runner deletes the ones each test leaves behind, and a full-suite
+  worker ends itself without interpreter shutdown; see
   [docs/TESTING.md](docs/TESTING.md).
 - **Line endings.** Provenance digests are of the raw working-tree bytes, and the
   reviewed sources are a mix of LF and CRLF files. With `core.autocrlf=true`, a
@@ -109,6 +109,12 @@ old `test-runs/` and `test-temp/` directories and never touches the list above.
   `_project_reference_sidecar_paths` / `_project_manual_centre_sidecar_paths`, not
   by constructing a store on the workspace root. Only untitled projects use the
   shared `projects/` folders.
+- **Deferred callbacks.** Use `seedvision.ui.deferred.run_soon(owner, callback)`,
+  not `QTimer.singleShot`; `tests/test_deferred_callbacks.py` enforces this under
+  `seedvision/`. `singleShot(0, callback)` outlives its target, and an exception it
+  raises during a static dialog such as `QMessageBox.warning()` can crash the
+  process. The context overload `singleShot(0, owner, callback)` loses the exception
+  silently instead.
 - **Non-ASCII paths.** `cv2.imread` fails on them on Windows; always use
   `seedvision.persistence.image_decoding.read_image`.
 - **Offscreen Qt screenshots** render boxes unless `QT_QPA_FONTDIR=C:/Windows/Fonts`.

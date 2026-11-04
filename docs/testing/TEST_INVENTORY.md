@@ -4,9 +4,9 @@ This is a source-derived inventory of every discovered test method, audited on 2
 
 Markdown shows at most the first two assertion expressions, shortened to 260 characters. JSON retains every direct assertion expression, lexical production-call candidates, interface calls, helper references and their shared assertion evidence, loops, subtest sites, decorators and fixture calls. Dynamic dispatch and inherited fixture behavior require source inspection; this is not a manually proven call graph or an exhaustive enumeration of runtime subtest cases.
 
-Total: **674 methods in 256 test files**. A method can contain many subtests, input cases or expensive executions. Those are not separate unittest methods.
+Total: **681 methods in 257 test files**. A method can contain many subtests, input cases or expensive executions. Those are not separate unittest methods.
 
-Discovery reconciliation: exact match, 674 canonical unittest IDs; zero discovery errors.
+Discovery reconciliation: exact match, 681 canonical unittest IDs; zero discovery errors.
 
 No historical run receipt was used, so status and seconds are blank. Class setup/teardown, discovery and interpreter shutdown are not allocated to methods. A dash means no method duration was recorded, not zero cost. Runtime skips can differ by environment; their exact historical reasons are in JSON.
 
@@ -51,6 +51,7 @@ See [the multi-pass audit](../archive/TEST_INFRASTRUCTURE_AUDIT.md) for overlap,
 | [tests.test_correction_project_dialog](#teststest_correction_project_dialog) | 3 | 0.000 | Exact-image correction Keep, worker handoff and reopened project pins. |
 | [tests.test_critical_review_fixes](#teststest_critical_review_fixes) | 2 | 0.000 | Earlier regression fixes spanning annotation coordinates, learning and export |
 | [tests.test_default_pipeline_copies](#teststest_default_pipeline_copies) | 2 | 0.000 | Default pipelines stay locked; their edit controls offer a named, editable copy. |
+| [tests.test_deferred_callbacks](#teststest_deferred_callbacks) | 6 | 0.000 | Deferred callbacks die with their owner and report what they raise. |
 | [tests.test_desktop_terminal_history](#teststest_desktop_terminal_history) | 4 | 0.000 | Earlier desktop rejection boundaries and bounded evidence-only history review. |
 | [tests.test_diagnostics](#teststest_diagnostics) | 1 | 0.000 | Runtime diagnostic facts |
 | [tests.test_edge_trace_commit](#teststest_edge_trace_commit) | 1 | 0.000 | Edge trace tool commits and desktop annotation updates |
@@ -263,7 +264,7 @@ See [the multi-pass audit](../archive/TEST_INFRASTRUCTURE_AUDIT.md) for overlap,
 | [tests.test_smpts_paper](#teststest_smpts_paper) | 5 | 0.000 | Soybean paper method calculations and explicitly supported boundaries |
 | [tests.test_species_library_dialog](#teststest_species_library_dialog) | 2 | 0.000 | Species reference library desktop editing |
 | [tests.test_terminal_snapshot](#teststest_terminal_snapshot) | 2 | 0.000 | Real terminal/acknowledgment transport and private Qt historical consumers. |
-| [tests.test_test_runner](#teststest_test_runner) | 10 | 0.000 | Runner failure reporting, exhaustive tier partition and fixture lifecycle. |
+| [tests.test_test_runner](#teststest_test_runner) | 11 | 0.000 | Runner failure reporting, exhaustive tier partition and fixture lifecycle. |
 | [tests.test_threshold_conformance](#teststest_threshold_conformance) | 4 | 0.000 | Public/native threshold checkpoint comparison and conformance |
 | [tests.test_trait_classifier](#teststest_trait_classifier) | 2 | 0.000 | Software oracles for trait classification; all truth is explicitly synthetic. |
 | [tests.test_trait_pipeline](#teststest_trait_pipeline) | 2 | 0.000 | Native selection/cache/report witnesses for the frozen trait classifier. |
@@ -344,8 +345,8 @@ Fixtures: `setUpClass` at line 81.
 
 | Test method / source | Functionality exercised | Assertion evidence | Last full run |
 | --- | --- | --- | --- |
-| [`test_workflow_lifecycle`](../../tests/test_annotation_centres.py#L492) | 11 related AnnotationCentresUiTests scenarios, each with private fixture state. | `helper: tests.test_annotation_centres.AnnotationCentresUiTests.check_test_crosshairs_span_a_third_of_the_median_seed_at_every_zoom: self.assertAlmostEqual(columns[-1] - columns[0] + 1, 40.0 * zoom, delta=5.0)` | unrecorded / — |
-| [`test_validation_and_recovery`](../../tests/test_annotation_centres.py#L506) | 1 related AnnotationCentresUiTests scenarios, each with private fixture state. | `helper: tests.test_annotation_centres.AnnotationCentresUiTests.check_test_next_unannotated_cycles_painted_seeds_missing_condition_or_shape: self.assertIsNotNone(key)` | unrecorded / — |
+| [`test_workflow_lifecycle`](../../tests/test_annotation_centres.py#L491) | 11 related AnnotationCentresUiTests scenarios, each with private fixture state. | `helper: tests.test_annotation_centres.AnnotationCentresUiTests.check_test_crosshairs_span_a_third_of_the_median_seed_at_every_zoom: self.assertAlmostEqual(columns[-1] - columns[0] + 1, 40.0 * zoom, delta=5.0)` | unrecorded / — |
+| [`test_validation_and_recovery`](../../tests/test_annotation_centres.py#L505) | 1 related AnnotationCentresUiTests scenarios, each with private fixture state. | `helper: tests.test_annotation_centres.AnnotationCentresUiTests.check_test_next_unannotated_cycles_painted_seeds_missing_condition_or_shape: self.assertIsNotNone(key)` | unrecorded / — |
 
 ## tests.test_annotation_edge_sources
 
@@ -359,8 +360,8 @@ Fixtures: `setUpClass` at line 18.
 
 | Test method / source | Functionality exercised | Assertion evidence | Last full run |
 | --- | --- | --- | --- |
-| [`test_workflow_lifecycle`](../../tests/test_annotation_edge_sources.py#L439) | 2 related AnnotationEdgeSourceTests scenarios, each with private fixture state. | `helper: tests.test_annotation_edge_sources.AnnotationEdgeSourceTests.check_test_trace_and_fill_selectors_expose_only_applicable_edge_sources: self.assertTrue(image.save(str(image_path)))` | unrecorded / — |
-| [`test_validation_and_recovery`](../../tests/test_annotation_edge_sources.py#L444) | 1 related AnnotationEdgeSourceTests scenarios, each with private fixture state. | `helper: tests.test_annotation_edge_sources.AnnotationEdgeSourceTests.check_test_image_view_adapts_each_edge_source_and_invalidates_cached_values: self.assertTrue(image.save(str(image_path)))` | unrecorded / — |
+| [`test_workflow_lifecycle`](../../tests/test_annotation_edge_sources.py#L438) | 2 related AnnotationEdgeSourceTests scenarios, each with private fixture state. | `helper: tests.test_annotation_edge_sources.AnnotationEdgeSourceTests.check_test_trace_and_fill_selectors_expose_only_applicable_edge_sources: self.assertTrue(image.save(str(image_path)))` | unrecorded / — |
+| [`test_validation_and_recovery`](../../tests/test_annotation_edge_sources.py#L443) | 1 related AnnotationEdgeSourceTests scenarios, each with private fixture state. | `helper: tests.test_annotation_edge_sources.AnnotationEdgeSourceTests.check_test_image_view_adapts_each_edge_source_and_invalidates_cached_values: self.assertTrue(image.save(str(image_path)))` | unrecorded / — |
 
 ## tests.test_annotation_generation_binding
 
@@ -398,7 +399,7 @@ Fixtures: `setUpClass` at line 166.
 
 | Test method / source | Functionality exercised | Assertion evidence | Last full run |
 | --- | --- | --- | --- |
-| [`test_workflow_lifecycle`](../../tests/test_annotation_shape_revision.py#L384) | 5 related AnnotationWidgetTests scenarios, each with private fixture state. | `helper: tests.test_annotation_shape_revision.AnnotationWidgetTests.check_test_distribution_has_axes_units_pose_key_and_error_bars: self.assertIn('Maximum span (mm)', text)` | unrecorded / — |
+| [`test_workflow_lifecycle`](../../tests/test_annotation_shape_revision.py#L382) | 5 related AnnotationWidgetTests scenarios, each with private fixture state. | `helper: tests.test_annotation_shape_revision.AnnotationWidgetTests.check_test_distribution_has_axes_units_pose_key_and_error_bars: self.assertIn('Maximum span (mm)', text)` | unrecorded / — |
 
 ## tests.test_annotation_tools
 
@@ -466,14 +467,14 @@ Fixtures: `setUpClass` at line 29, `setUp` at line 36.
 
 | Test method / source | Functionality exercised | Assertion evidence | Last full run |
 | --- | --- | --- | --- |
-| [`test_missing_model_and_incompatible_review_are_explicit_on_both_routes`](../../tests/test_authoritative_parity.py#L173) | missing model and incompatible review are explicit on both routes | `self.assertTrue(all((row['trait_prediction']['abstention_reason'] == 'model_file_missing' for row in desktop['instances']))); self.assertEqual(batch['review_lookup'], 'incompatible')` | unrecorded / — |
+| [`test_missing_model_and_incompatible_review_are_explicit_on_both_routes`](../../tests/test_authoritative_parity.py#L172) | missing model and incompatible review are explicit on both routes | `self.assertTrue(all((row['trait_prediction']['abstention_reason'] == 'model_file_missing' for row in desktop['instances']))); self.assertEqual(batch['review_lookup'], 'incompatible')` | unrecorded / — |
 ### ReviewLookupTests
 
-Fixtures: `setUpClass` at line 192.
+Fixtures: `setUpClass` at line 191.
 
 | Test method / source | Functionality exercised | Assertion evidence | Last full run |
 | --- | --- | --- | --- |
-| [`test_invalid_duplicate_oversized_and_stale_reviews_remain_distinct_and_unchanged`](../../tests/test_authoritative_parity.py#L198) | invalid duplicate oversized and stale reviews remain distinct and unchanged | `self.assertEqual(lookup_result_review(root, revision), (None, 'not_recorded')); self.assertEqual(lookup_result_review(root, revision), (None, 'malformed'))` | unrecorded / — |
+| [`test_invalid_duplicate_oversized_and_stale_reviews_remain_distinct_and_unchanged`](../../tests/test_authoritative_parity.py#L197) | invalid duplicate oversized and stale reviews remain distinct and unchanged | `self.assertEqual(lookup_result_review(root, revision), (None, 'not_recorded')); self.assertEqual(lookup_result_review(root, revision), (None, 'malformed'))` | unrecorded / — |
 
 ## tests.test_backend_outcomes
 
@@ -885,6 +886,25 @@ Fixtures: `setUpClass` at line 47, `setUp` at line 50, `tearDown` at line 59.
 | [`test_workflow_lifecycle`](../../tests/test_default_pipeline_copies.py#L488) | 9 related DefaultPipelineCopyTests scenarios, each with private fixture state. | `helper: tests.test_default_pipeline_copies.DefaultPipelineCopyTests.check_test_load_and_save_icons_sit_beside_rename_and_offer_no_copy: self.assertEqual(layout.indexOf(presenter.load_button), rename + 1)` | unrecorded / — |
 | [`test_refusal_and_recovery`](../../tests/test_default_pipeline_copies.py#L500) | 6 related DefaultPipelineCopyTests scenarios, each with private fixture state. | `helper: tests.test_default_pipeline_copies.DefaultPipelineCopyTests.check_test_declining_keeps_the_default_and_never_asks_for_a_name: self.assert_locked_default()` | unrecorded / — |
 
+## tests.test_deferred_callbacks
+
+Deferred callbacks die with their owner and report what they raise.
+
+Source: [tests/test_deferred_callbacks.py](../../tests/test_deferred_callbacks.py). Category: Image analysis, calibration and rendering.
+
+### DeferredCallbackTests
+
+Fixtures: `setUpClass` at line 56.
+
+| Test method / source | Functionality exercised | Assertion evidence | Last full run |
+| --- | --- | --- | --- |
+| [`test_callback_runs_in_one_event_pass_in_order_and_leaves_no_timer`](../../tests/test_deferred_callbacks.py#L81) | callback runs in one event pass in order and leaves no timer | `self.assertEqual(calls, []); self.assertEqual(calls, ['first', 'second'])` | unrecorded / — |
+| [`test_deleting_the_owner_cancels_the_callback`](../../tests/test_deferred_callbacks.py#L90) | deleting the owner cancels the callback | `self.assertEqual(calls, [])` | unrecorded / — |
+| [`test_raising_callback_is_reported_and_new_cards_paint_during_process_events`](../../tests/test_deferred_callbacks.py#L98) | raising callback is reported and new cards paint during process events | `self.assertEqual(errors, ['raised by a deferred callback'])` | unrecorded / — |
+| [`test_raising_callback_is_reported_and_new_cards_paint_during_a_static_dialog`](../../tests/test_deferred_callbacks.py#L105) | raising callback is reported and new cards paint during a static dialog | `self.assertEqual(errors, ['raised by a deferred callback']); self.assertTrue(all((card.paints for card in cards)))` | unrecorded / — |
+| [`test_deleted_window_with_a_pending_workspace_restore_cannot_harm_a_new_canvas`](../../tests/test_deferred_callbacks.py#L117) | deleted window with a pending workspace restore cannot harm a new canvas | `self.assertEqual(errors, [])` | unrecorded / — |
+| [`test_application_code_defers_only_through_owned_timers`](../../tests/test_deferred_callbacks.py#L141) | application code defers only through owned timers | `self.assertEqual(users, [], 'Use seedvision.ui.deferred.run_soon, not QTimer.singleShot.')` | unrecorded / — |
+
 ## tests.test_desktop_terminal_history
 
 Earlier desktop rejection boundaries and bounded evidence-only history review.
@@ -934,7 +954,7 @@ Fixtures: `setUpClass` at line 17.
 
 | Test method / source | Functionality exercised | Assertion evidence | Last full run |
 | --- | --- | --- | --- |
-| [`test_workflow_lifecycle`](../../tests/test_edge_trace_commit.py#L178) | 4 related EdgeTraceCommitTests scenarios, each with private fixture state. | `helper: tests.test_edge_trace_commit.EdgeTraceCommitTests.check_test_open_trace_is_exactly_one_pixel_independent_of_brush_radius: self.assertEqual(changed, 49)` | unrecorded / — |
+| [`test_workflow_lifecycle`](../../tests/test_edge_trace_commit.py#L177) | 4 related EdgeTraceCommitTests scenarios, each with private fixture state. | `helper: tests.test_edge_trace_commit.EdgeTraceCommitTests.check_test_open_trace_is_exactly_one_pixel_independent_of_brush_radius: self.assertEqual(changed, 49)` | unrecorded / — |
 
 ## tests.test_entrypoint
 
@@ -1001,7 +1021,7 @@ Fixtures: `setUpClass` at line 19, `setUp` at line 24.
 
 | Test method / source | Functionality exercised | Assertion evidence | Last full run |
 | --- | --- | --- | --- |
-| [`test_workflow_lifecycle`](../../tests/test_gui_layout.py#L411) | 18 related GuiLayoutTests scenarios, each with private fixture state. | `helper: tests.test_gui_layout.GuiLayoutTests.check_test_every_shortcut_is_unique: self.assertEqual({key: count for key, count in shortcuts.items() if count > 1}, {})` | unrecorded / — |
+| [`test_workflow_lifecycle`](../../tests/test_gui_layout.py#L437) | 19 related GuiLayoutTests scenarios, each with private fixture state. | `helper: tests.test_gui_layout.GuiLayoutTests.check_test_every_shortcut_is_unique: self.assertEqual({key: count for key, count in shortcuts.items() if count > 1}, {})` | unrecorded / — |
 
 ## tests.test_icon_asset
 
@@ -1104,8 +1124,8 @@ Fixtures: `setUpClass` at line 17, `setUp` at line 25.
 
 | Test method / source | Functionality exercised | Assertion evidence | Last full run |
 | --- | --- | --- | --- |
-| [`test_selected_seed_warning_is_exact_and_does_not_block_apply`](../../tests/test_instance_continuity_ui.py#L56) | selected seed warning is exact and does not block apply | `self.assertFalse(warning.isHidden()); self.assertEqual(warning.text(), '⚠ Seed 7 has 2 disconnected areas.')` | unrecorded / — |
-| [`test_global_warning_and_identity_cache_update_for_a_new_draft`](../../tests/test_instance_continuity_ui.py#L102) | global warning and identity cache update for a new draft | `self.assertIn('1 seed ID has disconnected areas: 2', warning.text()); self.assertEqual(banner.text(), warning.text())` | unrecorded / — |
+| [`test_selected_seed_warning_is_exact_and_does_not_block_apply`](../../tests/test_instance_continuity_ui.py#L54) | selected seed warning is exact and does not block apply | `self.assertFalse(warning.isHidden()); self.assertEqual(warning.text(), '⚠ Seed 7 has 2 disconnected areas.')` | unrecorded / — |
+| [`test_global_warning_and_identity_cache_update_for_a_new_draft`](../../tests/test_instance_continuity_ui.py#L100) | global warning and identity cache update for a new draft | `self.assertIn('1 seed ID has disconnected areas: 2', warning.text()); self.assertEqual(banner.text(), warning.text())` | unrecorded / — |
 
 ## tests.test_instance_mask_import
 
@@ -1134,8 +1154,8 @@ Fixtures: `setUpClass` at line 21, `setUp` at line 29.
 
 | Test method / source | Functionality exercised | Assertion evidence | Last full run |
 | --- | --- | --- | --- |
-| [`test_workflow_lifecycle`](../../tests/test_instance_mask_import_ui.py#L610) | 13 related InstanceMaskImportUiTests scenarios, each with private fixture state. | `helper: tests.test_instance_mask_import_ui.InstanceMaskImportUiTests.check_test_panel_import_is_draft_with_provenance_warning_and_undo: chooser.assert_not_called()` | unrecorded / — |
-| [`test_validation_and_recovery`](../../tests/test_instance_mask_import_ui.py#L626) | 2 related InstanceMaskImportUiTests scenarios, each with private fixture state. | `helper: tests.test_instance_mask_import_ui.InstanceMaskImportUiTests.check_test_validation_failure_warns_without_mutating_draft_or_history: warning.assert_called_once()` | unrecorded / — |
+| [`test_workflow_lifecycle`](../../tests/test_instance_mask_import_ui.py#L608) | 13 related InstanceMaskImportUiTests scenarios, each with private fixture state. | `helper: tests.test_instance_mask_import_ui.InstanceMaskImportUiTests.check_test_panel_import_is_draft_with_provenance_warning_and_undo: chooser.assert_not_called()` | unrecorded / — |
+| [`test_validation_and_recovery`](../../tests/test_instance_mask_import_ui.py#L624) | 2 related InstanceMaskImportUiTests scenarios, each with private fixture state. | `helper: tests.test_instance_mask_import_ui.InstanceMaskImportUiTests.check_test_validation_failure_warns_without_mutating_draft_or_history: warning.assert_called_once()` | unrecorded / — |
 
 ## tests.test_instance_reference_evidence
 
@@ -1291,8 +1311,8 @@ Fixtures: `setUpClass` at line 19.
 
 | Test method / source | Functionality exercised | Assertion evidence | Last full run |
 | --- | --- | --- | --- |
-| [`test_workflow_lifecycle`](../../tests/test_manual_seed_centre_ui.py#L410) | 2 related ManualSeedCentreUiTests scenarios, each with private fixture state. | `helper: tests.test_manual_seed_centre_ui.ManualSeedCentreUiTests.check_test_qt_add_manual_drag_auto_drag_and_right_delete_use_marker_semantics: self.assertTrue(succeeded, error)` | unrecorded / — |
-| [`test_validation_and_recovery`](../../tests/test_manual_seed_centre_ui.py#L415) | 3 related ManualSeedCentreUiTests scenarios, each with private fixture state. | `helper: tests.test_manual_seed_centre_ui.ManualSeedCentreUiTests.check_test_completed_edit_inverse_projects_autosaves_and_invalidates_only_dependents: self.assertIsNotNone(key)` | unrecorded / — |
+| [`test_workflow_lifecycle`](../../tests/test_manual_seed_centre_ui.py#L406) | 2 related ManualSeedCentreUiTests scenarios, each with private fixture state. | `helper: tests.test_manual_seed_centre_ui.ManualSeedCentreUiTests.check_test_qt_add_manual_drag_auto_drag_and_right_delete_use_marker_semantics: self.assertTrue(succeeded, error)` | unrecorded / — |
+| [`test_validation_and_recovery`](../../tests/test_manual_seed_centre_ui.py#L411) | 3 related ManualSeedCentreUiTests scenarios, each with private fixture state. | `helper: tests.test_manual_seed_centre_ui.ManualSeedCentreUiTests.check_test_completed_edit_inverse_projects_autosaves_and_invalidates_only_dependents: self.assertIsNotNone(key)` | unrecorded / — |
 
 ## tests.test_material_evidence
 
@@ -2686,21 +2706,21 @@ Fixtures: `setUpClass` at line 24.
 
 | Test method / source | Functionality exercised | Assertion evidence | Last full run |
 | --- | --- | --- | --- |
-| [`test_approved_reference_edge_fit_updates_live_node_parameters`](../../tests/test_pipeline_ui.py#L4434) | approved reference edge fit updates live node parameters | `helper: tests.test_pipeline_ui.PipelineCanvasTests.check_test_approved_reference_edge_fit_updates_live_node_parameters: self.assertAlmostEqual(node.parameters['reference_edge_similarity_scale'], 1.3)` | unrecorded / — |
-| [`test_switching_images_cancels_all_previous_image_work_before_load`](../../tests/test_pipeline_ui.py#L4437) | switching images cancels all previous image work before load | `helper: tests.test_pipeline_ui.PipelineCanvasTests.check_test_switching_images_cancels_all_previous_image_work_before_load: self.assertTrue(analysis_task.cancelled)` | unrecorded / — |
-| [`test_cancelled_previous_image_completion_cannot_install_stale_result`](../../tests/test_pipeline_ui.py#L4440) | cancelled previous image completion cannot install stale result | `helper: tests.test_pipeline_ui.PipelineCanvasTests.check_test_cancelled_previous_image_completion_cannot_install_stale_result: mark_complete.assert_not_called()` | unrecorded / — |
-| [`test_failed_analysis_purges_its_partial_cache`](../../tests/test_pipeline_ui.py#L4443) | failed analysis purges its partial cache | `helper: tests.test_pipeline_ui.PipelineCanvasTests.check_test_failed_analysis_purges_its_partial_cache: self.assertNotIn(key, window._analysis_caches)` | unrecorded / — |
-| [`test_superseded_analysis_is_cancelled_and_remains_visible`](../../tests/test_pipeline_ui.py#L4446) | superseded analysis is cancelled and remains visible | `helper: tests.test_pipeline_ui.PipelineCanvasTests.check_test_superseded_analysis_is_cancelled_and_remains_visible: self.assertTrue(task.cancelled)` | unrecorded / — |
-| [`test_worker_progress_turns_only_the_current_revision_node_green`](../../tests/test_pipeline_ui.py#L4449) | worker progress turns only the current revision node green | `helper: tests.test_pipeline_ui.PipelineCanvasTests.check_test_worker_progress_turns_only_the_current_revision_node_green: self.assertTrue(succeeded, error)` | unrecorded / — |
-| [`test_cleared_reference_layer_returns_to_paint_and_accepts_dabs`](../../tests/test_pipeline_ui.py#L4452) | cleared reference layer returns to paint and accepts dabs | `helper: tests.test_pipeline_ui.PipelineCanvasTests.check_test_cleared_reference_layer_returns_to_paint_and_accepts_dabs: self.assertTrue(window.image_view._reference_erase_enabled)` | unrecorded / — |
-| [`test_perimeter_source_checkbox_invalidates_every_background_consumer`](../../tests/test_pipeline_ui.py#L4455) | perimeter source checkbox invalidates every background consumer | `helper: tests.test_pipeline_ui.PipelineCanvasTests.check_test_perimeter_source_checkbox_invalidates_every_background_consumer: self.assertTrue(window.keep_perimeter_background_reference_checkbox.isChecked())` | unrecorded / — |
-| [`test_annotated_seed_foreground_checkbox_defaults_on_and_invalidates_consumers`](../../tests/test_pipeline_ui.py#L4458) | annotated seed foreground checkbox defaults on and invalidates consumers | `helper: tests.test_pipeline_ui.PipelineCanvasTests.check_test_annotated_seed_foreground_checkbox_defaults_on_and_invalidates_consumers: self.assertTrue(checkbox.isChecked())` | unrecorded / — |
-| [`test_new_seed_preserves_the_selected_instance_tool`](../../tests/test_pipeline_ui.py#L4461) | new seed preserves the selected instance tool | `helper: tests.test_pipeline_ui.PipelineCanvasTests.check_test_new_seed_preserves_the_selected_instance_tool: self.assertTrue(image.save(str(image_path)))` | unrecorded / — |
-| [`test_reference_masks_run_analysis_only_after_explicit_apply`](../../tests/test_pipeline_ui.py#L4464) | reference masks run analysis only after explicit apply | `helper: tests.test_pipeline_ui.PipelineCanvasTests.check_test_reference_masks_run_analysis_only_after_explicit_apply: self.assertEqual(analyses, [])` | unrecorded / — |
-| [`test_instance_annotations_apply_separately_from_reference_masks`](../../tests/test_pipeline_ui.py#L4467) | instance annotations apply separately from reference masks | `helper: tests.test_pipeline_ui.PipelineCanvasTests.check_test_instance_annotations_apply_separately_from_reference_masks: self.assertIn(key, window._instance_annotations_dirty)` | unrecorded / — |
-| [`test_workflow_lifecycle`](../../tests/test_pipeline_ui.py#L4470) | 58 related PipelineCanvasTests scenarios, each with private fixture state. | `helper: tests.test_pipeline_ui.PipelineCanvasTests.check_test_canvas_contains_default_nodes_and_live_edges: self.assertGreater(canvas.horizontalScrollBar().maximum(), 0)` | unrecorded / — |
-| [`test_validation_and_recovery`](../../tests/test_pipeline_ui.py#L4531) | 1 related PipelineCanvasTests scenarios, each with private fixture state. | `helper: tests.test_pipeline_ui.PipelineCanvasTests.check_test_setting_change_invalidates_only_node_and_graph_dependents: self.assertEqual(window.pipeline.node('edge_gradients').status, NodeStatus.IDLE)` | unrecorded / — |
-| [`test_calibration_nodes_render_references_and_metric_scale`](../../tests/test_pipeline_ui.py#L4882) | calibration nodes render references and metric scale | `helper: tests.test_pipeline_ui.PipelineCanvasTests.check_test_calibration_nodes_render_references_and_metric_scale: self.assertTrue(succeeded, error)` | unrecorded / — |
+| [`test_approved_reference_edge_fit_updates_live_node_parameters`](../../tests/test_pipeline_ui.py#L4421) | approved reference edge fit updates live node parameters | `helper: tests.test_pipeline_ui.PipelineCanvasTests.check_test_approved_reference_edge_fit_updates_live_node_parameters: self.assertAlmostEqual(node.parameters['reference_edge_similarity_scale'], 1.3)` | unrecorded / — |
+| [`test_switching_images_cancels_all_previous_image_work_before_load`](../../tests/test_pipeline_ui.py#L4424) | switching images cancels all previous image work before load | `helper: tests.test_pipeline_ui.PipelineCanvasTests.check_test_switching_images_cancels_all_previous_image_work_before_load: self.assertTrue(analysis_task.cancelled)` | unrecorded / — |
+| [`test_cancelled_previous_image_completion_cannot_install_stale_result`](../../tests/test_pipeline_ui.py#L4427) | cancelled previous image completion cannot install stale result | `helper: tests.test_pipeline_ui.PipelineCanvasTests.check_test_cancelled_previous_image_completion_cannot_install_stale_result: mark_complete.assert_not_called()` | unrecorded / — |
+| [`test_failed_analysis_purges_its_partial_cache`](../../tests/test_pipeline_ui.py#L4430) | failed analysis purges its partial cache | `helper: tests.test_pipeline_ui.PipelineCanvasTests.check_test_failed_analysis_purges_its_partial_cache: self.assertNotIn(key, window._analysis_caches)` | unrecorded / — |
+| [`test_superseded_analysis_is_cancelled_and_remains_visible`](../../tests/test_pipeline_ui.py#L4433) | superseded analysis is cancelled and remains visible | `helper: tests.test_pipeline_ui.PipelineCanvasTests.check_test_superseded_analysis_is_cancelled_and_remains_visible: self.assertTrue(task.cancelled)` | unrecorded / — |
+| [`test_worker_progress_turns_only_the_current_revision_node_green`](../../tests/test_pipeline_ui.py#L4436) | worker progress turns only the current revision node green | `helper: tests.test_pipeline_ui.PipelineCanvasTests.check_test_worker_progress_turns_only_the_current_revision_node_green: self.assertTrue(succeeded, error)` | unrecorded / — |
+| [`test_cleared_reference_layer_returns_to_paint_and_accepts_dabs`](../../tests/test_pipeline_ui.py#L4439) | cleared reference layer returns to paint and accepts dabs | `helper: tests.test_pipeline_ui.PipelineCanvasTests.check_test_cleared_reference_layer_returns_to_paint_and_accepts_dabs: self.assertTrue(window.image_view._reference_erase_enabled)` | unrecorded / — |
+| [`test_perimeter_source_checkbox_invalidates_every_background_consumer`](../../tests/test_pipeline_ui.py#L4442) | perimeter source checkbox invalidates every background consumer | `helper: tests.test_pipeline_ui.PipelineCanvasTests.check_test_perimeter_source_checkbox_invalidates_every_background_consumer: self.assertTrue(window.keep_perimeter_background_reference_checkbox.isChecked())` | unrecorded / — |
+| [`test_annotated_seed_foreground_checkbox_defaults_on_and_invalidates_consumers`](../../tests/test_pipeline_ui.py#L4445) | annotated seed foreground checkbox defaults on and invalidates consumers | `helper: tests.test_pipeline_ui.PipelineCanvasTests.check_test_annotated_seed_foreground_checkbox_defaults_on_and_invalidates_consumers: self.assertTrue(checkbox.isChecked())` | unrecorded / — |
+| [`test_new_seed_preserves_the_selected_instance_tool`](../../tests/test_pipeline_ui.py#L4448) | new seed preserves the selected instance tool | `helper: tests.test_pipeline_ui.PipelineCanvasTests.check_test_new_seed_preserves_the_selected_instance_tool: self.assertTrue(image.save(str(image_path)))` | unrecorded / — |
+| [`test_reference_masks_run_analysis_only_after_explicit_apply`](../../tests/test_pipeline_ui.py#L4451) | reference masks run analysis only after explicit apply | `helper: tests.test_pipeline_ui.PipelineCanvasTests.check_test_reference_masks_run_analysis_only_after_explicit_apply: self.assertEqual(analyses, [])` | unrecorded / — |
+| [`test_instance_annotations_apply_separately_from_reference_masks`](../../tests/test_pipeline_ui.py#L4454) | instance annotations apply separately from reference masks | `helper: tests.test_pipeline_ui.PipelineCanvasTests.check_test_instance_annotations_apply_separately_from_reference_masks: self.assertIn(key, window._instance_annotations_dirty)` | unrecorded / — |
+| [`test_workflow_lifecycle`](../../tests/test_pipeline_ui.py#L4457) | 58 related PipelineCanvasTests scenarios, each with private fixture state. | `helper: tests.test_pipeline_ui.PipelineCanvasTests.check_test_canvas_contains_default_nodes_and_live_edges: self.assertGreater(canvas.horizontalScrollBar().maximum(), 0)` | unrecorded / — |
+| [`test_validation_and_recovery`](../../tests/test_pipeline_ui.py#L4518) | 1 related PipelineCanvasTests scenarios, each with private fixture state. | `helper: tests.test_pipeline_ui.PipelineCanvasTests.check_test_setting_change_invalidates_only_node_and_graph_dependents: self.assertEqual(window.pipeline.node('edge_gradients').status, NodeStatus.IDLE)` | unrecorded / — |
+| [`test_calibration_nodes_render_references_and_metric_scale`](../../tests/test_pipeline_ui.py#L4868) | calibration nodes render references and metric scale | `helper: tests.test_pipeline_ui.PipelineCanvasTests.check_test_calibration_nodes_render_references_and_metric_scale: self.assertTrue(succeeded, error)` | unrecorded / — |
 
 ## tests.test_pipeline_workflow_batch
 
@@ -3645,8 +3665,8 @@ Fixtures: `setUpClass` at line 19.
 
 | Test method / source | Functionality exercised | Assertion evidence | Last full run |
 | --- | --- | --- | --- |
-| [`test_fit_task_passes_complete_coverage_to_core_options`](../../tests/test_procedural_fit_ui.py#L130) | fit task passes complete coverage to core options | `self.assertTrue(options.annotations_are_complete); self.assertEqual(options.false_positive_weight, 2.5)` | unrecorded / — |
-| [`test_completed_whole_dish_fit_labels_reported_metrics`](../../tests/test_procedural_fit_ui.py#L222) | completed whole dish fit labels reported metrics | `self.assertIn('Whole-dish metrics', window.pipeline_inspector.procedural_fit_status_label.text())` | unrecorded / — |
+| [`test_fit_task_passes_complete_coverage_to_core_options`](../../tests/test_procedural_fit_ui.py#L128) | fit task passes complete coverage to core options | `self.assertTrue(options.annotations_are_complete); self.assertEqual(options.false_positive_weight, 2.5)` | unrecorded / — |
+| [`test_completed_whole_dish_fit_labels_reported_metrics`](../../tests/test_procedural_fit_ui.py#L220) | completed whole dish fit labels reported metrics | `self.assertIn('Whole-dish metrics', window.pipeline_inspector.procedural_fit_status_label.text())` | unrecorded / — |
 
 ## tests.test_procedural_instances
 
@@ -4011,7 +4031,7 @@ Fixtures: `setUpClass` at line 21, `tearDownClass` at line 34.
 
 | Test method / source | Functionality exercised | Assertion evidence | Last full run |
 | --- | --- | --- | --- |
-| [`test_workflow_lifecycle`](../../tests/test_reference_edge_toolbar_revision.py#L245) | 6 related ReferenceEdgeToolbarRevisionTests scenarios, each with private fixture state. | `helper: tests.test_reference_edge_toolbar_revision.ReferenceEdgeToolbarRevisionTests.check_test_toolbar_toggles_and_opacity_are_display_only: self.assertEqual(window.analyze_action.text(), 'Run pipeline')` | unrecorded / — |
+| [`test_workflow_lifecycle`](../../tests/test_reference_edge_toolbar_revision.py#L244) | 6 related ReferenceEdgeToolbarRevisionTests scenarios, each with private fixture state. | `helper: tests.test_reference_edge_toolbar_revision.ReferenceEdgeToolbarRevisionTests.check_test_toolbar_toggles_and_opacity_are_display_only: self.assertEqual(window.analyze_action.text(), 'Run pipeline')` | unrecorded / — |
 
 ## tests.test_reference_graph_persistence
 
@@ -4136,8 +4156,8 @@ Fixtures: `setUpClass` at line 302.
 
 | Test method / source | Functionality exercised | Assertion evidence | Last full run |
 | --- | --- | --- | --- |
-| [`test_workflow_lifecycle`](../../tests/test_reference_persistence.py#L738) | 7 related ReferenceRegionMainWindowTests scenarios, each with private fixture state. | `helper: tests.test_reference_persistence.ReferenceRegionMainWindowTests.check_test_saved_snapshot_automatically_loads_as_immutable_applied_state: self.assertIsNotNone(key)` | unrecorded / — |
-| [`test_validation_and_recovery`](../../tests/test_reference_persistence.py#L748) | 2 related ReferenceRegionMainWindowTests scenarios, each with private fixture state. | `helper: tests.test_reference_persistence.ReferenceRegionMainWindowTests.check_test_loose_corrected_shape_is_deferred_instead_of_rejected_against_raw_image: self.assertIn(key, window._pending_unbound_reference_bundles)` | unrecorded / — |
+| [`test_workflow_lifecycle`](../../tests/test_reference_persistence.py#L720) | 7 related ReferenceRegionMainWindowTests scenarios, each with private fixture state. | `helper: tests.test_reference_persistence.ReferenceRegionMainWindowTests.check_test_saved_snapshot_automatically_loads_as_immutable_applied_state: self.assertIsNotNone(key)` | unrecorded / — |
+| [`test_validation_and_recovery`](../../tests/test_reference_persistence.py#L730) | 2 related ReferenceRegionMainWindowTests scenarios, each with private fixture state. | `helper: tests.test_reference_persistence.ReferenceRegionMainWindowTests.check_test_loose_corrected_shape_is_deferred_instead_of_rejected_against_raw_image: self.assertIn(key, window._pending_unbound_reference_bundles)` | unrecorded / — |
 
 ## tests.test_reference_preprocessing
 
@@ -4460,8 +4480,8 @@ Fixtures: `setUpClass` at line 47.
 
 | Test method / source | Functionality exercised | Assertion evidence | Last full run |
 | --- | --- | --- | --- |
-| [`test_workflow_lifecycle`](../../tests/test_seed_crop_artifacts.py#L237) | 4 related SeedCropArtifactTests scenarios, each with private fixture state. | `helper: tests.test_seed_crop_artifacts.SeedCropArtifactTests.check_test_exported_pixels_masks_coordinates_and_hashes_are_bound_to_result: self.assertEqual(payload['result_revision'], report['result_revision'])` | unrecorded / — |
-| [`test_validation_and_recovery`](../../tests/test_seed_crop_artifacts.py#L244) | 5 related SeedCropArtifactTests scenarios, each with private fixture state. | `helper: tests.test_seed_crop_artifacts.SeedCropArtifactTests.check_test_changed_labels_and_source_are_rejected_before_output: self.assertRaisesRegex(ValueError, 'Result changed')` | unrecorded / — |
+| [`test_workflow_lifecycle`](../../tests/test_seed_crop_artifacts.py#L236) | 4 related SeedCropArtifactTests scenarios, each with private fixture state. | `helper: tests.test_seed_crop_artifacts.SeedCropArtifactTests.check_test_exported_pixels_masks_coordinates_and_hashes_are_bound_to_result: self.assertEqual(payload['result_revision'], report['result_revision'])` | unrecorded / — |
+| [`test_validation_and_recovery`](../../tests/test_seed_crop_artifacts.py#L243) | 5 related SeedCropArtifactTests scenarios, each with private fixture state. | `helper: tests.test_seed_crop_artifacts.SeedCropArtifactTests.check_test_changed_labels_and_source_are_rejected_before_output: self.assertRaisesRegex(ValueError, 'Result changed')` | unrecorded / — |
 
 ## tests.test_seed_crops
 
@@ -4700,7 +4720,8 @@ Fixtures: no class-local setup/teardown methods.
 | [`test_invalid_module_exits_before_execution_and_reports_discovery_errors`](../../tests/test_test_runner.py#L181) | invalid module exits before execution and reports discovery errors | `self.assertEqual(process.returncode, 2, process.stderr); self.assertEqual(record['tests'], 0)` | unrecorded / — |
 | [`test_worker_ends_with_its_code_and_flushed_output_but_no_interpreter_shutdown`](../../tests/test_test_runner.py#L211) | worker ends with its code and flushed output but no interpreter shutdown | `self.assertEqual(process.returncode, 7, process.stderr); self.assertEqual(process.stdout, 'flushed')` | unrecorded / — |
 | [`test_partition_is_complete_and_fixture_timings_preserve_lifecycle`](../../tests/test_test_runner.py#L219) | partition is complete and fixture timings preserve lifecycle | `self.assertEqual({k: len(v) for k, v in groups.items()}, {'cpu-qt': 1, 'cuda': 1, 'acceptance': 1}); self.assertEqual({t.id() for v in groups.values() for t in v}, {t.id() for t in items})` | unrecorded / — |
-| [`test_fixture_bundle_checks_hashes_and_never_overwrites_reviewed_files`](../../tests/test_test_runner.py#L249) | fixture bundle checks hashes and never overwrites reviewed files | `self.assertFalse(missing['passed']); self.assertTrue(restored['passed'], restored)` | unrecorded / — |
+| [`test_windows_left_by_a_test_are_deleted_but_class_fixture_windows_last_the_class`](../../tests/test_test_runner.py#L249) | windows left by a test are deleted but class fixture windows last the class | `self.assertTrue(isValid(seen['class'])); self.assertFalse(isValid(seen['a']))` | unrecorded / — |
+| [`test_fixture_bundle_checks_hashes_and_never_overwrites_reviewed_files`](../../tests/test_test_runner.py#L298) | fixture bundle checks hashes and never overwrites reviewed files | `self.assertFalse(missing['passed']); self.assertTrue(restored['passed'], restored)` | unrecorded / — |
 
 ## tests.test_threshold_conformance
 
@@ -4761,8 +4782,8 @@ Fixtures: `setUpClass` at line 25, `setUp` at line 32.
 
 | Test method / source | Functionality exercised | Assertion evidence | Last full run |
 | --- | --- | --- | --- |
-| [`test_workflow_lifecycle`](../../tests/test_trait_review_ui.py#L172) | 1 related TraitReviewUiTests scenarios, each with private fixture state. | `helper: tests.test_trait_review_ui.TraitReviewUiTests.check_test_actual_mixed_predictions_definitions_and_scores_reach_review_without_refitting: self.assertNotEqual(*confidences)` | unrecorded / — |
-| [`test_validation_and_recovery`](../../tests/test_trait_review_ui.py#L176) | 2 related TraitReviewUiTests scenarios, each with private fixture state. | `helper: tests.test_trait_review_ui.TraitReviewUiTests.check_test_actual_absent_invalid_and_outside_support_abstentions_stay_explanatory: self.assertEqual(set(observed['rows']), {1, 2})` | unrecorded / — |
+| [`test_workflow_lifecycle`](../../tests/test_trait_review_ui.py#L171) | 1 related TraitReviewUiTests scenarios, each with private fixture state. | `helper: tests.test_trait_review_ui.TraitReviewUiTests.check_test_actual_mixed_predictions_definitions_and_scores_reach_review_without_refitting: self.assertNotEqual(*confidences)` | unrecorded / — |
+| [`test_validation_and_recovery`](../../tests/test_trait_review_ui.py#L175) | 2 related TraitReviewUiTests scenarios, each with private fixture state. | `helper: tests.test_trait_review_ui.TraitReviewUiTests.check_test_actual_absent_invalid_and_outside_support_abstentions_stay_explanatory: self.assertEqual(set(observed['rows']), {1, 2})` | unrecorded / — |
 
 ## tests.test_trait_snapshot
 
@@ -4799,8 +4820,8 @@ Fixtures: `setUpClass` at line 345, `setUp` at line 349.
 
 | Test method / source | Functionality exercised | Assertion evidence | Last full run |
 | --- | --- | --- | --- |
-| [`test_workflow_lifecycle`](../../tests/test_trait_training.py#L505) | 3 related TraitTrainingUITests scenarios, each with private fixture state. | `helper: tests.test_trait_training.TraitTrainingUITests.check_test_dialog_snapshots_manifest_controls_and_activation_choice: self.assertEqual(request.configuration, TraitTrainingConfiguration(17, 0.04, 0.2, (0.2, 5.0), 13, 0.7))` | unrecorded / — |
-| [`test_validation_and_recovery`](../../tests/test_trait_training.py#L511) | 4 related TraitTrainingUITests scenarios, each with private fixture state. | `helper: tests.test_trait_training.TraitTrainingUITests.check_test_serial_busy_stop_and_stale_terminal_signals_preserve_current_job: started.assert_called_once_with(task)` | unrecorded / — |
+| [`test_workflow_lifecycle`](../../tests/test_trait_training.py#L504) | 3 related TraitTrainingUITests scenarios, each with private fixture state. | `helper: tests.test_trait_training.TraitTrainingUITests.check_test_dialog_snapshots_manifest_controls_and_activation_choice: self.assertEqual(request.configuration, TraitTrainingConfiguration(17, 0.04, 0.2, (0.2, 5.0), 13, 0.7))` | unrecorded / — |
+| [`test_validation_and_recovery`](../../tests/test_trait_training.py#L510) | 4 related TraitTrainingUITests scenarios, each with private fixture state. | `helper: tests.test_trait_training.TraitTrainingUITests.check_test_serial_busy_stop_and_stale_terminal_signals_preserve_current_job: started.assert_called_once_with(task)` | unrecorded / — |
 
 ## tests.test_ui_text_limits
 

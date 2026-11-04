@@ -3,7 +3,7 @@
 The suite is plain `unittest`, run through a parallel runner in `tests/__main__.py`.
 Related scenarios are grouped into *functional units* (one `test_workflow_lifecycle`
 or `test_validation_and_recovery` method that runs several private scenarios), so
-674 units cover roughly 2,800 original test methods.
+681 units cover roughly 2,800 original test methods.
 
 ## Commands
 
@@ -31,7 +31,7 @@ parameters; CI runs it.
 | Tier | Units | Needs |
 |---|---:|---|
 | `core` (default) | 28 | Overlaps the others; quick routine check. |
-| `cpu-qt` | 183 | Qt offscreen, no GPU, no ignored fixtures. Hosted CI runs this. |
+| `cpu-qt` | 190 | Qt offscreen, no GPU, no ignored fixtures. Hosted CI runs this. |
 | `cuda` | 478 | CUDA device and the pinned PlantCV interpreter. Every test not in another tier lands here, so new tests cannot escape full runs. |
 | `acceptance` | 13 | CUDA plus the frozen baselines and provenance records. |
 | `history` | — | Acceptance fixtures only. |
@@ -49,20 +49,16 @@ cannot produce a pass.
 - **Time budget is advisory.** The report records whether the run stayed under
   1,000 units and 900 seconds and prints a warning if not; it does not change the
   verdict.
+- **Windows are deleted between tests.** Closing a window only hides it, and
+  connections to its own methods keep it alive. `tests/functional_units.py` therefore
+  deletes the parentless widgets each scenario and test leaves behind. Windows a
+  class fixture opens last until that class ends.
 - **Workers end without interpreter shutdown.** Once its report and journal are
-  on disk, a worker ends itself with its result code (`tests/worker.py`). Closing a
-  window only hides it, and its own signal connections keep it alive, so a worker
-  holds every window its tests opened: up to about 180,000 widgets and 8 GB.
-  Deleting them at shutdown took over four minutes after the last test, because
-  each deletion costs more the more widgets are still alive. On Windows the worker
-  uses `TerminateProcess`, because `os._exit` still unloads DLLs and that crashes
+  on disk, a worker ends itself with its result code (`tests/worker.py`). On Windows
+  it uses `TerminateProcess`, because `os._exit` still unloads DLLs and that crashes
   after a long run. As a result, a crash during worker shutdown cannot fail a run,
   and temporary directories that tests leave open stay in `artifacts\test-temp\`
   until pruned.
-- **Do not delete windows between tests.** It looks like the direct cure, but once
-  the toolbar scenario of `tests.test_reference_edge_toolbar_revision` has deleted
-  its `MainWindow`, the next `PipelineCanvas` fails with an access violation, even
-  if `gc.collect()` runs in between. The cause is not yet known.
 - **Skips.** Three are expected on Windows: the opt-in fill-image diagnostic
   (`SEEDFIDDLE_RUN_FILL_IMAGE_DIAGNOSTIC=1`), a case-sensitive filesystem check
   and a directory-symlink privilege check.
@@ -70,7 +66,7 @@ cannot produce a pass.
   directories to `artifacts\test-temp\`. Clear old ones with
   `scripts\prune_artifacts.py --older-than 7 --delete` (dry run without `--delete`).
 
-The last full run (3 November 2026) passed 674/674 units with the three expected
+The last full run (3 November 2026) passed 681/681 units with the three expected
 skips. Run it from the main checkout: from a git worktree, the two acceptance units
 bound to the checkout path fail (see [HANDOFF.md](../HANDOFF.md)).
 
@@ -129,7 +125,15 @@ update. Test files are exempt as long as their numerical fixture definitions
 - Group related scenarios with the `@functional_units` decorator and
   `self.scenario(...)`, as in `tests/test_gui_layout.py`; each scenario keeps its own
   fixture state.
+- A window that must outlive one test belongs in `setUpClass`; any other window a
+  test leaves open is deleted when it ends.
 - Poll for asynchronous Qt state with a bounded loop rather than a fixed sleep.
+- Avoid raising from `QTimer.singleShot(0, callback)`, in tests as in application
+  code, which uses `seedvision.ui.deferred.run_soon`. Inside `processEvents()` or a
+  static dialog, PySide stores that exception, and graphics items painting for the
+  first time can then crash the process ("pure virtual method
+  'QGraphicsObject.paint'", then an access violation or abort). A window deleted
+  before its timer fires raises in exactly this way.
 - `tests/test_ui_text_limits.py` keeps command labels at 45 characters or fewer and
   tooltips at 450 or fewer.
 

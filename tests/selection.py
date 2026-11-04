@@ -19,6 +19,7 @@ CORE_TARGETS = (
 )
 
 CPU_QT_TARGETS = (
+    'tests.test_deferred_callbacks',
     'tests.test_pipeline_documents',
     'tests.test_pipeline_workspace_files',
     'tests.test_default_pipeline_copies',

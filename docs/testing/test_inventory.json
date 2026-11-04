@@ -10,9 +10,9 @@
   "historical_timings_sha256": null,
   "historical_source_changes": [],
   "unmatched_historical_timing_ids": [],
-  "collection_status": "exact match, 674 canonical unittest IDs; zero discovery errors",
-  "test_count": 674,
-  "test_file_count": 256,
+  "collection_status": "exact match, 681 canonical unittest IDs; zero discovery errors",
+  "test_count": 681,
+  "test_file_count": 257,
   "core_targets": [
     "tests.test_pipeline",
     "tests.test_analysis_settings_persistence",
@@ -26,7 +26,7 @@
     "tests.test_native_image_inputs.ImageInputContractTests"
   ],
   "core_test_count": 28,
-  "test_source_lines": 80864,
+  "test_source_lines": 81030,
   "historical_method_seconds": 0,
   "category_totals": {
     "Annotation and interactive image review": {
@@ -40,8 +40,8 @@
       "method_seconds": 0
     },
     "Image analysis, calibration and rendering": {
-      "methods": 61,
-      "files": 22,
+      "methods": 67,
+      "files": 23,
       "method_seconds": 0
     },
     "Learning and trait analysis": {
@@ -75,7 +75,7 @@
       "method_seconds": 0
     },
     "Startup, resources and diagnostics": {
-      "methods": 33,
+      "methods": 34,
       "files": 7,
       "method_seconds": 0
     }
@@ -163,8 +163,8 @@
       "file": "tests/test_annotation_centres.py",
       "purpose": "Annotation centroids and radial hilum metadata must never become predictions.",
       "category": "Annotation and interactive image review",
-      "lines": 508,
-      "source_sha256": "af053144ff4029c738a1f677513f57f4af931daa9931e0165e51d2316ba97a71",
+      "lines": 507,
+      "source_sha256": "4fd5bd070d61a16261748543a79b709b6d3033a3fe5d097426c1cc5fe86e45e3",
       "historical_source_matches": false,
       "test_count": 4,
       "class_fixtures": {
@@ -193,8 +193,8 @@
       "file": "tests/test_annotation_edge_sources.py",
       "purpose": "Annotation tools select the intended edge evidence and clear obsolete sources",
       "category": "Annotation and interactive image review",
-      "lines": 450,
-      "source_sha256": "5a2f0a1a17ebee583d0d865475a753f4c51b2a78ffd10936c70457cd08e0231c",
+      "lines": 449,
+      "source_sha256": "a9b001ddceea4a13c6d4ce198012d001de01f27ecf8246ab8743955264537e02",
       "historical_source_matches": false,
       "test_count": 2,
       "class_fixtures": {
@@ -274,8 +274,8 @@
       "file": "tests/test_annotation_shape_revision.py",
       "purpose": "Shape review revisions, visibility and reference-library updates",
       "category": "Annotation and interactive image review",
-      "lines": 390,
-      "source_sha256": "3576108fc8ebe5e6174fb57a43b74b23f021d2a73f3be0152f571cf3670ba2a0",
+      "lines": 388,
+      "source_sha256": "fcc8cb9456680ee057ff80edd62a44e5e018998e95204cb65f586fc0d98eed41",
       "historical_source_matches": false,
       "test_count": 4,
       "class_fixtures": {
@@ -407,8 +407,8 @@
       "file": "tests/test_authoritative_parity.py",
       "purpose": "Real native CUDA analysis, desktop/batch identity and exact review portability.",
       "category": "Image analysis, calibration and rendering",
-      "lines": 216,
-      "source_sha256": "b173fc9b85e254125b65100f38fd436e146d937c2a2d1330d7bcb7c3cc69010f",
+      "lines": 215,
+      "source_sha256": "f5d3286764c2cf8b3b40fa41e5fc314220f84aebe0165fe8d809d6fc3ac73659",
       "historical_source_matches": false,
       "test_count": 2,
       "class_fixtures": {
@@ -447,8 +447,7 @@
               "SeedInstanceAnnotation",
               "np.array",
               "self.save_project",
-              "open_workspace_images",
-              "MainWindow",
+              "workspace_window",
               "str(self.source.resolve()).casefold",
               "self.source.resolve",
               "self.install_profile",
@@ -462,7 +461,7 @@
         "ReviewLookupTests": [
           {
             "name": "setUpClass",
-            "line": 192,
+            "line": 191,
             "calls": [
               "QApplication.instance",
               "QApplication"
@@ -1341,6 +1340,33 @@
       "method_seconds": 0
     },
     {
+      "module": "tests.test_deferred_callbacks",
+      "file": "tests/test_deferred_callbacks.py",
+      "purpose": "Deferred callbacks die with their owner and report what they raise.",
+      "category": "Image analysis, calibration and rendering",
+      "lines": 145,
+      "source_sha256": "22f7682016f305c056614f4fd3490cf2e5066019ca892cfbcd77a928acc276b5",
+      "historical_source_matches": false,
+      "test_count": 6,
+      "class_fixtures": {
+        "_Card": [],
+        "DeferredCallbackTests": [
+          {
+            "name": "setUpClass",
+            "line": 56,
+            "calls": [
+              "QApplication.instance",
+              "QApplication"
+            ]
+          }
+        ]
+      },
+      "production_imports": [
+        "seedvision.ui.deferred.run_soon"
+      ],
+      "method_seconds": 0
+    },
+    {
       "module": "tests.test_desktop_terminal_history",
       "file": "tests/test_desktop_terminal_history.py",
       "purpose": "Earlier desktop rejection boundaries and bounded evidence-only history review.",
@@ -1407,8 +1433,8 @@
       "file": "tests/test_edge_trace_commit.py",
       "purpose": "Edge trace tool commits and desktop annotation updates",
       "category": "Annotation and interactive image review",
-      "lines": 187,
-      "source_sha256": "b9b5934081d438c2012978770645cb66d44635556acd51376b0852432cfc17a0",
+      "lines": 186,
+      "source_sha256": "f76ea14a2d40547e3b0bf59dfedb6cb2a466bc415ad7d7add098285721080972",
       "historical_source_matches": false,
       "test_count": 1,
       "class_fixtures": {
@@ -1497,8 +1523,8 @@
       "file": "tests/test_gui_layout.py",
       "purpose": "Desktop layout contracts from the GUI review: menus, toolbar, panels, canvas.",
       "category": "Image analysis, calibration and rendering",
-      "lines": 434,
-      "source_sha256": "ec3d9d5d5094dc3333a1c2bf29662582aa65f7cd5cd0230bd3cc86544ace4b67",
+      "lines": 461,
+      "source_sha256": "c795ca3dc6bff764ea7fb619ddce96e2a8f7f1aaf78cbe1194c7c564739483ba",
       "historical_source_matches": false,
       "test_count": 1,
       "class_fixtures": {
@@ -1702,8 +1728,8 @@
       "file": "tests/test_instance_continuity_ui.py",
       "purpose": "Desktop selection follows instance continuity",
       "category": "Annotation and interactive image review",
-      "lines": 133,
-      "source_sha256": "98da5b9e59f33c71a2247d4d4be34276f27d3b4f5afc5b1b1fea9861798db7f5",
+      "lines": 131,
+      "source_sha256": "c35575d93304c3f16c590bd3e357a81cf4cace8b37f2adab4fc30614e5e00693",
       "historical_source_matches": false,
       "test_count": 2,
       "class_fixtures": {
@@ -1732,8 +1758,7 @@
               "self.assertTrue",
               "image.save",
               "str",
-              "open_workspace_images",
-              "MainWindow",
+              "workspace_window",
               "SimpleNamespace"
             ]
           }
@@ -1769,8 +1794,8 @@
       "file": "tests/test_instance_mask_import_ui.py",
       "purpose": "Instance mask import dialogs and desktop application",
       "category": "Annotation and interactive image review",
-      "lines": 633,
-      "source_sha256": "7b5b32f401d84489ee8dae7d1b32cf1356cb693f437f28fe6a93a663ba4bc2fb",
+      "lines": 631,
+      "source_sha256": "2f08707415b7d13360cfc22335d1287a7ff5910ec4b71f90e83438bc3df5cefe",
       "historical_source_matches": false,
       "test_count": 2,
       "class_fixtures": {
@@ -1799,8 +1824,7 @@
               "self.assertTrue",
               "image.save",
               "str",
-              "open_workspace_images",
-              "MainWindow",
+              "workspace_window",
               "self.window.image_view.set_overlay_mode",
               "SimpleNamespace",
               "np.full",
@@ -2014,8 +2038,8 @@
       "file": "tests/test_manual_seed_centre_ui.py",
       "purpose": "Manual centre drawing, selection and desktop persistence",
       "category": "Annotation and interactive image review",
-      "lines": 423,
-      "source_sha256": "c3e63f960c669e0b86a6dc05f87582b1bc3e7dfc6d48fddf81929957b2053152",
+      "lines": 419,
+      "source_sha256": "bcf1af72397717fd59ad9f9517badb8bec3c17e08e618439f50bbb476ff89095",
       "historical_source_matches": false,
       "test_count": 2,
       "class_fixtures": {
@@ -5231,8 +5255,8 @@
       "file": "tests/test_pipeline_ui.py",
       "purpose": "Pipeline desktop controls, graph state, navigation, workers and status",
       "category": "Pipeline workspace and controls",
-      "lines": 4887,
-      "source_sha256": "ff3b22b6b2f9014ae33138ec4d11c71048108686faa885a9b161825ff5188222",
+      "lines": 4873,
+      "source_sha256": "28d38d4de4adfa7df6ae1240dca5ddaea410ee9f6ba7294ec2701986ad8ce456",
       "historical_source_matches": false,
       "test_count": 15,
       "class_fixtures": {
@@ -6537,8 +6561,8 @@
       "file": "tests/test_portable_result_identity.py",
       "purpose": "Actual relocated native results, artifact facts and private review history.",
       "category": "Persistence, export, identity and outcomes",
-      "lines": 258,
-      "source_sha256": "0298825620e5b87947aab9ab35e9703a76c64f3af7b49196790e79bebb0227b0",
+      "lines": 257,
+      "source_sha256": "40935f62ae53c17ccd337652498c001f33e0f710e0ce5bff54a7029d7135de98",
       "historical_source_matches": false,
       "test_count": 3,
       "class_fixtures": {
@@ -6619,8 +6643,8 @@
       "file": "tests/test_procedural_fit_ui.py",
       "purpose": "Procedural fit controls and result application",
       "category": "Image analysis, calibration and rendering",
-      "lines": 248,
-      "source_sha256": "88a65353f04d2ab57252356bd0a3d2691dea5c7c8a25cfa2d98d924397559ea6",
+      "lines": 246,
+      "source_sha256": "0eee0fd88ed3d4443077a2c216cf58f988448722877eaa202ee350bba45bcca5",
       "historical_source_matches": false,
       "test_count": 2,
       "class_fixtures": {
@@ -7572,8 +7596,8 @@
       "file": "tests/test_reference_edge_toolbar_revision.py",
       "purpose": "Edge reference toolbar controls, graph revisions and image-view state",
       "category": "Annotation and interactive image review",
-      "lines": 252,
-      "source_sha256": "e28bde647a4266958044436f742636c10792e13186db07d8696229a87a66e09b",
+      "lines": 251,
+      "source_sha256": "adf8990f749584273da57206001d5826ee45fe02efe2b86ed53018cc6d85f46d",
       "historical_source_matches": false,
       "test_count": 1,
       "class_fixtures": {
@@ -7865,8 +7889,8 @@
       "file": "tests/test_reference_persistence.py",
       "purpose": "Reference region sidecars, source binding and desktop lifecycle",
       "category": "Persistence, export, identity and outcomes",
-      "lines": 755,
-      "source_sha256": "5aa3449b50a7bbbff6deed22c929f9fd684c10de06786ecdec4bad8f006469e9",
+      "lines": 737,
+      "source_sha256": "b8be09ebcd298b08594670fe4a7389f952c870531ad8e3a1c54600ec95b5ac89",
       "historical_source_matches": false,
       "test_count": 4,
       "class_fixtures": {
@@ -8439,8 +8463,8 @@
       "file": "tests/test_seed_crop_artifacts.py",
       "purpose": "Seed crop artifacts, export identity and portable review",
       "category": "Persistence, export, identity and outcomes",
-      "lines": 254,
-      "source_sha256": "78dc5e2529bdcaafb21b77ba8a1addbd77b92652749b2ac6f8d44048c4ac7a89",
+      "lines": 253,
+      "source_sha256": "44c2953a51f67cb40b1658aeb51d6ad1f8a5e7c29530b0d96c8b32dacc12c8c3",
       "historical_source_matches": false,
       "test_count": 2,
       "class_fixtures": {
@@ -8509,8 +8533,8 @@
       "file": "tests/test_selected_instance_view.py",
       "purpose": "Selected instance overlay and desktop view state",
       "category": "Annotation and interactive image review",
-      "lines": 242,
-      "source_sha256": "2ea79a3d92c0fd822bd36ec2422cef7a1845143b9bf573ff0ef1563526d7fb94",
+      "lines": 240,
+      "source_sha256": "cc0b32c1704e9407950bcfd1884900f25cd67b740cedb1310eac890b356c2776",
       "historical_source_matches": false,
       "test_count": 3,
       "class_fixtures": {
@@ -8835,10 +8859,10 @@
       "file": "tests/test_test_runner.py",
       "purpose": "Runner failure reporting, exhaustive tier partition and fixture lifecycle.",
       "category": "Startup, resources and diagnostics",
-      "lines": 268,
-      "source_sha256": "a4e38559cacbaba4a915f2af9ff09c63135cb918e3115cf39a776a9d2e38d8a8",
+      "lines": 317,
+      "source_sha256": "a71217f72d64d69ac4886a3303cb509b04b222a88b60153b7e809b07f9fc12e4",
       "historical_source_matches": false,
-      "test_count": 10,
+      "test_count": 11,
       "class_fixtures": {
         "TestRunnerTests": []
       },
@@ -8978,8 +9002,8 @@
       "file": "tests/test_trait_review_ui.py",
       "purpose": "Actual frozen CUDA trait predictions must reach the native review widgets.",
       "category": "Learning and trait analysis",
-      "lines": 183,
-      "source_sha256": "e418cc17e93926843a528c85cf3818ba7c56ccb909acc0753e3029263b581e93",
+      "lines": 182,
+      "source_sha256": "8885c61dea4cf63757d2377573d9a989a93952e3671235749d821bcefb52a2c9",
       "historical_source_matches": false,
       "test_count": 2,
       "class_fixtures": {
@@ -9010,8 +9034,7 @@
               "torch.tensor(self.corrected, device='cuda').float",
               "torch.tensor",
               "torch.ones",
-              "open_workspace_images",
-              "MainWindow",
+              "workspace_window",
               "self.window.pipeline.node"
             ]
           }
@@ -9082,8 +9105,8 @@
       "file": "tests/test_trait_training.py",
       "purpose": "Synthetic native evidence, CUDA extraction, stop and publication witnesses.",
       "category": "Learning and trait analysis",
-      "lines": 520,
-      "source_sha256": "42b24857ae56b8741cdf8b9a86be1d1248fc7d26ea963fa31e08d6335cc9ddfd",
+      "lines": 519,
+      "source_sha256": "b975b755628023f7c17cd673fb1e6d81bdcdc22401a41d6c158317eafdb8c1b0",
       "historical_source_matches": false,
       "test_count": 4,
       "class_fixtures": {
@@ -9566,8 +9589,8 @@
       "file": "tests/test_annotation_centres.py",
       "class": "AnnotationCentresUiTests",
       "method": "test_workflow_lifecycle",
-      "line": 492,
-      "end_line": 504,
+      "line": 491,
+      "end_line": 503,
       "functionality": "11 related AnnotationCentresUiTests scenarios, each with private fixture state.",
       "description_basis": "method docstring",
       "category": "Annotation and interactive image review",
@@ -9600,7 +9623,11 @@
         "tests.test_annotation_centres.AnnotationCentresUiTests.check_test_brush_publishes_fresh_centroids_before_edit_listeners_run",
         "tests.test_annotation_centres.AnnotationCentresUiTests.check_test_next_empty_does_not_reuse_an_occupied_seed_at_capacity",
         "tests.test_annotation_centres.AnnotationCentresUiTests.make_window",
-        "tests.review_fixtures.open_workspace_images"
+        "tests.review_fixtures.workspace_window",
+        "tests.review_fixtures.shared_workflow_templates",
+        "tests.review_fixtures.open_workspace_images",
+        "tests.review_fixtures._workflow_templates",
+        "tests.review_fixtures._workflow_template_key"
       ],
       "fixtures": [
         "setUpClass"
@@ -9623,8 +9650,8 @@
       "file": "tests/test_annotation_centres.py",
       "class": "AnnotationCentresUiTests",
       "method": "test_validation_and_recovery",
-      "line": 506,
-      "end_line": 508,
+      "line": 505,
+      "end_line": 507,
       "functionality": "1 related AnnotationCentresUiTests scenarios, each with private fixture state.",
       "description_basis": "method docstring",
       "category": "Annotation and interactive image review",
@@ -9640,7 +9667,11 @@
       "helpers": [
         "tests.test_annotation_centres.AnnotationCentresUiTests.check_test_next_unannotated_cycles_painted_seeds_missing_condition_or_shape",
         "tests.test_annotation_centres.AnnotationCentresUiTests.make_window",
-        "tests.review_fixtures.open_workspace_images"
+        "tests.review_fixtures.workspace_window",
+        "tests.review_fixtures.shared_workflow_templates",
+        "tests.review_fixtures.open_workspace_images",
+        "tests.review_fixtures._workflow_templates",
+        "tests.review_fixtures._workflow_template_key"
       ],
       "fixtures": [
         "setUpClass"
@@ -9663,15 +9694,15 @@
       "file": "tests/test_annotation_edge_sources.py",
       "class": "AnnotationEdgeSourceTests",
       "method": "test_workflow_lifecycle",
-      "line": 439,
-      "end_line": 442,
+      "line": 438,
+      "end_line": 441,
       "functionality": "2 related AnnotationEdgeSourceTests scenarios, each with private fixture state.",
       "description_basis": "method docstring",
       "category": "Annotation and interactive image review",
       "direct_subjects": [],
       "helper_subjects": [
-        "seedvision.ui.main_window.MainWindow",
-        "seedvision.ui.image_view.ImageView"
+        "seedvision.ui.image_view.ImageView",
+        "seedvision.ui.main_window.MainWindow"
       ],
       "calls": [
         "self.scenario"
@@ -9680,7 +9711,11 @@
       "helpers": [
         "tests.test_annotation_edge_sources.AnnotationEdgeSourceTests.check_test_trace_and_fill_selectors_expose_only_applicable_edge_sources",
         "tests.test_annotation_edge_sources.AnnotationEdgeSourceTests.check_test_compact_fallback_separates_probability_from_conservative_evidence",
-        "tests.review_fixtures.open_workspace_images"
+        "tests.review_fixtures.workspace_window",
+        "tests.review_fixtures.shared_workflow_templates",
+        "tests.review_fixtures.open_workspace_images",
+        "tests.review_fixtures._workflow_templates",
+        "tests.review_fixtures._workflow_template_key"
       ],
       "fixtures": [
         "setUpClass"
@@ -9703,8 +9738,8 @@
       "file": "tests/test_annotation_edge_sources.py",
       "class": "AnnotationEdgeSourceTests",
       "method": "test_validation_and_recovery",
-      "line": 444,
-      "end_line": 446,
+      "line": 443,
+      "end_line": 445,
       "functionality": "1 related AnnotationEdgeSourceTests scenarios, each with private fixture state.",
       "description_basis": "method docstring",
       "category": "Annotation and interactive image review",
@@ -9978,8 +10013,8 @@
       "file": "tests/test_annotation_shape_revision.py",
       "class": "AnnotationWidgetTests",
       "method": "test_workflow_lifecycle",
-      "line": 384,
-      "end_line": 390,
+      "line": 382,
+      "end_line": 388,
       "functionality": "5 related AnnotationWidgetTests scenarios, each with private fixture state.",
       "description_basis": "method docstring",
       "category": "Annotation and interactive image review",
@@ -10002,8 +10037,12 @@
         "tests.test_annotation_shape_revision.AnnotationWidgetTests.check_test_no_defects_empty_selector_and_shape_fields",
         "tests.test_annotation_shape_revision.AnnotationWidgetTests.check_test_hilum_drag_moves_landmark_and_derives_radial_direction_without_painting",
         "tests.test_annotation_shape_revision.AnnotationWidgetTests.check_test_brush_stack_uses_only_current_page_and_resize_is_remembered",
-        "tests.review_fixtures.open_workspace_images",
+        "tests.review_fixtures.workspace_window",
         "tests.review_fixtures.dispose_window",
+        "tests.review_fixtures.shared_workflow_templates",
+        "tests.review_fixtures.open_workspace_images",
+        "tests.review_fixtures._workflow_templates",
+        "tests.review_fixtures._workflow_template_key",
         "tests.test_annotation_shape_revision.reviewed"
       ],
       "fixtures": [
@@ -10453,8 +10492,8 @@
       "file": "tests/test_authoritative_parity.py",
       "class": "AuthoritativeParityTests",
       "method": "test_missing_model_and_incompatible_review_are_explicit_on_both_routes",
-      "line": 173,
-      "end_line": 187,
+      "line": 172,
+      "end_line": 186,
       "functionality": "missing model and incompatible review are explicit on both routes",
       "description_basis": "method scenario name; see assertion evidence",
       "category": "Image analysis, calibration and rendering",
@@ -10522,8 +10561,8 @@
       "file": "tests/test_authoritative_parity.py",
       "class": "ReviewLookupTests",
       "method": "test_invalid_duplicate_oversized_and_stale_reviews_remain_distinct_and_unchanged",
-      "line": 198,
-      "end_line": 212,
+      "line": 197,
+      "end_line": 211,
       "functionality": "invalid duplicate oversized and stale reviews remain distinct and unchanged",
       "description_basis": "method scenario name; see assertion evidence",
       "category": "Image analysis, calibration and rendering",
@@ -13288,10 +13327,11 @@
         "tests.test_correction_project_dialog.CorrectionProjectDialogTests.window",
         "tests.test_project_analysis_ui.ProjectAnalysisUiTests._window",
         "tests.review_fixtures.isolated_window",
-        "tests.review_fixtures._workflow_templates",
-        "tests.review_fixtures._workflow_template_key",
+        "tests.review_fixtures.shared_workflow_templates",
         "tests.review_fixtures.open_workspace_images",
-        "tests.review_fixtures.editable_copy"
+        "tests.review_fixtures.editable_copy",
+        "tests.review_fixtures._workflow_templates",
+        "tests.review_fixtures._workflow_template_key"
       ],
       "fixtures": [
         "setUpClass"
@@ -13546,6 +13586,295 @@
       "runs_in_default_core": false
     },
     {
+      "id": "tests.test_deferred_callbacks.DeferredCallbackTests.test_callback_runs_in_one_event_pass_in_order_and_leaves_no_timer",
+      "file": "tests/test_deferred_callbacks.py",
+      "class": "DeferredCallbackTests",
+      "method": "test_callback_runs_in_one_event_pass_in_order_and_leaves_no_timer",
+      "line": 81,
+      "end_line": 88,
+      "functionality": "callback runs in one event pass in order and leaves no timer",
+      "description_basis": "method scenario name; see assertion evidence",
+      "category": "Image analysis, calibration and rendering",
+      "direct_subjects": [
+        "seedvision.ui.deferred.run_soon"
+      ],
+      "helper_subjects": [],
+      "calls": [
+        "QWidget",
+        "run_soon",
+        "calls.append",
+        "self.assertEqual",
+        "self.app.processEvents",
+        "self._pump_until",
+        "owner.findChildren"
+      ],
+      "direct_checks": [
+        "self.assertEqual(calls, [])",
+        "self.assertEqual(calls, ['first', 'second'])"
+      ],
+      "helpers": [
+        "tests.test_deferred_callbacks.DeferredCallbackTests._pump_until"
+      ],
+      "fixtures": [
+        "setUpClass"
+      ],
+      "decorators": [],
+      "class_decorators": [],
+      "subtest_sites": 0,
+      "loop_iterables": [],
+      "skip_calls": [],
+      "historical_source_matches": false,
+      "last_full_status": "unrecorded",
+      "last_full_seconds": null,
+      "skip_reason": "",
+      "runs_in_default_core": false
+    },
+    {
+      "id": "tests.test_deferred_callbacks.DeferredCallbackTests.test_deleting_the_owner_cancels_the_callback",
+      "file": "tests/test_deferred_callbacks.py",
+      "class": "DeferredCallbackTests",
+      "method": "test_deleting_the_owner_cancels_the_callback",
+      "line": 90,
+      "end_line": 96,
+      "functionality": "deleting the owner cancels the callback",
+      "description_basis": "method scenario name; see assertion evidence",
+      "category": "Image analysis, calibration and rendering",
+      "direct_subjects": [
+        "seedvision.ui.deferred.run_soon"
+      ],
+      "helper_subjects": [],
+      "calls": [
+        "QWidget",
+        "run_soon",
+        "calls.append",
+        "owner.deleteLater",
+        "QCoreApplication.sendPostedEvents",
+        "self.app.processEvents",
+        "self.assertEqual"
+      ],
+      "direct_checks": [
+        "self.assertEqual(calls, [])"
+      ],
+      "helpers": [],
+      "fixtures": [
+        "setUpClass"
+      ],
+      "decorators": [],
+      "class_decorators": [],
+      "subtest_sites": 0,
+      "loop_iterables": [],
+      "skip_calls": [],
+      "historical_source_matches": false,
+      "last_full_status": "unrecorded",
+      "last_full_seconds": null,
+      "skip_reason": "",
+      "runs_in_default_core": false
+    },
+    {
+      "id": "tests.test_deferred_callbacks.DeferredCallbackTests.test_raising_callback_is_reported_and_new_cards_paint_during_process_events",
+      "file": "tests/test_deferred_callbacks.py",
+      "class": "DeferredCallbackTests",
+      "method": "test_raising_callback_is_reported_and_new_cards_paint_during_process_events",
+      "line": 98,
+      "end_line": 103,
+      "functionality": "raising callback is reported and new cards paint during process events",
+      "description_basis": "method scenario name; see assertion evidence",
+      "category": "Image analysis, calibration and rendering",
+      "direct_subjects": [
+        "seedvision.ui.deferred.run_soon"
+      ],
+      "helper_subjects": [],
+      "calls": [
+        "self._fresh_cards",
+        "reported_errors",
+        "run_soon",
+        "self._pump_until",
+        "all",
+        "self.assertEqual"
+      ],
+      "direct_checks": [
+        "self.assertEqual(errors, ['raised by a deferred callback'])"
+      ],
+      "helpers": [
+        "tests.test_deferred_callbacks.DeferredCallbackTests._fresh_cards",
+        "tests.test_deferred_callbacks.reported_errors",
+        "tests.test_deferred_callbacks.DeferredCallbackTests._pump_until"
+      ],
+      "fixtures": [
+        "setUpClass"
+      ],
+      "decorators": [],
+      "class_decorators": [],
+      "subtest_sites": 0,
+      "loop_iterables": [
+        "cards"
+      ],
+      "skip_calls": [],
+      "historical_source_matches": false,
+      "last_full_status": "unrecorded",
+      "last_full_seconds": null,
+      "skip_reason": "",
+      "runs_in_default_core": false
+    },
+    {
+      "id": "tests.test_deferred_callbacks.DeferredCallbackTests.test_raising_callback_is_reported_and_new_cards_paint_during_a_static_dialog",
+      "file": "tests/test_deferred_callbacks.py",
+      "class": "DeferredCallbackTests",
+      "method": "test_raising_callback_is_reported_and_new_cards_paint_during_a_static_dialog",
+      "line": 105,
+      "end_line": 115,
+      "functionality": "raising callback is reported and new cards paint during a static dialog",
+      "description_basis": "method scenario name; see assertion evidence",
+      "category": "Image analysis, calibration and rendering",
+      "direct_subjects": [
+        "seedvision.ui.deferred.run_soon"
+      ],
+      "helper_subjects": [],
+      "calls": [
+        "self._fresh_cards",
+        "QTimer",
+        "closing.setSingleShot",
+        "closing.timeout.connect",
+        "QApplication.activeModalWidget().close",
+        "QApplication.activeModalWidget",
+        "closing.start",
+        "reported_errors",
+        "run_soon",
+        "QMessageBox.information",
+        "self.assertEqual",
+        "self.assertTrue",
+        "all"
+      ],
+      "direct_checks": [
+        "self.assertEqual(errors, ['raised by a deferred callback'])",
+        "self.assertTrue(all((card.paints for card in cards)))"
+      ],
+      "helpers": [
+        "tests.test_deferred_callbacks.DeferredCallbackTests._fresh_cards",
+        "tests.test_deferred_callbacks.reported_errors"
+      ],
+      "fixtures": [
+        "setUpClass"
+      ],
+      "decorators": [],
+      "class_decorators": [],
+      "subtest_sites": 0,
+      "loop_iterables": [
+        "cards"
+      ],
+      "skip_calls": [],
+      "historical_source_matches": false,
+      "last_full_status": "unrecorded",
+      "last_full_seconds": null,
+      "skip_reason": "",
+      "runs_in_default_core": false
+    },
+    {
+      "id": "tests.test_deferred_callbacks.DeferredCallbackTests.test_deleted_window_with_a_pending_workspace_restore_cannot_harm_a_new_canvas",
+      "file": "tests/test_deferred_callbacks.py",
+      "class": "DeferredCallbackTests",
+      "method": "test_deleted_window_with_a_pending_workspace_restore_cannot_harm_a_new_canvas",
+      "line": 117,
+      "end_line": 139,
+      "functionality": "deleted window with a pending workspace restore cannot harm a new canvas",
+      "description_basis": "method scenario name; see assertion evidence",
+      "category": "Image analysis, calibration and rendering",
+      "direct_subjects": [
+        "seedvision.ui.pipeline_canvas.PipelineCanvas",
+        "seedvision.pipeline.build_default_pipeline"
+      ],
+      "helper_subjects": [
+        "seedvision.ui.main_window.MainWindow"
+      ],
+      "calls": [
+        "painted.append",
+        "real_paint",
+        "tempfile.TemporaryDirectory",
+        "reported_errors",
+        "patch.object",
+        "isolated_window",
+        "Path",
+        "window.image_workspace_action.setChecked",
+        "window.deleteLater",
+        "QCoreApplication.sendPostedEvents",
+        "PipelineCanvas",
+        "build_default_pipeline",
+        "self.addCleanup",
+        "canvas.resize",
+        "canvas.show",
+        "self._pump_until",
+        "len",
+        "self.assertEqual"
+      ],
+      "direct_checks": [
+        "self.assertEqual(errors, [])"
+      ],
+      "helpers": [
+        "tests.test_deferred_callbacks.reported_errors",
+        "tests.review_fixtures.isolated_window",
+        "tests.test_deferred_callbacks.DeferredCallbackTests._pump_until",
+        "tests.review_fixtures.shared_workflow_templates",
+        "tests.review_fixtures.open_workspace_images",
+        "tests.review_fixtures.editable_copy",
+        "tests.review_fixtures._workflow_templates",
+        "tests.review_fixtures._workflow_template_key"
+      ],
+      "fixtures": [
+        "setUpClass"
+      ],
+      "decorators": [],
+      "class_decorators": [],
+      "subtest_sites": 0,
+      "loop_iterables": [],
+      "skip_calls": [],
+      "historical_source_matches": false,
+      "last_full_status": "unrecorded",
+      "last_full_seconds": null,
+      "skip_reason": "",
+      "runs_in_default_core": false
+    },
+    {
+      "id": "tests.test_deferred_callbacks.DeferredCallbackTests.test_application_code_defers_only_through_owned_timers",
+      "file": "tests/test_deferred_callbacks.py",
+      "class": "DeferredCallbackTests",
+      "method": "test_application_code_defers_only_through_owned_timers",
+      "line": 141,
+      "end_line": 145,
+      "functionality": "application code defers only through owned timers",
+      "description_basis": "method scenario name; see assertion evidence",
+      "category": "Image analysis, calibration and rendering",
+      "direct_subjects": [],
+      "helper_subjects": [],
+      "calls": [
+        "re.compile",
+        "path.relative_to(ROOT).as_posix",
+        "path.relative_to",
+        "(ROOT / 'seedvision').rglob",
+        "direct.search",
+        "path.read_text",
+        "self.assertEqual"
+      ],
+      "direct_checks": [
+        "self.assertEqual(users, [], 'Use seedvision.ui.deferred.run_soon, not QTimer.singleShot.')"
+      ],
+      "helpers": [],
+      "fixtures": [
+        "setUpClass"
+      ],
+      "decorators": [],
+      "class_decorators": [],
+      "subtest_sites": 0,
+      "loop_iterables": [
+        "(ROOT / 'seedvision').rglob('*.py')"
+      ],
+      "skip_calls": [],
+      "historical_source_matches": false,
+      "last_full_status": "unrecorded",
+      "last_full_seconds": null,
+      "skip_reason": "",
+      "runs_in_default_core": false
+    },
+    {
       "id": "tests.test_desktop_terminal_history.TerminalHistoryTests.test_workflow_lifecycle",
       "file": "tests/test_desktop_terminal_history.py",
       "class": "TerminalHistoryTests",
@@ -13786,8 +14115,8 @@
       "file": "tests/test_edge_trace_commit.py",
       "class": "EdgeTraceCommitTests",
       "method": "test_workflow_lifecycle",
-      "line": 178,
-      "end_line": 183,
+      "line": 177,
+      "end_line": 182,
       "functionality": "4 related EdgeTraceCommitTests scenarios, each with private fixture state.",
       "description_basis": "method docstring",
       "category": "Annotation and interactive image review",
@@ -13806,7 +14135,11 @@
         "tests.test_edge_trace_commit.EdgeTraceCommitTests.check_test_closing_trace_fills_only_inward_and_preserves_other_ids",
         "tests.test_edge_trace_commit.EdgeTraceCommitTests.check_test_closed_fill_can_be_disabled_and_trace_session_resets",
         "tests.test_edge_trace_commit.EdgeTraceCommitTests.check_test_fill_closed_loops_checkbox_defaults_on_and_updates_options",
+        "tests.review_fixtures.workspace_window",
+        "tests.review_fixtures.shared_workflow_templates",
         "tests.review_fixtures.open_workspace_images",
+        "tests.review_fixtures._workflow_templates",
+        "tests.review_fixtures._workflow_template_key",
         "tests.test_edge_trace_commit.EdgeTraceCommitTests._image_view",
         "tests.test_edge_trace_commit.EdgeTraceCommitTests._set_preview"
       ],
@@ -14186,9 +14519,9 @@
       "file": "tests/test_gui_layout.py",
       "class": "GuiLayoutTests",
       "method": "test_workflow_lifecycle",
-      "line": 411,
-      "end_line": 430,
-      "functionality": "18 related GuiLayoutTests scenarios, each with private fixture state.",
+      "line": 437,
+      "end_line": 457,
+      "functionality": "19 related GuiLayoutTests scenarios, each with private fixture state.",
       "description_basis": "method docstring",
       "category": "Image analysis, calibration and rendering",
       "direct_subjects": [],
@@ -14199,7 +14532,8 @@
         "seedvision.pipeline.build_default_pipeline",
         "seedvision.ui.main_window._reference_summary_html",
         "seedvision.ui.spin_format.spin_decimals",
-        "seedvision.ui.main_window._path_identity"
+        "seedvision.ui.main_window._path_identity",
+        "seedvision.ui.main_window.MainWindow"
       ],
       "calls": [
         "self.scenario"
@@ -14224,6 +14558,14 @@
         "tests.test_gui_layout.GuiLayoutTests.check_test_toolbar_closes_up_after_the_overlay_controls_left",
         "tests.test_gui_layout.GuiLayoutTests.check_test_image_header_never_overlaps_at_narrow_widths",
         "tests.test_gui_layout.GuiLayoutTests.check_test_overlay_controls_follow_the_showing_display",
+        "tests.test_gui_layout.GuiLayoutTests.check_test_window_fixtures_share_templates_and_opting_out_builds_them",
+        "tests.review_fixtures._workflow_templates",
+        "tests.review_fixtures._workflow_template_key",
+        "tests.review_fixtures.workspace_window",
+        "tests.review_fixtures.isolated_window",
+        "tests.review_fixtures.shared_workflow_templates",
+        "tests.review_fixtures.open_workspace_images",
+        "tests.review_fixtures.editable_copy",
         "tests.test_gui_layout.GuiLayoutTests._settled",
         "tests.test_gui_layout.GuiLayoutTests._pane_edges"
       ],
@@ -14523,10 +14865,11 @@
         "tests.test_project_analysis_ui.ProjectAnalysisUiTests._write_image",
         "tests.review_fixtures.isolated_window",
         "tests.review_fixtures.dispose_window",
-        "tests.review_fixtures._workflow_templates",
-        "tests.review_fixtures._workflow_template_key",
+        "tests.review_fixtures.shared_workflow_templates",
         "tests.review_fixtures.open_workspace_images",
-        "tests.review_fixtures.editable_copy"
+        "tests.review_fixtures.editable_copy",
+        "tests.review_fixtures._workflow_templates",
+        "tests.review_fixtures._workflow_template_key"
       ],
       "fixtures": [
         "setUpClass"
@@ -14633,10 +14976,11 @@
         "tests.test_project_analysis_ui.ProjectAnalysisUiTests._write_image",
         "tests.review_fixtures.isolated_window",
         "tests.review_fixtures.dispose_window",
-        "tests.review_fixtures._workflow_templates",
-        "tests.review_fixtures._workflow_template_key",
+        "tests.review_fixtures.shared_workflow_templates",
         "tests.review_fixtures.open_workspace_images",
-        "tests.review_fixtures.editable_copy"
+        "tests.review_fixtures.editable_copy",
+        "tests.review_fixtures._workflow_templates",
+        "tests.review_fixtures._workflow_template_key"
       ],
       "fixtures": [
         "setUpClass"
@@ -14757,10 +15101,11 @@
         "tests.test_image_list_controls.ImageListRowTests._species",
         "tests.test_image_list_controls._write_image",
         "tests.test_project_analysis_ui.ProjectAnalysisUiTests._write_image",
-        "tests.review_fixtures._workflow_templates",
-        "tests.review_fixtures._workflow_template_key",
+        "tests.review_fixtures.shared_workflow_templates",
         "tests.review_fixtures.open_workspace_images",
         "tests.review_fixtures.editable_copy",
+        "tests.review_fixtures._workflow_templates",
+        "tests.review_fixtures._workflow_template_key",
         "tests.test_image_list_controls.ImageListRowTests._tooltip",
         "tests.test_image_list_controls.ImageListRowTests._accent",
         "tests.test_image_list_controls.ImageListRowTests._open_rows",
@@ -14950,8 +15295,8 @@
       "file": "tests/test_instance_continuity_ui.py",
       "class": "InstanceContinuityUiTests",
       "method": "test_selected_seed_warning_is_exact_and_does_not_block_apply",
-      "line": 56,
-      "end_line": 100,
+      "line": 54,
+      "end_line": 98,
       "functionality": "selected seed warning is exact and does not block apply",
       "description_basis": "method scenario name; see assertion evidence",
       "category": "Annotation and interactive image review",
@@ -15030,8 +15375,8 @@
       "file": "tests/test_instance_continuity_ui.py",
       "class": "InstanceContinuityUiTests",
       "method": "test_global_warning_and_identity_cache_update_for_a_new_draft",
-      "line": 102,
-      "end_line": 129,
+      "line": 100,
+      "end_line": 127,
       "functionality": "global warning and identity cache update for a new draft",
       "description_basis": "method scenario name; see assertion evidence",
       "category": "Annotation and interactive image review",
@@ -15172,8 +15517,8 @@
       "file": "tests/test_instance_mask_import_ui.py",
       "class": "InstanceMaskImportUiTests",
       "method": "test_workflow_lifecycle",
-      "line": 610,
-      "end_line": 624,
+      "line": 608,
+      "end_line": 622,
       "functionality": "13 related InstanceMaskImportUiTests scenarios, each with private fixture state.",
       "description_basis": "method docstring",
       "category": "Annotation and interactive image review",
@@ -15233,8 +15578,8 @@
       "file": "tests/test_instance_mask_import_ui.py",
       "class": "InstanceMaskImportUiTests",
       "method": "test_validation_and_recovery",
-      "line": 626,
-      "end_line": 629,
+      "line": 624,
+      "end_line": 627,
       "functionality": "2 related InstanceMaskImportUiTests scenarios, each with private fixture state.",
       "description_basis": "method docstring",
       "category": "Annotation and interactive image review",
@@ -16249,16 +16594,16 @@
       "file": "tests/test_manual_seed_centre_ui.py",
       "class": "ManualSeedCentreUiTests",
       "method": "test_workflow_lifecycle",
-      "line": 410,
-      "end_line": 413,
+      "line": 406,
+      "end_line": 409,
       "functionality": "2 related ManualSeedCentreUiTests scenarios, each with private fixture state.",
       "description_basis": "method docstring",
       "category": "Annotation and interactive image review",
       "direct_subjects": [],
       "helper_subjects": [
         "seedvision.ui.image_view.ImageView",
-        "seedvision.ui.main_window.MainWindow",
-        "seedvision.persistence.ManualSeedCentreStore"
+        "seedvision.persistence.ManualSeedCentreStore",
+        "seedvision.ui.main_window.MainWindow"
       ],
       "calls": [
         "self.scenario"
@@ -16268,9 +16613,13 @@
         "tests.test_manual_seed_centre_ui.ManualSeedCentreUiTests.check_test_qt_add_manual_drag_auto_drag_and_right_delete_use_marker_semantics",
         "tests.test_manual_seed_centre_ui.ManualSeedCentreUiTests.check_test_qt_mode_switch_undo_and_reset_are_autosaved_per_image",
         "tests.test_manual_seed_centre_ui.ManualSeedCentreUiTests._write_image",
-        "tests.review_fixtures.open_workspace_images",
+        "tests.review_fixtures.workspace_window",
         "tests.test_manual_seed_centre_ui.ManualSeedCentreUiTests._procedural_result",
-        "tests.review_fixtures.dispose_window"
+        "tests.review_fixtures.dispose_window",
+        "tests.review_fixtures.shared_workflow_templates",
+        "tests.review_fixtures.open_workspace_images",
+        "tests.review_fixtures._workflow_templates",
+        "tests.review_fixtures._workflow_template_key"
       ],
       "fixtures": [
         "setUpClass"
@@ -16293,15 +16642,15 @@
       "file": "tests/test_manual_seed_centre_ui.py",
       "class": "ManualSeedCentreUiTests",
       "method": "test_validation_and_recovery",
-      "line": 415,
-      "end_line": 419,
+      "line": 411,
+      "end_line": 415,
       "functionality": "3 related ManualSeedCentreUiTests scenarios, each with private fixture state.",
       "description_basis": "method docstring",
       "category": "Annotation and interactive image review",
       "direct_subjects": [],
       "helper_subjects": [
-        "seedvision.ui.main_window.MainWindow",
-        "seedvision.persistence.ManualSeedCentreStore"
+        "seedvision.persistence.ManualSeedCentreStore",
+        "seedvision.ui.main_window.MainWindow"
       ],
       "calls": [
         "self.scenario"
@@ -16312,9 +16661,13 @@
         "tests.test_manual_seed_centre_ui.ManualSeedCentreUiTests.check_test_autosave_failure_keeps_the_edit_and_still_recomputes",
         "tests.test_manual_seed_centre_ui.ManualSeedCentreUiTests.check_test_running_node_switch_and_image_switch_stop_qt_edit_mode",
         "tests.test_manual_seed_centre_ui.ManualSeedCentreUiTests._write_image",
-        "tests.review_fixtures.open_workspace_images",
+        "tests.review_fixtures.workspace_window",
         "tests.test_manual_seed_centre_ui.ManualSeedCentreUiTests._procedural_result",
-        "tests.review_fixtures.dispose_window"
+        "tests.review_fixtures.dispose_window",
+        "tests.review_fixtures.shared_workflow_templates",
+        "tests.review_fixtures.open_workspace_images",
+        "tests.review_fixtures._workflow_templates",
+        "tests.review_fixtures._workflow_template_key"
       ],
       "fixtures": [
         "setUpClass"
@@ -23916,10 +24269,11 @@
       "helpers": [
         "tests.review_fixtures.isolated_window",
         "tests.review_fixtures.dispose_window",
-        "tests.review_fixtures._workflow_templates",
-        "tests.review_fixtures._workflow_template_key",
+        "tests.review_fixtures.shared_workflow_templates",
         "tests.review_fixtures.open_workspace_images",
-        "tests.review_fixtures.editable_copy"
+        "tests.review_fixtures.editable_copy",
+        "tests.review_fixtures._workflow_templates",
+        "tests.review_fixtures._workflow_template_key"
       ],
       "fixtures": [],
       "decorators": [],
@@ -23976,10 +24330,11 @@
         "tests.test_node_optimization_ui.NodeOptimizationUITests.check_test_sample_preflight_allows_local_refs_and_tracks_image_context",
         "tests.test_node_optimization_ui.NodeOptimizationUITests.window",
         "tests.review_fixtures.isolated_window",
-        "tests.review_fixtures._workflow_templates",
-        "tests.review_fixtures._workflow_template_key",
+        "tests.review_fixtures.shared_workflow_templates",
         "tests.review_fixtures.open_workspace_images",
-        "tests.review_fixtures.editable_copy"
+        "tests.review_fixtures.editable_copy",
+        "tests.review_fixtures._workflow_templates",
+        "tests.review_fixtures._workflow_template_key"
       ],
       "fixtures": [
         "setUpClass"
@@ -24021,10 +24376,11 @@
         "tests.test_node_optimization_ui.NodeOptimizationUITests.check_test_stale_proposal_never_opens_apply_dialog",
         "tests.test_node_optimization_ui.NodeOptimizationUITests.window",
         "tests.review_fixtures.isolated_window",
-        "tests.review_fixtures._workflow_templates",
-        "tests.review_fixtures._workflow_template_key",
+        "tests.review_fixtures.shared_workflow_templates",
         "tests.review_fixtures.open_workspace_images",
-        "tests.review_fixtures.editable_copy"
+        "tests.review_fixtures.editable_copy",
+        "tests.review_fixtures._workflow_templates",
+        "tests.review_fixtures._workflow_template_key"
       ],
       "fixtures": [
         "setUpClass"
@@ -25909,17 +26265,17 @@
       "file": "tests/test_pipeline_ui.py",
       "class": "PipelineCanvasTests",
       "method": "test_approved_reference_edge_fit_updates_live_node_parameters",
-      "line": 4434,
-      "end_line": 4435,
+      "line": 4421,
+      "end_line": 4422,
       "functionality": "approved reference edge fit updates live node parameters",
       "description_basis": "method scenario name; see assertion evidence",
       "category": "Pipeline workspace and controls",
       "direct_subjects": [],
       "helper_subjects": [
-        "seedvision.ui.main_window.MainWindow",
         "seedvision.segmentation.reference_edge_fit.ReferenceEdgeFitScore",
         "seedvision.segmentation.reference_edge_fit.ReferenceEdgeFitResult",
-        "seedvision.segmentation.PipelineAnalysisCache"
+        "seedvision.segmentation.PipelineAnalysisCache",
+        "seedvision.ui.main_window.MainWindow"
       ],
       "calls": [
         "self.scenario"
@@ -25927,9 +26283,13 @@
       "direct_checks": [],
       "helpers": [
         "tests.test_pipeline_ui.PipelineCanvasTests.check_test_approved_reference_edge_fit_updates_live_node_parameters",
-        "tests.review_fixtures.open_workspace_images",
+        "tests.review_fixtures.workspace_window",
         "tests.review_fixtures.editable_copy",
-        "tests.review_fixtures.dispose_window"
+        "tests.review_fixtures.dispose_window",
+        "tests.review_fixtures.shared_workflow_templates",
+        "tests.review_fixtures.open_workspace_images",
+        "tests.review_fixtures._workflow_templates",
+        "tests.review_fixtures._workflow_template_key"
       ],
       "fixtures": [
         "setUpClass"
@@ -25952,16 +26312,16 @@
       "file": "tests/test_pipeline_ui.py",
       "class": "PipelineCanvasTests",
       "method": "test_switching_images_cancels_all_previous_image_work_before_load",
-      "line": 4437,
-      "end_line": 4438,
+      "line": 4424,
+      "end_line": 4425,
       "functionality": "switching images cancels all previous image work before load",
       "description_basis": "method scenario name; see assertion evidence",
       "category": "Pipeline workspace and controls",
       "direct_subjects": [],
       "helper_subjects": [
-        "seedvision.ui.main_window.MainWindow",
         "seedvision.ui.main_window._path_identity",
-        "seedvision.ui.main_window._AnalysisActivity"
+        "seedvision.ui.main_window._AnalysisActivity",
+        "seedvision.ui.main_window.MainWindow"
       ],
       "calls": [
         "self.scenario"
@@ -25969,9 +26329,13 @@
       "direct_checks": [],
       "helpers": [
         "tests.test_pipeline_ui.PipelineCanvasTests.check_test_switching_images_cancels_all_previous_image_work_before_load",
-        "tests.review_fixtures.open_workspace_images",
+        "tests.review_fixtures.workspace_window",
         "tests.review_fixtures.editable_copy",
-        "tests.review_fixtures.dispose_window"
+        "tests.review_fixtures.dispose_window",
+        "tests.review_fixtures.shared_workflow_templates",
+        "tests.review_fixtures.open_workspace_images",
+        "tests.review_fixtures._workflow_templates",
+        "tests.review_fixtures._workflow_template_key"
       ],
       "fixtures": [
         "setUpClass"
@@ -25994,16 +26358,16 @@
       "file": "tests/test_pipeline_ui.py",
       "class": "PipelineCanvasTests",
       "method": "test_cancelled_previous_image_completion_cannot_install_stale_result",
-      "line": 4440,
-      "end_line": 4441,
+      "line": 4427,
+      "end_line": 4428,
       "functionality": "cancelled previous image completion cannot install stale result",
       "description_basis": "method scenario name; see assertion evidence",
       "category": "Pipeline workspace and controls",
       "direct_subjects": [],
       "helper_subjects": [
-        "seedvision.ui.main_window.MainWindow",
         "seedvision.ui.main_window._path_identity",
-        "seedvision.segmentation.PipelineAnalysisCache"
+        "seedvision.segmentation.PipelineAnalysisCache",
+        "seedvision.ui.main_window.MainWindow"
       ],
       "calls": [
         "self.scenario"
@@ -26011,9 +26375,13 @@
       "direct_checks": [],
       "helpers": [
         "tests.test_pipeline_ui.PipelineCanvasTests.check_test_cancelled_previous_image_completion_cannot_install_stale_result",
-        "tests.review_fixtures.open_workspace_images",
+        "tests.review_fixtures.workspace_window",
         "tests.review_fixtures.editable_copy",
-        "tests.review_fixtures.dispose_window"
+        "tests.review_fixtures.dispose_window",
+        "tests.review_fixtures.shared_workflow_templates",
+        "tests.review_fixtures.open_workspace_images",
+        "tests.review_fixtures._workflow_templates",
+        "tests.review_fixtures._workflow_template_key"
       ],
       "fixtures": [
         "setUpClass"
@@ -26036,8 +26404,8 @@
       "file": "tests/test_pipeline_ui.py",
       "class": "PipelineCanvasTests",
       "method": "test_failed_analysis_purges_its_partial_cache",
-      "line": 4443,
-      "end_line": 4444,
+      "line": 4430,
+      "end_line": 4431,
       "functionality": "failed analysis purges its partial cache",
       "description_basis": "method scenario name; see assertion evidence",
       "category": "Pipeline workspace and controls",
@@ -26055,10 +26423,11 @@
         "tests.test_pipeline_ui.PipelineCanvasTests.check_test_failed_analysis_purges_its_partial_cache",
         "tests.review_fixtures.controls_window",
         "tests.review_fixtures.isolated_window",
-        "tests.review_fixtures._workflow_templates",
-        "tests.review_fixtures._workflow_template_key",
+        "tests.review_fixtures.shared_workflow_templates",
         "tests.review_fixtures.open_workspace_images",
-        "tests.review_fixtures.editable_copy"
+        "tests.review_fixtures.editable_copy",
+        "tests.review_fixtures._workflow_templates",
+        "tests.review_fixtures._workflow_template_key"
       ],
       "fixtures": [
         "setUpClass"
@@ -26081,8 +26450,8 @@
       "file": "tests/test_pipeline_ui.py",
       "class": "PipelineCanvasTests",
       "method": "test_superseded_analysis_is_cancelled_and_remains_visible",
-      "line": 4446,
-      "end_line": 4447,
+      "line": 4433,
+      "end_line": 4434,
       "functionality": "superseded analysis is cancelled and remains visible",
       "description_basis": "method scenario name; see assertion evidence",
       "category": "Pipeline workspace and controls",
@@ -26099,10 +26468,11 @@
         "tests.test_pipeline_ui.PipelineCanvasTests.check_test_superseded_analysis_is_cancelled_and_remains_visible",
         "tests.review_fixtures.controls_window",
         "tests.review_fixtures.isolated_window",
-        "tests.review_fixtures._workflow_templates",
-        "tests.review_fixtures._workflow_template_key",
+        "tests.review_fixtures.shared_workflow_templates",
         "tests.review_fixtures.open_workspace_images",
-        "tests.review_fixtures.editable_copy"
+        "tests.review_fixtures.editable_copy",
+        "tests.review_fixtures._workflow_templates",
+        "tests.review_fixtures._workflow_template_key"
       ],
       "fixtures": [
         "setUpClass"
@@ -26125,8 +26495,8 @@
       "file": "tests/test_pipeline_ui.py",
       "class": "PipelineCanvasTests",
       "method": "test_worker_progress_turns_only_the_current_revision_node_green",
-      "line": 4449,
-      "end_line": 4450,
+      "line": 4436,
+      "end_line": 4437,
       "functionality": "worker progress turns only the current revision node green",
       "description_basis": "method scenario name; see assertion evidence",
       "category": "Pipeline workspace and controls",
@@ -26140,9 +26510,13 @@
       "direct_checks": [],
       "helpers": [
         "tests.test_pipeline_ui.PipelineCanvasTests.check_test_worker_progress_turns_only_the_current_revision_node_green",
-        "tests.review_fixtures.open_workspace_images",
+        "tests.review_fixtures.workspace_window",
         "tests.review_fixtures.editable_copy",
-        "tests.review_fixtures.dispose_window"
+        "tests.review_fixtures.dispose_window",
+        "tests.review_fixtures.shared_workflow_templates",
+        "tests.review_fixtures.open_workspace_images",
+        "tests.review_fixtures._workflow_templates",
+        "tests.review_fixtures._workflow_template_key"
       ],
       "fixtures": [
         "setUpClass"
@@ -26165,8 +26539,8 @@
       "file": "tests/test_pipeline_ui.py",
       "class": "PipelineCanvasTests",
       "method": "test_cleared_reference_layer_returns_to_paint_and_accepts_dabs",
-      "line": 4452,
-      "end_line": 4453,
+      "line": 4439,
+      "end_line": 4440,
       "functionality": "cleared reference layer returns to paint and accepts dabs",
       "description_basis": "method scenario name; see assertion evidence",
       "category": "Pipeline workspace and controls",
@@ -26180,9 +26554,13 @@
       "direct_checks": [],
       "helpers": [
         "tests.test_pipeline_ui.PipelineCanvasTests.check_test_cleared_reference_layer_returns_to_paint_and_accepts_dabs",
-        "tests.review_fixtures.open_workspace_images",
+        "tests.review_fixtures.workspace_window",
         "tests.review_fixtures.editable_copy",
-        "tests.review_fixtures.dispose_window"
+        "tests.review_fixtures.dispose_window",
+        "tests.review_fixtures.shared_workflow_templates",
+        "tests.review_fixtures.open_workspace_images",
+        "tests.review_fixtures._workflow_templates",
+        "tests.review_fixtures._workflow_template_key"
       ],
       "fixtures": [
         "setUpClass"
@@ -26205,15 +26583,15 @@
       "file": "tests/test_pipeline_ui.py",
       "class": "PipelineCanvasTests",
       "method": "test_perimeter_source_checkbox_invalidates_every_background_consumer",
-      "line": 4455,
-      "end_line": 4456,
+      "line": 4442,
+      "end_line": 4443,
       "functionality": "perimeter source checkbox invalidates every background consumer",
       "description_basis": "method scenario name; see assertion evidence",
       "category": "Pipeline workspace and controls",
       "direct_subjects": [],
       "helper_subjects": [
-        "seedvision.ui.main_window.MainWindow",
-        "seedvision.segmentation.PipelineAnalysisCache"
+        "seedvision.segmentation.PipelineAnalysisCache",
+        "seedvision.ui.main_window.MainWindow"
       ],
       "calls": [
         "self.scenario"
@@ -26221,9 +26599,13 @@
       "direct_checks": [],
       "helpers": [
         "tests.test_pipeline_ui.PipelineCanvasTests.check_test_perimeter_source_checkbox_invalidates_every_background_consumer",
-        "tests.review_fixtures.open_workspace_images",
+        "tests.review_fixtures.workspace_window",
         "tests.review_fixtures.editable_copy",
-        "tests.review_fixtures.dispose_window"
+        "tests.review_fixtures.dispose_window",
+        "tests.review_fixtures.shared_workflow_templates",
+        "tests.review_fixtures.open_workspace_images",
+        "tests.review_fixtures._workflow_templates",
+        "tests.review_fixtures._workflow_template_key"
       ],
       "fixtures": [
         "setUpClass"
@@ -26246,15 +26628,15 @@
       "file": "tests/test_pipeline_ui.py",
       "class": "PipelineCanvasTests",
       "method": "test_annotated_seed_foreground_checkbox_defaults_on_and_invalidates_consumers",
-      "line": 4458,
-      "end_line": 4459,
+      "line": 4445,
+      "end_line": 4446,
       "functionality": "annotated seed foreground checkbox defaults on and invalidates consumers",
       "description_basis": "method scenario name; see assertion evidence",
       "category": "Pipeline workspace and controls",
       "direct_subjects": [],
       "helper_subjects": [
-        "seedvision.ui.main_window.MainWindow",
-        "seedvision.segmentation.PipelineAnalysisCache"
+        "seedvision.segmentation.PipelineAnalysisCache",
+        "seedvision.ui.main_window.MainWindow"
       ],
       "calls": [
         "self.scenario"
@@ -26262,9 +26644,13 @@
       "direct_checks": [],
       "helpers": [
         "tests.test_pipeline_ui.PipelineCanvasTests.check_test_annotated_seed_foreground_checkbox_defaults_on_and_invalidates_consumers",
-        "tests.review_fixtures.open_workspace_images",
+        "tests.review_fixtures.workspace_window",
         "tests.review_fixtures.editable_copy",
-        "tests.review_fixtures.dispose_window"
+        "tests.review_fixtures.dispose_window",
+        "tests.review_fixtures.shared_workflow_templates",
+        "tests.review_fixtures.open_workspace_images",
+        "tests.review_fixtures._workflow_templates",
+        "tests.review_fixtures._workflow_template_key"
       ],
       "fixtures": [
         "setUpClass"
@@ -26287,8 +26673,8 @@
       "file": "tests/test_pipeline_ui.py",
       "class": "PipelineCanvasTests",
       "method": "test_new_seed_preserves_the_selected_instance_tool",
-      "line": 4461,
-      "end_line": 4462,
+      "line": 4448,
+      "end_line": 4449,
       "functionality": "new seed preserves the selected instance tool",
       "description_basis": "method scenario name; see assertion evidence",
       "category": "Pipeline workspace and controls",
@@ -26304,10 +26690,11 @@
         "tests.test_pipeline_ui.PipelineCanvasTests.check_test_new_seed_preserves_the_selected_instance_tool",
         "tests.review_fixtures.isolated_window",
         "tests.review_fixtures.dispose_window",
-        "tests.review_fixtures._workflow_templates",
-        "tests.review_fixtures._workflow_template_key",
+        "tests.review_fixtures.shared_workflow_templates",
         "tests.review_fixtures.open_workspace_images",
-        "tests.review_fixtures.editable_copy"
+        "tests.review_fixtures.editable_copy",
+        "tests.review_fixtures._workflow_templates",
+        "tests.review_fixtures._workflow_template_key"
       ],
       "fixtures": [
         "setUpClass"
@@ -26330,8 +26717,8 @@
       "file": "tests/test_pipeline_ui.py",
       "class": "PipelineCanvasTests",
       "method": "test_reference_masks_run_analysis_only_after_explicit_apply",
-      "line": 4464,
-      "end_line": 4465,
+      "line": 4451,
+      "end_line": 4452,
       "functionality": "reference masks run analysis only after explicit apply",
       "description_basis": "method scenario name; see assertion evidence",
       "category": "Pipeline workspace and controls",
@@ -26345,9 +26732,13 @@
       "direct_checks": [],
       "helpers": [
         "tests.test_pipeline_ui.PipelineCanvasTests.check_test_reference_masks_run_analysis_only_after_explicit_apply",
-        "tests.review_fixtures.open_workspace_images",
+        "tests.review_fixtures.workspace_window",
         "tests.review_fixtures.editable_copy",
-        "tests.review_fixtures.dispose_window"
+        "tests.review_fixtures.dispose_window",
+        "tests.review_fixtures.shared_workflow_templates",
+        "tests.review_fixtures.open_workspace_images",
+        "tests.review_fixtures._workflow_templates",
+        "tests.review_fixtures._workflow_template_key"
       ],
       "fixtures": [
         "setUpClass"
@@ -26370,8 +26761,8 @@
       "file": "tests/test_pipeline_ui.py",
       "class": "PipelineCanvasTests",
       "method": "test_instance_annotations_apply_separately_from_reference_masks",
-      "line": 4467,
-      "end_line": 4468,
+      "line": 4454,
+      "end_line": 4455,
       "functionality": "instance annotations apply separately from reference masks",
       "description_basis": "method scenario name; see assertion evidence",
       "category": "Pipeline workspace and controls",
@@ -26385,9 +26776,13 @@
       "direct_checks": [],
       "helpers": [
         "tests.test_pipeline_ui.PipelineCanvasTests.check_test_instance_annotations_apply_separately_from_reference_masks",
-        "tests.review_fixtures.open_workspace_images",
+        "tests.review_fixtures.workspace_window",
         "tests.review_fixtures.editable_copy",
-        "tests.review_fixtures.dispose_window"
+        "tests.review_fixtures.dispose_window",
+        "tests.review_fixtures.shared_workflow_templates",
+        "tests.review_fixtures.open_workspace_images",
+        "tests.review_fixtures._workflow_templates",
+        "tests.review_fixtures._workflow_template_key"
       ],
       "fixtures": [
         "setUpClass"
@@ -26410,8 +26805,8 @@
       "file": "tests/test_pipeline_ui.py",
       "class": "PipelineCanvasTests",
       "method": "test_workflow_lifecycle",
-      "line": 4470,
-      "end_line": 4529,
+      "line": 4457,
+      "end_line": 4516,
       "functionality": "58 related PipelineCanvasTests scenarios, each with private fixture state.",
       "description_basis": "method docstring",
       "category": "Pipeline workspace and controls",
@@ -26419,7 +26814,6 @@
       "helper_subjects": [
         "seedvision.ui.pipeline_canvas.PipelineCanvas",
         "seedvision.pipeline.build_default_pipeline",
-        "seedvision.ui.main_window.MainWindow",
         "seedvision.ui.main_window._path_identity",
         "seedvision.ui.main_window._seed_boundary_status",
         "seedvision.cuda.GpuRaster",
@@ -26442,7 +26836,8 @@
         "seedvision.annotation.ShapeGuidedFillOptions",
         "seedvision.annotation.SmartFillOptions",
         "seedvision.annotation.load_seed_trait_catalogue",
-        "seedvision.persistence.SeedInstanceAnnotation"
+        "seedvision.persistence.SeedInstanceAnnotation",
+        "seedvision.ui.main_window.MainWindow"
       ],
       "calls": [
         "self.scenario"
@@ -26509,11 +26904,13 @@
         "tests.test_pipeline_ui.PipelineCanvasTests.check_test_reference_seed_scale_overlay_boldly_labels_actual_seed_above",
         "tests.review_fixtures.isolated_window",
         "tests.review_fixtures.dispose_window",
-        "tests.review_fixtures._workflow_templates",
-        "tests.review_fixtures._workflow_template_key",
+        "tests.review_fixtures.shared_workflow_templates",
         "tests.review_fixtures.open_workspace_images",
         "tests.review_fixtures.editable_copy",
-        "tests.review_fixtures.controls_window"
+        "tests.review_fixtures._workflow_templates",
+        "tests.review_fixtures._workflow_template_key",
+        "tests.review_fixtures.controls_window",
+        "tests.review_fixtures.workspace_window"
       ],
       "fixtures": [
         "setUpClass"
@@ -26536,8 +26933,8 @@
       "file": "tests/test_pipeline_ui.py",
       "class": "PipelineCanvasTests",
       "method": "test_validation_and_recovery",
-      "line": 4531,
-      "end_line": 4533,
+      "line": 4518,
+      "end_line": 4520,
       "functionality": "1 related PipelineCanvasTests scenarios, each with private fixture state.",
       "description_basis": "method docstring",
       "category": "Pipeline workspace and controls",
@@ -26553,10 +26950,11 @@
         "tests.test_pipeline_ui.PipelineCanvasTests.check_test_setting_change_invalidates_only_node_and_graph_dependents",
         "tests.review_fixtures.controls_window",
         "tests.review_fixtures.isolated_window",
-        "tests.review_fixtures._workflow_templates",
-        "tests.review_fixtures._workflow_template_key",
+        "tests.review_fixtures.shared_workflow_templates",
         "tests.review_fixtures.open_workspace_images",
-        "tests.review_fixtures.editable_copy"
+        "tests.review_fixtures.editable_copy",
+        "tests.review_fixtures._workflow_templates",
+        "tests.review_fixtures._workflow_template_key"
       ],
       "fixtures": [
         "setUpClass"
@@ -26579,8 +26977,8 @@
       "file": "tests/test_pipeline_ui.py",
       "class": "PipelineCanvasTests",
       "method": "test_calibration_nodes_render_references_and_metric_scale",
-      "line": 4882,
-      "end_line": 4883,
+      "line": 4868,
+      "end_line": 4869,
       "functionality": "calibration nodes render references and metric scale",
       "description_basis": "method scenario name; see assertion evidence",
       "category": "Pipeline workspace and controls",
@@ -26596,9 +26994,13 @@
       "direct_checks": [],
       "helpers": [
         "tests.test_pipeline_ui.PipelineCanvasTests.check_test_calibration_nodes_render_references_and_metric_scale",
-        "tests.review_fixtures.open_workspace_images",
+        "tests.review_fixtures.workspace_window",
         "tests.review_fixtures.editable_copy",
-        "tests.review_fixtures.dispose_window"
+        "tests.review_fixtures.dispose_window",
+        "tests.review_fixtures.shared_workflow_templates",
+        "tests.review_fixtures.open_workspace_images",
+        "tests.review_fixtures._workflow_templates",
+        "tests.review_fixtures._workflow_template_key"
       ],
       "fixtures": [
         "setUpClass"
@@ -33000,8 +33402,8 @@
       "file": "tests/test_procedural_fit_ui.py",
       "class": "ProceduralFitMainWindowTests",
       "method": "test_fit_task_passes_complete_coverage_to_core_options",
-      "line": 130,
-      "end_line": 217,
+      "line": 128,
+      "end_line": 215,
       "functionality": "fit task passes complete coverage to core options",
       "description_basis": "method scenario name; see assertion evidence",
       "category": "Image analysis, calibration and rendering",
@@ -33067,16 +33469,16 @@
       "file": "tests/test_procedural_fit_ui.py",
       "class": "ProceduralFitMainWindowTests",
       "method": "test_completed_whole_dish_fit_labels_reported_metrics",
-      "line": 222,
-      "end_line": 242,
+      "line": 220,
+      "end_line": 240,
       "functionality": "completed whole dish fit labels reported metrics",
       "description_basis": "method scenario name; see assertion evidence",
       "category": "Image analysis, calibration and rendering",
       "direct_subjects": [],
       "helper_subjects": [
-        "seedvision.ui.main_window.MainWindow",
         "seedvision.segmentation.procedural_fit.ProceduralFitScore",
-        "seedvision.segmentation.procedural_fit.ProceduralFitResult"
+        "seedvision.segmentation.procedural_fit.ProceduralFitResult",
+        "seedvision.ui.main_window.MainWindow"
       ],
       "calls": [
         "self._window_and_key",
@@ -33097,8 +33499,12 @@
         "tests.test_procedural_fit_ui.ProceduralFitMainWindowTests._window_and_key",
         "tests.test_procedural_fit_ui.ProceduralFitMainWindowTests._install_completed_task",
         "tests.test_procedural_fit_ui.ProceduralFitMainWindowTests._fit_report",
+        "tests.review_fixtures.workspace_window",
+        "tests.review_fixtures.editable_copy",
+        "tests.review_fixtures.shared_workflow_templates",
         "tests.review_fixtures.open_workspace_images",
-        "tests.review_fixtures.editable_copy"
+        "tests.review_fixtures._workflow_templates",
+        "tests.review_fixtures._workflow_template_key"
       ],
       "fixtures": [
         "setUpClass"
@@ -33441,10 +33847,11 @@
         "tests.test_project_analysis_ui.ProjectAnalysisUiTests._window",
         "tests.test_project_analysis_ui.ProjectAnalysisUiTests._dispose",
         "tests.review_fixtures.isolated_window",
-        "tests.review_fixtures._workflow_templates",
-        "tests.review_fixtures._workflow_template_key",
+        "tests.review_fixtures.shared_workflow_templates",
         "tests.review_fixtures.open_workspace_images",
         "tests.review_fixtures.editable_copy",
+        "tests.review_fixtures._workflow_templates",
+        "tests.review_fixtures._workflow_template_key",
         "tests.test_project_analysis_ui.ProjectAnalysisUiTests._image_paths",
         "tests.test_project_analysis_ui.ProjectAnalysisUiTests._reference_graph_attachment"
       ],
@@ -33499,10 +33906,11 @@
         "tests.test_project_analysis_ui.ProjectAnalysisUiTests._window",
         "tests.test_project_analysis_ui.ProjectAnalysisUiTests._dispose",
         "tests.review_fixtures.isolated_window",
-        "tests.review_fixtures._workflow_templates",
-        "tests.review_fixtures._workflow_template_key",
+        "tests.review_fixtures.shared_workflow_templates",
         "tests.review_fixtures.open_workspace_images",
         "tests.review_fixtures.editable_copy",
+        "tests.review_fixtures._workflow_templates",
+        "tests.review_fixtures._workflow_template_key",
         "tests.test_project_analysis_ui.ProjectAnalysisUiTests._centres"
       ],
       "fixtures": [
@@ -33566,10 +33974,11 @@
         "tests.test_project_analysis_ui.ProjectAnalysisUiTests._window",
         "tests.test_project_analysis_ui.ProjectAnalysisUiTests._dispose",
         "tests.review_fixtures.isolated_window",
-        "tests.review_fixtures._workflow_templates",
-        "tests.review_fixtures._workflow_template_key",
+        "tests.review_fixtures.shared_workflow_templates",
         "tests.review_fixtures.open_workspace_images",
         "tests.review_fixtures.editable_copy",
+        "tests.review_fixtures._workflow_templates",
+        "tests.review_fixtures._workflow_template_key",
         "tests.test_project_analysis_ui.ProjectAnalysisUiTests._image_paths"
       ],
       "fixtures": [
@@ -36184,14 +36593,13 @@
       "file": "tests/test_reference_edge_toolbar_revision.py",
       "class": "ReferenceEdgeToolbarRevisionTests",
       "method": "test_workflow_lifecycle",
-      "line": 245,
-      "end_line": 252,
+      "line": 244,
+      "end_line": 251,
       "functionality": "6 related ReferenceEdgeToolbarRevisionTests scenarios, each with private fixture state.",
       "description_basis": "method docstring",
       "category": "Annotation and interactive image review",
       "direct_subjects": [],
       "helper_subjects": [
-        "seedvision.ui.main_window.MainWindow",
         "seedvision.persistence.analysis_settings_profile_from_graph",
         "seedvision.ui.pipeline_canvas.PipelineCanvas",
         "seedvision.pipeline.build_default_pipeline",
@@ -36202,7 +36610,8 @@
         "seedvision.visualization.BackgroundColourProfile",
         "seedvision.ui.pipeline_inspector.BackgroundColourGamut.profile_for_class",
         "seedvision.ui.pipeline_inspector.BackgroundColourGamut.parameters_for_class",
-        "seedvision.ui.pipeline_inspector.BackgroundColourGamut.render_hsv_value_slice"
+        "seedvision.ui.pipeline_inspector.BackgroundColourGamut.render_hsv_value_slice",
+        "seedvision.ui.main_window.MainWindow"
       ],
       "calls": [
         "self.scenario"
@@ -36215,7 +36624,11 @@
         "tests.test_reference_edge_toolbar_revision.ReferenceEdgeToolbarRevisionTests.check_test_selected_node_has_visible_cosmetic_outline_at_overview_zoom",
         "tests.test_reference_edge_toolbar_revision.ReferenceEdgeToolbarRevisionTests.check_test_colour_overlay_order_and_other_node_socket",
         "tests.test_reference_edge_toolbar_revision.ReferenceEdgeToolbarRevisionTests.check_test_other_hsv_matches_production_frequency_model_without_refitting",
-        "tests.review_fixtures.open_workspace_images"
+        "tests.review_fixtures.workspace_window",
+        "tests.review_fixtures.shared_workflow_templates",
+        "tests.review_fixtures.open_workspace_images",
+        "tests.review_fixtures._workflow_templates",
+        "tests.review_fixtures._workflow_template_key"
       ],
       "fixtures": [
         "setUpClass",
@@ -36948,17 +37361,17 @@
       "file": "tests/test_reference_persistence.py",
       "class": "ReferenceRegionMainWindowTests",
       "method": "test_workflow_lifecycle",
-      "line": 738,
-      "end_line": 746,
+      "line": 720,
+      "end_line": 728,
       "functionality": "7 related ReferenceRegionMainWindowTests scenarios, each with private fixture state.",
       "description_basis": "method docstring",
       "category": "Persistence, export, identity and outcomes",
       "direct_subjects": [],
       "helper_subjects": [
-        "seedvision.ui.main_window.MainWindow",
         "seedvision.persistence.SeedInstanceAnnotation",
         "seedvision.persistence.ReferenceRegionStore",
-        "seedvision.persistence.ReferenceRegionBundle"
+        "seedvision.persistence.ReferenceRegionBundle",
+        "seedvision.ui.main_window.MainWindow"
       ],
       "calls": [
         "self.scenario"
@@ -36973,9 +37386,13 @@
         "tests.test_reference_persistence.ReferenceRegionMainWindowTests.check_test_dirty_draft_blocks_save_without_replacing_archive",
         "tests.test_reference_persistence.ReferenceRegionMainWindowTests.check_test_applying_seed_instances_automatically_saves_and_reloads_them",
         "tests.test_reference_persistence.ReferenceRegionMainWindowTests._write_image",
-        "tests.review_fixtures.open_workspace_images",
+        "tests.review_fixtures.workspace_window",
         "tests.review_fixtures.dispose_window",
         "tests.review_fixtures.install_test_frame",
+        "tests.review_fixtures.shared_workflow_templates",
+        "tests.review_fixtures.open_workspace_images",
+        "tests.review_fixtures._workflow_templates",
+        "tests.review_fixtures._workflow_template_key",
         "tests.test_reference_persistence.ReferenceRegionMainWindowTests._save_complete_snapshot"
       ],
       "fixtures": [
@@ -36999,8 +37416,8 @@
       "file": "tests/test_reference_persistence.py",
       "class": "ReferenceRegionMainWindowTests",
       "method": "test_validation_and_recovery",
-      "line": 748,
-      "end_line": 751,
+      "line": 730,
+      "end_line": 733,
       "functionality": "2 related ReferenceRegionMainWindowTests scenarios, each with private fixture state.",
       "description_basis": "method docstring",
       "category": "Persistence, export, identity and outcomes",
@@ -37008,8 +37425,8 @@
       "helper_subjects": [
         "seedvision.persistence.ReferenceRegionStore",
         "seedvision.persistence.ReferenceRegionBundle",
-        "seedvision.ui.main_window.MainWindow",
-        "seedvision.ui.main_window._path_identity"
+        "seedvision.ui.main_window._path_identity",
+        "seedvision.ui.main_window.MainWindow"
       ],
       "calls": [
         "self.scenario"
@@ -37019,8 +37436,12 @@
         "tests.test_reference_persistence.ReferenceRegionMainWindowTests.check_test_loose_corrected_shape_is_deferred_instead_of_rejected_against_raw_image",
         "tests.test_reference_persistence.ReferenceRegionMainWindowTests.check_test_seed_instance_autosave_failure_warns_but_keeps_applied_state",
         "tests.test_reference_persistence.ReferenceRegionMainWindowTests._write_image",
+        "tests.review_fixtures.workspace_window",
+        "tests.review_fixtures.dispose_window",
+        "tests.review_fixtures.shared_workflow_templates",
         "tests.review_fixtures.open_workspace_images",
-        "tests.review_fixtures.dispose_window"
+        "tests.review_fixtures._workflow_templates",
+        "tests.review_fixtures._workflow_template_key"
       ],
       "fixtures": [
         "setUpClass"
@@ -39197,8 +39618,8 @@
       "file": "tests/test_seed_crop_artifacts.py",
       "class": "SeedCropArtifactTests",
       "method": "test_workflow_lifecycle",
-      "line": 237,
-      "end_line": 242,
+      "line": 236,
+      "end_line": 241,
       "functionality": "4 related SeedCropArtifactTests scenarios, each with private fixture state.",
       "description_basis": "method docstring",
       "category": "Persistence, export, identity and outcomes",
@@ -39242,8 +39663,8 @@
       "file": "tests/test_seed_crop_artifacts.py",
       "class": "SeedCropArtifactTests",
       "method": "test_validation_and_recovery",
-      "line": 244,
-      "end_line": 250,
+      "line": 243,
+      "end_line": 249,
       "functionality": "5 related SeedCropArtifactTests scenarios, each with private fixture state.",
       "description_basis": "method docstring",
       "category": "Persistence, export, identity and outcomes",
@@ -39252,8 +39673,8 @@
         "seedvision.export.results.result_report",
         "seedvision.export.crop_artifacts.export_seed_crop_artifacts",
         "seedvision.export.crop_artifacts.CropExportCancelled",
-        "seedvision.ui.main_window.MainWindow",
         "seedvision.ui.results._CropExportTask",
+        "seedvision.ui.main_window.MainWindow",
         "seedvision.segmentation.procedural.ProceduralInstanceResult",
         "seedvision.calibration.image.ImageCalibration",
         "seedvision.segmentation.baseline.BaselineAnalysis"
@@ -39268,9 +39689,13 @@
         "tests.test_seed_crop_artifacts.SeedCropArtifactTests.check_test_gpu_crop_drift_is_rejected_before_publication",
         "tests.test_seed_crop_artifacts.SeedCropArtifactTests.check_test_result_mutation_during_encoding_prevents_publication",
         "tests.test_seed_crop_artifacts.SeedCropArtifactTests.check_test_window_stop_reaches_export_worker_cancellation_event",
-        "tests.review_fixtures.open_workspace_images",
+        "tests.review_fixtures.workspace_window",
         "tests.test_seed_crop_artifacts._analysis",
-        "tests.review_fixtures.dispose_window"
+        "tests.review_fixtures.dispose_window",
+        "tests.review_fixtures.shared_workflow_templates",
+        "tests.review_fixtures.open_workspace_images",
+        "tests.review_fixtures._workflow_templates",
+        "tests.review_fixtures._workflow_template_key"
       ],
       "fixtures": [
         "setUpClass"
@@ -39752,14 +40177,14 @@
       "class": "SelectedInstanceMainWindowTests",
       "method": "test_show_dropdown_plumbs_to_view_and_tracks_analysis_availability",
       "line": 195,
-      "end_line": 238,
+      "end_line": 236,
       "functionality": "show dropdown plumbs to view and tracks analysis availability",
       "description_basis": "method scenario name; see assertion evidence",
       "category": "Annotation and interactive image review",
-      "direct_subjects": [
+      "direct_subjects": [],
+      "helper_subjects": [
         "seedvision.ui.main_window.MainWindow"
       ],
-      "helper_subjects": [],
       "calls": [
         "tempfile.TemporaryDirectory",
         "Path",
@@ -39770,8 +40195,7 @@
         "self.assertTrue",
         "image.save",
         "str",
-        "open_workspace_images",
-        "MainWindow",
+        "workspace_window",
         "self.addCleanup",
         "self.assertEqual",
         "selector.currentData",
@@ -39800,7 +40224,11 @@
         "assert key is not None"
       ],
       "helpers": [
-        "tests.review_fixtures.open_workspace_images"
+        "tests.review_fixtures.workspace_window",
+        "tests.review_fixtures.shared_workflow_templates",
+        "tests.review_fixtures.open_workspace_images",
+        "tests.review_fixtures._workflow_templates",
+        "tests.review_fixtures._workflow_template_key"
       ],
       "fixtures": [
         "setUpClass"
@@ -41463,12 +41891,71 @@
       "runs_in_default_core": false
     },
     {
+      "id": "tests.test_test_runner.TestRunnerTests.test_windows_left_by_a_test_are_deleted_but_class_fixture_windows_last_the_class",
+      "file": "tests/test_test_runner.py",
+      "class": "TestRunnerTests",
+      "method": "test_windows_left_by_a_test_are_deleted_but_class_fixture_windows_last_the_class",
+      "line": 249,
+      "end_line": 296,
+      "functionality": "windows left by a test are deleted but class fixture windows last the class",
+      "description_basis": "method scenario name; see assertion evidence",
+      "category": "Startup, resources and diagnostics",
+      "direct_subjects": [],
+      "helper_subjects": [],
+      "calls": [
+        "os.environ.setdefault",
+        "QApplication.instance",
+        "QApplication",
+        "QWidget",
+        "QTimer(window).timeout.connect",
+        "QTimer",
+        "window.close",
+        "self_retaining_window",
+        "self.assertTrue",
+        "isValid",
+        "self.assertFalse",
+        "pending.deleteLater",
+        "application.processEvents",
+        "self.scenario",
+        "TimedSuite",
+        "Witness",
+        "Later",
+        "unittest.TextTestRunner(stream=io.StringIO()).run",
+        "unittest.TextTestRunner",
+        "io.StringIO",
+        "result.wasSuccessful"
+      ],
+      "direct_checks": [
+        "self.assertTrue(isValid(seen['class']))",
+        "self.assertFalse(isValid(seen['a']))",
+        "self.assertFalse(isValid(seen['a-child']))",
+        "self.assertFalse(isValid(seen['class']))",
+        "self.assertFalse(isValid(seen['b']))",
+        "self.assertFalse(isValid(seen['first']))",
+        "self.assertTrue(isValid(pending))",
+        "self.assertFalse(isValid(seen['pending']))",
+        "self.assertTrue(result.wasSuccessful(), result.failures + result.errors)"
+      ],
+      "helpers": [],
+      "fixtures": [],
+      "decorators": [],
+      "class_decorators": [],
+      "subtest_sites": 0,
+      "loop_iterables": [],
+      "skip_calls": [],
+      "historical_source_matches": false,
+      "last_full_status": "unrecorded",
+      "last_full_seconds": null,
+      "skip_reason": "",
+      "runs_in_default_core": false
+    },
+    {
       "id": "tests.test_test_runner.TestRunnerTests.test_fixture_bundle_checks_hashes_and_never_overwrites_reviewed_files",
       "file": "tests/test_test_runner.py",
       "class": "TestRunnerTests",
       "method": "test_fixture_bundle_checks_hashes_and_never_overwrites_reviewed_files",
-      "line": 249,
-      "end_line": 268,
+      "line": 298,
+      "end_line": 317,
       "functionality": "fixture bundle checks hashes and never overwrites reviewed files",
       "description_basis": "method scenario name; see assertion evidence",
       "category": "Startup, resources and diagnostics",
@@ -42033,8 +42520,8 @@
       "file": "tests/test_trait_review_ui.py",
       "class": "TraitReviewUiTests",
       "method": "test_workflow_lifecycle",
-      "line": 172,
-      "end_line": 174,
+      "line": 171,
+      "end_line": 173,
       "functionality": "1 related TraitReviewUiTests scenarios, each with private fixture state.",
       "description_basis": "method docstring",
       "category": "Learning and trait analysis",
@@ -42076,8 +42563,8 @@
       "file": "tests/test_trait_review_ui.py",
       "class": "TraitReviewUiTests",
       "method": "test_validation_and_recovery",
-      "line": 176,
-      "end_line": 179,
+      "line": 175,
+      "end_line": 178,
       "functionality": "2 related TraitReviewUiTests scenarios, each with private fixture state.",
       "description_basis": "method docstring",
       "category": "Learning and trait analysis",
@@ -42341,8 +42828,8 @@
       "file": "tests/test_trait_training.py",
       "class": "TraitTrainingUITests",
       "method": "test_workflow_lifecycle",
-      "line": 505,
-      "end_line": 509,
+      "line": 504,
+      "end_line": 508,
       "functionality": "3 related TraitTrainingUITests scenarios, each with private fixture state.",
       "description_basis": "method docstring",
       "category": "Learning and trait analysis",
@@ -42365,8 +42852,12 @@
         "tests.test_trait_training.TraitTrainingUITests.check_test_trait_worker_forwards_real_controls_task_identity_and_terminal_outcomes",
         "tests.test_trait_training.TraitTrainingUITests.check_test_serial_worker_terminal_slot_runs_on_gui_thread",
         "tests.test_trait_training.TraitTrainingUITests.window",
+        "tests.review_fixtures.workspace_window",
+        "tests.review_fixtures.dispose_window",
+        "tests.review_fixtures.shared_workflow_templates",
         "tests.review_fixtures.open_workspace_images",
-        "tests.review_fixtures.dispose_window"
+        "tests.review_fixtures._workflow_templates",
+        "tests.review_fixtures._workflow_template_key"
       ],
       "fixtures": [
         "setUpClass",
@@ -42390,8 +42881,8 @@
       "file": "tests/test_trait_training.py",
       "class": "TraitTrainingUITests",
       "method": "test_validation_and_recovery",
-      "line": 511,
-      "end_line": 516,
+      "line": 510,
+      "end_line": 515,
       "functionality": "4 related TraitTrainingUITests scenarios, each with private fixture state.",
       "description_basis": "method docstring",
       "category": "Learning and trait analysis",
@@ -42411,7 +42902,11 @@
         "tests.test_trait_training.TraitTrainingUITests.check_test_active_model_output_is_preserved_and_close_cancels_current_task",
         "tests.test_trait_training.TraitTrainingUITests.window",
         "tests.review_fixtures.dispose_window",
-        "tests.review_fixtures.open_workspace_images"
+        "tests.review_fixtures.workspace_window",
+        "tests.review_fixtures.shared_workflow_templates",
+        "tests.review_fixtures.open_workspace_images",
+        "tests.review_fixtures._workflow_templates",
+        "tests.review_fixtures._workflow_template_key"
       ],
       "fixtures": [
         "setUpClass",
@@ -43091,14 +43586,14 @@
     },
     "tests.test_annotation_centres.AnnotationCentresUiTests.check_test_crosshairs_span_a_third_of_the_median_seed_at_every_zoom": {
       "file": "tests/test_annotation_centres.py",
-      "line": 164,
+      "line": 163,
       "checks": [
         "self.assertAlmostEqual(columns[-1] - columns[0] + 1, 40.0 * zoom, delta=5.0)"
       ]
     },
     "tests.test_annotation_centres.AnnotationCentresUiTests.check_test_centre_markers_follow_the_image_except_in_the_editor": {
       "file": "tests/test_annotation_centres.py",
-      "line": 185,
+      "line": 184,
       "checks": [
         "self.assertFalse(display.flags() & constant)",
         "self.assertEqual(display.rect(), QRectF(-12.0, -12.0, 24.0, 24.0))",
@@ -43111,7 +43606,7 @@
     },
     "tests.test_annotation_centres.AnnotationCentresUiTests.check_test_rejected_proposals_show_only_on_the_centre_overlay_with_their_reason": {
       "file": "tests/test_annotation_centres.py",
-      "line": 215,
+      "line": 214,
       "checks": [
         "self.assertEqual(len(view._overlay_items) - first, 1)",
         "self.assertEqual(len(cross), 2)",
@@ -43129,7 +43624,7 @@
     },
     "tests.test_annotation_centres.AnnotationCentresUiTests.check_test_compact_seed_selector_and_no_routine_explanatory_labels": {
       "file": "tests/test_annotation_centres.py",
-      "line": 101,
+      "line": 100,
       "checks": [
         "self.assertEqual(spin.prefix(), '')",
         "self.assertEqual(spin.maximum(), 9999)",
@@ -43148,7 +43643,7 @@
     },
     "tests.test_annotation_centres.AnnotationCentresUiTests.check_test_crosshairs_follow_masks_selection_visibility_opacity_and_image_switch": {
       "file": "tests/test_annotation_centres.py",
-      "line": 125,
+      "line": 124,
       "checks": [
         "self.assertEqual(markers(), [])",
         "self.assertEqual(len(markers()), 1)",
@@ -43168,7 +43663,7 @@
     },
     "tests.test_annotation_centres.AnnotationCentresUiTests.check_test_annotation_palette_can_extend_beyond_image_view": {
       "file": "tests/test_annotation_centres.py",
-      "line": 270,
+      "line": 269,
       "checks": [
         "self.assertIs(panel.parentWidget(), window.annotation_workspace)",
         "self.assertTrue(panel.isVisible())",
@@ -43182,7 +43677,7 @@
     },
     "tests.test_annotation_centres.AnnotationCentresUiTests.check_test_annotations_only_appear_on_deskewed_image": {
       "file": "tests/test_annotation_centres.py",
-      "line": 306,
+      "line": 305,
       "checks": [
         "self.assertEqual(view._displayed_base, 'corrected')",
         "self.assertEqual(len(view._overlay_items), 3)",
@@ -43201,7 +43696,7 @@
     },
     "tests.test_annotation_centres.AnnotationCentresUiTests.check_test_hilum_tracks_outline_edits_undo_and_persistence": {
       "file": "tests/test_annotation_centres.py",
-      "line": 401,
+      "line": 400,
       "checks": [
         "self.assertIn('861 interior pixels', window._project_summary_text())",
         "self.assertFalse(hasattr(window, 'instance_annotation_status_label'))",
@@ -43224,14 +43719,14 @@
     },
     "tests.test_annotation_centres.AnnotationCentresUiTests.check_test_direction_is_unknown_at_centroid_and_removed_without_landmark": {
       "file": "tests/test_annotation_centres.py",
-      "line": 447,
+      "line": 446,
       "checks": [
         "self.assertIsNone(derived[1].hilum_direction)"
       ]
     },
     "tests.test_annotation_centres.AnnotationCentresUiTests.check_test_brush_publishes_fresh_centroids_before_edit_listeners_run": {
       "file": "tests/test_annotation_centres.py",
-      "line": 456,
+      "line": 455,
       "checks": [
         "self.assertEqual(view.instance_centre(1), (50.0, 30.0))",
         "self.assertEqual(len(received), 1)",
@@ -43241,7 +43736,7 @@
     },
     "tests.test_annotation_centres.AnnotationCentresUiTests.check_test_next_empty_does_not_reuse_an_occupied_seed_at_capacity": {
       "file": "tests/test_annotation_centres.py",
-      "line": 483,
+      "line": 482,
       "checks": [
         "self.assertEqual(window.instance_id_spin.value(), 5)",
         "self.assertIn('9,999', window.statusBar().currentMessage())"
@@ -43254,14 +43749,34 @@
         "self.assertTrue(image.save(str(path)))"
       ]
     },
+    "tests.review_fixtures.workspace_window": {
+      "file": "tests/review_fixtures.py",
+      "line": 120,
+      "checks": []
+    },
+    "tests.review_fixtures.shared_workflow_templates": {
+      "file": "tests/review_fixtures.py",
+      "line": 46,
+      "checks": []
+    },
     "tests.review_fixtures.open_workspace_images": {
       "file": "tests/review_fixtures.py",
-      "line": 44,
+      "line": 65,
+      "checks": []
+    },
+    "tests.review_fixtures._workflow_templates": {
+      "file": "tests/review_fixtures.py",
+      "line": 39,
+      "checks": []
+    },
+    "tests.review_fixtures._workflow_template_key": {
+      "file": "tests/review_fixtures.py",
+      "line": 8,
       "checks": []
     },
     "tests.test_annotation_centres.AnnotationCentresUiTests.check_test_next_unannotated_cycles_painted_seeds_missing_condition_or_shape": {
       "file": "tests/test_annotation_centres.py",
-      "line": 361,
+      "line": 360,
       "checks": [
         "self.assertIsNotNone(key)",
         "self.assertEqual(window.next_unannotated_button.text(), 'Next unannotated')",
@@ -43324,7 +43839,7 @@
     },
     "tests.test_annotation_edge_sources.AnnotationEdgeSourceTests.check_test_compact_fallback_separates_probability_from_conservative_evidence": {
       "file": "tests/test_annotation_edge_sources.py",
-      "line": 350,
+      "line": 349,
       "checks": [
         "np.testing.assert_array_equal(probability, ((100, 0, 40),))",
         "np.testing.assert_array_equal(conservative, ((60, 0, 0),))",
@@ -43334,7 +43849,7 @@
     },
     "tests.test_annotation_edge_sources.AnnotationEdgeSourceTests.check_test_image_view_adapts_each_edge_source_and_invalidates_cached_values": {
       "file": "tests/test_annotation_edge_sources.py",
-      "line": 202,
+      "line": 201,
       "checks": [
         "self.assertTrue(image.save(str(image_path)))",
         "self.assertTrue(succeeded, error)",
@@ -43368,7 +43883,7 @@
     },
     "tests.test_annotation_edge_sources.AnnotationEdgeSourceTests._analysis_result": {
       "file": "tests/test_annotation_edge_sources.py",
-      "line": 376,
+      "line": 375,
       "checks": []
     },
     "tests.test_annotation_generation_binding.AnnotationGenerationBindingTests.check_test_actual_mouse_brush_binds_source_and_retains_legacy_signal": {
@@ -43732,7 +44247,7 @@
     },
     "tests.test_annotation_shape_revision.AnnotationWidgetTests.check_test_hilum_drag_moves_landmark_and_derives_radial_direction_without_painting": {
       "file": "tests/test_annotation_shape_revision.py",
-      "line": 305,
+      "line": 304,
       "checks": [
         "self.assertEqual(len(edits), 1)",
         "np.testing.assert_allclose(edits[0][0], (120.0, 90.0), atol=1.0)",
@@ -43751,7 +44266,7 @@
     },
     "tests.test_annotation_shape_revision.AnnotationWidgetTests.check_test_brush_stack_uses_only_current_page_and_resize_is_remembered": {
       "file": "tests/test_annotation_shape_revision.py",
-      "line": 357,
+      "line": 356,
       "checks": [
         "self.assertLess(stack.height(), 120)",
         "self.assertIsNotNone(window.reference_panel.user_size)",
@@ -43760,7 +44275,7 @@
     },
     "tests.review_fixtures.dispose_window": {
       "file": "tests/review_fixtures.py",
-      "line": 148,
+      "line": 167,
       "checks": []
     },
     "tests.test_annotation_tools.AnnotationToolTests.check_test_edge_cursor_prefers_nearby_ridge_to_stronger_parallel_ridge": {
@@ -43964,17 +44479,17 @@
     },
     "tests.test_authoritative_parity.AuthoritativeParityTests.save_project": {
       "file": "tests/test_authoritative_parity.py",
-      "line": 82,
+      "line": 81,
       "checks": []
     },
     "tests.test_authoritative_parity.AuthoritativeParityTests.install_profile": {
       "file": "tests/test_authoritative_parity.py",
-      "line": 94,
+      "line": 93,
       "checks": []
     },
     "tests.test_authoritative_parity.AuthoritativeParityTests.paired": {
       "file": "tests/test_authoritative_parity.py",
-      "line": 114,
+      "line": 113,
       "checks": [
         "self.assertTrue(pool.waitForDone(30000), 'Native worker did not finish')",
         "self.assertEqual(failed, [])",
@@ -45901,22 +46416,12 @@
     },
     "tests.review_fixtures.isolated_window": {
       "file": "tests/review_fixtures.py",
-      "line": 75,
-      "checks": []
-    },
-    "tests.review_fixtures._workflow_templates": {
-      "file": "tests/review_fixtures.py",
-      "line": 38,
-      "checks": []
-    },
-    "tests.review_fixtures._workflow_template_key": {
-      "file": "tests/review_fixtures.py",
-      "line": 7,
+      "line": 96,
       "checks": []
     },
     "tests.review_fixtures.editable_copy": {
       "file": "tests/review_fixtures.py",
-      "line": 63,
+      "line": 84,
       "checks": []
     },
     "tests.test_critical_review_fixes.CriticalIntegrityTests.check_test_checkpoint_cache_uses_content_and_result_rejects_replaced_weights": {
@@ -46407,6 +46912,23 @@
         "self.assertTrue(self.window._open_project(destination))",
         "critical.assert_not_called()"
       ]
+    },
+    "tests.test_deferred_callbacks.DeferredCallbackTests._pump_until": {
+      "file": "tests/test_deferred_callbacks.py",
+      "line": 73,
+      "checks": [
+        "self.fail('The expected event never arrived.')"
+      ]
+    },
+    "tests.test_deferred_callbacks.DeferredCallbackTests._fresh_cards": {
+      "file": "tests/test_deferred_callbacks.py",
+      "line": 59,
+      "checks": []
+    },
+    "tests.test_deferred_callbacks.reported_errors": {
+      "file": "tests/test_deferred_callbacks.py",
+      "line": 44,
+      "checks": []
     },
     "tests.test_desktop_terminal_history.TerminalHistoryTests.check_test_loading_old_native_and_preflight_records_does_not_probe_deleted_source_or_implementation": {
       "file": "tests/test_desktop_terminal_history.py",
@@ -47186,6 +47708,18 @@
         "self.assertTrue(window.overlay_button.isVisible())"
       ]
     },
+    "tests.test_gui_layout.GuiLayoutTests.check_test_window_fixtures_share_templates_and_opting_out_builds_them": {
+      "file": "tests/test_gui_layout.py",
+      "line": 411,
+      "checks": [
+        "self.assertIs(self.window.pipeline_workflow._all_templates, shared)",
+        "self.assertIs(window.pipeline_workflow._all_templates, shared)",
+        "self.assertIsNot(real.pipeline_workflow._all_templates, shared)",
+        "self.assertEqual(tuple((recipe.to_json() for recipe in real.pipeline_workflow._all_templates)), identities)",
+        "self.assertRaisesRegex(AssertionError, 'changed before construction')",
+        "self.assertIs(workflows.workflow_catalogue, mocked)"
+      ]
+    },
     "tests.test_gui_layout.GuiLayoutTests._settled": {
       "file": "tests/test_gui_layout.py",
       "line": 241,
@@ -47829,7 +48363,7 @@
     },
     "tests.test_instance_continuity_ui.InstanceContinuityUiTests._install_draft": {
       "file": "tests/test_instance_continuity_ui.py",
-      "line": 42,
+      "line": 40,
       "checks": [
         "self.assertIsNotNone(key)",
         "assert key is not None"
@@ -47947,7 +48481,7 @@
     },
     "tests.test_instance_mask_import_ui.InstanceMaskImportUiTests.check_test_panel_import_is_draft_with_provenance_warning_and_undo": {
       "file": "tests/test_instance_mask_import_ui.py",
-      "line": 87,
+      "line": 85,
       "checks": [
         "chooser.assert_not_called()",
         "self.assertTrue(np.array_equal(self.window._draft_instance_annotations[self.key], labels))",
@@ -47967,7 +48501,7 @@
     },
     "tests.test_instance_mask_import_ui.InstanceMaskImportUiTests.check_test_bundle_import_is_explicit_and_preserves_applied_labels": {
       "file": "tests/test_instance_mask_import_ui.py",
-      "line": 134,
+      "line": 132,
       "checks": [
         "loader.assert_called_once()",
         "np.testing.assert_array_equal(self.window._applied_instance_annotations[self.key], applied)",
@@ -47978,7 +48512,7 @@
     },
     "tests.test_instance_mask_import_ui.InstanceMaskImportUiTests.check_test_no_bundle_explains_explicit_file_import": {
       "file": "tests/test_instance_mask_import_ui.py",
-      "line": 154,
+      "line": 152,
       "checks": [
         "chooser.assert_not_called()",
         "self.assertIn('Import seed outlines from file', information.call_args.args[2])",
@@ -47987,7 +48521,7 @@
     },
     "tests.test_instance_mask_import_ui.InstanceMaskImportUiTests.check_test_explicit_file_chooser_bypasses_an_available_bundle": {
       "file": "tests/test_instance_mask_import_ui.py",
-      "line": 164,
+      "line": 162,
       "checks": [
         "bundled_loader.assert_not_called()",
         "self.assertTrue(np.array_equal(self.window._draft_instance_annotations[self.key], manual_labels))",
@@ -47998,7 +48532,7 @@
     },
     "tests.test_instance_mask_import_ui.InstanceMaskImportUiTests.check_test_training_lists_images_and_explains_unusable_ones": {
       "file": "tests/test_instance_mask_import_ui.py",
-      "line": 339,
+      "line": 337,
       "checks": [
         "self.assertEqual(self._training_images(), ())",
         "self.assertEqual((image.key, image.seed_count), (self.key, 2))",
@@ -48015,7 +48549,7 @@
     },
     "tests.test_instance_mask_import_ui.InstanceMaskImportUiTests.check_test_training_asks_before_using_unreviewed_samples": {
       "file": "tests/test_instance_mask_import_ui.py",
-      "line": 397,
+      "line": 395,
       "checks": [
         "self.assertIn('checked', question.call_args.args[2])",
         "self.assertNotIn('kept', question.call_args.args[2])",
@@ -48030,7 +48564,7 @@
     },
     "tests.test_instance_mask_import_ui.InstanceMaskImportUiTests.check_test_training_build_reuses_an_analysis_and_saves_each_image_then_trains": {
       "file": "tests/test_instance_mask_import_ui.py",
-      "line": 477,
+      "line": 475,
       "checks": [
         "self.fail('analysis was current')",
         "calls.run.assert_not_called()",
@@ -48049,7 +48583,7 @@
     },
     "tests.test_instance_mask_import_ui.InstanceMaskImportUiTests.check_test_training_build_analyses_with_only_the_features_prerequisites": {
       "file": "tests/test_instance_mask_import_ui.py",
-      "line": 496,
+      "line": 494,
       "checks": [
         "calls.exporter.assert_not_called()",
         "self.assertIsNotNone(self.window._training_dataset_build)",
@@ -48063,7 +48597,7 @@
     },
     "tests.test_instance_mask_import_ui.InstanceMaskImportUiTests.check_test_training_build_stops_on_failure_stop_and_bad_audit": {
       "file": "tests/test_instance_mask_import_ui.py",
-      "line": 534,
+      "line": 532,
       "checks": [
         "self.assertIn('capture.png', calls.critical.call_args.args[2])",
         "self.assertIn('Disconnected seed.', calls.critical.call_args.args[2])",
@@ -48083,7 +48617,7 @@
     },
     "tests.test_instance_mask_import_ui.InstanceMaskImportUiTests.check_test_finished_training_replaces_the_training_status": {
       "file": "tests/test_instance_mask_import_ui.py",
-      "line": 462,
+      "line": 460,
       "checks": [
         "information.assert_called_once()",
         "self.assertIsNone(self.window._learning_training_task)",
@@ -48092,7 +48626,7 @@
     },
     "tests.test_instance_mask_import_ui.InstanceMaskImportUiTests.check_test_seed_label_export_uses_applied_16_bit_labels": {
       "file": "tests/test_instance_mask_import_ui.py",
-      "line": 584,
+      "line": 582,
       "checks": [
         "self.assertFalse(invalid.exists())",
         "self.assertIn('lossless 16-bit', warning.call_args.args[2])",
@@ -48103,7 +48637,7 @@
     },
     "tests.test_instance_mask_import_ui.InstanceMaskImportUiTests.check_test_cellpose_seeds_copy_into_an_undoable_outline_draft": {
       "file": "tests/test_instance_mask_import_ui.py",
-      "line": 261,
+      "line": 259,
       "checks": [
         "self.assertIn('Seed outlines', [menu.title() for menu in action.associatedObjects() if isinstance(menu, QMenu)])",
         "self.assertFalse(action.isEnabled())",
@@ -48123,7 +48657,7 @@
     },
     "tests.test_instance_mask_import_ui.InstanceMaskImportUiTests.check_test_cellpose_seeds_add_to_or_replace_existing_outlines": {
       "file": "tests/test_instance_mask_import_ui.py",
-      "line": 299,
+      "line": 297,
       "checks": [
         "ask.assert_called_once_with(1)",
         "np.testing.assert_array_equal(self.window._draft_instance_annotations[self.key], existing)",
@@ -48140,42 +48674,42 @@
     },
     "tests.test_instance_mask_import_ui.InstanceMaskImportUiTests._with_cellpose": {
       "file": "tests/test_instance_mask_import_ui.py",
-      "line": 250,
+      "line": 248,
       "checks": []
     },
     "tests.test_instance_mask_import_ui.InstanceMaskImportUiTests._training_request": {
       "file": "tests/test_instance_mask_import_ui.py",
-      "line": 385,
+      "line": 383,
       "checks": []
     },
     "tests.test_instance_mask_import_ui.InstanceMaskImportUiTests._training_entry": {
       "file": "tests/test_instance_mask_import_ui.py",
-      "line": 392,
+      "line": 390,
       "checks": []
     },
     "tests.test_instance_mask_import_ui.InstanceMaskImportUiTests._training_labels": {
       "file": "tests/test_instance_mask_import_ui.py",
-      "line": 456,
+      "line": 454,
       "checks": []
     },
     "tests.test_instance_mask_import_ui.InstanceMaskImportUiTests._build_training_dataset": {
       "file": "tests/test_instance_mask_import_ui.py",
-      "line": 431,
+      "line": 429,
       "checks": []
     },
     "tests.test_instance_mask_import_ui.InstanceMaskImportUiTests._training_images": {
       "file": "tests/test_instance_mask_import_ui.py",
-      "line": 335,
+      "line": 333,
       "checks": []
     },
     "tests.test_instance_mask_import_ui.InstanceMaskImportUiTests._imported": {
       "file": "tests/test_instance_mask_import_ui.py",
-      "line": 71,
+      "line": 69,
       "checks": []
     },
     "tests.test_instance_mask_import_ui.InstanceMaskImportUiTests.check_test_validation_failure_warns_without_mutating_draft_or_history": {
       "file": "tests/test_instance_mask_import_ui.py",
-      "line": 197,
+      "line": 195,
       "checks": [
         "warning.assert_called_once()",
         "chooser.assert_not_called()",
@@ -48186,7 +48720,7 @@
     },
     "tests.test_instance_mask_import_ui.InstanceMaskImportUiTests.check_test_replacement_cancel_leaves_existing_draft_untouched": {
       "file": "tests/test_instance_mask_import_ui.py",
-      "line": 228,
+      "line": 226,
       "checks": [
         "self.assertFalse(changed)",
         "self.assertTrue(np.array_equal(self.window._draft_instance_annotations[self.key], existing))",
@@ -48245,7 +48779,7 @@
     },
     "tests.review_fixtures.reviewed_outlines": {
       "file": "tests/review_fixtures.py",
-      "line": 143,
+      "line": 162,
       "checks": []
     },
     "tests.test_instance_reference_evidence.InstanceReferenceEvidenceTests.check_test_rejects_non_integer_and_negative_instance_ids": {
@@ -48843,7 +49377,7 @@
     },
     "tests.test_manual_seed_centre_ui.ManualSeedCentreUiTests.check_test_qt_mode_switch_undo_and_reset_are_autosaved_per_image": {
       "file": "tests/test_manual_seed_centre_ui.py",
-      "line": 247,
+      "line": 246,
       "checks": [
         "self.assertIsNotNone(key)",
         "self.assertGreaterEqual(replace_index, 0)",
@@ -48896,7 +49430,7 @@
     },
     "tests.test_manual_seed_centre_ui.ManualSeedCentreUiTests.check_test_autosave_failure_keeps_the_edit_and_still_recomputes": {
       "file": "tests/test_manual_seed_centre_ui.py",
-      "line": 322,
+      "line": 320,
       "checks": [
         "self.assertIsNotNone(key)",
         "critical.assert_called_once()",
@@ -48909,7 +49443,7 @@
     },
     "tests.test_manual_seed_centre_ui.ManualSeedCentreUiTests.check_test_running_node_switch_and_image_switch_stop_qt_edit_mode": {
       "file": "tests/test_manual_seed_centre_ui.py",
-      "line": 364,
+      "line": 362,
       "checks": [
         "self.assertIsNotNone(key)",
         "self.assertTrue(window.image_view.manual_seed_centre_editing)",
@@ -54751,7 +55285,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_approved_reference_edge_fit_updates_live_node_parameters": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 131,
+      "line": 129,
       "checks": [
         "self.assertAlmostEqual(node.parameters['reference_edge_similarity_scale'], 1.3)",
         "self.assertAlmostEqual(node.parameters['reference_edge_class_contrast'], 5.0)",
@@ -54763,7 +55297,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_switching_images_cancels_all_previous_image_work_before_load": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 199,
+      "line": 196,
       "checks": [
         "self.assertTrue(analysis_task.cancelled)",
         "self.assertTrue(procedural_task.cancelled)",
@@ -54779,7 +55313,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_cancelled_previous_image_completion_cannot_install_stale_result": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 325,
+      "line": 321,
       "checks": [
         "mark_complete.assert_not_called()",
         "show_result.assert_not_called()",
@@ -54790,7 +55324,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_failed_analysis_purges_its_partial_cache": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 574,
+      "line": 570,
       "checks": [
         "self.assertNotIn(key, window._analysis_caches)",
         "self.assertFalse(raster.is_materialized)",
@@ -54800,12 +55334,12 @@
     },
     "tests.review_fixtures.controls_window": {
       "file": "tests/review_fixtures.py",
-      "line": 111,
+      "line": 130,
       "checks": []
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_superseded_analysis_is_cancelled_and_remains_visible": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 617,
+      "line": 613,
       "checks": [
         "self.assertTrue(task.cancelled)",
         "self.assertEqual(window._pending_analysis_key, key)",
@@ -54817,7 +55351,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_worker_progress_turns_only_the_current_revision_node_green": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 1074,
+      "line": 1070,
       "checks": [
         "self.assertTrue(succeeded, error)",
         "self.assertEqual(node.status, NodeStatus.COMPLETE)",
@@ -54827,7 +55361,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_cleared_reference_layer_returns_to_paint_and_accepts_dabs": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 2308,
+      "line": 2301,
       "checks": [
         "self.assertTrue(window.image_view._reference_erase_enabled)",
         "self.assertTrue(window.reference_paint_mode_button.isChecked())",
@@ -54839,7 +55373,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_perimeter_source_checkbox_invalidates_every_background_consumer": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 2503,
+      "line": 2494,
       "checks": [
         "self.assertTrue(window.keep_perimeter_background_reference_checkbox.isChecked())",
         "self.assertFalse(window.pipeline.node('background_likelihood').parameters['background_keep_perimeter_reference'])",
@@ -54852,7 +55386,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_annotated_seed_foreground_checkbox_defaults_on_and_invalidates_consumers": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 2553,
+      "line": 2544,
       "checks": [
         "self.assertTrue(checkbox.isChecked())",
         "self.assertTrue(checkbox.isEnabled())",
@@ -54868,7 +55402,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_new_seed_preserves_the_selected_instance_tool": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 4015,
+      "line": 4005,
       "checks": [
         "self.assertTrue(image.save(str(image_path)))",
         "self.assertTrue(button.isChecked())",
@@ -54882,7 +55416,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_reference_masks_run_analysis_only_after_explicit_apply": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 4075,
+      "line": 4065,
       "checks": [
         "self.assertEqual(analyses, [])",
         "self.assertIn(key, window._reference_masks_dirty)",
@@ -54915,7 +55449,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_instance_annotations_apply_separately_from_reference_masks": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 4184,
+      "line": 4173,
       "checks": [
         "self.assertIn(key, window._instance_annotations_dirty)",
         "self.assertNotIn(key, window._applied_instance_annotations)",
@@ -54970,7 +55504,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_switching_images_selects_the_lowest_empty_seed_id": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 283,
+      "line": 279,
       "checks": [
         "self.assertTrue(image.save(str(image_path)))",
         "self.assertEqual(window.instance_id_spin.value(), 3)",
@@ -54981,7 +55515,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_run_to_node_scopes_execution_to_enabled_ancestors": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 387,
+      "line": 383,
       "checks": [
         "self.assertEqual(arguments['dirty_nodes'], {'procedural_instances'})",
         "self.assertIn('procedural_instances', scope)",
@@ -54993,14 +55527,14 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_loading_saved_references_reruns_only_the_finished_runs_scope": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 403,
+      "line": 399,
       "checks": [
         "analyze.assert_called_once_with(dirty_nodes={'reference_texture_prototypes'}, enabled_node_scope=finished_scope)"
       ]
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_run_to_a_disabled_node_enables_it_or_says_why": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 417,
+      "line": 413,
       "checks": [
         "self.assertFalse(node.enabled)",
         "self.assertEqual(window._disabled_node_detail(node.identifier), 'Disabled; needs the optional cellpose package')",
@@ -55019,7 +55553,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_node_menu_offers_to_enable_a_disabled_node": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 519,
+      "line": 515,
       "checks": [
         "self.assertEqual(labels('procedural_instances'), ['Run to node'])",
         "self.assertEqual(labels('cellpose_sam_instances'), ['Enable and run to node'])",
@@ -55028,7 +55562,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_seed_boundary_status_says_why_no_seed_was_found": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 467,
+      "line": 463,
       "checks": [
         "self.assertEqual(status, NodeStatus.COMPLETE)",
         "self.assertEqual(detail, '1 seed ovals fitted at 2 centre-vote peaks; 152 strongly supported boundary pixels')",
@@ -55041,7 +55575,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_run_to_node_result_says_no_instance_node_ran": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 506,
+      "line": 502,
       "checks": [
         "self.assertIn('no instance node ran', window._scoped_run_reason(result, missing))",
         "self.assertIsNone(window._scoped_run_reason(result, ''))",
@@ -55051,7 +55585,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_analysis_cache_is_lru_bounded_and_gpu_jobs_are_serialized": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 536,
+      "line": 532,
       "checks": [
         "self.assertEqual(window._thread_pool.maxThreadCount(), 1)",
         "self.assertEqual(evicted, ('old',))",
@@ -55063,7 +55597,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_node_cards_support_typed_blueprint_controls_and_time_footers": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 669,
+      "line": 665,
       "checks": [
         "self.assertIsInstance(canvas.node_items['deskew_colour']._inline_editors['apply_colour_balance'], QCheckBox)",
         "self.assertIsInstance(canvas.node_items['refined_background_likelihood']._inline_editors['noise_direction_integration'], QComboBox)",
@@ -55081,7 +55615,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_manual_overlap_is_allowed_and_auto_arrange_removes_it": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 718,
+      "line": 714,
       "checks": [
         "self.assertFalse(canvas._items_overlap(first, float(first.pos().y()), second), (first.node.identifier, second.node.identifier))",
         "self.assertTrue(canvas._items_overlap(moved, float(moved.pos().y()), obstacle))",
@@ -55090,7 +55624,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_unused_node_toolbox_can_restore_circle_candidates": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 748,
+      "line": 744,
       "checks": [
         "self.assertEqual(restored, ['circle_candidates'])",
         "self.assertIn('circle_candidates', canvas.node_items)",
@@ -55111,7 +55645,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_main_window_exposes_circle_overlay_only_after_toolbox_restore": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 786,
+      "line": 782,
       "checks": [
         "self.assertEqual(window.overlay_combo.findData('circle_candidates'), -1)",
         "self.assertGreaterEqual(window.overlay_combo.findData('circle_candidates'), 0)",
@@ -55125,7 +55659,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_selected_node_marks_direct_neighbours_purple": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 810,
+      "line": 806,
       "checks": [
         "self.assertTrue(canvas.node_items['edge_gradients'].isSelected())",
         "self.assertTrue(all((canvas.node_items[node_id]._adjacent for node_id in adjacent)))",
@@ -55134,7 +55668,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_canvas_disconnects_and_reconnects_authored_ports": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 826,
+      "line": 822,
       "checks": [
         "self.assertEqual(len(canvas.edge_items), 188)",
         "self.assertFalse(graph.node(connection.target).enabled)",
@@ -55147,7 +55681,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_connection_paths_do_not_block_plain_left_drag_panning": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 867,
+      "line": 863,
       "checks": [
         "self.assertEqual(edge.acceptedMouseButtons(), Qt.MouseButton.RightButton)",
         "self.assertIsNotNone(hit_point)",
@@ -55159,7 +55693,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_image_and_graph_zoom_controls_report_scale": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 948,
+      "line": 944,
       "checks": [
         "self.assertTrue(succeeded, error)",
         "self.assertEqual(view.zoom_label.text(), '120%')",
@@ -55186,7 +55720,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_image_zoom_buttons_keep_view_center_and_wheel_keeps_pointer": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 1013,
+      "line": 1009,
       "checks": [
         "self.assertTrue(succeeded, error)",
         "self.assertLess((after - before).manhattanLength(), 2.0)",
@@ -55198,7 +55732,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_selected_overlay_shows_large_red_calculating_banner": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 1103,
+      "line": 1098,
       "checks": [
         "self.assertIsNotNone(path)",
         "self.assertFalse(banner.isHidden())",
@@ -55210,7 +55744,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_project_node_displays_live_project_image_and_annotation_information": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 1126,
+      "line": 1121,
       "checks": [
         "self.assertEqual(window.pipeline_inspector.title_label.text(), 'Node: Inputs')",
         "self.assertFalse(window.pipeline_inspector.project_info_container.isHidden())",
@@ -55226,7 +55760,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_identification_stages_expose_methods_and_relevant_parameters": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 1154,
+      "line": 1147,
       "checks": [
         "self.assertEqual(len(inspector._parameter_widgets), parameter_count)",
         "self.assertTrue(inspector.method_heading.isVisibleTo(inspector))",
@@ -55245,7 +55779,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_layout_vessel_selector_is_first_pinned_and_non_mutating": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 1216,
+      "line": 1209,
       "checks": [
         "self.assertIsNotNone(combo)",
         "self.assertIs(inspector.parameter_form.itemAt(0, QFormLayout.ItemRole.FieldRole).widget(), combo)",
@@ -55267,7 +55801,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_background_colour_gamut_renders_as_full_hsv_value_slice": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 1268,
+      "line": 1261,
       "checks": [
         "self.assertFalse(hasattr(inspector, 'gamut_widget'))",
         "self.assertEqual((image.width(), image.height()), (960, 640))",
@@ -55280,7 +55814,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_real_exterior_annulus_profile_retains_all_gamut_contours": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 1316,
+      "line": 1309,
       "checks": [
         "self.assertGreater(float(probability.max()), 0.9)",
         "self.assertGreater(int(np.count_nonzero(BackgroundColourGamut._contour_edge(probability, level))), 0, level)",
@@ -55289,7 +55823,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_foreground_node_shows_its_probability_colour_gamut": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 1369,
+      "line": 1362,
       "checks": [
         "self.assertFalse(hasattr(inspector, 'gamut_widget'))",
         "self.assertTrue(inspector.foreground_start_heading.isVisibleTo(inspector))",
@@ -55301,7 +55835,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_nearly_neutral_dark_mode_does_not_span_every_hsv_hue": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 1429,
+      "line": 1422,
       "checks": [
         "self.assertLess(float(probability.max()), 0.25)",
         "self.assertEqual(centre_points.shape, (1, 2))"
@@ -55309,14 +55843,14 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_colour_gamut_does_not_project_neutral_membership_across_hues": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 1458,
+      "line": 1451,
       "checks": [
         "self.assertTrue((probability == 0.0).all())"
       ]
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_overlay_node_selection_updates_the_viewer_layer": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 1488,
+      "line": 1481,
       "checks": [
         "self.assertGreaterEqual(directed_index, 0)",
         "self.assertEqual(window.overlay_combo.currentData(), 'directed_edges')",
@@ -55353,7 +55887,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_viewer_layer_selection_selects_its_owning_graph_node": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 1600,
+      "line": 1593,
       "checks": [
         "self.assertGreaterEqual(index, 0)",
         "self.assertEqual(window._selected_pipeline_node, 'reference_edge_probability')",
@@ -55364,7 +55898,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_node_selection_shows_stage_overlay_sections_and_connections": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 1625,
+      "line": 1618,
       "checks": [
         "self.assertGreaterEqual(window.metadata_scroll.verticalScrollBar().width(), 16)",
         "self.assertEqual(window.overlay_combo.currentData(), 'background_likelihood')",
@@ -55382,7 +55916,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_image_and_pipeline_share_a_split_workspace": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 1667,
+      "line": 1660,
       "checks": [
         "self.assertEqual(window.windowTitle(), 'Seed Fiddle — Untitled')",
         "self.assertEqual(window.workspace_splitter.count(), 2)",
@@ -55399,7 +55933,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_overlay_selectors_group_layers_and_stay_synchronised": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 1686,
+      "line": 1679,
       "checks": [
         "self.assertTrue(window.overlay_combo.isHidden())",
         "self.assertIs(window.overlay_button.menu(), window.overlay_menu)",
@@ -55517,7 +56051,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_edge_oval_overlay_draws_only_retained_edge_hypotheses": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 2015,
+      "line": 2008,
       "checks": [
         "self.assertEqual(len(view._overlay_items), 1)",
         "self.assertAlmostEqual(item.pos().x(), 35.0)",
@@ -55528,7 +56062,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_other_probability_overlays_are_registered_owned_and_synchronised": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 2044,
+      "line": 2037,
       "checks": [
         "self.assertEqual(_overlay_node_owner(mode), owner)",
         "self.assertGreaterEqual(global_index, 0)",
@@ -55553,7 +56087,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_probability_legends_state_low_and_high_display_values": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 2095,
+      "line": 2088,
       "checks": [
         "self.assertIn('white = low displayed probability/evidence; black = high', window.overlay_legend_label.text())",
         "self.assertIn('black = low displayed probability/evidence', foreground_legend)",
@@ -55564,7 +56098,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_compact_toolbar_and_contextual_paint_panel": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 2112,
+      "line": 2105,
       "checks": [
         "self.assertNotIn('Overlay:', toolbar_labels)",
         "self.assertNotIn('Overlay opacity:', toolbar_labels)",
@@ -55632,7 +56166,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_background_node_can_be_disabled_without_disabling_foreground_noise": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 2344,
+      "line": 2335,
       "checks": [
         "self.assertFalse(window.pipeline.node('background_likelihood').parameters['background_colour_enabled'])",
         "self.assertTrue(window.pipeline.node('background_likelihood').enabled)",
@@ -55642,7 +56176,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_combined_noise_node_preserves_independent_enable_switches": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 2358,
+      "line": 2349,
       "checks": [
         "self.assertFalse(node.parameters['background_noise_enabled'])",
         "self.assertTrue(node.parameters['foreground_noise_enabled'])",
@@ -55653,14 +56187,14 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_settings_reset_button_restores_node_defaults": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 2371,
+      "line": 2362,
       "checks": [
         "self.assertEqual(node.parameters['foreground_reference_weight'], default)"
       ]
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_expanded_node_settings_feed_runtime_settings_objects": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 2384,
+      "line": 2375,
       "checks": [
         "self.assertTrue(window.pipeline.node('background_likelihood').parameters['background_keep_perimeter_reference'])",
         "self.assertTrue(window.keep_perimeter_background_reference_checkbox.isChecked())",
@@ -55682,7 +56216,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_net_edge_subtraction_recomputes_thinned_net_ridge_dependents": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 2612,
+      "line": 2603,
       "checks": [
         "self.assertGreaterEqual(net_index, 0)",
         "analyze.assert_called_once_with(dirty_nodes=affected)",
@@ -55699,7 +56233,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_image_view_switches_between_analysis_layers": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 2679,
+      "line": 2669,
       "checks": [
         "self.assertEqual(len(view._overlay_items), 3)",
         "self.assertEqual(len(view._overlay_items), 1)",
@@ -55731,7 +56265,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_selected_procedural_instance_reports_geometry_in_node_panel": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 2886,
+      "line": 2876,
       "checks": [
         "self.assertEqual(window._selected_pipeline_node, 'procedural_instances')",
         "self.assertIn('maximum width 7.0 px', text)",
@@ -55742,7 +56276,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_image_view_displays_full_size_gamut_without_changing_mask_size": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 2925,
+      "line": 2915,
       "checks": [
         "self.assertTrue(source.save(str(path)))",
         "self.assertTrue(succeeded, error)",
@@ -55757,7 +56291,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_image_view_displays_every_reference_prototype_in_a_full_pane_collage": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 2994,
+      "line": 2984,
       "checks": [
         "self.assertTrue(source.save(str(path)))",
         "self.assertTrue(succeeded, error)",
@@ -55771,7 +56305,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_image_view_edits_full_resolution_binary_reference_masks": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 3074,
+      "line": 3064,
       "checks": [
         "self.assertTrue(image.save(str(path)))",
         "self.assertTrue(succeeded, error)",
@@ -55824,7 +56358,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_background_painting_shows_only_exact_perimeter_ring_source": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 3250,
+      "line": 3240,
       "checks": [
         "self.assertTrue(image.save(str(path)))",
         "self.assertTrue(succeeded, error)",
@@ -55847,7 +56381,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_sparse_automatic_background_source_survives_large_view_downsampling": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 3385,
+      "line": 3375,
       "checks": [
         "self.assertTrue(image.save(str(path)))",
         "self.assertTrue(succeeded, error)",
@@ -55858,7 +56392,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_image_view_edits_distinct_seed_instance_ids": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 3449,
+      "line": 3439,
       "checks": [
         "self.assertTrue(image.save(str(path)))",
         "self.assertTrue(succeeded, error)",
@@ -55874,7 +56408,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_instance_brush_uses_live_stroke_without_rebuilding_analysis": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 3499,
+      "line": 3489,
       "checks": [
         "self.assertTrue(image.save(str(path)))",
         "self.assertTrue(succeeded, error)",
@@ -55889,7 +56423,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_reference_brush_uses_live_stroke_and_redraws_once_on_release": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 3543,
+      "line": 3533,
       "checks": [
         "self.assertTrue(image.save(str(path)))",
         "self.assertTrue(succeeded, error)",
@@ -55904,7 +56438,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_image_view_applies_assisted_instance_annotation_tools": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 3586,
+      "line": 3576,
       "checks": [
         "self.assertTrue(image.save(str(path)))",
         "self.assertTrue(succeeded, error)",
@@ -55921,7 +56455,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_assisted_instance_tools_preview_on_hover_and_apply_on_click": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 3668,
+      "line": 3658,
       "checks": [
         "self.assertTrue(image.save(str(path)))",
         "self.assertTrue(succeeded, error)",
@@ -55944,7 +56478,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_instance_annotation_panel_exposes_advanced_tool_options": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 3809,
+      "line": 3799,
       "checks": [
         "self.assertTrue(image.save(str(image_path)))",
         "self.assertEqual(window.instance_tool_options_stack.count(), 5)",
@@ -56003,7 +56537,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_seed_trait_editor_is_species_specific_and_recomputes_in_isolation": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 4244,
+      "line": 4231,
       "checks": [
         "self.assertTrue(image.save(str(image_path)))",
         "self.assertEqual(tuple((window.seed_coat_pattern_combo.itemData(index) for index in range(1, window.seed_coat_pattern_combo.count()))), ('white', 'banded_light', 'banded_dark', 'other'))",
@@ -56019,7 +56553,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_shape_review_cannot_enter_unsaveable_unknown_state": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 4323,
+      "line": 4310,
       "checks": [
         "self.assertTrue(image.save(str(image_path)))",
         "self.assertIsNotNone(key)",
@@ -56036,7 +56570,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_reference_seed_scale_overlay_boldly_labels_actual_seed_above": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 4369,
+      "line": 4356,
       "checks": [
         "self.assertEqual(len(circles), 1)",
         "self.assertEqual(len(labels), 1)",
@@ -56056,7 +56590,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_setting_change_invalidates_only_node_and_graph_dependents": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 2484,
+      "line": 2475,
       "checks": [
         "self.assertEqual(window.pipeline.node('edge_gradients').status, NodeStatus.IDLE)",
         "self.assertEqual(window.pipeline.node('edge_traces').status, NodeStatus.IDLE)"
@@ -56064,7 +56598,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_calibration_nodes_render_references_and_metric_scale": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 4535,
+      "line": 4522,
       "checks": [
         "self.assertTrue(succeeded, error)",
         "self.assertEqual(view.image_size, raw_size)",
@@ -61506,12 +62040,12 @@
     },
     "tests.test_procedural_fit_ui.ProceduralFitMainWindowTests._install_completed_task": {
       "file": "tests/test_procedural_fit_ui.py",
-      "line": 108,
+      "line": 106,
       "checks": []
     },
     "tests.test_procedural_fit_ui.ProceduralFitMainWindowTests._fit_report": {
       "file": "tests/test_procedural_fit_ui.py",
-      "line": 58,
+      "line": 56,
       "checks": []
     },
     "tests.test_procedural_instances.ProceduralInstanceTests.check_test_reference_cost_settings_never_change_automatic_predictions": {
@@ -63834,7 +64368,7 @@
     },
     "tests.test_reference_edge_toolbar_revision.ReferenceEdgeToolbarRevisionTests.check_test_pipeline_zoom_controls_fit_narrow_and_wide_panes": {
       "file": "tests/test_reference_edge_toolbar_revision.py",
-      "line": 96,
+      "line": 95,
       "checks": [
         "self.assertTrue(button.isVisible())",
         "self.assertTrue(canvas.control_bar.rect().contains(button.geometry()))",
@@ -63848,7 +64382,7 @@
     },
     "tests.test_reference_edge_toolbar_revision.ReferenceEdgeToolbarRevisionTests.check_test_annotation_opacity_does_not_touch_analytical_items_or_masks": {
       "file": "tests/test_reference_edge_toolbar_revision.py",
-      "line": 121,
+      "line": 120,
       "checks": [
         "self.assertEqual(len(authored), 3)",
         "self.assertAlmostEqual(item.opacity(), 0.19)",
@@ -63862,7 +64396,7 @@
     },
     "tests.test_reference_edge_toolbar_revision.ReferenceEdgeToolbarRevisionTests.check_test_selected_node_has_visible_cosmetic_outline_at_overview_zoom": {
       "file": "tests/test_reference_edge_toolbar_revision.py",
-      "line": 155,
+      "line": 154,
       "checks": [
         "self.assertGreater(counts[1], counts[0] + 100)",
         "self.assertEqual(item.zValue(), 4.0)"
@@ -63870,7 +64404,7 @@
     },
     "tests.test_reference_edge_toolbar_revision.ReferenceEdgeToolbarRevisionTests.check_test_colour_overlay_order_and_other_node_socket": {
       "file": "tests/test_reference_edge_toolbar_revision.py",
-      "line": 180,
+      "line": 179,
       "checks": [
         "self.assertEqual([mode for _, mode in entries], ['foreground_mask', 'foreground_colour_gamut', 'background_likelihood', 'background_colour_gamut', 'other_colour_probability', 'other_colour_gamut', 'foreground_colour_excess'])",
         "self.assertEqual(ports[_overlay_output_port_id('other_colour_gamut')], 'Accepted other colours (HSV)')",
@@ -63881,7 +64415,7 @@
     },
     "tests.test_reference_edge_toolbar_revision.ReferenceEdgeToolbarRevisionTests.check_test_other_hsv_matches_production_frequency_model_without_refitting": {
       "file": "tests/test_reference_edge_toolbar_revision.py",
-      "line": 200,
+      "line": 199,
       "checks": [
         "np.testing.assert_allclose(displayed[12:], probability.numpy()[12:], atol=2e-06)",
         "self.assertEqual(other.component_centres_lab, profile.excluded_component_centres_lab)",
@@ -64476,7 +65010,7 @@
     },
     "tests.test_reference_persistence.ReferenceRegionMainWindowTests.check_test_saved_snapshot_automatically_loads_as_immutable_applied_state": {
       "file": "tests/test_reference_persistence.py",
-      "line": 356,
+      "line": 354,
       "checks": [
         "self.assertIsNotNone(key)",
         "self.assertTrue(restored._applied_background_reference_masks[key][3, 4])",
@@ -64500,7 +65034,7 @@
     },
     "tests.test_reference_persistence.ReferenceRegionMainWindowTests.check_test_switching_images_keeps_newer_unsaved_in_memory_applied_state": {
       "file": "tests/test_reference_persistence.py",
-      "line": 453,
+      "line": 449,
       "checks": [
         "self.assertIsNotNone(key)",
         "self.assertIs(window._applied_background_reference_masks[key], newer)",
@@ -64512,7 +65046,7 @@
     },
     "tests.test_reference_persistence.ReferenceRegionMainWindowTests.check_test_association_panel_explains_pending_corrected_seed_annotations": {
       "file": "tests/test_reference_persistence.py",
-      "line": 491,
+      "line": 485,
       "checks": [
         "self.assertIsNotNone(key)",
         "self.assertIn('Validated; waiting for corrected-image calibration', panel)",
@@ -64529,7 +65063,7 @@
     },
     "tests.test_reference_persistence.ReferenceRegionMainWindowTests.check_test_empty_applied_snapshot_overwrites_an_older_nonempty_archive": {
       "file": "tests/test_reference_persistence.py",
-      "line": 561,
+      "line": 553,
       "checks": [
         "self.assertIsNotNone(key)",
         "self.assertIsNotNone(loaded)",
@@ -64545,7 +65079,7 @@
     },
     "tests.test_reference_persistence.ReferenceRegionMainWindowTests.check_test_modified_image_warns_and_loads_no_saved_regions": {
       "file": "tests/test_reference_persistence.py",
-      "line": 603,
+      "line": 593,
       "checks": [
         "self.assertIsNotNone(key)",
         "warning.assert_called_once()",
@@ -64558,7 +65092,7 @@
     },
     "tests.test_reference_persistence.ReferenceRegionMainWindowTests.check_test_dirty_draft_blocks_save_without_replacing_archive": {
       "file": "tests/test_reference_persistence.py",
-      "line": 625,
+      "line": 613,
       "checks": [
         "self.assertIsNotNone(key)",
         "warning.assert_called_once()",
@@ -64568,7 +65102,7 @@
     },
     "tests.test_reference_persistence.ReferenceRegionMainWindowTests.check_test_applying_seed_instances_automatically_saves_and_reloads_them": {
       "file": "tests/test_reference_persistence.py",
-      "line": 644,
+      "line": 630,
       "checks": [
         "self.assertIsNotNone(key)",
         "self.assertFalse(window._reference_region_store.path_for(image_path).exists())",
@@ -64591,7 +65125,7 @@
     },
     "tests.review_fixtures.install_test_frame": {
       "file": "tests/review_fixtures.py",
-      "line": 161,
+      "line": 180,
       "checks": []
     },
     "tests.test_reference_persistence.ReferenceRegionMainWindowTests._save_complete_snapshot": {
@@ -64605,7 +65139,7 @@
     },
     "tests.test_reference_persistence.ReferenceRegionMainWindowTests.check_test_loose_corrected_shape_is_deferred_instead_of_rejected_against_raw_image": {
       "file": "tests/test_reference_persistence.py",
-      "line": 412,
+      "line": 408,
       "checks": [
         "self.assertIn(key, window._pending_unbound_reference_bundles)",
         "self.assertNotIn(key, window._applied_foreground_reference_masks)",
@@ -64617,7 +65151,7 @@
     },
     "tests.test_reference_persistence.ReferenceRegionMainWindowTests.check_test_seed_instance_autosave_failure_warns_but_keeps_applied_state": {
       "file": "tests/test_reference_persistence.py",
-      "line": 693,
+      "line": 677,
       "checks": [
         "self.assertIsNotNone(key)",
         "critical.assert_called_once()",
@@ -66167,7 +66701,7 @@
     },
     "tests.test_seed_crop_artifacts.SeedCropArtifactTests.check_test_batch_cli_surfaces_partial_crop_manifest": {
       "file": "tests/test_seed_crop_artifacts.py",
-      "line": 216,
+      "line": 215,
       "checks": [
         "self.assertEqual(main(), 0)",
         "self.assertIn(str(output), stdout.getvalue())",
@@ -67605,7 +68139,7 @@
     },
     "tests.selection.matches": {
       "file": "tests/selection.py",
-      "line": 121,
+      "line": 122,
       "checks": []
     },
     "tests.parallel.last_started_unit": {
@@ -67630,7 +68164,7 @@
     },
     "tests.selection.partition": {
       "file": "tests/selection.py",
-      "line": 125,
+      "line": 126,
       "checks": []
     },
     "tests.prerequisites.check_prerequisites": {
@@ -68049,7 +68583,7 @@
     },
     "tests.test_trait_review_ui.TraitReviewUiTests.check_test_actual_mixed_predictions_definitions_and_scores_reach_review_without_refitting": {
       "file": "tests/test_trait_review_ui.py",
-      "line": 93,
+      "line": 92,
       "checks": [
         "self.assertNotEqual(*confidences)",
         "self.assertEqual(sum((row['trait_prediction']['abstained'] for row in report['instances'])), 1)",
@@ -68073,17 +68607,17 @@
     },
     "tests.test_trait_review_ui.TraitReviewUiTests.classify": {
       "file": "tests/test_trait_review_ui.py",
-      "line": 54,
+      "line": 53,
       "checks": []
     },
     "tests.test_trait_review_ui.TraitReviewUiTests.observe_dialog": {
       "file": "tests/test_trait_review_ui.py",
-      "line": 69,
+      "line": 68,
       "checks": []
     },
     "tests.test_trait_review_ui.TraitReviewUiTests.check_test_actual_absent_invalid_and_outside_support_abstentions_stay_explanatory": {
       "file": "tests/test_trait_review_ui.py",
-      "line": 128,
+      "line": 127,
       "checks": [
         "self.assertEqual(set(observed['rows']), {1, 2})",
         "self.assertEqual(row['trait_prediction']['abstention_reason'], expected)",
@@ -68095,7 +68629,7 @@
     },
     "tests.test_trait_review_ui.TraitReviewUiTests.check_test_threshold_change_stales_review_preserves_probabilities_and_historical_bytes": {
       "file": "tests/test_trait_review_ui.py",
-      "line": 150,
+      "line": 149,
       "checks": [
         "self.assertTrue(all((not row['trait_prediction']['abstained'] for row in first['instances'])))",
         "self.assertEqual(reviewed['accepted_count'], 1)",
@@ -68355,7 +68889,7 @@
     },
     "tests.test_trait_training.TraitTrainingUITests.check_test_dialog_snapshots_manifest_controls_and_activation_choice": {
       "file": "tests/test_trait_training.py",
-      "line": 366,
+      "line": 365,
       "checks": [
         "self.assertEqual(request.configuration, TraitTrainingConfiguration(17, 0.04, 0.2, (0.2, 5.0), 13, 0.7))",
         "self.assertEqual(dialog.request(), request)",
@@ -68365,7 +68899,7 @@
     },
     "tests.test_trait_training.TraitTrainingUITests.check_test_trait_worker_forwards_real_controls_task_identity_and_terminal_outcomes": {
       "file": "tests/test_trait_training.py",
-      "line": 387,
+      "line": 386,
       "checks": [
         "self.assertIs(received, request)",
         "self.assertEqual(progress, [(task, 'training', 1, 3)])",
@@ -68376,7 +68910,7 @@
     },
     "tests.test_trait_training.TraitTrainingUITests.check_test_serial_worker_terminal_slot_runs_on_gui_thread": {
       "file": "tests/test_trait_training.py",
-      "line": 458,
+      "line": 457,
       "checks": [
         "self.assertTrue(finished.is_set())",
         "self.assertTrue(window._thread_pool.waitForDone(5000))",
@@ -68391,7 +68925,7 @@
     },
     "tests.test_trait_training.TraitTrainingUITests.check_test_serial_busy_stop_and_stale_terminal_signals_preserve_current_job": {
       "file": "tests/test_trait_training.py",
-      "line": 411,
+      "line": 410,
       "checks": [
         "started.assert_called_once_with(task)",
         "self.assertEqual(window._thread_pool.maxThreadCount(), 1)",
@@ -68406,7 +68940,7 @@
     },
     "tests.test_trait_training.TraitTrainingUITests.check_test_saved_only_late_stop_and_changed_graph_never_activate": {
       "file": "tests/test_trait_training.py",
-      "line": 431,
+      "line": 430,
       "checks": [
         "activation.assert_not_called()",
         "self.assertIsNone(window._learning_training_task)"
@@ -68414,7 +68948,7 @@
     },
     "tests.test_trait_training.TraitTrainingUITests.check_test_completion_activation_failure_keeps_saved_result_and_clears_busy": {
       "file": "tests/test_trait_training.py",
-      "line": 447,
+      "line": 446,
       "checks": [
         "activation.assert_called_once_with(request.output_path, abstention_threshold=0.8)",
         "self.assertIn('Model saved; activation failed', window.statusBar().currentMessage())",
@@ -68423,7 +68957,7 @@
     },
     "tests.test_trait_training.TraitTrainingUITests.check_test_active_model_output_is_preserved_and_close_cancels_current_task": {
       "file": "tests/test_trait_training.py",
-      "line": 488,
+      "line": 487,
       "checks": [
         "self.assertRaisesRegex(ValueError, 'new file')",
         "self.assertTrue(task.cancellation_requested())",
@@ -68975,8 +69509,8 @@
     },
     {
       "file": "tests/__main__.py",
-      "source_sha256": "b7082d530e656a583e6b681973fd54baef33a7e5e06590ee9be84f02f5005ca2",
-      "lines": 221,
+      "source_sha256": "6fd5bf5385de73b2e452ec7f19686a93a38c10fe14a800b13ecb8b627b0cafed",
+      "lines": 231,
       "docstring": "Run core/focused checks, an explicit tier, or unfiltered --full acceptance."
     },
     {
@@ -69017,8 +69551,8 @@
     },
     {
       "file": "tests/functional_units.py",
-      "source_sha256": "a72dd0a47cc4c913a444200ff55a103bb3dfb05c8b0f82b807cfe7bf10fb1fe3",
-      "lines": 60,
+      "source_sha256": "eef19b1abc9475d3910b65ecc81ea4d56565d7a4de05344fe6105a0008a35da4",
+      "lines": 90,
       "docstring": "Functional units with independently owned scenario fixtures.\n\nScenario assertions still run as subtests, without creating nested unittest\nruns or reporting old method executions as new discovered tests. Mutable\nwindows, directories, tensors and cleanup stacks remain scenario-local."
     },
     {
@@ -69059,14 +69593,14 @@
     },
     {
       "file": "tests/review_fixtures.py",
-      "source_sha256": "f9e8606857097c71061adb36aad98dff10894b70e6ca07f1adbdfbf8059c0108",
-      "lines": 170,
+      "source_sha256": "7e843d98c244da96ff857eb955212cb53a66db7fdd650ab2c1fd8829f7a3ed90",
+      "lines": 189,
       "docstring": "Explicit review declarations for synthetic complete-outline test fixtures."
     },
     {
       "file": "tests/selection.py",
-      "source_sha256": "429d11f902addc65585420c4e4295ee2d39f049d554898fc38b61cbf7e9ede72",
-      "lines": 142,
+      "source_sha256": "7579f5e3d0331ecc0f0da165311a6096a27dd1dbaaa6a8749b7b34d7b27c125a",
+      "lines": 143,
       "docstring": "Explicit test selections; full discovery is always the union, unfiltered.\n\nCPU/Qt is an allowlist, not an inference from skip decorators. CUDA contains\nevery remaining non-acceptance ID, so new tests cannot disappear from full CI.\nCore intentionally overlaps the three exhaustive partition groups."
     },
     {

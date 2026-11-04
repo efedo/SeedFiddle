@@ -10,6 +10,7 @@ import sys
 import time
 import unittest
 
+from tests.functional_units import discard_windows, live_windows
 from tests.prerequisites import check_prerequisites
 from tests.selection import (CORE_TARGETS, CPU_QT_TARGETS, ACCEPTANCE_TARGETS,
                              HISTORY_TARGETS, flatten, matches, partition)
@@ -35,21 +36,30 @@ class TimedSuite(unittest.TestSuite):
         original = super()._handleClassSetUp
         if cls is getattr(result, '_previousTestClass', None) or getattr(cls, '__unittest_skip__', False):
             return original(test, result)
-        fixture = getattr(cls, 'setUpClass', None)
-        if getattr(fixture, '__func__', fixture) is unittest.TestCase.setUpClass.__func__:
-            return original(test, result)
-        return self._time_fixture(result, cls, 'setUpClass', lambda: original(test, result))
+        try:
+            fixture = getattr(cls, 'setUpClass', None)
+            if getattr(fixture, '__func__', fixture) is unittest.TestCase.setUpClass.__func__:
+                return original(test, result)
+            return self._time_fixture(result, cls, 'setUpClass', lambda: original(test, result))
+        finally:
+            result.class_windows = live_windows()
 
     def _tearDownPreviousClass(self, test, result):
         cls = getattr(result, '_previousTestClass', None)
         original = super()._tearDownPreviousClass
-        if cls is None or cls is getattr(test, '__class__', None) or getattr(cls, '__unittest_skip__', False) or getattr(cls, '_classSetupFailed', False):
-            return original(test, result)
-        fixture = getattr(cls, 'tearDownClass', None)
-        if (getattr(fixture, '__func__', fixture) is unittest.TestCase.tearDownClass.__func__
-                and not getattr(cls, '_class_cleanups', ())):
-            return original(test, result)
-        return self._time_fixture(result, cls, 'tearDownClass/cleanups', lambda: original(test, result))
+        same_class = cls is getattr(test, '__class__', None)
+        try:
+            if cls is None or same_class or getattr(cls, '__unittest_skip__', False) or getattr(cls, '_classSetupFailed', False):
+                return original(test, result)
+            fixture = getattr(cls, 'tearDownClass', None)
+            if (getattr(fixture, '__func__', fixture) is unittest.TestCase.tearDownClass.__func__
+                    and not getattr(cls, '_class_cleanups', ())):
+                return original(test, result)
+            return self._time_fixture(result, cls, 'tearDownClass/cleanups', lambda: original(test, result))
+        finally:
+            # unittest calls this between tests: only a running class's own
+            # fixture may still own a window.
+            discard_windows(getattr(result, 'class_windows', frozenset()) if same_class else frozenset())
 
 
 def main(argv=None):

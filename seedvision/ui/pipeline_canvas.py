@@ -45,6 +45,7 @@ from PySide6.QtWidgets import (
 
 from seedvision.pipeline import NodeStatus, PipelineConnection, PipelineGraph, PipelineNode, category_rank
 from seedvision.ui.canvas_controls import CHECK_ICON_SIZE, blank_icon, check_icon, style_canvas_control_bar
+from seedvision.ui.deferred import run_soon
 from seedvision.ui.spin_format import spin_decimals
 
 
@@ -2513,7 +2514,7 @@ class PipelineCanvas(QGraphicsView):
     def showEvent(self, event) -> None:  # noqa: N802 - Qt override
         super().showEvent(event)
         if self._fit_pending:
-            QTimer.singleShot(0, self._finish_pending_fit)
+            run_soon(self, self._finish_pending_fit)
 
     def _finish_pending_fit(self) -> None:
         self._fit_pending = False
