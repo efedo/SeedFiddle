@@ -7,6 +7,7 @@ from tests.functional_units import functional_units
 from copy import deepcopy
 import json
 import os
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -297,6 +298,9 @@ class ProjectAnalysisUiTests(CatalogueTestCase):
             stale = self._write_image(
                 root / "outside" / "stale.png", colour="#4a687c"
             )
+            (root / "config").mkdir()
+            shutil.copy(Path(__file__).resolve().parents[1] / "config" / "traits.json",
+                        root / "config")
             window = self._window(root)
             try:
                 foreground = np.zeros((36, 48), dtype=bool)
@@ -330,8 +334,7 @@ class ProjectAnalysisUiTests(CatalogueTestCase):
                 window.pipeline_canvas.set_cable_bundling_enabled(True)
                 window.pipeline_canvas.set_obstacle_routing_enabled(True)
                 window.pipeline_canvas.select_node("reference_edge_probability")
-                window.species_combo.addItem("Project test species")
-                window.species_combo.setCurrentText("Project test species")
+                window.species_combo.setCurrentText("Lupinus mutabilis")
                 overlay_index = window.overlay_combo.findData(
                     "physical_edge_probability"
                 )
@@ -412,7 +415,7 @@ class ProjectAnalysisUiTests(CatalogueTestCase):
                     window.overlay_combo.currentData(), "physical_edge_probability"
                 )
                 self.assertEqual(
-                    window.species_combo.currentText(), "Project test species"
+                    window.species_combo.currentText(), "Lupinus mutabilis"
                 )
                 second_key = str(second.resolve()).casefold()
                 pending = window._pending_unbound_reference_bundles[second_key]

@@ -24,16 +24,22 @@ from seedvision.persistence import (
     BiologicalContext, ProjectAnalysisStore, ProjectImageSpec, ReferenceRegionBundle,
     ReferenceRegionStore, analysis_settings_profile_from_graph,
 )
+from seedvision.export.project_runner import run_project
 from seedvision.pipeline import build_default_pipeline
+from seedvision.segmentation.baseline import PipelineAnalysisCache
 from seedvision.ui import image_list
 from seedvision.ui.image_list import (
     IMAGE_OPEN_ROLE, IMAGE_SPECIES_ROLE, THUMBNAIL_SIZE, ImageThumbnailLoader, name_lines,
     read_thumbnail, row_text, species_text,
 )
-from seedvision.ui.main_window import MainWindow, _path_identity
+from seedvision.ui.main_window import MainWindow, UNASSIGNED_SPECIES, _path_identity
 from tests.functional_units import functional_units
 from tests.review_fixtures import dispose_window, isolated_window
 from tests import test_project_analysis_ui
+
+
+class _StopBatch(Exception):
+    """Ends a batch run once its analysis request is built."""
 
 
 def _write_image(path, **options):
@@ -677,10 +683,13 @@ class ImageListRowTests(unittest.TestCase):
         self.assertTrue(settings.value(MainWindow.IMAGE_SPECIES_SETTINGS_KEY, type=bool))
         self.assertFalse(self.window._project_dirty)
 
-    def check_each_row_names_the_species_recorded_for_its_own_image(self):
+    def _install_traits(self):
         config = self.root / "config"
         config.mkdir()
         shutil.copy(Path(__file__).resolve().parents[1] / "config" / "traits.json", config)
+
+    def _open_mixed_species_project(self):
+        self._install_traits()
         contexts = (BiologicalContext("soybean"), BiologicalContext("lupinus_mexicanus"),
                     BiologicalContext("unknown"), None)
         project = ProjectAnalysisStore(self.root).capture_and_save(
@@ -689,34 +698,140 @@ class ImageListRowTests(unittest.TestCase):
                          for path, context in zip(self.paths, contexts)),
             species="Lupinus mutabilis", selected_image=self.paths[0],
             destination=self.root / "project.seedfiddle-project.json")
+        return self._reopen(project), project
+
+    def _reopen(self, project):
         window = isolated_window(self.root)
         self.addCleanup(dispose_window, window)
         with patch.object(window, "_confirm_project_replacement", return_value=True):
             self.assertTrue(window._open_project(project))
-        self.assertEqual(window.species_combo.currentText(), "Lupinus mutabilis")
+        return window
+
+    def check_each_row_names_the_species_recorded_for_its_own_image(self):
+        window, _ = self._open_mixed_species_project()
         self.assertEqual(self._species(window), [
             "Soybean", "Lupinus mexicanus", "Unassigned", "Lupinus mutabilis"])
-
-        # The selector shows the same value whichever image is open; the rows keep their own.
-        window._open_path(self.paths[1], mark_project_dirty=False)
-        self.assertEqual(self._species(window), [
-            "Soybean", "Lupinus mexicanus", "Unassigned", "Lupinus mutabilis"])
-
-        # Only an image with no species of its own follows the project's.
-        window.species_combo.setCurrentText("Lupinus polyphyllus")
-        self.assertEqual(self._species(window), [
-            "Soybean", "Lupinus mexicanus", "Unassigned", "Lupinus polyphyllus"])
-        added = _write_image(self.root / "images" / "e.png")
-        window._add_image(added, open_now=False, mark_project_dirty=False)
-        self.assertEqual(self._species(window)[-1], "Lupinus polyphyllus")
-        window.species_combo.setCurrentIndex(0)
-        self.assertEqual(self._species(window)[3:], ["Unassigned", "Unassigned"])
 
         # A species missing from the catalogue is still named rather than hidden.
         window._project_image_biological_contexts[_path_identity(self.paths[3])] = (
             BiologicalContext("vicia_faba"))
         window._update_analysis_availability()
         self.assertEqual(self._species(window)[3], "vicia_faba")
+
+    def check_the_selector_shows_and_sets_the_open_images_species(self):
+        window, project = self._open_mixed_species_project()
+        combo = window.species_combo
+
+        # It follows the open image, and looking at an image changes nothing.
+        for path, species in zip(self.paths, (
+                "Soybean", "Lupinus mexicanus", UNASSIGNED_SPECIES, "Lupinus mutabilis")):
+            window._open_path(path, mark_project_dirty=False)
+            self.assertEqual(combo.currentText(), species)
+        self.assertEqual(self._species(window), [
+            "Soybean", "Lupinus mexicanus", "Unassigned", "Lupinus mutabilis"])
+        self.assertEqual(window.pipeline.node("metadata").status_detail, "Lupinus mutabilis")
+
+        # Changing it changes the open image and no other.
+        window._open_path(self.paths[1], mark_project_dirty=False)
+        combo.setCurrentText("Lupinus polyphyllus")
+        self.assertEqual(self._species(window), [
+            "Soybean", "Lupinus polyphyllus", "Unassigned", "Lupinus mutabilis"])
+        self.assertEqual(window._effective_biological_context().species_id, "lupinus_polyphyllus")
+
+        # It does not carry over to the next image, and analysis uses that image's own.
+        window._open_path(self.paths[0], mark_project_dirty=False)
+        self.assertEqual(combo.currentText(), "Soybean")
+        self.assertEqual(window._current_seed_trait_species_id(), "soybean")
+        window._open_path(self.paths[1], mark_project_dirty=False)
+        self.assertEqual(combo.currentText(), "Lupinus polyphyllus")
+
+        # New images follow the project, and giving one image a species leaves them there.
+        added = _write_image(self.root / "images" / "e.png")
+        window._add_image(added, open_now=False, mark_project_dirty=False)
+        self.assertEqual(self._species(window)[-1], "Lupinus mutabilis")
+        window._open_path(self.paths[3], mark_project_dirty=False)
+        combo.setCurrentText("Soybean")
+        self.assertEqual(self._species(window)[3:], ["Soybean", "Lupinus mutabilis"])
+
+        # One image can be set back to unknown on its own.
+        window._open_path(self.paths[0], mark_project_dirty=False)
+        combo.setCurrentIndex(0)
+        expected = ["Unassigned", "Lupinus polyphyllus", "Unassigned", "Soybean", "Lupinus mutabilis"]
+        self.assertEqual(self._species(window), expected)
+
+        # Each image's own survives a save; the one without any keeps following the project.
+        self.assertTrue(window._save_project())
+        loaded = ProjectAnalysisStore(self.root).load(project)
+        self.assertEqual(loaded.document.species, "Lupinus mutabilis")
+        self.assertEqual(loaded.document.biological_context.species_id, "lupinus_mutabilis")
+        self.assertEqual(
+            [None if image.record.biological_context is None
+             else image.record.biological_context.species_id for image in loaded.images],
+            ["unknown", "lupinus_polyphyllus", "unknown", "soybean", None])
+        reopened = self._reopen(project)
+        self.assertEqual(self._species(reopened), expected)
+        self.assertEqual(reopened.species_combo.currentText(), UNASSIGNED_SPECIES)
+
+        # Removing the open image moves to the next one's species, then the project's.
+        reopened._open_path(self.paths[1], mark_project_dirty=False)
+        reopened._remove_image(self.paths[1])
+        self.assertEqual(reopened.species_combo.currentText(), UNASSIGNED_SPECIES)
+        for path in (self.paths[0], self.paths[2], self.paths[3], added):
+            reopened._remove_image(path)
+        self.assertIsNone(reopened._current_image_key())
+        self.assertEqual(reopened.species_combo.currentText(), "Lupinus mutabilis")
+
+        # With no image open it sets the project's, which the next new image follows.
+        reopened.species_combo.setCurrentText("Lupinus polyphyllus")
+        reopened._add_image(added, open_now=False, mark_project_dirty=False)
+        self.assertEqual(self._species(reopened), ["Lupinus polyphyllus"])
+
+    def check_the_first_species_chosen_also_covers_images_without_one(self):
+        self._install_traits()
+        window = isolated_window(self.root)
+        self.addCleanup(dispose_window, window)
+        for path in self.paths:
+            window._add_image(path, open_now=False, mark_project_dirty=False)
+        window._open_path(self.paths[0], mark_project_dirty=False)
+        self.assertEqual(self._species(window), ["Unassigned"] * 4)
+        follower = _path_identity(self.paths[2])
+        window._analysis_caches[follower] = PipelineAnalysisCache()
+
+        window.species_combo.setCurrentText("Soybean")
+        self.assertEqual(self._species(window), ["Soybean"] * 4)
+        self.assertEqual(window._project_species, "Soybean")
+        self.assertTrue(window._cache_dirty_nodes[follower])
+
+        # From then on a choice stays with its image.
+        window._cache_dirty_nodes.pop(follower)
+        window._open_path(self.paths[1], mark_project_dirty=False)
+        self.assertEqual(window.species_combo.currentText(), "Soybean")
+        window.species_combo.setCurrentText("Lupinus mexicanus")
+        self.assertEqual(self._species(window),
+                         ["Soybean", "Lupinus mexicanus", "Soybean", "Soybean"])
+        self.assertEqual(window._project_species, "Soybean")
+        self.assertNotIn(follower, window._cache_dirty_nodes)
+
+    def check_batch_analyses_each_image_as_its_own_species(self):
+        self._install_traits()
+        # Of these only Lupinus mutabilis has coat patterns, and the project is not it.
+        for index, (context, expected, species_id) in enumerate((
+                (BiologicalContext("lupinus_mutabilis"), "Lupinus mutabilis", "lupinus_mutabilis"),
+                (None, "Lupinus mexicanus", "lupinus_mexicanus"),
+                (BiologicalContext("unknown"), "unknown", "unknown"))):
+            project = ProjectAnalysisStore(self.root).capture_and_save(
+                analysis_settings=analysis_settings_profile_from_graph(build_default_pipeline()),
+                images=(ProjectImageSpec(self.paths[index], (320, 480), biological_context=context),),
+                species="Lupinus mexicanus", biological_context=BiologicalContext("lupinus_mexicanus"),
+                selected_image=self.paths[index],
+                destination=self.root / f"batch-{index}.seedfiddle-project.json")
+            with patch("seedvision.export.project_runner.run_native_analysis",
+                       side_effect=_StopBatch) as runner, self.assertRaises(_StopBatch):
+                run_project(self.root, project, self.root / f"batch-{index}")
+            request = runner.call_args.kwargs
+            self.assertEqual(request["species"], expected)
+            self.assertEqual(request["biological_context"].species_id, species_id)
+            self.assertEqual(bool(request["seed_trait_coat_patterns"]), index == 0)
 
     def check_species_fits_the_narrow_panel_and_is_a_column_in_a_wide_one(self):
         window, panel = self.window, self.window.images_panel_splitter.parentWidget()
@@ -809,6 +924,9 @@ class ImageListRowTests(unittest.TestCase):
         self.scenario(self.check_rows_fit_the_narrow_panel)
         self.scenario(self.check_species_shows_by_default_and_the_switch_is_remembered)
         self.scenario(self.check_each_row_names_the_species_recorded_for_its_own_image)
+        self.scenario(self.check_the_selector_shows_and_sets_the_open_images_species)
+        self.scenario(self.check_the_first_species_chosen_also_covers_images_without_one)
+        self.scenario(self.check_batch_analyses_each_image_as_its_own_species)
         self.scenario(self.check_species_fits_the_narrow_panel_and_is_a_column_in_a_wide_one)
         self.scenario(self.check_thumbnails_reach_neither_the_project_nor_the_disk)
         self.scenario(self.check_closing_finishes_the_work_only_when_the_window_really_closes)

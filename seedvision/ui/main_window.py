@@ -190,6 +190,7 @@ FALLBACK_SPECIES = (
     "Lupinus polyphyllus",
     "Lupinus mexicanus",
 )
+UNASSIGNED_SPECIES = "Unknown / unassigned"
 OVERLAY_NODE_IDS = (
     "hue_only",
     "wavelet_decomposition",
@@ -1339,6 +1340,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._species_library_service = SpeciesLibraryService()
         self._project_species_library_pin: SpeciesLibraryPin | None = None
         self._project_biological_context: BiologicalContext | None = None
+        self._project_species = UNASSIGNED_SPECIES
         self._project_capture_group_id: str | None = None
         self._project_reference_graphs = ()
         self._project_reference_model_assets = ()
@@ -1519,7 +1521,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         )
         self.image_list.setItemDelegate(self._image_list_delegate)
         self.species_combo = QComboBox(self)
-        self.species_combo.addItem('Unknown / unassigned')
+        self.species_combo.addItem(UNASSIGNED_SPECIES)
         self.species_combo.addItems(self._load_species_names())
         self.species_combo.currentTextChanged.connect(self._species_changed)
 
@@ -1973,7 +1975,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                     include_manual_seed_centres=centres is not None,
                     reference_regions_path=references,
                     manual_seed_centres_path=centres,
-                    biological_context=self._effective_biological_context(path),
+                    biological_context=self._project_image_biological_contexts.get(key),
                     capture_group_id=self._project_capture_group_id,
                 )
             )
@@ -2429,11 +2431,11 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             captured = run_persistence(self, partial(self._project_analysis_store.capture,
                 analysis_settings=analysis_settings_profile_from_graph(self.pipeline),
                 images=image_specs,
-                species=(self.species_combo.currentText().strip() or None),
+                species=self._project_species,
                 selected_image=selected_image,
                 ui_state=self._project_ui_state(),
                 species_library=self._project_species_library_pin,
-                biological_context=self._effective_biological_context(),
+                biological_context=self._project_level_biological_context(),
                 capture_group_id=self._project_capture_group_id,
                 reference_graphs=self._project_reference_graphs,
                 reference_model_assets=getattr(self, '_project_reference_model_assets', ()),
@@ -2793,14 +2795,11 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 name=loaded.document.active_pipeline or (None if loaded_workflow is None else loaded_workflow.display_state.get("pipeline_name")))
             self.pipeline_backends.refresh()
         self._project_correction_bindings = loaded.document.correction_bindings
-        species = loaded.document.species or 'unknown'
-        if species:
-            if self.species_combo.findText(species) < 0:
-                self.species_combo.addItem(species)
-            with QSignalBlocker(self.species_combo):
-                self.species_combo.setCurrentText(species)
-        self._populate_seed_coat_patterns()
-        self._sync_seed_trait_controls()
+        species = loaded.document.species
+        self._project_species = (
+            UNASSIGNED_SPECIES if species in {None, "", "unknown"} else species
+        )
+        self._sync_species_selector()
         self._offer_missing_species_library_import()
 
         available_images = [
@@ -3067,6 +3066,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._project_unresolved_selected_image_id = None
         self._project_species_library_pin = None
         self._project_biological_context = None
+        self._project_species = UNASSIGNED_SPECIES
         self._project_capture_group_id = None
         self._project_reference_graphs = ()
         self._project_reference_model_assets = ()
@@ -6455,14 +6455,18 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._application_settings.setValue(self.IMAGE_SPECIES_SETTINGS_KEY, visible)
         self._image_list_delegate.set_show_species(visible)
 
-    def _image_species_text(self, key: str) -> str:
+    def _image_species_name(self, key: str | None) -> str:
         """Name the species recorded for one image, or the project's if it has none."""
 
         context = self._project_image_biological_contexts.get(key)
-        species = context.species_id if context is not None else self.species_combo.currentText()
-        if species in {"", "unknown", self.species_combo.itemText(0)}:
-            return "Unassigned"
+        species = context.species_id if context is not None else self._project_species
+        if species in {"", "unknown"}:
+            return UNASSIGNED_SPECIES
         return self._seed_trait_catalogue.for_species(species).display_name
+
+    def _image_species_text(self, key: str) -> str:
+        species = self._image_species_name(key)
+        return "Unassigned" if species == UNASSIGNED_SPECIES else species
 
     def _remove_image(self, path: Path) -> bool:
         """Forget a workspace image and its live state without deleting files."""
@@ -6590,6 +6594,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.image_list.takeItem(row)
 
         if selected:
+            self._sync_species_selector()
             self.pipeline_workflow.image_changed()
             self.catalogue_nodes.image_changed()
             self.pipeline.invalidate(
@@ -6640,6 +6645,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         if not succeeded:
             QMessageBox.warning(self, "Could not open image", f"{path}\n\n{error}")
             return
+        self._sync_species_selector()
         self.pipeline_workflow.image_changed()
         self.catalogue_nodes.image_changed()
         self.filename_label.setText(path.name)
@@ -10243,16 +10249,22 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
     def _current_seed_trait_species_id(self) -> str:
         return self._current_seed_trait_vocabulary().species_id
 
-    def _effective_biological_context(self, path: Path | None = None) -> BiologicalContext:
-        species_id = self._current_seed_trait_species_id() or "unknown"
-        key = self._current_image_key() if path is None else _path_identity(path)
-        image_context = self._project_image_biological_contexts.get(key)
-        if image_context is not None and (path is not None or image_context.species_id == species_id):
-            return image_context
+    def _project_level_biological_context(self) -> BiologicalContext:
+        species_id = (
+            self._seed_trait_catalogue.for_species(self._project_species).species_id
+            or "unknown"
+        )
         current = self._project_biological_context
         if current is not None and current.species_id == species_id:
             return current
         return BiologicalContext(species_id)
+
+    def _effective_biological_context(self, path: Path | None = None) -> BiologicalContext:
+        key = self._current_image_key() if path is None else _path_identity(path)
+        image_context = self._project_image_biological_contexts.get(key)
+        if image_context is not None:
+            return image_context
+        return self._project_level_biological_context()
 
     def _resolved_species_library_for_current_image(self, path: Path):
         return self._species_library_service.resolve(
@@ -11479,7 +11491,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             QMessageBox.warning(
                 self,
                 "Species mismatch",
-                "The selected library does not match the project's species.",
+                "The selected library does not match the current species.",
             )
             return
         if self._project_species_library_pin == pin:
@@ -11528,7 +11540,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._refresh_project_node()
         source_contexts = {
             _path_identity(spec.path): (
-                spec.biological_context or biological_context,
+                self._effective_biological_context(spec.path),
                 (
                     spec.capture_group_id
                     if spec.capture_group_id is not None
@@ -15065,24 +15077,29 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
     def _species_changed(self, species: str) -> None:
         self._catalogue_context_changed()
         species_id = self._current_seed_trait_vocabulary().species_id or "unknown"
-        if (
-            self._project_biological_context is None
-            or self._project_biological_context.species_id != species_id
-        ):
-            self._project_biological_context = BiologicalContext(species_id)
-        if (
-            self._project_species_library_pin is not None
-            and self._project_species_library_pin.species_id != species_id
-        ):
-            self._project_species_library_pin = None
+        key = self._current_image_key()
+        changed = set()
+        if key is not None:
+            self._project_image_biological_contexts[key] = BiologicalContext(species_id)
+            changed.add(key)
+        if key is None or self._project_species == UNASSIGNED_SPECIES:
+            # Images without a species of their own follow the project's.
+            self._project_species = species
+            self._project_biological_context = self._project_level_biological_context()
+            if (
+                self._project_species_library_pin is not None
+                and self._project_species_library_pin.species_id != species_id
+            ):
+                self._project_species_library_pin = None
+            changed.update(
+                image_key for image_key in set(self._analysis_caches) | set(self._analyses)
+                if image_key not in self._project_image_biological_contexts
+            )
         self._set_project_dirty()
         self._refresh_project_node()
         self._populate_seed_coat_patterns()
         self._sync_seed_trait_controls()
         self._update_analysis_availability()
-        if self.image_view.image_path is None:
-            return
-        self.pipeline.set_status("metadata", NodeStatus.COMPLETE, species)
         affected = {
             node_id
             for node_id in (
@@ -15095,14 +15112,27 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             if self.pipeline.node(node_id).enabled
         }
         if affected:
+            for image_key in changed:
+                self._cache_dirty_nodes.setdefault(image_key, set()).update(affected)
+                self._analyses.pop(image_key, None)
+        if key is None:
+            return
+        self.pipeline.set_status("metadata", NodeStatus.COMPLETE, species)
+        if affected:
             self.pipeline.invalidate(affected)
-            key = self._current_image_key()
-            if key is not None:
-                self._cache_dirty_nodes.setdefault(key, set()).update(affected)
-                self._analyses.pop(key, None)
-                if key in self._analysis_caches and not self.pipeline_workflow.active:
-                    self._analyze_current_image(dirty_nodes=affected)
+            if key in self._analysis_caches and not self.pipeline_workflow.active:
+                self._analyze_current_image(dirty_nodes=affected)
         self.pipeline_canvas.refresh(("metadata", *affected))
+
+    def _sync_species_selector(self) -> None:
+        """Show the open image's species, or the project's with no image open."""
+        species = self._image_species_name(self._current_image_key())
+        with QSignalBlocker(self.species_combo):
+            if self.species_combo.findText(species) < 0:
+                self.species_combo.addItem(species)
+            self.species_combo.setCurrentText(species)
+        self._populate_seed_coat_patterns()
+        self._sync_seed_trait_controls()
 
     def _update_analysis_availability(self) -> None:
         from PySide6.QtWidgets import QStyle

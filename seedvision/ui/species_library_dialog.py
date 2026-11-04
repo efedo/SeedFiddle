@@ -310,7 +310,7 @@ class SpeciesLibraryManagerDialog(QDialog):
                 self.version_table.setItem(row, column, QTableWidgetItem(str(value)))
         self.version_table.resizeColumnsToContents()
         self.summary_label.setText(
-            f"Current project species: {self.context.species_id}. "
+            f"Current species: {self.context.species_id}. "
             f"{len(manifests)} immutable version(s) are installed. "
             + (
                 "The project is not using a species library."

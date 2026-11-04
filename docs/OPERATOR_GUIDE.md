@@ -71,9 +71,12 @@ of this guide. Splitter sizes and the annotation panel position are remembered.
   project** (`Ctrl+S`) and **Save project as…**. The eight most recent projects are
   listed by number near the bottom of the **File** menu; choose one to open it
   again. Same-named projects show their folder, and hovering shows the full path.
-- **File → Open images…** (`Ctrl+O`) adds images to the project. Set the verified
-  species in the **Image** tab. Species starts *Unknown / unassigned* and is never
-  inferred.
+- **File → Open images…** (`Ctrl+O`) adds images to the project. The **Image** tab
+  shows the open image's verified species, and changing it changes that image only.
+  An image with no species of its own follows the project's. The first species you
+  choose becomes the project's, so a one-species project sets it once; with no image
+  open, the selector sets the project's. Species starts *Unknown / unassigned* and is
+  never inferred.
 - For an immutable revision use **File → Snapshots → Create snapshot…**: it copies
   and verifies images, annotations, manual centres, enabled model checkpoints and
   the pinned species library, and writes its completion index last. **Create
@@ -460,8 +463,11 @@ are also kept in its `unsaved/` folder, which the next open offers to restore.
   K-means centres…** trains centres from a folder of images and saves them with
   their training provenance in one JSON file. Defaults match PlantCV.
 - **Species reference libraries…** builds, validates, publishes, forks, imports,
-  exports and pins immutable species libraries. Coverage reports inventory evidence,
-  not accuracy. See [species reference libraries](SPECIES_REFERENCE_LIBRARIES.md).
+  exports and pins immutable species libraries. A project pins one library, chosen
+  for the open image's species. On an image of another species the desktop marks the
+  library node blocked and analyses without the library; batch runs and optimisation
+  refuse that image. Coverage reports inventory evidence, not accuracy. See
+  [species reference libraries](SPECIES_REFERENCE_LIBRARIES.md).
 
 To use an existing PlantCV K-means `.fit` model, convert it with the Python
 environment that trained it, then select the JSON with **Select model…**:

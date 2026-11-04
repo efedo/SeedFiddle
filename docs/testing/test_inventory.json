@@ -26,7 +26,7 @@
     "tests.test_native_image_inputs.ImageInputContractTests"
   ],
   "core_test_count": 28,
-  "test_source_lines": 81030,
+  "test_source_lines": 81151,
   "historical_method_seconds": 0,
   "category_totals": {
     "Annotation and interactive image review": {
@@ -1596,15 +1596,16 @@
       "file": "tests/test_image_list_controls.py",
       "purpose": "Native image-list actions, thumbnails, file preservation and edit ownership.",
       "category": "Image analysis, calibration and rendering",
-      "lines": 814,
-      "source_sha256": "925f87e45a715914e8c845936950f758d94e13b66d538d817b587bb7eef92fc8",
+      "lines": 932,
+      "source_sha256": "63c52f83b092140f892502983260af881d693ac193b4cac9877b37371e5841b4",
       "historical_source_matches": false,
       "test_count": 4,
       "class_fixtures": {
+        "_StopBatch": [],
         "ImageListControlsTests": [
           {
             "name": "setUpClass",
-            "line": 71,
+            "line": 77,
             "calls": [
               "QApplication.instance",
               "QApplication"
@@ -1614,7 +1615,7 @@
         "ImageThumbnailLoaderTests": [
           {
             "name": "setUpClass",
-            "line": 210,
+            "line": 216,
             "calls": [
               "QApplication.instance",
               "QApplication"
@@ -1622,7 +1623,7 @@
           },
           {
             "name": "setUp",
-            "line": 213,
+            "line": 219,
             "calls": [
               "TemporaryDirectory",
               "self.addCleanup",
@@ -1634,7 +1635,7 @@
         "ImageListRowTests": [
           {
             "name": "setUpClass",
-            "line": 403,
+            "line": 409,
             "calls": [
               "QApplication.instance",
               "QApplication"
@@ -1642,7 +1643,7 @@
           },
           {
             "name": "setUp",
-            "line": 406,
+            "line": 412,
             "calls": [
               "TemporaryDirectory",
               "self.addCleanup",
@@ -1659,6 +1660,7 @@
         ]
       },
       "production_imports": [
+        "seedvision.export.project_runner.run_project",
         "seedvision.persistence.BiologicalContext",
         "seedvision.persistence.ProjectAnalysisStore",
         "seedvision.persistence.ProjectImageSpec",
@@ -1666,6 +1668,7 @@
         "seedvision.persistence.ReferenceRegionStore",
         "seedvision.persistence.analysis_settings_profile_from_graph",
         "seedvision.pipeline.build_default_pipeline",
+        "seedvision.segmentation.baseline.PipelineAnalysisCache",
         "seedvision.ui.image_list",
         "seedvision.ui.image_list.IMAGE_OPEN_ROLE",
         "seedvision.ui.image_list.IMAGE_SPECIES_ROLE",
@@ -1676,6 +1679,7 @@
         "seedvision.ui.image_list.row_text",
         "seedvision.ui.image_list.species_text",
         "seedvision.ui.main_window.MainWindow",
+        "seedvision.ui.main_window.UNASSIGNED_SPECIES",
         "seedvision.ui.main_window._path_identity"
       ],
       "method_seconds": 0
@@ -6734,15 +6738,15 @@
       "file": "tests/test_project_analysis_ui.py",
       "purpose": "Project analysis save/reopen, dirty state, selections and desktop guards",
       "category": "Persistence, export, identity and outcomes",
-      "lines": 2213,
-      "source_sha256": "6069ea4d3fa610b88011cbb83a535cbee28226af6acd414d3c8d213718601ed1",
+      "lines": 2216,
+      "source_sha256": "557a2007c9dbb63bd660d8940d7826129ee5ab05752f05dc559d7cdaf563f546",
       "historical_source_matches": false,
       "test_count": 3,
       "class_fixtures": {
         "ProjectAnalysisUiTests": [
           {
             "name": "setUpClass",
-            "line": 22,
+            "line": 23,
             "calls": [
               "os.environ.setdefault",
               "unittest.SkipTest",
@@ -14768,8 +14772,8 @@
       "file": "tests/test_image_list_controls.py",
       "class": "ImageListControlsTests",
       "method": "test_header_open_and_row_removal_preserve_files_and_unresolved_project_records",
-      "line": 74,
-      "end_line": 139,
+      "line": 80,
+      "end_line": 145,
       "functionality": "header open and row removal preserve files and unresolved project records",
       "description_basis": "method scenario name; see assertion evidence",
       "category": "Image analysis, calibration and rendering",
@@ -14895,8 +14899,8 @@
       "file": "tests/test_image_list_controls.py",
       "class": "ImageListControlsTests",
       "method": "test_removal_protects_edits_and_busy_work_then_clears_selected_native_display",
-      "line": 141,
-      "end_line": 204,
+      "line": 147,
+      "end_line": 210,
       "functionality": "removal protects edits and busy work then clears selected native display",
       "description_basis": "method scenario name; see assertion evidence",
       "category": "Image analysis, calibration and rendering",
@@ -15003,8 +15007,8 @@
       "file": "tests/test_image_list_controls.py",
       "class": "ImageThumbnailLoaderTests",
       "method": "test_background_decoding_and_cache",
-      "line": 387,
-      "end_line": 395,
+      "line": 393,
+      "end_line": 401,
       "functionality": "background decoding and cache",
       "description_basis": "method scenario name; see assertion evidence",
       "category": "Image analysis, calibration and rendering",
@@ -15056,8 +15060,8 @@
       "file": "tests/test_image_list_controls.py",
       "class": "ImageListRowTests",
       "method": "test_rows_show_thumbnails_status_and_the_open_image",
-      "line": 803,
-      "end_line": 814,
+      "line": 918,
+      "end_line": 932,
       "functionality": "rows show thumbnails status and the open image",
       "description_basis": "method scenario name; see assertion evidence",
       "category": "Image analysis, calibration and rendering",
@@ -15068,9 +15072,11 @@
         "seedvision.ui.main_window.MainWindow",
         "seedvision.persistence.BiologicalContext",
         "seedvision.persistence.ProjectAnalysisStore",
+        "seedvision.segmentation.baseline.PipelineAnalysisCache",
         "seedvision.persistence.analysis_settings_profile_from_graph",
         "seedvision.pipeline.build_default_pipeline",
         "seedvision.persistence.ProjectImageSpec",
+        "seedvision.export.project_runner.run_project",
         "seedvision.ui.image_list.row_text",
         "seedvision.ui.image_list.read_thumbnail"
       ],
@@ -15087,6 +15093,9 @@
         "tests.test_image_list_controls.ImageListRowTests.check_rows_fit_the_narrow_panel",
         "tests.test_image_list_controls.ImageListRowTests.check_species_shows_by_default_and_the_switch_is_remembered",
         "tests.test_image_list_controls.ImageListRowTests.check_each_row_names_the_species_recorded_for_its_own_image",
+        "tests.test_image_list_controls.ImageListRowTests.check_the_selector_shows_and_sets_the_open_images_species",
+        "tests.test_image_list_controls.ImageListRowTests.check_the_first_species_chosen_also_covers_images_without_one",
+        "tests.test_image_list_controls.ImageListRowTests.check_batch_analyses_each_image_as_its_own_species",
         "tests.test_image_list_controls.ImageListRowTests.check_species_fits_the_narrow_panel_and_is_a_column_in_a_wide_one",
         "tests.test_image_list_controls.ImageListRowTests.check_thumbnails_reach_neither_the_project_nor_the_disk",
         "tests.test_image_list_controls.ImageListRowTests.check_closing_finishes_the_work_only_when_the_window_really_closes",
@@ -15097,15 +15106,18 @@
         "tests.test_image_list_controls.ImageListRowTests._row",
         "tests.test_image_list_controls.ImageListRowTests._picture",
         "tests.test_image_list_controls.ImageListRowTests._changed_area",
+        "tests.test_image_list_controls.ImageListRowTests._install_traits",
         "tests.review_fixtures.isolated_window",
         "tests.test_image_list_controls.ImageListRowTests._species",
-        "tests.test_image_list_controls._write_image",
-        "tests.test_project_analysis_ui.ProjectAnalysisUiTests._write_image",
         "tests.review_fixtures.shared_workflow_templates",
         "tests.review_fixtures.open_workspace_images",
         "tests.review_fixtures.editable_copy",
         "tests.review_fixtures._workflow_templates",
         "tests.review_fixtures._workflow_template_key",
+        "tests.test_image_list_controls.ImageListRowTests._open_mixed_species_project",
+        "tests.test_image_list_controls._write_image",
+        "tests.test_image_list_controls.ImageListRowTests._reopen",
+        "tests.test_project_analysis_ui.ProjectAnalysisUiTests._write_image",
         "tests.test_image_list_controls.ImageListRowTests._tooltip",
         "tests.test_image_list_controls.ImageListRowTests._accent",
         "tests.test_image_list_controls.ImageListRowTests._open_rows",
@@ -33793,8 +33805,8 @@
       "file": "tests/test_project_analysis_ui.py",
       "class": "ProjectAnalysisUiTests",
       "method": "test_workflow_lifecycle",
-      "line": 2175,
-      "end_line": 2191,
+      "line": 2178,
+      "end_line": 2194,
       "functionality": "15 related ProjectAnalysisUiTests scenarios, each with private fixture state.",
       "description_basis": "method docstring",
       "category": "Persistence, export, identity and outcomes",
@@ -33876,8 +33888,8 @@
       "file": "tests/test_project_analysis_ui.py",
       "class": "ProjectAnalysisUiTests",
       "method": "test_project_owned_annotations",
-      "line": 2193,
-      "end_line": 2197,
+      "line": 2196,
+      "end_line": 2200,
       "functionality": "3 related ProjectAnalysisUiTests scenarios, each with private fixture state.",
       "description_basis": "method docstring",
       "category": "Persistence, export, identity and outcomes",
@@ -33934,8 +33946,8 @@
       "file": "tests/test_project_analysis_ui.py",
       "class": "ProjectAnalysisUiTests",
       "method": "test_validation_and_recovery",
-      "line": 2199,
-      "end_line": 2209,
+      "line": 2202,
+      "end_line": 2212,
       "functionality": "9 related ProjectAnalysisUiTests scenarios, each with private fixture state.",
       "description_basis": "method docstring",
       "category": "Persistence, export, identity and outcomes",
@@ -46411,7 +46423,7 @@
     },
     "tests.test_project_analysis_ui.ProjectAnalysisUiTests._window": {
       "file": "tests/test_project_analysis_ui.py",
-      "line": 47,
+      "line": 48,
       "checks": []
     },
     "tests.review_fixtures.isolated_window": {
@@ -47819,12 +47831,12 @@
     },
     "tests.test_project_analysis_ui.ProjectAnalysisUiTests._write_image": {
       "file": "tests/test_project_analysis_ui.py",
-      "line": 31,
+      "line": 32,
       "checks": []
     },
     "tests.test_image_list_controls.ImageThumbnailLoaderTests.check_reader_fits_the_box_and_reports_what_it_cannot_read": {
       "file": "tests/test_image_list_controls.py",
-      "line": 224,
+      "line": 230,
       "checks": [
         "self.assertEqual(error, '')",
         "self.assertEqual((landscape.width(), landscape.height()), (48, 31))",
@@ -47839,7 +47851,7 @@
     },
     "tests.test_image_list_controls.ImageThumbnailLoaderTests.check_decoding_stays_off_the_gui_thread_and_queues_each_image_once": {
       "file": "tests/test_image_list_controls.py",
-      "line": 256,
+      "line": 262,
       "checks": [
         "self.assertIsNone(self.loader.get(str(path)))",
         "self.assertIsNone(self.loader.get(str(path)))",
@@ -47855,7 +47867,7 @@
     },
     "tests.test_image_list_controls.ImageThumbnailLoaderTests.check_abandoned_work_is_dropped_and_the_cache_stays_bounded": {
       "file": "tests/test_image_list_controls.py",
-      "line": 278,
+      "line": 284,
       "checks": [
         "self.assertEqual(len(threads), 1)",
         "self.assertFalse(self.loader._entries)",
@@ -47866,7 +47878,7 @@
     },
     "tests.test_image_list_controls.ImageThumbnailLoaderTests.check_a_changed_source_file_is_decoded_again": {
       "file": "tests/test_image_list_controls.py",
-      "line": 303,
+      "line": 309,
       "checks": [
         "self.assertIs(self.loader._entries[str(path)], before)",
         "self.assertEqual(changed, [True])",
@@ -47876,7 +47888,7 @@
     },
     "tests.test_image_list_controls.ImageThumbnailLoaderTests.check_stop_waits_for_the_decode_in_flight_without_blocking_it": {
       "file": "tests/test_image_list_controls.py",
-      "line": 318,
+      "line": 324,
       "checks": [
         "self.assertLess(time.monotonic() - started, ImageThumbnailLoader.STOP_WAIT_MS / 1000)",
         "self.assertEqual(self.loader._pool.activeThreadCount(), 0)",
@@ -47885,7 +47897,7 @@
     },
     "tests.test_image_list_controls.ImageThumbnailLoaderTests.check_names_fit_two_lines_and_keep_their_distinguishing_end": {
       "file": "tests/test_image_list_controls.py",
-      "line": 333,
+      "line": 339,
       "checks": [
         "self.assertEqual(name_lines('IMG_9403.JPG', metrics, 500), ('IMG_9403.JPG',))",
         "self.assertEqual(name_lines('IMG_9403.JPG', metrics, width), ('IMG_9403.', 'JPG'))",
@@ -47898,7 +47910,7 @@
     },
     "tests.test_image_list_controls.ImageThumbnailLoaderTests.check_species_text_shortens_the_genus_before_the_epithet": {
       "file": "tests/test_image_list_controls.py",
-      "line": 347,
+      "line": 353,
       "checks": [
         "self.assertEqual(species_text('Lupinus mexicanus', metrics, 500), 'Lupinus mexicanus')",
         "self.assertLess(width, metrics.horizontalAdvance('Lupinus mexicanus'))",
@@ -47910,7 +47922,7 @@
     },
     "tests.test_image_list_controls.ImageThumbnailLoaderTests.check_species_is_a_column_when_wide_and_a_second_line_when_narrow": {
       "file": "tests/test_image_list_controls.py",
-      "line": 359,
+      "line": 365,
       "checks": [
         "self.assertEqual(wide[0].species_rect, wide[1].species_rect)",
         "self.assertEqual(wide[0].species_rect.right(), area.right())",
@@ -47930,27 +47942,27 @@
     },
     "tests.test_image_list_controls._write_image": {
       "file": "tests/test_image_list_controls.py",
-      "line": 39,
+      "line": 45,
       "checks": []
     },
     "tests.test_image_list_controls._held_decodes": {
       "file": "tests/test_image_list_controls.py",
-      "line": 52,
+      "line": 58,
       "checks": []
     },
     "tests.test_image_list_controls._wait_until": {
       "file": "tests/test_image_list_controls.py",
-      "line": 43,
+      "line": 49,
       "checks": []
     },
     "tests.test_image_list_controls.ImageThumbnailLoaderTests._delivered": {
       "file": "tests/test_image_list_controls.py",
-      "line": 220,
+      "line": 226,
       "checks": []
     },
     "tests.test_image_list_controls.ImageListRowTests.check_every_row_shows_its_own_image_replacing_the_blank_document": {
       "file": "tests/test_image_list_controls.py",
-      "line": 473,
+      "line": 479,
       "checks": [
         "self.assertEqual(self.list.count(), 4)",
         "self.assertEqual(self._tile_colour(row), QColor(colour))",
@@ -47960,7 +47972,7 @@
     },
     "tests.test_image_list_controls.ImageListRowTests.check_analysis_status_stays_visible_on_the_thumbnail": {
       "file": "tests/test_image_list_controls.py",
-      "line": 482,
+      "line": 488,
       "checks": [
         "self.assertEqual(self._picture().pixelColor(spot), QColor(self.COLOURS[1]))",
         "self.assertFalse(item.icon().isNull())",
@@ -47974,7 +47986,7 @@
     },
     "tests.test_image_list_controls.ImageListRowTests.check_placeholder_and_unreadable_files_do_not_hold_up_or_break_the_list": {
       "file": "tests/test_image_list_controls.py",
-      "line": 504,
+      "line": 510,
       "checks": [
         "self.assertEqual(self._tile_colour(1).rgb(), placeholder.rgb())",
         "self.assertNotIn(get_ident(), threads)",
@@ -47994,7 +48006,7 @@
     },
     "tests.test_image_list_controls.ImageListRowTests.check_only_painted_rows_are_decoded": {
       "file": "tests/test_image_list_controls.py",
-      "line": 550,
+      "line": 556,
       "checks": [
         "self.assertGreater(painted, 3)",
         "self.assertLess(painted, 15)",
@@ -48004,7 +48016,7 @@
     },
     "tests.test_image_list_controls.ImageListRowTests.check_highlight_follows_the_open_image_however_it_changes": {
       "file": "tests/test_image_list_controls.py",
-      "line": 566,
+      "line": 572,
       "checks": [
         "self.assertEqual(self._open_rows(), [0])",
         "self.assertEqual(self._margin_colour(0), accent)",
@@ -48041,7 +48053,7 @@
     },
     "tests.test_image_list_controls.ImageListRowTests.check_rows_fit_the_narrow_panel": {
       "file": "tests/test_image_list_controls.py",
-      "line": 627,
+      "line": 633,
       "checks": [
         "self.assertEqual(rect.width(), self.list.viewport().width())",
         "self.assertFalse(self.list.horizontalScrollBar().isVisible())",
@@ -48054,7 +48066,7 @@
     },
     "tests.test_image_list_controls.ImageListRowTests.check_species_shows_by_default_and_the_switch_is_remembered": {
       "file": "tests/test_image_list_controls.py",
-      "line": 647,
+      "line": 653,
       "checks": [
         "self.assertTrue(action.isChecked())",
         "self.assertIs(self.window.image_species_button.defaultAction(), action)",
@@ -48076,21 +48088,66 @@
     },
     "tests.test_image_list_controls.ImageListRowTests.check_each_row_names_the_species_recorded_for_its_own_image": {
       "file": "tests/test_image_list_controls.py",
-      "line": 680,
+      "line": 710,
       "checks": [
-        "self.assertTrue(window._open_project(project))",
-        "self.assertEqual(window.species_combo.currentText(), 'Lupinus mutabilis')",
         "self.assertEqual(self._species(window), ['Soybean', 'Lupinus mexicanus', 'Unassigned', 'Lupinus mutabilis'])",
-        "self.assertEqual(self._species(window), ['Soybean', 'Lupinus mexicanus', 'Unassigned', 'Lupinus mutabilis'])",
-        "self.assertEqual(self._species(window), ['Soybean', 'Lupinus mexicanus', 'Unassigned', 'Lupinus polyphyllus'])",
-        "self.assertEqual(self._species(window)[-1], 'Lupinus polyphyllus')",
-        "self.assertEqual(self._species(window)[3:], ['Unassigned', 'Unassigned'])",
         "self.assertEqual(self._species(window)[3], 'vicia_faba')"
+      ]
+    },
+    "tests.test_image_list_controls.ImageListRowTests.check_the_selector_shows_and_sets_the_open_images_species": {
+      "file": "tests/test_image_list_controls.py",
+      "line": 721,
+      "checks": [
+        "self.assertEqual(combo.currentText(), species)",
+        "self.assertEqual(self._species(window), ['Soybean', 'Lupinus mexicanus', 'Unassigned', 'Lupinus mutabilis'])",
+        "self.assertEqual(window.pipeline.node('metadata').status_detail, 'Lupinus mutabilis')",
+        "self.assertEqual(self._species(window), ['Soybean', 'Lupinus polyphyllus', 'Unassigned', 'Lupinus mutabilis'])",
+        "self.assertEqual(window._effective_biological_context().species_id, 'lupinus_polyphyllus')",
+        "self.assertEqual(combo.currentText(), 'Soybean')",
+        "self.assertEqual(window._current_seed_trait_species_id(), 'soybean')",
+        "self.assertEqual(combo.currentText(), 'Lupinus polyphyllus')",
+        "self.assertEqual(self._species(window)[-1], 'Lupinus mutabilis')",
+        "self.assertEqual(self._species(window)[3:], ['Soybean', 'Lupinus mutabilis'])",
+        "self.assertEqual(self._species(window), expected)",
+        "self.assertTrue(window._save_project())",
+        "self.assertEqual(loaded.document.species, 'Lupinus mutabilis')",
+        "self.assertEqual(loaded.document.biological_context.species_id, 'lupinus_mutabilis')",
+        "self.assertEqual([None if image.record.biological_context is None else image.record.biological_context.species_id for image in loaded.images], ['unknown', 'lupinus_polyphyllus', 'unknown', 'soybean', None])",
+        "self.assertEqual(self._species(reopened), expected)",
+        "self.assertEqual(reopened.species_combo.currentText(), UNASSIGNED_SPECIES)",
+        "self.assertEqual(reopened.species_combo.currentText(), UNASSIGNED_SPECIES)",
+        "self.assertIsNone(reopened._current_image_key())",
+        "self.assertEqual(reopened.species_combo.currentText(), 'Lupinus mutabilis')",
+        "self.assertEqual(self._species(reopened), ['Lupinus polyphyllus'])"
+      ]
+    },
+    "tests.test_image_list_controls.ImageListRowTests.check_the_first_species_chosen_also_covers_images_without_one": {
+      "file": "tests/test_image_list_controls.py",
+      "line": 789,
+      "checks": [
+        "self.assertEqual(self._species(window), ['Unassigned'] * 4)",
+        "self.assertEqual(self._species(window), ['Soybean'] * 4)",
+        "self.assertEqual(window._project_species, 'Soybean')",
+        "self.assertTrue(window._cache_dirty_nodes[follower])",
+        "self.assertEqual(window.species_combo.currentText(), 'Soybean')",
+        "self.assertEqual(self._species(window), ['Soybean', 'Lupinus mexicanus', 'Soybean', 'Soybean'])",
+        "self.assertEqual(window._project_species, 'Soybean')",
+        "self.assertNotIn(follower, window._cache_dirty_nodes)"
+      ]
+    },
+    "tests.test_image_list_controls.ImageListRowTests.check_batch_analyses_each_image_as_its_own_species": {
+      "file": "tests/test_image_list_controls.py",
+      "line": 815,
+      "checks": [
+        "self.assertRaises(_StopBatch)",
+        "self.assertEqual(request['species'], expected)",
+        "self.assertEqual(request['biological_context'].species_id, species_id)",
+        "self.assertEqual(bool(request['seed_trait_coat_patterns']), index == 0)"
       ]
     },
     "tests.test_image_list_controls.ImageListRowTests.check_species_fits_the_narrow_panel_and_is_a_column_in_a_wide_one": {
       "file": "tests/test_image_list_controls.py",
-      "line": 721,
+      "line": 836,
       "checks": [
         "self.assertEqual(panel.width(), panel.minimumWidth())",
         "self.assertFalse(self.list.horizontalScrollBar().isVisible())",
@@ -48111,7 +48168,7 @@
     },
     "tests.test_image_list_controls.ImageListRowTests.check_thumbnails_reach_neither_the_project_nor_the_disk": {
       "file": "tests/test_image_list_controls.py",
-      "line": 765,
+      "line": 880,
       "checks": [
         "self.assertFalse(self.window._project_dirty)",
         "self.assertTrue(self.loader._entries)",
@@ -48123,7 +48180,7 @@
     },
     "tests.test_image_list_controls.ImageListRowTests.check_closing_finishes_the_work_only_when_the_window_really_closes": {
       "file": "tests/test_image_list_controls.py",
-      "line": 776,
+      "line": 891,
       "checks": [
         "self.assertTrue(self.window.isVisible())",
         "self.assertTrue(self.loader._entries)",
@@ -48135,52 +48192,69 @@
     },
     "tests.test_image_list_controls.ImageListRowTests._settle": {
       "file": "tests/test_image_list_controls.py",
-      "line": 425,
+      "line": 431,
       "checks": []
     },
     "tests.test_image_list_controls.ImageListRowTests._row": {
       "file": "tests/test_image_list_controls.py",
-      "line": 430,
+      "line": 436,
       "checks": []
     },
     "tests.test_image_list_controls.ImageListRowTests._picture": {
       "file": "tests/test_image_list_controls.py",
-      "line": 433,
+      "line": 439,
       "checks": []
     },
     "tests.test_image_list_controls.ImageListRowTests._changed_area": {
       "file": "tests/test_image_list_controls.py",
-      "line": 455,
+      "line": 461,
+      "checks": []
+    },
+    "tests.test_image_list_controls.ImageListRowTests._install_traits": {
+      "file": "tests/test_image_list_controls.py",
+      "line": 686,
       "checks": []
     },
     "tests.test_image_list_controls.ImageListRowTests._species": {
       "file": "tests/test_image_list_controls.py",
-      "line": 451,
+      "line": 457,
       "checks": []
+    },
+    "tests.test_image_list_controls.ImageListRowTests._open_mixed_species_project": {
+      "file": "tests/test_image_list_controls.py",
+      "line": 691,
+      "checks": []
+    },
+    "tests.test_image_list_controls.ImageListRowTests._reopen": {
+      "file": "tests/test_image_list_controls.py",
+      "line": 703,
+      "checks": [
+        "self.assertTrue(window._open_project(project))"
+      ]
     },
     "tests.test_image_list_controls.ImageListRowTests._tooltip": {
       "file": "tests/test_image_list_controls.py",
-      "line": 465,
+      "line": 471,
       "checks": []
     },
     "tests.test_image_list_controls.ImageListRowTests._accent": {
       "file": "tests/test_image_list_controls.py",
-      "line": 444,
+      "line": 450,
       "checks": []
     },
     "tests.test_image_list_controls.ImageListRowTests._open_rows": {
       "file": "tests/test_image_list_controls.py",
-      "line": 447,
+      "line": 453,
       "checks": []
     },
     "tests.test_image_list_controls.ImageListRowTests._margin_colour": {
       "file": "tests/test_image_list_controls.py",
-      "line": 440,
+      "line": 446,
       "checks": []
     },
     "tests.test_image_list_controls.ImageListRowTests._tile_colour": {
       "file": "tests/test_image_list_controls.py",
-      "line": 437,
+      "line": 443,
       "checks": []
     },
     "tests.test_instance_annotation_tiling.InstanceAnnotationTilingTests.check_test_6240_by_4160_tiles_preserve_exact_one_pixel_marks_and_ridges": {
@@ -62573,7 +62647,7 @@
     },
     "tests.test_project_analysis_ui.ProjectAnalysisUiTests.check_test_actions_and_profile_load_replace_only_portable_analysis_state": {
       "file": "tests/test_project_analysis_ui.py",
-      "line": 138,
+      "line": 139,
       "checks": [
         "self.assertEqual(window.open_action.shortcut().toString(), QKeySequence(QKeySequence.StandardKey.Open).toString())",
         "self.assertEqual(window.save_project_action.shortcut().toString(), QKeySequence(QKeySequence.StandardKey.Save).toString())",
@@ -62601,7 +62675,7 @@
     },
     "tests.test_project_analysis_ui.ProjectAnalysisUiTests.check_test_project_round_trip_restores_state_and_purges_every_old_image_value": {
       "file": "tests/test_project_analysis_ui.py",
-      "line": 279,
+      "line": 280,
       "checks": [
         "self.assertGreaterEqual(overlay_index, 0)",
         "self.assertTrue(window._write_project(destination))",
@@ -62615,7 +62689,7 @@
         "self.assertTrue(window.pipeline_canvas.obstacle_routing_enabled)",
         "self.assertEqual(window._selected_pipeline_node, 'reference_texture_prototypes')",
         "self.assertEqual(window.overlay_combo.currentData(), 'physical_edge_probability')",
-        "self.assertEqual(window.species_combo.currentText(), 'Project test species')",
+        "self.assertEqual(window.species_combo.currentText(), 'Lupinus mutabilis')",
         "np.testing.assert_array_equal(pending.foreground, foreground)",
         "np.testing.assert_array_equal(pending.annotated_seeds, instances)",
         "np.testing.assert_allclose(window._manual_seed_centre_states[second_key].centres_source_xy, ((11.5, 13.25),))",
@@ -62636,7 +62710,7 @@
     },
     "tests.test_project_analysis_ui.ProjectAnalysisUiTests.check_test_absent_and_partial_ui_state_reset_unspecified_presentation_to_defaults": {
       "file": "tests/test_project_analysis_ui.py",
-      "line": 470,
+      "line": 473,
       "checks": [
         "self.assertTrue(window._open_project(absent_path))",
         "self.assertEqual(window.pipeline.node('ruler_detection').x, default_graph.node('ruler_detection').x)",
@@ -62655,7 +62729,7 @@
     },
     "tests.test_project_analysis_ui.ProjectAnalysisUiTests.check_test_tracked_untitled_close_prompts_and_save_routes_through_save_as": {
       "file": "tests/test_project_analysis_ui.py",
-      "line": 559,
+      "line": 562,
       "checks": [
         "self.assertTrue(window._new_project())",
         "self.assertTrue(window._project_tracking_enabled)",
@@ -62670,7 +62744,7 @@
     },
     "tests.test_project_analysis_ui.ProjectAnalysisUiTests.check_test_open_and_save_retain_reference_graph_metadata": {
       "file": "tests/test_project_analysis_ui.py",
-      "line": 613,
+      "line": 616,
       "checks": [
         "self.assertTrue(first._write_project(source_project))",
         "self.assertTrue(second._open_project(source_project))",
@@ -62682,7 +62756,7 @@
     },
     "tests.test_project_analysis_ui.ProjectAnalysisUiTests.check_test_new_project_purges_session_and_restores_default_graph_and_ui": {
       "file": "tests/test_project_analysis_ui.py",
-      "line": 645,
+      "line": 648,
       "checks": [
         "self.assertTrue(window._write_project(root / 'projects' / 'old.seedfiddle-project.json'))",
         "self.assertIsNotNone(key)",
@@ -62710,7 +62784,7 @@
     },
     "tests.test_project_analysis_ui.ProjectAnalysisUiTests.check_test_ordinary_analysis_allows_project_save_but_guards_context_replacement": {
       "file": "tests/test_project_analysis_ui.py",
-      "line": 726,
+      "line": 729,
       "checks": [
         "self.assertFalse(window.new_project_action.isEnabled())",
         "self.assertFalse(window.open_project_action.isEnabled())",
@@ -62730,7 +62804,7 @@
     },
     "tests.test_project_analysis_ui.ProjectAnalysisUiTests.check_test_ordinary_recompute_keeps_reference_and_annotation_entry_points_enabled": {
       "file": "tests/test_project_analysis_ui.py",
-      "line": 777,
+      "line": 780,
       "checks": [
         "self.assertTrue(window.paint_background_action.isEnabled())",
         "self.assertTrue(window.annotate_instances_action.isEnabled())",
@@ -62742,7 +62816,7 @@
     },
     "tests.test_project_analysis_ui.ProjectAnalysisUiTests.check_test_bulk_draft_clear_persists_an_empty_corrected_shape_archive": {
       "file": "tests/test_project_analysis_ui.py",
-      "line": 1108,
+      "line": 1111,
       "checks": [
         "self.assertIsNotNone(key)",
         "self.assertTrue(window._apply_and_save_all_project_drafts({key}, recompute=False))",
@@ -62759,7 +62833,7 @@
     },
     "tests.test_project_analysis_ui.ProjectAnalysisUiTests.check_test_user_image_node_and_overlay_selection_dirty_tracked_project_only": {
       "file": "tests/test_project_analysis_ui.py",
-      "line": 1157,
+      "line": 1160,
       "checks": [
         "self.assertTrue(window._write_project(destination))",
         "self.assertFalse(window._project_dirty)",
@@ -62779,7 +62853,7 @@
     },
     "tests.test_project_analysis_ui.ProjectAnalysisUiTests.check_test_project_sidecar_binding_omits_unlisted_and_loads_only_listed_files": {
       "file": "tests/test_project_analysis_ui.py",
-      "line": 1195,
+      "line": 1198,
       "checks": [
         "self.assertTrue(window._open_project(omitted_path))",
         "self.assertNotIn(key, window._applied_foreground_reference_masks)",
@@ -62794,7 +62868,7 @@
     },
     "tests.test_project_analysis_ui.ProjectAnalysisUiTests.check_test_changed_valid_sidecars_load_but_keep_master_dirty": {
       "file": "tests/test_project_analysis_ui.py",
-      "line": 1271,
+      "line": 1274,
       "checks": [
         "self.assertTrue(window._open_project(project_path))",
         "np.testing.assert_array_equal(pending.foreground, changed)",
@@ -62807,7 +62881,7 @@
     },
     "tests.test_project_analysis_ui.ProjectAnalysisUiTests.check_test_degraded_save_preserves_unresolved_record_until_locator_is_readded": {
       "file": "tests/test_project_analysis_ui.py",
-      "line": 1462,
+      "line": 1465,
       "checks": [
         "self.assertTrue(window._open_project(project_path))",
         "self.assertEqual(self._image_paths(window), (first,))",
@@ -62822,7 +62896,7 @@
     },
     "tests.test_project_analysis_ui.ProjectAnalysisUiTests.check_test_new_project_image_does_not_capture_unseen_loose_sidecars": {
       "file": "tests/test_project_analysis_ui.py",
-      "line": 1629,
+      "line": 1632,
       "checks": [
         "self.assertTrue(window._open_project(project_path))",
         "self.assertIn(key, window._withheld_reference_sidecars)",
@@ -62837,7 +62911,7 @@
     },
     "tests.test_project_analysis_ui.ProjectAnalysisUiTests.check_test_explicit_noncanonical_sidecar_loads_then_save_copies_it_into_the_project": {
       "file": "tests/test_project_analysis_ui.py",
-      "line": 1689,
+      "line": 1692,
       "checks": [
         "self.assertTrue(window._open_project(project_path))",
         "self.assertEqual(window._project_reference_sidecar_paths[key], explicit.resolve())",
@@ -62863,22 +62937,22 @@
     },
     "tests.test_project_analysis_ui.ProjectAnalysisUiTests._dispose": {
       "file": "tests/test_project_analysis_ui.py",
-      "line": 53,
+      "line": 54,
       "checks": []
     },
     "tests.test_project_analysis_ui.ProjectAnalysisUiTests._image_paths": {
       "file": "tests/test_project_analysis_ui.py",
-      "line": 67,
+      "line": 68,
       "checks": []
     },
     "tests.test_project_analysis_ui.ProjectAnalysisUiTests._reference_graph_attachment": {
       "file": "tests/test_project_analysis_ui.py",
-      "line": 76,
+      "line": 77,
       "checks": []
     },
     "tests.test_project_analysis_ui.ProjectAnalysisUiTests.check_test_each_project_keeps_its_own_annotations_until_save": {
       "file": "tests/test_project_analysis_ui.py",
-      "line": 1884,
+      "line": 1887,
       "checks": [
         "self.assertTrue(window._write_project(first))",
         "self.assertEqual(saved_first.read_bytes(), shared_bytes)",
@@ -62904,7 +62978,7 @@
     },
     "tests.test_project_analysis_ui.ProjectAnalysisUiTests.check_test_unsaved_annotation_edits_are_offered_after_an_unexpected_exit": {
       "file": "tests/test_project_analysis_ui.py",
-      "line": 1970,
+      "line": 1973,
       "checks": [
         "self.assertTrue(window._write_project(project))",
         "self.assertTrue(any(unsaved.rglob('*.npz')))",
@@ -62925,7 +62999,7 @@
     },
     "tests.test_project_analysis_ui.ProjectAnalysisUiTests.check_test_annotations_move_between_projects_only_by_export_and_import": {
       "file": "tests/test_project_analysis_ui.py",
-      "line": 2054,
+      "line": 2057,
       "checks": [
         "self.assertTrue(window._write_project(source_project))",
         "self.assertEqual(len(source_files), 2)",
@@ -62948,12 +63022,12 @@
     },
     "tests.test_project_analysis_ui.ProjectAnalysisUiTests._centres": {
       "file": "tests/test_project_analysis_ui.py",
-      "line": 1879,
+      "line": 1882,
       "checks": []
     },
     "tests.test_project_analysis_ui.ProjectAnalysisUiTests.check_test_incompatible_profile_is_rejected_before_confirmation_and_is_atomic": {
       "file": "tests/test_project_analysis_ui.py",
-      "line": 233,
+      "line": 234,
       "checks": [
         "self.assertFalse(loaded)",
         "question.assert_not_called()",
@@ -62964,7 +63038,7 @@
     },
     "tests.test_project_analysis_ui.ProjectAnalysisUiTests.check_test_changed_source_cancel_is_nonmutating_and_failed_paths_are_not_recent": {
       "file": "tests/test_project_analysis_ui.py",
-      "line": 840,
+      "line": 843,
       "checks": [
         "self.assertFalse(opened)",
         "confirm.assert_not_called()",
@@ -62980,7 +63054,7 @@
     },
     "tests.test_project_analysis_ui.ProjectAnalysisUiTests.check_test_startup_is_an_untitled_project_and_file_menu_lists_recent_projects": {
       "file": "tests/test_project_analysis_ui.py",
-      "line": 798,
+      "line": 801,
       "checks": [
         "self.assertEqual(window.image_list.count(), 0)",
         "self.assertIsNone(window._current_project_path)",
@@ -62996,7 +63070,7 @@
     },
     "tests.test_project_analysis_ui.ProjectAnalysisUiTests.check_test_live_source_corruption_aborts_master_save_without_replacing_it": {
       "file": "tests/test_project_analysis_ui.py",
-      "line": 909,
+      "line": 912,
       "checks": [
         "self.assertTrue(window._write_project(destination))",
         "self.assertFalse(window._save_project())",
@@ -63007,7 +63081,7 @@
     },
     "tests.test_project_analysis_ui.ProjectAnalysisUiTests.check_test_unavailable_selected_image_survives_fallback_until_user_selects": {
       "file": "tests/test_project_analysis_ui.py",
-      "line": 932,
+      "line": 935,
       "checks": [
         "self.assertTrue(window._open_project(project_path))",
         "self.assertEqual(window.image_view.image_path, fallback)",
@@ -63023,7 +63097,7 @@
     },
     "tests.test_project_analysis_ui.ProjectAnalysisUiTests.check_test_failed_applied_and_manual_sidecar_autosaves_are_retried_before_master_save": {
       "file": "tests/test_project_analysis_ui.py",
-      "line": 1003,
+      "line": 1006,
       "checks": [
         "self.assertTrue(window._write_project(destination))",
         "self.assertIsNotNone(key)",
@@ -63056,7 +63130,7 @@
     },
     "tests.test_project_analysis_ui.ProjectAnalysisUiTests.check_test_invalid_listed_sidecar_is_withheld_preserved_then_explicitly_superseded": {
       "file": "tests/test_project_analysis_ui.py",
-      "line": 1362,
+      "line": 1365,
       "checks": [
         "self.assertTrue(window._open_project(project_path))",
         "self.assertNotIn(key, window._applied_foreground_reference_masks)",
@@ -63076,7 +63150,7 @@
     },
     "tests.test_project_analysis_ui.ProjectAnalysisUiTests.check_test_restored_source_keeps_unavailable_record_explicit_sidecar_paths": {
       "file": "tests/test_project_analysis_ui.py",
-      "line": 1527,
+      "line": 1530,
       "checks": [
         "self.assertTrue(window._open_project(project_path))",
         "self.assertEqual(window._project_reference_sidecar_paths[key], explicit_reference.resolve())",
@@ -63095,7 +63169,7 @@
     },
     "tests.test_project_analysis_ui.ProjectAnalysisUiTests.check_test_corrected_shape_sidecar_waits_for_calibration_then_installs_or_withholds": {
       "file": "tests/test_project_analysis_ui.py",
-      "line": 1784,
+      "line": 1787,
       "checks": [
         "self.assertTrue(window._open_project(project_path))",
         "self.assertIn(key, window._pending_unbound_reference_bundles)",

@@ -40,12 +40,15 @@ def run_project(root, project_path, output_directory, *, crop_padding_px=None,
         from seedvision.reference_library.service import SpeciesLibraryService
         from seedvision.annotation.seed_traits import load_seed_trait_catalogue
         catalogue = load_seed_trait_catalogue(root/'config'/'traits.json')
-        vocabulary = catalogue.for_species(loaded.document.species or 'unknown')
         service = SpeciesLibraryService()
     reports = []
     native_cache = PipelineAnalysisCache()
     for item in loaded.images:
         with record_preflight(item.path, 'image', 'image_settings', terminal_directory):
+            # An image's own species wins; one without it follows the project's.
+            image_context = item.record.biological_context
+            vocabulary = catalogue.for_species(loaded.document.species or 'unknown'
+                if image_context is None else image_context.species_id)
             kwargs = production_settings(graph)
             kwargs.update(seed_trait_coat_patterns=vocabulary.coat_patterns,
                           seed_trait_conditions=catalogue.conditions)
@@ -78,7 +81,7 @@ def run_project(root, project_path, output_directory, *, crop_padding_px=None,
                 raise ValueError(library.error)
         with record_preflight(item.path, 'image', 'image_request', terminal_directory):
             enabled = frozenset(identifier for identifier,node in graph.nodes.items() if node.enabled)
-            kwargs.update(enabled_nodes=enabled,learning_root=root,species=loaded.document.species or 'unknown',
+            kwargs.update(enabled_nodes=enabled,learning_root=root,species=vocabulary.display_name,
                 biological_context=context,species_library=library.artifact,
                 library_shape_bank=None if library.artifact is None else library.artifact.dimensions_shape,
                 background_colour_enabled=graph.node('background_likelihood').parameters['background_colour_enabled'])

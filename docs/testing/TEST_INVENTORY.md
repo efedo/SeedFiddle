@@ -1061,26 +1061,26 @@ Source: [tests/test_image_list_controls.py](../../tests/test_image_list_controls
 
 ### ImageListControlsTests
 
-Fixtures: `setUpClass` at line 71.
+Fixtures: `setUpClass` at line 77.
 
 | Test method / source | Functionality exercised | Assertion evidence | Last full run |
 | --- | --- | --- | --- |
-| [`test_header_open_and_row_removal_preserve_files_and_unresolved_project_records`](../../tests/test_image_list_controls.py#L74) | header open and row removal preserve files and unresolved project records | `self.assertTrue(window._open_project(project)); self.assertNotIn(window.open_action, window.workflow_toolbar.actions())` | unrecorded / — |
-| [`test_removal_protects_edits_and_busy_work_then_clears_selected_native_display`](../../tests/test_image_list_controls.py#L141) | removal protects edits and busy work then clears selected native display | `self.assertFalse(window._remove_image(first)); busy.assert_called_once()` | unrecorded / — |
+| [`test_header_open_and_row_removal_preserve_files_and_unresolved_project_records`](../../tests/test_image_list_controls.py#L80) | header open and row removal preserve files and unresolved project records | `self.assertTrue(window._open_project(project)); self.assertNotIn(window.open_action, window.workflow_toolbar.actions())` | unrecorded / — |
+| [`test_removal_protects_edits_and_busy_work_then_clears_selected_native_display`](../../tests/test_image_list_controls.py#L147) | removal protects edits and busy work then clears selected native display | `self.assertFalse(window._remove_image(first)); busy.assert_called_once()` | unrecorded / — |
 ### ImageThumbnailLoaderTests
 
-Fixtures: `setUpClass` at line 210, `setUp` at line 213.
+Fixtures: `setUpClass` at line 216, `setUp` at line 219.
 
 | Test method / source | Functionality exercised | Assertion evidence | Last full run |
 | --- | --- | --- | --- |
-| [`test_background_decoding_and_cache`](../../tests/test_image_list_controls.py#L387) | background decoding and cache | `helper: tests.test_image_list_controls.ImageThumbnailLoaderTests.check_reader_fits_the_box_and_reports_what_it_cannot_read: self.assertEqual(error, '')` | unrecorded / — |
+| [`test_background_decoding_and_cache`](../../tests/test_image_list_controls.py#L393) | background decoding and cache | `helper: tests.test_image_list_controls.ImageThumbnailLoaderTests.check_reader_fits_the_box_and_reports_what_it_cannot_read: self.assertEqual(error, '')` | unrecorded / — |
 ### ImageListRowTests
 
-Fixtures: `setUpClass` at line 403, `setUp` at line 406.
+Fixtures: `setUpClass` at line 409, `setUp` at line 412.
 
 | Test method / source | Functionality exercised | Assertion evidence | Last full run |
 | --- | --- | --- | --- |
-| [`test_rows_show_thumbnails_status_and_the_open_image`](../../tests/test_image_list_controls.py#L803) | rows show thumbnails status and the open image | `helper: tests.test_image_list_controls.ImageListRowTests.check_every_row_shows_its_own_image_replacing_the_blank_document: self.assertEqual(self.list.count(), 4)` | unrecorded / — |
+| [`test_rows_show_thumbnails_status_and_the_open_image`](../../tests/test_image_list_controls.py#L918) | rows show thumbnails status and the open image | `helper: tests.test_image_list_controls.ImageListRowTests.check_every_row_shows_its_own_image_replacing_the_blank_document: self.assertEqual(self.list.count(), 4)` | unrecorded / — |
 
 ## tests.test_instance_annotation_tiling
 
@@ -3707,13 +3707,13 @@ Source: [tests/test_project_analysis_ui.py](../../tests/test_project_analysis_ui
 
 ### ProjectAnalysisUiTests
 
-Fixtures: `setUpClass` at line 22.
+Fixtures: `setUpClass` at line 23.
 
 | Test method / source | Functionality exercised | Assertion evidence | Last full run |
 | --- | --- | --- | --- |
-| [`test_workflow_lifecycle`](../../tests/test_project_analysis_ui.py#L2175) | 15 related ProjectAnalysisUiTests scenarios, each with private fixture state. | `helper: tests.test_project_analysis_ui.ProjectAnalysisUiTests.check_test_actions_and_profile_load_replace_only_portable_analysis_state: self.assertEqual(window.open_action.shortcut().toString(), QKeySequence(QKeySequence.StandardKey.Open).toString())` | unrecorded / — |
-| [`test_project_owned_annotations`](../../tests/test_project_analysis_ui.py#L2193) | 3 related ProjectAnalysisUiTests scenarios, each with private fixture state. | `helper: tests.test_project_analysis_ui.ProjectAnalysisUiTests.check_test_each_project_keeps_its_own_annotations_until_save: self.assertTrue(window._write_project(first))` | unrecorded / — |
-| [`test_validation_and_recovery`](../../tests/test_project_analysis_ui.py#L2199) | 9 related ProjectAnalysisUiTests scenarios, each with private fixture state. | `helper: tests.test_project_analysis_ui.ProjectAnalysisUiTests.check_test_incompatible_profile_is_rejected_before_confirmation_and_is_atomic: self.assertFalse(loaded)` | unrecorded / — |
+| [`test_workflow_lifecycle`](../../tests/test_project_analysis_ui.py#L2178) | 15 related ProjectAnalysisUiTests scenarios, each with private fixture state. | `helper: tests.test_project_analysis_ui.ProjectAnalysisUiTests.check_test_actions_and_profile_load_replace_only_portable_analysis_state: self.assertEqual(window.open_action.shortcut().toString(), QKeySequence(QKeySequence.StandardKey.Open).toString())` | unrecorded / — |
+| [`test_project_owned_annotations`](../../tests/test_project_analysis_ui.py#L2196) | 3 related ProjectAnalysisUiTests scenarios, each with private fixture state. | `helper: tests.test_project_analysis_ui.ProjectAnalysisUiTests.check_test_each_project_keeps_its_own_annotations_until_save: self.assertTrue(window._write_project(first))` | unrecorded / — |
+| [`test_validation_and_recovery`](../../tests/test_project_analysis_ui.py#L2202) | 9 related ProjectAnalysisUiTests scenarios, each with private fixture state. | `helper: tests.test_project_analysis_ui.ProjectAnalysisUiTests.check_test_incompatible_profile_is_rejected_before_confirmation_and_is_atomic: self.assertFalse(loaded)` | unrecorded / — |
 
 ## tests.test_project_correction_inputs
 
