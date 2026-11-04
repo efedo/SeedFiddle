@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from tests.review_fixtures import open_workspace_images
+from tests.review_fixtures import workspace_window
 from tests.review_fixtures import dispose_window
 
 import os
@@ -25,8 +25,6 @@ class InstanceContinuityUiTests(unittest.TestCase):
     def setUp(self) -> None:
         from PySide6.QtGui import QColor, QImage
 
-        from seedvision.ui.main_window import MainWindow
-
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
@@ -35,7 +33,7 @@ class InstanceContinuityUiTests(unittest.TestCase):
         image = QImage(80, 60, QImage.Format.Format_RGB32)
         image.fill(QColor("white"))
         self.assertTrue(image.save(str(image_path)))
-        self.window = open_workspace_images(MainWindow(self.root))
+        self.window = workspace_window(self.root)
         self.addCleanup(dispose_window, self.window)
         self.window.image_view._analysis_result = SimpleNamespace()
 

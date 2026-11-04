@@ -107,7 +107,10 @@ update. Test files are exempt as long as their numerical fixture definitions
 - Put new desktop-only tests in `cpu-qt` by adding them to `CPU_QT_TARGETS`;
   otherwise they run in `cuda`.
 - Use `tests.review_fixtures.isolated_window` for a main window with a private
-  project root, and `dispose_window` in cleanup.
+  project root, and `dispose_window` in cleanup. `workspace_window` keeps the real
+  application settings. Both share frozen factory templates instead of rebuilding
+  the catalogue for each window; a test of the catalogue itself passes
+  `reuse_templates=False` to `isolated_window`.
 - Group related scenarios with the `@functional_units` decorator and
   `self.scenario(...)`, as in `tests/test_gui_layout.py`; each scenario keeps its own
   fixture state.

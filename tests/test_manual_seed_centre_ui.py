@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from tests.review_fixtures import dispose_window, open_workspace_images
+from tests.review_fixtures import dispose_window, workspace_window
 from tests.functional_units import functional_units
 
 import os
@@ -182,13 +182,12 @@ class ManualSeedCentreUiTests(unittest.TestCase):
 
     def check_test_completed_edit_inverse_projects_autosaves_and_invalidates_only_dependents(self) -> None:
         from seedvision.persistence import ManualSeedCentreStore
-        from seedvision.ui.main_window import MainWindow
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             image_path = root / "images" / "capture.png"
             self._write_image(image_path, size=(80, 60))
-            window = open_workspace_images(MainWindow(root))
+            window = workspace_window(root)
             key = window._current_image_key()
             self.assertIsNotNone(key)
             assert key is not None
@@ -249,13 +248,12 @@ class ManualSeedCentreUiTests(unittest.TestCase):
         from PySide6.QtTest import QTest
 
         from seedvision.persistence import ManualSeedCentreStore
-        from seedvision.ui.main_window import MainWindow
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             image_path = root / "images" / "capture.png"
             self._write_image(image_path)
-            window = open_workspace_images(MainWindow(root))
+            window = workspace_window(root)
             key = window._current_image_key()
             self.assertIsNotNone(key)
             assert key is not None
@@ -320,13 +318,13 @@ class ManualSeedCentreUiTests(unittest.TestCase):
             dispose_window(window)
 
     def check_test_autosave_failure_keeps_the_edit_and_still_recomputes(self) -> None:
-        from seedvision.ui.main_window import MainWindow, QMessageBox
+        from seedvision.ui.main_window import QMessageBox
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             image_path = root / "images" / "capture.png"
             self._write_image(image_path)
-            window = open_workspace_images(MainWindow(root))
+            window = workspace_window(root)
             key = window._current_image_key()
             self.assertIsNotNone(key)
             assert key is not None
@@ -362,15 +360,13 @@ class ManualSeedCentreUiTests(unittest.TestCase):
             dispose_window(window)
 
     def check_test_running_node_switch_and_image_switch_stop_qt_edit_mode(self) -> None:
-        from seedvision.ui.main_window import MainWindow
-
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             first = root / "images" / "a.png"
             second = root / "images" / "b.png"
             self._write_image(first)
             self._write_image(second)
-            window = open_workspace_images(MainWindow(root))
+            window = workspace_window(root)
             key = window._current_image_key()
             self.assertIsNotNone(key)
             assert key is not None

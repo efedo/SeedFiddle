@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from tests.review_fixtures import open_workspace_images
+from tests.review_fixtures import workspace_window
 from tests.catalogue_fixtures import CatalogueTestCase
 
 from tests.functional_units import functional_units
@@ -113,9 +113,7 @@ class PipelineCanvasTests(CatalogueTestCase):
         canvas.close()
 
     def check_test_current_image_name_is_in_pane_and_list_selection_tracks_it(self) -> None:
-        from seedvision.ui.main_window import MainWindow
-
-        window = open_workspace_images(MainWindow(ROOT))
+        window = workspace_window(ROOT)
         editable_copy(window)
         path = window.image_view.image_path
         self.assertIsNotNone(path)
@@ -141,9 +139,8 @@ class PipelineCanvasTests(CatalogueTestCase):
             ReferenceEdgeFitScore,
         )
         from seedvision.segmentation import PipelineAnalysisCache
-        from seedvision.ui.main_window import MainWindow
 
-        window = open_workspace_images(MainWindow(ROOT))
+        window = workspace_window(ROOT)
         editable_copy(window)
         key = window._current_image_key()
         if key is None:
@@ -200,7 +197,6 @@ class PipelineCanvasTests(CatalogueTestCase):
         from time import monotonic
 
         from seedvision.ui.main_window import (
-            MainWindow,
             _AnalysisActivity,
             _path_identity,
         )
@@ -220,7 +216,7 @@ class PipelineCanvasTests(CatalogueTestCase):
             def cancellation_requested(self) -> bool:
                 return self.cancelled
 
-        window = open_workspace_images(MainWindow(ROOT))
+        window = workspace_window(ROOT)
         editable_copy(window)
         previous_path = window.image_view.image_path
         if previous_path is None:
@@ -326,7 +322,7 @@ class PipelineCanvasTests(CatalogueTestCase):
         from unittest.mock import patch
 
         from seedvision.segmentation import PipelineAnalysisCache
-        from seedvision.ui.main_window import MainWindow, _path_identity
+        from seedvision.ui.main_window import _path_identity
 
         class FakeTask:
             def __init__(self, path: Path) -> None:
@@ -340,7 +336,7 @@ class PipelineCanvasTests(CatalogueTestCase):
             def cancellation_requested(self) -> bool:
                 return self.cancelled
 
-        window = open_workspace_images(MainWindow(ROOT))
+        window = workspace_window(ROOT)
         editable_copy(window)
         previous_path = window.image_view.image_path
         if previous_path is None:
@@ -1073,12 +1069,11 @@ class PipelineCanvasTests(CatalogueTestCase):
 
     def check_test_worker_progress_turns_only_the_current_revision_node_green(self) -> None:
         from seedvision.pipeline import NodeStatus
-        from seedvision.ui.main_window import MainWindow
 
         path = ROOT / "images" / "IMG_9670c.JPG"
         if not path.exists():
             self.skipTest("Pilot image is not present")
-        window = open_workspace_images(MainWindow(ROOT))
+        window = workspace_window(ROOT)
         editable_copy(window)
         succeeded, error = window.image_view.load_image(path)
         self.assertTrue(succeeded, error)
@@ -1124,9 +1119,7 @@ class PipelineCanvasTests(CatalogueTestCase):
         self.assertTrue(banner.isHidden())
 
     def check_test_project_node_displays_live_project_image_and_annotation_information(self) -> None:
-        from seedvision.ui.main_window import MainWindow
-
-        window = open_workspace_images(MainWindow(ROOT))
+        window = workspace_window(ROOT)
         editable_copy(window)
         window.pipeline_canvas.select_node("project")
         self.application.processEvents()
@@ -2309,9 +2302,7 @@ class PipelineCanvasTests(CatalogueTestCase):
         import numpy as np
         from PySide6.QtCore import QPointF
 
-        from seedvision.ui.main_window import MainWindow
-
-        window = open_workspace_images(MainWindow(ROOT))
+        window = workspace_window(ROOT)
         editable_copy(window)
         key = window._current_image_key()
         if key is None or window.image_view.image_size is None:
@@ -2509,7 +2500,7 @@ class PipelineCanvasTests(CatalogueTestCase):
         with patch.object(
             MainWindow, "_auto_load_reference_regions", return_value=False
         ):
-            window = open_workspace_images(MainWindow(ROOT))
+            window = workspace_window(ROOT)
             editable_copy(window)
         key = window._current_image_key()
         if key is None:
@@ -2559,7 +2550,7 @@ class PipelineCanvasTests(CatalogueTestCase):
         with patch.object(
             MainWindow, "_auto_load_reference_regions", return_value=False
         ):
-            window = open_workspace_images(MainWindow(ROOT))
+            window = workspace_window(ROOT)
             editable_copy(window)
         key = window._current_image_key()
         if key is None:
@@ -2616,7 +2607,6 @@ class PipelineCanvasTests(CatalogueTestCase):
 
         from seedvision.pipeline import NodeStatus
         from seedvision.segmentation import PipelineAnalysisCache
-        from seedvision.ui.main_window import MainWindow
         warning_patcher = patch.object(
             QMessageBox,
             "warning",
@@ -2624,7 +2614,7 @@ class PipelineCanvasTests(CatalogueTestCase):
         )
         warning_patcher.start()
         self.addCleanup(warning_patcher.stop)
-        window = open_workspace_images(MainWindow(ROOT))
+        window = workspace_window(ROOT)
         editable_copy(window)
         path = ROOT / "images" / "IMG_0002c.JPG"
         key = str(path.resolve()).casefold()
@@ -4076,9 +4066,8 @@ class PipelineCanvasTests(CatalogueTestCase):
         import numpy as np
 
         from seedvision.pipeline import NodeStatus
-        from seedvision.ui.main_window import MainWindow
 
-        window = open_workspace_images(MainWindow(ROOT))
+        window = workspace_window(ROOT)
         editable_copy(window)
         # This controller test uses the real repository fixtures. Persistence is
         # covered against an isolated project root in test_reference_persistence.
@@ -4184,9 +4173,7 @@ class PipelineCanvasTests(CatalogueTestCase):
     def check_test_instance_annotations_apply_separately_from_reference_masks(self) -> None:
         import numpy as np
 
-        from seedvision.ui.main_window import MainWindow
-
-        window = open_workspace_images(MainWindow(ROOT))
+        window = workspace_window(ROOT)
         editable_copy(window)
         # Do not let this controller test overwrite a developer's local archive.
         window._persist_applied_reference_regions = (
@@ -4549,7 +4536,6 @@ class PipelineCanvasTests(CatalogueTestCase):
         from seedvision.pipeline import NodeStatus
         from seedvision.segmentation import analyze_path
         from seedvision.ui.image_view import ImageView
-        from seedvision.ui.main_window import MainWindow
 
         path = ROOT / "images" / "IMG_9670c.JPG"
         if not path.exists():
@@ -4827,7 +4813,7 @@ class PipelineCanvasTests(CatalogueTestCase):
         self.assertEqual(len(view._overlay_items), 0)
         view.close()
 
-        window = open_workspace_images(MainWindow(ROOT))
+        window = workspace_window(ROOT)
         editable_copy(window)
         window._mark_analysis_complete(result)
         for node_id in (

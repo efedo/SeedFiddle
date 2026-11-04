@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from tests.review_fixtures import open_workspace_images
+from tests.review_fixtures import workspace_window
 from tests.functional_units import functional_units
 
 from tests.review_fixtures import dispose_window
@@ -29,8 +29,6 @@ class InstanceMaskImportUiTests(unittest.TestCase):
     def setUp(self) -> None:
         from PySide6.QtGui import QColor, QImage
 
-        from seedvision.ui.main_window import MainWindow
-
         self.temporary = TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
@@ -39,7 +37,7 @@ class InstanceMaskImportUiTests(unittest.TestCase):
         image = QImage(80, 60, QImage.Format.Format_RGB888)
         image.fill(QColor("#8b927f"))
         self.assertTrue(image.save(str(self.image_path)))
-        self.window = open_workspace_images(MainWindow(self.root))
+        self.window = workspace_window(self.root)
         self.addCleanup(dispose_window, self.window)
         self.window.image_view.set_overlay_mode("none")
         self.result = SimpleNamespace(

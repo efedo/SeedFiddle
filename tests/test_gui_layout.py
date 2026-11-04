@@ -408,8 +408,34 @@ class GuiLayoutTests(unittest.TestCase):
         self.application.processEvents()
         self.assertTrue(window.overlay_button.isVisible())
 
+    def check_test_window_fixtures_share_templates_and_opting_out_builds_them(self) -> None:
+        from unittest.mock import patch
+
+        from seedvision.pipeline import workflows
+        from tests.review_fixtures import (_workflow_template_key, _workflow_templates, dispose_window,
+                                           isolated_window, shared_workflow_templates, workspace_window)
+
+        root = Path(self._directory.name)
+        shared, identities = _workflow_templates(_workflow_template_key(), workflows.workflow_catalogue)
+        self.assertIs(self.window.pipeline_workflow._all_templates, shared)
+        window = workspace_window(root)
+        self.addCleanup(dispose_window, window)
+        self.assertIs(window.pipeline_workflow._all_templates, shared)
+        # Every other window fixture shares; this one keeps the real startup build covered.
+        real = isolated_window(root, reuse_templates=False, images=False,
+                               settings_path=root / "real-startup-settings.ini")
+        self.addCleanup(dispose_window, real)
+        self.assertIsNot(real.pipeline_workflow._all_templates, shared)
+        self.assertEqual(tuple(recipe.to_json() for recipe in real.pipeline_workflow._all_templates), identities)
+        with patch("tests.review_fixtures._workflow_templates", return_value=(shared, ("changed",))):
+            with self.assertRaisesRegex(AssertionError, "changed before construction"):
+                with shared_workflow_templates():
+                    pass
+        with patch.object(workflows, "workflow_catalogue") as mocked, shared_workflow_templates():
+            self.assertIs(workflows.workflow_catalogue, mocked)
+
     def test_workflow_lifecycle(self):
-        """18 related GuiLayoutTests scenarios, each with private fixture state."""
+        """19 related GuiLayoutTests scenarios, each with private fixture state."""
         self.scenario(self.check_test_every_shortcut_is_unique)
         self.scenario(self.check_test_toolbar_keeps_run_view_and_annotation_controls_only)
         self.scenario(self.check_test_menus_group_commands_and_end_file_with_exit)
@@ -428,6 +454,7 @@ class GuiLayoutTests(unittest.TestCase):
         self.scenario(self.check_test_toolbar_closes_up_after_the_overlay_controls_left)
         self.scenario(self.check_test_image_header_never_overlaps_at_narrow_widths)
         self.scenario(self.check_test_overlay_controls_follow_the_showing_display)
+        self.scenario(self.check_test_window_fixtures_share_templates_and_opting_out_builds_them)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from tests.review_fixtures import open_workspace_images
+from tests.review_fixtures import workspace_window
 from tests.catalogue_fixtures import CatalogueTestCase
 
 from tests.functional_units import functional_units
@@ -318,9 +318,7 @@ class ReferenceRegionMainWindowTests(CatalogueTestCase):
             raise RuntimeError(f"Could not write test image {path}.")
 
     def _save_complete_snapshot(self, root: Path, image_path: Path) -> None:
-        from seedvision.ui.main_window import MainWindow
-
-        window = open_workspace_images(MainWindow(root))
+        window = workspace_window(root)
         key = window._current_image_key()
         self.assertIsNotNone(key)
         assert key is not None
@@ -354,15 +352,13 @@ class ReferenceRegionMainWindowTests(CatalogueTestCase):
         dispose_window(window)
 
     def check_test_saved_snapshot_automatically_loads_as_immutable_applied_state(self) -> None:
-        from seedvision.ui.main_window import MainWindow
-
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             image_path = root / "images" / "capture.png"
             self._write_image(image_path, "#38684a")
             self._save_complete_snapshot(root, image_path)
 
-            restored = open_workspace_images(MainWindow(root))
+            restored = workspace_window(root)
             install_test_frame(restored)
             key = restored._current_image_key()
             self.assertIsNotNone(key)
@@ -412,7 +408,7 @@ class ReferenceRegionMainWindowTests(CatalogueTestCase):
     def check_test_loose_corrected_shape_is_deferred_instead_of_rejected_against_raw_image(self) -> None:
         from types import SimpleNamespace
 
-        from seedvision.ui.main_window import MainWindow, _path_identity
+        from seedvision.ui.main_window import _path_identity
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -429,7 +425,7 @@ class ReferenceRegionMainWindowTests(CatalogueTestCase):
             )
 
             with patch("seedvision.ui.main_window.QMessageBox.warning") as warning:
-                window = open_workspace_images(MainWindow(root))
+                window = workspace_window(root)
             key = _path_identity(image_path)
             self.assertIn(key, window._pending_unbound_reference_bundles)
             self.assertNotIn(key, window._applied_foreground_reference_masks)
@@ -451,8 +447,6 @@ class ReferenceRegionMainWindowTests(CatalogueTestCase):
             dispose_window(window)
 
     def check_test_switching_images_keeps_newer_unsaved_in_memory_applied_state(self) -> None:
-        from seedvision.ui.main_window import MainWindow
-
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             first_path = root / "images" / "a.png"
@@ -465,7 +459,7 @@ class ReferenceRegionMainWindowTests(CatalogueTestCase):
                 first_path,
                 ReferenceRegionBundle(source_to_corrected=np.eye(3),shape=(48, 64), background=old),
             )
-            window = open_workspace_images(MainWindow(root))
+            window = workspace_window(root)
             key = window._current_image_key()
             self.assertIsNotNone(key)
             assert key is not None
@@ -489,8 +483,6 @@ class ReferenceRegionMainWindowTests(CatalogueTestCase):
             dispose_window(window)
 
     def check_test_association_panel_explains_pending_corrected_seed_annotations(self) -> None:
-        from seedvision.ui.main_window import MainWindow
-
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             image_path = root / "images" / "capture.png"
@@ -516,7 +508,7 @@ class ReferenceRegionMainWindowTests(CatalogueTestCase):
                 ),
             )
 
-            window = open_workspace_images(MainWindow(root))
+            window = workspace_window(root)
             key = window._current_image_key()
             self.assertIsNotNone(key)
             assert key is not None
@@ -559,14 +551,12 @@ class ReferenceRegionMainWindowTests(CatalogueTestCase):
             dispose_window(window)
 
     def check_test_empty_applied_snapshot_overwrites_an_older_nonempty_archive(self) -> None:
-        from seedvision.ui.main_window import MainWindow
-
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             image_path = root / "images" / "capture.png"
             self._write_image(image_path, "#38684a")
             self._save_complete_snapshot(root, image_path)
-            window = open_workspace_images(MainWindow(root))
+            window = workspace_window(root)
             key = window._current_image_key()
             self.assertIsNotNone(key)
             assert key is not None
@@ -601,8 +591,6 @@ class ReferenceRegionMainWindowTests(CatalogueTestCase):
             dispose_window(window)
 
     def check_test_modified_image_warns_and_loads_no_saved_regions(self) -> None:
-        from seedvision.ui.main_window import MainWindow
-
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             image_path = root / "images" / "capture.png"
@@ -611,7 +599,7 @@ class ReferenceRegionMainWindowTests(CatalogueTestCase):
             self._write_image(image_path, "#8b4038")
 
             with patch("seedvision.ui.main_window.QMessageBox.warning") as warning:
-                rejected = open_workspace_images(MainWindow(root))
+                rejected = workspace_window(root)
             key = rejected._current_image_key()
             self.assertIsNotNone(key)
             assert key is not None
@@ -623,13 +611,11 @@ class ReferenceRegionMainWindowTests(CatalogueTestCase):
             dispose_window(rejected)
 
     def check_test_dirty_draft_blocks_save_without_replacing_archive(self) -> None:
-        from seedvision.ui.main_window import MainWindow
-
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             image_path = root / "images" / "capture.png"
             self._write_image(image_path, "#38684a")
-            window = open_workspace_images(MainWindow(root))
+            window = workspace_window(root)
             key = window._current_image_key()
             self.assertIsNotNone(key)
             assert key is not None
@@ -642,13 +628,11 @@ class ReferenceRegionMainWindowTests(CatalogueTestCase):
             dispose_window(window)
 
     def check_test_applying_seed_instances_automatically_saves_and_reloads_them(self) -> None:
-        from seedvision.ui.main_window import MainWindow
-
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             image_path = root / "images" / "capture.png"
             self._write_image(image_path, "#38684a")
-            window = open_workspace_images(MainWindow(root))
+            window = workspace_window(root)
             key = window._current_image_key()
             self.assertIsNotNone(key)
             assert key is not None
@@ -678,7 +662,7 @@ class ReferenceRegionMainWindowTests(CatalogueTestCase):
             self.assertEqual(loaded.annotation_origin, "manual")
             dispose_window(window)
 
-            restored = open_workspace_images(MainWindow(root))
+            restored = workspace_window(root)
             install_test_frame(restored)
             restored_key = restored._current_image_key()
             self.assertIsNotNone(restored_key)
@@ -691,13 +675,11 @@ class ReferenceRegionMainWindowTests(CatalogueTestCase):
             dispose_window(restored)
 
     def check_test_seed_instance_autosave_failure_warns_but_keeps_applied_state(self) -> None:
-        from seedvision.ui.main_window import MainWindow
-
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             image_path = root / "images" / "capture.png"
             self._write_image(image_path, "#38684a")
-            window = open_workspace_images(MainWindow(root))
+            window = workspace_window(root)
             key = window._current_image_key()
             self.assertIsNotNone(key)
             assert key is not None
