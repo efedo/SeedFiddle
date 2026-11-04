@@ -79,6 +79,7 @@ from seedvision.ui.results import ResultsController
 from seedvision.ui.persistence_jobs import ResponsiveReferenceRegionStore, run_persistence
 from seedvision.ui.annotation_panel import AnnotationPanel, CurrentPageStack
 from seedvision.ui.annotation_transfer import AnnotationTransferController
+from seedvision.ui.deferred import run_soon
 from seedvision.diagnostics import (
     LOGGER,
     current_crash_log_path,
@@ -15331,7 +15332,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         super().showEvent(event)
         if not getattr(self, '_initial_pipeline_focus_scheduled', False):
             self._initial_pipeline_focus_scheduled = True
-            QTimer.singleShot(0, self._focus_initial_pipeline_node)
+            run_soon(self, self._focus_initial_pipeline_node)
 
     def _focus_initial_pipeline_node(self) -> None:
         selected = self.pipeline_canvas.scene().selectedItems()

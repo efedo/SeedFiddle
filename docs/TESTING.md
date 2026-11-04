@@ -49,6 +49,10 @@ cannot produce a pass.
 - **Time budget is advisory.** The report records whether the run stayed under
   1,000 units and 900 seconds and prints a warning if not; it does not change the
   verdict.
+- **Windows are deleted between tests.** Closing a window only hides it, and
+  connections to its own methods keep it alive. `tests/functional_units.py` therefore
+  deletes the parentless widgets each scenario and test leaves behind. Windows a
+  class fixture opens last until that class ends.
 - **Skips.** Three are expected on Windows: the opt-in fill-image diagnostic
   (`SEEDFIDDLE_RUN_FILL_IMAGE_DIAGNOSTIC=1`), a case-sensitive filesystem check
   and a directory-symlink privilege check.
@@ -111,7 +115,15 @@ update. Test files are exempt as long as their numerical fixture definitions
 - Group related scenarios with the `@functional_units` decorator and
   `self.scenario(...)`, as in `tests/test_gui_layout.py`; each scenario keeps its own
   fixture state.
+- A window that must outlive one test belongs in `setUpClass`; any other window a
+  test leaves open is deleted when it ends.
 - Poll for asynchronous Qt state with a bounded loop rather than a fixed sleep.
+- Avoid raising from `QTimer.singleShot(0, callback)`, in tests as in application
+  code, which uses `seedvision.ui.deferred.run_soon`. Inside `processEvents()` or a
+  static dialog, PySide stores that exception, and graphics items painting for the
+  first time can then crash the process ("pure virtual method
+  'QGraphicsObject.paint'", then an access violation or abort). A window deleted
+  before its timer fires raises in exactly this way.
 - `tests/test_ui_text_limits.py` keeps command labels at 45 characters or fewer and
   tooltips at 450 or fewer.
 

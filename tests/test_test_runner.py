@@ -238,6 +238,55 @@ class TestRunnerTests(unittest.TestCase):
         self.assertEqual([row['fixture'] for row in result.fixture_durations], ['setUpClass','tearDownClass/cleanups'])
         self.assertTrue(all(row['seconds'] >= 0 for row in result.fixture_durations))
 
+    def test_windows_left_by_a_test_are_deleted_but_class_fixture_windows_last_the_class(self):
+        import os
+        os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+        from PySide6.QtCore import QTimer
+        from PySide6.QtWidgets import QApplication, QWidget
+        from shiboken6 import isValid
+        from tests.functional_units import functional_units
+        application = QApplication.instance() or QApplication([])
+        seen = {}
+        def self_retaining_window(name):
+            # The timer's connection keeps a closed window alive with no Python
+            # reference left, which is what leaks a real MainWindow.
+            window = seen[name] = QWidget()
+            seen[name + '-child'] = QWidget(window)
+            QTimer(window).timeout.connect(lambda: window)
+            window.close()
+        class Witness(unittest.TestCase):
+            @classmethod
+            def setUpClass(cls):
+                self_retaining_window('class')
+            def test_a(self):
+                self_retaining_window('a')
+            def test_b(self):
+                self.assertTrue(isValid(seen['class']))
+                self.assertFalse(isValid(seen['a']))
+                self.assertFalse(isValid(seen['a-child']))
+                self_retaining_window('b')
+        @functional_units
+        class Later(unittest.TestCase):
+            def check_first(self):
+                self.assertFalse(isValid(seen['class']))
+                self.assertFalse(isValid(seen['b']))
+                self_retaining_window('first')
+            def check_second(self):
+                self.assertFalse(isValid(seen['first']))
+                pending = seen['pending'] = QWidget()
+                pending.deleteLater()
+                application.processEvents()
+                self.assertTrue(isValid(pending))
+            def check_third(self):
+                self.assertFalse(isValid(seen['pending']))
+            def test_unit(self):
+                self.scenario(self.check_first)
+                self.scenario(self.check_second)
+                self.scenario(self.check_third)
+        suite = TimedSuite([Witness('test_a'), Witness('test_b'), Later('test_unit')])
+        result = unittest.TextTestRunner(stream=io.StringIO()).run(suite)
+        self.assertTrue(result.wasSuccessful(), result.failures + result.errors)
+
     def test_fixture_bundle_checks_hashes_and_never_overwrites_reviewed_files(self):
         from hashlib import sha256
         with tempfile.TemporaryDirectory() as directory:

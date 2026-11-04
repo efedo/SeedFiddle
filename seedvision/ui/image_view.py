@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
 )
 
 from seedvision.ui.canvas_controls import style_canvas_control_bar
+from seedvision.ui.deferred import run_soon
 from seedvision.annotation.geometry import annotation_centres, outward_hilum_direction
 from seedvision.visualization import ADVANCED_OVERLAY_LABELS
 from seedvision.resources import release_host_caches
@@ -1196,7 +1197,7 @@ class ImageView(QGraphicsView):
     def showEvent(self, event) -> None:  # noqa: N802 - Qt override
         super().showEvent(event)
         if self._fit_pending:
-            QTimer.singleShot(0, self._finish_pending_fit)
+            run_soon(self, self._finish_pending_fit)
 
     def _finish_pending_fit(self) -> None:
         if not self._fit_pending:
@@ -1886,7 +1887,7 @@ class ImageView(QGraphicsView):
         self._overlay_mode = mode
         self._render_analysis()
         if was_full_pane or mode in full_pane_modes:
-            QTimer.singleShot(0, self.fit_image)
+            run_soon(self, self.fit_image)
 
     def set_colour_gamut_parameters(
         self, class_name: str, parameters: dict[str, object]

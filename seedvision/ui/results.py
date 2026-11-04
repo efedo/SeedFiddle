@@ -2,12 +2,13 @@
 from dataclasses import asdict
 from html import escape
 import json
-from PySide6.QtCore import Qt, QObject, QRunnable, Signal, QTimer, QByteArray, QPoint, QSignalBlocker
+from PySide6.QtCore import Qt, QObject, QRunnable, Signal, QByteArray, QPoint, QSignalBlocker
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QLabel, QTableWidget, QTableWidgetItem,
     QComboBox, QLineEdit, QPushButton, QFileDialog, QMessageBox, QProgressDialog, QInputDialog, QPlainTextEdit)
 from seedvision.export.results import result_report, export_report
 from seedvision.persistence.analysis_settings import analysis_settings_profile_from_graph, analysis_settings_profile_to_payload
+from seedvision.ui.deferred import run_soon
 
 
 def _trait_presentation(row, report):
@@ -259,7 +260,7 @@ class ResultsController:
             QMessageBox.warning(self,'Restore failed',str(error))
 
     def _ensure_workspace_visible(self):
-        QTimer.singleShot(0,self._restore_empty_workspace)
+        run_soon(self,self._restore_empty_workspace)
 
     def _restore_empty_workspace(self):
         if not self.image_workspace_action.isChecked() and not self.pipeline_workspace_action.isChecked():

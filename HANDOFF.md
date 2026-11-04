@@ -100,6 +100,12 @@ old `test-runs/` and `test-temp/` directories and never touches the list above.
   `_project_reference_sidecar_paths` / `_project_manual_centre_sidecar_paths`, not
   by constructing a store on the workspace root. Only untitled projects use the
   shared `projects/` folders.
+- **Deferred callbacks.** Use `seedvision.ui.deferred.run_soon(owner, callback)`,
+  not `QTimer.singleShot`; `tests/test_deferred_callbacks.py` enforces this under
+  `seedvision/`. `singleShot(0, callback)` outlives its target, and an exception it
+  raises during a static dialog such as `QMessageBox.warning()` can crash the
+  process. The context overload `singleShot(0, owner, callback)` loses the exception
+  silently instead.
 - **Non-ASCII paths.** `cv2.imread` fails on them on Windows; always use
   `seedvision.persistence.image_decoding.read_image`.
 - **Offscreen Qt screenshots** render boxes unless `QT_QPA_FONTDIR=C:/Windows/Fonts`.
