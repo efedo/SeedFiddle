@@ -235,6 +235,8 @@ class NativePreflightOutcomeTests(unittest.TestCase):
         cleanup.assert_not_called()
         self.assertIs(self.window._active_tasks[self.key], replacement)
         self.assertNotIn(self.key, self.window._image_run_outcomes)
-        self.assertIn(project.payload['outcome_revision'], self.window._run_outcome_history)
-        self.assertIn(outcome.payload['outcome_revision'], self.window._run_outcome_history)
+        saved = {runs.load_run_outcome(path.read_text(encoding='utf-8'))['outcome_revision']
+                 for path in (self.root / 'artifacts' / 'run-outcomes').glob('*/run-outcome.json')}
+        self.assertIn(project.payload['outcome_revision'], saved)
+        self.assertIn(outcome.payload['outcome_revision'], saved)
         self.window._active_tasks.clear()

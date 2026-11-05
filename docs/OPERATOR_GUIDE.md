@@ -54,7 +54,7 @@ optional Cellpose-SAM package when it is missing (see [Cellpose-SAM](#cellpose-s
 | Area | Purpose |
 |---|---|
 | Toolbar | **Run pipeline**, **Stop**, **Image** / **Pipeline** view toggles, **HSV value** for colour-gamut overlays, and **Materials** / **Seeds** annotation modes with their visibility and opacity. |
-| Images (left) | Images in the project, each with a thumbnail. The filled row is the image open in the viewer. A click or arrow key only moves the outlined list cursor; double-click or `Enter` opens that image. A badge on the thumbnail shows that an image is computing, computed, or needs attention; no badge means analysis is still required. Each row also names its image's species: the species saved for that image, otherwise the project's **Species** selector. It sits under the name in a narrow panel, abbreviating the genus if it must (*L. mexicanus*), and becomes its own column once the panel is dragged to about 300 pixels wide. Switch it off with the **Species** button above the list or the list's right-click menu; the choice is remembered for the next session and is not part of the project. Hover for the text status and the full species. A crossed thumbnail means the file could not be read, and its tooltip gives the reason. The ✕ on hover removes an image from the project. |
+| Images (left) | Images in the project, each with a thumbnail. The filled row is the image open in the viewer. A click or arrow key only moves the outlined list cursor; double-click or `Enter` opens that image. A badge on the thumbnail shows that an image is computing, computed, or needs attention; no badge means analysis is still required. Each row also names its image's species: the species saved for that image, otherwise the project's, and *Unknown* until one is chosen. It sits under the name in a narrow panel, abbreviating the genus if it must (*L. mexicanus*), and becomes its own column once the panel is dragged to about 300 pixels wide. Hover for the text status and the full species. The **+** button above the list adds images. A crossed thumbnail means the file could not be read, and its tooltip gives the reason. The ✕ on hover removes an image from the project. |
 | Image view | The selected overlay on the current image. Drag to pan, scroll to zoom. Its dark header holds **Overlay** and **Overlay opacity** on the left, the file name, and the zoom buttons on the right. |
 | Pipeline view | The node graph for the current image. Both views are visible by default; `Ctrl+1` and `Ctrl+2` toggle each, `Ctrl+3` shows both. |
 | Reference annotation panel | Floats over the image while **Materials** or **Seeds** is active; drag its title to move it and the corner grip to resize it. |
@@ -71,12 +71,13 @@ of this guide. Splitter sizes and the annotation panel position are remembered.
   project** (`Ctrl+S`) and **Save project as…**. The eight most recent projects are
   listed by number near the bottom of the **File** menu; choose one to open it
   again. Same-named projects show their folder, and hovering shows the full path.
-- **File → Open images…** (`Ctrl+O`) adds images to the project. The **Image** tab
+- **File → Open images…** (`Ctrl+O`) or the **+** button above the Images list adds
+  images to the project. The **Image** tab
   shows the open image's verified species, and changing it changes that image only.
   An image with no species of its own follows the project's. The first species you
   choose becomes the project's, so a one-species project sets it once; with no image
-  open, the selector sets the project's. Species starts *Unknown / unassigned* and is
-  never inferred.
+  open, the selector sets the project's. Species starts *Unknown* and is never
+  inferred.
 - For an immutable revision use **File → Snapshots → Create snapshot…**: it copies
   and verifies images, annotations, manual centres, enabled model checkpoints and
   the pinned species library, and writes its completion index last. **Create
@@ -138,22 +139,39 @@ Images list choose the same current image.
 ### Choosing and locking
 
 Choose a pipeline from the **Pipeline** list at the top of the Pipeline view. It
-holds every pipeline under headings: **Seed Fiddle** (Default seed analysis,
-experimental core recovery), **Seed analysis** (the PlantCV seed workflows, the
+offers **Procedural seed analysis**, **Cellpose seed analysis**, the PlantCV Otsu
+seed workflow, the calibrated Otsu seed analysis and the SMPTS paper reconstruction.
+Your own editable copies are listed under **Saved in this project**.
+
+**Procedural seed analysis** separates seeds from material, edge and shape evidence
+built from your painted references, and includes the optional U-Net and StarDist
+nodes. **Cellpose seed analysis** holds [Cellpose-SAM](#cellpose-sam) and only the
+nodes it needs: inputs, deskew and colour balance, ruler, layout, and seed scale. To
+compare both on one graph, make an editable copy of Procedural seed analysis and add
+Cellpose-SAM from **Add node**.
+
+**Analysis > Settings > Show all default pipelines** adds the rest, and the list
+then holds every pipeline under headings: **Seed Fiddle** (Procedural seed analysis,
+Cellpose seed analysis, experimental core recovery), **Seed analysis** (the PlantCV seed workflows, the
 calibrated seed analyses and the SMPTS paper reconstruction), **Thresholds and
 classifiers** (extended thresholds, Naive Bayes, K-means) and **Colour
-correction**. Your own editable copies are listed under **Saved in this project**.
+correction**. It is off until you turn it on, and the application remembers it. A
+project saved on a pipeline outside the short list still opens on that pipeline with
+the setting off, and the nodes of all pipelines stay available from Add node.
+
 Hover over a factory pipeline in the list for its description and evidence caveats,
 such as an original source being unavailable.
 
 Choosing a factory pipeline loads a fresh copy and arranges its nodes
 automatically. Factory pipelines are never overwritten; re-selecting one restores
 its original values and layout. A project or pipeline file opens with the layout it
-was saved with. Returning to Default seed analysis from a factory pipeline keeps the
-project's own graph, including its layout; leaving an editable copy of it restores
-the factory values and layout, and the edits stay in the copy.
+was saved with. Returning from a factory pipeline to the Procedural or Cellpose seed
+analysis it was opened from keeps the project's own graph, including its layout;
+changing between those two, or leaving an editable copy of one, restores the factory
+values and layout, and the edits stay in the copy. Changing between them clears the
+open result until you run again; nodes they share stay calculated.
 
-Default pipelines (Default seed analysis and the factory pipelines) are always locked
+Default pipelines (Procedural seed analysis, Cellpose seed analysis and the factory pipelines) are always locked
 and cannot be renamed. Running, inspecting outputs, arranging nodes and choosing
 backends work. Parameter editors, wiring and the **Enabled** checkbox are read-only,
 and the **Node** tab says so and links to making a copy.
@@ -174,10 +192,16 @@ and reopens on the one you were using; choose one in the list to return to it.
 ### Running
 
 - **Run pipeline** (`Ctrl+R`) calculates the current image; **Stop** (`Ctrl+.`)
-  takes effect before the next GPU operation, or within the long CPU-only steps, and
-  discards that image's partial outputs.
-  Right-click a node for **Run to node**, which runs it and its enabled upstream
-  nodes only. On a disabled node it reads **Enable and run to node** and enables the
+  takes effect before the next GPU operation, or within the long CPU-only steps.
+  The image's finished node results are kept, so the next run recalculates only what
+  was still owed.
+  Right-click a node for **Run to node**, which runs that node, plus any enabled
+  upstream node that has changed or has no result yet. Other nodes keep the results
+  they have. Nodes that depend on a changed node show *Out of date*, and the next
+  **Run pipeline** recalculates them. If a change moves the dish crop, the kept
+  results no longer line up, so the core stages run on and every other node waits
+  for the next **Run pipeline**.
+  On a disabled node it reads **Enable and run to node** and enables the
   node first; if the node cannot be enabled (a missing optional package or
   checkpoint, an unconnected input or a disabled upstream node) a message says why.
   On a default pipeline it offers an editable copy first.
@@ -394,13 +418,12 @@ Open **Results…** (`Ctrl+Shift+E`, or the button in the right panel).
 - The **Predicted trait** column shows a stored trait class or an abstention reason;
   see [seed-trait training](TRAIT_CLASSIFIER_TRAINING.md).
 
-**Analysis → Run history…** lists terminal records of failed, cancelled and
-completed runs, which can be reviewed, acknowledged or exported as JSON.
+On an image whose run did not complete, **Results…** says how the run ended and why.
 
 *Unavailable* means mandatory evidence or an instance result is missing. It is
 never reported as zero seeds. After **Run to node** on a node before every instance
-node, the count reads *Not run*: nothing failed, and **Run pipeline** produces the
-count.
+node, the count stays if nothing it depends on changed. Otherwise it reads *Not run*:
+nothing failed, and **Run pipeline** produces the count.
 
 ## Optimisation
 
@@ -483,8 +506,8 @@ through PyTorch's restricted loader.
 
 ## Cellpose-SAM
 
-**Cellpose-SAM seed instances** (Seed detection category of the Default seed
-analysis) runs the pretrained Cellpose-SAM model zero-shot on the calibrated colour
+**Cellpose-SAM seed instances** is the seed-detection node of **Cellpose seed
+analysis**. It runs the pretrained Cellpose-SAM model zero-shot on the calibrated colour
 crop. It needs no training or checkpoint, but it needs the optional `cellpose`
 package, which `seed_vision.py` installs when it is missing unless `--no-cellpose`
 is given. In the default `--bootstrap ask` mode it lists the packages and asks
@@ -509,21 +532,19 @@ commands when `opencv-python-headless` is installed beside `opencv-python`.
 
 To run it:
 
-1. On an editable copy, select the node and tick **Enabled**, or right-click it and
-   choose **Enable and run to node**, which on a default pipeline offers an editable
-   copy first. If the package is missing, a message says so
-   and the node stays disabled; its status then reads *needs the optional cellpose
-   package*.
+1. Choose **Cellpose seed analysis** in the **Pipeline** list. If the package is
+   missing, a message says so and the list stays where it was.
 2. **Run pipeline**. The first run downloads the `cpsam_v2` weights (about
    1.2 GB) into `~/.cellpose/models`, or `CELLPOSE_LOCAL_MODELS_PATH` if set, and
    loading them takes several seconds. Later runs reuse the loaded model.
 3. Choose **Cellpose-SAM seed instances**, **cell probability** or **instance
    confidence** from the **Overlay** menu.
 
-Results use the first enabled instance node that completed, in the order U-Net,
-StarDist, Cellpose-SAM, procedural. With the learned nodes at their default
-(disabled), an enabled Cellpose-SAM node therefore supplies the reviewed seeds and
-measurements; disable it to return to procedural separation.
+To run it beside procedural separation, add it from **Add node** on an editable copy
+of Procedural seed analysis, then tick **Enabled**, or right-click it and choose
+**Enable and run to node**. Results use the first enabled instance node that
+completed, in the order U-Net, StarDist, Cellpose-SAM, procedural, so on such a copy
+Cellpose-SAM supplies the reviewed seeds and measurements until you disable it.
 
 Controls:
 

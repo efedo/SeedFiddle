@@ -4,7 +4,7 @@ Date: 21 October 2026. Scope: the instance-segmentation methods in this reposito
 
 ## Summary
 
-No method in the repository has a measured accuracy on a real image, because there are no human-reviewed instance masks. The procedural watershed pipeline is the only method wired into the default workflow; the learned U-Net and StarDist models were trained only on synthetic data from engineered feature channels and have never been scored against real labels. The literature says marker watershed is the known failure mode for touching seeds and that pretrained flow-field models (Cellpose family, now with a SAM transformer backbone) are the strongest fit for densely packed convex objects with internal texture.
+No method in the repository has a measured accuracy on a real image, because there are no human-reviewed instance masks. Procedural watershed and zero-shot Cellpose-SAM each have their own default pipeline; the learned U-Net and StarDist models were trained only on synthetic data from engineered feature channels and have never been scored against real labels. The literature says marker watershed is the known failure mode for touching seeds and that pretrained flow-field models (Cellpose family, now with a SAM transformer backbone) are the strongest fit for densely packed convex objects with internal texture.
 
 Recommendation, in order: build a small reviewed benchmark first; run Cellpose-SAM zero-shot on calibrated RGB crops and score it with the same harness; fine-tune it human-in-the-loop using the existing annotation tools; keep the classical pipeline for calibration, dish, scale and colour, and demote watershed to an explainable fallback. A pretrained transformer-backbone model is in order, but architecture is the second problem; the reviewed test set is the first.
 
@@ -16,7 +16,7 @@ Recommendation, in order: build a small reviewed benchmark first; run Cellpose-S
 
 | Method | How it works | State |
 | --- | --- | --- |
-| Procedural (`seedvision/segmentation/procedural.py`) | Hand-built evidence rasters (colour likelihood, edge magnitude, ridges, oriented traces, surface darkening, distance) scored into markers, then OpenCV marker-controlled watershed at a 1600 px working scale | About 45 tuned parameters in `ProceduralInstanceSettings`; the only instance method in the default workflow |
+| Procedural (`seedvision/segmentation/procedural.py`) | Hand-built evidence rasters (colour likelihood, edge magnitude, ridges, oriented traces, surface darkening, distance) scored into markers, then OpenCV marker-controlled watershed at a 1600 px working scale | About 45 tuned parameters in `ProceduralInstanceSettings`; the instance method Procedural seed analysis runs unless a learned node is enabled |
 | U-Net + watershed and StarDist (`seedvision/learning/`) | Small native nets (24 base channels, depth 3) trained from scratch on synthetic data; inputs are 13 engineered feature channels from the classical pipeline plus species planes, not RGB | `artifacts/learned/synthetic_hard_v2/unet_b24d3_pattern15.training.json` records best epoch 1 (did not converge); every fixture review in `artifacts/learned/fixture_review/` states that no human instance masks exist and accuracy cannot be estimated |
 
 Labelled data on hand:
@@ -39,7 +39,7 @@ The observation that no pipeline matches human seed differentiation is therefore
 Yes, as a pretrained flow-field model, with the benchmark built first. Ranked:
 
 1. Build the benchmark (days). Human-correct two or three of the existing pre-annotation masks at full resolution (about 800 seeds) and lock them as a held-out set. Score the procedural pipeline with `evaluate_instances`. Until this exists no method, including the current one, can be ranked.
-2. Run Cellpose-SAM zero-shot on calibrated RGB dish crops. This is now the optional **Cellpose-SAM seed instances** node (disabled by default; see the operator guide). It fits the project constraints: native PyTorch on CUDA, no server, one optional pip dependency. Given the geometry it should beat marker watershed on contact splitting out of the box; the benchmark will say by how much.
+2. Run Cellpose-SAM zero-shot on calibrated RGB dish crops. This is now **Cellpose seed analysis** (see the operator guide). It fits the project constraints: native PyTorch on CUDA, no server, one optional pip dependency. Given the geometry it should beat marker watershed on contact splitting out of the box; the benchmark will say by how much.
 3. Fine-tune human-in-the-loop. Use the GUI's existing annotation tools to correct predictions and mix in the synthetic generator (the Toda recipe). Fifty corrected images is a reasonable target for a species-general model.
 4. Keep the classical pipeline for calibration, dish and ruler detection, colour correction and scale. Demote watershed to an explainable fallback. Retire the from-scratch U-Net/StarDist-on-engineered-features track: feeding a learner the output of the heuristic it is meant to replace caps it at the heuristic's quality.
 5. Only if steps 2 and 3 plateau on contacts: a parameter-efficient SAM or DINOv2 fine-tune with a Cellpose-style flow head, trained natively. Same data, more work.

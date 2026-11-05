@@ -12,6 +12,7 @@ from seedvision.persistence.pipeline_documents import (
     PIPELINE_EXTENSION, PipelineDocumentError,
     PipelineDocumentStore, PipelineLayoutDocument, _name_key, _pipeline_name,
 )
+from seedvision.pipeline.default_pipelines import graph_pipeline_of
 
 COPY_ERRORS = (ValueError, TypeError, KeyError, OSError, RecursionError, NotImplementedError)
 
@@ -182,8 +183,9 @@ class PipelineDocumentsController(QObject):
 
     @staticmethod
     def _factory_of(document):
-        return ('Default seed analysis' if document.pipeline_workflow is None
-                else document.pipeline_workflow.source_recipe.title)
+        if document.pipeline_workflow is not None:
+            return document.pipeline_workflow.source_recipe.title
+        return graph_pipeline_of({node.identifier for node in document.analysis_settings.nodes if node.active}).title
 
     def _busy(self):
         return (self.window._background_work_is_active()

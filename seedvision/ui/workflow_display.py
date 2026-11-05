@@ -32,7 +32,7 @@ class WorkflowDisplay:
         key = window._current_image_key()
         editable = window._analyses.get(key or '') is not None
         explanation = ('Edit labels in the calibrated image; return to node outputs through Overlay.'
-            if editable else 'Run Default seed analysis for this image to establish the calibrated annotation frame.')
+            if editable else 'Run Procedural or Cellpose seed analysis for this image to establish the calibrated annotation frame.')
         for action in (window.paint_background_action, window.annotate_instances_action):
             action.setEnabled(editable and not busy)
             action.setToolTip(explanation)
@@ -93,7 +93,7 @@ class WorkflowDisplay:
         window = self.window
         result = window._analyses.get(window._current_image_key() or '')
         if result is None:
-            window.statusBar().showMessage('Run Default seed analysis for this image before editing calibrated annotations.')
+            window.statusBar().showMessage('Run Procedural or Cellpose seed analysis for this image before editing calibrated annotations.')
             return False
         self.mode, self.title, self.blend_available = 'annotations', 'Calibrated image and annotations', False
         window.image_view.show_analysis(result)

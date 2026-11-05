@@ -6,7 +6,7 @@ is the [operator guide](OPERATOR_GUIDE.md).
 
 **In short:** the desktop workflow, the analysis graph, persistence, export, batch
 execution and the PlantCV–SMPTS peer pipelines are implemented and covered by a
-649-unit test suite. None of the analytical outputs has been validated against
+685-unit test suite. None of the analytical outputs has been validated against
 independently reviewed laboratory data. Physical units and trait predictions are
 withheld or labelled unvalidated, and procedural counting is not yet competitive
 with counting by eye.
@@ -16,12 +16,12 @@ with counting by eye.
 | Area | Current state | Remaining evidence or work |
 |---|---|---|
 | Runtime and desktop shell | Implemented. One `seed_vision.py` launcher, native PySide6 UI, optional local environment bootstrap, diagnostics, cancellation, and responsive persistence. Image and Pipeline views side by side; menus File/Edit/Analysis/Learning/Help. | Validate the frozen dependency and hardware envelope intended for laboratory deployment. |
-| Analysis graph | Implemented. Default seed analysis plus 18 factory pipelines; default pipelines stay locked, editing one offers a named copy that the project keeps, and copies can be saved as custom pipeline files. The generated [node catalogue](NODE_CATALOGUE.md) lists every card. Node local caching and dependency based invalidation are preserved. | New controls must continue to affect calculations and receive optimization coverage or a stated exemption. |
+| Analysis graph | Implemented. Procedural seed analysis and Cellpose seed analysis on the shared graph, plus 18 factory pipelines; the Pipeline list offers those two and three factory pipelines until Show all default pipelines is on. Default pipelines stay locked, editing one offers a named copy that the project keeps, and copies can be saved as custom pipeline files. The generated [node catalogue](NODE_CATALOGUE.md) lists every card. Node local caching and dependency based invalidation are preserved. | New controls must continue to affect calculations and receive optimization coverage or a stated exemption. |
 | Calibration and image evidence | Engineering implementation complete for ruler/card detection, deskew, neutral balance, layout, material, edge, texture, lighting, and quality evidence. | Supply traceable card/camera geometry and independent measurements before enabling or claiming validated physical or colorimetric output. |
 | Material references | Implemented with Background, Foreground, and Other classes, exclusions, draft/apply/revert history, and source bound persistence. | Independently review reference policy on representative acquisition sessions. |
 | Seed annotation | Implemented with brush, edge trace, shape fill, smart fill, eraser, undo/redo, saved reference loading, seed condition/shape metadata, and one shot hilum placement. | Produce complete independently reviewed masks and trait labels. |
 | Procedural instances | Implemented as a transparent CUDA-first evidence path with bounded CPU topology, used as annotation bootstrap and fallback. Undercounts touching seeds substantially (see [seed-detection evaluation](SEED_DETECTION_EVALUATION.md)). | Establish count, split/merge, boundary, and correction time performance on held out real images. |
-| Learned instances | U-Net/watershed and StarDist nodes, training, checkpoints, tiled inference, evaluation, and audits are implemented but disabled by default. A zero-shot **Cellpose-SAM** node (optional `cellpose` package, pretrained `cpsam_v2` weights) is also available, disabled by default, with cached flows so mask-recovery edits skip inference. | Retrain and evaluate on reviewed real data. Existing U-Net/StarDist results establish synthetic engineering behavior only; Cellpose-SAM has been inspected by eye, not scored. |
+| Learned instances | U-Net/watershed and StarDist nodes, training, checkpoints, tiled inference, evaluation, and audits are implemented but disabled by default. **Cellpose seed analysis** runs a zero-shot **Cellpose-SAM** node (optional `cellpose` package, pretrained `cpsam_v2` weights), with cached flows so mask-recovery edits skip inference. | Retrain and evaluate on reviewed real data. Existing U-Net/StarDist results establish synthetic engineering behavior only; Cellpose-SAM has been inspected by eye, not scored. |
 | Node optimization | Implemented for 39 computational nodes, with 12 explicit exemptions (`optimization/registry.py`), fixed objectives, project sequencing, proposal review, history, and rollback. | Treat every run as in-sample adaptation; independent performance still needs a frozen evaluation protocol. |
 | Species libraries | Implemented with immutable versioning, content pins, source exclusion, import/export, validation metadata, and product specific coverage. | Build and validate reviewed libraries from representative sources. Coverage is not accuracy. |
 | Results and export | Implemented with explicit availability, method selection, per-instance review, immutable result revisions, CSV/JSON/annotated-image export, and batch parity. | Physical units and unvalidated traits remain withheld until their validation gates pass. |
@@ -84,8 +84,8 @@ Operation-level detail: [feature register](plantcv_smpts_features.json) and
 
 ## Verification
 
-`python -m tests --full` runs 681 functional units in three isolated processes
-and passed on 3 November 2026 with three expected skips (an opt-in fill
+`python -m tests --full` runs 685 functional units in three isolated processes
+and passed on 4 November 2026 with three expected skips (an opt-in fill
 diagnostic, a case-sensitive-filesystem check and a symlink-privilege check). The four frozen numerical acceptance baselines and 223
 frozen recipe profiles are unchanged. See [TESTING.md](TESTING.md).
 

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import colorsys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+import hashlib
 
 import numpy as np
 from seedvision.annotation.eligibility import connected_instances
@@ -483,10 +484,15 @@ def build_cuda_analysis_layers(
     settings=None,
     cache_values: dict[str, object] | None = None,
     dirty_nodes: set[str] | frozenset[str] = frozenset(),
+    retained_nodes: frozenset[str] = frozenset(),
     cuda_context: CudaContext | None = None,
     timing_recorder=None,
 ):
-    """Build cached overlay products while all raster math stays on the GPU."""
+    """Build cached overlay products while all raster math stays on the GPU.
+
+    ``retained_nodes`` have a cached product this run leaves out: it stands
+    whatever changed upstream, and the caller answers for marking it stale.
+    """
 
     from seedvision.visualization.layers import AnalysisLayers, AnalysisLayerSettings
 
@@ -535,7 +541,7 @@ def build_cuda_analysis_layers(
     hue_only = values["layer.hue_only"]
 
     wavelet_signature = int(settings.wavelet_level_count)
-    wavelet_dirty = (
+    wavelet_dirty = "wavelet_decomposition" not in retained_nodes and (
         "wavelet_decomposition" in dirty
         or "layer.wavelet_decomposition" not in values
         or values.get("layer.wavelet_signature") != wavelet_signature
@@ -568,7 +574,7 @@ def build_cuda_analysis_layers(
     else:
         wavelet_details, wavelet_residual = values["layer.wavelet_decomposition"]
     painted_reference_dirty = "project" in dirty or "reference_layers" in dirty
-    background_dirty = (
+    background_dirty = "background_likelihood" not in retained_nodes and (
         painted_reference_dirty
         or "background_likelihood" in dirty
         or "layer.background" not in values
@@ -658,7 +664,7 @@ def build_cuda_analysis_layers(
         surrounding_background_valid,
     ) = surrounding_background_result
 
-    refined_dirty = (
+    refined_dirty = "refined_background_likelihood" not in retained_nodes and (
         background_dirty
         or "refined_background_likelihood" in dirty
         or "layer.refined_background" not in values
@@ -735,7 +741,7 @@ def build_cuda_analysis_layers(
         str(settings.foreground_noise_reference_source),
         float(settings.foreground_noise_current_reference_weight),
     )
-    foreground_noise_dirty = (
+    foreground_noise_dirty = "foreground_noise_likelihood" not in retained_nodes and (
         painted_reference_dirty
         or "foreground_segmentation" in dirty
         or "refined_background_likelihood" in dirty
@@ -835,7 +841,7 @@ def build_cuda_analysis_layers(
     if refined_timing is not None:
         timing_recorder.stop(refined_timing)
 
-    instance_dirty = (
+    instance_dirty = "instance_masks" not in retained_nodes and (
         refined_dirty or "instance_masks" in dirty or "layer.instances" not in values
     )
     if instance_dirty and instance_masks_enabled:
@@ -902,7 +908,7 @@ def build_cuda_analysis_layers(
     else:
         labels, colours = values["layer.instances"]
 
-    gradients_dirty = (
+    gradients_dirty = "edge_gradients" not in retained_nodes and (
         wavelet_dirty
         or "edge_gradients" in dirty
         or "layer.edge_gradients" not in values
@@ -934,7 +940,7 @@ def build_cuda_analysis_layers(
     shared_directed_hue = gradient_result.directed_hue_raster
     shared_undirected_hue = gradient_result.undirected_hue_raster
 
-    surface_gradients_dirty = (
+    surface_gradients_dirty = "surface_darkness_gradients" not in retained_nodes and (
         "surface_darkness_gradients" in dirty
         or "layer.surface_darkness_gradients" not in values
     )
@@ -979,7 +985,7 @@ def build_cuda_analysis_layers(
     else:
         surface_gradients = values["layer.surface_darkness_gradients"]
 
-    lightening_ceiling_dirty = (
+    lightening_ceiling_dirty = "lightening_gradient_ceiling" not in retained_nodes and (
         surface_gradients_dirty
         or "lightening_gradient_ceiling" in dirty
         or "layer.lightening_gradient_ceiling" not in values
@@ -1009,7 +1015,7 @@ def build_cuda_analysis_layers(
     else:
         lightening_ceiling = values["layer.lightening_gradient_ceiling"]
 
-    darkening_ceiling_dirty = (
+    darkening_ceiling_dirty = "darkening_gradient_ceiling" not in retained_nodes and (
         surface_gradients_dirty
         or "darkening_gradient_ceiling" in dirty
         or "layer.darkening_gradient_ceiling" not in values
@@ -1039,7 +1045,7 @@ def build_cuda_analysis_layers(
     else:
         darkening_ceiling = values["layer.darkening_gradient_ceiling"]
 
-    frequency_noise_dirty = (
+    frequency_noise_dirty = "frequency_noise_masks" not in retained_nodes and (
         "frequency_noise_masks" in dirty
         or "layer.frequency_noise_masks" not in values
     )
@@ -1081,15 +1087,13 @@ def build_cuda_analysis_layers(
     undirected_edge_hue = shared_undirected_hue
 
     previous_curve_result = values.get("layer.seed_edge_curves")
-    ridges_dirty = (
-        gradients_dirty
-        or "edge_ridges" in dirty
-        or previous_curve_result is None
+    ridges_dirty = previous_curve_result is None or (
+        "edge_ridges" not in retained_nodes
+        and (gradients_dirty or "edge_ridges" in dirty)
     )
-    traces_dirty = (
-        ridges_dirty
-        or "edge_traces" in dirty
-        or previous_curve_result is None
+    traces_dirty = previous_curve_result is None or (
+        "edge_traces" not in retained_nodes
+        and (ridges_dirty or "edge_traces" in dirty)
     )
     if ridges_dirty or traces_dirty:
         trace_products = seed_boundary_tracing(
@@ -1100,17 +1104,19 @@ def build_cuda_analysis_layers(
             previous=previous_curve_result,
             recompute_ridges=ridges_dirty,
             recompute_traces=traces_dirty,
+            keep_traces=not traces_dirty,
             compute_final=False,
             timing_recorder=timing_recorder,
             seed_shape_model=seed_shape_model,
             seed_measurement_summary=seed_measurement_summary,
         )
         values["layer.edge_ridges"] = trace_products.ridges
-        values["layer.edge_traces"] = (
-            trace_products.trace_labels,
-            trace_products.trace_continuity,
-            trace_products.gap_confidence,
-        )
+        if traces_dirty:
+            values["layer.edge_traces"] = (
+                trace_products.trace_labels,
+                trace_products.trace_continuity,
+                trace_products.gap_confidence,
+            )
     else:
         trace_products = previous_curve_result
 
@@ -1140,7 +1146,7 @@ def build_cuda_analysis_layers(
         float(settings.reference_edge_ridge_weight),
         float(settings.reference_texture_instance_interior_buffer_fraction),
     )
-    reference_texture_dirty = (
+    reference_texture_dirty = "reference_texture_prototypes" not in retained_nodes and (
         background_dirty
         or painted_reference_dirty
         or "foreground_segmentation" in dirty
@@ -1240,7 +1246,7 @@ def build_cuda_analysis_layers(
     else:
         reference_textures = values["layer.reference_texture_prototypes"]
 
-    material_evidence_dirty = (
+    material_evidence_dirty = "material_evidence_decision" not in retained_nodes and (
         background_dirty
         or refined_dirty
         or foreground_noise_dirty
@@ -1309,7 +1315,14 @@ def build_cuda_analysis_layers(
         None if species_library is None else species_library.manifest.content_sha256,
         str(settings.seed_trait_reference_source),
         float(settings.seed_trait_current_reference_weight),
-        id(seed_instance_annotations),
+        (
+            None
+            if seed_instance_annotations is None
+            else (
+                seed_instance_annotations.shape,
+                hashlib.blake2b(seed_instance_annotations.tobytes()).digest(),
+            )
+        ),
         str(seed_trait_species),
         tuple(str(value) for value in seed_trait_coat_patterns),
         tuple(str(value) for value in seed_trait_conditions),
@@ -1331,7 +1344,7 @@ def build_cuda_analysis_layers(
         float(settings.reference_seed_trait_interior_buffer_fraction),
         int(settings.reference_seed_trait_working_maximum_dimension),
     )
-    seed_traits_dirty = (
+    seed_traits_dirty = "reference_seed_traits" not in retained_nodes and (
         gradients_dirty
         or ridges_dirty
         or frequency_noise_dirty
@@ -1391,7 +1404,7 @@ def build_cuda_analysis_layers(
     else:
         seed_traits = values["layer.reference_seed_traits"]
 
-    reference_edge_dirty = (
+    reference_edge_dirty = "reference_edge_probability" not in retained_nodes and (
         reference_texture_dirty
         or "reference_edge_probability" in dirty
         or "layer.reference_edge_probability" not in values
@@ -1536,9 +1549,14 @@ def build_cuda_analysis_layers(
         reference_edges = values["layer.reference_edge_probability"]
 
     reference_ridges_dirty = (
-        reference_edge_dirty
-        or gradients_dirty
-        or "reference_edge_ridges" in dirty
+        (
+            "reference_edge_ridges" not in retained_nodes
+            and (
+                reference_edge_dirty
+                or gradients_dirty
+                or "reference_edge_ridges" in dirty
+            )
+        )
         or "layer.reference_edge_ridges" not in values
         or "layer.net_reference_edge_ridges" not in values
         or "layer.locally_normalized_net_physical_edge" not in values
@@ -1653,39 +1671,40 @@ def build_cuda_analysis_layers(
             "net_reference_ridges": net_reference_edge_ridge,
             "normalized_net_reference_ridges": normalized_net_reference_edge_ridge,
         }[trace_source_name]
-        selected_trace_dirty = (
-            traces_dirty
-            or reference_ridges_dirty
-            or "edge_traces" in dirty
-            or previous_curve_result is None
+        selected_trace_dirty = previous_curve_result is None or (
+            "edge_traces" not in retained_nodes
+            and (traces_dirty or reference_ridges_dirty or "edge_traces" in dirty)
         )
-        trace_products = seed_boundary_tracing(
-            gradient_result,
-            seed_diameter,
-            settings,
-            cuda_context=context,
-            previous=trace_products,
-            recompute_ridges=False,
-            recompute_traces=selected_trace_dirty,
-            compute_final=False,
-            trace_ridge_override=trace_source_raster,
-            trace_source_name=trace_source_name,
-            timing_recorder=timing_recorder,
-            seed_shape_model=seed_shape_model,
-            seed_measurement_summary=seed_measurement_summary,
-        )
-        values["layer.edge_traces"] = (
-            trace_products.trace_labels,
-            trace_products.trace_continuity,
-            trace_products.gap_confidence,
-        )
+        if selected_trace_dirty:
+            trace_products = seed_boundary_tracing(
+                gradient_result,
+                seed_diameter,
+                settings,
+                cuda_context=context,
+                previous=trace_products,
+                recompute_ridges=False,
+                recompute_traces=True,
+                compute_final=False,
+                trace_ridge_override=trace_source_raster,
+                trace_source_name=trace_source_name,
+                timing_recorder=timing_recorder,
+                seed_shape_model=seed_shape_model,
+                seed_measurement_summary=seed_measurement_summary,
+            )
+            values["layer.edge_traces"] = (
+                trace_products.trace_labels,
+                trace_products.trace_continuity,
+                trace_products.gap_confidence,
+            )
 
-    curve_dirty = (
-        traces_dirty
-        or reference_edge_dirty
-        or background_dirty
-        or "seed_edge_curves" in dirty
-        or previous_curve_result is None
+    curve_dirty = previous_curve_result is None or (
+        "seed_edge_curves" not in retained_nodes
+        and (
+            traces_dirty
+            or reference_edge_dirty
+            or background_dirty
+            or "seed_edge_curves" in dirty
+        )
     )
     if curve_dirty:
         curve_result = seed_boundary_tracing(
@@ -1722,6 +1741,19 @@ def build_cuda_analysis_layers(
         values["layer.seed_edge_curves"] = curve_result
     else:
         curve_result = values["layer.seed_edge_curves"]
+        if trace_products is not curve_result:
+            # The curve fit stands, but it also holds the ridges and traces that
+            # this run redid: the next fit must start from the new ones.
+            curve_result = replace(
+                curve_result,
+                ridges=trace_products.ridges,
+                ridge_state=trace_products.ridge_state,
+                trace_labels=trace_products.trace_labels,
+                trace_continuity=trace_products.trace_continuity,
+                gap_confidence=trace_products.gap_confidence,
+                trace_state=trace_products.trace_state,
+            )
+            values["layer.seed_edge_curves"] = curve_result
     curve_likelihood = curve_result.final_likelihood
     curve_radius = curve_result.selected_radius
 
@@ -7242,6 +7274,7 @@ def seed_boundary_tracing(
     previous: BoundaryTraceProducts | None = None,
     recompute_ridges: bool = True,
     recompute_traces: bool = True,
+    keep_traces: bool = False,
     compute_final: bool = True,
     trace_ridge_override=None,
     seed_shape_model=None,
@@ -7255,6 +7288,9 @@ def seed_boundary_tracing(
     maxima are fitted with an ellipse and a circle, and an edge pixel is
     confirmed by the strongest of its own arc support and its agreement
     with a fitted outline.
+
+    ``keep_traces`` holds the previous traces even when the ridges beneath them
+    are redone, for a run that leaves the trace node out.
     """
 
     import torch
@@ -7454,11 +7490,13 @@ def seed_boundary_tracing(
         curvature_envelope,
     )
     cached_trace = None if previous is None else previous.trace_state
-    if (
-        not recompute_traces
-        and ridge_state is cached_ridge
-        and isinstance(cached_trace, GpuTraceState)
-        and cached_trace.signature == trace_signature
+    if isinstance(cached_trace, GpuTraceState) and (
+        keep_traces
+        or (
+            not recompute_traces
+            and ridge_state is cached_ridge
+            and cached_trace.signature == trace_signature
+        )
     ):
         trace_state = cached_trace
         trace_seed = trace_state.trace_seed

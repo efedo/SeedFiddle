@@ -1512,6 +1512,7 @@ def build_analysis_layers(
     settings: AnalysisLayerSettings | None = None,
     cache_values: dict[str, object] | None = None,
     dirty_nodes: set[str] | frozenset[str] = frozenset(),
+    retained_nodes: frozenset[str] = frozenset(),
     cuda_context=None,
     timing_recorder=None,
 ) -> AnalysisLayers:
@@ -1579,6 +1580,7 @@ def build_analysis_layers(
         settings=settings,
         cache_values=cache_values,
         dirty_nodes=dirty_nodes,
+        retained_nodes=retained_nodes,
         cuda_context=cuda_context,
         timing_recorder=timing_recorder,
     )

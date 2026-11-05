@@ -1,6 +1,6 @@
 {
   "schema": "seedfiddle.test-inventory.v1",
-  "audit_date": "2026-11-03",
+  "audit_date": "2026-11-04",
   "generator": "tools/audit_test_inventory.py",
   "generator_sha256": "db49bf21d3b542906ab407f1f5666cf07c9653a8689fd879e276fd99a88aadce",
   "description_limit": "Static scenario, assertion and call evidence; no measured line/branch coverage. Import aliases are lexical candidates, not runtime type resolution.",
@@ -10,9 +10,9 @@
   "historical_timings_sha256": null,
   "historical_source_changes": [],
   "unmatched_historical_timing_ids": [],
-  "collection_status": "exact match, 681 canonical unittest IDs; zero discovery errors",
-  "test_count": 681,
-  "test_file_count": 257,
+  "collection_status": "exact match, 685 canonical unittest IDs; zero discovery errors",
+  "test_count": 685,
+  "test_file_count": 259,
   "core_targets": [
     "tests.test_pipeline",
     "tests.test_analysis_settings_persistence",
@@ -26,7 +26,7 @@
     "tests.test_native_image_inputs.ImageInputContractTests"
   ],
   "core_test_count": 28,
-  "test_source_lines": 81151,
+  "test_source_lines": 81817,
   "historical_method_seconds": 0,
   "category_totals": {
     "Annotation and interactive image review": {
@@ -40,8 +40,8 @@
       "method_seconds": 0
     },
     "Image analysis, calibration and rendering": {
-      "methods": 67,
-      "files": 23,
+      "methods": 71,
+      "files": 25,
       "method_seconds": 0
     },
     "Learning and trait analysis": {
@@ -1293,15 +1293,15 @@
       "file": "tests/test_default_pipeline_copies.py",
       "purpose": "Default pipelines stay locked; their edit controls offer a named, editable copy.",
       "category": "Image analysis, calibration and rendering",
-      "lines": 511,
-      "source_sha256": "cf3bcf4293382f3a0f563a7e08a6a7f88a3d84df34abe0839b8a9fa0557e03e9",
+      "lines": 591,
+      "source_sha256": "071725bcbfdae69c26348fb98ce0d1831a93c5657ca68dd00f8848aea3697726",
       "historical_source_matches": false,
       "test_count": 2,
       "class_fixtures": {
         "DefaultPipelineCopyTests": [
           {
             "name": "setUpClass",
-            "line": 47,
+            "line": 48,
             "calls": [
               "QApplication.instance",
               "QApplication"
@@ -1309,7 +1309,7 @@
           },
           {
             "name": "setUp",
-            "line": 50,
+            "line": 51,
             "calls": [
               "TemporaryDirectory",
               "Path",
@@ -1318,7 +1318,7 @@
           },
           {
             "name": "tearDown",
-            "line": 59,
+            "line": 60,
             "calls": [
               "dispose_window",
               "self.application.processEvents",
@@ -1334,8 +1334,10 @@
         "seedvision.ui.canvas_controls.load_icon",
         "seedvision.ui.canvas_controls.rename_icon",
         "seedvision.ui.canvas_controls.save_icon",
+        "seedvision.ui.main_window.MainWindow",
         "seedvision.ui.pipeline_workflow.ENTRY_KIND",
-        "seedvision.ui.pipeline_workflow.SELECTOR_WIDTH"
+        "seedvision.ui.pipeline_workflow.SELECTOR_WIDTH",
+        "seedvision.ui.pipeline_workflow.SHOW_ALL_TEMPLATES_SETTING"
       ],
       "method_seconds": 0
     },
@@ -1369,10 +1371,10 @@
     {
       "module": "tests.test_desktop_terminal_history",
       "file": "tests/test_desktop_terminal_history.py",
-      "purpose": "Earlier desktop rejection boundaries and bounded evidence-only history review.",
+      "purpose": "Earlier desktop rejection boundaries and bounded reading of saved run records.",
       "category": "Persistence, export, identity and outcomes",
-      "lines": 253,
-      "source_sha256": "58655e981d098ad093e884d345ac640e216c0cc52a4afaed98af1071da03b331",
+      "lines": 235,
+      "source_sha256": "311922df1fe3b4b6cf296d129380b17482c639439d5f8700a6e7c22be15fbfe3",
       "historical_source_matches": false,
       "test_count": 4,
       "class_fixtures": {
@@ -1496,6 +1498,58 @@
       "method_seconds": 0
     },
     {
+      "module": "tests.test_graph_default_pipelines",
+      "file": "tests/test_graph_default_pipelines.py",
+      "purpose": "Procedural and Cellpose seed analysis are one catalogue with different active nodes.",
+      "category": "Image analysis, calibration and rendering",
+      "lines": 214,
+      "source_sha256": "68b22d69b19ba6bd7305c100f02e5684924a3134e7b3f30a905f5a7be43a3a94",
+      "historical_source_matches": false,
+      "test_count": 2,
+      "class_fixtures": {
+        "GraphDefaultPipelineTests": [
+          {
+            "name": "setUpClass",
+            "line": 35,
+            "calls": [
+              "QApplication.instance",
+              "QApplication"
+            ]
+          },
+          {
+            "name": "setUp",
+            "line": 38,
+            "calls": [
+              "TemporaryDirectory",
+              "Path",
+              "isolated_window"
+            ]
+          },
+          {
+            "name": "tearDown",
+            "line": 46,
+            "calls": [
+              "dispose_window",
+              "self.application.processEvents",
+              "self.temporary.cleanup"
+            ]
+          }
+        ]
+      },
+      "production_imports": [
+        "seedvision.persistence.analysis_settings.analysis_settings_profile_from_graph",
+        "seedvision.persistence.analysis_settings.apply_analysis_settings_profile",
+        "seedvision.pipeline.build_default_pipeline",
+        "seedvision.pipeline.default_pipelines.CELLPOSE_NODE",
+        "seedvision.pipeline.default_pipelines.CELLPOSE_SEED_ANALYSIS",
+        "seedvision.pipeline.default_pipelines.PROCEDURAL_SEED_ANALYSIS",
+        "seedvision.pipeline.default_pipelines.build_cellpose_pipeline",
+        "seedvision.pipeline.default_pipelines.build_procedural_pipeline",
+        "seedvision.pipeline.default_pipelines.graph_pipeline_of"
+      ],
+      "method_seconds": 0
+    },
+    {
       "module": "tests.test_grouped_comparison",
       "file": "tests/test_grouped_comparison.py",
       "purpose": "Compact synthetic engineering witnesses, not biological validation.",
@@ -1596,8 +1650,8 @@
       "file": "tests/test_image_list_controls.py",
       "purpose": "Native image-list actions, thumbnails, file preservation and edit ownership.",
       "category": "Image analysis, calibration and rendering",
-      "lines": 932,
-      "source_sha256": "63c52f83b092140f892502983260af881d693ac193b4cac9877b37371e5841b4",
+      "lines": 928,
+      "source_sha256": "5377ae434a3a0a5d71bf7983ae111a0c1a83889aa0e2b52aebdd929216a4ed6e",
       "historical_source_matches": false,
       "test_count": 4,
       "class_fixtures": {
@@ -1605,7 +1659,7 @@
         "ImageListControlsTests": [
           {
             "name": "setUpClass",
-            "line": 77,
+            "line": 78,
             "calls": [
               "QApplication.instance",
               "QApplication"
@@ -1615,7 +1669,7 @@
         "ImageThumbnailLoaderTests": [
           {
             "name": "setUpClass",
-            "line": 216,
+            "line": 230,
             "calls": [
               "QApplication.instance",
               "QApplication"
@@ -1623,7 +1677,7 @@
           },
           {
             "name": "setUp",
-            "line": 219,
+            "line": 233,
             "calls": [
               "TemporaryDirectory",
               "self.addCleanup",
@@ -1635,7 +1689,7 @@
         "ImageListRowTests": [
           {
             "name": "setUpClass",
-            "line": 409,
+            "line": 418,
             "calls": [
               "QApplication.instance",
               "QApplication"
@@ -1643,7 +1697,7 @@
           },
           {
             "name": "setUp",
-            "line": 412,
+            "line": 421,
             "calls": [
               "TemporaryDirectory",
               "self.addCleanup",
@@ -1669,6 +1723,7 @@
         "seedvision.persistence.analysis_settings_profile_from_graph",
         "seedvision.pipeline.build_default_pipeline",
         "seedvision.segmentation.baseline.PipelineAnalysisCache",
+        "seedvision.ui.canvas_controls.COMPACT_ICON_SIZE",
         "seedvision.ui.image_list",
         "seedvision.ui.image_list.IMAGE_OPEN_ROLE",
         "seedvision.ui.image_list.IMAGE_SPECIES_ROLE",
@@ -1679,7 +1734,7 @@
         "seedvision.ui.image_list.row_text",
         "seedvision.ui.image_list.species_text",
         "seedvision.ui.main_window.MainWindow",
-        "seedvision.ui.main_window.UNASSIGNED_SPECIES",
+        "seedvision.ui.main_window.UNKNOWN_SPECIES",
         "seedvision.ui.main_window._path_identity"
       ],
       "method_seconds": 0
@@ -5259,8 +5314,8 @@
       "file": "tests/test_pipeline_ui.py",
       "purpose": "Pipeline desktop controls, graph state, navigation, workers and status",
       "category": "Pipeline workspace and controls",
-      "lines": 4873,
-      "source_sha256": "28d38d4de4adfa7df6ae1240dca5ddaea410ee9f6ba7294ec2701986ad8ce456",
+      "lines": 5024,
+      "source_sha256": "f0035cddd381114204ef6b55821b247db16fdd2b7ed9ab08eccae14d47e09c62",
       "historical_source_matches": false,
       "test_count": 15,
       "class_fixtures": {
@@ -5308,8 +5363,8 @@
       "file": "tests/test_pipeline_workflow_ui.py",
       "purpose": "Main-workspace routing, editing and queued-delivery ownership.",
       "category": "Pipeline workspace and controls",
-      "lines": 514,
-      "source_sha256": "8e7cb6ac508784b85ff8e5c49e52599478395c6ac6a94443ee1706fb613fb361",
+      "lines": 515,
+      "source_sha256": "49e08c81708fdecc91b8f8a3a5802a6c9d467b8645bd94c2562294376ae07897",
       "historical_source_matches": false,
       "test_count": 1,
       "class_fixtures": {
@@ -6590,8 +6645,8 @@
       "file": "tests/test_preflight_outcomes.py",
       "purpose": "Incomplete request evidence through real batch and Qt preparation boundaries.",
       "category": "Persistence, export, identity and outcomes",
-      "lines": 240,
-      "source_sha256": "9a2d63a388e5e5532078ca751b9be1577dfd0326f5f3062fccea8b713c47be9c",
+      "lines": 242,
+      "source_sha256": "a3d09d0561e724ac2c8fc45324197b354860177e686e0110b8cf0bea14f079bb",
       "historical_source_matches": false,
       "test_count": 3,
       "class_fixtures": {
@@ -6739,7 +6794,7 @@
       "purpose": "Project analysis save/reopen, dirty state, selections and desktop guards",
       "category": "Persistence, export, identity and outcomes",
       "lines": 2216,
-      "source_sha256": "557a2007c9dbb63bd660d8940d7826129ee5ab05752f05dc559d7cdaf563f546",
+      "source_sha256": "142ad950d4f7ba5bbc9ef1fa5f0a561a79c16c7658ac2bac32d0ac9c96ac1846",
       "historical_source_matches": false,
       "test_count": 3,
       "class_fixtures": {
@@ -8460,6 +8515,30 @@
         "seedvision.export.run_outcomes",
         "seedvision.timing.AnalysisCancelled"
       ],
+      "method_seconds": 0
+    },
+    {
+      "module": "tests.test_run_to_node_cache",
+      "file": "tests/test_run_to_node_cache.py",
+      "purpose": "A run to one node recomputes that node alone and leaves other results standing.",
+      "category": "Image analysis, calibration and rendering",
+      "lines": 240,
+      "source_sha256": "4390ac15eb6166dbdde223662e449ac7bc2b1c5529c31c54f2852f15fb63ea14",
+      "historical_source_matches": false,
+      "test_count": 2,
+      "class_fixtures": {
+        "RunToNodeCacheTests": [
+          {
+            "name": "setUp",
+            "line": 31,
+            "calls": [
+              "torch.cuda.is_available",
+              "self.skipTest"
+            ]
+          }
+        ]
+      },
+      "production_imports": [],
       "method_seconds": 0
     },
     {
@@ -13478,13 +13557,14 @@
       "file": "tests/test_default_pipeline_copies.py",
       "class": "DefaultPipelineCopyTests",
       "method": "test_workflow_lifecycle",
-      "line": 488,
-      "end_line": 498,
-      "functionality": "9 related DefaultPipelineCopyTests scenarios, each with private fixture state.",
+      "line": 565,
+      "end_line": 578,
+      "functionality": "12 related DefaultPipelineCopyTests scenarios, each with private fixture state.",
       "description_basis": "method docstring",
       "category": "Image analysis, calibration and rendering",
       "direct_subjects": [],
       "helper_subjects": [
+        "seedvision.ui.main_window.MainWindow",
         "seedvision.ui.canvas_controls.rename_icon",
         "seedvision.ui.canvas_controls.load_icon",
         "seedvision.ui.canvas_controls.save_icon"
@@ -13494,6 +13574,9 @@
       ],
       "direct_checks": [],
       "helpers": [
+        "tests.test_default_pipeline_copies.DefaultPipelineCopyTests.check_test_list_offers_five_until_the_setting_shows_them_all",
+        "tests.test_default_pipeline_copies.DefaultPipelineCopyTests.check_test_show_all_setting_is_remembered_by_the_next_window",
+        "tests.test_default_pipeline_copies.DefaultPipelineCopyTests.check_test_hidden_pipeline_stays_loaded_and_copies_stay_listed",
         "tests.test_default_pipeline_copies.DefaultPipelineCopyTests.check_test_load_and_save_icons_sit_beside_rename_and_offer_no_copy",
         "tests.test_default_pipeline_copies.DefaultPipelineCopyTests.check_test_more_menu_holds_only_node_removal_and_export_when_narrow",
         "tests.test_default_pipeline_copies.DefaultPipelineCopyTests.check_test_factory_entries_show_their_caveats_when_hovered",
@@ -13512,7 +13595,8 @@
         "tests.test_default_pipeline_copies.DefaultPipelineCopyTests.show_copy",
         "tests.test_default_pipeline_copies.DefaultPipelineCopyTests.assert_on_copy",
         "tests.test_default_pipeline_copies.answers",
-        "tests.test_default_pipeline_copies.DefaultPipelineCopyTests.copy_names"
+        "tests.test_default_pipeline_copies.DefaultPipelineCopyTests.copy_names",
+        "tests.test_default_pipeline_copies.DefaultPipelineCopyTests.offered"
       ],
       "fixtures": [
         "setUpClass",
@@ -13537,8 +13621,8 @@
       "file": "tests/test_default_pipeline_copies.py",
       "class": "DefaultPipelineCopyTests",
       "method": "test_refusal_and_recovery",
-      "line": 500,
-      "end_line": 507,
+      "line": 580,
+      "end_line": 587,
       "functionality": "6 related DefaultPipelineCopyTests scenarios, each with private fixture state.",
       "description_basis": "method docstring",
       "category": "Image analysis, calibration and rendering",
@@ -13974,8 +14058,8 @@
       "file": "tests/test_desktop_terminal_history.py",
       "class": "DesktopTerminalHistoryTests",
       "method": "test_validation_and_recovery",
-      "line": 246,
-      "end_line": 249,
+      "line": 228,
+      "end_line": 231,
       "functionality": "2 related DesktopTerminalHistoryTests scenarios, each with private fixture state.",
       "description_basis": "method docstring",
       "category": "Persistence, export, identity and outcomes",
@@ -14016,24 +14100,22 @@
       "file": "tests/test_desktop_terminal_history.py",
       "class": "DesktopTerminalHistoryTests",
       "method": "test_workflow_lifecycle",
-      "line": 251,
-      "end_line": 253,
+      "line": 233,
+      "end_line": 235,
       "functionality": "1 related DesktopTerminalHistoryTests scenarios, each with private fixture state.",
       "description_basis": "method docstring",
       "category": "Persistence, export, identity and outcomes",
       "direct_subjects": [],
       "helper_subjects": [
-        "seedvision.export.preflight_outcomes.begin_preflight(self.master, 'project', 'desktop_project_load').outcome",
-        "seedvision.export.preflight_outcomes.begin_preflight",
-        "seedvision.export.run_outcomes.export_run_outcome",
-        "seedvision.export.run_outcome_history.load_terminal_record"
+        "seedvision.export.preflight_outcomes.begin_preflight(self.source, 'image', 'desktop_prepare').outcome",
+        "seedvision.export.preflight_outcomes.begin_preflight"
       ],
       "calls": [
         "self.scenario"
       ],
       "direct_checks": [],
       "helpers": [
-        "tests.test_desktop_terminal_history.DesktopTerminalHistoryTests.check_test_reopened_disk_history_ack_export_keeps_current_analysis_drafts_and_reviews_unchanged"
+        "tests.test_desktop_terminal_history.DesktopTerminalHistoryTests.check_results_says_why_the_open_images_run_did_not_complete"
       ],
       "fixtures": [],
       "decorators": [],
@@ -14392,6 +14474,103 @@
       "decorators": [],
       "class_decorators": [
         "unittest.skipUnless(torch.cuda.is_available(), 'CUDA required')",
+        "functional_units"
+      ],
+      "subtest_sites": 0,
+      "loop_iterables": [],
+      "skip_calls": [],
+      "historical_source_matches": false,
+      "last_full_status": "unrecorded",
+      "last_full_seconds": null,
+      "skip_reason": "",
+      "runs_in_default_core": false
+    },
+    {
+      "id": "tests.test_graph_default_pipelines.GraphDefaultPipelineTests.test_the_two_graphs",
+      "file": "tests/test_graph_default_pipelines.py",
+      "class": "GraphDefaultPipelineTests",
+      "method": "test_the_two_graphs",
+      "line": 193,
+      "end_line": 197,
+      "functionality": "3 related GraphDefaultPipelineTests scenarios, each with private fixture state.",
+      "description_basis": "method docstring",
+      "category": "Image analysis, calibration and rendering",
+      "direct_subjects": [],
+      "helper_subjects": [
+        "seedvision.pipeline.build_default_pipeline",
+        "seedvision.pipeline.default_pipelines.build_procedural_pipeline",
+        "seedvision.persistence.analysis_settings.analysis_settings_profile_from_graph",
+        "seedvision.pipeline.default_pipelines.build_cellpose_pipeline",
+        "seedvision.persistence.analysis_settings.apply_analysis_settings_profile",
+        "seedvision.pipeline.default_pipelines.graph_pipeline_of"
+      ],
+      "calls": [
+        "self.scenario"
+      ],
+      "direct_checks": [],
+      "helpers": [
+        "tests.test_graph_default_pipelines.GraphDefaultPipelineTests.check_test_procedural_excludes_only_cellpose",
+        "tests.test_graph_default_pipelines.GraphDefaultPipelineTests.check_test_cellpose_keeps_only_what_cellpose_needs",
+        "tests.test_graph_default_pipelines.GraphDefaultPipelineTests.check_test_graph_says_which_pipeline_it_came_from"
+      ],
+      "fixtures": [
+        "setUpClass",
+        "setUp",
+        "tearDown"
+      ],
+      "decorators": [],
+      "class_decorators": [
+        "functional_units"
+      ],
+      "subtest_sites": 0,
+      "loop_iterables": [],
+      "skip_calls": [],
+      "historical_source_matches": false,
+      "last_full_status": "unrecorded",
+      "last_full_seconds": null,
+      "skip_reason": "",
+      "runs_in_default_core": false
+    },
+    {
+      "id": "tests.test_graph_default_pipelines.GraphDefaultPipelineTests.test_choosing_between_them",
+      "file": "tests/test_graph_default_pipelines.py",
+      "class": "GraphDefaultPipelineTests",
+      "method": "test_choosing_between_them",
+      "line": 199,
+      "end_line": 210,
+      "functionality": "10 related GraphDefaultPipelineTests scenarios, each with private fixture state.",
+      "description_basis": "method docstring",
+      "category": "Image analysis, calibration and rendering",
+      "direct_subjects": [],
+      "helper_subjects": [
+        "seedvision.pipeline.default_pipelines.build_procedural_pipeline"
+      ],
+      "calls": [
+        "self.scenario"
+      ],
+      "direct_checks": [],
+      "helpers": [
+        "tests.test_graph_default_pipelines.GraphDefaultPipelineTests.check_test_list_changes_the_graph_and_back",
+        "tests.test_graph_default_pipelines.GraphDefaultPipelineTests.check_test_changing_pipeline_keeps_shared_nodes_and_clears_the_open_result",
+        "tests.test_graph_default_pipelines.GraphDefaultPipelineTests.check_test_overlays_follow_the_chosen_pipeline",
+        "tests.test_graph_default_pipelines.GraphDefaultPipelineTests.check_test_missing_package_keeps_the_current_pipeline",
+        "tests.test_graph_default_pipelines.GraphDefaultPipelineTests.check_test_returning_from_a_factory_pipeline_keeps_the_graph",
+        "tests.test_graph_default_pipelines.GraphDefaultPipelineTests.check_test_a_copy_keeps_its_graph_across_pipeline_changes",
+        "tests.test_graph_default_pipelines.GraphDefaultPipelineTests.check_test_titles_are_reserved_for_copies",
+        "tests.test_graph_default_pipelines.GraphDefaultPipelineTests.check_test_project_reopens_on_the_pipeline_it_was_saved_on",
+        "tests.test_graph_default_pipelines.GraphDefaultPipelineTests.check_test_new_project_starts_on_procedural",
+        "tests.test_graph_default_pipelines.GraphDefaultPipelineTests.check_test_training_asks_for_procedural",
+        "tests.test_graph_default_pipelines.GraphDefaultPipelineTests.choose",
+        "tests.test_graph_default_pipelines.GraphDefaultPipelineTests.assert_on",
+        "tests.test_graph_default_pipelines.GraphDefaultPipelineTests.save_project"
+      ],
+      "fixtures": [
+        "setUpClass",
+        "setUp",
+        "tearDown"
+      ],
+      "decorators": [],
+      "class_decorators": [
         "functional_units"
       ],
       "subtest_sites": 0,
@@ -14772,8 +14951,8 @@
       "file": "tests/test_image_list_controls.py",
       "class": "ImageListControlsTests",
       "method": "test_header_open_and_row_removal_preserve_files_and_unresolved_project_records",
-      "line": 80,
-      "end_line": 145,
+      "line": 81,
+      "end_line": 159,
       "functionality": "header open and row removal preserve files and unresolved project records",
       "description_basis": "method scenario name; see assertion evidence",
       "category": "Image analysis, calibration and rendering",
@@ -14819,9 +14998,28 @@
         "self.assertNotIn",
         "window.workflow_toolbar.actions",
         "self.assertIs",
-        "window.open_images_button.defaultAction",
+        "button.defaultAction",
+        "self.assertEqual",
+        "button.toolButtonStyle",
+        "button.iconSize",
+        "self.assertLessEqual",
+        "button.width",
+        "button.accessibleName",
+        "button.toolTip().startswith",
+        "button.toolTip",
+        "button.icon().pixmap(COMPACT_ICON_SIZE).toImage",
+        "button.icon().pixmap",
+        "button.icon",
+        "plus.pixelColor",
+        "plus.width",
+        "plus.height",
+        "middle.name",
+        "middle.alpha",
+        "plus.pixelColor(1, 1).alpha",
+        "self.assertFalse",
+        "window.open_action.isIconVisibleInMenu",
         "patch",
-        "window.open_images_button.click",
+        "button.click",
         "choose.assert_called_once",
         "self.assertGreater",
         "window.image_list.height",
@@ -14835,7 +15033,6 @@
         "QTest.mouseClick",
         "window.image_list.viewport",
         "close_rect.center",
-        "self.assertEqual",
         "window.image_list.count",
         "window._save_project",
         "preserved_bytes.items",
@@ -14844,7 +15041,15 @@
       "direct_checks": [
         "self.assertTrue(window._open_project(project))",
         "self.assertNotIn(window.open_action, window.workflow_toolbar.actions())",
-        "self.assertIs(window.open_images_button.defaultAction(), window.open_action)",
+        "self.assertIs(button.defaultAction(), window.open_action)",
+        "self.assertEqual(button.toolButtonStyle(), Qt.ToolButtonStyle.ToolButtonIconOnly)",
+        "self.assertEqual(button.iconSize(), COMPACT_ICON_SIZE)",
+        "self.assertLessEqual(button.width(), 30)",
+        "self.assertEqual(button.accessibleName(), 'Add images')",
+        "self.assertTrue(button.toolTip().startswith('Add one or more images'))",
+        "self.assertEqual((middle.name(), middle.alpha()), ('#f2f6fa', 255))",
+        "self.assertEqual(plus.pixelColor(1, 1).alpha(), 0)",
+        "self.assertFalse(window.open_action.isIconVisibleInMenu())",
         "choose.assert_called_once()",
         "self.assertGreater(window.image_list.height() / window.height(), 0.27)",
         "self.assertLess(window.image_list.height() / window.height(), 0.39)",
@@ -14899,8 +15104,8 @@
       "file": "tests/test_image_list_controls.py",
       "class": "ImageListControlsTests",
       "method": "test_removal_protects_edits_and_busy_work_then_clears_selected_native_display",
-      "line": 147,
-      "end_line": 210,
+      "line": 161,
+      "end_line": 224,
       "functionality": "removal protects edits and busy work then clears selected native display",
       "description_basis": "method scenario name; see assertion evidence",
       "category": "Image analysis, calibration and rendering",
@@ -15007,8 +15212,8 @@
       "file": "tests/test_image_list_controls.py",
       "class": "ImageThumbnailLoaderTests",
       "method": "test_background_decoding_and_cache",
-      "line": 393,
-      "end_line": 401,
+      "line": 402,
+      "end_line": 410,
       "functionality": "background decoding and cache",
       "description_basis": "method scenario name; see assertion evidence",
       "category": "Image analysis, calibration and rendering",
@@ -15060,8 +15265,8 @@
       "file": "tests/test_image_list_controls.py",
       "class": "ImageListRowTests",
       "method": "test_rows_show_thumbnails_status_and_the_open_image",
-      "line": 918,
-      "end_line": 932,
+      "line": 914,
+      "end_line": 928,
       "functionality": "rows show thumbnails status and the open image",
       "description_basis": "method scenario name; see assertion evidence",
       "category": "Image analysis, calibration and rendering",
@@ -15069,7 +15274,6 @@
       "helper_subjects": [
         "seedvision.ui.main_window._path_identity",
         "seedvision.ui.image_list.THUMBNAIL_SIZE.height",
-        "seedvision.ui.main_window.MainWindow",
         "seedvision.persistence.BiologicalContext",
         "seedvision.persistence.ProjectAnalysisStore",
         "seedvision.segmentation.baseline.PipelineAnalysisCache",
@@ -15078,7 +15282,8 @@
         "seedvision.persistence.ProjectImageSpec",
         "seedvision.export.project_runner.run_project",
         "seedvision.ui.image_list.row_text",
-        "seedvision.ui.image_list.read_thumbnail"
+        "seedvision.ui.image_list.read_thumbnail",
+        "seedvision.ui.main_window.MainWindow"
       ],
       "calls": [
         "self.scenario"
@@ -15091,7 +15296,7 @@
         "tests.test_image_list_controls.ImageListRowTests.check_only_painted_rows_are_decoded",
         "tests.test_image_list_controls.ImageListRowTests.check_highlight_follows_the_open_image_however_it_changes",
         "tests.test_image_list_controls.ImageListRowTests.check_rows_fit_the_narrow_panel",
-        "tests.test_image_list_controls.ImageListRowTests.check_species_shows_by_default_and_the_switch_is_remembered",
+        "tests.test_image_list_controls.ImageListRowTests.check_every_row_always_names_a_species_starting_at_unknown",
         "tests.test_image_list_controls.ImageListRowTests.check_each_row_names_the_species_recorded_for_its_own_image",
         "tests.test_image_list_controls.ImageListRowTests.check_the_selector_shows_and_sets_the_open_images_species",
         "tests.test_image_list_controls.ImageListRowTests.check_the_first_species_chosen_also_covers_images_without_one",
@@ -15104,6 +15309,7 @@
         "tests.test_image_list_controls._wait_until",
         "tests.review_fixtures.dispose_window",
         "tests.test_image_list_controls.ImageListRowTests._row",
+        "tests.test_image_list_controls.ImageListRowTests._species_change_area",
         "tests.test_image_list_controls.ImageListRowTests._picture",
         "tests.test_image_list_controls.ImageListRowTests._changed_area",
         "tests.test_image_list_controls.ImageListRowTests._install_traits",
@@ -26277,8 +26483,8 @@
       "file": "tests/test_pipeline_ui.py",
       "class": "PipelineCanvasTests",
       "method": "test_approved_reference_edge_fit_updates_live_node_parameters",
-      "line": 4421,
-      "end_line": 4422,
+      "line": 4560,
+      "end_line": 4561,
       "functionality": "approved reference edge fit updates live node parameters",
       "description_basis": "method scenario name; see assertion evidence",
       "category": "Pipeline workspace and controls",
@@ -26324,8 +26530,8 @@
       "file": "tests/test_pipeline_ui.py",
       "class": "PipelineCanvasTests",
       "method": "test_switching_images_cancels_all_previous_image_work_before_load",
-      "line": 4424,
-      "end_line": 4425,
+      "line": 4563,
+      "end_line": 4564,
       "functionality": "switching images cancels all previous image work before load",
       "description_basis": "method scenario name; see assertion evidence",
       "category": "Pipeline workspace and controls",
@@ -26370,8 +26576,8 @@
       "file": "tests/test_pipeline_ui.py",
       "class": "PipelineCanvasTests",
       "method": "test_cancelled_previous_image_completion_cannot_install_stale_result",
-      "line": 4427,
-      "end_line": 4428,
+      "line": 4566,
+      "end_line": 4567,
       "functionality": "cancelled previous image completion cannot install stale result",
       "description_basis": "method scenario name; see assertion evidence",
       "category": "Pipeline workspace and controls",
@@ -26416,8 +26622,8 @@
       "file": "tests/test_pipeline_ui.py",
       "class": "PipelineCanvasTests",
       "method": "test_failed_analysis_purges_its_partial_cache",
-      "line": 4430,
-      "end_line": 4431,
+      "line": 4569,
+      "end_line": 4570,
       "functionality": "failed analysis purges its partial cache",
       "description_basis": "method scenario name; see assertion evidence",
       "category": "Pipeline workspace and controls",
@@ -26462,8 +26668,8 @@
       "file": "tests/test_pipeline_ui.py",
       "class": "PipelineCanvasTests",
       "method": "test_superseded_analysis_is_cancelled_and_remains_visible",
-      "line": 4433,
-      "end_line": 4434,
+      "line": 4572,
+      "end_line": 4573,
       "functionality": "superseded analysis is cancelled and remains visible",
       "description_basis": "method scenario name; see assertion evidence",
       "category": "Pipeline workspace and controls",
@@ -26507,8 +26713,8 @@
       "file": "tests/test_pipeline_ui.py",
       "class": "PipelineCanvasTests",
       "method": "test_worker_progress_turns_only_the_current_revision_node_green",
-      "line": 4436,
-      "end_line": 4437,
+      "line": 4575,
+      "end_line": 4576,
       "functionality": "worker progress turns only the current revision node green",
       "description_basis": "method scenario name; see assertion evidence",
       "category": "Pipeline workspace and controls",
@@ -26551,8 +26757,8 @@
       "file": "tests/test_pipeline_ui.py",
       "class": "PipelineCanvasTests",
       "method": "test_cleared_reference_layer_returns_to_paint_and_accepts_dabs",
-      "line": 4439,
-      "end_line": 4440,
+      "line": 4578,
+      "end_line": 4579,
       "functionality": "cleared reference layer returns to paint and accepts dabs",
       "description_basis": "method scenario name; see assertion evidence",
       "category": "Pipeline workspace and controls",
@@ -26595,8 +26801,8 @@
       "file": "tests/test_pipeline_ui.py",
       "class": "PipelineCanvasTests",
       "method": "test_perimeter_source_checkbox_invalidates_every_background_consumer",
-      "line": 4442,
-      "end_line": 4443,
+      "line": 4581,
+      "end_line": 4582,
       "functionality": "perimeter source checkbox invalidates every background consumer",
       "description_basis": "method scenario name; see assertion evidence",
       "category": "Pipeline workspace and controls",
@@ -26640,8 +26846,8 @@
       "file": "tests/test_pipeline_ui.py",
       "class": "PipelineCanvasTests",
       "method": "test_annotated_seed_foreground_checkbox_defaults_on_and_invalidates_consumers",
-      "line": 4445,
-      "end_line": 4446,
+      "line": 4584,
+      "end_line": 4585,
       "functionality": "annotated seed foreground checkbox defaults on and invalidates consumers",
       "description_basis": "method scenario name; see assertion evidence",
       "category": "Pipeline workspace and controls",
@@ -26685,8 +26891,8 @@
       "file": "tests/test_pipeline_ui.py",
       "class": "PipelineCanvasTests",
       "method": "test_new_seed_preserves_the_selected_instance_tool",
-      "line": 4448,
-      "end_line": 4449,
+      "line": 4587,
+      "end_line": 4588,
       "functionality": "new seed preserves the selected instance tool",
       "description_basis": "method scenario name; see assertion evidence",
       "category": "Pipeline workspace and controls",
@@ -26729,8 +26935,8 @@
       "file": "tests/test_pipeline_ui.py",
       "class": "PipelineCanvasTests",
       "method": "test_reference_masks_run_analysis_only_after_explicit_apply",
-      "line": 4451,
-      "end_line": 4452,
+      "line": 4590,
+      "end_line": 4591,
       "functionality": "reference masks run analysis only after explicit apply",
       "description_basis": "method scenario name; see assertion evidence",
       "category": "Pipeline workspace and controls",
@@ -26773,8 +26979,8 @@
       "file": "tests/test_pipeline_ui.py",
       "class": "PipelineCanvasTests",
       "method": "test_instance_annotations_apply_separately_from_reference_masks",
-      "line": 4454,
-      "end_line": 4455,
+      "line": 4593,
+      "end_line": 4594,
       "functionality": "instance annotations apply separately from reference masks",
       "description_basis": "method scenario name; see assertion evidence",
       "category": "Pipeline workspace and controls",
@@ -26817,8 +27023,8 @@
       "file": "tests/test_pipeline_ui.py",
       "class": "PipelineCanvasTests",
       "method": "test_workflow_lifecycle",
-      "line": 4457,
-      "end_line": 4516,
+      "line": 4596,
+      "end_line": 4658,
       "functionality": "58 related PipelineCanvasTests scenarios, each with private fixture state.",
       "description_basis": "method docstring",
       "category": "Pipeline workspace and controls",
@@ -26827,6 +27033,7 @@
         "seedvision.ui.pipeline_canvas.PipelineCanvas",
         "seedvision.pipeline.build_default_pipeline",
         "seedvision.ui.main_window._path_identity",
+        "seedvision.segmentation.baseline.PipelineAnalysisCache",
         "seedvision.ui.main_window._seed_boundary_status",
         "seedvision.cuda.GpuRaster",
         "seedvision.segmentation.PipelineAnalysisCache",
@@ -26860,6 +27067,9 @@
         "tests.test_pipeline_ui.PipelineCanvasTests.check_test_current_image_name_is_in_pane_and_list_selection_tracks_it",
         "tests.test_pipeline_ui.PipelineCanvasTests.check_test_switching_images_selects_the_lowest_empty_seed_id",
         "tests.test_pipeline_ui.PipelineCanvasTests.check_test_run_to_node_scopes_execution_to_enabled_ancestors",
+        "tests.test_pipeline_ui.PipelineCanvasTests.check_test_run_to_node_recomputes_only_what_has_changed",
+        "tests.test_pipeline_ui.PipelineCanvasTests.check_test_cancelling_a_run_keeps_results_and_restores_its_changes",
+        "tests.test_pipeline_ui.PipelineCanvasTests.check_test_results_refuse_a_report_while_nodes_are_out_of_date",
         "tests.test_pipeline_ui.PipelineCanvasTests.check_test_loading_saved_references_reruns_only_the_finished_runs_scope",
         "tests.test_pipeline_ui.PipelineCanvasTests.check_test_run_to_a_disabled_node_enables_it_or_says_why",
         "tests.test_pipeline_ui.PipelineCanvasTests.check_test_node_menu_offers_to_enable_a_disabled_node",
@@ -26945,8 +27155,8 @@
       "file": "tests/test_pipeline_ui.py",
       "class": "PipelineCanvasTests",
       "method": "test_validation_and_recovery",
-      "line": 4518,
-      "end_line": 4520,
+      "line": 4660,
+      "end_line": 4662,
       "functionality": "1 related PipelineCanvasTests scenarios, each with private fixture state.",
       "description_basis": "method docstring",
       "category": "Pipeline workspace and controls",
@@ -26989,8 +27199,8 @@
       "file": "tests/test_pipeline_ui.py",
       "class": "PipelineCanvasTests",
       "method": "test_calibration_nodes_render_references_and_metric_scale",
-      "line": 4868,
-      "end_line": 4869,
+      "line": 5019,
+      "end_line": 5020,
       "functionality": "calibration nodes render references and metric scale",
       "description_basis": "method scenario name; see assertion evidence",
       "category": "Pipeline workspace and controls",
@@ -26998,6 +27208,8 @@
       "helper_subjects": [
         "seedvision.segmentation.analyze_path",
         "seedvision.ui.image_view.ImageView",
+        "seedvision.ui.main_window._path_identity",
+        "seedvision.segmentation.baseline.PipelineAnalysisCache",
         "seedvision.ui.main_window.MainWindow"
       ],
       "calls": [
@@ -27035,8 +27247,8 @@
       "file": "tests/test_pipeline_workflow_ui.py",
       "class": "PipelineWorkflowUiTests",
       "method": "test_workflow_lifecycle",
-      "line": 491,
-      "end_line": 510,
+      "line": 492,
+      "end_line": 511,
       "functionality": "workflow lifecycle",
       "description_basis": "method scenario name; see assertion evidence",
       "category": "Pipeline workspace and controls",
@@ -33148,14 +33360,15 @@
       "class": "NativePreflightOutcomeTests",
       "method": "test_project_subject_and_stale_pretask_attempt_preserve_history_without_image_cleanup",
       "line": 226,
-      "end_line": 240,
+      "end_line": 242,
       "functionality": "project subject and stale pretask attempt preserve history without image cleanup",
       "description_basis": "method scenario name; see assertion evidence",
       "category": "Persistence, export, identity and outcomes",
       "direct_subjects": [
         "seedvision.export.preflight_outcomes.begin_preflight(self.master, 'project', 'project_load').outcome",
         "seedvision.export.preflight_outcomes.begin_preflight",
-        "seedvision.export.preflight_outcomes.begin_preflight(self.source, 'image', 'desktop_prepare').outcome"
+        "seedvision.export.preflight_outcomes.begin_preflight(self.source, 'image', 'desktop_prepare').outcome",
+        "seedvision.export.run_outcomes.load_run_outcome"
       ],
       "helper_subjects": [],
       "calls": [
@@ -33170,6 +33383,9 @@
         "cleanup.assert_not_called",
         "self.assertIs",
         "self.assertNotIn",
+        "runs.load_run_outcome",
+        "path.read_text",
+        "(self.root / 'artifacts' / 'run-outcomes').glob",
         "self.assertIn",
         "self.window._active_tasks.clear"
       ],
@@ -33177,8 +33393,8 @@
         "cleanup.assert_not_called()",
         "self.assertIs(self.window._active_tasks[self.key], replacement)",
         "self.assertNotIn(self.key, self.window._image_run_outcomes)",
-        "self.assertIn(project.payload['outcome_revision'], self.window._run_outcome_history)",
-        "self.assertIn(outcome.payload['outcome_revision'], self.window._run_outcome_history)"
+        "self.assertIn(project.payload['outcome_revision'], saved)",
+        "self.assertIn(outcome.payload['outcome_revision'], saved)"
       ],
       "helpers": [],
       "fixtures": [],
@@ -33187,7 +33403,9 @@
         "unittest.skipUnless(torch.cuda.is_available(), 'Native boundary fixtures require CUDA')"
       ],
       "subtest_sites": 0,
-      "loop_iterables": [],
+      "loop_iterables": [
+        "(self.root / 'artifacts' / 'run-outcomes').glob('*/run-outcome.json')"
+      ],
       "skip_calls": [],
       "historical_source_matches": false,
       "last_full_status": "unrecorded",
@@ -39618,6 +39836,90 @@
       "loop_iterables": [
         "enumerate(errors)"
       ],
+      "skip_calls": [],
+      "historical_source_matches": false,
+      "last_full_status": "unrecorded",
+      "last_full_seconds": null,
+      "skip_reason": "",
+      "runs_in_default_core": false
+    },
+    {
+      "id": "tests.test_run_to_node_cache.RunToNodeCacheTests.test_layer_builder",
+      "file": "tests/test_run_to_node_cache.py",
+      "class": "RunToNodeCacheTests",
+      "method": "test_layer_builder",
+      "line": 226,
+      "end_line": 231,
+      "functionality": "How a run to one node treats the layer products it leaves out.",
+      "description_basis": "method docstring",
+      "category": "Image analysis, calibration and rendering",
+      "direct_subjects": [],
+      "helper_subjects": [
+        "seedvision.visualization.build_analysis_layers"
+      ],
+      "calls": [
+        "self.scenario"
+      ],
+      "direct_checks": [],
+      "helpers": [
+        "tests.test_run_to_node_cache.RunToNodeCacheTests.check_retained_layers_keep_their_results_when_their_inputs_change",
+        "tests.test_run_to_node_cache.RunToNodeCacheTests.check_a_later_curve_fit_starts_from_traces_that_ran_under_a_kept_fit",
+        "tests.test_run_to_node_cache.RunToNodeCacheTests.check_a_retained_node_with_no_result_still_gets_one",
+        "tests.test_run_to_node_cache.RunToNodeCacheTests.check_seed_traits_follow_annotation_content_rather_than_the_array",
+        "tests.test_run_to_node_cache.seed_arguments"
+      ],
+      "fixtures": [
+        "setUp"
+      ],
+      "decorators": [],
+      "class_decorators": [
+        "functional_units"
+      ],
+      "subtest_sites": 0,
+      "loop_iterables": [],
+      "skip_calls": [],
+      "historical_source_matches": false,
+      "last_full_status": "unrecorded",
+      "last_full_seconds": null,
+      "skip_reason": "",
+      "runs_in_default_core": false
+    },
+    {
+      "id": "tests.test_run_to_node_cache.RunToNodeCacheTests.test_analysis",
+      "file": "tests/test_run_to_node_cache.py",
+      "class": "RunToNodeCacheTests",
+      "method": "test_analysis",
+      "line": 233,
+      "end_line": 236,
+      "functionality": "What a run to one node executes and keeps across the whole analysis.",
+      "description_basis": "method docstring",
+      "category": "Image analysis, calibration and rendering",
+      "direct_subjects": [],
+      "helper_subjects": [
+        "seedvision.persistence.image_decoding.read_image",
+        "seedvision.pipeline.build_default_pipeline",
+        "seedvision.segmentation.PipelineAnalysisCache",
+        "seedvision.segmentation.baseline.analyze_image",
+        "seedvision.pipeline.node_aliases.owning_node",
+        "seedvision.export.results.result_report"
+      ],
+      "calls": [
+        "self.scenario"
+      ],
+      "direct_checks": [],
+      "helpers": [
+        "tests.test_run_to_node_cache.RunToNodeCacheTests.check_analysis_runs_only_the_target_and_keeps_every_other_result",
+        "tests.test_run_to_node_cache.RunToNodeCacheTests.check_a_changed_crop_gives_up_what_no_longer_lines_up"
+      ],
+      "fixtures": [
+        "setUp"
+      ],
+      "decorators": [],
+      "class_decorators": [
+        "functional_units"
+      ],
+      "subtest_sites": 0,
+      "loop_iterables": [],
       "skip_calls": [],
       "historical_source_matches": false,
       "last_full_status": "unrecorded",
@@ -46599,9 +46901,50 @@
         "self.assertEqual(set(restored.state_dict()), set(model.state_dict()))"
       ]
     },
+    "tests.test_default_pipeline_copies.DefaultPipelineCopyTests.check_test_list_offers_five_until_the_setting_shows_them_all": {
+      "file": "tests/test_default_pipeline_copies.py",
+      "line": 247,
+      "checks": [
+        "self.assertEqual(analysis['Settings'].menu().actions(), [action])",
+        "self.assertFalse(action.isChecked())",
+        "self.assertEqual(selectable, short)",
+        "self.assertEqual(shown, ['SEED FIDDLE', *short[:2], 'SEED ANALYSIS', *short[2:]])",
+        "self.assertEqual(self.selector.currentText(), short[0])",
+        "self.assertEqual(seen, short[1:])",
+        "self.assertTrue(self.window._application_settings.value(SHOW_ALL_TEMPLATES_SETTING, type=bool))",
+        "self.assertEqual(len(selectable), 20)",
+        "self.assertEqual(set(selectable), {*short[:2], *name.values()})",
+        "self.assertEqual([text for text in shown if text not in selectable], ['SEED FIDDLE', 'SEED ANALYSIS', 'THRESHOLDS AND CLASSIFIERS', 'COLOUR CORRECTION'])",
+        "self.assertEqual(self.offered()[1], short)"
+      ]
+    },
+    "tests.test_default_pipeline_copies.DefaultPipelineCopyTests.check_test_show_all_setting_is_remembered_by_the_next_window": {
+      "file": "tests/test_default_pipeline_copies.py",
+      "line": 280,
+      "checks": [
+        "self.assertTrue(second.pipeline_workflow.show_all_action.isChecked())",
+        "self.assertFalse(selector.view().isRowHidden(second.pipeline_workflow.index_of('plantcv_threshold_texture')))"
+      ]
+    },
+    "tests.test_default_pipeline_copies.DefaultPipelineCopyTests.check_test_hidden_pipeline_stays_loaded_and_copies_stay_listed": {
+      "file": "tests/test_default_pipeline_copies.py",
+      "line": 293,
+      "checks": [
+        "self.assertTrue(self.selector.view().isRowHidden(row))",
+        "self.assertEqual(self.selector.currentIndex(), row)",
+        "self.assertEqual(self.presenter.workflow.recipe.recipe_id, recipe_id)",
+        "self.assertFalse(self.selector.view().isRowHidden(row))",
+        "self.assertTrue(self.selector.view().isRowHidden(row))",
+        "self.assertEqual(self.selector.currentIndex(), row)",
+        "self.assertEqual(self.presenter.workflow.recipe.recipe_id, recipe_id)",
+        "self.assertIn('My copy', selectable)",
+        "self.assertIn('SAVED IN THIS PROJECT', shown)",
+        "self.assertIn('My copy', self.offered()[1])"
+      ]
+    },
     "tests.test_default_pipeline_copies.DefaultPipelineCopyTests.check_test_load_and_save_icons_sit_beside_rename_and_offer_no_copy": {
       "file": "tests/test_default_pipeline_copies.py",
-      "line": 143,
+      "line": 144,
       "checks": [
         "self.assertEqual(layout.indexOf(presenter.load_button), rename + 1)",
         "self.assertEqual(layout.indexOf(presenter.save_button), rename + 2)",
@@ -46629,7 +46972,7 @@
     },
     "tests.test_default_pipeline_copies.DefaultPipelineCopyTests.check_test_more_menu_holds_only_node_removal_and_export_when_narrow": {
       "file": "tests/test_default_pipeline_copies.py",
-      "line": 201,
+      "line": 202,
       "checks": [
         "self.assertEqual([action.text() for action in menu.actions()], ['Export run…', 'Remove selected added node'])",
         "self.assertFalse(self.presenter.export_button.isHidden())",
@@ -46641,7 +46984,7 @@
     },
     "tests.test_default_pipeline_copies.DefaultPipelineCopyTests.check_test_factory_entries_show_their_caveats_when_hovered": {
       "file": "tests/test_default_pipeline_copies.py",
-      "line": 218,
+      "line": 219,
       "checks": [
         "self.assertTrue(tooltip.startswith('<p>'))",
         "self.assertIn(escape(recipe.description), tooltip)",
@@ -46651,7 +46994,7 @@
     },
     "tests.test_default_pipeline_copies.DefaultPipelineCopyTests.check_test_add_node_names_line_up_whether_used_or_not": {
       "file": "tests/test_default_pipeline_copies.py",
-      "line": 104,
+      "line": 105,
       "checks": [
         "self.assertTrue(used)",
         "self.assertTrue(unused)",
@@ -46665,7 +47008,7 @@
     },
     "tests.test_default_pipeline_copies.DefaultPipelineCopyTests.check_test_selector_is_wider_with_rename_beside_it_and_no_lock_control": {
       "file": "tests/test_default_pipeline_copies.py",
-      "line": 131,
+      "line": 132,
       "checks": [
         "self.assertEqual(self.selector.width(), SELECTOR_WIDTH)",
         "self.assertEqual(layout.indexOf(self.presenter.rename_button), layout.indexOf(self.selector) + 1)",
@@ -46677,10 +47020,10 @@
     },
     "tests.test_default_pipeline_copies.DefaultPipelineCopyTests.check_test_accepting_loads_the_copy_and_applies_the_add_that_asked": {
       "file": "tests/test_default_pipeline_copies.py",
-      "line": 276,
+      "line": 353,
       "checks": [
         "question.assert_called_once()",
-        "self.assertEqual(prompt.call_args.kwargs['text'], 'Default seed analysis copy')",
+        "self.assertEqual(prompt.call_args.kwargs['text'], 'Procedural seed analysis copy')",
         "self.assert_on_copy('My seeds')",
         "self.assertEqual(len(self.window.catalogue_nodes.instances), 1)",
         "self.assertEqual(self.copy_names(), ['My seeds'])",
@@ -46691,7 +47034,7 @@
     },
     "tests.test_default_pipeline_copies.DefaultPipelineCopyTests.check_test_accepting_applies_move_to_unused_and_remove": {
       "file": "tests/test_default_pipeline_copies.py",
-      "line": 293,
+      "line": 370,
       "checks": [
         "self.assert_on_copy('Restored')",
         "self.assertNotIn(OPTIONAL_NODE, self.window.pipeline.unused_nodes)",
@@ -46706,7 +47049,7 @@
     },
     "tests.test_default_pipeline_copies.DefaultPipelineCopyTests.check_test_rename_offers_a_copy_on_a_default_and_renames_a_copy": {
       "file": "tests/test_default_pipeline_copies.py",
-      "line": 339,
+      "line": 416,
       "checks": [
         "question.assert_called_once()",
         "prompt.assert_not_called()",
@@ -46728,7 +47071,7 @@
     },
     "tests.test_default_pipeline_copies.DefaultPipelineCopyTests.check_test_switching_keeps_copies_and_defaults_stay_factory": {
       "file": "tests/test_default_pipeline_copies.py",
-      "line": 376,
+      "line": 453,
       "checks": [
         "self.assertEqual(self.documents.custom['Plain'].name, 'Plain')",
         "self.assertTrue(self.documents.locked)",
@@ -46750,12 +47093,12 @@
     },
     "tests.test_default_pipeline_copies.DefaultPipelineCopyTests.default_positions": {
       "file": "tests/test_default_pipeline_copies.py",
-      "line": 75,
+      "line": 76,
       "checks": []
     },
     "tests.test_default_pipeline_copies.DefaultPipelineCopyTests.make_copy": {
       "file": "tests/test_default_pipeline_copies.py",
-      "line": 86,
+      "line": 87,
       "checks": [
         "self.assertTrue(self.documents.rename_current())",
         "self.assertFalse(self.documents.locked)"
@@ -46763,17 +47106,17 @@
     },
     "tests.test_default_pipeline_copies.DefaultPipelineCopyTests.binary": {
       "file": "tests/test_default_pipeline_copies.py",
-      "line": 64,
+      "line": 65,
       "checks": []
     },
     "tests.test_default_pipeline_copies.DefaultPipelineCopyTests.threshold": {
       "file": "tests/test_default_pipeline_copies.py",
-      "line": 69,
+      "line": 70,
       "checks": []
     },
     "tests.test_default_pipeline_copies.DefaultPipelineCopyTests.assert_locked_default": {
       "file": "tests/test_default_pipeline_copies.py",
-      "line": 91,
+      "line": 92,
       "checks": [
         "self.assertTrue(self.documents.locked)",
         "self.assertEqual(self.documents.current_name, name)",
@@ -46783,19 +47126,19 @@
     },
     "tests.test_default_pipeline_copies.DefaultPipelineCopyTests.default_value": {
       "file": "tests/test_default_pipeline_copies.py",
-      "line": 72,
+      "line": 73,
       "checks": []
     },
     "tests.test_default_pipeline_copies.DefaultPipelineCopyTests.show_copy": {
       "file": "tests/test_default_pipeline_copies.py",
-      "line": 82,
+      "line": 83,
       "checks": [
         "self.assertEqual(self.documents.current_name, name)"
       ]
     },
     "tests.test_default_pipeline_copies.DefaultPipelineCopyTests.assert_on_copy": {
       "file": "tests/test_default_pipeline_copies.py",
-      "line": 97,
+      "line": 98,
       "checks": [
         "self.assertFalse(self.documents.locked)",
         "self.assertEqual(self.documents.current_name, name)",
@@ -46806,17 +47149,22 @@
     },
     "tests.test_default_pipeline_copies.answers": {
       "file": "tests/test_default_pipeline_copies.py",
-      "line": 36,
+      "line": 37,
       "checks": []
     },
     "tests.test_default_pipeline_copies.DefaultPipelineCopyTests.copy_names": {
       "file": "tests/test_default_pipeline_copies.py",
-      "line": 78,
+      "line": 79,
+      "checks": []
+    },
+    "tests.test_default_pipeline_copies.DefaultPipelineCopyTests.offered": {
+      "file": "tests/test_default_pipeline_copies.py",
+      "line": 240,
       "checks": []
     },
     "tests.test_default_pipeline_copies.DefaultPipelineCopyTests.check_test_declining_keeps_the_default_and_never_asks_for_a_name": {
       "file": "tests/test_default_pipeline_copies.py",
-      "line": 239,
+      "line": 316,
       "checks": [
         "self.assert_locked_default()",
         "self.assertTrue(control.isEnabled(), control)",
@@ -46838,7 +47186,7 @@
     },
     "tests.test_default_pipeline_copies.DefaultPipelineCopyTests.check_test_cancelling_the_name_leaves_the_default_and_drops_the_edit": {
       "file": "tests/test_default_pipeline_copies.py",
-      "line": 265,
+      "line": 342,
       "checks": [
         "self.assertFalse(self.window.catalogue_nodes.add_entry(ADDED))",
         "question.assert_called_once()",
@@ -46851,7 +47199,7 @@
     },
     "tests.test_default_pipeline_copies.DefaultPipelineCopyTests.check_test_refused_names_ask_again_with_the_reason_and_typed_text": {
       "file": "tests/test_default_pipeline_copies.py",
-      "line": 322,
+      "line": 399,
       "checks": [
         "self.assertTrue(self.documents.locked)",
         "self.assertTrue(self.documents.rename_current())",
@@ -46867,7 +47215,7 @@
     },
     "tests.test_default_pipeline_copies.DefaultPipelineCopyTests.check_test_project_keeps_every_copy_and_reopens_on_the_current_one": {
       "file": "tests/test_default_pipeline_copies.py",
-      "line": 411,
+      "line": 488,
       "checks": [
         "self.assertEqual(payload['active_pipeline'], 'Binary')",
         "self.assertEqual([copy['name'] for copy in payload['custom_pipelines']], ['Plain'])",
@@ -46879,7 +47227,7 @@
     },
     "tests.test_default_pipeline_copies.DefaultPipelineCopyTests.check_test_project_without_copies_saves_no_copy_keys_and_opens_locked": {
       "file": "tests/test_default_pipeline_copies.py",
-      "line": 431,
+      "line": 508,
       "checks": [
         "self.assertNotIn('active_pipeline', payload)",
         "self.assertNotIn('custom_pipelines', payload)",
@@ -46889,7 +47237,7 @@
     },
     "tests.test_default_pipeline_copies.DefaultPipelineCopyTests.check_test_lock_notice_settings_profile_and_finished_work_respect_the_lock": {
       "file": "tests/test_default_pipeline_copies.py",
-      "line": 442,
+      "line": 519,
       "checks": [
         "self.assertIn('Default pipelines cannot be edited', notice.text())",
         "self.assertFalse(self.window._load_analysis_settings_profile(profile))",
@@ -46906,12 +47254,12 @@
     },
     "tests.test_default_pipeline_copies.DefaultPipelineCopyTests.edited_default_graph": {
       "file": "tests/test_default_pipeline_copies.py",
-      "line": 470,
+      "line": 547,
       "checks": []
     },
     "tests.test_default_pipeline_copies.DefaultPipelineCopyTests.save_project": {
       "file": "tests/test_default_pipeline_copies.py",
-      "line": 475,
+      "line": 552,
       "checks": [
         "critical.assert_not_called()",
         "self.assertTrue(destination.is_file())"
@@ -46919,7 +47267,7 @@
     },
     "tests.test_default_pipeline_copies.DefaultPipelineCopyTests.open_project": {
       "file": "tests/test_default_pipeline_copies.py",
-      "line": 482,
+      "line": 559,
       "checks": [
         "self.assertTrue(self.window._open_project(destination))",
         "critical.assert_not_called()"
@@ -47047,22 +47395,15 @@
       "line": 149,
       "checks": []
     },
-    "tests.test_desktop_terminal_history.DesktopTerminalHistoryTests.check_test_reopened_disk_history_ack_export_keeps_current_analysis_drafts_and_reviews_unchanged": {
+    "tests.test_desktop_terminal_history.DesktopTerminalHistoryTests.check_results_says_why_the_open_images_run_did_not_complete": {
       "file": "tests/test_desktop_terminal_history.py",
       "line": 206,
       "checks": [
-        "self.assertEqual(table.rowCount(), 1)",
-        "self.assertEqual(table.item(0, 0).text(), 'project')",
-        "self.assertIs(self.window._analyses[self.key], current)",
-        "self.assertIs(self.window._draft_instance_annotations[self.key], draft)",
-        "self.assertEqual(self.window._image_run_outcomes, {})",
-        "self.assertEqual(self.window._run_outcome_history, {})",
-        "self.assertFalse((self.root / 'result-reviews').exists())",
-        "self.assertEqual(saved.read_bytes(), old)",
-        "self.assertEqual(self.window._selected_history_outcome.payload, outcome.payload)",
-        "self.assertTrue(any(('observations made during earlier attempts' in note for note in observed)))",
-        "self.assertEqual(json.loads(acknowledgment.read_bytes())['outcome_revision'], outcome.payload['outcome_revision'])",
-        "self.assertEqual(history.load_terminal_record(exported).payload, outcome.payload)"
+        "opened.assert_not_called()",
+        "self.assertTrue(text.startswith(f'Run {state}: '))",
+        "self.assertIn('Preparation phase: desktop prepare', text)",
+        "self.assertIn('source rejected', text)",
+        "self.assertEqual(shown.call_args.args[2], 'Analyze the current image first.')"
       ]
     },
     "tests.test_edge_trace_commit.EdgeTraceCommitTests.check_test_open_trace_is_exactly_one_pixel_independent_of_brush_radius": {
@@ -47338,6 +47679,157 @@
         "self.assertRaises(TypeError)",
         "self.assertRaises(primitive.FillCancelledError)",
         "torch.testing.assert_close(source, before)"
+      ]
+    },
+    "tests.test_graph_default_pipelines.GraphDefaultPipelineTests.check_test_procedural_excludes_only_cellpose": {
+      "file": "tests/test_graph_default_pipelines.py",
+      "line": 67,
+      "checks": [
+        "self.assertEqual(set(graph.nodes), set(whole.nodes) - {CELLPOSE_NODE})",
+        "self.assertIn(CELLPOSE_NODE, graph.unused_nodes)",
+        "self.assertFalse(graph.node(CELLPOSE_NODE).enabled)",
+        "self.assertTrue(graph.node('procedural_instances').enabled)",
+        "self.assertEqual(node.enabled, whole.node(identifier).enabled, identifier)"
+      ]
+    },
+    "tests.test_graph_default_pipelines.GraphDefaultPipelineTests.check_test_cellpose_keeps_only_what_cellpose_needs": {
+      "file": "tests/test_graph_default_pipelines.py",
+      "line": 77,
+      "checks": [
+        "self.assertEqual(set(graph.nodes), CELLPOSE_NODES)",
+        "self.assertTrue(all((node.enabled for node in graph.nodes.values())))",
+        "self.assertFalse(any((node.enabled for node in graph.unused_nodes.values())))",
+        "self.assertEqual(graph.missing_input_ports(identifier), ())",
+        "self.assertIn(CELLPOSE_NODE, graph.downstream(identifier, recursive=True))",
+        "self.assertEqual({**graph.nodes, **graph.unused_nodes}.keys(), {**whole.nodes, **whole.unused_nodes}.keys())",
+        "self.assertEqual(set(whole.nodes), CELLPOSE_NODES)"
+      ]
+    },
+    "tests.test_graph_default_pipelines.GraphDefaultPipelineTests.check_test_graph_says_which_pipeline_it_came_from": {
+      "file": "tests/test_graph_default_pipelines.py",
+      "line": 93,
+      "checks": [
+        "self.assertIs(graph_pipeline_of(build_procedural_pipeline().nodes), PROCEDURAL_SEED_ANALYSIS)",
+        "self.assertIs(graph_pipeline_of(build_cellpose_pipeline().nodes), CELLPOSE_SEED_ANALYSIS)"
+      ]
+    },
+    "tests.test_graph_default_pipelines.GraphDefaultPipelineTests.check_test_list_changes_the_graph_and_back": {
+      "file": "tests/test_graph_default_pipelines.py",
+      "line": 97,
+      "checks": [
+        "self.assert_on(PROCEDURAL_SEED_ANALYSIS, procedural)",
+        "self.assert_on(CELLPOSE_SEED_ANALYSIS, CELLPOSE_NODES)",
+        "self.assertEqual(self.window._selected_pipeline_node, CELLPOSE_NODE)",
+        "self.assertEqual(self.window.pipeline_inspector._node.identifier, CELLPOSE_NODE)",
+        "self.assertTrue(self.window.pipeline.node(CELLPOSE_NODE).enabled)",
+        "self.assert_on(PROCEDURAL_SEED_ANALYSIS, procedural)",
+        "self.assertFalse(self.window.pipeline.node(CELLPOSE_NODE).enabled)",
+        "self.assertEqual(self.window._selected_pipeline_node, 'seed_scale_estimation')"
+      ]
+    },
+    "tests.test_graph_default_pipelines.GraphDefaultPipelineTests.check_test_changing_pipeline_keeps_shared_nodes_and_clears_the_open_result": {
+      "file": "tests/test_graph_default_pipelines.py",
+      "line": 110,
+      "checks": [
+        "self.assertNotIn(key, self.window._analyses)",
+        "self.assertIn(CELLPOSE_NODE, dirty)",
+        "self.assertIn('procedural_instances', dirty)",
+        "self.assertFalse(dirty & CELLPOSE_NODES - {CELLPOSE_NODE})"
+      ]
+    },
+    "tests.test_graph_default_pipelines.GraphDefaultPipelineTests.check_test_overlays_follow_the_chosen_pipeline": {
+      "file": "tests/test_graph_default_pipelines.py",
+      "line": 122,
+      "checks": [
+        "self.assertNotIn('cellpose_sam_instances', modes())",
+        "self.assertIn('procedural_instances', modes())",
+        "self.assertIn('cellpose_sam_instances', modes())",
+        "self.assertNotIn('procedural_instances', modes())"
+      ]
+    },
+    "tests.test_graph_default_pipelines.GraphDefaultPipelineTests.check_test_missing_package_keeps_the_current_pipeline": {
+      "file": "tests/test_graph_default_pipelines.py",
+      "line": 131,
+      "checks": [
+        "self.assertEqual(warning.call_args.args[1], 'Cellpose-SAM is not installed')",
+        "self.assert_on(PROCEDURAL_SEED_ANALYSIS, set(build_procedural_pipeline().nodes))"
+      ]
+    },
+    "tests.test_graph_default_pipelines.GraphDefaultPipelineTests.check_test_returning_from_a_factory_pipeline_keeps_the_graph": {
+      "file": "tests/test_graph_default_pipelines.py",
+      "line": 137,
+      "checks": [
+        "self.assertEqual(self.presenter.workflow.recipe.recipe_id, 'plantcv_threshold_triangle')",
+        "self.assertEqual(set(self.window.pipeline.nodes), CELLPOSE_NODES)",
+        "self.assert_on(CELLPOSE_SEED_ANALYSIS, CELLPOSE_NODES)",
+        "self.assert_on(PROCEDURAL_SEED_ANALYSIS, set(build_procedural_pipeline().nodes))"
+      ]
+    },
+    "tests.test_graph_default_pipelines.GraphDefaultPipelineTests.check_test_a_copy_keeps_its_graph_across_pipeline_changes": {
+      "file": "tests/test_graph_default_pipelines.py",
+      "line": 148,
+      "checks": [
+        "self.assertEqual(prompt.call_args.kwargs['text'], 'Cellpose seed analysis copy')",
+        "self.assertEqual(self.documents.factory_name, CELLPOSE_SEED_ANALYSIS.title)",
+        "self.assertFalse(self.documents.locked)",
+        "self.assert_on(PROCEDURAL_SEED_ANALYSIS, set(build_procedural_pipeline().nodes))",
+        "self.assertEqual(self.documents.current_name, 'Mine')",
+        "self.assertEqual(self.documents.factory_name, CELLPOSE_SEED_ANALYSIS.title)",
+        "self.assertEqual(set(self.window.pipeline.nodes), CELLPOSE_NODES | {'hue_only'})",
+        "self.assert_on(CELLPOSE_SEED_ANALYSIS, CELLPOSE_NODES)"
+      ]
+    },
+    "tests.test_graph_default_pipelines.GraphDefaultPipelineTests.check_test_titles_are_reserved_for_copies": {
+      "file": "tests/test_graph_default_pipelines.py",
+      "line": 166,
+      "checks": [
+        "self.assertEqual(self.documents.unique_name(pipeline.title), pipeline.title + ' 2')"
+      ]
+    },
+    "tests.test_graph_default_pipelines.GraphDefaultPipelineTests.check_test_project_reopens_on_the_pipeline_it_was_saved_on": {
+      "file": "tests/test_graph_default_pipelines.py",
+      "line": 170,
+      "checks": [
+        "self.assertNotIn('active_pipeline', saved)",
+        "self.assertTrue(self.window._open_project(destination))",
+        "self.assert_on(CELLPOSE_SEED_ANALYSIS, CELLPOSE_NODES)"
+      ]
+    },
+    "tests.test_graph_default_pipelines.GraphDefaultPipelineTests.check_test_new_project_starts_on_procedural": {
+      "file": "tests/test_graph_default_pipelines.py",
+      "line": 181,
+      "checks": [
+        "self.assert_on(PROCEDURAL_SEED_ANALYSIS, set(build_procedural_pipeline().nodes))"
+      ]
+    },
+    "tests.test_graph_default_pipelines.GraphDefaultPipelineTests.check_test_training_asks_for_procedural": {
+      "file": "tests/test_graph_default_pipelines.py",
+      "line": 187,
+      "checks": [
+        "self.assertEqual(information.call_args.args[1], 'Choose Procedural seed analysis')"
+      ]
+    },
+    "tests.test_graph_default_pipelines.GraphDefaultPipelineTests.choose": {
+      "file": "tests/test_graph_default_pipelines.py",
+      "line": 51,
+      "checks": []
+    },
+    "tests.test_graph_default_pipelines.GraphDefaultPipelineTests.assert_on": {
+      "file": "tests/test_graph_default_pipelines.py",
+      "line": 56,
+      "checks": [
+        "self.assertEqual(set(self.window.pipeline.nodes), active)",
+        "self.assertEqual(self.selector.currentText(), pipeline.title)",
+        "self.assertEqual(self.documents.current_name, pipeline.title)",
+        "self.assertTrue(self.documents.locked)",
+        "self.assertEqual(set(self.window.pipeline_canvas.node_items), active)"
+      ]
+    },
+    "tests.test_graph_default_pipelines.GraphDefaultPipelineTests.save_project": {
+      "file": "tests/test_graph_default_pipelines.py",
+      "line": 63,
+      "checks": [
+        "self.assertTrue(self.window._save_project_as())"
       ]
     },
     "tests.test_grouped_comparison.GroupedComparisonTests.check_test_constant_paired_shift_has_exact_bounds_and_never_certifies_science": {
@@ -47836,7 +48328,7 @@
     },
     "tests.test_image_list_controls.ImageThumbnailLoaderTests.check_reader_fits_the_box_and_reports_what_it_cannot_read": {
       "file": "tests/test_image_list_controls.py",
-      "line": 230,
+      "line": 244,
       "checks": [
         "self.assertEqual(error, '')",
         "self.assertEqual((landscape.width(), landscape.height()), (48, 31))",
@@ -47851,7 +48343,7 @@
     },
     "tests.test_image_list_controls.ImageThumbnailLoaderTests.check_decoding_stays_off_the_gui_thread_and_queues_each_image_once": {
       "file": "tests/test_image_list_controls.py",
-      "line": 262,
+      "line": 276,
       "checks": [
         "self.assertIsNone(self.loader.get(str(path)))",
         "self.assertIsNone(self.loader.get(str(path)))",
@@ -47867,7 +48359,7 @@
     },
     "tests.test_image_list_controls.ImageThumbnailLoaderTests.check_abandoned_work_is_dropped_and_the_cache_stays_bounded": {
       "file": "tests/test_image_list_controls.py",
-      "line": 284,
+      "line": 298,
       "checks": [
         "self.assertEqual(len(threads), 1)",
         "self.assertFalse(self.loader._entries)",
@@ -47878,7 +48370,7 @@
     },
     "tests.test_image_list_controls.ImageThumbnailLoaderTests.check_a_changed_source_file_is_decoded_again": {
       "file": "tests/test_image_list_controls.py",
-      "line": 309,
+      "line": 323,
       "checks": [
         "self.assertIs(self.loader._entries[str(path)], before)",
         "self.assertEqual(changed, [True])",
@@ -47888,7 +48380,7 @@
     },
     "tests.test_image_list_controls.ImageThumbnailLoaderTests.check_stop_waits_for_the_decode_in_flight_without_blocking_it": {
       "file": "tests/test_image_list_controls.py",
-      "line": 324,
+      "line": 338,
       "checks": [
         "self.assertLess(time.monotonic() - started, ImageThumbnailLoader.STOP_WAIT_MS / 1000)",
         "self.assertEqual(self.loader._pool.activeThreadCount(), 0)",
@@ -47897,7 +48389,7 @@
     },
     "tests.test_image_list_controls.ImageThumbnailLoaderTests.check_names_fit_two_lines_and_keep_their_distinguishing_end": {
       "file": "tests/test_image_list_controls.py",
-      "line": 339,
+      "line": 353,
       "checks": [
         "self.assertEqual(name_lines('IMG_9403.JPG', metrics, 500), ('IMG_9403.JPG',))",
         "self.assertEqual(name_lines('IMG_9403.JPG', metrics, width), ('IMG_9403.', 'JPG'))",
@@ -47910,7 +48402,7 @@
     },
     "tests.test_image_list_controls.ImageThumbnailLoaderTests.check_species_text_shortens_the_genus_before_the_epithet": {
       "file": "tests/test_image_list_controls.py",
-      "line": 353,
+      "line": 367,
       "checks": [
         "self.assertEqual(species_text('Lupinus mexicanus', metrics, 500), 'Lupinus mexicanus')",
         "self.assertLess(width, metrics.horizontalAdvance('Lupinus mexicanus'))",
@@ -47922,7 +48414,7 @@
     },
     "tests.test_image_list_controls.ImageThumbnailLoaderTests.check_species_is_a_column_when_wide_and_a_second_line_when_narrow": {
       "file": "tests/test_image_list_controls.py",
-      "line": 365,
+      "line": 379,
       "checks": [
         "self.assertEqual(wide[0].species_rect, wide[1].species_rect)",
         "self.assertEqual(wide[0].species_rect.right(), area.right())",
@@ -47935,34 +48427,32 @@
         "self.assertEqual(narrow.species_rect.left(), narrow.name_rect.left())",
         "self.assertTrue(narrow_area.contains(narrow.name_rect))",
         "self.assertTrue(narrow_area.contains(narrow.species_rect))",
-        "self.assertLessEqual(metrics.horizontalAdvance(narrow.species), narrow_area.width())",
-        "self.assertIsNone(name_only.species_rect)",
-        "self.assertEqual(name_only.name_rect, narrow_area)"
+        "self.assertLessEqual(metrics.horizontalAdvance(narrow.species), narrow_area.width())"
       ]
     },
     "tests.test_image_list_controls._write_image": {
       "file": "tests/test_image_list_controls.py",
-      "line": 45,
+      "line": 46,
       "checks": []
     },
     "tests.test_image_list_controls._held_decodes": {
       "file": "tests/test_image_list_controls.py",
-      "line": 58,
+      "line": 59,
       "checks": []
     },
     "tests.test_image_list_controls._wait_until": {
       "file": "tests/test_image_list_controls.py",
-      "line": 49,
+      "line": 50,
       "checks": []
     },
     "tests.test_image_list_controls.ImageThumbnailLoaderTests._delivered": {
       "file": "tests/test_image_list_controls.py",
-      "line": 226,
+      "line": 240,
       "checks": []
     },
     "tests.test_image_list_controls.ImageListRowTests.check_every_row_shows_its_own_image_replacing_the_blank_document": {
       "file": "tests/test_image_list_controls.py",
-      "line": 479,
+      "line": 501,
       "checks": [
         "self.assertEqual(self.list.count(), 4)",
         "self.assertEqual(self._tile_colour(row), QColor(colour))",
@@ -47972,7 +48462,7 @@
     },
     "tests.test_image_list_controls.ImageListRowTests.check_analysis_status_stays_visible_on_the_thumbnail": {
       "file": "tests/test_image_list_controls.py",
-      "line": 488,
+      "line": 510,
       "checks": [
         "self.assertEqual(self._picture().pixelColor(spot), QColor(self.COLOURS[1]))",
         "self.assertFalse(item.icon().isNull())",
@@ -47986,7 +48476,7 @@
     },
     "tests.test_image_list_controls.ImageListRowTests.check_placeholder_and_unreadable_files_do_not_hold_up_or_break_the_list": {
       "file": "tests/test_image_list_controls.py",
-      "line": 510,
+      "line": 532,
       "checks": [
         "self.assertEqual(self._tile_colour(1).rgb(), placeholder.rgb())",
         "self.assertNotIn(get_ident(), threads)",
@@ -48006,7 +48496,7 @@
     },
     "tests.test_image_list_controls.ImageListRowTests.check_only_painted_rows_are_decoded": {
       "file": "tests/test_image_list_controls.py",
-      "line": 556,
+      "line": 578,
       "checks": [
         "self.assertGreater(painted, 3)",
         "self.assertLess(painted, 15)",
@@ -48016,7 +48506,7 @@
     },
     "tests.test_image_list_controls.ImageListRowTests.check_highlight_follows_the_open_image_however_it_changes": {
       "file": "tests/test_image_list_controls.py",
-      "line": 572,
+      "line": 594,
       "checks": [
         "self.assertEqual(self._open_rows(), [0])",
         "self.assertEqual(self._margin_colour(0), accent)",
@@ -48053,7 +48543,7 @@
     },
     "tests.test_image_list_controls.ImageListRowTests.check_rows_fit_the_narrow_panel": {
       "file": "tests/test_image_list_controls.py",
-      "line": 633,
+      "line": 655,
       "checks": [
         "self.assertEqual(rect.width(), self.list.viewport().width())",
         "self.assertFalse(self.list.horizontalScrollBar().isVisible())",
@@ -48064,44 +48554,36 @@
         "self.assertGreaterEqual(self.list.viewport().height() / rect.height(), 6.5)"
       ]
     },
-    "tests.test_image_list_controls.ImageListRowTests.check_species_shows_by_default_and_the_switch_is_remembered": {
+    "tests.test_image_list_controls.ImageListRowTests.check_every_row_always_names_a_species_starting_at_unknown": {
       "file": "tests/test_image_list_controls.py",
-      "line": 653,
+      "line": 675,
       "checks": [
-        "self.assertTrue(action.isChecked())",
-        "self.assertIs(self.window.image_species_button.defaultAction(), action)",
-        "self.assertIn(action, self.list.actions())",
-        "self.assertEqual(self.list.contextMenuPolicy(), Qt.ContextMenuPolicy.ActionsContextMenu)",
-        "self.assertEqual(self._species(), ['Unassigned'] * 4)",
-        "self.assertIn('Species: Unassigned', self._tooltip(1))",
-        "self.assertFalse(action.isChecked())",
-        "self.assertFalse(self._changed_area(shown, hidden).isNull())",
-        "self.assertNotIn('Species:', self._tooltip(1))",
-        "self.assertFalse(self.window._project_dirty)",
-        "self.assertFalse(reopened.image_species_action.isChecked())",
-        "self.assertFalse(reopened._image_list_delegate._show_species)",
-        "self.assertTrue(action.isChecked())",
-        "self.assertEqual(self._picture(), shown)",
-        "self.assertTrue(settings.value(MainWindow.IMAGE_SPECIES_SETTINGS_KEY, type=bool))",
+        "self.assertEqual(UNKNOWN_SPECIES, 'Unknown')",
+        "self.assertEqual(self.window.species_combo.currentText(), UNKNOWN_SPECIES)",
+        "self.assertEqual(self._species(), [UNKNOWN_SPECIES] * 4)",
+        "self.assertIn('Species: Unknown', self._tooltip(1))",
+        "self.assertFalse(self._species_change_area(1, self._row(1)).isNull())",
+        "self.assertEqual(self._picture(), before)",
+        "self.assertIn('Species: Unknown', self._tooltip(1))",
         "self.assertFalse(self.window._project_dirty)"
       ]
     },
     "tests.test_image_list_controls.ImageListRowTests.check_each_row_names_the_species_recorded_for_its_own_image": {
       "file": "tests/test_image_list_controls.py",
-      "line": 710,
+      "line": 714,
       "checks": [
-        "self.assertEqual(self._species(window), ['Soybean', 'Lupinus mexicanus', 'Unassigned', 'Lupinus mutabilis'])",
+        "self.assertEqual(self._species(window), ['Soybean', 'Lupinus mexicanus', UNKNOWN_SPECIES, 'Lupinus mutabilis'])",
         "self.assertEqual(self._species(window)[3], 'vicia_faba')"
       ]
     },
     "tests.test_image_list_controls.ImageListRowTests.check_the_selector_shows_and_sets_the_open_images_species": {
       "file": "tests/test_image_list_controls.py",
-      "line": 721,
+      "line": 725,
       "checks": [
         "self.assertEqual(combo.currentText(), species)",
-        "self.assertEqual(self._species(window), ['Soybean', 'Lupinus mexicanus', 'Unassigned', 'Lupinus mutabilis'])",
+        "self.assertEqual(self._species(window), ['Soybean', 'Lupinus mexicanus', UNKNOWN_SPECIES, 'Lupinus mutabilis'])",
         "self.assertEqual(window.pipeline.node('metadata').status_detail, 'Lupinus mutabilis')",
-        "self.assertEqual(self._species(window), ['Soybean', 'Lupinus polyphyllus', 'Unassigned', 'Lupinus mutabilis'])",
+        "self.assertEqual(self._species(window), ['Soybean', 'Lupinus polyphyllus', UNKNOWN_SPECIES, 'Lupinus mutabilis'])",
         "self.assertEqual(window._effective_biological_context().species_id, 'lupinus_polyphyllus')",
         "self.assertEqual(combo.currentText(), 'Soybean')",
         "self.assertEqual(window._current_seed_trait_species_id(), 'soybean')",
@@ -48114,8 +48596,8 @@
         "self.assertEqual(loaded.document.biological_context.species_id, 'lupinus_mutabilis')",
         "self.assertEqual([None if image.record.biological_context is None else image.record.biological_context.species_id for image in loaded.images], ['unknown', 'lupinus_polyphyllus', 'unknown', 'soybean', None])",
         "self.assertEqual(self._species(reopened), expected)",
-        "self.assertEqual(reopened.species_combo.currentText(), UNASSIGNED_SPECIES)",
-        "self.assertEqual(reopened.species_combo.currentText(), UNASSIGNED_SPECIES)",
+        "self.assertEqual(reopened.species_combo.currentText(), UNKNOWN_SPECIES)",
+        "self.assertEqual(reopened.species_combo.currentText(), UNKNOWN_SPECIES)",
         "self.assertIsNone(reopened._current_image_key())",
         "self.assertEqual(reopened.species_combo.currentText(), 'Lupinus mutabilis')",
         "self.assertEqual(self._species(reopened), ['Lupinus polyphyllus'])"
@@ -48123,9 +48605,9 @@
     },
     "tests.test_image_list_controls.ImageListRowTests.check_the_first_species_chosen_also_covers_images_without_one": {
       "file": "tests/test_image_list_controls.py",
-      "line": 789,
+      "line": 793,
       "checks": [
-        "self.assertEqual(self._species(window), ['Unassigned'] * 4)",
+        "self.assertEqual(self._species(window), [UNKNOWN_SPECIES] * 4)",
         "self.assertEqual(self._species(window), ['Soybean'] * 4)",
         "self.assertEqual(window._project_species, 'Soybean')",
         "self.assertTrue(window._cache_dirty_nodes[follower])",
@@ -48137,7 +48619,7 @@
     },
     "tests.test_image_list_controls.ImageListRowTests.check_batch_analyses_each_image_as_its_own_species": {
       "file": "tests/test_image_list_controls.py",
-      "line": 815,
+      "line": 819,
       "checks": [
         "self.assertRaises(_StopBatch)",
         "self.assertEqual(request['species'], expected)",
@@ -48147,13 +48629,11 @@
     },
     "tests.test_image_list_controls.ImageListRowTests.check_species_fits_the_narrow_panel_and_is_a_column_in_a_wide_one": {
       "file": "tests/test_image_list_controls.py",
-      "line": 836,
+      "line": 840,
       "checks": [
         "self.assertEqual(panel.width(), panel.minimumWidth())",
         "self.assertFalse(self.list.horizontalScrollBar().isVisible())",
-        "self.assertTrue(heading.rect().contains(window.image_species_button.geometry()))",
         "self.assertTrue(heading.rect().contains(window.open_images_button.geometry()))",
-        "self.assertFalse(window.image_species_button.geometry().intersects(window.open_images_button.geometry()))",
         "self.assertEqual(narrow.name, ('b.png',))",
         "self.assertGreaterEqual(narrow.species_rect.top(), narrow.name_rect.bottom())",
         "self.assertTrue(rect.contains(narrow.species_rect))",
@@ -48168,7 +48648,7 @@
     },
     "tests.test_image_list_controls.ImageListRowTests.check_thumbnails_reach_neither_the_project_nor_the_disk": {
       "file": "tests/test_image_list_controls.py",
-      "line": 880,
+      "line": 876,
       "checks": [
         "self.assertFalse(self.window._project_dirty)",
         "self.assertTrue(self.loader._entries)",
@@ -48180,7 +48660,7 @@
     },
     "tests.test_image_list_controls.ImageListRowTests.check_closing_finishes_the_work_only_when_the_window_really_closes": {
       "file": "tests/test_image_list_controls.py",
-      "line": 891,
+      "line": 887,
       "checks": [
         "self.assertTrue(self.window.isVisible())",
         "self.assertTrue(self.loader._entries)",
@@ -48192,69 +48672,76 @@
     },
     "tests.test_image_list_controls.ImageListRowTests._settle": {
       "file": "tests/test_image_list_controls.py",
-      "line": 431,
+      "line": 440,
       "checks": []
     },
     "tests.test_image_list_controls.ImageListRowTests._row": {
       "file": "tests/test_image_list_controls.py",
-      "line": 436,
+      "line": 445,
       "checks": []
+    },
+    "tests.test_image_list_controls.ImageListRowTests._species_change_area": {
+      "file": "tests/test_image_list_controls.py",
+      "line": 480,
+      "checks": [
+        "self.assertEqual(self._picture(), before)"
+      ]
     },
     "tests.test_image_list_controls.ImageListRowTests._picture": {
       "file": "tests/test_image_list_controls.py",
-      "line": 439,
+      "line": 448,
       "checks": []
     },
     "tests.test_image_list_controls.ImageListRowTests._changed_area": {
       "file": "tests/test_image_list_controls.py",
-      "line": 461,
+      "line": 470,
       "checks": []
     },
     "tests.test_image_list_controls.ImageListRowTests._install_traits": {
       "file": "tests/test_image_list_controls.py",
-      "line": 686,
+      "line": 690,
       "checks": []
     },
     "tests.test_image_list_controls.ImageListRowTests._species": {
       "file": "tests/test_image_list_controls.py",
-      "line": 457,
+      "line": 466,
       "checks": []
     },
     "tests.test_image_list_controls.ImageListRowTests._open_mixed_species_project": {
       "file": "tests/test_image_list_controls.py",
-      "line": 691,
+      "line": 695,
       "checks": []
     },
     "tests.test_image_list_controls.ImageListRowTests._reopen": {
       "file": "tests/test_image_list_controls.py",
-      "line": 703,
+      "line": 707,
       "checks": [
         "self.assertTrue(window._open_project(project))"
       ]
     },
     "tests.test_image_list_controls.ImageListRowTests._tooltip": {
       "file": "tests/test_image_list_controls.py",
-      "line": 471,
+      "line": 493,
       "checks": []
     },
     "tests.test_image_list_controls.ImageListRowTests._accent": {
       "file": "tests/test_image_list_controls.py",
-      "line": 450,
+      "line": 459,
       "checks": []
     },
     "tests.test_image_list_controls.ImageListRowTests._open_rows": {
       "file": "tests/test_image_list_controls.py",
-      "line": 453,
+      "line": 462,
       "checks": []
     },
     "tests.test_image_list_controls.ImageListRowTests._margin_colour": {
       "file": "tests/test_image_list_controls.py",
-      "line": 446,
+      "line": 455,
       "checks": []
     },
     "tests.test_image_list_controls.ImageListRowTests._tile_colour": {
       "file": "tests/test_image_list_controls.py",
-      "line": 443,
+      "line": 452,
       "checks": []
     },
     "tests.test_instance_annotation_tiling.InstanceAnnotationTilingTests.check_test_6240_by_4160_tiles_preserve_exact_one_pixel_marks_and_ridges": {
@@ -55398,7 +55885,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_failed_analysis_purges_its_partial_cache": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 570,
+      "line": 709,
       "checks": [
         "self.assertNotIn(key, window._analysis_caches)",
         "self.assertFalse(raster.is_materialized)",
@@ -55413,7 +55900,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_superseded_analysis_is_cancelled_and_remains_visible": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 613,
+      "line": 752,
       "checks": [
         "self.assertTrue(task.cancelled)",
         "self.assertEqual(window._pending_analysis_key, key)",
@@ -55425,7 +55912,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_worker_progress_turns_only_the_current_revision_node_green": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 1070,
+      "line": 1209,
       "checks": [
         "self.assertTrue(succeeded, error)",
         "self.assertEqual(node.status, NodeStatus.COMPLETE)",
@@ -55435,7 +55922,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_cleared_reference_layer_returns_to_paint_and_accepts_dabs": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 2301,
+      "line": 2440,
       "checks": [
         "self.assertTrue(window.image_view._reference_erase_enabled)",
         "self.assertTrue(window.reference_paint_mode_button.isChecked())",
@@ -55447,7 +55934,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_perimeter_source_checkbox_invalidates_every_background_consumer": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 2494,
+      "line": 2633,
       "checks": [
         "self.assertTrue(window.keep_perimeter_background_reference_checkbox.isChecked())",
         "self.assertFalse(window.pipeline.node('background_likelihood').parameters['background_keep_perimeter_reference'])",
@@ -55460,7 +55947,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_annotated_seed_foreground_checkbox_defaults_on_and_invalidates_consumers": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 2544,
+      "line": 2683,
       "checks": [
         "self.assertTrue(checkbox.isChecked())",
         "self.assertTrue(checkbox.isEnabled())",
@@ -55476,7 +55963,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_new_seed_preserves_the_selected_instance_tool": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 4005,
+      "line": 4144,
       "checks": [
         "self.assertTrue(image.save(str(image_path)))",
         "self.assertTrue(button.isChecked())",
@@ -55490,7 +55977,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_reference_masks_run_analysis_only_after_explicit_apply": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 4065,
+      "line": 4204,
       "checks": [
         "self.assertEqual(analyses, [])",
         "self.assertIn(key, window._reference_masks_dirty)",
@@ -55523,7 +56010,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_instance_annotations_apply_separately_from_reference_masks": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 4173,
+      "line": 4312,
       "checks": [
         "self.assertIn(key, window._instance_annotations_dirty)",
         "self.assertNotIn(key, window._applied_instance_annotations)",
@@ -55591,7 +56078,8 @@
       "file": "tests/test_pipeline_ui.py",
       "line": 383,
       "checks": [
-        "self.assertEqual(arguments['dirty_nodes'], {'procedural_instances'})",
+        "self.assertEqual(arguments['rerun_node'], 'procedural_instances')",
+        "self.assertNotIn('dirty_nodes', arguments)",
         "self.assertIn('procedural_instances', scope)",
         "self.assertIn('layout_detection', scope)",
         "self.assertIn('reference_edge_probability', scope)",
@@ -55599,16 +56087,71 @@
         "self.assertNotIn('measurements', scope)"
       ]
     },
+    "tests.test_pipeline_ui.PipelineCanvasTests.check_test_run_to_node_recomputes_only_what_has_changed": {
+      "file": "tests/test_pipeline_ui.py",
+      "line": 400,
+      "checks": [
+        "self.assertIn('reference_texture_prototypes', dependents)",
+        "self.assertIn(ancestor, scope)",
+        "self.assertNotIn(elsewhere, scope | dependents)",
+        "self.assertEqual(plan(finished), ({target}, enabled - scope, set()))",
+        "self.assertEqual(requested, {target})",
+        "self.assertEqual(stale, dependents - scope)",
+        "self.assertNotIn(elsewhere, stale)",
+        "self.assertEqual(requested, {ancestor, target})",
+        "self.assertIn('procedural_instances', stale)",
+        "self.assertFalse(stale & scope)",
+        "self.assertEqual(requested, {target})",
+        "self.assertEqual(stale, {elsewhere, 'wavelet_decomposition'})",
+        "self.assertEqual(requested, {'reference_layers', 'edge_ridges'})",
+        "self.assertEqual(stale, set(enabled - {'edge_gradients'}))",
+        "self.assertEqual(requested, {'wavelet_decomposition'})",
+        "self.assertFalse(stale & {'wavelet_decomposition'})",
+        "self.assertEqual(plan(PipelineAnalysisCache())[2], set(enabled - scope))",
+        "self.assertEqual(requested, {elsewhere, 'wavelet_decomposition'})",
+        "self.assertEqual((retained, stale), (frozenset(), set()))",
+        "self.fail(error)",
+        "start.assert_called_once()",
+        "self.assertEqual(task.dirty_nodes, {target})",
+        "self.assertEqual(task.enabled_nodes, scope)",
+        "self.assertEqual(task.retained_nodes, enabled - scope)",
+        "self.assertEqual(window._analysis_caches[key].stale_nodes, set())",
+        "self.assertEqual(window._cache_dirty_nodes[key], set())",
+        "self.assertEqual(window._cache_dirty_nodes[key], {target})",
+        "self.assertEqual(window._pending_analysis_scope, scope)"
+      ]
+    },
+    "tests.test_pipeline_ui.PipelineCanvasTests.check_test_cancelling_a_run_keeps_results_and_restores_its_changes": {
+      "file": "tests/test_pipeline_ui.py",
+      "line": 489,
+      "checks": [
+        "self.assertIs(window._analysis_caches[key], cache)",
+        "self.assertEqual(cache.stale_nodes, {'hue_only'})",
+        "self.assertNotIn(key, window._analyses)",
+        "self.assertEqual(window._cache_dirty_nodes[key], {'edge_gradients'})",
+        "mark_complete.assert_not_called()",
+        "self.assertIs(window._analysis_caches[key], cache)",
+        "self.assertEqual(window._cache_dirty_nodes[key], {'wavelet_decomposition'})",
+        "self.assertNotIn(key, window._analysis_caches)"
+      ]
+    },
+    "tests.test_pipeline_ui.PipelineCanvasTests.check_test_results_refuse_a_report_while_nodes_are_out_of_date": {
+      "file": "tests/test_pipeline_ui.py",
+      "line": 526,
+      "checks": [
+        "self.assertRaisesRegex(ValueError, 'Pipeline inputs changed')"
+      ]
+    },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_loading_saved_references_reruns_only_the_finished_runs_scope": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 399,
+      "line": 536,
       "checks": [
         "analyze.assert_called_once_with(dirty_nodes={'reference_texture_prototypes'}, enabled_node_scope=finished_scope)"
       ]
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_run_to_a_disabled_node_enables_it_or_says_why": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 413,
+      "line": 550,
       "checks": [
         "self.assertFalse(node.enabled)",
         "self.assertEqual(window._disabled_node_detail(node.identifier), 'Disabled; needs the optional cellpose package')",
@@ -55621,22 +56164,22 @@
         "self.assertIn('was not changed', window.statusBar().currentMessage())",
         "self.assertEqual(window._disabled_node_detail(node.identifier), 'Disabled; enable to run Cellpose-SAM')",
         "self.assertTrue(node.enabled)",
-        "self.assertEqual(arguments['dirty_nodes'], {node.identifier})",
+        "self.assertEqual(arguments['rerun_node'], node.identifier)",
         "self.assertIn('seed_scale_estimation', arguments['enabled_node_scope'])"
       ]
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_node_menu_offers_to_enable_a_disabled_node": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 515,
+      "line": 654,
       "checks": [
         "self.assertEqual(labels('procedural_instances'), ['Run to node'])",
-        "self.assertEqual(labels('cellpose_sam_instances'), ['Enable and run to node'])",
-        "self.assertEqual(labels('cellpose_sam_instances'), ['Enable and run to node'])"
+        "self.assertEqual(labels('unet_instances'), ['Enable and run to node'])",
+        "self.assertEqual(labels('unet_instances'), ['Enable and run to node'])"
       ]
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_seed_boundary_status_says_why_no_seed_was_found": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 463,
+      "line": 602,
       "checks": [
         "self.assertEqual(status, NodeStatus.COMPLETE)",
         "self.assertEqual(detail, '1 seed ovals fitted at 2 centre-vote peaks; 152 strongly supported boundary pixels')",
@@ -55649,7 +56192,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_run_to_node_result_says_no_instance_node_ran": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 502,
+      "line": 641,
       "checks": [
         "self.assertIn('no instance node ran', window._scoped_run_reason(result, missing))",
         "self.assertIsNone(window._scoped_run_reason(result, ''))",
@@ -55659,7 +56202,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_analysis_cache_is_lru_bounded_and_gpu_jobs_are_serialized": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 532,
+      "line": 671,
       "checks": [
         "self.assertEqual(window._thread_pool.maxThreadCount(), 1)",
         "self.assertEqual(evicted, ('old',))",
@@ -55671,7 +56214,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_node_cards_support_typed_blueprint_controls_and_time_footers": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 665,
+      "line": 804,
       "checks": [
         "self.assertIsInstance(canvas.node_items['deskew_colour']._inline_editors['apply_colour_balance'], QCheckBox)",
         "self.assertIsInstance(canvas.node_items['refined_background_likelihood']._inline_editors['noise_direction_integration'], QComboBox)",
@@ -55689,7 +56232,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_manual_overlap_is_allowed_and_auto_arrange_removes_it": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 714,
+      "line": 853,
       "checks": [
         "self.assertFalse(canvas._items_overlap(first, float(first.pos().y()), second), (first.node.identifier, second.node.identifier))",
         "self.assertTrue(canvas._items_overlap(moved, float(moved.pos().y()), obstacle))",
@@ -55698,7 +56241,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_unused_node_toolbox_can_restore_circle_candidates": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 744,
+      "line": 883,
       "checks": [
         "self.assertEqual(restored, ['circle_candidates'])",
         "self.assertIn('circle_candidates', canvas.node_items)",
@@ -55719,7 +56262,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_main_window_exposes_circle_overlay_only_after_toolbox_restore": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 782,
+      "line": 921,
       "checks": [
         "self.assertEqual(window.overlay_combo.findData('circle_candidates'), -1)",
         "self.assertGreaterEqual(window.overlay_combo.findData('circle_candidates'), 0)",
@@ -55733,7 +56276,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_selected_node_marks_direct_neighbours_purple": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 806,
+      "line": 945,
       "checks": [
         "self.assertTrue(canvas.node_items['edge_gradients'].isSelected())",
         "self.assertTrue(all((canvas.node_items[node_id]._adjacent for node_id in adjacent)))",
@@ -55742,7 +56285,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_canvas_disconnects_and_reconnects_authored_ports": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 822,
+      "line": 961,
       "checks": [
         "self.assertEqual(len(canvas.edge_items), 188)",
         "self.assertFalse(graph.node(connection.target).enabled)",
@@ -55755,7 +56298,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_connection_paths_do_not_block_plain_left_drag_panning": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 863,
+      "line": 1002,
       "checks": [
         "self.assertEqual(edge.acceptedMouseButtons(), Qt.MouseButton.RightButton)",
         "self.assertIsNotNone(hit_point)",
@@ -55767,7 +56310,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_image_and_graph_zoom_controls_report_scale": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 944,
+      "line": 1083,
       "checks": [
         "self.assertTrue(succeeded, error)",
         "self.assertEqual(view.zoom_label.text(), '120%')",
@@ -55794,7 +56337,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_image_zoom_buttons_keep_view_center_and_wheel_keeps_pointer": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 1009,
+      "line": 1148,
       "checks": [
         "self.assertTrue(succeeded, error)",
         "self.assertLess((after - before).manhattanLength(), 2.0)",
@@ -55806,7 +56349,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_selected_overlay_shows_large_red_calculating_banner": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 1098,
+      "line": 1237,
       "checks": [
         "self.assertIsNotNone(path)",
         "self.assertFalse(banner.isHidden())",
@@ -55818,7 +56361,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_project_node_displays_live_project_image_and_annotation_information": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 1121,
+      "line": 1260,
       "checks": [
         "self.assertEqual(window.pipeline_inspector.title_label.text(), 'Node: Inputs')",
         "self.assertFalse(window.pipeline_inspector.project_info_container.isHidden())",
@@ -55834,7 +56377,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_identification_stages_expose_methods_and_relevant_parameters": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 1147,
+      "line": 1286,
       "checks": [
         "self.assertEqual(len(inspector._parameter_widgets), parameter_count)",
         "self.assertTrue(inspector.method_heading.isVisibleTo(inspector))",
@@ -55853,7 +56396,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_layout_vessel_selector_is_first_pinned_and_non_mutating": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 1209,
+      "line": 1348,
       "checks": [
         "self.assertIsNotNone(combo)",
         "self.assertIs(inspector.parameter_form.itemAt(0, QFormLayout.ItemRole.FieldRole).widget(), combo)",
@@ -55875,7 +56418,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_background_colour_gamut_renders_as_full_hsv_value_slice": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 1261,
+      "line": 1400,
       "checks": [
         "self.assertFalse(hasattr(inspector, 'gamut_widget'))",
         "self.assertEqual((image.width(), image.height()), (960, 640))",
@@ -55888,7 +56431,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_real_exterior_annulus_profile_retains_all_gamut_contours": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 1309,
+      "line": 1448,
       "checks": [
         "self.assertGreater(float(probability.max()), 0.9)",
         "self.assertGreater(int(np.count_nonzero(BackgroundColourGamut._contour_edge(probability, level))), 0, level)",
@@ -55897,7 +56440,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_foreground_node_shows_its_probability_colour_gamut": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 1362,
+      "line": 1501,
       "checks": [
         "self.assertFalse(hasattr(inspector, 'gamut_widget'))",
         "self.assertTrue(inspector.foreground_start_heading.isVisibleTo(inspector))",
@@ -55909,7 +56452,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_nearly_neutral_dark_mode_does_not_span_every_hsv_hue": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 1422,
+      "line": 1561,
       "checks": [
         "self.assertLess(float(probability.max()), 0.25)",
         "self.assertEqual(centre_points.shape, (1, 2))"
@@ -55917,14 +56460,14 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_colour_gamut_does_not_project_neutral_membership_across_hues": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 1451,
+      "line": 1590,
       "checks": [
         "self.assertTrue((probability == 0.0).all())"
       ]
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_overlay_node_selection_updates_the_viewer_layer": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 1481,
+      "line": 1620,
       "checks": [
         "self.assertGreaterEqual(directed_index, 0)",
         "self.assertEqual(window.overlay_combo.currentData(), 'directed_edges')",
@@ -55961,7 +56504,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_viewer_layer_selection_selects_its_owning_graph_node": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 1593,
+      "line": 1732,
       "checks": [
         "self.assertGreaterEqual(index, 0)",
         "self.assertEqual(window._selected_pipeline_node, 'reference_edge_probability')",
@@ -55972,7 +56515,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_node_selection_shows_stage_overlay_sections_and_connections": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 1618,
+      "line": 1757,
       "checks": [
         "self.assertGreaterEqual(window.metadata_scroll.verticalScrollBar().width(), 16)",
         "self.assertEqual(window.overlay_combo.currentData(), 'background_likelihood')",
@@ -55990,7 +56533,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_image_and_pipeline_share_a_split_workspace": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 1660,
+      "line": 1799,
       "checks": [
         "self.assertEqual(window.windowTitle(), 'Seed Fiddle — Untitled')",
         "self.assertEqual(window.workspace_splitter.count(), 2)",
@@ -56007,7 +56550,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_overlay_selectors_group_layers_and_stay_synchronised": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 1679,
+      "line": 1818,
       "checks": [
         "self.assertTrue(window.overlay_combo.isHidden())",
         "self.assertIs(window.overlay_button.menu(), window.overlay_menu)",
@@ -56125,7 +56668,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_edge_oval_overlay_draws_only_retained_edge_hypotheses": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 2008,
+      "line": 2147,
       "checks": [
         "self.assertEqual(len(view._overlay_items), 1)",
         "self.assertAlmostEqual(item.pos().x(), 35.0)",
@@ -56136,7 +56679,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_other_probability_overlays_are_registered_owned_and_synchronised": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 2037,
+      "line": 2176,
       "checks": [
         "self.assertEqual(_overlay_node_owner(mode), owner)",
         "self.assertGreaterEqual(global_index, 0)",
@@ -56161,7 +56704,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_probability_legends_state_low_and_high_display_values": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 2088,
+      "line": 2227,
       "checks": [
         "self.assertIn('white = low displayed probability/evidence; black = high', window.overlay_legend_label.text())",
         "self.assertIn('black = low displayed probability/evidence', foreground_legend)",
@@ -56172,7 +56715,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_compact_toolbar_and_contextual_paint_panel": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 2105,
+      "line": 2244,
       "checks": [
         "self.assertNotIn('Overlay:', toolbar_labels)",
         "self.assertNotIn('Overlay opacity:', toolbar_labels)",
@@ -56240,7 +56783,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_background_node_can_be_disabled_without_disabling_foreground_noise": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 2335,
+      "line": 2474,
       "checks": [
         "self.assertFalse(window.pipeline.node('background_likelihood').parameters['background_colour_enabled'])",
         "self.assertTrue(window.pipeline.node('background_likelihood').enabled)",
@@ -56250,7 +56793,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_combined_noise_node_preserves_independent_enable_switches": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 2349,
+      "line": 2488,
       "checks": [
         "self.assertFalse(node.parameters['background_noise_enabled'])",
         "self.assertTrue(node.parameters['foreground_noise_enabled'])",
@@ -56261,14 +56804,14 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_settings_reset_button_restores_node_defaults": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 2362,
+      "line": 2501,
       "checks": [
         "self.assertEqual(node.parameters['foreground_reference_weight'], default)"
       ]
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_expanded_node_settings_feed_runtime_settings_objects": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 2375,
+      "line": 2514,
       "checks": [
         "self.assertTrue(window.pipeline.node('background_likelihood').parameters['background_keep_perimeter_reference'])",
         "self.assertTrue(window.keep_perimeter_background_reference_checkbox.isChecked())",
@@ -56290,7 +56833,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_net_edge_subtraction_recomputes_thinned_net_ridge_dependents": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 2603,
+      "line": 2742,
       "checks": [
         "self.assertGreaterEqual(net_index, 0)",
         "analyze.assert_called_once_with(dirty_nodes=affected)",
@@ -56307,7 +56850,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_image_view_switches_between_analysis_layers": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 2669,
+      "line": 2808,
       "checks": [
         "self.assertEqual(len(view._overlay_items), 3)",
         "self.assertEqual(len(view._overlay_items), 1)",
@@ -56339,7 +56882,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_selected_procedural_instance_reports_geometry_in_node_panel": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 2876,
+      "line": 3015,
       "checks": [
         "self.assertEqual(window._selected_pipeline_node, 'procedural_instances')",
         "self.assertIn('maximum width 7.0 px', text)",
@@ -56350,7 +56893,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_image_view_displays_full_size_gamut_without_changing_mask_size": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 2915,
+      "line": 3054,
       "checks": [
         "self.assertTrue(source.save(str(path)))",
         "self.assertTrue(succeeded, error)",
@@ -56365,7 +56908,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_image_view_displays_every_reference_prototype_in_a_full_pane_collage": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 2984,
+      "line": 3123,
       "checks": [
         "self.assertTrue(source.save(str(path)))",
         "self.assertTrue(succeeded, error)",
@@ -56379,7 +56922,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_image_view_edits_full_resolution_binary_reference_masks": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 3064,
+      "line": 3203,
       "checks": [
         "self.assertTrue(image.save(str(path)))",
         "self.assertTrue(succeeded, error)",
@@ -56432,7 +56975,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_background_painting_shows_only_exact_perimeter_ring_source": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 3240,
+      "line": 3379,
       "checks": [
         "self.assertTrue(image.save(str(path)))",
         "self.assertTrue(succeeded, error)",
@@ -56455,7 +56998,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_sparse_automatic_background_source_survives_large_view_downsampling": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 3375,
+      "line": 3514,
       "checks": [
         "self.assertTrue(image.save(str(path)))",
         "self.assertTrue(succeeded, error)",
@@ -56466,7 +57009,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_image_view_edits_distinct_seed_instance_ids": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 3439,
+      "line": 3578,
       "checks": [
         "self.assertTrue(image.save(str(path)))",
         "self.assertTrue(succeeded, error)",
@@ -56482,7 +57025,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_instance_brush_uses_live_stroke_without_rebuilding_analysis": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 3489,
+      "line": 3628,
       "checks": [
         "self.assertTrue(image.save(str(path)))",
         "self.assertTrue(succeeded, error)",
@@ -56497,7 +57040,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_reference_brush_uses_live_stroke_and_redraws_once_on_release": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 3533,
+      "line": 3672,
       "checks": [
         "self.assertTrue(image.save(str(path)))",
         "self.assertTrue(succeeded, error)",
@@ -56512,7 +57055,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_image_view_applies_assisted_instance_annotation_tools": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 3576,
+      "line": 3715,
       "checks": [
         "self.assertTrue(image.save(str(path)))",
         "self.assertTrue(succeeded, error)",
@@ -56529,7 +57072,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_assisted_instance_tools_preview_on_hover_and_apply_on_click": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 3658,
+      "line": 3797,
       "checks": [
         "self.assertTrue(image.save(str(path)))",
         "self.assertTrue(succeeded, error)",
@@ -56552,7 +57095,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_instance_annotation_panel_exposes_advanced_tool_options": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 3799,
+      "line": 3938,
       "checks": [
         "self.assertTrue(image.save(str(image_path)))",
         "self.assertEqual(window.instance_tool_options_stack.count(), 5)",
@@ -56611,7 +57154,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_seed_trait_editor_is_species_specific_and_recomputes_in_isolation": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 4231,
+      "line": 4370,
       "checks": [
         "self.assertTrue(image.save(str(image_path)))",
         "self.assertEqual(tuple((window.seed_coat_pattern_combo.itemData(index) for index in range(1, window.seed_coat_pattern_combo.count()))), ('white', 'banded_light', 'banded_dark', 'other'))",
@@ -56627,7 +57170,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_shape_review_cannot_enter_unsaveable_unknown_state": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 4310,
+      "line": 4449,
       "checks": [
         "self.assertTrue(image.save(str(image_path)))",
         "self.assertIsNotNone(key)",
@@ -56644,7 +57187,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_reference_seed_scale_overlay_boldly_labels_actual_seed_above": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 4356,
+      "line": 4495,
       "checks": [
         "self.assertEqual(len(circles), 1)",
         "self.assertEqual(len(labels), 1)",
@@ -56664,7 +57207,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_setting_change_invalidates_only_node_and_graph_dependents": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 2475,
+      "line": 2614,
       "checks": [
         "self.assertEqual(window.pipeline.node('edge_gradients').status, NodeStatus.IDLE)",
         "self.assertEqual(window.pipeline.node('edge_traces').status, NodeStatus.IDLE)"
@@ -56672,7 +57215,7 @@
     },
     "tests.test_pipeline_ui.PipelineCanvasTests.check_test_calibration_nodes_render_references_and_metric_scale": {
       "file": "tests/test_pipeline_ui.py",
-      "line": 4522,
+      "line": 4664,
       "checks": [
         "self.assertTrue(succeeded, error)",
         "self.assertEqual(view.image_size, raw_size)",
@@ -56723,6 +57266,8 @@
         "self.assertEqual(sum((isinstance(item, QGraphicsTextItem) and item.toPlainText() == '5 cm' for item in view._overlay_items)), 2)",
         "self.assertGreaterEqual(len(view._overlay_items), 1, mode)",
         "self.assertEqual(len(view._overlay_items), 0)",
+        "self.assertEqual(out_of_date.status, NodeStatus.IDLE)",
+        "self.assertEqual(out_of_date.status_detail, 'Out of date; run the pipeline to update')",
         "self.assertEqual(window.pipeline.node(node_id).status, NodeStatus.COMPLETE)",
         "self.assertAlmostEqual(window.pipeline.node('edge_gradients').calculation_seconds, result.node_timings_seconds['edge_gradients'] + result.node_timings_seconds['edge_ridges'])",
         "self.assertEqual(window.pipeline.node(node_id).status, NodeStatus.COMPLETE)",
@@ -56763,7 +57308,7 @@
     },
     "tests.test_pipeline_workflow_ui.PipelineWorkflowUiTests.check_test_shared_workspace_controls_and_preparation_failure": {
       "file": "tests/test_pipeline_workflow_ui.py",
-      "line": 238,
+      "line": 239,
       "checks": [
         "self.assertTrue(widget.isVisible(), f'{widget.metaObject().className()}: {widget.objectName()}')",
         "self.assertTrue(visibility_action.isVisible())",
@@ -56821,7 +57366,7 @@
         "self.assertFalse(hasattr(self.controller, 'run_button'))",
         "self.assertFalse(hasattr(self.controller, 'stop_button'))",
         "self.assertIs(actions[actions.index(self.window.analyze_action) + 1], self.window.stop_action)",
-        "self.assertEqual({getattr(selector.itemData(index), 'recipe_id', None) for index in templates}, {None} | {recipe.recipe_id for recipe in self.controller._all_templates})",
+        "self.assertEqual({selector.itemData(index).recipe_id for index in templates}, {'procedural_seed_analysis', 'cellpose_seed_analysis'} | {recipe.recipe_id for recipe in self.controller._all_templates})",
         "self.assertEqual(headings, ['SEED FIDDLE', 'SEED ANALYSIS', 'THRESHOLDS AND CLASSIFIERS', 'COLOUR CORRECTION'])",
         "self.assertFalse(any((selector.model().item(index).isEnabled() for index in range(selector.count()) if selector.itemData(index, ENTRY_KIND) == 'heading')))",
         "self.assertFalse(any((action.menu() for action in self.controller.more_button.menu().actions())))",
@@ -56842,7 +57387,7 @@
     },
     "tests.test_pipeline_workflow_ui.PipelineWorkflowUiTests.check_test_typed_controls_and_choice_edit_reach_engine_contract": {
       "file": "tests/test_pipeline_workflow_ui.py",
-      "line": 206,
+      "line": 207,
       "checks": [
         "self.assertIsNotNone(widget)",
         "self.assert_display_cleared()",
@@ -56852,7 +57397,7 @@
     },
     "tests.test_pipeline_workflow_ui.PipelineWorkflowUiTests.check_test_actual_run_click_uses_current_image_and_full_scope": {
       "file": "tests/test_pipeline_workflow_ui.py",
-      "line": 225,
+      "line": 226,
       "checks": [
         "self.assert_display_cleared()",
         "self.assertEqual(function(lambda: False), 'computed')",
@@ -56862,14 +57407,14 @@
     },
     "tests.test_pipeline_workflow_ui.PipelineWorkflowUiTests.check_test_canvas_run_to_node_signal_routes_selected_scope": {
       "file": "tests/test_pipeline_workflow_ui.py",
-      "line": 290,
+      "line": 291,
       "checks": [
         "run.assert_called_once_with(selected)"
       ]
     },
     "tests.test_pipeline_workflow_ui.PipelineWorkflowUiTests.check_test_queued_delivery_after_image_switch_is_discarded": {
       "file": "tests/test_pipeline_workflow_ui.py",
-      "line": 297,
+      "line": 298,
       "checks": [
         "self.assertTrue(all((self.controller.graph.node(stage.stage_id).status == NodeStatus.IDLE for stage in self.controller.workflow.recipe.stages)))",
         "completion.assert_not_called()",
@@ -56878,7 +57423,7 @@
     },
     "tests.test_pipeline_workflow_ui.PipelineWorkflowUiTests.check_test_same_path_reopen_reuses_unchanged_source_and_clears_changed_source": {
       "file": "tests/test_pipeline_workflow_ui.py",
-      "line": 313,
+      "line": 314,
       "checks": [
         "self.assertIs(self.controller.result, old_result)",
         "self.assertIs(self.controller.cache, old_cache)",
@@ -56897,7 +57442,7 @@
     },
     "tests.test_pipeline_workflow_ui.PipelineWorkflowUiTests.check_test_project_reset_restores_default_and_drops_copies": {
       "file": "tests/test_pipeline_workflow_ui.py",
-      "line": 363,
+      "line": 364,
       "checks": [
         "self.assertIs(self.window.pipeline_canvas.graph, self.window.pipeline)",
         "self.assertFalse(self.controller.active)",
@@ -56908,7 +57453,7 @@
     },
     "tests.test_pipeline_workflow_ui.PipelineWorkflowUiTests.check_test_install_reopened_workflow_updates_selector": {
       "file": "tests/test_pipeline_workflow_ui.py",
-      "line": 374,
+      "line": 375,
       "checks": [
         "self.assertEqual(self.controller.selector.currentIndex(), index)",
         "self.assertIs(self.window.pipeline_canvas.graph, self.controller.graph)"
@@ -56916,7 +57461,7 @@
     },
     "tests.test_pipeline_workflow_ui.PipelineWorkflowUiTests.check_test_templates_are_arranged_when_chosen_and_reloads_keep_their_layout": {
       "file": "tests/test_pipeline_workflow_ui.py",
-      "line": 381,
+      "line": 382,
       "checks": [
         "self.assertEqual({round(node.x) % 270 for node in self.window.pipeline.nodes.values()}, {0})",
         "arrange.assert_called_once_with()",
@@ -56928,7 +57473,7 @@
     },
     "tests.test_pipeline_workflow_ui.PipelineWorkflowUiTests.check_test_correction_inputs_are_contextual_and_source_is_current_image": {
       "file": "tests/test_pipeline_workflow_ui.py",
-      "line": 400,
+      "line": 401,
       "checks": [
         "self.assertIn('Target image…', texts)",
         "self.assertIn('Source chip mask…', texts)",
@@ -56939,7 +57484,7 @@
     },
     "tests.test_pipeline_workflow_ui.PipelineWorkflowUiTests.check_test_actual_save_and_open_restore_native_working_values": {
       "file": "tests/test_pipeline_workflow_ui.py",
-      "line": 418,
+      "line": 419,
       "checks": [
         "critical.assert_not_called()",
         "self.assertTrue(destination.is_file())",
@@ -56960,14 +57505,14 @@
     },
     "tests.test_pipeline_workflow_ui.PipelineWorkflowUiTests.check_test_structured_points_preserve_fractional_values": {
       "file": "tests/test_pipeline_workflow_ui.py",
-      "line": 456,
+      "line": 457,
       "checks": [
         "self.assertEqual(json.loads(emitted[-1]), [[1.375, 2.5], [10.75, 20.5]])"
       ]
     },
     "tests.test_pipeline_workflow_ui.PipelineWorkflowUiTests.check_test_range_colorspace_change_adapts_bounds_field_count": {
       "file": "tests/test_pipeline_workflow_ui.py",
-      "line": 467,
+      "line": 468,
       "checks": [
         "self.assertEqual(len(values['lower']), 4)",
         "self.assertEqual(len(values['upper']), 4)"
@@ -56975,7 +57520,7 @@
     },
     "tests.test_pipeline_workflow_ui.PipelineWorkflowUiTests.check_test_actual_enabled_checkbox_bypasses_only_selected_node": {
       "file": "tests/test_pipeline_workflow_ui.py",
-      "line": 476,
+      "line": 477,
       "checks": [
         "self.assertTrue(self.window.pipeline_inspector.enabled_checkbox.isEnabled())",
         "self.assertEqual(self.controller.workflow.disabled_nodes, (stage.stage_id,))",
@@ -56984,7 +57529,7 @@
     },
     "tests.test_pipeline_workflow_ui.PipelineWorkflowUiTests.check_test_learning_menu_actions_preserve_native_training_routes": {
       "file": "tests/test_pipeline_workflow_ui.py",
-      "line": 485,
+      "line": 486,
       "checks": [
         "self.assertEqual(train.call_args_list, [unittest.mock.call('bayes'), unittest.mock.call('kmeans')])"
       ]
@@ -66736,6 +67281,85 @@
         "self.assertRaises(OSError)",
         "self.assertEqual(sorted(output.iterdir()), sorted([first, second]))",
         "self.assertEqual((first / 'run-outcome.json').read_bytes(), old)"
+      ]
+    },
+    "tests.test_run_to_node_cache.RunToNodeCacheTests.check_retained_layers_keep_their_results_when_their_inputs_change": {
+      "file": "tests/test_run_to_node_cache.py",
+      "line": 37,
+      "checks": [
+        "self.assertIsNot(cache['layer.edge_gradients'], gradients)",
+        "self.assertIsNot(cache['layer.edge_ridges'], ridges)",
+        "self.assertIs(cache[name], product, name)",
+        "self.assertIs(held.final_likelihood, fit.final_likelihood)",
+        "self.assertIs(held.geometry, fit.geometry)",
+        "self.assertIs(held.ridges, cache['layer.edge_ridges'])",
+        "self.assertIs(layers.edge_ridges, held.ridges)"
+      ]
+    },
+    "tests.test_run_to_node_cache.RunToNodeCacheTests.check_a_later_curve_fit_starts_from_traces_that_ran_under_a_kept_fit": {
+      "file": "tests/test_run_to_node_cache.py",
+      "line": 68,
+      "checks": [
+        "self.assertIsNot(traces, fit.trace_state)",
+        "self.assertIs(cache['layer.seed_edge_curves'].final_likelihood, fit.final_likelihood)",
+        "self.assertIsNot(refitted.final_likelihood, fit.final_likelihood)",
+        "self.assertIs(refitted.trace_state, traces)"
+      ]
+    },
+    "tests.test_run_to_node_cache.RunToNodeCacheTests.check_a_retained_node_with_no_result_still_gets_one": {
+      "file": "tests/test_run_to_node_cache.py",
+      "line": 89,
+      "checks": [
+        "self.assertIn('layer.seed_edge_curves', cache)"
+      ]
+    },
+    "tests.test_run_to_node_cache.RunToNodeCacheTests.check_seed_traits_follow_annotation_content_rather_than_the_array": {
+      "file": "tests/test_run_to_node_cache.py",
+      "line": 101,
+      "checks": [
+        "self.assertIs(build(labels.copy()), first)",
+        "self.assertIsNot(build(changed), first)"
+      ]
+    },
+    "tests.test_run_to_node_cache.seed_arguments": {
+      "file": "tests/test_run_to_node_cache.py",
+      "line": 22,
+      "checks": []
+    },
+    "tests.test_run_to_node_cache.RunToNodeCacheTests.check_analysis_runs_only_the_target_and_keeps_every_other_result": {
+      "file": "tests/test_run_to_node_cache.py",
+      "line": 121,
+      "checks": [
+        "self.assertIn('reference_texture_prototypes', left_out)",
+        "self.assertIn('procedural_instances', left_out)",
+        "self.assertIsNotNone(full.layers.reference_texture_profile)",
+        "self.assertIsNotNone(full.procedural_instances)",
+        "self.assertEqual(executed, {target})",
+        "self.assertIsNot(cache.values['layer.frequency_noise_masks'], before['layer.frequency_noise_masks'])",
+        "self.assertIs(cache.values[key], before[key], key)",
+        "self.assertIs(repeat.procedural_instances, full.procedural_instances)",
+        "self.assertIs(repeat.layers.reference_texture_profile, full.layers.reference_texture_profile)",
+        "self.assertEqual([row['seed_id'] for row in result_report(repeat, enabled=enabled)['instances']], [row['seed_id'] for row in result_report(full, enabled=enabled)['instances']])",
+        "self.assertIsNotNone(ruler)",
+        "self.assertIn('deskew_colour', executed)",
+        "self.assertNotIn('ruler_detection', executed)",
+        "self.assertIs(cache.values['calibration'].ruler, ruler)",
+        "self.assertEqual(cache.values['calibration'].pixels_per_mm, full.calibration.pixels_per_mm)",
+        "self.assertIsNone(outdated.procedural_instances)",
+        "self.assertIs(cache.values['segmentation.procedural_instances'], before['segmentation.procedural_instances'])",
+        "self.assertEqual(executed, set())",
+        "self.assertIs(again.procedural_instances, full.procedural_instances)"
+      ]
+    },
+    "tests.test_run_to_node_cache.RunToNodeCacheTests.check_a_changed_crop_gives_up_what_no_longer_lines_up": {
+      "file": "tests/test_run_to_node_cache.py",
+      "line": 195,
+      "checks": [
+        "self.assertEqual(cache.stale_nodes, set(left_out))",
+        "self.assertIsNone(narrow.procedural_instances)",
+        "self.assertNotIn('segmentation.procedural_instances', cache.values)",
+        "self.assertEqual(narrow.layers.valid_mask.shape, cache.values['crop'][0].shape[:2])",
+        "self.assertEqual(full.layers.valid_mask.shape, narrow.layers.valid_mask.shape)"
       ]
     },
     "tests.test_seed_crop_artifacts.SeedCropArtifactTests.check_test_exported_pixels_masks_coordinates_and_hashes_are_bound_to_result": {

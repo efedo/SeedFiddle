@@ -13,8 +13,8 @@ import unittest
 from unittest.mock import patch
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
-from PySide6.QtCore import QEvent, QPoint, Qt
-from PySide6.QtGui import QHelpEvent
+from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
+from PySide6.QtGui import QHelpEvent, QWheelEvent
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QFileDialog, QInputDialog, QMessageBox, QStyle,
     QStyledItemDelegate, QStyleOptionViewItem, QToolTip,
@@ -22,8 +22,9 @@ from PySide6.QtWidgets import (
 
 from seedvision.persistence.analysis_settings import save_analysis_settings_profile
 from seedvision.pipeline import build_default_pipeline
+from seedvision.ui.main_window import MainWindow
 from seedvision.ui.canvas_controls import COMPACT_ICON_SIZE, load_icon, rename_icon, save_icon
-from seedvision.ui.pipeline_workflow import ENTRY_KIND, SELECTOR_WIDTH
+from seedvision.ui.pipeline_workflow import ENTRY_KIND, SELECTOR_WIDTH, SHOW_ALL_TEMPLATES_SETTING
 from tests.review_fixtures import dispose_window, isolated_window
 
 YES, NO = QMessageBox.StandardButton.Yes, QMessageBox.StandardButton.No
@@ -88,7 +89,7 @@ class DefaultPipelineCopyTests(CatalogueTestCase):
             self.assertTrue(self.documents.rename_current())
         self.assertFalse(self.documents.locked)
 
-    def assert_locked_default(self, name='Default seed analysis'):
+    def assert_locked_default(self, name='Procedural seed analysis'):
         self.assertTrue(self.documents.locked)
         self.assertEqual(self.documents.current_name, name)
         self.assertEqual(self.selector.currentText(), name)
@@ -176,7 +177,7 @@ class DefaultPipelineCopyTests(CatalogueTestCase):
         choose.assert_called_once()
         question.assert_not_called()
         self.assert_locked_default()
-        with (answers(names=['Default seed analysis']) as (question, _),
+        with (answers(names=['Procedural seed analysis']) as (question, _),
               patch.object(QFileDialog, 'getSaveFileName', return_value=(str(destination), '')),
               patch.object(QMessageBox, 'warning') as warning):
             presenter.save_button.click()
@@ -236,6 +237,82 @@ class DefaultPipelineCopyTests(CatalogueTestCase):
         QToolTip.hideText()
         self.selector.hidePopup()
 
+    def offered(self):
+        """What the open list shows, and what a person can pick from it."""
+        view, model = self.selector.view(), self.selector.model()
+        shown = [row for row in range(self.selector.count()) if not view.isRowHidden(row)]
+        return ([self.selector.itemText(row) for row in shown],
+                [self.selector.itemText(row) for row in shown if model.item(row).isEnabled()])
+
+    def check_test_list_offers_five_until_the_setting_shows_them_all(self):
+        name = {recipe.recipe_id: recipe.title for recipe in self.presenter._all_templates}
+        short = ['Procedural seed analysis', 'Cellpose seed analysis', name['plantcv_seed_otsu_working'],
+                 name['plantcv_calibrated_seed_otsu'], name['smpts_paper_fixed_mean']]
+        action = self.presenter.show_all_action
+        menus = {entry.text().replace('&', ''): entry for entry in self.window.menuBar().actions()}
+        analysis = {entry.text(): entry for entry in menus['Analysis'].menu().actions()}
+        self.assertEqual(analysis['Settings'].menu().actions(), [action])
+        self.assertFalse(action.isChecked())
+        shown, selectable = self.offered()
+        self.assertEqual(selectable, short)
+        self.assertEqual(shown, ['SEED FIDDLE', *short[:2], 'SEED ANALYSIS', *short[2:]])
+        # Nothing hidden can be reached with the wheel or the keys either.
+        self.selector.setFocus()
+        self.assertEqual(self.selector.currentText(), short[0])
+        seen = []
+        for _ in short[1:]:
+            self.selector.wheelEvent(QWheelEvent(QPointF(), QPointF(), QPoint(), QPoint(0, -120),
+                Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.NoScrollPhase, False))
+            seen.append(self.selector.currentText())
+        self.assertEqual(seen, short[1:])
+        self.presenter.select_template(None)
+
+        action.setChecked(True)
+        self.assertTrue(self.window._application_settings.value(SHOW_ALL_TEMPLATES_SETTING, type=bool))
+        shown, selectable = self.offered()
+        self.assertEqual(len(selectable), 20)
+        self.assertEqual(set(selectable), {*short[:2], *name.values()})
+        self.assertEqual([text for text in shown if text not in selectable],
+                         ['SEED FIDDLE', 'SEED ANALYSIS', 'THRESHOLDS AND CLASSIFIERS', 'COLOUR CORRECTION'])
+        action.setChecked(False)
+        self.assertEqual(self.offered()[1], short)
+
+    def check_test_show_all_setting_is_remembered_by_the_next_window(self):
+        self.presenter.show_all_action.setChecked(True)
+        settings = self.window._application_settings
+        settings.sync()
+        other = TemporaryDirectory()
+        self.addCleanup(other.cleanup)
+        with patch('seedvision.ui.main_window.QSettings', return_value=settings):
+            second = MainWindow(Path(other.name))
+        self.addCleanup(dispose_window, second)
+        self.assertTrue(second.pipeline_workflow.show_all_action.isChecked())
+        selector = second.pipeline_workflow.selector
+        self.assertFalse(selector.view().isRowHidden(second.pipeline_workflow.index_of('plantcv_threshold_texture')))
+
+    def check_test_hidden_pipeline_stays_loaded_and_copies_stay_listed(self):
+        recipe_id = 'plantcv_threshold_triangle'
+        row = self.presenter.index_of(recipe_id)
+        self.assertTrue(self.selector.view().isRowHidden(row))
+        self.presenter.select_template(recipe_id)
+        self.assertEqual(self.selector.currentIndex(), row)
+        self.assertEqual(self.presenter.workflow.recipe.recipe_id, recipe_id)
+        self.presenter.show_all_action.setChecked(True)
+        self.assertFalse(self.selector.view().isRowHidden(row))
+        self.presenter.show_all_action.setChecked(False)
+        self.assertTrue(self.selector.view().isRowHidden(row))
+        self.assertEqual(self.selector.currentIndex(), row)
+        self.assertEqual(self.presenter.workflow.recipe.recipe_id, recipe_id)
+        self.presenter.select_template(None)
+        with answers(names=['My copy']):
+            self.presenter.rename_button.click()
+        shown, selectable = self.offered()
+        self.assertIn('My copy', selectable)
+        self.assertIn('SAVED IN THIS PROJECT', shown)
+        self.presenter.show_all_action.setChecked(True)
+        self.presenter.show_all_action.setChecked(False)
+        self.assertIn('My copy', self.offered()[1])
+
     def check_test_declining_keeps_the_default_and_never_asks_for_a_name(self):
         self.assert_locked_default()
         for control in (self.canvas.add_node_button, self.canvas.move_to_unused_button,
@@ -279,7 +356,7 @@ class DefaultPipelineCopyTests(CatalogueTestCase):
         with answers(names=['My seeds']) as (question, prompt):
             self.canvas._add_catalogue_item(self.canvas.catalogue_entry_items()[0])
         question.assert_called_once()
-        self.assertEqual(prompt.call_args.kwargs['text'], 'Default seed analysis copy')
+        self.assertEqual(prompt.call_args.kwargs['text'], 'Procedural seed analysis copy')
         self.assert_on_copy('My seeds')
         self.assertEqual(len(self.window.catalogue_nodes.instances), 1)
         self.assertEqual(self.copy_names(), ['My seeds'])
@@ -298,7 +375,7 @@ class DefaultPipelineCopyTests(CatalogueTestCase):
 
         # A project without a named copy can open locked on a graph holding these nodes.
         self.canvas.select_node(OPTIONAL_NODE)
-        self.documents.loaded('Default seed analysis')
+        self.documents.loaded('Procedural seed analysis')
         with answers(NO):
             self.canvas.move_to_unused_button.click()
         self.assertNotIn(OPTIONAL_NODE, self.window.pipeline.unused_nodes)
@@ -309,7 +386,7 @@ class DefaultPipelineCopyTests(CatalogueTestCase):
 
         added = self.window.catalogue_nodes.add_entry(ADDED)
         self.canvas.select_node(added)
-        self.documents.loaded('Default seed analysis')
+        self.documents.loaded('Procedural seed analysis')
         self.assertIsNotNone(self.window.catalogue_nodes.selected_instance)
         with answers(NO):
             self.presenter.remove_added_action.trigger()
@@ -323,7 +400,7 @@ class DefaultPipelineCopyTests(CatalogueTestCase):
         self.make_copy('Taken')
         self.presenter.select_template('plantcv_seed_binary_working')
         self.assertTrue(self.documents.locked)
-        with answers(names=['   ', 'default seed ANALYSIS', 'taken', 'Bad\nname', '  Fresh  ']) as (_, prompt):
+        with answers(names=['   ', 'procedural seed ANALYSIS', 'taken', 'Bad\nname', '  Fresh  ']) as (_, prompt):
             self.assertTrue(self.documents.rename_current())
         labels = [call.args[2] for call in prompt.call_args_list]
         texts = [call.kwargs['text'] for call in prompt.call_args_list]
@@ -486,7 +563,10 @@ class DefaultPipelineCopyTests(CatalogueTestCase):
             critical.assert_not_called()
 
     def test_workflow_lifecycle(self):
-        """9 related DefaultPipelineCopyTests scenarios, each with private fixture state."""
+        """12 related DefaultPipelineCopyTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_list_offers_five_until_the_setting_shows_them_all)
+        self.scenario(self.check_test_show_all_setting_is_remembered_by_the_next_window)
+        self.scenario(self.check_test_hidden_pipeline_stays_loaded_and_copies_stay_listed)
         self.scenario(self.check_test_load_and_save_icons_sit_beside_rename_and_offer_no_copy)
         self.scenario(self.check_test_more_menu_holds_only_node_removal_and_export_when_narrow)
         self.scenario(self.check_test_factory_entries_show_their_caveats_when_hovered)

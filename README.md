@@ -5,9 +5,11 @@ measuring and broadly classifying soybean and lupin seeds in calibrated laborato
 photographs. It is a native PySide6 application launched from a single script,
 with full-resolution analysis on a CUDA GPU through PyTorch.
 
-Analyses are typed node graphs ("pipelines"). The Default seed analysis combines
+Analyses are typed node graphs ("pipelines"). Procedural seed analysis combines
 calibration, material and edge evidence, procedural instance separation and
-optional learned (U-Net/StarDist) and pretrained Cellpose-SAM branches. Eighteen further factory pipelines
+optional learned (U-Net/StarDist) branches. Cellpose seed analysis runs the
+pretrained Cellpose-SAM model on the calibrated image with only the nodes it needs.
+Eighteen further factory pipelines
 reproduce selected PlantCV and SMPTS seed workflows natively, so methods can be
 compared on the same image.
 
@@ -123,7 +125,7 @@ launching; the final command launches Seed Fiddle.
 
 Menus: **File** (projects, images, snapshots, import/export), **Edit** (annotation
 undo/redo, annotation modes, `Ctrl+K` node search), **Analysis** (run, stop,
-results, run history, optimisation), **Learning** (seed outlines, datasets,
+results, optimisation, settings), **Learning** (seed outlines, datasets,
 training, species libraries) and **Help** (operator guide `F1`, keyboard shortcuts,
 runtime summary).
 
@@ -133,9 +135,10 @@ runtime summary).
    images…** (`Ctrl+O`), or open a saved project (the File menu lists recent ones).
    Set the verified species in the **Image** tab; species is operator metadata and
    is never inferred.
-2. Choose a pipeline from the grouped **Pipeline** list at the top of the Pipeline
-   view. Default pipelines are locked: editing one offers an editable copy under a
-   name you choose.
+2. Choose a pipeline from the **Pipeline** list at the top of the Pipeline view. It
+   offers five to begin with; **Analysis → Settings → Show all default pipelines**
+   lists all of them. Default pipelines are locked: editing one offers an editable
+   copy under a name you choose.
 3. Paint material references (**Materials**: Background, Foreground, Other) and,
    where useful, seed outlines (**Seeds**). Missing required evidence makes a result
    *unavailable*; it is never reported as zero seeds.
@@ -163,7 +166,7 @@ Add `--seed-crop-padding-px 4` to also write per-seed image/mask crops.
 
 ```powershell
 .\.venv\Scripts\python.exe -m tests            # core regression subset (28 units)
-.\.venv\Scripts\python.exe -m tests --full     # all 681 units
+.\.venv\Scripts\python.exe -m tests --full     # all 685 units
 .\.venv\Scripts\python.exe scripts\generate_node_catalogue.py --check
 ```
 

@@ -84,6 +84,15 @@ def save_icon() -> QIcon:
     return _flat_icon(shape)
 
 
+def add_icon() -> QIcon:
+    """A plus sign, drawn as one outline so its arms do not cancel where they cross."""
+
+    return _flat_icon(_polygon(
+        (6.5, 1.5), (9.5, 1.5), (9.5, 6.5), (14.5, 6.5), (14.5, 9.5), (9.5, 9.5),
+        (9.5, 14.5), (6.5, 14.5), (6.5, 9.5), (1.5, 9.5), (1.5, 6.5), (6.5, 6.5),
+    ))
+
+
 def check_icon(colour: str) -> QIcon:
     """A check mark that occupies a fixed column beside list text."""
 
@@ -105,6 +114,49 @@ def blank_icon(size: QSize) -> QIcon:
     return QIcon(pixmap)
 
 
+def _canvas_button_rules(selector: str) -> str:
+    """The colours of a canvas button in each of its states."""
+
+    return f"""
+        {selector} {{
+            color: {CANVAS_BUTTON_TEXT};
+            background-color: {CANVAS_BUTTON_BACKGROUND};
+            border: 1px solid #647383;
+            border-radius: 3px;
+            padding: 2px 7px;
+        }}
+        {selector}:hover {{
+            background-color: #435465;
+            border-color: #8295a8;
+        }}
+        {selector}:pressed {{
+            background-color: #202a33;
+            border-color: #718395;
+        }}
+        {selector}:checked {{
+            color: #ffffff;
+            background-color: #245f75;
+            border-color: #57d8ff;
+        }}
+        {selector}:checked:hover {{
+            background-color: #2c7189;
+            border-color: #83e4ff;
+        }}
+        {selector}:disabled {{
+            color: {CANVAS_DISABLED_BUTTON_TEXT};
+            background-color: {CANVAS_DISABLED_BUTTON_BACKGROUND};
+            border-color: #4b5865;
+        }}
+        """
+
+
+def style_canvas_icon_button(button: QToolButton) -> None:
+    """Make a button outside a canvas bar match the compact icon buttons inside one."""
+
+    button.setIconSize(COMPACT_ICON_SIZE)
+    button.setStyleSheet(_canvas_button_rules("QToolButton") + "QToolButton { padding: 2px 3px; }")
+
+
 def style_canvas_control_bar(frame: QFrame, object_name: str) -> None:
     """Give canvas controls explicit, readable enabled and disabled colours."""
 
@@ -115,35 +167,7 @@ def style_canvas_control_bar(frame: QFrame, object_name: str) -> None:
             background-color: {CANVAS_CONTROL_BACKGROUND};
             border-bottom: 1px solid #3d4853;
         }}
-        QFrame#{object_name} QToolButton {{
-            color: {CANVAS_BUTTON_TEXT};
-            background-color: {CANVAS_BUTTON_BACKGROUND};
-            border: 1px solid #647383;
-            border-radius: 3px;
-            padding: 2px 7px;
-        }}
-        QFrame#{object_name} QToolButton:hover {{
-            background-color: #435465;
-            border-color: #8295a8;
-        }}
-        QFrame#{object_name} QToolButton:pressed {{
-            background-color: #202a33;
-            border-color: #718395;
-        }}
-        QFrame#{object_name} QToolButton:checked {{
-            color: #ffffff;
-            background-color: #245f75;
-            border-color: #57d8ff;
-        }}
-        QFrame#{object_name} QToolButton:checked:hover {{
-            background-color: #2c7189;
-            border-color: #83e4ff;
-        }}
-        QFrame#{object_name} QToolButton:disabled {{
-            color: {CANVAS_DISABLED_BUTTON_TEXT};
-            background-color: {CANVAS_DISABLED_BUTTON_BACKGROUND};
-            border-color: #4b5865;
-        }}
+        {_canvas_button_rules(f"QFrame#{object_name} QToolButton")}
         QFrame#{object_name} QLabel {{
             color: #d7e0e8;
             background-color: transparent;

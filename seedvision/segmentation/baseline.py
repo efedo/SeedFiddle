@@ -478,6 +478,9 @@ class PipelineAnalysisCache:
     last_computed_nodes: tuple[str, ...] = ()
     last_reused_nodes: tuple[str, ...] = ()
     node_timings_seconds: dict[str, float] = field(default_factory=dict)
+    # Nodes a run to one node left out whose results no longer follow from their
+    # inputs. The next run that includes them recomputes them.
+    stale_nodes: set[str] = field(default_factory=set)
 
 
 def analyze_path(
@@ -507,6 +510,7 @@ def analyze_path(
     manual_seed_centres: ManualSeedCentres | None = None,
     background_colour_enabled: bool = True,
     enabled_nodes: set[str] | frozenset[str] | None = None,
+    retained_nodes: frozenset[str] = frozenset(),
     node_cache: PipelineAnalysisCache | None = None,
     dirty_nodes: set[str] | frozenset[str] = frozenset(),
     progress_callback=None,
@@ -614,6 +618,7 @@ def analyze_path(
         manual_seed_centres=manual_seed_centres,
         background_colour_enabled=background_colour_enabled,
         enabled_nodes=enabled_nodes,
+        retained_nodes=retained_nodes,
         node_cache=node_cache,
         dirty_nodes=dirty_nodes,
         progress_callback=progress_callback,
@@ -661,6 +666,7 @@ def analyze_image(
     manual_seed_centres: ManualSeedCentres | None = None,
     background_colour_enabled: bool = True,
     enabled_nodes: set[str] | frozenset[str] | None = None,
+    retained_nodes: frozenset[str] = frozenset(),
     node_cache: PipelineAnalysisCache | None = None,
     dirty_nodes: set[str] | frozenset[str] = frozenset(),
     progress_callback=None,
@@ -715,10 +721,22 @@ def analyze_image(
     def node_enabled(node_id: str) -> bool:
         return enabled_nodes is None or owning_node(node_id) in enabled_nodes
 
+    def retained(node_id: str) -> bool:
+        """Whether this run leaves the node out, so that its cached result stands."""
+        return owning_node(node_id) in retained_nodes
+
+    def retain_nothing() -> None:
+        """Flow forward when the kept results no longer line up with this run's geometry."""
+        nonlocal retained_nodes
+        if node_cache is not None:
+            node_cache.stale_nodes.update(retained_nodes)
+        retained_nodes = frozenset()
+
     from seedvision.calibration.image import _calibration_source_key, calibration_cache_matches
     source_key = _calibration_source_key(image, cuda_context)
     if 'classic.source_key' in values and values['classic.source_key'] != source_key:
         values.clear()
+        retain_nothing()
     values['classic.source_key'] = source_key
     calibration_settings = calibration_settings or CalibrationSettings()
     calibration_nodes = {"ruler_detection", "deskew_colour"}
@@ -732,14 +750,22 @@ def analyze_image(
             cuda_context=cuda_context,
             timing_recorder=timings,
             _previous_geometry=(previous_calibration if 'deskew_colour' not in dirty else None),
+            _kept_ruler=(previous_calibration if retained('ruler_detection') else None),
         )
         values["calibration"] = calibration
+        if (previous_calibration is not None
+                and calibration.corrected_bgr.shape != previous_calibration.corrected_bgr.shape):
+            retain_nothing()
         if (getattr(calibration, '_geometry', None) is not None
                 and calibration._geometry is getattr(previous_calibration, '_geometry', None)):
             reused.append('deskew_colour')
-            computed.append('ruler_detection')
         else:
-            computed.extend(('deskew_colour', 'ruler_detection'))
+            computed.append('deskew_colour')
+        if (calibration.ruler is not None
+                and calibration.ruler is getattr(previous_calibration, 'ruler', None)):
+            reused.append('ruler_detection')
+        else:
+            computed.append('ruler_detection')
     else:
         calibration = values["calibration"]
         reused.append("deskew_colour")
@@ -815,7 +841,7 @@ def analyze_image(
     })
 
     layout_dirty = (
-        calibration_dirty
+        (calibration_dirty and not retained("layout_detection"))
         or "layout_detection" in dirty
         or "perimeter_background_reference" in dirty
         or "dish" not in values
@@ -865,13 +891,18 @@ def analyze_image(
     ) = perimeter_background
 
     seed_scale_dirty = (
-        calibration_dirty
-        or layout_dirty
-        or painted_reference_dirty
+        (
+            (
+                calibration_dirty
+                or layout_dirty
+                or painted_reference_dirty
+                or values.get('seed_scale.reviewed_input_key') != reviewed_input_key
+            )
+            and not retained("seed_scale_estimation")
+        )
         or "seed_scale_estimation" in dirty
         or "species_reference_library" in dirty
         or "seed_scale" not in values
-        or values.get('seed_scale.reviewed_input_key') != reviewed_input_key
     )
     if seed_scale_dirty:
         with timings.measure("seed_scale_estimation"):
@@ -979,10 +1010,16 @@ def analyze_image(
         or "crop" not in values
     )
     if crop_dirty:
+        previous_crop = values.get("crop")
         crop, offset_x, offset_y = _dish_crop(
             analysis_image, dish, radius=probability_outer_radius
         )
         values["crop"] = (crop, offset_x, offset_y)
+        if previous_crop is not None and (
+            previous_crop[0].shape != crop.shape
+            or previous_crop[1:] != (offset_x, offset_y)
+        ):
+            retain_nothing()
     else:
         crop, offset_x, offset_y = values["crop"]
 
@@ -1065,9 +1102,10 @@ def analyze_image(
         else manual_seed_centres.translated(-offset_x, -offset_y)
     )
     reference_samples_dirty = (
-        crop_dirty
-        or seed_scale_dirty
-        or painted_reference_dirty
+        (
+            (crop_dirty or seed_scale_dirty or painted_reference_dirty)
+            and not retained("background_likelihood")
+        )
         or "foreground_segmentation" in dirty
         or "background_likelihood" in dirty
         or "reference.samples" not in values
@@ -1115,14 +1153,19 @@ def analyze_image(
         float(settings.foreground_current_reference_weight),
     )
     foreground_dirty = (
-        crop_dirty
-        or seed_scale_dirty
-        or painted_reference_dirty
+        (
+            (
+                crop_dirty
+                or seed_scale_dirty
+                or painted_reference_dirty
+                or values.get("foreground.library_signature")
+                != foreground_library_signature
+            )
+            and not retained("foreground_segmentation")
+        )
         or "foreground_segmentation" in dirty
         or "background_likelihood" in dirty
         or "foreground" not in values
-        or values.get("foreground.library_signature")
-        != foreground_library_signature
     )
     if foreground_dirty:
         foreground_timing = timings.start("foreground_segmentation")
@@ -1424,7 +1467,7 @@ def analyze_image(
         )
 
     distance_dirty = (
-        foreground_dirty
+        (foreground_dirty and not retained("distance_candidates"))
         or "distance_candidates" in dirty
         or "distance" not in values
     )
@@ -1458,10 +1501,10 @@ def analyze_image(
             10, circle_threshold - settings.dense_circle_relaxation
         )
     circle_dirty = (
-        crop_dirty
-        or seed_scale_dirty
-        or distance_dirty
-        or circle_evidence_dirty
+        (
+            (crop_dirty or seed_scale_dirty or distance_dirty or circle_evidence_dirty)
+            and not retained("circle_candidates")
+        )
         or "circle_candidates" in dirty
         or "circles" not in values
     )
@@ -1507,8 +1550,7 @@ def analyze_image(
         reused.append("circle_candidates")
 
     identification_dirty = (
-        distance_dirty
-        or circle_dirty
+        ((distance_dirty or circle_dirty) and not retained("identification"))
         or "identification" in dirty
         or "fused" not in values
     )
@@ -1728,6 +1770,12 @@ def analyze_image(
         "edge_traces": "layer.edge_traces",
         "seed_edge_curves": "layer.seed_edge_curves",
     }
+    retained_layers = frozenset(
+        node_id
+        for node_id, cache_key in layer_cache_keys.items()
+        if retained(node_id) and cache_key in values
+    )
+    layer_dirty -= retained_layers
     for node_id, cache_key in layer_cache_keys.items():
         if node_id == "edge_gradients" and precomputed_edge_gradients:
             computed.append(node_id)
@@ -1849,6 +1897,7 @@ def analyze_image(
         ),
         settings=layer_settings,
         cache_values=values,
+        retained_nodes=retained_layers,
         cuda_context=cuda_context,
         timing_recorder=timings,
     )
@@ -2058,13 +2107,13 @@ def analyze_image(
     )
     if previous_advanced is None:
         requested_advanced_nodes = set(enabled_advanced_nodes)
-    elif upstream_advanced_dirty and not requested_advanced_nodes:
+    elif upstream_advanced_dirty and not requested_advanced_nodes and not retained_nodes:
         # Direct API callers may name only a legacy source node, whereas the
         # Qt graph supplies the full recursive dirty set.
         requested_advanced_nodes = set(enabled_advanced_nodes)
     advanced_dirty = (
         bool(requested_advanced_nodes)
-        or upstream_advanced_dirty
+        or (upstream_advanced_dirty and not retained_nodes)
         or previous_advanced is None
     )
     if advanced_dirty:
@@ -2150,6 +2199,16 @@ def analyze_image(
             node_id for node_id in ADVANCED_NODE_MODES
             if node_id in enabled_advanced_nodes
         )
+
+    kept_nodes: set[str] = set()
+
+    def kept_result(node_id: str, cache_key: str):
+        """A left-out node's earlier result, unless something has made it stale."""
+        stale = () if node_cache is None else node_cache.stale_nodes
+        result = None if node_id in stale else values.get(cache_key)
+        if result is not None:
+            kept_nodes.add(node_id)
+        return result
 
     # This new review branch is opt-in for API callers that omit graph state;
     # the desktop always passes its explicit active-node set.
@@ -2283,6 +2342,10 @@ def analyze_image(
     elif procedural_enabled:
         procedural_result = values["segmentation.procedural_instances"]
         reused.append("procedural_instances")
+    elif retained("procedural_instances"):
+        procedural_result = kept_result(
+            "procedural_instances", "segmentation.procedural_instances"
+        )
     else:
         procedural_result = None
         values.pop("segmentation.procedural_instances", None)
@@ -2370,6 +2433,8 @@ def analyze_image(
 
     def learned_branch(node_id, family, branch_settings):
         if enabled_nodes is None or node_id not in enabled_nodes:
+            if retained(node_id):
+                return kept_result(node_id, f"learning.{node_id}.result")
             clear_learned_branch(node_id)
             return None
         configured_checkpoint = Path(branch_settings.checkpoint_path).expanduser()
@@ -2428,6 +2493,8 @@ def analyze_image(
     def cellpose_branch():
         node_id = "cellpose_sam_instances"
         if enabled_nodes is None or node_id not in enabled_nodes:
+            if retained(node_id):
+                return kept_result(node_id, f"learning.{node_id}.result")
             clear_learned_branch(node_id)
             return None
         from seedvision.learning.cellpose_sam import (
@@ -2494,10 +2561,15 @@ def analyze_image(
                 affine=calibration.affine_matrix, gpu_source=layers.gpu_source, gpu_valid=layers.gpu_valid,
                 settings=trait_settings or TraitClassifierSettings(), root=learning_root, cache=values)
         (computed if trait_computed else reused).append('trait_classifier')
-    else:
+    elif not retained('trait_classifier'):
         for key in tuple(values):
             if key.startswith('trait_classifier.'):
                 values.pop(key, None)
+
+    # A kept result was produced by its node, so the run's records must say so.
+    producing_nodes = (
+        None if enabled_nodes is None else frozenset(enabled_nodes) | kept_nodes
+    )
 
     reported_instance_count = (
         unet_result.count
@@ -2563,7 +2635,7 @@ def analyze_image(
         )
     _, reported_instances, _ = select_instances(unet=unet_result,
         stardist=stardist_result, cellpose=cellpose_result,
-        procedural=procedural_result, enabled=enabled_nodes,
+        procedural=procedural_result, enabled=producing_nodes,
         foreground_available=layers.foreground_colour_profile is not None)
     confidence_warning = _procedural_confidence_warning(reported_instances, procedural_result)
     if confidence_warning:
@@ -2584,13 +2656,13 @@ def analyze_image(
                     'stardist_instances': stardist_settings.checkpoint_path,
                     'cellpose_sam_instances': cellpose_settings.pretrained_model,
                     'trait_classifier': (trait_settings or TraitClassifierSettings()).trait_model_path},
-        enabled=enabled_nodes or (), trait_result=trait_result,
+        enabled=producing_nodes or (), trait_result=trait_result,
         checkpoints={node: branch.checkpoint_id for node, branch in
                      (('unet_instances', unet_result), ('stardist_instances', stardist_result),
                       ('cellpose_sam_instances', cellpose_result))
                      if branch is not None})
     from seedvision.export.backend_outcomes import capture_native_outcomes
-    backend_outcomes_json = capture_native_outcomes(enabled=enabled_nodes or (),
+    backend_outcomes_json = capture_native_outcomes(enabled=producing_nodes or (),
         results={'procedural_instances': procedural_result, 'unet_instances': unet_result,
                  'stardist_instances': stardist_result,
                  'cellpose_sam_instances': cellpose_result}, failures=backend_failures,

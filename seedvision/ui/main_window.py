@@ -67,7 +67,8 @@ from seedvision.calibration.neutral import neutral_balance_description
 
 _KEEP_INSTANCE_GENERATION = object()
 from seedvision.pipeline import NodeStatus, build_default_pipeline, category_rank
-from seedvision.pipeline.node_aliases import owning_node
+from seedvision.pipeline.default_pipelines import PROCEDURAL_SEED_ANALYSIS, build_procedural_pipeline
+from seedvision.pipeline.node_aliases import INPUT_DIRTY_MARKERS, owning_node
 from seedvision.ui.optimization import OptimizationController
 from seedvision.ui.reference_frames import ReferenceFrameController
 from seedvision.ui.work_control import WorkController
@@ -166,8 +167,10 @@ from seedvision.segmentation import (
     procedural_seed_instances_from_prepared,
 )
 from seedvision.visualization import ADVANCED_NODE_MODES, ADVANCED_OVERLAY_LABELS
+from seedvision.ui.canvas_controls import add_icon, style_canvas_icon_button
 from seedvision.ui.image_list import (
-    IMAGE_OPEN_ROLE, IMAGE_SPECIES_ROLE, ImageListDelegate, ImageThumbnailLoader,
+    IMAGE_OPEN_ROLE, IMAGE_SPECIES_ROLE, UNKNOWN_SPECIES, ImageListDelegate,
+    ImageThumbnailLoader,
 )
 from seedvision.ui.image_view import ImageView, SUPPORTED_SUFFIXES
 from seedvision.ui.overlay_header import OverlayHeaderControls
@@ -190,7 +193,6 @@ FALLBACK_SPECIES = (
     "Lupinus polyphyllus",
     "Lupinus mexicanus",
 )
-UNASSIGNED_SPECIES = "Unknown / unassigned"
 OVERLAY_NODE_IDS = (
     "hue_only",
     "wavelet_decomposition",
@@ -646,9 +648,11 @@ class _AnalysisTask(QRunnable):
         reference_annotation_snapshot_source_sha256=None,
         trait_settings=None,
         cellpose_settings=None,
+        retained_nodes: frozenset[str] = frozenset(),
     ) -> None:
         super().__init__()
         self.path = path
+        self.retained_nodes = retained_nodes
         self.reference_transform = None if reference_transform is None else np.asarray(reference_transform).copy()
         self.reference_archive_source_sha256 = reference_archive_source_sha256
         self.reference_annotation_snapshot_source_sha256 = reference_annotation_snapshot_source_sha256
@@ -765,6 +769,7 @@ class _AnalysisTask(QRunnable):
                 manual_seed_centres=self.manual_seed_centres,
                 background_colour_enabled=self.background_colour_enabled,
                 enabled_nodes=self.enabled_nodes,
+                retained_nodes=self.retained_nodes,
                 node_cache=self.node_cache,
                 dirty_nodes=self.dirty_nodes,
                 progress_callback=lambda node_id, state: self.signals.node_progress.emit(
@@ -1300,7 +1305,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
     REFERENCE_UNDO_LIMIT = 20
     MAX_RECENT_PROJECTS = 8
     RECENT_PROJECTS_SETTINGS_KEY = "projects/recentFiles"
-    IMAGE_SPECIES_SETTINGS_KEY = "review-ui/images-species-column"
 
     def __init__(self, root: Path, parent=None) -> None:
         super().__init__(parent)
@@ -1340,7 +1344,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._species_library_service = SpeciesLibraryService()
         self._project_species_library_pin: SpeciesLibraryPin | None = None
         self._project_biological_context: BiologicalContext | None = None
-        self._project_species = UNASSIGNED_SPECIES
+        self._project_species = UNKNOWN_SPECIES
         self._project_capture_group_id: str | None = None
         self._project_reference_graphs = ()
         self._project_reference_model_assets = ()
@@ -1438,7 +1442,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._selected_pipeline_node = "project"
         self._selecting_node_from_overlay = False
         self._selecting_overlay_from_node = False
-        self.pipeline = build_default_pipeline()
+        self.pipeline = build_procedural_pipeline()
 
         self.setMinimumSize(900, 520)
         available_screen = self.screen().availableGeometry()
@@ -1521,7 +1525,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         )
         self.image_list.setItemDelegate(self._image_list_delegate)
         self.species_combo = QComboBox(self)
-        self.species_combo.addItem(UNASSIGNED_SPECIES)
+        self.species_combo.addItem(UNKNOWN_SPECIES)
         self.species_combo.addItems(self._load_species_names())
         self.species_combo.currentTextChanged.connect(self._species_changed)
 
@@ -2791,13 +2795,13 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             self._pipeline_held_correction_bindings = ()
             loaded_workflow = loaded.document.pipeline_workflow
             self.pipeline_documents.set_stored_copies(loaded.document.custom_pipelines)
-            self.pipeline_documents.loaded('Default seed analysis' if loaded_workflow is None else loaded_workflow.source_recipe.title,
+            self.pipeline_documents.loaded(self.pipeline_workflow.graph_pipeline.title if loaded_workflow is None else loaded_workflow.source_recipe.title,
                 name=loaded.document.active_pipeline or (None if loaded_workflow is None else loaded_workflow.display_state.get("pipeline_name")))
             self.pipeline_backends.refresh()
         self._project_correction_bindings = loaded.document.correction_bindings
         species = loaded.document.species
         self._project_species = (
-            UNASSIGNED_SPECIES if species in {None, "", "unknown"} else species
+            UNKNOWN_SPECIES if species in {None, "", "unknown"} else species
         )
         self._sync_species_selector()
         self._offer_missing_species_library_import()
@@ -2941,15 +2945,15 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
     def _install_new_project(self) -> None:
         """Replace the session with an empty, untitled, unmodified project."""
 
-        default_graph = build_default_pipeline()
+        default_graph = build_procedural_pipeline()
         default_profile = analysis_settings_profile_from_graph(default_graph)
         default_positions = {
             **default_graph.nodes,
             **default_graph.unused_nodes,
         }
         self._installing_project = True
-        self._clear_project_session_state()
         apply_analysis_settings_profile(self.pipeline, default_profile)
+        self._clear_project_session_state()
         catalogue = {**self.pipeline.nodes, **self.pipeline.unused_nodes}
         for node_id, default_node in default_positions.items():
             node = catalogue[node_id]
@@ -3004,7 +3008,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             release_host_caches(analysis)
         self._analyses.clear()
         self._image_run_outcomes.clear()
-        self._run_outcome_history.clear()
         self._analysis_caches.clear()
         self._cache_dirty_nodes.clear()
 
@@ -3066,7 +3069,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._project_unresolved_selected_image_id = None
         self._project_species_library_pin = None
         self._project_biological_context = None
-        self._project_species = UNASSIGNED_SPECIES
+        self._project_species = UNKNOWN_SPECIES
         self._project_capture_group_id = None
         self._project_reference_graphs = ()
         self._project_reference_model_assets = ()
@@ -3470,7 +3473,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.save_project_as_action.triggered.connect(self._save_project_as)
         self._init_annotation_transfer()
 
-        self.open_action = QAction("Open images…", self)
+        self.open_action = QAction(add_icon(), "Open images…", self)
+        self.open_action.setIconVisibleInMenu(False)
         self.open_action.setShortcut(QKeySequence.StandardKey.Open)
         self.open_action.setToolTip(
             "Add one or more images to the project and open the last selected image."
@@ -3759,12 +3763,14 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         analysis_menu.addAction(self.stop_action)
         analysis_menu.addSeparator()
         analysis_menu.addAction(self.results_action)
-        analysis_menu.addAction(self.terminal_history_action)
         analysis_menu.addSeparator()
         optimise_menu = analysis_menu.addMenu("Optimise")
         optimise_menu.addAction(self.optimize_project_action)
         optimise_menu.addAction(self.import_optimization_targets_action)
         optimise_menu.addAction(self.optimization_history_action)
+        analysis_menu.addSeparator()
+        settings_menu = analysis_menu.addMenu("Settings")
+        settings_menu.addAction(self.pipeline_workflow.show_all_action)
 
         learning_menu = menus["learning"]
         outlines_menu = learning_menu.addMenu("Seed outlines")
@@ -5711,23 +5717,11 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         heading.setStyleSheet("font-size: 16px; font-weight: 600;")
         heading_row = QHBoxLayout()
         heading_row.addWidget(heading, 1)
-        self.image_species_action = QAction("Show species in the Images list", self)
-        self.image_species_action.setIconText("Species")
-        self.image_species_action.setCheckable(True)
-        self.image_species_action.setChecked(self._application_settings.value(
-            self.IMAGE_SPECIES_SETTINGS_KEY, True, type=bool))
-        self.image_species_action.toggled.connect(self._image_species_toggled)
-        self._image_list_delegate.set_show_species(self.image_species_action.isChecked())
-        self.image_list.setContextMenuPolicy(Qt.ContextMenuPolicy.ActionsContextMenu)
-        self.image_list.addAction(self.image_species_action)
-        self.image_species_button = QToolButton(images)
-        self.image_species_button.setObjectName("imageSpeciesButton")
-        self.image_species_button.setDefaultAction(self.image_species_action)
-        heading_row.addWidget(self.image_species_button)
         self.open_images_button = QToolButton(images)
         self.open_images_button.setObjectName("openImagesButton")
         self.open_images_button.setDefaultAction(self.open_action)
-        self.open_images_button.setText("Open…")
+        self.open_images_button.setAccessibleName("Add images")
+        style_canvas_icon_button(self.open_images_button)
         heading_row.addWidget(self.open_images_button)
         images_layout.addLayout(heading_row)
         images_layout.addWidget(self.image_list, 1)
@@ -6440,7 +6434,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             item = QListWidgetItem(resolved.name)
             item.setData(Qt.ItemDataRole.UserRole, str(resolved))
             item.setToolTip(str(resolved))
-            item.setData(IMAGE_SPECIES_ROLE, self._image_species_text(key))
+            item.setData(IMAGE_SPECIES_ROLE, self._image_species_name(key))
             self.image_list.addItem(item)
             if mark_project_dirty:
                 self._set_project_dirty()
@@ -6451,22 +6445,14 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._open_path(Path(item.data(Qt.ItemDataRole.UserRole)))
         self.image_workspace_action.setChecked(True)
 
-    def _image_species_toggled(self, visible: bool) -> None:
-        self._application_settings.setValue(self.IMAGE_SPECIES_SETTINGS_KEY, visible)
-        self._image_list_delegate.set_show_species(visible)
-
     def _image_species_name(self, key: str | None) -> str:
         """Name the species recorded for one image, or the project's if it has none."""
 
         context = self._project_image_biological_contexts.get(key)
         species = context.species_id if context is not None else self._project_species
         if species in {"", "unknown"}:
-            return UNASSIGNED_SPECIES
+            return UNKNOWN_SPECIES
         return self._seed_trait_catalogue.for_species(species).display_name
-
-    def _image_species_text(self, key: str) -> str:
-        species = self._image_species_name(key)
-        return "Unassigned" if species == UNASSIGNED_SPECIES else species
 
     def _remove_image(self, path: Path) -> bool:
         """Forget a workspace image and its live state without deleting files."""
@@ -6846,6 +6832,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.crowding_label.setText("No result")
         self.warning_label.setText("")
         self.warning_label.hide()
+        self.reference_readiness_button.hide()
         self._sync_background_controls()
 
     def _baseline_settings(self) -> BaselineSettings:
@@ -6912,6 +6899,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         *,
         dirty_nodes: set[str] | frozenset[str] | None = None,
         enabled_node_scope: frozenset[str] | None = None,
+        rerun_node: str | None = None,
     ) -> None:
         if dirty_nodes is None and enabled_node_scope is None:
             self.catalogue_nodes.run()
@@ -6939,6 +6927,9 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         ):
             # Keep only the most recently requested image. Dirty-node sets are
             # retained per image, so a coalesced rerun still has exact scope.
+            # A repeat that has to wait joins them and so counts as a change.
+            if rerun_node is not None:
+                pending_dirty.add(rerun_node)
             self._pending_analysis_key = key
             self._pending_analysis_scope = enabled_node_scope
             now = monotonic()
@@ -6966,7 +6957,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         from seedvision.export.preflight_outcomes import begin_preflight
         attempt_revision = self.pipeline.revision
         attempt = begin_preflight(path, 'image', 'desktop_prepare')
-        requested_dirty = frozenset(pending_dirty)
+        waiting_dirty = frozenset(pending_dirty)
         try:
             pending_dirty.clear()
             self._pending_analysis_key = None
@@ -6976,6 +6967,9 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 key, PipelineAnalysisCache()
             )
             self._analysis_caches.move_to_end(key)
+            requested_dirty, retained_nodes, stale_nodes = self._plan_analysis_run(
+                node_cache, waiting_dirty, enabled_node_scope, rerun_node
+            )
             resolved_library = self._resolved_species_library_for_current_image(path)
             library_shape_bank = (
                 None
@@ -7069,11 +7063,13 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 reference_annotation_snapshot_source_sha256=self._reference_source_identities.get(key, (None, None))[1],
                 trait_settings=self._trait_settings(),
                 cellpose_settings=self._cellpose_settings(),
+                retained_nodes=retained_nodes,
             )
         except Exception as error:
             self._analysis_preflight_failed(attempt.outcome(error), attempt_revision)
-            self._cache_dirty_nodes.setdefault(key, set()).update(requested_dirty)
+            self._cache_dirty_nodes.setdefault(key, set()).update(waiting_dirty)
             return
+        node_cache.stale_nodes = stale_nodes
         task.signals.completed.connect(self._analysis_completed)
         task.signals.terminal_outcome.connect(self._analysis_terminal_outcome)
         task.signals.failed.connect(self._analysis_failed)
@@ -7105,9 +7101,52 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         )
         self._thread_pool.start(task)
 
+    def _plan_analysis_run(
+        self,
+        node_cache: PipelineAnalysisCache,
+        waiting_dirty: frozenset[str],
+        scope: frozenset[str] | None,
+        rerun_node: str | None,
+    ) -> tuple[frozenset[str], frozenset[str], set[str]]:
+        """Split an image's outstanding work between this run and later runs.
+
+        Returns the nodes to recompute, the enabled nodes the run leaves out, and
+        those left-out nodes that will be out of date afterwards. Repeating a node
+        with nothing changed reproduces its result, so its dependents stay valid.
+        """
+        waiting = waiting_dirty | node_cache.stale_nodes
+        if scope is None:
+            return frozenset(waiting), frozenset(), set()
+        enabled = frozenset(
+            identifier for identifier, node in self.pipeline.nodes.items() if node.enabled
+        )
+        in_scope = {
+            name for name in waiting
+            if name in INPUT_DIRTY_MARKERS or owning_node(name) in scope
+        }
+        if "result" not in node_cache.values:
+            # Nothing has finished for this image, so the rest only holds blanks.
+            stale = set(enabled - scope)
+        else:
+            stale = set(waiting - in_scope)
+            for name in in_scope:
+                if name in INPUT_DIRTY_MARKERS:
+                    # A shared input feeds the whole pipeline.
+                    stale.update(enabled)
+                elif owning_node(name) in self.pipeline.nodes:
+                    stale.update(
+                        enabled.intersection(
+                            self.pipeline.downstream(owning_node(name), recursive=True)
+                        )
+                    )
+            stale -= scope
+        if rerun_node is not None:
+            in_scope.add(rerun_node)
+        return frozenset(in_scope), enabled - scope, stale
+
     @Slot(str)
     def _run_pipeline_to_node(self, node_id: str) -> None:
-        """Execute the selected active node with only its enabled ancestors."""
+        """Run the selected node, and any enabled ancestor that has changed."""
         from seedvision.pipeline.project_context import CONTEXT_NODE_IDS
         if node_id in CONTEXT_NODE_IDS:
             self._context_library_key = None
@@ -7146,12 +7185,10 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 continue
             scope.add(current)
             pending.extend(self.pipeline.upstream(current))
-        self.statusBar().showMessage(
-            f"Running enabled prerequisites through {node.title}…"
-        )
+        self.statusBar().showMessage(f"Running {node.title}…")
         self._analyze_current_image(
-            dirty_nodes={node_id},
             enabled_node_scope=frozenset(scope),
+            rerun_node=node_id,
         )
 
     def _start_pending_analysis(self) -> None:
@@ -7291,7 +7328,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             # repopulate a partial cache or rewrite the visible pipeline state.
             self._active_tasks.pop(key, None)
             self._analysis_activities.pop(key, None)
-            self._discard_analysis_cache(key)
+            self._keep_cancelled_analysis_cache(key, task)
             self._refresh_analysis_activity_panel()
             self._update_analysis_availability()
             self.statusBar().showMessage(
@@ -7384,7 +7421,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         if not isinstance(outcome, (NativeRunOutcome, PreflightRunOutcome)):
             raise ValueError('Unknown native terminal outcome.')
         payload = outcome.payload
-        self._run_outcome_history[payload['outcome_revision']] = outcome
         recording_failure = None
         # Preserve history even when a queued signal belongs to an old image.
         try:
@@ -7564,11 +7600,20 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             return
         self._finish_analysis_cancellation(path, pipeline_revision)
 
+    def _keep_cancelled_analysis_cache(self, key: str, task) -> None:
+        """Keep what a cancelled run finished; what it was asked to change stays owed."""
+        dirty_nodes = getattr(task, "dirty_nodes", None)
+        if dirty_nodes is None or key not in self._analysis_caches:
+            self._discard_analysis_cache(key)
+            return
+        self._analyses.pop(key, None)
+        self._cache_dirty_nodes.setdefault(key, set()).update(dirty_nodes)
+
     def _finish_analysis_cancellation(self, path, pipeline_revision):
         key = _path_identity(path)
-        self._active_tasks.pop(key, None)
+        task = self._active_tasks.pop(key, None)
         self._analysis_activities.pop(key, None)
-        self._discard_analysis_cache(key)
+        self._keep_cancelled_analysis_cache(key, task)
         current_path = self.image_view.image_path
         if current_path is not None and _path_identity(current_path) == key:
             self.image_view.set_overlay_calculating(None)
@@ -11750,11 +11795,11 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 "Wait for the current analysis or training run to finish.",
             )
             return
-        if self.pipeline_workflow.active:
+        if self.pipeline_workflow.active or self.pipeline_workflow.graph_pipeline is not PROCEDURAL_SEED_ANALYSIS:
             QMessageBox.information(
                 self,
-                "Choose the default pipeline",
-                "Training analyses its images with Default seed analysis. "
+                f"Choose {PROCEDURAL_SEED_ANALYSIS.title}",
+                f"Training analyses its images with {PROCEDURAL_SEED_ANALYSIS.title}. "
                 "Choose it in the pipeline list first.",
             )
             return
@@ -14249,7 +14294,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                     else NodeStatus.WARNING
                 ),
                 (
-                    f"Species {getattr(trait_profile, 'species_id', '') or 'unassigned'}; "
+                    f"Species {getattr(trait_profile, 'species_id', '') or 'unknown'}; "
                     f"coat model {'available' if coat_available else 'needs two labelled classes'}; "
                     f"{condition_available}/{len(self._seed_trait_catalogue.conditions)} condition model(s) available; "
                     f"up to {reviewed_seed_count} reviewed current seed(s) per coat class; "
@@ -14335,6 +14380,13 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                     node.identifier,
                     NodeStatus.BYPASSED,
                     self._disabled_node_detail(node.identifier),
+                )
+        image_path = getattr(result, "image_path", None)
+        cache = None if image_path is None else self._analysis_caches.get(_path_identity(image_path))
+        for node_id in () if cache is None else cache.stale_nodes:
+            if node_id in self.pipeline.nodes and self.pipeline.node(node_id).enabled:
+                self.pipeline.set_status(
+                    node_id, NodeStatus.IDLE, "Out of date; run the pipeline to update"
                 )
         self.pipeline_canvas.refresh()
         self.pipeline_inspector.refresh_status()
@@ -14972,6 +15024,32 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 return "Disabled; needs the optional cellpose package"
         return detail
 
+    def _cellpose_available(self) -> bool:
+        """Whether Cellpose-SAM can run, saying so if not or if it must download weights."""
+
+        from seedvision.learning.cellpose_sam import (
+            INSTALL_HINT,
+            cellpose_installed,
+            resolve_weights,
+        )
+
+        if not cellpose_installed():
+            QMessageBox.warning(
+                self,
+                "Cellpose-SAM is not installed",
+                "The optional cellpose package is not installed in this "
+                f"environment.\n\n{INSTALL_HINT}",
+            )
+            return False
+        selection = str(self.pipeline.node("cellpose_sam_instances").parameters["pretrained_model"])
+        if not resolve_weights(selection, self._root).is_file():
+            self.statusBar().showMessage(
+                f"Cellpose-SAM weights '{selection}' are not cached yet; the first "
+                "run downloads them (about 1.2 GB for cpsam_v2).",
+                15000,
+            )
+        return True
+
     @Slot(str, bool)
     def _pipeline_enabled_changed(self, node_id: str, enabled: bool) -> None:
         if not self._pipeline_editing_allowed():
@@ -14999,29 +15077,9 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 )
                 self.pipeline_inspector.set_node(self.pipeline.node(node_id))
                 return
-        if enabled and node_id == "cellpose_sam_instances":
-            from seedvision.learning.cellpose_sam import (
-                INSTALL_HINT,
-                cellpose_installed,
-                resolve_weights,
-            )
-
-            if not cellpose_installed():
-                QMessageBox.warning(
-                    self,
-                    "Cellpose-SAM is not installed",
-                    "The optional cellpose package is not installed in this "
-                    f"environment.\n\n{INSTALL_HINT}",
-                )
-                self.pipeline_inspector.set_node(self.pipeline.node(node_id))
-                return
-            selection = str(self.pipeline.node(node_id).parameters["pretrained_model"])
-            if not resolve_weights(selection, self._root).is_file():
-                self.statusBar().showMessage(
-                    f"Cellpose-SAM weights '{selection}' are not cached yet; the first "
-                    "run downloads them (about 1.2 GB for cpsam_v2).",
-                    15000,
-                )
+        if enabled and node_id == "cellpose_sam_instances" and not self._cellpose_available():
+            self.pipeline_inspector.set_node(self.pipeline.node(node_id))
+            return
         try:
             affected = self.pipeline.set_enabled(node_id, enabled)
         except ValueError as error:
@@ -15082,7 +15140,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         if key is not None:
             self._project_image_biological_contexts[key] = BiologicalContext(species_id)
             changed.add(key)
-        if key is None or self._project_species == UNASSIGNED_SPECIES:
+        if key is None or self._project_species == UNKNOWN_SPECIES:
             # Images without a species of their own follow the project's.
             self._project_species = species
             self._project_biological_context = self._project_level_biological_context()
@@ -15155,7 +15213,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             elif key in self._analyses:
                 status, icon = getattr(self,'_image_review_states',{}).get(key,'Computed; review available'), QStyle.StandardPixmap.SP_DialogApplyButton
             elif key in self._image_run_outcomes:
-                status, icon = 'Run did not complete; terminal record available', QStyle.StandardPixmap.SP_MessageBoxWarning
+                status, icon = 'Run did not complete', QStyle.StandardPixmap.SP_MessageBoxWarning
             else:
                 status, icon = 'Analysis required', None
             if key == open_key:
@@ -15164,7 +15222,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             item.setToolTip(str(source)+'\n'+status)
             item.setData(Qt.ItemDataRole.AccessibleDescriptionRole,status)
             item.setData(IMAGE_OPEN_ROLE, key == open_key)
-            item.setData(IMAGE_SPECIES_ROLE, self._image_species_text(key))
+            item.setData(IMAGE_SPECIES_ROLE, self._image_species_name(key))
         path = self.image_view.image_path
         running = self._sync_run_controls()
         if hasattr(self, 'optimize_project_action'):

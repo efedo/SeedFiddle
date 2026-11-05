@@ -32,7 +32,7 @@ def initialize_pipeline_files(window):
     window.pipeline_workflow.save_button.clicked.connect(lambda checked=False: documents.choose_pipeline_save())
     window.pipeline_inspector.lock_notice.linkActivated.connect(lambda link: documents.offer_copy())
     window.pipeline_canvas.set_edit_guard(window._pipeline_editing_allowed)
-    documents.loaded('Default seed analysis')
+    documents.loaded(window.pipeline_workflow.graph_pipeline.title)
 
 
 def apply_lock(window, locked):
@@ -65,24 +65,31 @@ def pipeline_named(window, name):
     window._set_project_dirty()
 
 
-def leave_copy(window):
-    """Clear what a copy put on the shared graph before a default pipeline takes over."""
-    from seedvision.pipeline import build_default_pipeline
+def load_graph_pipeline(window, pipeline):
+    """Make the shared graph this default pipeline; only the nodes that differ recalculate."""
     from seedvision.persistence.pipeline_documents import PipelineLayoutDocument
-    was_default_graph = not window.pipeline_workflow.active
-    window.catalogue_nodes.set_instances(())
-    if not was_default_graph:
-        return
-    factory = build_default_pipeline()
+    factory = pipeline.build()
     result = apply_analysis_settings_profile(window.pipeline, analysis_settings_profile_from_graph(factory))
     if result.analytical_changed:
         for key in set(window._analysis_caches) | set(window._analyses):
             window._cache_dirty_nodes.setdefault(key, set()).update(result.affected_node_ids)
             window._analyses.pop(key, None)
     PipelineLayoutDocument.from_graph(factory).apply(window.pipeline)
-    # A factory layout is arranged fresh, as at startup.
-    window.pipeline_canvas.rebuild_from_graph(window._selected_pipeline_node)
-    window.pipeline_canvas.auto_arrange()
+
+
+def leave_copy(window, pipeline=None):
+    """Clear what a copy put on the shared graph before a default pipeline takes over.
+
+    ``pipeline`` is the one taking over the graph; by default, the one the copy came from.
+    """
+    was_default_graph = not window.pipeline_workflow.active
+    window.catalogue_nodes.set_instances(())
+    if pipeline is not None or was_default_graph:
+        load_graph_pipeline(window, pipeline or window.pipeline_workflow.graph_pipeline)
+    if was_default_graph:
+        # A factory layout is arranged fresh, as at startup.
+        window.pipeline_canvas.rebuild_from_graph(window._selected_pipeline_node)
+        window.pipeline_canvas.auto_arrange()
 
 
 def capture_pipeline(window, name):

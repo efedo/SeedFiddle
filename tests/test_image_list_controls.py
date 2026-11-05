@@ -13,7 +13,7 @@ from unittest.mock import patch
 import numpy as np
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-from PySide6.QtCore import QEvent, QPoint, QRect, QSettings, Qt
+from PySide6.QtCore import QEvent, QPoint, QRect, Qt
 from PySide6.QtGui import (
     QColor, QFontMetrics, QHelpEvent, QImage, QImageIOHandler, QImageWriter, QPalette,
 )
@@ -32,7 +32,8 @@ from seedvision.ui.image_list import (
     IMAGE_OPEN_ROLE, IMAGE_SPECIES_ROLE, THUMBNAIL_SIZE, ImageThumbnailLoader, name_lines,
     read_thumbnail, row_text, species_text,
 )
-from seedvision.ui.main_window import MainWindow, UNASSIGNED_SPECIES, _path_identity
+from seedvision.ui.canvas_controls import COMPACT_ICON_SIZE
+from seedvision.ui.main_window import MainWindow, UNKNOWN_SPECIES, _path_identity
 from tests.functional_units import functional_units
 from tests.review_fixtures import dispose_window, isolated_window
 from tests import test_project_analysis_ui
@@ -107,9 +108,22 @@ class ImageListControlsTests(unittest.TestCase):
                 window.show()
                 self.application.processEvents()
                 self.assertNotIn(window.open_action, window.workflow_toolbar.actions())
-                self.assertIs(window.open_images_button.defaultAction(), window.open_action)
+                # A named, icon-only plus in the pipeline editor's flat colour, whose
+                # middle stays filled where its two arms cross.
+                button = window.open_images_button
+                self.assertIs(button.defaultAction(), window.open_action)
+                self.assertEqual(button.toolButtonStyle(), Qt.ToolButtonStyle.ToolButtonIconOnly)
+                self.assertEqual(button.iconSize(), COMPACT_ICON_SIZE)
+                self.assertLessEqual(button.width(), 30)
+                self.assertEqual(button.accessibleName(), "Add images")
+                self.assertTrue(button.toolTip().startswith("Add one or more images"))
+                plus = button.icon().pixmap(COMPACT_ICON_SIZE).toImage()
+                middle = plus.pixelColor(plus.width() // 2, plus.height() // 2)
+                self.assertEqual((middle.name(), middle.alpha()), ("#f2f6fa", 255))
+                self.assertEqual(plus.pixelColor(1, 1).alpha(), 0)
+                self.assertFalse(window.open_action.isIconVisibleInMenu())
                 with patch("seedvision.ui.main_window.QFileDialog.getOpenFileNames", return_value=([], "")) as choose:
-                    window.open_images_button.click()
+                    button.click()
                 choose.assert_called_once()
                 self.assertGreater(window.image_list.height() / window.height(), .27)
                 self.assertLess(window.image_list.height() / window.height(), .39)
@@ -357,7 +371,7 @@ class ImageThumbnailLoaderTests(unittest.TestCase):
         self.assertLess(width, metrics.horizontalAdvance("Lupinus mexicanus"))
         self.assertEqual(species_text("Lupinus mexicanus", metrics, width), "L. mexicanus")
         self.assertEqual(species_text("Lupinus polyphyllus", metrics, width), "L. polyphyllus")
-        for name in ("Lupinus polyphyllus", "Soybean", "Unassigned"):
+        for name in ("Lupinus polyphyllus", "Soybean", UNKNOWN_SPECIES):
             tight = species_text(name, metrics, 30)
             self.assertLessEqual(metrics.horizontalAdvance(tight), 30)
             self.assertNotEqual(tight, name)
@@ -384,11 +398,6 @@ class ImageThumbnailLoaderTests(unittest.TestCase):
         self.assertTrue(narrow_area.contains(narrow.name_rect))
         self.assertTrue(narrow_area.contains(narrow.species_rect))
         self.assertLessEqual(metrics.horizontalAdvance(narrow.species), narrow_area.width())
-
-        for name_only in (row_text(narrow_area, "IMG_9403.JPG", None, metrics),
-                          row_text(narrow_area, "IMG_9403.JPG", "", metrics)):
-            self.assertIsNone(name_only.species_rect)
-            self.assertEqual(name_only.name_rect, narrow_area)
 
     def test_background_decoding_and_cache(self):
         self.scenario(self.check_reader_fits_the_box_and_reports_what_it_cannot_read)
@@ -467,6 +476,19 @@ class ImageListRowTests(unittest.TestCase):
                 if before.pixel(x, y) != after.pixel(x, y):
                     area = area.united(QRect(x, y, 1, 1))
         return area
+
+    def _species_change_area(self, row, rect):
+        """Where a row's picture changes when it names another species."""
+
+        item, before = self.list.item(row), self._picture()
+        species = item.data(IMAGE_SPECIES_ROLE)
+        # Short enough never to be shortened, because the offscreen platform may draw
+        # every letter alike and only the length of the text then shows.
+        item.setData(IMAGE_SPECIES_ROLE, "Pea")
+        changed = self._changed_area(before, self._picture()).intersected(rect)
+        item.setData(IMAGE_SPECIES_ROLE, species)
+        self.assertEqual(self._picture(), before)
+        return changed
 
     def _tooltip(self, row):
         viewport = self.list.viewport()
@@ -650,37 +672,19 @@ class ImageListRowTests(unittest.TestCase):
         # The Images list keeps its share of the window, so this is what it shows.
         self.assertGreaterEqual(self.list.viewport().height() / rect.height(), 6.5)
 
-    def check_species_shows_by_default_and_the_switch_is_remembered(self):
-        action = self.window.image_species_action
-        self.assertTrue(action.isChecked())
-        self.assertIs(self.window.image_species_button.defaultAction(), action)
-        self.assertIn(action, self.list.actions())
-        self.assertEqual(self.list.contextMenuPolicy(), Qt.ContextMenuPolicy.ActionsContextMenu)
-        self.assertEqual(self._species(), ["Unassigned"] * 4)
+    def check_every_row_always_names_a_species_starting_at_unknown(self):
+        self.assertEqual(UNKNOWN_SPECIES, "Unknown")
+        self.assertEqual(self.window.species_combo.currentText(), UNKNOWN_SPECIES)
+        self.assertEqual(self._species(), [UNKNOWN_SPECIES] * 4)
         self._settle()
-        shown = self._picture()
-        self.assertIn("Species: Unassigned", self._tooltip(1))
+        self.assertIn("Species: Unknown", self._tooltip(1))
+        self.assertFalse(self._species_change_area(1, self._row(1)).isNull())
 
-        self.window.image_species_button.click()
-        self.assertFalse(action.isChecked())
-        hidden = self._picture()
-        self.assertFalse(self._changed_area(shown, hidden).isNull())
-        self.assertNotIn("Species:", self._tooltip(1))
-        self.assertFalse(self.window._project_dirty)
-
-        settings = self.window._test_application_settings
-        settings.sync()
-        with patch("seedvision.ui.main_window.QSettings", return_value=QSettings(
-                settings.fileName(), QSettings.Format.IniFormat)):
-            reopened = MainWindow(self.root)
-        self.addCleanup(dispose_window, reopened)
-        self.assertFalse(reopened.image_species_action.isChecked())
-        self.assertFalse(reopened._image_list_delegate._show_species)
-
-        action.trigger()
-        self.assertTrue(action.isChecked())
-        self.assertEqual(self._picture(), shown)
-        self.assertTrue(settings.value(MainWindow.IMAGE_SPECIES_SETTINGS_KEY, type=bool))
+        # A row that was given no species still reads as unknown, not blank.
+        before = self._picture()
+        self.list.item(1).setData(IMAGE_SPECIES_ROLE, None)
+        self.assertEqual(self._picture(), before)
+        self.assertIn("Species: Unknown", self._tooltip(1))
         self.assertFalse(self.window._project_dirty)
 
     def _install_traits(self):
@@ -710,7 +714,7 @@ class ImageListRowTests(unittest.TestCase):
     def check_each_row_names_the_species_recorded_for_its_own_image(self):
         window, _ = self._open_mixed_species_project()
         self.assertEqual(self._species(window), [
-            "Soybean", "Lupinus mexicanus", "Unassigned", "Lupinus mutabilis"])
+            "Soybean", "Lupinus mexicanus", UNKNOWN_SPECIES, "Lupinus mutabilis"])
 
         # A species missing from the catalogue is still named rather than hidden.
         window._project_image_biological_contexts[_path_identity(self.paths[3])] = (
@@ -724,18 +728,18 @@ class ImageListRowTests(unittest.TestCase):
 
         # It follows the open image, and looking at an image changes nothing.
         for path, species in zip(self.paths, (
-                "Soybean", "Lupinus mexicanus", UNASSIGNED_SPECIES, "Lupinus mutabilis")):
+                "Soybean", "Lupinus mexicanus", UNKNOWN_SPECIES, "Lupinus mutabilis")):
             window._open_path(path, mark_project_dirty=False)
             self.assertEqual(combo.currentText(), species)
         self.assertEqual(self._species(window), [
-            "Soybean", "Lupinus mexicanus", "Unassigned", "Lupinus mutabilis"])
+            "Soybean", "Lupinus mexicanus", UNKNOWN_SPECIES, "Lupinus mutabilis"])
         self.assertEqual(window.pipeline.node("metadata").status_detail, "Lupinus mutabilis")
 
         # Changing it changes the open image and no other.
         window._open_path(self.paths[1], mark_project_dirty=False)
         combo.setCurrentText("Lupinus polyphyllus")
         self.assertEqual(self._species(window), [
-            "Soybean", "Lupinus polyphyllus", "Unassigned", "Lupinus mutabilis"])
+            "Soybean", "Lupinus polyphyllus", UNKNOWN_SPECIES, "Lupinus mutabilis"])
         self.assertEqual(window._effective_biological_context().species_id, "lupinus_polyphyllus")
 
         # It does not carry over to the next image, and analysis uses that image's own.
@@ -756,7 +760,7 @@ class ImageListRowTests(unittest.TestCase):
         # One image can be set back to unknown on its own.
         window._open_path(self.paths[0], mark_project_dirty=False)
         combo.setCurrentIndex(0)
-        expected = ["Unassigned", "Lupinus polyphyllus", "Unassigned", "Soybean", "Lupinus mutabilis"]
+        expected = [UNKNOWN_SPECIES, "Lupinus polyphyllus", UNKNOWN_SPECIES, "Soybean", "Lupinus mutabilis"]
         self.assertEqual(self._species(window), expected)
 
         # Each image's own survives a save; the one without any keeps following the project.
@@ -770,12 +774,12 @@ class ImageListRowTests(unittest.TestCase):
             ["unknown", "lupinus_polyphyllus", "unknown", "soybean", None])
         reopened = self._reopen(project)
         self.assertEqual(self._species(reopened), expected)
-        self.assertEqual(reopened.species_combo.currentText(), UNASSIGNED_SPECIES)
+        self.assertEqual(reopened.species_combo.currentText(), UNKNOWN_SPECIES)
 
         # Removing the open image moves to the next one's species, then the project's.
         reopened._open_path(self.paths[1], mark_project_dirty=False)
         reopened._remove_image(self.paths[1])
-        self.assertEqual(reopened.species_combo.currentText(), UNASSIGNED_SPECIES)
+        self.assertEqual(reopened.species_combo.currentText(), UNKNOWN_SPECIES)
         for path in (self.paths[0], self.paths[2], self.paths[3], added):
             reopened._remove_image(path)
         self.assertIsNone(reopened._current_image_key())
@@ -793,7 +797,7 @@ class ImageListRowTests(unittest.TestCase):
         for path in self.paths:
             window._add_image(path, open_now=False, mark_project_dirty=False)
         window._open_path(self.paths[0], mark_project_dirty=False)
-        self.assertEqual(self._species(window), ["Unassigned"] * 4)
+        self.assertEqual(self._species(window), [UNKNOWN_SPECIES] * 4)
         follower = _path_identity(self.paths[2])
         window._analysis_caches[follower] = PipelineAnalysisCache()
 
@@ -839,11 +843,8 @@ class ImageListRowTests(unittest.TestCase):
         self._settle()
         self.assertEqual(panel.width(), panel.minimumWidth())
         self.assertFalse(self.list.horizontalScrollBar().isVisible())
-        heading = window.image_species_button.parentWidget()
-        self.assertTrue(heading.rect().contains(window.image_species_button.geometry()))
+        heading = window.open_images_button.parentWidget()
         self.assertTrue(heading.rect().contains(window.open_images_button.geometry()))
-        self.assertFalse(window.image_species_button.geometry().intersects(
-            window.open_images_button.geometry()))
 
         metrics = self.list.fontMetrics()
         rect = self._row(1)
@@ -854,13 +855,10 @@ class ImageListRowTests(unittest.TestCase):
         self.assertTrue(rect.contains(narrow.species_rect))
         for target in (self.delegate.tile_rect(rect), self.delegate.remove_rect(rect)):
             self.assertFalse(area.intersects(target))
-        shown = self._picture()
-        window.image_species_action.trigger()
-        changed = self._changed_area(shown, self._picture()).intersected(rect)
+        changed = self._species_change_area(1, rect)
         self.assertFalse(changed.isNull())
         self.assertFalse(changed.intersects(self.delegate.tile_rect(rect)))
         self.assertFalse(changed.intersects(self.delegate.remove_rect(rect)))
-        window.image_species_action.trigger()
 
         # The test platform's font can be wider than the panel's limit allows for.
         panel.setMaximumWidth(1000)
@@ -868,11 +866,9 @@ class ImageListRowTests(unittest.TestCase):
         self.window.main_splitter.setSizes((wide_width, 1440 - wide_width - 250, 250))
         self._settle()
         rect = self._row(1)
-        wide = row_text(self.delegate.text_rect(rect), "b.png", "Unassigned", metrics)
+        wide = row_text(self.delegate.text_rect(rect), "b.png", UNKNOWN_SPECIES, metrics)
         self.assertGreater(wide.species_rect.left(), wide.name_rect.right())
-        shown = self._picture()
-        window.image_species_action.trigger()
-        changed = self._changed_area(shown, self._picture()).intersected(rect)
+        changed = self._species_change_area(1, rect)
         # A short name stays put, so only the species column changes.
         self.assertTrue(wide.species_rect.contains(changed))
         self.assertFalse(changed.isNull())
@@ -922,7 +918,7 @@ class ImageListRowTests(unittest.TestCase):
         self.scenario(self.check_only_painted_rows_are_decoded)
         self.scenario(self.check_highlight_follows_the_open_image_however_it_changes)
         self.scenario(self.check_rows_fit_the_narrow_panel)
-        self.scenario(self.check_species_shows_by_default_and_the_switch_is_remembered)
+        self.scenario(self.check_every_row_always_names_a_species_starting_at_unknown)
         self.scenario(self.check_each_row_names_the_species_recorded_for_its_own_image)
         self.scenario(self.check_the_selector_shows_and_sets_the_open_images_species)
         self.scenario(self.check_the_first_species_chosen_also_covers_images_without_one)

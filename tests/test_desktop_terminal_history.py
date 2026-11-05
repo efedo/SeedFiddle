@@ -1,4 +1,4 @@
-"""Earlier desktop rejection boundaries and bounded evidence-only history review."""
+"""Earlier desktop rejection boundaries and bounded reading of saved run records."""
 
 from tests.functional_units import functional_units
 from hashlib import sha256
@@ -203,44 +203,26 @@ class DesktopTerminalHistoryTests(unittest.TestCase):
         self.assertEqual(payload['identity']['subject_at_request']['sha256'], sha256(selected.read_bytes()).hexdigest())
 
 
-    def check_test_reopened_disk_history_ack_export_keeps_current_analysis_drafts_and_reviews_unchanged(self):
-        from PySide6.QtWidgets import QDialog, QTableWidget, QPushButton, QLabel
-        outcome = preflight.begin_preflight(self.master, 'project', 'desktop_project_load').outcome(ValueError('historical rejected project'))
-        saved = runs.export_run_outcome(self.root / 'artifacts' / 'run-outcomes', outcome) / 'run-outcome.json'
-        old = saved.read_bytes()
-        self.window._run_outcome_history.clear()
-        current = object()
-        self.window._analyses[self.key] = current
-        draft = self.labels.copy()
-        self.window._draft_instance_annotations[self.key] = draft
-        observed = []
-        def exercise(dialog):
-            observed.extend(label.text() for label in dialog.findChildren(QLabel))
-            if dialog.windowTitle() == 'Terminal run history':
-                table = dialog.findChild(QTableWidget)
-                self.assertEqual(table.rowCount(), 1)
-                self.assertEqual(table.item(0, 0).text(), 'project')
-                table.selectRow(0)
-                next(b for b in dialog.findChildren(QPushButton) if b.text().startswith('Review selected')).click()
-            else:
-                next(b for b in dialog.findChildren(QPushButton) if b.text().startswith('Acknowledge')).click()
-                next(b for b in dialog.findChildren(QPushButton) if b.text().startswith('Export terminal')).click()
-            return QDialog.DialogCode.Rejected
-        with patch.object(QDialog, 'exec', new=exercise), \
-             patch('seedvision.ui.results.QFileDialog.getExistingDirectory', return_value=str(self.root / 'history-export')):
-            self.window.terminal_history_action.trigger()
-        self.assertIs(self.window._analyses[self.key], current)
-        self.assertIs(self.window._draft_instance_annotations[self.key], draft)
-        self.assertEqual(self.window._image_run_outcomes, {})
-        self.assertEqual(self.window._run_outcome_history, {})
-        self.assertFalse((self.root / 'result-reviews').exists())
-        self.assertEqual(saved.read_bytes(), old)
-        self.assertEqual(self.window._selected_history_outcome.payload, outcome.payload)
-        self.assertTrue(any('observations made during earlier attempts' in note for note in observed))
-        acknowledgment, = (self.root / 'artifacts' / 'run-outcome-acknowledgments').glob('*.json')
-        self.assertEqual(json.loads(acknowledgment.read_bytes())['outcome_revision'], outcome.payload['outcome_revision'])
-        exported, = (self.root / 'history-export').glob('*/run-outcome.json')
-        self.assertEqual(history.load_terminal_record(exported).payload, outcome.payload)
+    def check_results_says_why_the_open_images_run_did_not_complete(self):
+        from PySide6.QtWidgets import QDialog
+        outcome = preflight.begin_preflight(self.source, 'image', 'desktop_prepare').outcome(ValueError('source rejected'))
+        state = outcome.payload['identity']['state']
+        self.window.image_view._image_path = self.source
+        self.window._analyses.pop(self.key, None)
+        self.window._image_run_outcomes[self.key] = (self.window.pipeline.revision, outcome)
+        with patch.object(QDialog, 'exec') as opened, \
+             patch('seedvision.ui.results.QMessageBox.information') as shown:
+            self.window.results_action.trigger()
+        opened.assert_not_called()
+        text = shown.call_args.args[2]
+        self.assertTrue(text.startswith(f'Run {state}: '))
+        self.assertIn('Preparation phase: desktop prepare', text)
+        self.assertIn('source rejected', text)
+        # An outcome from before the pipeline changed says nothing about this run.
+        self.window._image_run_outcomes[self.key] = (self.window.pipeline.revision - 1, outcome)
+        with patch('seedvision.ui.results.QMessageBox.information') as shown:
+            self.window.results_action.trigger()
+        self.assertEqual(shown.call_args.args[2], 'Analyze the current image first.')
 
 
     def test_validation_and_recovery(self):
@@ -250,4 +232,4 @@ class DesktopTerminalHistoryTests(unittest.TestCase):
 
     def test_workflow_lifecycle(self):
         """1 related DesktopTerminalHistoryTests scenarios, each with private fixture state."""
-        self.scenario(self.check_test_reopened_disk_history_ack_export_keeps_current_analysis_drafts_and_reviews_unchanged)
+        self.scenario(self.check_results_says_why_the_open_images_run_did_not_complete)

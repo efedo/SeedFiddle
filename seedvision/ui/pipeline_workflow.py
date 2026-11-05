@@ -11,22 +11,24 @@ from html import escape
 
 import torch
 from PySide6.QtCore import QObject, QRunnable, QSignalBlocker, Qt, Signal, QRectF
-from PySide6.QtGui import QPixmap, QPen, QColor
+from PySide6.QtGui import QAction, QPixmap, QPen, QColor
 from PySide6.QtWidgets import (QComboBox, QFileDialog, QFrame, QGraphicsScene, QGraphicsView,
     QHBoxLayout, QLabel, QMenu, QPushButton, QTextBrowser, QToolButton,
     QSizePolicy, QVBoxLayout, QWidget)
 
 from seedvision.pipeline import NodeStatus
+from seedvision.pipeline.default_pipelines import (
+    CELLPOSE_SEED_ANALYSIS, GRAPH_PIPELINES, GraphPipeline, graph_pipeline_of)
 from seedvision.pipeline.project_context import CONTEXT_NODE_IDS, workspace_graph
 from seedvision.segmentation import PipelineAnalysisCache
 from seedvision.ui.canvas_controls import COMPACT_ICON_SIZE, load_icon, rename_icon, save_icon, style_canvas_control_bar
 from seedvision.ui.native_workflow_helpers import configure_native_parameters, configure_foreground_regions, native_preview_image
 
 
-# The Pipeline list, in order. A factory template missing here is listed under
-# "Other", so a new one is never hidden. None is the Default seed analysis.
+# The full Pipeline list, in order. A factory template missing here is listed
+# under "Other", so the full list always holds it.
 TEMPLATE_GROUPS = (
-    ('Seed Fiddle', (None, 'seedfiddle_experimental_core_recovery')),
+    ('Seed Fiddle', ('procedural_seed_analysis', 'cellpose_seed_analysis', 'seedfiddle_experimental_core_recovery')),
     ('Seed analysis', ('plantcv_seed_binary_working', 'plantcv_seed_mean_working',
         'plantcv_seed_otsu_working', 'plantcv_calibrated_seed_binary', 'plantcv_calibrated_seed_mean',
         'plantcv_calibrated_seed_otsu', 'plantcv_calibrated_seed_range', 'smpts_paper_fixed_mean')),
@@ -35,6 +37,10 @@ TEMPLATE_GROUPS = (
         'plantcv_naive_bayes_classifier', 'plantcv_kmeans_predict_masks')),
     ('Colour correction', ('plantcv_automatic_color_card', 'plantcv_color_card_correct_color')),
 )
+# All the list offers until Show all default pipelines is on.
+SHORT_LIST_TEMPLATES = frozenset(('procedural_seed_analysis', 'cellpose_seed_analysis',
+    'plantcv_seed_otsu_working', 'plantcv_calibrated_seed_otsu', 'smpts_paper_fixed_mean'))
+SHOW_ALL_TEMPLATES_SETTING = 'pipelines/showAllDefaults'
 SAVED_HEADING = 'Saved in this project'
 # Item role: 'heading', 'template' (fresh factory copy), 'custom' (a named,
 # editable copy), 'saved' (project recipe) or 'current' (an installed pipeline
@@ -219,25 +225,27 @@ class PipelineWorkflowController(QObject):
         self.selector.setObjectName('pipelineWorkflowSelector')
         from seedvision.pipeline.workflows import workflow_catalogue
         self._all_templates = workflow_catalogue()
-        by_id = {recipe.recipe_id: recipe for recipe in self._all_templates}
+        by_id = {entry.recipe_id: entry for entry in (*GRAPH_PIPELINES, *self._all_templates)}
         listed = {identifier for _, identifiers in TEMPLATE_GROUPS for identifier in identifiers}
         groups = [*TEMPLATE_GROUPS, ('Other', tuple(recipe.recipe_id for recipe in self._all_templates
                                                     if recipe.recipe_id not in listed))]
         for heading, identifiers in groups:
-            present = [identifier for identifier in identifiers if identifier is None or identifier in by_id]
+            present = [identifier for identifier in identifiers if identifier in by_id]
             if present:
                 self._add_heading(heading)
             for identifier in present:
-                if identifier is None:
-                    self.selector.addItem('Default seed analysis', None)
-                    self.selector.setItemData(self.selector.count()-1, 'template', ENTRY_KIND)
-                    continue
-                recipe = by_id[identifier]
-                self.selector.addItem(recipe.title, recipe)
+                entry = by_id[identifier]
+                self.selector.addItem(entry.title, entry)
                 self.selector.setItemData(self.selector.count()-1, 'template', ENTRY_KIND)
-                self.selector.setItemData(self.selector.count()-1, _template_tooltip(recipe), Qt.ItemDataRole.ToolTipRole)
+                if not isinstance(entry, GraphPipeline):
+                    self.selector.setItemData(self.selector.count()-1, _template_tooltip(entry), Qt.ItemDataRole.ToolTipRole)
         with QSignalBlocker(self.selector):
             self.selector.setCurrentIndex(self.index_of(None))
+        self.show_all_action = QAction('Show all default pipelines', window)
+        self.show_all_action.setCheckable(True)
+        self.show_all_action.setChecked(window._application_settings.value(SHOW_ALL_TEMPLATES_SETTING, False, type=bool))
+        self.show_all_action.toggled.connect(self._show_all_toggled)
+        self._sync_template_visibility()
         row.addWidget(self.selector)
         self.rename_button = self._icon_button(rename_icon(), 'Rename pipeline')
         self.rename_button.setToolTip('Rename pipeline. Default pipelines cannot be renamed, so this offers an editable copy instead.')
@@ -313,10 +321,41 @@ class PipelineWorkflowController(QObject):
         return [index for index in range(self.selector.count())
                 if self.selector.itemData(index, ENTRY_KIND) in kinds]
 
+    def _show_all_toggled(self, checked):
+        self.window._application_settings.setValue(SHOW_ALL_TEMPLATES_SETTING, checked)
+        self._sync_template_visibility()
+
+    def _sync_template_visibility(self):
+        """Offer the short list unless all are wanted, with headings only over what shows.
+
+        A hidden entry stays in the list, unselectable, so a project using it
+        still opens on it and shows its name.
+        """
+        show_all = self.show_all_action.isChecked()
+        view, model = self.selector.view(), self.selector.model()
+        heading = None
+        for row in self._entries('heading', 'template'):
+            if self.selector.itemData(row, ENTRY_KIND) == 'heading':
+                heading = row
+                view.setRowHidden(row, True)
+                continue
+            shown = show_all or self.selector.itemData(row).recipe_id in SHORT_LIST_TEMPLATES
+            view.setRowHidden(row, not shown)
+            # Hiding alone would still let the wheel and arrow keys reach it.
+            model.item(row).setEnabled(shown)
+            if shown:
+                view.setRowHidden(heading, False)
+
+    @property
+    def graph_pipeline(self):
+        """The default pipeline the shared graph is, or was copied from."""
+        return graph_pipeline_of(self.window.pipeline.nodes)
+
     def index_of(self, recipe_id):
-        """The list index of a factory template; None is the Default seed analysis."""
+        """The list index of a default pipeline; None is the one on the shared graph."""
+        wanted = self.graph_pipeline.recipe_id if recipe_id is None else recipe_id
         return next(index for index in self._entries('template')
-                    if getattr(self.selector.itemData(index), 'recipe_id', None) == recipe_id)
+                    if self.selector.itemData(index).recipe_id == wanted)
 
     def select_template(self, recipe_id):
         """Load a fresh copy of a factory template, as choosing it in the list does."""
@@ -378,7 +417,11 @@ class PipelineWorkflowController(QObject):
             return
         documents = getattr(self.window, 'pipeline_documents', None)
         leaving_copy = documents is not None and not documents.locked
-        if leaving_copy or kind == 'custom':
+        recipe = self.selector.itemData(index)
+        graph_pipeline = recipe if isinstance(recipe, GraphPipeline) else None
+        # Back to the pipeline already on the graph keeps its values and layout.
+        replacing_graph = graph_pipeline not in (None, self.graph_pipeline)
+        if leaving_copy or kind == 'custom' or replacing_graph:
             # A copy shares the default graph, which must not change under running work.
             if documents._busy():
                 self.window.statusBar().showMessage('Wait for current work to finish before changing pipeline.')
@@ -391,21 +434,34 @@ class PipelineWorkflowController(QObject):
             if not documents.activate(self.selector.itemData(index)):
                 self.sync_copies()
             return
-        recipe = self.selector.itemData(index)
+        if replacing_graph:
+            # It would describe a result the change clears.
+            self.window.statusBar().clearMessage()
+        if graph_pipeline is CELLPOSE_SEED_ANALYSIS and not self.window._cellpose_available():
+            self.sync_copies()
+            return
         if not self.active:
             self._default_selection = self.window._selected_pipeline_node
         elif not leaving_copy:
             self.sync_graph()
             self._copies[self.workflow.source_recipe.identity.recipe_sha256] = self.workflow
         template = kind == 'template'
-        workflow = None if recipe is None else (create_workflow(recipe) if template else self._copies.get(recipe.identity.recipe_sha256, create_workflow(recipe)))
+        workflow = None if graph_pipeline is not None else (create_workflow(recipe) if template else self._copies.get(recipe.identity.recipe_sha256, create_workflow(recipe)))
         if workflow is not None and template and hasattr(self.window, 'pipeline_backends'):
             workflow = replace(workflow, backend_default=self.window.pipeline_backends.default)
+        from seedvision.ui.pipeline_workspace import leave_copy, load_graph_pipeline
         if leaving_copy:
-            from seedvision.ui.pipeline_workspace import leave_copy
-            leave_copy(self.window)
+            leave_copy(self.window, graph_pipeline if replacing_graph else None)
+        elif replacing_graph:
+            load_graph_pipeline(self.window, graph_pipeline)
+        if replacing_graph:
+            self.window._selected_pipeline_node = self._default_selection = graph_pipeline.selected_node
+            self.window._rebuild_overlay_combo(str(self.window.overlay_combo.currentData() or 'raw_image'))
+            self.window._sync_inspector_overlay_options()
         self.install(workflow)
-        if workflow is not None and template:
+        if replacing_graph and self.window.image_view.image_path is not None:
+            self.window._show_pending_result()
+        if replacing_graph or (workflow is not None and template):
             # A template is laid out fresh; saved layouts load as they were.
             self.window.pipeline_canvas.auto_arrange()
 
@@ -506,7 +562,7 @@ class PipelineWorkflowController(QObject):
             self.window._update_analysis_availability()
         documents = getattr(self.window, "pipeline_documents", None)
         if documents is not None:
-            documents.loaded("Default seed analysis" if workflow is None else workflow.source_recipe.title,
+            documents.loaded(self.graph_pipeline.title if workflow is None else workflow.source_recipe.title,
                 name=None if workflow is None else workflow.display_state.get("pipeline_name"))
 
     def sync_graph(self):
@@ -581,7 +637,7 @@ class PipelineWorkflowController(QObject):
             return self.index_of(None)
         source = self.workflow.source_recipe
         entries = [(i, self.selector.itemData(i)) for i in self._entries('template', 'saved', 'current')]
-        entries = [(i, recipe) for i, recipe in entries if recipe is not None]
+        entries = [(i, recipe) for i, recipe in entries if not isinstance(recipe, GraphPipeline)]
         # A node-action variant keeps its template's recipe ID.
         return next((i for i, recipe in entries
                      if recipe.identity.recipe_sha256 == source.identity.recipe_sha256),

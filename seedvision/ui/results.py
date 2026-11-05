@@ -5,7 +5,7 @@ import json
 from PySide6.QtCore import Qt, QObject, QRunnable, Signal, QByteArray, QPoint, QSignalBlocker
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QLabel, QTableWidget, QTableWidgetItem,
-    QComboBox, QLineEdit, QPushButton, QFileDialog, QMessageBox, QProgressDialog, QInputDialog, QPlainTextEdit)
+    QComboBox, QLineEdit, QPushButton, QFileDialog, QMessageBox, QProgressDialog, QInputDialog)
 from seedvision.export.results import result_report, export_report
 from seedvision.persistence.analysis_settings import analysis_settings_profile_from_graph, analysis_settings_profile_to_payload
 from seedvision.ui.deferred import run_soon
@@ -37,6 +37,17 @@ def _trait_presentation(row, report):
         if prediction.get('model_sha256'):
             details.append('Model SHA256: ' + prediction['model_sha256'])
     return text, '\n'.join(details)
+
+
+def _incomplete_run_text(payload):
+    """Say how a run ended and why, for an image with no result to review."""
+    identity = payload['identity']
+    lines = [f"Run {identity['state']}: " + identity['reason_code'].replace('_', ' ')]
+    if 'phase' in identity:
+        lines.append('Preparation phase: ' + identity['phase'].replace('_', ' '))
+    if payload['diagnostic']:
+        lines.append(payload['diagnostic'])
+    return '\n'.join(lines)
 
 
 class _ExportSignals(QObject):
@@ -86,19 +97,13 @@ class ResultsController:
         self._result_export_task = None
         self._image_review_states = {}
         self._image_run_outcomes = {}
-        self._run_outcome_history = {}
-        self._selected_history_outcome = None
         self.results_action = QAction('Results…',self)
         self.results_action.setShortcut('Ctrl+Shift+E')
         self.results_action.triggered.connect(self._review_results)
         self.addAction(self.results_action)
-        self.terminal_history_action = QAction('Run history…', self)
-        self.terminal_history_action.triggered.connect(self._review_terminal_history)
-        self.addAction(self.terminal_history_action)
         for action in self._optimization_menu_actions:
             if action.text() == '&Analysis':
                 action.menu().addAction(self.results_action)
-                action.menu().addAction(self.terminal_history_action)
         button = QPushButton('Results…',self)
         button.clicked.connect(self._review_results)
         self.baseline_section.layout().addWidget(button)
@@ -109,6 +114,7 @@ class ResultsController:
             'Paint seed examples, then Apply + save.')
         self.reference_readiness_button.clicked.connect(self._paint_foreground_references)
         self.baseline_section.layout().addWidget(self.reference_readiness_button)
+        self.reference_readiness_button.hide()
         # Results and node search live in the Analysis and Edit menus
         # (with shortcuts); the toolbar keeps only run control and viewing.
         actions = self.workflow_toolbar.actions()
@@ -288,7 +294,8 @@ class ResultsController:
 
     def _current_report(self, result):
         key = self._current_image_key()
-        if self._cache_dirty_nodes.get(key):
+        cache = self._analysis_caches.get(key)
+        if self._cache_dirty_nodes.get(key) or (cache is not None and cache.stale_nodes):
             raise ValueError('Pipeline inputs changed. Recompute the image before reviewing or exporting this result.')
         provenance = {}
         if getattr(result, 'analysis_inputs_json', None) is None:
@@ -334,143 +341,6 @@ class ResultsController:
     def _review_path(self, report):
         return self._root / 'result-reviews' / (report['result_revision']+'.json')
 
-    def _review_run_outcome(self, outcome):
-        from seedvision.export.run_outcomes import export_run_outcome, acknowledge_run_outcome
-        from seedvision.persistence.terminal_history import load_project_acknowledgments, load_acknowledgment
-        from seedvision.ui.persistence_jobs import run_persistence
-        payload = outcome.payload
-        dialog = QDialog(self)
-        dialog.setWindowTitle('Review terminal analysis record')
-        dialog.resize(720, 360)
-        layout = QVBoxLayout(dialog)
-        summary = QLabel(f"Run {payload['identity']['state']}: "
-                         + payload['identity']['reason_code'].replace('_', ' ') + '\n'
-                         + ('Preparation phase: ' + payload['identity']['phase'].replace('_', ' ') + '\n'
-                            if 'phase' in payload['identity'] else '')
-                         + (payload['diagnostic'] or '') + '\n\n'
-                         'No authoritative prediction or calibration was captured. '
-                         'Acknowledgment records that you reviewed this outcome.', dialog)
-        summary.setWordWrap(True)
-        layout.addWidget(summary)
-        saved = run_persistence(self, lambda: load_project_acknowledgments(
-            self._root, self._current_project_path), 'Reading terminal acknowledgments…')
-        matching = [load_acknowledgment(raw) for raw in saved.records
-                    if load_acknowledgment(raw)['outcome_revision'] == payload['outcome_revision']]
-        if matching or saved.diagnostics:
-            text = '\n'.join('Recorded acknowledgment: ' + record['operator_account'] + ' at '
-                + record['reviewed_at_utc'] for record in matching[:8])
-            if len(matching) > 8:
-                text += f'\n{len(matching) - 8} additional recorded acknowledgments.'
-            if saved.diagnostics:
-                text += '\nAcknowledgment history has diagnostics: ' + '; '.join(saved.diagnostics[:3])
-            note = QPlainTextEdit(dialog)
-            note.setReadOnly(True)
-            note.setMaximumHeight(100)
-            note.setPlainText(text)
-            layout.addWidget(note)
-        acknowledge = QPushButton('Acknowledge this terminal outcome', dialog)
-        layout.addWidget(acknowledge)
-
-        def save_acknowledgment():
-            import getpass
-            try:
-                run_persistence(self, lambda: acknowledge_run_outcome(
-                    self._root / 'artifacts' / 'run-outcome-acknowledgments', outcome, getpass.getuser()),
-                    'Saving exact outcome acknowledgment…')
-            except (ValueError, OSError) as error:
-                QMessageBox.warning(dialog, 'Acknowledgment failed', str(error))
-                return
-            acknowledge.setText('Acknowledged for this exact outcome revision')
-
-        acknowledge.clicked.connect(save_acknowledgment)
-        export = QPushButton('Export terminal JSON record…', dialog)
-        layout.addWidget(export)
-
-        def export_record():
-            directory = QFileDialog.getExistingDirectory(dialog, 'Export terminal analysis record')
-            if not directory:
-                return
-            try:
-                path = run_persistence(self, lambda: export_run_outcome(directory, outcome),
-                                       'Saving terminal run evidence…')
-                self.statusBar().showMessage(f'Terminal analysis record saved: {path}')
-            except (ValueError, OSError) as error:
-                QMessageBox.warning(dialog, 'Export failed', str(error))
-
-        export.clicked.connect(export_record)
-        dialog.exec()
-
-    def _open_terminal_record(self):
-        from seedvision.export.run_outcome_history import load_terminal_record
-        from seedvision.ui.persistence_jobs import run_persistence
-        selected, _ = QFileDialog.getOpenFileName(self, 'Open terminal run record',
-            str(self._root / 'artifacts' / 'run-outcomes'), 'Terminal JSON (*.json)')
-        if not selected:
-            return
-        try:
-            outcome = run_persistence(self, lambda: load_terminal_record(selected), 'Reading terminal run record…')
-        except (ValueError, OSError) as error:
-            QMessageBox.warning(self, 'Terminal record unavailable', str(error))
-            return
-        self._selected_history_outcome = outcome
-        self._review_run_outcome(outcome)
-
-    def _review_terminal_history(self):
-        from seedvision.persistence.terminal_history import load_project_terminal_history
-        from seedvision.ui.persistence_jobs import run_persistence
-        history = run_persistence(self, lambda: load_project_terminal_history(
-            self._root, self._current_project_path, live=tuple(self._run_outcome_history.values())),
-            'Reading terminal run history…')
-        outcomes = history.outcomes
-        dialog = QDialog(self)
-        dialog.setWindowTitle('Terminal run history')
-        dialog.resize(850, 450)
-        layout = QVBoxLayout(dialog)
-        label = QLabel('These records contain observations made during earlier attempts. '
-            'Reviewing them does not change the current analysis.', dialog)
-        label.setWordWrap(True)
-        layout.addWidget(label)
-        table = QTableWidget(len(outcomes), 5, dialog)
-        table.setHorizontalHeaderLabels(('Subject', 'Preparation / last node', 'Outcome', 'File', 'Revision'))
-        for row, outcome in enumerate(outcomes):
-            payload = outcome.payload
-            identity = payload['identity']
-            path = outcome.image_path or outcome.subject_path
-            values = (identity.get('subject_kind', 'image').replace('_', ' '),
-                (identity.get('phase') or identity.get('last_started_node') or 'analysis').replace('_', ' '),
-                identity['state'], path.name, payload['outcome_revision'][:16])
-            for column, value in enumerate(values):
-                item = QTableWidgetItem(value)
-                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                item.setToolTip(str(path) if column == 3 else payload['outcome_revision'] if column == 4 else value)
-                table.setItem(row, column, item)
-        table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
-        table.resizeColumnsToContents()
-        layout.addWidget(table)
-        diagnostics = history.diagnostics
-        if diagnostics:
-            note = QPlainTextEdit(dialog)
-            note.setReadOnly(True)
-            note.setMaximumHeight(100)
-            note.setPlainText('\n'.join(diagnostics[:12]) + ('\nFurther diagnostics omitted.' if len(diagnostics) > 12 else ''))
-            layout.addWidget(note)
-        review = QPushButton('Review selected terminal record…', dialog)
-        review.setEnabled(False)
-        table.itemSelectionChanged.connect(lambda: review.setEnabled(table.currentRow() >= 0))
-        def selected_record():
-            row = table.currentRow()
-            if row < 0:
-                return
-            self._selected_history_outcome = outcomes[row]
-            self._review_run_outcome(outcomes[row])
-        review.clicked.connect(selected_record)
-        layout.addWidget(review)
-        open_file = QPushButton('Open one terminal JSON record…', dialog)
-        open_file.clicked.connect(self._open_terminal_record)
-        layout.addWidget(open_file)
-        dialog.exec()
-
     def _review_results(self):
         if self._background_work_is_active():
             QMessageBox.information(self,'Results','Wait for the active calculation to finish or use Stop.')
@@ -478,10 +348,10 @@ class ResultsController:
         result = self._analyses.get(self._current_image_key())
         if result is None:
             terminal = self._image_run_outcomes.get(self._current_image_key())
-            if terminal is not None and terminal[0] == self.pipeline.revision:
-                self._review_run_outcome(terminal[1])
-                return
-            QMessageBox.information(self,'Results','Analyze the current image first.')
+            QMessageBox.information(self,'Results',
+                _incomplete_run_text(terminal[1].payload)
+                if terminal is not None and terminal[0] == self.pipeline.revision
+                else 'Analyze the current image first.')
             return
         try:
             report = self._current_report(result)

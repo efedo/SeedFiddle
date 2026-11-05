@@ -409,8 +409,13 @@ def calibrate_image(
     cuda_context: CudaContext | None = None,
     timing_recorder=None,
     _previous_geometry: ImageCalibration | None = None,
+    _kept_ruler: ImageCalibration | None = None,
 ) -> ImageCalibration:
-    """Detect references and perform all raster calibration on one GPU."""
+    """Detect references and perform all raster calibration on one GPU.
+
+    ``_kept_ruler`` holds a previous ruler for a run that leaves the ruler node
+    out. A previous failure to find one is retried, so that its warning recurs.
+    """
 
     _validate_image(image)
     settings = settings or CalibrationSettings()
@@ -425,28 +430,31 @@ def calibrate_image(
     perspective_strength, gains = geometry.perspective_strength, geometry.gains
     warnings = list(geometry.warnings)
 
-    ruler_timing = (
-        None
-        if timing_recorder is None
-        else timing_recorder.start("ruler_detection")
-    )
-    try:
-        ruler = detect_ruler(
-            corrected,
-            settings.ruler_length_mm,
-            minor_tick_mm=settings.minor_tick_mm,
-            cuda_context=context,
-            image_tensor=corrected_tensor,
+    kept_ruler = None if _kept_ruler is None else _kept_ruler.ruler
+    ruler = kept_ruler
+    if ruler is None:
+        ruler_timing = (
+            None
+            if timing_recorder is None
+            else timing_recorder.start("ruler_detection")
         )
-    except CalibrationDetectionError as error:
-        ruler = None
-        warnings.append(str(error))
-    if ruler_timing is not None:
-        timing_recorder.stop(ruler_timing)
+        try:
+            ruler = detect_ruler(
+                corrected,
+                settings.ruler_length_mm,
+                minor_tick_mm=settings.minor_tick_mm,
+                cuda_context=context,
+                image_tensor=corrected_tensor,
+            )
+        except CalibrationDetectionError as error:
+            ruler = None
+            warnings.append(str(error))
+        if ruler_timing is not None:
+            timing_recorder.stop(ruler_timing)
 
     scale_timing = (
         None
-        if timing_recorder is None
+        if timing_recorder is None or kept_ruler is not None
         else timing_recorder.start("scale_calibration")
     )
     pixels_per_mm: float | None = None

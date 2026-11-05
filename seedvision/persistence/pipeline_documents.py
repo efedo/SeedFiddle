@@ -292,7 +292,9 @@ def _merge_records(existing, incoming):
 class PipelineDocumentStore:
     def __init__(self, root, *, factory_names=(), factory_paths=()):
         self.root = Path(root).resolve()
-        self.factory_names = frozenset(_name_key(name) for name in ('Default seed analysis', 'Default', *factory_names))
+        from seedvision.pipeline.default_pipelines import GRAPH_PIPELINES
+        self.factory_names = frozenset(_name_key(name) for name in (
+            'Default', *(pipeline.title for pipeline in GRAPH_PIPELINES), *factory_names))
         self.factory_paths = frozenset(Path(path).resolve() for path in factory_paths)
 
     def _destination(self, path, extension, name=None):

@@ -709,7 +709,7 @@ class ProjectAnalysisUiTests(CatalogueTestCase):
                         "ruler_length_mm"
                     ],
                 )
-                # A new project lays the Default seed analysis out afresh.
+                # A new project lays the Procedural seed analysis out afresh.
                 ruler = window.pipeline.node("ruler_detection")
                 self.assertNotEqual((ruler.x, ruler.y), (-600.0, 700.0))
                 self.assertEqual(

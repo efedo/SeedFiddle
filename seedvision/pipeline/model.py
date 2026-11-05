@@ -1071,7 +1071,7 @@ class PipelineGraph:
 
 
 def build_default_pipeline() -> PipelineGraph:
-    """Create the default raw-image-to-report workflow."""
+    """Create the whole node catalogue; ``default_pipelines`` builds the analyses people choose."""
 
     colour_reference_parameters = (
         ParameterSpec(

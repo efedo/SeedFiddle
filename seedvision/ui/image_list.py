@@ -26,6 +26,8 @@ THUMBNAIL_SIZE = QSize(48, 32)
 IMAGE_OPEN_ROLE = Qt.ItemDataRole.UserRole + 1
 # The display name of the species recorded for the row's image.
 IMAGE_SPECIES_ROLE = Qt.ItemDataRole.UserRole + 2
+# What an image's species reads as until someone chooses one.
+UNKNOWN_SPECIES = "Unknown"
 
 _ROW_PADDING = 3
 _TILE_LEFT = 3
@@ -226,19 +228,17 @@ def species_text(species: str, metrics: QFontMetrics, width: int) -> str:
 
 @dataclass(frozen=True, slots=True)
 class RowText:
-    """Where one row's name and species go; no species means ``species_rect`` is None."""
+    """Where one row's name and species go."""
 
     name_rect: QRect
     name: tuple[str, ...]
-    species_rect: QRect | None = None
-    species: str = ""
+    species_rect: QRect
+    species: str
 
 
-def row_text(area: QRect, name: str, species: str | None, metrics: QFontMetrics) -> RowText:
+def row_text(area: QRect, name: str, species: str, metrics: QFontMetrics) -> RowText:
     """Give the species its own column in a wide row, or a second line in a narrow one."""
 
-    if not species:
-        return RowText(area, name_lines(name, metrics, area.width()))
     column = metrics.horizontalAdvance(_SPECIES_COLUMN_SAMPLE)
     needed = column + _COLUMN_GAP + metrics.horizontalAdvance(_NAME_COLUMN_SAMPLE)
     if area.width() >= needed:
@@ -263,12 +263,7 @@ class ImageListDelegate(QStyledItemDelegate):
         super().__init__(view)
         self._thumbnails = thumbnails
         self._view = view
-        self._show_species = True
         thumbnails.changed.connect(view.viewport().update)
-
-    def set_show_species(self, visible: bool) -> None:
-        self._show_species = bool(visible)
-        self._view.viewport().update()
 
     @staticmethod
     def remove_rect(rect: QRect) -> QRect:
@@ -317,18 +312,17 @@ class ImageListDelegate(QStyledItemDelegate):
         layout = row_text(
             self.text_rect(option.rect),
             index.data(Qt.ItemDataRole.DisplayRole) or "",
-            index.data(IMAGE_SPECIES_ROLE) if self._show_species else None,
+            index.data(IMAGE_SPECIES_ROLE) or UNKNOWN_SPECIES,
             option.fontMetrics,
         )
         alignment = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
         painter.setFont(option.font)
         painter.setPen(text)
         painter.drawText(layout.name_rect, alignment, "\n".join(layout.name))
-        if layout.species_rect is not None:
-            secondary = QColor(text)
-            secondary.setAlphaF(.72)
-            painter.setPen(secondary)
-            painter.drawText(layout.species_rect, alignment, layout.species)
+        secondary = QColor(text)
+        secondary.setAlphaF(.72)
+        painter.setPen(secondary)
+        painter.drawText(layout.species_rect, alignment, layout.species)
         # Draw the removal target only where the pointer or selection is, so a
         # long list does not show a column of identical close buttons.
         if selected or hovered:
@@ -390,11 +384,11 @@ class ImageListDelegate(QStyledItemDelegate):
         if event.type() != QEvent.Type.ToolTip:
             return super().helpEvent(event, view, option, index)
         # A narrow row may abbreviate the species, so the tooltip always names it in full.
-        lines = [index.data(Qt.ItemDataRole.ToolTipRole) or ""]
-        species = index.data(IMAGE_SPECIES_ROLE)
-        if self._show_species and species:
-            lines.append(f"Species: {species}")
-        error = self._thumbnails.error(index.data(Qt.ItemDataRole.UserRole) or "")
+        lines = [
+            index.data(Qt.ItemDataRole.ToolTipRole) or "",
+            f"Species: {index.data(IMAGE_SPECIES_ROLE) or UNKNOWN_SPECIES}",
+        ]
+        error =self._thumbnails.error(index.data(Qt.ItemDataRole.UserRole) or "")
         if error:
             lines.append(f"No thumbnail: {error}")
         QToolTip.showText(event.globalPos(), "\n".join(lines), view)

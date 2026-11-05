@@ -388,13 +388,150 @@ class PipelineCanvasTests(CatalogueTestCase):
         with patch.object(window, "_analyze_current_image") as analyze:
             window._run_pipeline_to_node("procedural_instances")
         arguments = analyze.call_args.kwargs
-        self.assertEqual(arguments["dirty_nodes"], {"procedural_instances"})
+        self.assertEqual(arguments["rerun_node"], "procedural_instances")
+        self.assertNotIn("dirty_nodes", arguments)
         scope = arguments["enabled_node_scope"]
         self.assertIn("procedural_instances", scope)
         self.assertIn("layout_detection", scope)
         self.assertIn("reference_edge_probability", scope)
         self.assertNotIn("review", scope)
         self.assertNotIn("measurements", scope)
+
+    def check_test_run_to_node_recomputes_only_what_has_changed(self) -> None:
+        from unittest.mock import patch
+
+        from seedvision.segmentation.baseline import PipelineAnalysisCache
+
+        window = controls_window(self)
+        key = window._current_image_key()
+        graph = window.pipeline
+        target = "frequency_noise_masks"
+        enabled = frozenset(name for name, node in graph.nodes.items() if node.enabled)
+        scope = {target}
+        pending = [target]
+        while pending:
+            parents = set(graph.upstream(pending.pop())) & enabled - scope
+            scope |= parents
+            pending.extend(parents)
+        scope = frozenset(scope)
+        dependents = set(graph.downstream(target, recursive=True)) & enabled
+        self.assertIn("reference_texture_prototypes", dependents)
+        ancestor = "layout_detection"
+        self.assertIn(ancestor, scope)
+        elsewhere = "hue_only"
+        self.assertNotIn(elsewhere, scope | dependents)
+
+        def plan(cache, waiting=(), run_scope=scope, rerun=target):
+            return window._plan_analysis_run(cache, frozenset(waiting), run_scope, rerun)
+
+        finished = PipelineAnalysisCache(values={"result": object()})
+        # Nothing changed: only the target repeats, and its dependents stay valid.
+        self.assertEqual(plan(finished), ({target}, enabled - scope, set()))
+        # A real change to the target outdates its dependents and nothing else.
+        requested, _, stale = plan(finished, {target})
+        self.assertEqual(requested, {target})
+        self.assertEqual(stale, dependents - scope)
+        self.assertNotIn(elsewhere, stale)
+        # A changed ancestor runs too, and outdates what depends on it.
+        requested, _, stale = plan(finished, {ancestor})
+        self.assertEqual(requested, {ancestor, target})
+        self.assertIn("procedural_instances", stale)
+        self.assertFalse(stale & scope)
+        # Changes outside the run wait, whether new or left by an earlier run.
+        waiting = PipelineAnalysisCache(values={"result": object()}, stale_nodes={"wavelet_decomposition"})
+        requested, _, stale = plan(waiting, {elsewhere}, frozenset({target}))
+        self.assertEqual(requested, {target})
+        self.assertEqual(stale, {elsewhere, "wavelet_decomposition"})
+        # Shared inputs and engine stage names follow the node that owns them.
+        requested, _, stale = plan(finished, {"reference_layers", "edge_ridges"}, frozenset({"edge_gradients"}), None)
+        self.assertEqual(requested, {"reference_layers", "edge_ridges"})
+        self.assertEqual(stale, set(enabled - {"edge_gradients"}))
+        # What an earlier run left stale is recomputed once a run includes it.
+        requested, _, stale = plan(waiting, (), frozenset({"wavelet_decomposition"}), None)
+        self.assertEqual(requested, {"wavelet_decomposition"})
+        self.assertFalse(stale & {"wavelet_decomposition"})
+        # With no finished run the rest holds only blanks, so all of it is owed.
+        self.assertEqual(plan(PipelineAnalysisCache())[2], set(enabled - scope))
+        # A full run takes everything outstanding and leaves nothing out.
+        requested, retained, stale = plan(waiting, {elsewhere}, None, None)
+        self.assertEqual(requested, {elsewhere, "wavelet_decomposition"})
+        self.assertEqual((retained, stale), (frozenset(), set()))
+
+        window._analysis_caches[key] = PipelineAnalysisCache(values={"result": object()})
+        with patch.object(window._thread_pool, "start") as start, patch.object(
+            window, "_finish_analysis_failure",
+            side_effect=lambda _path, error, _revision: self.fail(error),
+        ), patch.object(
+            window, "_resolved_species_library_for_current_image",
+            return_value=SimpleNamespace(artifact=None, error=None, provenance=None),
+        ):
+            window._run_pipeline_to_node(target)
+        start.assert_called_once()
+        task = window._active_tasks.pop(key)
+        window._analysis_activities.pop(key, None)
+        self.assertEqual(task.dirty_nodes, {target})
+        self.assertEqual(task.enabled_nodes, scope)
+        self.assertEqual(task.retained_nodes, enabled - scope)
+        self.assertEqual(window._analysis_caches[key].stale_nodes, set())
+        self.assertEqual(window._cache_dirty_nodes[key], set())
+
+        # A repeat that has to wait for a running task counts as a change.
+        running = SimpleNamespace(cancel=lambda: None)
+        window._active_tasks[key] = running
+        window._run_pipeline_to_node(target)
+        self.assertEqual(window._cache_dirty_nodes[key], {target})
+        self.assertEqual(window._pending_analysis_scope, scope)
+        window._active_tasks.clear()
+        window._analysis_activities.clear()
+        window._pending_analysis_key = window._pending_analysis_scope = None
+        window._cache_dirty_nodes[key].clear()
+
+    def check_test_cancelling_a_run_keeps_results_and_restores_its_changes(self) -> None:
+        from unittest.mock import patch
+
+        from seedvision.segmentation.baseline import PipelineAnalysisCache
+
+        window = controls_window(self)
+        key = window._current_image_key()
+        path = window.image_view.image_path
+        cache = PipelineAnalysisCache(values={"result": object()}, stale_nodes={"hue_only"})
+        window._analysis_caches[key] = cache
+        window._analyses[key] = SimpleNamespace(image_path=path)
+        window._active_tasks[key] = SimpleNamespace(dirty_nodes=frozenset({"edge_gradients"}))
+        window._stop_requested = True
+        window._finish_analysis_cancellation(path, window.pipeline.revision)
+        self.assertIs(window._analysis_caches[key], cache)
+        self.assertEqual(cache.stale_nodes, {"hue_only"})
+        self.assertNotIn(key, window._analyses)
+        self.assertEqual(window._cache_dirty_nodes[key], {"edge_gradients"})
+
+        # A completion that arrives after cancelling is treated the same way.
+        window._cache_dirty_nodes[key].clear()
+        window._active_tasks[key] = SimpleNamespace(
+            dirty_nodes=frozenset({"wavelet_decomposition"}), cancellation_requested=True
+        )
+        with patch.object(window, "_mark_analysis_complete") as mark_complete:
+            window._install_completed_analysis(
+                SimpleNamespace(image_path=path), window.pipeline.revision
+            )
+        mark_complete.assert_not_called()
+        self.assertIs(window._analysis_caches[key], cache)
+        self.assertEqual(window._cache_dirty_nodes[key], {"wavelet_decomposition"})
+
+        # With no record of what the run was changing, nothing can be trusted.
+        window._active_tasks.pop(key, None)
+        window._finish_analysis_cancellation(path, window.pipeline.revision)
+        self.assertNotIn(key, window._analysis_caches)
+
+    def check_test_results_refuse_a_report_while_nodes_are_out_of_date(self) -> None:
+        from seedvision.segmentation.baseline import PipelineAnalysisCache
+
+        window = controls_window(self)
+        key = window._current_image_key()
+        window._cache_dirty_nodes.pop(key, None)
+        window._analysis_caches[key] = PipelineAnalysisCache(stale_nodes={"hue_only"})
+        with self.assertRaisesRegex(ValueError, "Pipeline inputs changed"):
+            window._current_report(SimpleNamespace())
 
     def check_test_loading_saved_references_reruns_only_the_finished_runs_scope(self) -> None:
         from unittest.mock import patch
@@ -416,6 +553,8 @@ class PipelineCanvasTests(CatalogueTestCase):
         from PySide6.QtWidgets import QMessageBox
 
         window = controls_window(self)
+        # Procedural seed analysis keeps the node in the toolbox; a copy can add it.
+        window.pipeline.restore_unused_node("cellpose_sam_instances")
         node = window.pipeline.node("cellpose_sam_instances")
         self.assertFalse(node.enabled)
         installed = "seedvision.learning.cellpose_sam.cellpose_installed"
@@ -433,7 +572,7 @@ class PipelineCanvasTests(CatalogueTestCase):
         analyze.assert_not_called()
         self.assertFalse(node.enabled)
 
-        window.pipeline_documents.loaded("Default seed analysis")
+        window.pipeline_documents.loaded("Procedural seed analysis")
         with (
             patch(installed, return_value=True),
             patch.object(window, "_analyze_current_image") as analyze,
@@ -457,7 +596,7 @@ class PipelineCanvasTests(CatalogueTestCase):
             window._run_pipeline_to_node(node.identifier)
         self.assertTrue(node.enabled)
         arguments = analyze.call_args.kwargs
-        self.assertEqual(arguments["dirty_nodes"], {node.identifier})
+        self.assertEqual(arguments["rerun_node"], node.identifier)
         self.assertIn("seed_scale_estimation", arguments["enabled_node_scope"])
 
     def check_test_seed_boundary_status_says_why_no_seed_was_found(self) -> None:
@@ -524,10 +663,10 @@ class PipelineCanvasTests(CatalogueTestCase):
             return [call.args[0] for call in menu.return_value.addAction.call_args_list]
 
         self.assertEqual(labels("procedural_instances"), ["Run to node"])
-        self.assertEqual(labels("cellpose_sam_instances"), ["Enable and run to node"])
+        self.assertEqual(labels("unet_instances"), ["Enable and run to node"])
         # Locked, the entry stays offered: the window then offers an editable copy.
-        window.pipeline_documents.loaded("Default seed analysis")
-        self.assertEqual(labels("cellpose_sam_instances"), ["Enable and run to node"])
+        window.pipeline_documents.loaded("Procedural seed analysis")
+        self.assertEqual(labels("unet_instances"), ["Enable and run to node"])
 
     def check_test_analysis_cache_is_lru_bounded_and_gpu_jobs_are_serialized(self) -> None:
         import numpy as np
@@ -4460,6 +4599,9 @@ class PipelineCanvasTests(CatalogueTestCase):
         self.scenario(self.check_test_current_image_name_is_in_pane_and_list_selection_tracks_it)
         self.scenario(self.check_test_switching_images_selects_the_lowest_empty_seed_id)
         self.scenario(self.check_test_run_to_node_scopes_execution_to_enabled_ancestors)
+        self.scenario(self.check_test_run_to_node_recomputes_only_what_has_changed)
+        self.scenario(self.check_test_cancelling_a_run_keeps_results_and_restores_its_changes)
+        self.scenario(self.check_test_results_refuse_a_report_while_nodes_are_out_of_date)
         self.scenario(self.check_test_loading_saved_references_reruns_only_the_finished_runs_scope)
         self.scenario(self.check_test_run_to_a_disabled_node_enables_it_or_says_why)
         self.scenario(self.check_test_node_menu_offers_to_enable_a_disabled_node)
@@ -4815,7 +4957,16 @@ class PipelineCanvasTests(CatalogueTestCase):
 
         window = workspace_window(ROOT)
         editable_copy(window)
+        from seedvision.segmentation.baseline import PipelineAnalysisCache
+        from seedvision.ui.main_window import _path_identity
+
+        window._analysis_caches[_path_identity(result.image_path)] = PipelineAnalysisCache(
+            stale_nodes={"hue_only"}
+        )
         window._mark_analysis_complete(result)
+        out_of_date = window.pipeline.node("hue_only")
+        self.assertEqual(out_of_date.status, NodeStatus.IDLE)
+        self.assertEqual(out_of_date.status_detail, "Out of date; run the pipeline to update")
         for node_id in (
             "ruler_detection",
             "deskew_colour",

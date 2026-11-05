@@ -7,6 +7,7 @@ import numpy as np
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QMessageBox, QProgressDialog
 
+from seedvision.ui.image_list import UNKNOWN_SPECIES
 from seedvision.ui.learning_workflow import LearningTrainingRequest, TrainingImage
 from seedvision.ui.persistence_jobs import run_persistence
 
@@ -106,8 +107,8 @@ class TrainingDatasetController:
         species = context.species_id if context is not None else saved_species
         if species not in {'', 'unknown'}:
             return self._seed_trait_catalogue.for_species(species).display_name
-        name = self._image_species_text(key)
-        return '' if name == 'Unassigned' else name
+        name = self._image_species_name(key)
+        return '' if name == UNKNOWN_SPECIES else name
 
     def _training_analysis_scope(self) -> frozenset[str]:
         """Name the prerequisites of a learned node, which compute the model's input features."""

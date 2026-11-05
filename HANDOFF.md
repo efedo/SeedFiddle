@@ -10,7 +10,9 @@ the context behind them.
 A native PySide6 desktop application (`seed_vision.py` is the only launch point)
 for counting, measuring and classifying soybean and lupin seeds in calibrated
 photographs. Analyses are typed node graphs with node-local caching on a CUDA
-device. Besides the Default seed analysis there are 18 factory pipelines that
+device. Besides Procedural seed analysis and Cellpose seed analysis, which share one
+graph and differ in which nodes are active
+(`seedvision/pipeline/default_pipelines.py`), there are 18 factory pipelines that
 reproduce PlantCV and SMPTS seed workflows natively (the "peer-functionality"
 work, families F01–F22). See [README.md](README.md) for the user view and
 [docs/CURRENT_STATUS.md](docs/CURRENT_STATUS.md) for what is and is not done.
@@ -54,10 +56,10 @@ work, families F01–F22). See [README.md](README.md) for the user view and
 .\.venv\Scripts\python.exe .\seed_vision.py --no-bootstrap
 .\.venv\Scripts\python.exe -m tests                  # core subset
 .\.venv\Scripts\python.exe -m tests tests.test_gui_layout   # focused module
-.\.venv\Scripts\python.exe -m tests --full           # 681 units, 3 workers
+.\.venv\Scripts\python.exe -m tests --full           # 685 units, 3 workers
 ```
 
-The last full run (3 November 2026) passed all 681 units with the 3 expected
+The last full run (4 November 2026) passed all 685 units with the 3 expected
 skips. Wall time over 15 minutes is reported as an advisory warning only; a run
 fails on test outcomes or an unaccounted unit, and a worker that writes no
 journal entry for `--stall-seconds` (default 900) is stopped. Details are in

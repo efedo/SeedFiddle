@@ -168,8 +168,9 @@ class PipelineWorkflowUiTests(CatalogueTestCase):
         from seedvision.ui.pipeline_workflow import ENTRY_KIND
         selector = self.controller.selector
         templates = [index for index in range(selector.count()) if selector.itemData(index, ENTRY_KIND) == 'template']
-        self.assertEqual({getattr(selector.itemData(index), 'recipe_id', None) for index in templates},
-                         {None} | {recipe.recipe_id for recipe in self.controller._all_templates})
+        self.assertEqual({selector.itemData(index).recipe_id for index in templates},
+                         {'procedural_seed_analysis', 'cellpose_seed_analysis'}
+                         | {recipe.recipe_id for recipe in self.controller._all_templates})
         headings = [selector.itemText(index) for index in range(selector.count())
                     if selector.itemData(index, ENTRY_KIND) == 'heading']
         self.assertEqual(headings, ['SEED FIDDLE', 'SEED ANALYSIS', 'THRESHOLDS AND CLASSIFIERS', 'COLOUR CORRECTION'])
@@ -381,7 +382,7 @@ class PipelineWorkflowUiTests(CatalogueTestCase):
     def check_test_templates_are_arranged_when_chosen_and_reloads_keep_their_layout(self):
         canvas = self.window.pipeline_canvas
         self.controller.select_template(None)
-        # The startup project's Default seed analysis is laid out in columns.
+        # The startup project's Procedural seed analysis is laid out in columns.
         self.assertEqual({round(node.x) % 270 for node in self.window.pipeline.nodes.values()}, {0})
         with patch.object(canvas, 'auto_arrange', wraps=canvas.auto_arrange) as arrange:
             workflow = self.select_binary()

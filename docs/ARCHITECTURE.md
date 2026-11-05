@@ -46,7 +46,11 @@ node-local cache.
 
 - `segmentation/baseline.py`: source decoding/content identity, calibrated coordinates,
   node-local recomputation and production orchestration. Source changes invalidate
-  image results; ordinary parameter edits invalidate only their dependents.
+  image results; ordinary parameter edits invalidate only their dependents. A run to
+  one node passes the other enabled nodes as `retained_nodes`: their cached results
+  stand, and the cache's `stale_nodes` records those that a change has outdated, for
+  the next run that includes them. Cancelling a run keeps its finished results and
+  restores its dirty nodes; a failure discards the image's cache.
 - `cuda/`, `calibration/`, `measurement/`: device-resident evidence and geometry.
   CPU transfer is limited to display, compact metadata and documented bounded topology.
 - `learning/features.py`: shared live/export feature channels. Versioned feature specs
@@ -63,7 +67,7 @@ node-local cache.
 ## Workflow and persistence
 
 `ui/main_window.py` remains the native coordinator. Bounded responsibilities are
-extracted into `ui/results.py` (results, run history, snapshots, toolbar),
+extracted into `ui/results.py` (results, snapshots, toolbar),
 `pipeline_canvas.py`, `pipeline_inspector.py`, `pipeline_workflow.py` (factory
 pipeline loading and node actions), `pipeline_documents.py` (the default-pipeline lock,
 named copies and pipeline files), `image_list.py` (Images list rows and their
