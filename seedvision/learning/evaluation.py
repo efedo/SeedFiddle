@@ -129,6 +129,24 @@ def _decode(family, outputs, settings, checkpoint_id):
     return decode_stardist(outputs, settings=settings, checkpoint_id=checkpoint_id)
 
 
+def decoded_family(checkpoint_family: ModelFamily, output=None) -> ModelFamily:
+    """Name the decoder to apply: a shared checkpoint has two, so the caller chooses."""
+
+    if output is None:
+        if checkpoint_family is ModelFamily.SHARED_UNET_STARDIST:
+            raise ValueError("A shared checkpoint needs output='unet_watershed' or output='stardist'.")
+        return checkpoint_family
+    output = ModelFamily(output)
+    allowed = (
+        (ModelFamily.UNET_WATERSHED, ModelFamily.STARDIST)
+        if checkpoint_family is ModelFamily.SHARED_UNET_STARDIST
+        else (checkpoint_family,)
+    )
+    if output not in allowed:
+        raise ValueError(f"A {checkpoint_family.value} checkpoint has no {output.value} output.")
+    return output
+
+
 def _score(metrics: list[dict]) -> float:
     if not metrics:
         return -float("inf")
@@ -213,8 +231,12 @@ def evaluate_checkpoint(
     maximum_prediction_bytes: int = 8*1024**3,
     protocol: str = "development",
     decoder_source_path: Path | str | None = None,
+    output: ModelFamily | str | None = None,
 ) -> dict:
-    """Evaluate complete held-out images and render auditable comparisons."""
+    """Evaluate complete held-out images and render auditable comparisons.
+
+    ``output`` selects which decoder to score on a shared checkpoint.
+    """
 
     import torch
 
@@ -233,7 +255,8 @@ def evaluate_checkpoint(
     membership = checkpoint_membership(payload, identity) if split == 'test' else 'Development split; not an independent final evaluation.'
     if protocol != "development" and split == "test" and membership.startswith("Unknown"):
         raise ValueError("Independent evaluation requires checkpoint development membership.")
-    family = ModelFamily(payload["family"])
+    checkpoint_family = ModelFamily(payload["family"])
+    family = decoded_family(checkpoint_family, output)
     manifest = LearningManifest.load(manifest_path)
     if feature_spec != manifest.feature_spec:
         raise ValueError("Checkpoint and manifest feature specifications differ.")
@@ -371,6 +394,7 @@ def evaluate_checkpoint(
                         dense_aggregate[key] = mean(available)
         report = {
             "family": family.value,
+            "checkpoint_family": checkpoint_family.value,
             "checkpoint": str(checkpoint_path),
             "dataset_id": manifest.dataset_id,
             "split": split,

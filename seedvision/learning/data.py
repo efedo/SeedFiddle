@@ -484,6 +484,7 @@ class SeedTileDataset:
         self.ray_count = int(ray_count)
         self.augment = bool(augment)
         self.random_seed = int(random_seed)
+        self.epoch = 0
         self.derived_cache_directory = Path(
             derived_cache_directory
             if derived_cache_directory is not None
@@ -499,6 +500,40 @@ class SeedTileDataset:
 
     def __len__(self) -> int:
         return len(self.samples) * self.tiles_per_sample
+
+    def set_epoch(self, epoch: int) -> None:
+        """Draw new tiles and augmentations for this pass; the same epoch repeats exactly."""
+
+        self.epoch = int(epoch)
+
+    def _build_targets(self, labels, *, pattern, pattern_valid, physical, physical_valid):
+        targets = {}
+        if self.family is not ModelFamily.STARDIST:
+            built = build_dense_targets(
+                labels,
+                pattern_boundary=pattern,
+                pattern_valid=pattern_valid,
+                physical_boundary=physical,
+                physical_valid=physical_valid,
+            )
+            targets.update(
+                interior=built.interior[None],
+                physical_boundary=built.physical_boundary[None],
+                pattern_boundary=built.pattern_boundary[None],
+                pattern_valid=built.pattern_valid[None],
+                centre=built.centre[None],
+                distance=built.distance[None],
+                valid=built.valid[None],
+            )
+        if self.family is not ModelFamily.UNET_WATERSHED:
+            built = build_stardist_targets(labels, ray_count=self.ray_count)
+            targets.update(
+                object_probability=built.object_probability[None],
+                radial_distances=built.radial_distances,
+                radial_valid=built.radial_valid,
+                valid=built.valid[None],
+            )
+        return targets
 
     def _load(self, sample: LearningSample):
         cached = self._cache.get(sample.identifier)
@@ -540,9 +575,11 @@ class SeedTileDataset:
                     file_sha256(resolve_sample_path(self.manifest_path, optional))
                 )
         label_digest = sha256("".join(digest_parts).encode("ascii")).hexdigest()[:16]
-        family_suffix = (
-            "unet" if self.family is ModelFamily.UNET_WATERSHED else f"stardist{self.ray_count}"
-        )
+        family_suffix = {
+            ModelFamily.UNET_WATERSHED: "unet",
+            ModelFamily.STARDIST: f"stardist{self.ray_count}",
+            ModelFamily.SHARED_UNET_STARDIST: f"shared{self.ray_count}",
+        }[self.family]
         target_cache = self.derived_cache_directory / (
             f"{_safe_identifier(sample.identifier)}.{family_suffix}.{label_digest}.npz"
         )
@@ -553,31 +590,14 @@ class SeedTileDataset:
                 cached_targets = {name: archive[name] for name in archive.files}
         if cached_targets is not None:
             targets = cached_targets
-        elif self.family is ModelFamily.UNET_WATERSHED:
-            built = build_dense_targets(
+        else:
+            targets = self._build_targets(
                 labels,
-                pattern_boundary=pattern,
+                pattern=pattern,
                 pattern_valid=pattern_valid,
-                physical_boundary=physical,
+                physical=physical,
                 physical_valid=physical_valid,
             )
-            targets = {
-                "interior": built.interior[None],
-                "physical_boundary": built.physical_boundary[None],
-                "pattern_boundary": built.pattern_boundary[None],
-                "pattern_valid": built.pattern_valid[None],
-                "centre": built.centre[None],
-                "distance": built.distance[None],
-                "valid": built.valid[None],
-            }
-        else:
-            built = build_stardist_targets(labels, ray_count=self.ray_count)
-            targets = {
-                "object_probability": built.object_probability[None],
-                "radial_distances": built.radial_distances,
-                "radial_valid": built.radial_valid,
-                "valid": built.valid[None],
-            }
         if cached_targets is None:
             temporary = target_cache.with_name(target_cache.stem + ".tmp.npz")
             np.savez_compressed(temporary, **targets)
@@ -599,7 +619,7 @@ class SeedTileDataset:
         features, labels, targets = self._load(sample)
         height, width = labels.shape
         tile = min(self.tile_size, height, width)
-        rng = np.random.default_rng(self.random_seed + index * 104729)
+        rng = np.random.default_rng([self.random_seed, self.epoch, index])
         if np.any(labels > 0) and rng.random() < 0.8:
             rows, columns = np.nonzero(labels > 0)
             selected = int(rng.integers(0, len(rows)))
@@ -632,11 +652,12 @@ class SeedTileDataset:
 
     def _augment(self, features, labels, targets, rng):
         ray_count = self.ray_count
+        has_rays = self.family is not ModelFamily.UNET_WATERSHED
         if rng.random() < 0.5:
             features = features[..., ::-1]
             labels = labels[:, ::-1]
             targets = {name: values[..., ::-1] for name, values in targets.items()}
-            if self.family is ModelFamily.STARDIST:
+            if has_rays:
                 mapping = (ray_count // 2 - np.arange(ray_count)) % ray_count
                 targets["radial_distances"] = targets["radial_distances"][mapping]
                 targets["radial_valid"] = targets["radial_valid"][mapping]
@@ -644,7 +665,7 @@ class SeedTileDataset:
             features = features[..., ::-1, :]
             labels = labels[::-1, :]
             targets = {name: values[..., ::-1, :] for name, values in targets.items()}
-            if self.family is ModelFamily.STARDIST:
+            if has_rays:
                 mapping = (-np.arange(ray_count)) % ray_count
                 targets["radial_distances"] = targets["radial_distances"][mapping]
                 targets["radial_valid"] = targets["radial_valid"][mapping]
@@ -659,7 +680,7 @@ class SeedTileDataset:
                 name: np.rot90(values, turns, axes=(-2, -1))
                 for name, values in targets.items()
             }
-            if self.family is ModelFamily.STARDIST:
+            if has_rays:
                 # np.rot90 turns screen coordinates counter-clockwise, so a
                 # new ray at angle theta samples the old ray at theta + 90Â°.
                 mapping = rotation_ray_mapping(ray_count, turns)

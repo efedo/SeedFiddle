@@ -279,6 +279,7 @@ class LearningTrainingDialog(QDialog):
             split = QComboBox(table)
             split.addItem("Training", "train")
             split.addItem("Validation", "validation")
+            split.addItem("Test", "test")
             split.setCurrentIndex(max(0, split.findData(splits.get(image.key, "train"))))
             split.setEnabled(enabled)
             split.currentIndexChanged.connect(lambda _index, current=row: self._split_changed(current))

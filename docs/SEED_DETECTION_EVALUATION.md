@@ -19,6 +19,8 @@ Recommendation, in order: build a small reviewed benchmark first; run Cellpose-S
 | Procedural (`seedvision/segmentation/procedural.py`) | Hand-built evidence rasters (colour likelihood, edge magnitude, ridges, oriented traces, surface darkening, distance) scored into markers, then OpenCV marker-controlled watershed at a 1600 px working scale | About 45 tuned parameters in `ProceduralInstanceSettings`; the instance method Procedural seed analysis runs unless a learned node is enabled |
 | U-Net + watershed and StarDist (`seedvision/learning/`) | Small native nets (24 base channels, depth 3) trained from scratch on synthetic data; inputs are 13 engineered feature channels from the classical pipeline plus species planes, not RGB | `artifacts/learned/synthetic_hard_v2/unet_b24d3_pattern15.training.json` records best epoch 1 (did not converge); every fixture review in `artifacts/learned/fixture_review/` states that no human instance masks exist and accuracy cannot be estimated |
 
+The current configurations of the two learned methods, and the comparison between them, are in the [method comparison](METHOD_COMPARISON.md).
+
 Labelled data on hand:
 
 - `seed-instance-references/`: 11 `uint16` masks in source coordinates, every entry marked `reviewed: false` in `manifest.json` (machine pre-annotations with documented contact, count and boundary errors).

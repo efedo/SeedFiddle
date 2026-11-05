@@ -121,7 +121,12 @@ def stardist_loss(
     angular_weight=0.20,
     uncertainty_weight=0.20,
 ):
-    """Objectness plus uncertainty-weighted radial regression."""
+    """Objectness plus radial regression weighted by object probability.
+
+    Pixels near a seed's centre decide its polygon, because only peak pixels
+    become candidates at decoding, so they carry the most weight, as in
+    Schmidt et al. 2018. Background pixels carry none.
+    """
 
     import torch.nn.functional as functional
 
@@ -131,14 +136,14 @@ def stardist_loss(
     object_loss = object_loss + _dice_loss(
         outputs["object_logits"], (object_target > 0).to(object_target.dtype), valid
     )
-    radial_valid = targets["radial_valid"] * (object_target > 0).to(valid.dtype)
+    radial_weight_map = targets["radial_valid"] * object_target
     predicted = outputs["radial_distances"].clamp_min(0.25)
     expected = targets["radial_distances"].clamp_min(0.25)
     log_error = functional.smooth_l1_loss(
         predicted.log(), expected.log(), reduction="none"
     )
     relative_error = ((predicted - expected).abs() / expected).clamp_max(4.0)
-    radial_loss = _masked_mean(log_error + 0.20 * relative_error, radial_valid)
+    radial_loss = _masked_mean(log_error + 0.20 * relative_error, radial_weight_map)
     predicted_second = (
         predicted.roll(1, dims=1) - 2.0 * predicted + predicted.roll(-1, dims=1)
     )
@@ -151,7 +156,7 @@ def stardist_loss(
             expected_second / expected.clamp_min(1.0),
             reduction="none",
         ),
-        radial_valid,
+        radial_weight_map,
     )
     uncertainty_target = relative_error.mean(dim=1, keepdim=True).detach().clamp(0.0, 1.0)
     uncertainty_error = functional.binary_cross_entropy_with_logits(
@@ -171,3 +176,17 @@ def stardist_loss(
         + uncertainty_weight * uncertainty
     )
     return total, terms
+
+
+def shared_network_loss(outputs, targets, *, unet_weights=None):
+    """Sum both losses and report each output's terms under its own prefix."""
+
+    unet_total, unet_terms = multi_head_unet_loss(outputs, targets, weights=unet_weights)
+    stardist_total, stardist_terms = stardist_loss(outputs, targets)
+    terms = {
+        "unet_total": unet_total,
+        "stardist_total": stardist_total,
+        **{f"unet_{name}": value for name, value in unet_terms.items()},
+        **{f"stardist_{name}": value for name, value in stardist_terms.items()},
+    }
+    return unet_total + stardist_total, terms

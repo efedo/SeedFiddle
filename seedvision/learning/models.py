@@ -213,3 +213,66 @@ def SeedStarDist2D(
             }
 
     return _Model()
+
+
+def SharedSeedUNet(
+    input_channels: int,
+    *,
+    ray_count: int = 32,
+    base_channels: int = 24,
+    depth: int = 4,
+):
+    """Build one backbone feeding the heads of both separate models.
+
+    The output keys are the union of theirs, so either decoder reads this model's
+    outputs unchanged. The backbone and U-Net heads are created first and in the
+    same order as ``MultiHeadSeedUNet``, so a shared seed gives them the same
+    starting weights as the separately trained model.
+    """
+
+    if not 8 <= int(ray_count) <= 256:
+        raise ValueError("ray_count must be between 8 and 256.")
+    _torch, nn = _torch_modules()
+
+    class _Model(nn.Module):
+        family = "shared_unet_stardist"
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.configuration = ModelConfiguration(
+                input_channels=input_channels,
+                base_channels=base_channels,
+                depth=depth,
+                ray_count=int(ray_count),
+            )
+            self.backbone = UNetBackbone.create(
+                input_channels, base_channels=base_channels, depth=depth
+            )
+            channels = self.backbone.output_channels
+            self.interior_head = _head(channels, 1)
+            self.physical_boundary_head = _head(channels, 1)
+            self.pattern_boundary_head = _head(channels, 1)
+            self.centre_distance_head = _head(channels, 2)
+            self.uncertainty_head = _head(channels, 5)
+            self.object_head = _head(channels, 1)
+            self.radial_head = _head(channels, int(ray_count))
+            self.radial_uncertainty_head = _head(channels, 1)
+
+        def forward(self, values):
+            import torch.nn.functional as functional
+
+            features = self.backbone(values)
+            centre_distance = self.centre_distance_head(features)
+            return {
+                "interior_logits": self.interior_head(features),
+                "physical_boundary_logits": self.physical_boundary_head(features),
+                "pattern_boundary_logits": self.pattern_boundary_head(features),
+                "centre_logits": centre_distance[:, 0:1],
+                "distance": centre_distance[:, 1:2].sigmoid(),
+                "uncertainty_logits": self.uncertainty_head(features),
+                "object_logits": self.object_head(features),
+                "radial_distances": functional.softplus(self.radial_head(features)) + 0.25,
+                "radial_uncertainty_logits": self.radial_uncertainty_head(features),
+            }
+
+    return _Model()

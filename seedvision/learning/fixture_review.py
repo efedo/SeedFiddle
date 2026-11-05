@@ -97,6 +97,8 @@ def review_fixtures(
     output_directory.mkdir(parents=True, exist_ok=True)
     _model, _spec, payload = load_checkpoint(checkpoint_path, device="cpu")
     family = ModelFamily(payload["family"])
+    if family is ModelFamily.SHARED_UNET_STARDIST:
+        raise ValueError("Fixture review needs a U-Net or StarDist checkpoint, not a shared one.")
     graph = build_default_pipeline()
     node_id = (
         "unet_instances"

@@ -463,7 +463,10 @@ are also kept in its `unsaved/` folder, which the next open offers to restore.
   table lists every project image with seed outlines, with its seed count and species,
   and assigns **Training** and **Validation**: about one image in five per species,
   never a species' largest. Every image starts in its own group. Give related captures
-  the same group, and they keep one split. An image with disconnected or excluded seeds
+  the same group, and they keep one split. **Test** keeps an image out of training and
+  decoder tuning, for the
+  [training experiment](LEARNED_INSTANCE_SEGMENTATION.md#training-experiment) to score.
+  An image with disconnected or excluded seeds
   or an unapplied draft stays listed with the reason and cannot be used, because a seed
   left out would train as background. Tick **Reviewed** only for an image a person
   checked seed by seed; seeds need no per-seed review.

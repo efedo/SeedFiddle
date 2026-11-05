@@ -56,10 +56,10 @@ work, families F01–F22). See [README.md](README.md) for the user view and
 .\.venv\Scripts\python.exe .\seed_vision.py --no-bootstrap
 .\.venv\Scripts\python.exe -m tests                  # core subset
 .\.venv\Scripts\python.exe -m tests tests.test_gui_layout   # focused module
-.\.venv\Scripts\python.exe -m tests --full           # 685 units, 3 workers
+.\.venv\Scripts\python.exe -m tests --full           # 686 units, 3 workers
 ```
 
-The last full run (4 November 2026) passed all 685 units with the 3 expected
+The last full run (5 November 2026) passed all 686 units with the 3 expected
 skips. Wall time over 15 minutes is reported as an advisory warning only; a run
 fails on test outcomes or an unaccounted unit, and a worker that writes no
 journal entry for `--stall-seconds` (default 900) is stopped. Details are in

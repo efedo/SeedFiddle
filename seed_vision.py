@@ -94,6 +94,11 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="UNET_CHECKPOINT",
         help="evaluate U-Net boundaries with interior-gated StarDist markers",
     )
+    learning.add_argument(
+        "--run-training-experiment",
+        metavar="MANIFEST",
+        help="train U-Net alone, StarDist alone and a shared network, score them and exit",
+    )
     learning.add_argument("--benchmark-comparison", metavar="INPUT_JSON",
                          help="evaluate a prespecified grouped comparison and exit")
     learning.add_argument("--benchmark-resources", metavar="INPUT_JSON",
@@ -115,6 +120,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--training-seed", type=int, default=20260811)
     parser.add_argument("--pattern-boundary-loss-weight", type=float, default=0.8)
     parser.add_argument("--initial-checkpoint")
+    parser.add_argument("--experiment-output", help="directory for the training experiment; rerun to resume")
+    parser.add_argument("--experiment-steps", type=int, default=8000, help="optimiser steps for each arm")
+    parser.add_argument("--experiment-validate-every", type=int, default=200, help="steps between validations")
+    parser.add_argument("--experiment-seeds", type=int, nargs="+", default=[20260811, 20260812, 20260813])
+    parser.add_argument("--experiment-arms", nargs="+", choices=("unet", "stardist", "shared"),
+                        default=["unet", "stardist", "shared"])
     parser.add_argument("--synthetic-train-count", type=int, default=48)
     parser.add_argument("--synthetic-validation-count", type=int, default=12)
     parser.add_argument("--synthetic-test-count", type=int, default=12)
@@ -390,6 +401,26 @@ def _learning_arguments(args) -> list[str]:
         )
         if args.optimize_hybrid_decoder:
             values.append("--optimize-hybrid-decoder")
+    if args.run_training_experiment:
+        values.extend(("--run-training-experiment", args.run_training_experiment))
+        if args.experiment_output:
+            values.extend(("--experiment-output", args.experiment_output))
+        values.extend(
+            (
+                "--experiment-steps", str(args.experiment_steps),
+                "--experiment-validate-every", str(args.experiment_validate_every),
+                "--experiment-seeds", *map(str, args.experiment_seeds),
+                "--experiment-arms", *args.experiment_arms,
+                "--training-batch-size", str(args.training_batch_size),
+                "--training-tile-size", str(args.training_tile_size),
+                "--training-rays", str(args.training_rays),
+                "--training-base-channels", str(args.training_base_channels),
+                "--training-depth", str(args.training_depth),
+                "--training-learning-rate", str(args.training_learning_rate),
+            )
+        )
+        if args.allow_unreviewed_learning_data:
+            values.append("--allow-unreviewed-learning-data")
     return values
 
 
@@ -548,6 +579,32 @@ def _run_learning_action(args) -> int | None:
             overlap=args.evaluation_overlap,
         )
         print(json.dumps({key: value for key, value in report.items() if key != "samples"}, indent=2))
+        return 0
+    if args.run_training_experiment:
+        if not args.experiment_output:
+            raise BootstrapError("--run-training-experiment requires --experiment-output.")
+        from seedvision.learning.training_experiment import (
+            ExperimentConfiguration,
+            run_training_experiment,
+        )
+
+        run_training_experiment(
+            args.run_training_experiment,
+            args.experiment_output,
+            ExperimentConfiguration(
+                steps=args.experiment_steps,
+                validate_every=args.experiment_validate_every,
+                seeds=tuple(args.experiment_seeds),
+                arms=tuple(args.experiment_arms),
+                batch_size=args.training_batch_size,
+                tile_size=args.training_tile_size,
+                ray_count=args.training_rays,
+                base_channels=args.training_base_channels,
+                depth=args.training_depth,
+                learning_rate=args.training_learning_rate,
+                allow_unreviewed=args.allow_unreviewed_learning_data,
+            ),
+        )
         return 0
     return None
 

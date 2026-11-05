@@ -27,6 +27,8 @@
 
 - [Seed-detection evaluation](SEED_DETECTION_EVALUATION.md): how the current
   detection pipelines compare with the literature, and recommended directions.
+- [Method comparison](METHOD_COMPARISON.md): the two trained seed-instance methods,
+  how they relate, current recommendations, proposed names and the head-to-head protocol.
 - [Scientific validation protocol](SCIENTIFIC_VALIDATION_PROTOCOL.md): evidence
   required before any scientific or laboratory claim (gates L01–L04).
 - [Node optimisation](NODE_OPTIMIZATION.md): objectives, eligibility and exemptions.

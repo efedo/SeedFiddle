@@ -19,8 +19,8 @@ from seedvision.learning.data import (
     audit_manifest,
     file_sha256,
 )
-from seedvision.learning.losses import multi_head_unet_loss, stardist_loss
-from seedvision.learning.models import MultiHeadSeedUNet, SeedStarDist2D
+from seedvision.learning.losses import multi_head_unet_loss, shared_network_loss, stardist_loss
+from seedvision.learning.models import MultiHeadSeedUNet, SeedStarDist2D, SharedSeedUNet
 from seedvision.learning.evaluation_protocol import dataset_identity
 
 
@@ -48,11 +48,15 @@ class TrainingConfiguration:
     allow_unreviewed: bool = False
     pattern_boundary_loss_weight: float = 0.8
     initial_checkpoint: str | None = None
+    # None draws half as many validation tiles as training tiles.
+    validation_tiles_per_sample: int | None = None
 
     def __post_init__(self) -> None:
         ModelFamily(self.family)
         if self.epochs < 1 or self.batch_size < 1 or self.tiles_per_sample < 1:
             raise ValueError("Epoch, batch, and tile counts must be positive.")
+        if self.validation_tiles_per_sample is not None and self.validation_tiles_per_sample < 1:
+            raise ValueError("Validation tile count must be positive.")
         if self.tile_size < 32 or self.patience < 1:
             raise ValueError("Tile size must be >=32 and patience must be positive.")
         if self.base_channels < 8:
@@ -100,7 +104,8 @@ def _build_model(configuration: TrainingConfiguration, input_channels: int):
             base_channels=configuration.base_channels,
             depth=configuration.depth,
         )
-    return SeedStarDist2D(
+    constructor = SharedSeedUNet if family is ModelFamily.SHARED_UNET_STARDIST else SeedStarDist2D
+    return constructor(
         input_channels,
         ray_count=configuration.ray_count,
         base_channels=configuration.base_channels,
@@ -109,15 +114,12 @@ def _build_model(configuration: TrainingConfiguration, input_channels: int):
 
 
 def _loss(configuration: TrainingConfiguration, family: ModelFamily, outputs, targets):
-    return (
-        multi_head_unet_loss(
-            outputs,
-            targets,
-            weights={"pattern_boundary": configuration.pattern_boundary_loss_weight},
-        )
-        if family is ModelFamily.UNET_WATERSHED
-        else stardist_loss(outputs, targets)
-    )
+    unet_weights = {"pattern_boundary": configuration.pattern_boundary_loss_weight}
+    if family is ModelFamily.UNET_WATERSHED:
+        return multi_head_unet_loss(outputs, targets, weights=unet_weights)
+    if family is ModelFamily.SHARED_UNET_STARDIST:
+        return shared_network_loss(outputs, targets, unet_weights=unet_weights)
+    return stardist_loss(outputs, targets)
 
 
 def _move_targets(targets, device):
@@ -221,7 +223,10 @@ def _train_from_manifest_impl(
         split="validation",
         family=family,
         tile_size=configuration.tile_size,
-        tiles_per_sample=max(2, configuration.tiles_per_sample // 2),
+        tiles_per_sample=(
+            configuration.validation_tiles_per_sample
+            or max(2, configuration.tiles_per_sample // 2)
+        ),
         ray_count=configuration.ray_count,
         augment=False,
         random_seed=configuration.random_seed + 1,
@@ -275,6 +280,7 @@ def _train_from_manifest_impl(
     for epoch in range(1, configuration.epochs + 1):
         if cancellation_requested is not None and cancellation_requested():
             raise TrainingCancelled("Learned-model training was cancelled.")
+        train_dataset.set_epoch(epoch)
         train_terms = _epoch(
             model,
             train_loader,
@@ -341,6 +347,8 @@ def _train_from_manifest_impl(
         "device": str(device),
         "best_epoch": best_epoch,
         "best_validation_loss": best_loss,
+        "optimizer_steps": len(history) * len(train_loader),
+        "manifest_sha256": file_sha256(manifest_path),
         "elapsed_seconds": perf_counter() - started,
         "checkpoint": str(Path(output_path).resolve()),
         "history": history,

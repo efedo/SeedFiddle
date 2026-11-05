@@ -144,6 +144,24 @@ class LearningWorkflowTests(unittest.TestCase):
                 [item.identifier for item in dialog.selected_images()], ["IMG_1", "IMG_1_2"]
             )
 
+    def check_test_training_dialog_can_hold_an_image_out_as_test(self) -> None:
+        from seedvision.ui.learning_workflow import LearningTrainingDialog, TrainingImage
+
+        with TemporaryDirectory() as temporary:
+            dialog = LearningTrainingDialog(
+                project_root=Path(temporary),
+                images=tuple(
+                    TrainingImage(key, Path(f"{key}.png"), 3, "Soybean") for key in ("a", "b", "c")
+                ),
+                species_names=("Soybean",),
+            )
+            self.addCleanup(dialog.close)
+            combo = dialog._split_combo(2)
+            combo.setCurrentIndex(combo.findData("test"))
+            self.assertEqual(
+                sorted(item.split for item in dialog.selected_images()), ["test", "train", "validation"]
+            )
+
     def check_test_training_dialog_constructs_new_and_refinement_requests(self) -> None:
         from seedvision.ui.learning_workflow import LearningTrainingDialog
 
@@ -411,10 +429,11 @@ class LearningWorkflowTests(unittest.TestCase):
         )
 
     def test_workflow_lifecycle(self):
-        """7 related LearningWorkflowTests scenarios, each with private fixture state."""
+        """8 related LearningWorkflowTests scenarios, each with private fixture state."""
         self.scenario(self.check_test_default_splits_hold_out_about_a_fifth_per_species)
         self.scenario(self.check_test_training_dialog_keeps_groups_in_one_split_and_explains_refusals)
         self.scenario(self.check_test_training_dialog_names_same_stem_images_apart)
+        self.scenario(self.check_test_training_dialog_can_hold_an_image_out_as_test)
         self.scenario(self.check_test_training_dialog_constructs_new_and_refinement_requests)
         self.scenario(self.check_test_training_task_forwards_epoch_progress_and_completion)
         self.scenario(self.check_test_analysis_export_derives_nonphysical_targets_from_instance_interiors)

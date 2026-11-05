@@ -1,12 +1,12 @@
 # Complete test inventory
 
-This is a source-derived inventory of every discovered test method, audited on 2026-11-04. Functionality descriptions use method docstrings or scenario names, with assertion and call evidence in [the JSON inventory](test_inventory.json). These are intended coverage claims, **not measured statement or branch coverage**.
+This is a source-derived inventory of every discovered test method, audited on 2026-11-05. Functionality descriptions use method docstrings or scenario names, with assertion and call evidence in [the JSON inventory](test_inventory.json). These are intended coverage claims, **not measured statement or branch coverage**.
 
 Markdown shows at most the first two assertion expressions, shortened to 260 characters. JSON retains every direct assertion expression, lexical production-call candidates, interface calls, helper references and their shared assertion evidence, loops, subtest sites, decorators and fixture calls. Dynamic dispatch and inherited fixture behavior require source inspection; this is not a manually proven call graph or an exhaustive enumeration of runtime subtest cases.
 
-Total: **685 methods in 259 test files**. A method can contain many subtests, input cases or expensive executions. Those are not separate unittest methods.
+Total: **686 methods in 260 test files**. A method can contain many subtests, input cases or expensive executions. Those are not separate unittest methods.
 
-Discovery reconciliation: exact match, 685 canonical unittest IDs; zero discovery errors.
+Discovery reconciliation: exact match, 686 canonical unittest IDs; zero discovery errors.
 
 No historical run receipt was used, so status and seconds are blank. Class setup/teardown, discovery and interpreter shutdown are not allocated to methods. A dash means no method duration was recorded, not zero cost. Runtime skips can differ by environment; their exact historical reasons are in JSON.
 
@@ -268,6 +268,7 @@ See [the multi-pass audit](../archive/TEST_INFRASTRUCTURE_AUDIT.md) for overlap,
 | [tests.test_terminal_snapshot](#teststest_terminal_snapshot) | 2 | 0.000 | Real terminal/acknowledgment transport and private Qt historical consumers. |
 | [tests.test_test_runner](#teststest_test_runner) | 11 | 0.000 | Runner failure reporting, exhaustive tier partition and fixture lifecycle. |
 | [tests.test_threshold_conformance](#teststest_threshold_conformance) | 4 | 0.000 | Public/native threshold checkpoint comparison and conformance |
+| [tests.test_training_experiment](#teststest_training_experiment) | 1 | 0.000 | The three-arm training experiment: radial weighting, shared network, budget and reports. |
 | [tests.test_trait_classifier](#teststest_trait_classifier) | 2 | 0.000 | Software oracles for trait classification; all truth is explicitly synthetic. |
 | [tests.test_trait_pipeline](#teststest_trait_pipeline) | 2 | 0.000 | Native selection/cache/report witnesses for the frozen trait classifier. |
 | [tests.test_trait_review_ui](#teststest_trait_review_ui) | 2 | 0.000 | Actual frozen CUDA trait predictions must reach the native review widgets. |
@@ -1284,7 +1285,7 @@ Fixtures: `setUpClass` at line 19.
 
 | Test method / source | Functionality exercised | Assertion evidence | Last full run |
 | --- | --- | --- | --- |
-| [`test_workflow_lifecycle`](../../tests/test_learning_workflow.py#L413) | 7 related LearningWorkflowTests scenarios, each with private fixture state. | `helper: tests.test_learning_workflow.LearningWorkflowTests.check_test_default_splits_hold_out_about_a_fifth_per_species: self.assertEqual(default_training_splits([]), {})` | unrecorded / — |
+| [`test_workflow_lifecycle`](../../tests/test_learning_workflow.py#L431) | 8 related LearningWorkflowTests scenarios, each with private fixture state. | `helper: tests.test_learning_workflow.LearningWorkflowTests.check_test_default_splits_hold_out_about_a_fifth_per_species: self.assertEqual(default_training_splits([]), {})` | unrecorded / — |
 
 ## tests.test_local_shape_units
 
@@ -4771,6 +4772,20 @@ Fixtures: no class-local setup/teardown methods.
 | [`test_cancelled_pair_retains_distinct_failed_states_and_cannot_pass`](../../tests/test_threshold_conformance.py#L331) | cancelled pair retains distinct failed states and cannot pass | `self.assertEqual(run.call_count, 0); self.assertEqual(report['pair_status'], 'not_evaluated')` | unrecorded / — |
 | [`test_report_publication_is_bounded_content_addressed_and_no_overwrite`](../../tests/test_threshold_conformance.py#L352) | report publication is bounded content addressed and no overwrite | `self.assertEqual(first, second); self.assertEqual(first[0].read_bytes(), json.dumps(payload, sort_keys=True, separators=(',', ':')).encode('utf-8'))` | unrecorded / — |
 | [`test_missing_reference_prerequisites_and_cuda_are_reported_as_unavailable`](../../tests/test_threshold_conformance.py#L365) | missing reference prerequisites and cuda are reported as unavailable | `self.assertEqual(outcome.reference_outcome.run_record.state, StageRunState.UNAVAILABLE); self.assertEqual(outcome.native_outcome.run_record.state, StageRunState.UNAVAILABLE)` | unrecorded / — |
+
+## tests.test_training_experiment
+
+The three-arm training experiment: radial weighting, shared network, budget and reports.
+
+Source: [tests/test_training_experiment.py](../../tests/test_training_experiment.py). Category: Image analysis, calibration and rendering.
+
+### TrainingExperimentTests
+
+Fixtures: no class-local setup/teardown methods.
+
+| Test method / source | Functionality exercised | Assertion evidence | Last full run |
+| --- | --- | --- | --- |
+| [`test_training_experiment`](../../tests/test_training_experiment.py#L64) | Training experiment: 12 scenarios from the loss to the final report. | `helper: tests.test_training_experiment.TrainingExperimentTests.check_radial_error_counts_in_proportion_to_object_probability: self.assertAlmostEqual(radial_term(0) / radial_term(1), 10.0, places=4)` | unrecorded / — |
 
 ## tests.test_trait_classifier
 

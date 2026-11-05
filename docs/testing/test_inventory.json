@@ -1,6 +1,6 @@
 {
   "schema": "seedfiddle.test-inventory.v1",
-  "audit_date": "2026-11-04",
+  "audit_date": "2026-11-05",
   "generator": "tools/audit_test_inventory.py",
   "generator_sha256": "db49bf21d3b542906ab407f1f5666cf07c9653a8689fd879e276fd99a88aadce",
   "description_limit": "Static scenario, assertion and call evidence; no measured line/branch coverage. Import aliases are lexical candidates, not runtime type resolution.",
@@ -10,9 +10,9 @@
   "historical_timings_sha256": null,
   "historical_source_changes": [],
   "unmatched_historical_timing_ids": [],
-  "collection_status": "exact match, 685 canonical unittest IDs; zero discovery errors",
-  "test_count": 685,
-  "test_file_count": 259,
+  "collection_status": "exact match, 686 canonical unittest IDs; zero discovery errors",
+  "test_count": 686,
+  "test_file_count": 260,
   "core_targets": [
     "tests.test_pipeline",
     "tests.test_analysis_settings_persistence",
@@ -26,7 +26,7 @@
     "tests.test_native_image_inputs.ImageInputContractTests"
   ],
   "core_test_count": 28,
-  "test_source_lines": 81817,
+  "test_source_lines": 82193,
   "historical_method_seconds": 0,
   "category_totals": {
     "Annotation and interactive image review": {
@@ -40,8 +40,8 @@
       "method_seconds": 0
     },
     "Image analysis, calibration and rendering": {
-      "methods": 71,
-      "files": 25,
+      "methods": 72,
+      "files": 26,
       "method_seconds": 0
     },
     "Learning and trait analysis": {
@@ -2031,8 +2031,8 @@
       "file": "tests/test_learning_workflow.py",
       "purpose": "Training workflow, evidence export and desktop controls",
       "category": "Learning and trait analysis",
-      "lines": 425,
-      "source_sha256": "4a588b0cb73d40a7dade15e2be637d96f7f1b70a644c4dadcd7ece1d357b30e3",
+      "lines": 444,
+      "source_sha256": "8ce11523e18f05a61da4a17e6b561adfdbeab75d5a23e6f7da4ef896b5d75530",
       "historical_source_matches": false,
       "test_count": 1,
       "class_fixtures": {
@@ -8988,6 +8988,34 @@
         "seedvision.benchmarking.threshold_conformance",
         "seedvision.benchmarking.threshold_conformance.ThresholdPairError",
         "seedvision.benchmarking.threshold_conformance.run_threshold_conformance_pair"
+      ],
+      "method_seconds": 0
+    },
+    {
+      "module": "tests.test_training_experiment",
+      "file": "tests/test_training_experiment.py",
+      "purpose": "The three-arm training experiment: radial weighting, shared network, budget and reports.",
+      "category": "Image analysis, calibration and rendering",
+      "lines": 357,
+      "source_sha256": "51f60ff0574abedca11c5f77037f44d5e0efe0fbae5f8faf0677320c0f567fa8",
+      "historical_source_matches": false,
+      "test_count": 1,
+      "class_fixtures": {
+        "TrainingExperimentTests": []
+      },
+      "production_imports": [
+        "seedvision.learning.contracts.FeatureStackSpec",
+        "seedvision.learning.contracts.ModelFamily",
+        "seedvision.learning.data.SeedTileDataset",
+        "seedvision.learning.data.export_learning_sample",
+        "seedvision.learning.losses.multi_head_unet_loss",
+        "seedvision.learning.losses.shared_network_loss",
+        "seedvision.learning.losses.stardist_loss",
+        "seedvision.learning.training_experiment.ExperimentConfiguration",
+        "seedvision.learning.training_experiment.adoption_verdict",
+        "seedvision.learning.training_experiment.describe_evidence",
+        "seedvision.learning.training_experiment.run_training_experiment",
+        "seedvision.learning.training_experiment.training_configuration"
       ],
       "method_seconds": 0
     },
@@ -16594,9 +16622,9 @@
       "file": "tests/test_learning_workflow.py",
       "class": "LearningWorkflowTests",
       "method": "test_workflow_lifecycle",
-      "line": 413,
-      "end_line": 421,
-      "functionality": "7 related LearningWorkflowTests scenarios, each with private fixture state.",
+      "line": 431,
+      "end_line": 440,
+      "functionality": "8 related LearningWorkflowTests scenarios, each with private fixture state.",
       "description_basis": "method docstring",
       "category": "Learning and trait analysis",
       "direct_subjects": [],
@@ -16621,6 +16649,7 @@
         "tests.test_learning_workflow.LearningWorkflowTests.check_test_default_splits_hold_out_about_a_fifth_per_species",
         "tests.test_learning_workflow.LearningWorkflowTests.check_test_training_dialog_keeps_groups_in_one_split_and_explains_refusals",
         "tests.test_learning_workflow.LearningWorkflowTests.check_test_training_dialog_names_same_stem_images_apart",
+        "tests.test_learning_workflow.LearningWorkflowTests.check_test_training_dialog_can_hold_an_image_out_as_test",
         "tests.test_learning_workflow.LearningWorkflowTests.check_test_training_dialog_constructs_new_and_refinement_requests",
         "tests.test_learning_workflow.LearningWorkflowTests.check_test_training_task_forwards_epoch_progress_and_completion",
         "tests.test_learning_workflow.LearningWorkflowTests.check_test_analysis_export_derives_nonphysical_targets_from_instance_interiors",
@@ -42587,6 +42616,70 @@
       "runs_in_default_core": false
     },
     {
+      "id": "tests.test_training_experiment.TrainingExperimentTests.test_training_experiment",
+      "file": "tests/test_training_experiment.py",
+      "class": "TrainingExperimentTests",
+      "method": "test_training_experiment",
+      "line": 64,
+      "end_line": 77,
+      "functionality": "Training experiment: 12 scenarios from the loss to the final report.",
+      "description_basis": "method docstring",
+      "category": "Image analysis, calibration and rendering",
+      "direct_subjects": [],
+      "helper_subjects": [
+        "seedvision.learning.losses.stardist_loss",
+        "seedvision.learning.data.SeedTileDataset",
+        "seedvision.learning.checkpoint.save_checkpoint",
+        "seedvision.learning.checkpoint.load_checkpoint",
+        "seedvision.learning.models.SharedSeedUNet",
+        "seedvision.learning.losses.shared_network_loss",
+        "seedvision.learning.losses.multi_head_unet_loss",
+        "seedvision.learning.evaluation.decoded_family",
+        "seedvision.learning.evaluation.evaluate_checkpoint",
+        "seedvision.learning.training_experiment.ExperimentConfiguration",
+        "seedvision.learning.training_experiment.training_configuration",
+        "seedvision.learning.training_experiment.adoption_verdict",
+        "seedvision.learning.training_experiment.run_training_experiment",
+        "seedvision.learning.training_experiment.describe_evidence",
+        "seedvision.learning.data.LearningManifest.load",
+        "seedvision.learning.data.export_learning_sample"
+      ],
+      "calls": [
+        "self.scenario"
+      ],
+      "direct_checks": [],
+      "helpers": [
+        "tests.test_training_experiment.TrainingExperimentTests.check_radial_error_counts_in_proportion_to_object_probability",
+        "tests.test_training_experiment.TrainingExperimentTests.check_training_tiles_change_each_epoch_and_repeat_within_one",
+        "tests.test_training_experiment.TrainingExperimentTests.check_shared_targets_equal_both_separate_datasets",
+        "tests.test_training_experiment.TrainingExperimentTests.check_shared_model_starts_like_the_separate_unet_and_round_trips",
+        "tests.test_training_experiment.TrainingExperimentTests.check_shared_loss_sums_both_losses_and_trains_every_head",
+        "tests.test_training_experiment.TrainingExperimentTests.check_a_shared_checkpoint_must_name_the_output_to_score",
+        "tests.test_training_experiment.TrainingExperimentTests.check_step_budget_is_met_for_any_image_count",
+        "tests.test_training_experiment.TrainingExperimentTests.check_verdict_needs_reviewed_test_images_and_three_seeds",
+        "tests.test_training_experiment.TrainingExperimentTests.check_verdict_reports_when_joint_training_falls_short",
+        "tests.test_training_experiment.TrainingExperimentTests.check_unreviewed_run_is_labelled_not_validation_and_resumes",
+        "tests.test_training_experiment.TrainingExperimentTests.check_reviewed_test_images_are_scored_with_the_validation_decoder",
+        "tests.test_training_experiment.TrainingExperimentTests.check_launcher_forwards_and_runs_the_experiment",
+        "tests.test_training_experiment._export",
+        "tests.test_training_experiment._labels",
+        "tests.test_training_experiment._summary_row"
+      ],
+      "fixtures": [],
+      "decorators": [],
+      "class_decorators": [
+        "functional_units"
+      ],
+      "subtest_sites": 0,
+      "loop_iterables": [],
+      "skip_calls": [],
+      "historical_source_matches": false,
+      "last_full_status": "unrecorded",
+      "last_full_seconds": null,
+      "skip_reason": "",
+      "runs_in_default_core": false
+    },
+    {
       "id": "tests.test_trait_classifier.TraitClassifierTests.test_workflow_lifecycle",
       "file": "tests/test_trait_classifier.py",
       "class": "TraitClassifierTests",
@@ -49705,9 +49798,16 @@
         "self.assertEqual([item.identifier for item in dialog.selected_images()], ['IMG_1', 'IMG_1_2'])"
       ]
     },
-    "tests.test_learning_workflow.LearningWorkflowTests.check_test_training_dialog_constructs_new_and_refinement_requests": {
+    "tests.test_learning_workflow.LearningWorkflowTests.check_test_training_dialog_can_hold_an_image_out_as_test": {
       "file": "tests/test_learning_workflow.py",
       "line": 147,
+      "checks": [
+        "self.assertEqual(sorted((item.split for item in dialog.selected_images())), ['test', 'train', 'validation'])"
+      ]
+    },
+    "tests.test_learning_workflow.LearningWorkflowTests.check_test_training_dialog_constructs_new_and_refinement_requests": {
+      "file": "tests/test_learning_workflow.py",
+      "line": 165,
       "checks": [
         "self.assertEqual(request.configuration.family, 'stardist')",
         "self.assertEqual(request.configuration.epochs, 3)",
@@ -49720,7 +49820,7 @@
     },
     "tests.test_learning_workflow.LearningWorkflowTests.check_test_training_task_forwards_epoch_progress_and_completion": {
       "file": "tests/test_learning_workflow.py",
-      "line": 173,
+      "line": 191,
       "checks": [
         "self.assertFalse(cancellation_requested())",
         "self.assertEqual(progress, [(1, 2, 0.4, 0.3)])",
@@ -49730,7 +49830,7 @@
     },
     "tests.test_learning_workflow.LearningWorkflowTests.check_test_analysis_export_derives_nonphysical_targets_from_instance_interiors": {
       "file": "tests/test_learning_workflow.py",
-      "line": 220,
+      "line": 238,
       "checks": [
         "self.assertIsNotNone(sample.pattern_boundary)",
         "self.assertIsNotNone(sample.pattern_valid)",
@@ -49744,7 +49844,7 @@
     },
     "tests.test_learning_workflow.LearningWorkflowTests.check_test_reviewed_manifest_trains_and_refines_a_real_checkpoint": {
       "file": "tests/test_learning_workflow.py",
-      "line": 324,
+      "line": 342,
       "checks": [
         "self.assertTrue(first.is_file())",
         "self.assertEqual(report['best_epoch'], 1)",
@@ -68903,6 +69003,162 @@
     "tests.test_threshold_conformance._digest": {
       "file": "tests/test_threshold_conformance.py",
       "line": 63,
+      "checks": []
+    },
+    "tests.test_training_experiment.TrainingExperimentTests.check_radial_error_counts_in_proportion_to_object_probability": {
+      "file": "tests/test_training_experiment.py",
+      "line": 79,
+      "checks": [
+        "self.assertAlmostEqual(radial_term(0) / radial_term(1), 10.0, places=4)",
+        "self.assertEqual(radial_term(2), 0.0)"
+      ]
+    },
+    "tests.test_training_experiment.TrainingExperimentTests.check_training_tiles_change_each_epoch_and_repeat_within_one": {
+      "file": "tests/test_training_experiment.py",
+      "line": 104,
+      "checks": [
+        "np.testing.assert_array_equal(first, tiles(1))",
+        "self.assertFalse(np.array_equal(first, tiles(2)))"
+      ]
+    },
+    "tests.test_training_experiment.TrainingExperimentTests.check_shared_targets_equal_both_separate_datasets": {
+      "file": "tests/test_training_experiment.py",
+      "line": 121,
+      "checks": [
+        "self.assertLessEqual(set(separate), set(shared))",
+        "np.testing.assert_array_equal(values.numpy(), shared[name].numpy(), err_msg=name)",
+        "self.assertEqual(len(shared), 10)",
+        "self.assertEqual(caches, {'unet', 'stardist8', 'shared8'})"
+      ]
+    },
+    "tests.test_training_experiment.TrainingExperimentTests.check_shared_model_starts_like_the_separate_unet_and_round_trips": {
+      "file": "tests/test_training_experiment.py",
+      "line": 143,
+      "checks": [
+        "self.assertTrue(torch.equal(value, weights[name]), name)",
+        "self.assertTrue(torch.equal(value, weights[name]), name)",
+        "self.assertEqual(set(outputs), set(unet(values)) | set(star(values)))",
+        "self.assertEqual(outputs['radial_distances'].shape, (1, 8, 32, 32))",
+        "self.assertEqual(payload['family'], SHARED)",
+        "self.assertEqual(loaded.family, SHARED)",
+        "self.assertTrue(torch.equal(value, weights[name]), name)"
+      ]
+    },
+    "tests.test_training_experiment.TrainingExperimentTests.check_shared_loss_sums_both_losses_and_trains_every_head": {
+      "file": "tests/test_training_experiment.py",
+      "line": 173,
+      "checks": [
+        "self.assertAlmostEqual(total.item(), (unet_total + star_total).item(), places=4)",
+        "self.assertAlmostEqual(terms['unet_total'].item(), unet_total.item(), places=5)",
+        "self.assertAlmostEqual(terms['stardist_radial'].item(), star_terms['radial'].item(), places=5)",
+        "self.assertAlmostEqual(terms['unet_centre'].item(), unet_terms['centre'].item(), places=5)",
+        "self.assertGreater(float(gradient.abs().sum()), 0.0, head)"
+      ]
+    },
+    "tests.test_training_experiment.TrainingExperimentTests.check_a_shared_checkpoint_must_name_the_output_to_score": {
+      "file": "tests/test_training_experiment.py",
+      "line": 200,
+      "checks": [
+        "self.assertIs(decoded_family(family.UNET_WATERSHED), family.UNET_WATERSHED)",
+        "self.assertIs(decoded_family(family.SHARED_UNET_STARDIST, 'stardist'), family.STARDIST)",
+        "self.assertRaisesRegex(ValueError, 'no stardist output')",
+        "self.assertRaisesRegex(ValueError, 'no shared_unet_stardist output')",
+        "self.assertRaisesRegex(ValueError, 'needs output')",
+        "self.assertEqual(report['family'], output)",
+        "self.assertEqual(report['checkpoint_family'], SHARED)",
+        "self.assertTrue((root / output / 'a.prediction.png').is_file())"
+      ]
+    },
+    "tests.test_training_experiment.TrainingExperimentTests.check_step_budget_is_met_for_any_image_count": {
+      "file": "tests/test_training_experiment.py",
+      "line": 228,
+      "checks": [
+        "self.assertEqual(configuration.epochs, 5)",
+        "self.assertGreater(configuration.patience, configuration.epochs)",
+        "self.assertEqual(configuration.family, SHARED)",
+        "self.assertEqual(configuration.random_seed, 7)",
+        "self.assertEqual(-(-tiles // budget.batch_size), expected_steps)"
+      ]
+    },
+    "tests.test_training_experiment.TrainingExperimentTests.check_verdict_needs_reviewed_test_images_and_three_seeds": {
+      "file": "tests/test_training_experiment.py",
+      "line": 239,
+      "checks": [
+        "self.assertFalse(verdict['decided'])",
+        "self.assertFalse(adoption_verdict(summary, reviewed, (1, 2))['decided'])",
+        "self.assertFalse(adoption_verdict(summary[:2], reviewed, (1, 2, 3))['decided'])",
+        "self.assertTrue(verdict['decided'])",
+        "self.assertTrue(verdict['shared_network_holds_up'])",
+        "self.assertEqual(len(verdict['comparisons']), 4)"
+      ]
+    },
+    "tests.test_training_experiment.TrainingExperimentTests.check_verdict_reports_when_joint_training_falls_short": {
+      "file": "tests/test_training_experiment.py",
+      "line": 254,
+      "checks": [
+        "self.assertTrue(verdict['decided'])",
+        "self.assertFalse(verdict['shared_network_holds_up'])",
+        "self.assertEqual(short, {(UNET, False), (STARDIST, True)})"
+      ]
+    },
+    "tests.test_training_experiment.TrainingExperimentTests.check_unreviewed_run_is_labelled_not_validation_and_resumes": {
+      "file": "tests/test_training_experiment.py",
+      "line": 265,
+      "checks": [
+        "self.assertEqual(report['evidence']['state'], 'no_test_split')",
+        "self.assertIn('NOT VALIDATION', lines[0])",
+        "self.assertIn('NOT VALIDATION', (output / 'experiment.md').read_text(encoding='utf-8'))",
+        "self.assertFalse(report['verdict']['decided'])",
+        "self.assertFalse(report['scientifically_validated'])",
+        "self.assertEqual(report['optimizer_steps_by_arm'], {'unet': 2, 'stardist': 2, 'shared': 2})",
+        "self.assertEqual(sorted(((row['arm'], row['output']) for row in report['summary'])), [('shared', STARDIST), ('shared', UNET), ('stardist', STARDIST), ('unet', UNET)])",
+        "self.assertEqual(stored['evidence'], report['evidence'])",
+        "self.assertIn('unet_total', run['last_validation'])",
+        "self.assertIn('stardist_total', run['last_validation'])",
+        "self.assertEqual(resumed['summary'], report['summary'])",
+        "self.assertRaisesRegex(RuntimeError, 'configuration changed')"
+      ]
+    },
+    "tests.test_training_experiment.TrainingExperimentTests.check_reviewed_test_images_are_scored_with_the_validation_decoder": {
+      "file": "tests/test_training_experiment.py",
+      "line": 300,
+      "checks": [
+        "self.assertEqual(evidence['state'], 'reviewed_test')",
+        "self.assertEqual(evidence['scored_images'], ['c'])",
+        "self.assertFalse(evidence['training_masks_reviewed'])",
+        "self.assertEqual([image['sample_id'] for image in run['images']], ['c'])",
+        "self.assertIn('No recorded', run['membership_audit'])",
+        "self.assertEqual(stored['decoder_settings'], run['decoder_settings'])",
+        "self.assertEqual(stored['decoder_selection_provenance']['selection_protocol'], 'validation')",
+        "self.assertNotIn('NOT VALIDATION', (root / 'run' / 'experiment.md').read_text(encoding='utf-8'))",
+        "self.assertIsNotNone(run['mean']['f1_iou75'])",
+        "self.assertEqual(describe_evidence(LearningManifest.load(manifest))['state'], 'unreviewed_test')"
+      ]
+    },
+    "tests.test_training_experiment.TrainingExperimentTests.check_launcher_forwards_and_runs_the_experiment": {
+      "file": "tests/test_training_experiment.py",
+      "line": 333,
+      "checks": [
+        "self.assertEqual(getattr(reparsed, name), getattr(arguments, name), name)",
+        "self.assertEqual(seed_vision._run_learning_action(arguments), 0)",
+        "self.assertEqual((configuration.steps, configuration.seeds, configuration.arms), (40, (1, 2), ('shared',)))",
+        "self.assertTrue(configuration.allow_unreviewed)",
+        "self.assertRaisesRegex(seed_vision.BootstrapError, 'requires --experiment-output')"
+      ]
+    },
+    "tests.test_training_experiment._export": {
+      "file": "tests/test_training_experiment.py",
+      "line": 44,
+      "checks": []
+    },
+    "tests.test_training_experiment._labels": {
+      "file": "tests/test_training_experiment.py",
+      "line": 35,
+      "checks": []
+    },
+    "tests.test_training_experiment._summary_row": {
+      "file": "tests/test_training_experiment.py",
+      "line": 56,
       "checks": []
     },
     "tests.test_trait_classifier.TraitClassifierTests.check_test_synthetic_grouped_training_predicts_supplied_definition_ids": {

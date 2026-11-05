@@ -95,8 +95,8 @@ The **Learning** menu makes the ordinary workflow self-contained:
    image with seed outlines and assigns an image-level split automatically, holding
    out about one image in five per species and never a species' largest. Each image
    starts in its own lot/capture group; give related captures one group and they
-   keep one split. Name the annotator/reviewer and mark a mask reviewed only after a
-   seed-by-seed check.
+   keep one split. **Test** keeps an image out of training and decoder tuning. Name
+   the annotator/reviewer and mark a mask reviewed only after a seed-by-seed check.
 4. Training asks before using samples not marked reviewed, recording that choice
    in the checkpoint. It analyses any image that needs it with only the stages the
    model's inputs depend on, saves each sample into a new dataset folder under
@@ -180,7 +180,8 @@ score/overlap non-maximum suppression. The implementation supports tiled CUDA
 inference with overlap at least as large as the maximum supported seed radius.
 Radial regression combines log-distance, relative-error, and angular
 second-derivative losses so adjacent rays form smooth, faithful boundaries
-rather than alternating spikes.
+rather than alternating spikes. Each pixel's radial error is weighted by its
+object probability, because only pixels near a seed's centre become candidates.
 
 Initial experiments use 32 and 64 rays. Polygon masks are evaluated both
 directly and after optional local refinement by the U-Net physical-boundary
@@ -206,6 +207,48 @@ surface.
 9. Render raw-image overlays, physical/pattern boundaries, centres, uncertainty,
    instance identities, split/merge flags, and side-by-side error crops for
    manual examination.
+
+Each training epoch draws new tiles and augmentations from its own seed, so a run
+repeats exactly while no two epochs see the same crops. Validation tiles stay fixed.
+
+## Training experiment
+
+`--run-training-experiment` answers whether one shared network should replace the
+two separate ones. It trains three arms for each seed, on the same tile sequence and
+with the same step budget: U-Net alone, StarDist alone, and one backbone with both
+sets of heads and both losses added at equal weight. Shared checkpoints exist only for
+this experiment: the pipeline nodes refuse them.
+
+```powershell
+.\.venv\Scripts\python.exe seed_vision.py --run-training-experiment learning-data\<dataset>\manifest.json --experiment-output artifacts\training-experiment
+```
+
+The defaults are 8,000 optimiser steps with validation every 200, seeds 20260811–13
+and early stopping off. Change them with `--experiment-steps`,
+`--experiment-validate-every`, `--experiment-seeds` and `--experiment-arms`.
+Rerunning the same command resumes, reusing any arm whose settings and dataset match.
+`--allow-unreviewed-learning-data` is required when training or validation masks
+are unreviewed.
+
+Build the dataset with **Train or refine U-Net / StarDist…**, setting the reviewed
+images to **Test** and at least one image each to **Training** and **Validation**.
+Give it a new checkpoint path, then **Stop** the training it starts: Stop keeps the
+best checkpoint so far, and the experiment needs only the dataset folder written under
+`learning-data/`.
+
+For each output, the experiment chooses decoder settings on the validation split with
+the existing grid search, freezes them, and scores the test split. It writes
+`experiment.md` and `experiment.json`, with every arm's mean and spread for F1 at IoU
+0.5 and 0.75, matched IoU, count error, splits, merges and boundary F1. Each arm's
+folder holds its checkpoint, its per-term validation history and its comparison
+images. `best_round_for_output` shows when a shared arm's outputs disagree about the
+best moment to stop.
+
+The [adoption rule](METHOD_COMPARISON.md#a-shared-network) is applied only to
+reviewed test images with at least three seeds. A dataset with unreviewed test masks,
+or with no test split, is scored on what it has, and the report and console open with
+NOT VALIDATION and decide nothing. Reviewed scores compare the arms; they do not
+validate the accuracy of any arm.
 
 ## Metrics and validation gate
 

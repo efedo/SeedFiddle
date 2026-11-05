@@ -3,7 +3,7 @@
 The suite is plain `unittest`, run through a parallel runner in `tests/__main__.py`.
 Related scenarios are grouped into *functional units* (one `test_workflow_lifecycle`
 or `test_validation_and_recovery` method that runs several private scenarios), so
-685 units cover roughly 2,800 original test methods.
+686 units cover roughly 2,800 original test methods.
 
 ## Commands
 
@@ -66,7 +66,7 @@ cannot produce a pass.
   directories to `artifacts\test-temp\`. Clear old ones with
   `scripts\prune_artifacts.py --older-than 7 --delete` (dry run without `--delete`).
 
-The last full run (4 November 2026) passed 685/685 units with the three expected
+The last full run (5 November 2026) passed 686/686 units with the three expected
 skips. Run it from the main checkout: from a git worktree, the two acceptance units
 bound to the checkout path fail (see [HANDOFF.md](../HANDOFF.md)).
 

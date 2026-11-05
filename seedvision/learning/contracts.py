@@ -13,6 +13,8 @@ import numpy as np
 class ModelFamily(StrEnum):
     UNET_WATERSHED = "unet_watershed"
     STARDIST = "stardist"
+    # One backbone with both sets of heads. Only the training experiment makes these.
+    SHARED_UNET_STARDIST = "shared_unet_stardist"
 
 
 class PretrainedModelFamily(StrEnum):

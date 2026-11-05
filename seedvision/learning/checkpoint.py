@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from seedvision.learning.contracts import FeatureStackSpec, ModelFamily
-from seedvision.learning.models import MultiHeadSeedUNet, SeedStarDist2D
+from seedvision.learning.models import MultiHeadSeedUNet, SeedStarDist2D, SharedSeedUNet
 
 
 CHECKPOINT_VERSION = 1
@@ -78,7 +78,8 @@ def load_checkpoint(path: Path | str, *, device="cpu"):
             depth=configuration["depth"],
         )
     else:
-        model = SeedStarDist2D(
+        constructor = SharedSeedUNet if family is ModelFamily.SHARED_UNET_STARDIST else SeedStarDist2D
+        model = constructor(
             configuration["input_channels"],
             ray_count=configuration["ray_count"],
             base_channels=configuration["base_channels"],

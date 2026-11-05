@@ -6,7 +6,7 @@ is the [operator guide](OPERATOR_GUIDE.md).
 
 **In short:** the desktop workflow, the analysis graph, persistence, export, batch
 execution and the PlantCV–SMPTS peer pipelines are implemented and covered by a
-685-unit test suite. None of the analytical outputs has been validated against
+686-unit test suite. None of the analytical outputs has been validated against
 independently reviewed laboratory data. Physical units and trait predictions are
 withheld or labelled unvalidated, and procedural counting is not yet competitive
 with counting by eye.
@@ -84,7 +84,7 @@ Operation-level detail: [feature register](plantcv_smpts_features.json) and
 
 ## Verification
 
-`python -m tests --full` runs 685 functional units in three isolated processes
+`python -m tests --full` runs 686 functional units in three isolated processes
 and passed on 4 November 2026 with three expected skips (an opt-in fill
 diagnostic, a case-sensitive-filesystem check and a symlink-privilege check). The four frozen numerical acceptance baselines and 223
 frozen recipe profiles are unchanged. See [TESTING.md](TESTING.md).
