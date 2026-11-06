@@ -6,15 +6,17 @@ A project ``name.seedfiddle-project.json`` keeps its per-image annotations in
 - ``manual-seed-centres/`` and ``reference-regions/`` hold what the last Save
   recorded in the project file;
 - ``unsaved/`` holds edits made since that Save, so a crash does not lose them.
-  Save copies them into the folders above; Discard deletes them.
+  Save copies them into the folders above; Discard deletes them;
+- ``trait-models/`` holds the project's trained seed-trait models.
 
-An untitled project has no such folder. Its edits go to the workspace's shared
-``projects/`` folders, and the first Save copies them into the new project's
+An untitled project has no such folder. Its edits and models go to the workspace's
+shared ``projects/`` folders, and the first Save copies them into the new project's
 folder.
 """
 
 from __future__ import annotations
 
+import filecmp
 import os
 import shutil
 import tempfile
@@ -29,6 +31,7 @@ from seedvision.persistence.project_analysis import (
 
 PROJECT_ANNOTATIONS_SUFFIX = ".seedfiddle-annotations"
 UNSAVED_ANNOTATIONS_FOLDER = "unsaved"
+TRAIT_MODEL_FOLDER = "trait-models"
 ANNOTATION_FOLDERS = {
     REFERENCE_REGIONS_SIDECAR: "reference-regions",
     MANUAL_SEED_CENTRES_SIDECAR: "manual-seed-centres",
@@ -75,6 +78,28 @@ def copy_annotation_file(source: Path | str, destination: Path | str) -> Path:
     finally:
         if temporary.exists():
             temporary.unlink()
+    return destination
+
+
+def trait_model_folder(directory: Path | str) -> Path:
+    """Return where a project, or the shared ``projects/`` folder, keeps trait models."""
+
+    return Path(directory) / TRAIT_MODEL_FOLDER
+
+
+def copy_trait_model(source: Path | str, folder: Path | str) -> Path:
+    """Copy a model, and any evidence beside it, without replacing a different file."""
+
+    source, folder = Path(source), Path(folder)
+    destination, suffix = folder / source.name, 2
+    while destination.exists():
+        if filecmp.cmp(source, destination, shallow=False):
+            return destination
+        destination, suffix = folder / f"{source.stem}-{suffix}{source.suffix}", suffix + 1
+    copy_annotation_file(source, destination)
+    evidence = source.with_suffix(".evidence.json")
+    if evidence.is_file():
+        copy_annotation_file(evidence, destination.with_suffix(".evidence.json"))
     return destination
 
 

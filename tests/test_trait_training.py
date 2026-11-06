@@ -221,7 +221,7 @@ class TraitTrainingTests(unittest.TestCase):
 
     def check_test_review_boundary_and_source_support_are_actual_eligibility_guards(self):
         self.reference(self.payload['examples'][0], boundary=True)
-        with self.assertRaisesRegex(ValueError, 'canvas boundary'):
+        with self.assertRaisesRegex(ValueError, 'image edge'):
             materialize_trait_evidence(self.manifest())
         self.reference(self.payload['examples'][0], transform=np.array(((1, 0, 20), (0, 1, 0), (0, 0, 1))))
         with self.assertRaisesRegex(ValueError, 'outside decoded source support'):
@@ -364,7 +364,8 @@ class TraitTrainingUITests(unittest.TestCase):
 
     def check_test_dialog_snapshots_manifest_controls_and_activation_choice(self):
         from seedvision.ui.trait_training_workflow import TraitTrainingDialog
-        dialog = TraitTrainingDialog(project_root=self.root)
+        dialog = TraitTrainingDialog(project_root=self.root, model_directory=self.root / 'models')
+        dialog.evidence_file_checkbox.setChecked(True)
         dialog.manifest_row.edit.setText(str(self.path))
         dialog.iterations_spin.setValue(17)
         dialog.learning_rate_spin.setValue(.04)
@@ -373,7 +374,7 @@ class TraitTrainingUITests(unittest.TestCase):
         dialog.upper_temperature_spin.setValue(5)
         dialog.calibration_spin.setValue(13)
         dialog.threshold_spin.setValue(.7)
-        dialog.activate_checkbox.setChecked(True)
+        self.assertTrue(dialog.activate_checkbox.isChecked())
         dialog.accept()
         request = dialog.request()
         dialog.iterations_spin.setValue(99)
@@ -381,6 +382,7 @@ class TraitTrainingUITests(unittest.TestCase):
         self.assertEqual(dialog.request(), request)
         self.assertTrue(request.activate_after_training)
         self.assertEqual(request.manifest_sha256, file_sha256(self.path))
+        self.assertEqual(request.output_path.parent, (self.root / 'models').resolve())
         dialog.close()
 
     def check_test_trait_worker_forwards_real_controls_task_identity_and_terminal_outcomes(self):

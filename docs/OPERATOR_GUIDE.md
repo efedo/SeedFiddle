@@ -481,13 +481,15 @@ are also kept in its `unsaved/` folder, which the next open offers to restore.
   `learning-data/`, which can be deleted once it is no longer wanted. Learned nodes are
   disabled by default and need a compatible checkpoint.
   See [learned instance segmentation](LEARNED_INSTANCE_SEGMENTATION.md).
-- **Train object-level seed traits…** and **Activate frozen seed-trait model…**: see
-  [seed-trait training](TRAIT_CLASSIFIER_TRAINING.md).
+- **Train object-level seed traits…**, **Import seed-trait model…** and **Export
+  seed-trait model…**: see [seed-trait training](TRAIT_CLASSIFIER_TRAINING.md).
 - **Train PlantCV probability model…** trains a Naive Bayes model from a sampled RGB
   table or from image and mask directories, and saves the exact PlantCV TSV
   (optionally with hue/saturation/value density plots as SVG). **Train frozen
   K-means centres…** trains centres from a folder of images and saves them with
-  their training provenance in one JSON file. Defaults match PlantCV.
+  their training provenance in one JSON file. Defaults match PlantCV. Only the PlantCV
+  Naive Bayes and K-means pipelines use these files; both pipelines are listed when
+  **Show all default pipelines** is on.
 - **Species reference libraries…** builds, validates, publishes, forks, imports,
   exports and pins immutable species libraries. A project pins one library, chosen
   for the open image's species. On an image of another species the desktop marks the

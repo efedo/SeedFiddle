@@ -1,23 +1,58 @@
 # Native seed-trait training
 
 The **Object-level seed traits** node classifies each accepted seed into one of a
-supplied set of trait classes, or abstains. Training, saving and activation are
-separate steps, and nothing here establishes biological validity: definitions,
-truth, permissions and grouping are supplied by you and are only checked for
-consistency and split isolation. Independent locked testing (laboratory gate L04)
-is still required.
+set of trait classes, or abstains. Nothing here establishes biological validity:
+labels, definitions and grouping are yours and are only checked for consistency and
+split isolation. Calibration diagnostics and predictive probabilities do not establish
+scientific validity. Independent locked testing (laboratory gate L04) is still required.
 
-## Train and activate
+## Train from the project's labels
 
-Use **Learning → Train object-level seed traits…** to choose an evidence manifest, output file and training controls. The job shares the desktop's serial CUDA worker. Cancel and Stop request a stop before the next calculation or file commit. **Learning → Activate frozen seed-trait model…** also activates an existing model. Activation validates the artifact and graph before changing the Object-level seed traits node.
+**Learning → Train object-level seed traits…** trains on the seed labels already in the
+current project. There is no file to prepare or choose.
 
-Saving and activation are separate. The default saves without activating. Save to a new file when a model is already active. A failed or cancelled job before publication preserves the previous output; cancellation after publication keeps the valid saved file and skips activation. A graph change during training also skips automatic activation. Only the classifier and its dependents are invalidated on successful activation; reusable upstream caches remain available.
+- **Trait** offers coat pattern when any seed has one, and each condition at least one
+  seed has. A condition model has two classes: the condition, and `not_<condition>` for
+  seeds whose conditions were reviewed without it.
+- **The table** lists the images with seeds that speak to that trait. A seed is usable
+  when its outline is Complete, its pose is set, it is not excluded from modelling, it
+  does not touch the image edge, and it lies inside the decoded image of an image with
+  a recorded correction. The note counts the seeds skipped, by reason. An image with
+  an unapplied draft cannot be used until the draft is applied or discarded.
+- **Split** sends each image to Training, which fits the model, or Calibration, which
+  tunes its confidence on seeds it was not trained on. A seed lot stays on one side; an
+  image with no recorded seed lot counts as its own. The default holds out about a fifth
+  of the usable seeds and keeps every class in Training.
 
-Definitions, truth, permissions and biological grouping must be supplied. The program checks their consistency and isolation; it does not establish their biological authority. Calibration diagnostics and predictive probabilities do not establish scientific validity. Independent locked testing remains required.
+**Train** stays unavailable, with the reason beside it, until there are at least two
+classes, each in Training, and usable seeds in Calibration.
 
-## Training manifest
+When training completes the model is used in the Object-level seed traits node, unless
+that choice is cleared: this sets the node's model and abstention threshold and enables
+it. Only the classifier and its dependents are invalidated; upstream caches stay
+available. The job shares the desktop's serial CUDA worker. Cancel and Stop request a
+stop before the next calculation or file commit. A cancellation after the file is
+written, or a graph change during training, keeps the model without using it.
 
-The UTF-8 JSON manifest has exactly these root fields:
+## Where models are kept
+
+A saved project keeps its models in `<project>.seedfiddle-annotations/trait-models/`. An
+untitled project keeps them in `projects/trait-models/`, and its first Save copies the
+selected one into the new project's folder. Save As does the same, so each project holds
+the model it selects, recorded relative to the workspace. Each file is named after the
+trait and the time, and `<name>.evidence.json` beside it records the seeds it was trained
+on.
+
+**Learning → Import seed-trait model…** validates a model file, copies it into the
+project's folder and selects it. **Learning → Export seed-trait model…** copies the
+selected model to a file you choose.
+
+## Prepared evidence files
+
+*Train from a prepared evidence file instead* trains on a manifest you wrote, for
+evidence the project's labels cannot express, such as supplied feature values. Training
+from the project's labels writes this same format. The UTF-8 JSON manifest has exactly
+these root fields:
 
 ```json
 {

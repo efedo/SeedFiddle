@@ -182,7 +182,7 @@ from seedvision.ui.learning_workflow import (
 )
 from seedvision.ui.training_dataset import TrainingDatasetController
 from seedvision.ui.pipeline_canvas import PipelineCanvas
-from seedvision.ui.trait_training_workflow import TraitTrainingDialog, TraitTrainingTask
+from seedvision.ui.trait_training_workflow import TraitModelController, TraitTrainingTask
 from seedvision.ui.pipeline_inspector import PipelineInspector
 from seedvision.timing import AnalysisCancelled
 
@@ -1297,7 +1297,7 @@ def _reference_summary_html(
 
 
 class MainWindow(ResultsController, WorkController, ReferenceFrameController, OptimizationController,
-                 AnnotationTransferController, TrainingDatasetController, QMainWindow):
+                 AnnotationTransferController, TrainingDatasetController, TraitModelController, QMainWindow):
     """Main desktop window for visual pipeline control and seed review."""
 
     ANALYSIS_CACHE_CUDA_BUDGET_BYTES = 2 * 1024**3
@@ -2419,6 +2419,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             return False
         selected_image = self.image_view.image_path
         try:
+            self._adopt_trait_model(destination)
             annotation_paths = run_persistence(
                 self,
                 partial(
@@ -3641,8 +3642,10 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         )
         self.train_trait_model_action = QAction('Train object-level seed traits…', self)
         self.train_trait_model_action.triggered.connect(self._start_trait_training)
-        self.activate_trait_model_action = QAction('Activate frozen seed-trait model…', self)
-        self.activate_trait_model_action.triggered.connect(self._choose_trait_model)
+        self.import_trait_model_action = QAction('Import seed-trait model…', self)
+        self.import_trait_model_action.triggered.connect(self._import_trait_model)
+        self.export_trait_model_action = QAction('Export seed-trait model…', self)
+        self.export_trait_model_action.triggered.connect(self._export_trait_model)
         self.manage_species_libraries_action = QAction(
             "Species reference libraries…", self
         )
@@ -3684,7 +3687,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         learning_menu.addSeparator()
         learning_menu.addAction(self.train_learning_model_action)
         learning_menu.addAction(self.train_trait_model_action)
-        learning_menu.addAction(self.activate_trait_model_action)
+        learning_menu.addAction(self.import_trait_model_action)
+        learning_menu.addAction(self.export_trait_model_action)
         learning_menu.addSeparator()
         self.train_native_bayes_action = QAction('Train PlantCV probability model…', self)
         self.train_native_bayes_action.triggered.connect(lambda checked=False: self.pipeline_workflow.train_model('bayes'))
@@ -3785,7 +3789,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         for action in (
             self.train_learning_model_action,
             self.train_trait_model_action,
-            self.activate_trait_model_action,
+            self.import_trait_model_action,
+            self.export_trait_model_action,
         ):
             learning_menu.addAction(action)
         learning_menu.addSeparator()
@@ -11665,18 +11670,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             QMessageBox.critical(self, "Species-library build failed", message)
         self._update_analysis_availability()
 
-    @Slot()
-    def _start_trait_training(self) -> None:
-        if self._background_work_is_active():
-            self.statusBar().showMessage('Wait for the current background work to finish.')
-            return
-        dialog = TraitTrainingDialog(project_root=self._root, parent=self)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            try:
-                self._begin_trait_training(dialog.request())
-            except (OSError, ValueError) as error:
-                QMessageBox.warning(self, 'Trait training cannot start', str(error))
-
     def _begin_trait_training(self, request):
         if self._background_work_is_active():
             raise ValueError('Background work is busy.')
@@ -11686,7 +11679,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             raise ValueError('Save to a new file to preserve the active model until activation.')
         task = TraitTrainingTask(request)
         task.pipeline_identity, task.pipeline_revision = id(self.pipeline), self.pipeline.revision
-        progress = QProgressDialog('Preparing supplied trait evidence…', 'Cancel', 0, 0, self)
+        progress = QProgressDialog('Preparing trait evidence…', 'Cancel', 0, 0, self)
         progress.setWindowTitle('Training object-level seed traits')
         progress.setWindowModality(Qt.WindowModality.NonModal)
         progress.setAutoClose(False)
@@ -11751,24 +11744,13 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._start_pending_analysis()
         self.statusBar().showMessage('Trait training cancelled before saving; previous model retained.')
 
-    def _choose_trait_model(self):
-        if self._background_work_is_active():
-            self.statusBar().showMessage('Wait for the current background work to finish.')
-            return
-        path, _ = QFileDialog.getOpenFileName(self, 'Activate frozen seed-trait model', str(self._root), 'JSON (*.json)')
-        if path:
-            try:
-                self._activate_trait_model(path)
-            except (OSError, ValueError, KeyError, TypeError) as error:
-                QMessageBox.warning(self, 'Trait model activation failed', str(error))
-
     def _activate_trait_model(self, path, *, abstention_threshold=None):
         if not self._pipeline_editing_allowed():
             raise ValueError('Model saved; activation requires an editable pipeline.')
         from seedvision.learning.trait_training import activate_trait_model
         if self._background_work_is_active():
             raise ValueError('Background work is busy.')
-        affected, model = activate_trait_model(self.pipeline, path, abstention_threshold=abstention_threshold)
+        affected, model = activate_trait_model(self.pipeline, path, abstention_threshold=abstention_threshold, root=self._root)
         if affected:
             self._set_project_dirty()
             for image_key in set(self._analysis_caches) | set(self._analyses):
@@ -15245,7 +15227,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             self.train_native_kmeans_action.setEnabled(not running)
         if hasattr(self, 'train_trait_model_action'):
             self.train_trait_model_action.setEnabled(not running)
-            self.activate_trait_model_action.setEnabled(not running)
+            self.import_trait_model_action.setEnabled(not running)
+            self.export_trait_model_action.setEnabled(not running)
         if hasattr(self, "manage_species_libraries_action"):
             self.manage_species_libraries_action.setEnabled(not running)
         if hasattr(self, "load_analysis_settings_action"):

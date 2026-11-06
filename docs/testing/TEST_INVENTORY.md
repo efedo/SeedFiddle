@@ -4,9 +4,9 @@ This is a source-derived inventory of every discovered test method, audited on 2
 
 Markdown shows at most the first two assertion expressions, shortened to 260 characters. JSON retains every direct assertion expression, lexical production-call candidates, interface calls, helper references and their shared assertion evidence, loops, subtest sites, decorators and fixture calls. Dynamic dispatch and inherited fixture behavior require source inspection; this is not a manually proven call graph or an exhaustive enumeration of runtime subtest cases.
 
-Total: **686 methods in 260 test files**. A method can contain many subtests, input cases or expensive executions. Those are not separate unittest methods.
+Total: **690 methods in 261 test files**. A method can contain many subtests, input cases or expensive executions. Those are not separate unittest methods.
 
-Discovery reconciliation: exact match, 686 canonical unittest IDs; zero discovery errors.
+Discovery reconciliation: exact match, 690 canonical unittest IDs; zero discovery errors.
 
 No historical run receipt was used, so status and seconds are blank. Class setup/teardown, discovery and interpreter shutdown are not allocated to methods. A dash means no method duration was recorded, not zero cost. Runtime skips can differ by environment; their exact historical reasons are in JSON.
 
@@ -270,6 +270,7 @@ See [the multi-pass audit](../archive/TEST_INFRASTRUCTURE_AUDIT.md) for overlap,
 | [tests.test_threshold_conformance](#teststest_threshold_conformance) | 4 | 0.000 | Public/native threshold checkpoint comparison and conformance |
 | [tests.test_training_experiment](#teststest_training_experiment) | 1 | 0.000 | The three-arm training experiment: radial weighting, shared network, budget and reports. |
 | [tests.test_trait_classifier](#teststest_trait_classifier) | 2 | 0.000 | Software oracles for trait classification; all truth is explicitly synthetic. |
+| [tests.test_trait_evidence](#teststest_trait_evidence) | 4 | 0.000 | Trait training from a project's own labels, and models kept with the project. |
 | [tests.test_trait_pipeline](#teststest_trait_pipeline) | 2 | 0.000 | Native selection/cache/report witnesses for the frozen trait classifier. |
 | [tests.test_trait_review_ui](#teststest_trait_review_ui) | 2 | 0.000 | Actual frozen CUDA trait predictions must reach the native review widgets. |
 | [tests.test_trait_snapshot](#teststest_trait_snapshot) | 2 | 0.000 | Portable trait evidence and actual relocated CUDA/desktop/batch consumers. |
@@ -4802,6 +4803,35 @@ Fixtures: `setUpClass` at line 26.
 | [`test_workflow_lifecycle`](../../tests/test_trait_classifier.py#L286) | 8 related TraitClassifierTests scenarios, each with private fixture state. | `helper: tests.test_trait_classifier.TraitClassifierTests.check_test_synthetic_grouped_training_predicts_supplied_definition_ids: self.assertEqual([x['predicted_trait_id'] for x in result['predictions']], ['dark', 'dark', 'light', 'light'])` | unrecorded / — |
 | [`test_validation_and_recovery`](../../tests/test_trait_classifier.py#L297) | 9 related TraitClassifierTests scenarios, each with private fixture state. | `helper: tests.test_trait_classifier.TraitClassifierTests.check_test_group_physical_and_example_overlap_reject_before_optimization: self.assertRaisesRegex(ValueError, f'overlap by {key}')` | unrecorded / — |
 
+## tests.test_trait_evidence
+
+Trait training from a project's own labels, and models kept with the project.
+
+Source: [tests/test_trait_evidence.py](../../tests/test_trait_evidence.py). Category: Learning and trait analysis.
+
+### TraitEvidenceTests
+
+Fixtures: no class-local setup/teardown methods.
+
+| Test method / source | Functionality exercised | Assertion evidence | Last full run |
+| --- | --- | --- | --- |
+| [`test_project_evidence`](../../tests/test_trait_evidence.py#L201) | 9 related TraitEvidenceTests scenarios, each with private fixture state. | `helper: tests.test_trait_evidence.TraitEvidenceTests.check_seeds_are_counted_by_class_and_skip_reason: self.assertIsNone(image.problem)` | unrecorded / — |
+### TraitEvidenceTrainingTests
+
+Fixtures: no class-local setup/teardown methods.
+
+| Test method / source | Functionality exercised | Assertion evidence | Last full run |
+| --- | --- | --- | --- |
+| [`test_training_on_project_labels`](../../tests/test_trait_evidence.py#L262) | 2 related TraitEvidenceTrainingTests scenarios, each with private fixture state. | `helper: tests.test_trait_evidence.TraitEvidenceTrainingTests.check_project_labels_train_a_model_that_loads: self.assertEqual(model.model_sha256, report['model_sha256'])` | unrecorded / — |
+### TraitModelWindowTests
+
+Fixtures: no class-local setup/teardown methods.
+
+| Test method / source | Functionality exercised | Assertion evidence | Last full run |
+| --- | --- | --- | --- |
+| [`test_dialog`](../../tests/test_trait_evidence.py#L444) | 4 related TraitModelWindowTests scenarios, each with private fixture state. | `helper: tests.test_trait_evidence.TraitModelWindowTests.check_first_attempt_without_labels_explains_instead_of_failing: self.assertFalse(dialog.train_button.isEnabled())` | unrecorded / — |
+| [`test_models_with_the_project`](../../tests/test_trait_evidence.py#L451) | 5 related TraitModelWindowTests scenarios, each with private fixture state. | `helper: tests.test_trait_evidence.TraitModelWindowTests.check_window_reads_labels_and_blocks_drafts: self.assertEqual(window._trait_model_directory(), self.root / 'projects' / 'trait-models')` | unrecorded / — |
+
 ## tests.test_trait_pipeline
 
 Native selection/cache/report witnesses for the frozen trait classifier.
@@ -4867,8 +4897,8 @@ Fixtures: `setUpClass` at line 345, `setUp` at line 349.
 
 | Test method / source | Functionality exercised | Assertion evidence | Last full run |
 | --- | --- | --- | --- |
-| [`test_workflow_lifecycle`](../../tests/test_trait_training.py#L504) | 3 related TraitTrainingUITests scenarios, each with private fixture state. | `helper: tests.test_trait_training.TraitTrainingUITests.check_test_dialog_snapshots_manifest_controls_and_activation_choice: self.assertEqual(request.configuration, TraitTrainingConfiguration(17, 0.04, 0.2, (0.2, 5.0), 13, 0.7))` | unrecorded / — |
-| [`test_validation_and_recovery`](../../tests/test_trait_training.py#L510) | 4 related TraitTrainingUITests scenarios, each with private fixture state. | `helper: tests.test_trait_training.TraitTrainingUITests.check_test_serial_busy_stop_and_stale_terminal_signals_preserve_current_job: started.assert_called_once_with(task)` | unrecorded / — |
+| [`test_workflow_lifecycle`](../../tests/test_trait_training.py#L506) | 3 related TraitTrainingUITests scenarios, each with private fixture state. | `helper: tests.test_trait_training.TraitTrainingUITests.check_test_dialog_snapshots_manifest_controls_and_activation_choice: self.assertTrue(dialog.activate_checkbox.isChecked())` | unrecorded / — |
+| [`test_validation_and_recovery`](../../tests/test_trait_training.py#L512) | 4 related TraitTrainingUITests scenarios, each with private fixture state. | `helper: tests.test_trait_training.TraitTrainingUITests.check_test_serial_busy_stop_and_stale_terminal_signals_preserve_current_job: started.assert_called_once_with(task)` | unrecorded / — |
 
 ## tests.test_ui_text_limits
 

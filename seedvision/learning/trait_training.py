@@ -165,6 +165,17 @@ def read_trait_manifest(path, *, expected_sha256=None):
     return TraitManifest(_canonical(payload), digest, path.parent)
 
 
+def seed_exclusion_reason(annotation, *, touches_edge):
+    """Say why a reference seed cannot be trait evidence, or None when it can."""
+    if annotation is None or not annotation.shape_reviewed:
+        return 'outline or pose not set'
+    if annotation.outline_visibility != 'complete':
+        return 'outline not complete'
+    if annotation.shape_exclusion_reason:
+        return 'excluded from modelling'
+    return 'touches the image edge' if touches_edge else None
+
+
 def _reference_features(source, fact, directory, device, cancellation_requested):
     image_path = (directory / source['image_path']).resolve()
     archive_path = (directory / source['archive_path']).resolve()
@@ -189,13 +200,13 @@ def _reference_features(source, fact, directory, device, cancellation_requested)
         raise ValueError('Reference seed requires a recorded source-to-corrected transform.')
     matrix = validated_transform(bundle.source_to_corrected)
     annotation = next((item for item in bundle.seed_annotations if item.seed_id == source['seed_id']), None)
-    if annotation is None or not annotation.shape_reviewed or annotation.outline_visibility != 'complete' or annotation.shape_exclusion_reason:
-        raise ValueError('Reference seed requires a reviewed complete eligible outline.')
+    mask = bundle.annotated_seeds == source['seed_id']
+    touches_edge = not mask.any() or mask[0].any() or mask[-1].any() or mask[:, 0].any() or mask[:, -1].any()
+    reason = seed_exclusion_reason(annotation, touches_edge=touches_edge)
+    if reason is not None:
+        raise ValueError(f'Reference seed is not usable: {reason}.')
     if annotation.physical_seed_id is not None and annotation.physical_seed_id != fact.physical_id:
         raise ValueError('Reference physical seed ID disagrees with supplied evidence.')
-    mask = bundle.annotated_seeds == source['seed_id']
-    if not mask.any() or mask[0].any() or mask[-1].any() or mask[:, 0].any() or mask[:, -1].any():
-        raise ValueError('Reference seed is missing or touches the corrected canvas boundary.')
     # This CPU mask is an existing archive input, never a downloaded analysis raster.
     mask_sha = sha256(_canonical({'shape': list(mask.shape), 'transform': matrix.tolist()}).encode()
                       + np.packbits(mask).tobytes()).hexdigest()
@@ -286,13 +297,20 @@ def load_frozen_trait_model(path):
     return FrozenTraitModel.from_json(content.decode('utf-8'))
 
 
-def activate_trait_model(pipeline, path, *, abstention_threshold=None):
+def workspace_path_text(path, root):
+    """Record a path relative to the workspace when it is inside, so projects can move with it."""
+    path = Path(path).resolve()
+    return path.relative_to(Path(root).resolve()).as_posix() if path.is_relative_to(Path(root).resolve()) else str(path)
+
+
+def activate_trait_model(pipeline, path, *, abstention_threshold=None, root=None):
     """Validate first; enable/path/threshold changes are one UI transaction."""
     path = Path(path).resolve()
     model = load_frozen_trait_model(path)
     threshold = model.payload['development_diagnostics']['abstention_threshold'] if abstention_threshold is None else abstention_threshold
     _number(threshold, 'Activation threshold', minimum=0, maximum=1)
-    values = {'trait_model_path': str(path), 'trait_abstention_threshold': threshold}
+    values = {'trait_model_path': str(path) if root is None else workspace_path_text(path, root),
+              'trait_abstention_threshold': threshold}
     proposed = deepcopy(pipeline)
     proposed.set_parameters('trait_classifier', values)
     proposed.set_enabled('trait_classifier', True)

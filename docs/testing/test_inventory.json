@@ -10,9 +10,9 @@
   "historical_timings_sha256": null,
   "historical_source_changes": [],
   "unmatched_historical_timing_ids": [],
-  "collection_status": "exact match, 686 canonical unittest IDs; zero discovery errors",
-  "test_count": 686,
-  "test_file_count": 260,
+  "collection_status": "exact match, 690 canonical unittest IDs; zero discovery errors",
+  "test_count": 690,
+  "test_file_count": 261,
   "core_targets": [
     "tests.test_pipeline",
     "tests.test_analysis_settings_persistence",
@@ -26,7 +26,7 @@
     "tests.test_native_image_inputs.ImageInputContractTests"
   ],
   "core_test_count": 28,
-  "test_source_lines": 82193,
+  "test_source_lines": 82656,
   "historical_method_seconds": 0,
   "category_totals": {
     "Annotation and interactive image review": {
@@ -45,8 +45,8 @@
       "method_seconds": 0
     },
     "Learning and trait analysis": {
-      "methods": 19,
-      "files": 7,
+      "methods": 23,
+      "files": 8,
       "method_seconds": 0
     },
     "Measurements and shape models": {
@@ -9059,6 +9059,74 @@
       "method_seconds": 0
     },
     {
+      "module": "tests.test_trait_evidence",
+      "file": "tests/test_trait_evidence.py",
+      "purpose": "Trait training from a project's own labels, and models kept with the project.",
+      "category": "Learning and trait analysis",
+      "lines": 461,
+      "source_sha256": "9c03a047ec1d20621ab1437a528d74669b7bc9a1e692a4ef0fd4f289ca109cf0",
+      "historical_source_matches": false,
+      "test_count": 4,
+      "class_fixtures": {
+        "_Workspace": [
+          {
+            "name": "setUpClass",
+            "line": 48,
+            "calls": [
+              "QApplication.instance",
+              "QApplication"
+            ]
+          },
+          {
+            "name": "setUp",
+            "line": 52,
+            "calls": [
+              "TemporaryDirectory",
+              "self.addCleanup",
+              "Path(self.temporary.name).resolve",
+              "Path",
+              "(self.root / 'config').mkdir",
+              "(self.root / 'images').mkdir",
+              "shutil.copyfile",
+              "ReferenceRegionStore"
+            ]
+          }
+        ],
+        "TraitEvidenceTests": [],
+        "TraitEvidenceTrainingTests": [],
+        "TraitModelWindowTests": []
+      },
+      "production_imports": [
+        "seedvision.learning.trait_evidence.CALIBRATION",
+        "seedvision.learning.trait_evidence.COAT_PATTERN",
+        "seedvision.learning.trait_evidence.TRAIN",
+        "seedvision.learning.trait_evidence.TraitImage",
+        "seedvision.learning.trait_evidence.TraitImageSource",
+        "seedvision.learning.trait_evidence.TraitSeed",
+        "seedvision.learning.trait_evidence.build_trait_manifest",
+        "seedvision.learning.trait_evidence.default_trait_splits",
+        "seedvision.learning.trait_evidence.evidence_problem",
+        "seedvision.learning.trait_evidence.new_trait_model_path",
+        "seedvision.learning.trait_evidence.read_trait_image",
+        "seedvision.learning.trait_evidence.seed_label",
+        "seedvision.learning.trait_evidence.target_seeds",
+        "seedvision.learning.trait_evidence.target_title",
+        "seedvision.learning.trait_evidence.trait_evidence_path",
+        "seedvision.learning.trait_evidence.trait_targets",
+        "seedvision.learning.trait_training.TraitTrainingConfiguration",
+        "seedvision.learning.trait_training.TraitTrainingRequest",
+        "seedvision.learning.trait_training.load_frozen_trait_model",
+        "seedvision.learning.trait_training.read_trait_manifest",
+        "seedvision.learning.trait_training.train_trait_manifest",
+        "seedvision.persistence.project_annotations.copy_trait_model",
+        "seedvision.persistence.reference_regions.ReferenceRegionBundle",
+        "seedvision.persistence.reference_regions.ReferenceRegionStore",
+        "seedvision.persistence.reference_regions.SeedInstanceAnnotation",
+        "seedvision.persistence.reference_regions.file_sha256"
+      ],
+      "method_seconds": 0
+    },
+    {
       "module": "tests.test_trait_pipeline",
       "file": "tests/test_trait_pipeline.py",
       "purpose": "Native selection/cache/report witnesses for the frozen trait classifier.",
@@ -9216,8 +9284,8 @@
       "file": "tests/test_trait_training.py",
       "purpose": "Synthetic native evidence, CUDA extraction, stop and publication witnesses.",
       "category": "Learning and trait analysis",
-      "lines": 519,
-      "source_sha256": "b975b755628023f7c17cd673fb1e6d81bdcdc22401a41d6c158317eafdb8c1b0",
+      "lines": 521,
+      "source_sha256": "2ecaf90d9469e8839f6c6161ae9cb4b7134177fbc9c6fd57ce63b546caded4ee",
       "historical_source_matches": false,
       "test_count": 4,
       "class_fixtures": {
@@ -42794,6 +42862,218 @@
       "runs_in_default_core": false
     },
     {
+      "id": "tests.test_trait_evidence.TraitEvidenceTests.test_project_evidence",
+      "file": "tests/test_trait_evidence.py",
+      "class": "TraitEvidenceTests",
+      "method": "test_project_evidence",
+      "line": 201,
+      "end_line": 211,
+      "functionality": "9 related TraitEvidenceTests scenarios, each with private fixture state.",
+      "description_basis": "method docstring",
+      "category": "Learning and trait analysis",
+      "direct_subjects": [],
+      "helper_subjects": [
+        "seedvision.learning.trait_evidence.target_seeds",
+        "seedvision.learning.trait_evidence.TraitSeed",
+        "seedvision.learning.trait_evidence.seed_label",
+        "seedvision.learning.trait_evidence.TraitImage",
+        "seedvision.learning.trait_evidence.TraitImageSource",
+        "seedvision.learning.trait_evidence.trait_targets",
+        "seedvision.learning.trait_evidence.target_title",
+        "seedvision.learning.trait_evidence.read_trait_image",
+        "seedvision.learning.trait_evidence.evidence_problem",
+        "seedvision.learning.trait_evidence.default_trait_splits",
+        "seedvision.learning.trait_evidence.build_trait_manifest",
+        "seedvision.learning.trait_training.read_trait_manifest",
+        "seedvision.persistence.reference_regions.file_sha256",
+        "seedvision.learning.trait_evidence.new_trait_model_path",
+        "seedvision.learning.trait_evidence.trait_evidence_path",
+        "seedvision.persistence.project_annotations.copy_trait_model",
+        "seedvision.persistence.reference_regions.SeedInstanceAnnotation"
+      ],
+      "calls": [
+        "self.scenario"
+      ],
+      "direct_checks": [],
+      "helpers": [
+        "tests.test_trait_evidence.TraitEvidenceTests.check_seeds_are_counted_by_class_and_skip_reason",
+        "tests.test_trait_evidence.TraitEvidenceTests.check_seed_beyond_the_decoded_image_is_skipped",
+        "tests.test_trait_evidence.TraitEvidenceTests.check_conditions_say_nothing_about_unreviewed_seeds",
+        "tests.test_trait_evidence.TraitEvidenceTests.check_unreadable_archive_is_that_images_problem",
+        "tests.test_trait_evidence.TraitEvidenceTests.check_readiness_says_what_is_missing",
+        "tests.test_trait_evidence.TraitEvidenceTests.check_default_splits_hold_out_a_lot_and_keep_every_class_in_training",
+        "tests.test_trait_evidence.TraitEvidenceTests.check_manifest_passes_the_training_checks_without_unusable_seeds",
+        "tests.test_trait_evidence.TraitEvidenceTests.check_new_model_files_never_reuse_a_name",
+        "tests.test_trait_evidence.TraitEvidenceTests.check_copying_a_model_keeps_its_evidence_and_other_models",
+        "tests.test_trait_evidence.annotated",
+        "tests.test_trait_evidence.labelled"
+      ],
+      "fixtures": [],
+      "decorators": [],
+      "class_decorators": [
+        "functional_units"
+      ],
+      "subtest_sites": 0,
+      "loop_iterables": [],
+      "skip_calls": [],
+      "historical_source_matches": false,
+      "last_full_status": "unrecorded",
+      "last_full_seconds": null,
+      "skip_reason": "",
+      "runs_in_default_core": false
+    },
+    {
+      "id": "tests.test_trait_evidence.TraitEvidenceTrainingTests.test_training_on_project_labels",
+      "file": "tests/test_trait_evidence.py",
+      "class": "TraitEvidenceTrainingTests",
+      "method": "test_training_on_project_labels",
+      "line": 262,
+      "end_line": 265,
+      "functionality": "2 related TraitEvidenceTrainingTests scenarios, each with private fixture state.",
+      "description_basis": "method docstring",
+      "category": "Learning and trait analysis",
+      "direct_subjects": [],
+      "helper_subjects": [
+        "seedvision.learning.trait_training.load_frozen_trait_model",
+        "seedvision.learning.trait_evidence.build_trait_manifest",
+        "seedvision.learning.trait_evidence.trait_evidence_path",
+        "seedvision.learning.trait_training.train_trait_manifest",
+        "seedvision.learning.trait_training.TraitTrainingRequest",
+        "seedvision.learning.trait_training.TraitTrainingConfiguration",
+        "seedvision.persistence.reference_regions.file_sha256",
+        "seedvision.ui.main_window.MainWindow",
+        "seedvision.persistence.reference_regions.SeedInstanceAnnotation"
+      ],
+      "calls": [
+        "self.scenario"
+      ],
+      "direct_checks": [],
+      "helpers": [
+        "tests.test_trait_evidence.TraitEvidenceTrainingTests.check_project_labels_train_a_model_that_loads",
+        "tests.test_trait_evidence.TraitEvidenceTrainingTests.check_import_validates_copies_and_uses_the_model",
+        "tests.test_trait_evidence.TraitEvidenceTrainingTests.model",
+        "tests.review_fixtures.workspace_window",
+        "tests.review_fixtures.dispose_window",
+        "tests.review_fixtures.shared_workflow_templates",
+        "tests.review_fixtures.open_workspace_images",
+        "tests.review_fixtures._workflow_templates",
+        "tests.review_fixtures._workflow_template_key",
+        "tests.test_trait_evidence.annotated"
+      ],
+      "fixtures": [],
+      "decorators": [],
+      "class_decorators": [
+        "unittest.skipUnless(torch.cuda.is_available(), 'CUDA required for native trait training')",
+        "functional_units"
+      ],
+      "subtest_sites": 0,
+      "loop_iterables": [],
+      "skip_calls": [],
+      "historical_source_matches": false,
+      "last_full_status": "unrecorded",
+      "last_full_seconds": null,
+      "skip_reason": "",
+      "runs_in_default_core": false
+    },
+    {
+      "id": "tests.test_trait_evidence.TraitModelWindowTests.test_dialog",
+      "file": "tests/test_trait_evidence.py",
+      "class": "TraitModelWindowTests",
+      "method": "test_dialog",
+      "line": 444,
+      "end_line": 449,
+      "functionality": "4 related TraitModelWindowTests scenarios, each with private fixture state.",
+      "description_basis": "method docstring",
+      "category": "Learning and trait analysis",
+      "direct_subjects": [],
+      "helper_subjects": [
+        "seedvision.learning.trait_evidence.trait_evidence_path",
+        "seedvision.persistence.reference_regions.file_sha256",
+        "seedvision.learning.trait_training.read_trait_manifest",
+        "seedvision.learning.trait_evidence.TraitImage",
+        "seedvision.learning.trait_evidence.TraitImageSource",
+        "seedvision.learning.trait_evidence.TraitSeed",
+        "seedvision.ui.trait_training_workflow.TraitTrainingDialog",
+        "seedvision.persistence.reference_regions.SeedInstanceAnnotation"
+      ],
+      "calls": [
+        "self.scenario"
+      ],
+      "direct_checks": [],
+      "helpers": [
+        "tests.test_trait_evidence.TraitModelWindowTests.check_first_attempt_without_labels_explains_instead_of_failing",
+        "tests.test_trait_evidence.TraitModelWindowTests.check_first_attempt_with_labels_needs_no_files_chosen",
+        "tests.test_trait_evidence.TraitModelWindowTests.check_splits_keep_a_lot_together_and_update_readiness",
+        "tests.test_trait_evidence.TraitModelWindowTests.check_changing_the_trait_lists_only_images_that_speak_to_it",
+        "tests.test_trait_evidence.labelled",
+        "tests.test_trait_evidence.TraitModelWindowTests.dialog",
+        "tests.test_trait_evidence.TraitModelWindowTests.project_images",
+        "tests.test_trait_evidence.annotated"
+      ],
+      "fixtures": [],
+      "decorators": [],
+      "class_decorators": [
+        "functional_units"
+      ],
+      "subtest_sites": 0,
+      "loop_iterables": [],
+      "skip_calls": [],
+      "historical_source_matches": false,
+      "last_full_status": "unrecorded",
+      "last_full_seconds": null,
+      "skip_reason": "",
+      "runs_in_default_core": false
+    },
+    {
+      "id": "tests.test_trait_evidence.TraitModelWindowTests.test_models_with_the_project",
+      "file": "tests/test_trait_evidence.py",
+      "class": "TraitModelWindowTests",
+      "method": "test_models_with_the_project",
+      "line": 451,
+      "end_line": 457,
+      "functionality": "5 related TraitModelWindowTests scenarios, each with private fixture state.",
+      "description_basis": "method docstring",
+      "category": "Learning and trait analysis",
+      "direct_subjects": [],
+      "helper_subjects": [
+        "seedvision.learning.trait_evidence.trait_evidence_path",
+        "seedvision.ui.main_window.MainWindow",
+        "seedvision.persistence.reference_regions.SeedInstanceAnnotation"
+      ],
+      "calls": [
+        "self.scenario"
+      ],
+      "direct_checks": [],
+      "helpers": [
+        "tests.test_trait_evidence.TraitModelWindowTests.check_window_reads_labels_and_blocks_drafts",
+        "tests.test_trait_evidence.TraitModelWindowTests.check_trained_model_is_saved_with_the_project_and_follows_save_as",
+        "tests.test_trait_evidence.TraitModelWindowTests.check_save_leaves_a_missing_or_absent_model_alone",
+        "tests.test_trait_evidence.TraitModelWindowTests.check_export_copies_the_selected_model_or_says_there_is_none",
+        "tests.test_trait_evidence.TraitModelWindowTests.check_learning_menu_offers_import_and_export",
+        "tests.test_trait_evidence.TraitModelWindowTests.window",
+        "tests.review_fixtures.workspace_window",
+        "tests.review_fixtures.dispose_window",
+        "tests.review_fixtures.shared_workflow_templates",
+        "tests.review_fixtures.open_workspace_images",
+        "tests.review_fixtures._workflow_templates",
+        "tests.review_fixtures._workflow_template_key",
+        "tests.test_trait_evidence.annotated"
+      ],
+      "fixtures": [],
+      "decorators": [],
+      "class_decorators": [
+        "functional_units"
+      ],
+      "subtest_sites": 0,
+      "loop_iterables": [],
+      "skip_calls": [],
+      "historical_source_matches": false,
+      "last_full_status": "unrecorded",
+      "last_full_seconds": null,
+      "skip_reason": "",
+      "runs_in_default_core": false
+    },
+    {
       "id": "tests.test_trait_pipeline.TraitPipelineTests.test_workflow_lifecycle",
       "file": "tests/test_trait_pipeline.py",
       "class": "TraitPipelineTests",
@@ -43235,8 +43515,8 @@
       "file": "tests/test_trait_training.py",
       "class": "TraitTrainingUITests",
       "method": "test_workflow_lifecycle",
-      "line": 504,
-      "end_line": 508,
+      "line": 506,
+      "end_line": 510,
       "functionality": "3 related TraitTrainingUITests scenarios, each with private fixture state.",
       "description_basis": "method docstring",
       "category": "Learning and trait analysis",
@@ -43288,8 +43568,8 @@
       "file": "tests/test_trait_training.py",
       "class": "TraitTrainingUITests",
       "method": "test_validation_and_recovery",
-      "line": 510,
-      "end_line": 515,
+      "line": 512,
+      "end_line": 517,
       "functionality": "4 related TraitTrainingUITests scenarios, each with private fixture state.",
       "description_basis": "method docstring",
       "category": "Learning and trait analysis",
@@ -69342,6 +69622,261 @@
         "self.assertRaises(ValueError)"
       ]
     },
+    "tests.test_trait_evidence.TraitEvidenceTests.check_seeds_are_counted_by_class_and_skip_reason": {
+      "file": "tests/test_trait_evidence.py",
+      "line": 87,
+      "checks": [
+        "self.assertIsNone(image.problem)",
+        "self.assertEqual({seed.seed_id for seed in image.seeds}, set(range(1, 8)))",
+        "self.assertEqual(usable, {'white': 2, 'banded_dark': 1})",
+        "self.assertEqual(skipped, {'outline or pose not set': 1, 'outline not complete': 1, 'excluded from modelling': 1, 'touches the image edge': 1})"
+      ]
+    },
+    "tests.test_trait_evidence.TraitEvidenceTests.check_seed_beyond_the_decoded_image_is_skipped": {
+      "file": "tests/test_trait_evidence.py",
+      "line": 102,
+      "checks": [
+        "self.assertEqual(image.seeds[0].exclusion, 'outside the decoded image')"
+      ]
+    },
+    "tests.test_trait_evidence.TraitEvidenceTests.check_conditions_say_nothing_about_unreviewed_seeds": {
+      "file": "tests/test_trait_evidence.py",
+      "line": 107,
+      "checks": [
+        "self.assertEqual([seed_label(SPLIT, seed) for seed in (reviewed_clean, split, stained, unreviewed)], ['not_split', 'split', 'not_split', None])",
+        "self.assertEqual(trait_targets((image,)), (COAT_PATTERN, 'condition:split', 'condition:stained'))",
+        "self.assertEqual(target_title(SPLIT), 'Condition: split')",
+        "self.assertEqual(trait_targets((replace(image, seeds=(reviewed_clean,)),)), ())"
+      ]
+    },
+    "tests.test_trait_evidence.TraitEvidenceTests.check_unreadable_archive_is_that_images_problem": {
+      "file": "tests/test_trait_evidence.py",
+      "line": 119,
+      "checks": [
+        "self.assertIn('could not be read', image.problem)",
+        "self.assertEqual(image.seeds, ())",
+        "self.assertEqual(read_trait_image(draft, self.store).problem, 'Apply the draft.')"
+      ]
+    },
+    "tests.test_trait_evidence.TraitEvidenceTests.check_readiness_says_what_is_missing": {
+      "file": "tests/test_trait_evidence.py",
+      "line": 128,
+      "checks": [
+        "self.assertIn(expected, evidence_problem(COAT_PATTERN, images, splits))",
+        "self.assertIsNone(evidence_problem(COAT_PATTERN, (both, white), {'both': TRAIN, 'white': CALIBRATION}))"
+      ]
+    },
+    "tests.test_trait_evidence.TraitEvidenceTests.check_default_splits_hold_out_a_lot_and_keep_every_class_in_training": {
+      "file": "tests/test_trait_evidence.py",
+      "line": 143,
+      "checks": [
+        "self.assertEqual(default_trait_splits(COAT_PATTERN, (large, small)), {'large': TRAIN, 'small': CALIBRATION})",
+        "self.assertEqual(default_trait_splits(COAT_PATTERN, (large, small, only_rare))['rare'], TRAIN)",
+        "self.assertEqual(splits['first'], splits['second'])",
+        "self.assertEqual(default_trait_splits(COAT_PATTERN, (large,)), {'large': TRAIN})",
+        "self.assertNotIn('unusable', default_trait_splits(COAT_PATTERN, (large, unusable)))"
+      ]
+    },
+    "tests.test_trait_evidence.TraitEvidenceTests.check_manifest_passes_the_training_checks_without_unusable_seeds": {
+      "file": "tests/test_trait_evidence.py",
+      "line": 160,
+      "checks": [
+        "self.assertEqual([item['example_id'] for item in manifest['examples']], ['train-seed-1', 'train-seed-2', 'calibrate-seed-1'])",
+        "self.assertEqual(manifest['examples'][0]['physical_id'], 'seed-a')",
+        "self.assertEqual([item['identifier'] for item in manifest['vocabulary']['traits']], ['banded_dark', 'white'])",
+        "self.assertEqual(manifest['vocabulary']['definition_source_sha256'], file_sha256(self.definitions))",
+        "self.assertEqual({item['split'] for item in excluded['examples']}, {TRAIN})"
+      ]
+    },
+    "tests.test_trait_evidence.TraitEvidenceTests.check_new_model_files_never_reuse_a_name": {
+      "file": "tests/test_trait_evidence.py",
+      "line": 179,
+      "checks": [
+        "self.assertNotEqual(first, second)",
+        "self.assertEqual(trait_evidence_path(first).name, first.stem + '.evidence.json')"
+      ]
+    },
+    "tests.test_trait_evidence.TraitEvidenceTests.check_copying_a_model_keeps_its_evidence_and_other_models": {
+      "file": "tests/test_trait_evidence.py",
+      "line": 186,
+      "checks": [
+        "self.assertEqual(copied.read_text(), 'first')",
+        "self.assertEqual(trait_evidence_path(copied).read_text(), 'evidence')",
+        "self.assertEqual(copy_trait_model(source, folder), copied)",
+        "self.assertNotEqual(other, copied)",
+        "self.assertEqual((copied.read_text(), other.read_text()), ('first', 'second'))"
+      ]
+    },
+    "tests.test_trait_evidence.annotated": {
+      "file": "tests/test_trait_evidence.py",
+      "line": 33,
+      "checks": []
+    },
+    "tests.test_trait_evidence.labelled": {
+      "file": "tests/test_trait_evidence.py",
+      "line": 38,
+      "checks": []
+    },
+    "tests.test_trait_evidence.TraitEvidenceTrainingTests.check_project_labels_train_a_model_that_loads": {
+      "file": "tests/test_trait_evidence.py",
+      "line": 235,
+      "checks": [
+        "self.assertEqual(model.model_sha256, report['model_sha256'])",
+        "self.assertEqual([item['identifier'] for item in model.payload['vocabulary']['traits']], ['banded_dark', 'white'])"
+      ]
+    },
+    "tests.test_trait_evidence.TraitEvidenceTrainingTests.check_import_validates_copies_and_uses_the_model": {
+      "file": "tests/test_trait_evidence.py",
+      "line": 241,
+      "checks": [
+        "warning.assert_called_once()",
+        "self.assertFalse(window._trait_model_directory().exists())",
+        "self.assertEqual(window.pipeline.node('trait_classifier').parameters['trait_model_path'], 'None')",
+        "self.assertTrue(node.enabled)",
+        "self.assertEqual(node.parameters['trait_model_path'], 'projects/trait-models/coat-pattern.json')",
+        "self.assertEqual((self.root / node.parameters['trait_model_path']).read_bytes(), output.read_bytes())",
+        "self.assertTrue((self.root / 'projects/trait-models/coat-pattern.evidence.json').is_file())"
+      ]
+    },
+    "tests.test_trait_evidence.TraitEvidenceTrainingTests.model": {
+      "file": "tests/test_trait_evidence.py",
+      "line": 217,
+      "checks": []
+    },
+    "tests.test_trait_evidence.TraitModelWindowTests.check_first_attempt_without_labels_explains_instead_of_failing": {
+      "file": "tests/test_trait_evidence.py",
+      "line": 287,
+      "checks": [
+        "self.assertFalse(dialog.train_button.isEnabled())",
+        "self.assertIn('No seed in this project has a trait label', dialog.problem_label.text())",
+        "self.assertFalse(dialog.problem_label.isHidden())",
+        "self.assertEqual(dialog.manifest_row.edit.text(), '')",
+        "self.assertFalse(dialog.manifest_row.isEnabled())",
+        "self.assertEqual(dialog.problem_label.text(), 'Choose an evidence file.')",
+        "self.assertFalse(dialog.train_button.isEnabled())",
+        "self.assertTrue(dialog.train_button.isEnabled())",
+        "warning.assert_called_once()",
+        "self.assertIsNone(dialog.request())"
+      ]
+    },
+    "tests.test_trait_evidence.TraitModelWindowTests.check_first_attempt_with_labels_needs_no_files_chosen": {
+      "file": "tests/test_trait_evidence.py",
+      "line": 305,
+      "checks": [
+        "self.assertEqual(dialog.target_combo.currentData(), COAT_PATTERN)",
+        "self.assertEqual(dialog.image_table.rowCount(), 2)",
+        "self.assertEqual(table.item(0, dialog.SEEDS_COLUMN).text(), 'Banded dark 4, White 4')",
+        "self.assertEqual(table.cellWidget(0, dialog.SPLIT_COLUMN).currentData(), TRAIN)",
+        "self.assertEqual(table.cellWidget(1, dialog.SPLIT_COLUMN).currentData(), CALIBRATION)",
+        "self.assertIn('Outline not complete 1', table.item(1, dialog.NOTE_COLUMN).text())",
+        "self.assertEqual(dialog.class_summary.text(), 'Training: Banded dark 4, White 4. Calibration: Banded dark 1, White 1.')",
+        "self.assertTrue(dialog.train_button.isEnabled())",
+        "self.assertTrue(request.activate_after_training)",
+        "self.assertEqual(request.output_path.parent, (self.root / 'models').resolve())",
+        "self.assertTrue(request.output_path.name.startswith('coat-pattern-'))",
+        "self.assertEqual(request.manifest_path, trait_evidence_path(request.output_path))",
+        "self.assertEqual(request.manifest_sha256, file_sha256(request.manifest_path))",
+        "self.assertEqual(len(read_trait_manifest(request.manifest_path).payload['examples']), 10)"
+      ]
+    },
+    "tests.test_trait_evidence.TraitModelWindowTests.check_splits_keep_a_lot_together_and_update_readiness": {
+      "file": "tests/test_trait_evidence.py",
+      "line": 326,
+      "checks": [
+        "self.assertEqual(combos['first'].currentData(), combos['second'].currentData())",
+        "self.assertEqual(combos['second'].currentData(), CALIBRATION)",
+        "self.assertFalse(dialog.train_button.isEnabled())",
+        "self.assertIn('Training image', dialog.problem_label.text())",
+        "self.assertTrue(dialog.train_button.isEnabled())",
+        "self.assertTrue(dialog.problem_label.isHidden())"
+      ]
+    },
+    "tests.test_trait_evidence.TraitModelWindowTests.check_changing_the_trait_lists_only_images_that_speak_to_it": {
+      "file": "tests/test_trait_evidence.py",
+      "line": 343,
+      "checks": [
+        "self.assertEqual([dialog.target_combo.itemData(index) for index in range(dialog.target_combo.count())], [COAT_PATTERN, SPLIT])",
+        "self.assertEqual([image.source.key for image in dialog._rows], ['coat'])",
+        "self.assertIn('two classes', dialog.problem_label.text())",
+        "self.assertEqual([image.source.key for image in dialog._rows], ['clean', 'split'])",
+        "self.assertEqual(dialog.image_table.cellWidget(0, dialog.SPLIT_COLUMN).currentData(), CALIBRATION)",
+        "self.assertEqual(dialog.image_table.cellWidget(1, dialog.SPLIT_COLUMN).currentData(), TRAIN)",
+        "self.assertTrue(dialog.train_button.isEnabled())"
+      ]
+    },
+    "tests.test_trait_evidence.TraitModelWindowTests.dialog": {
+      "file": "tests/test_trait_evidence.py",
+      "line": 275,
+      "checks": []
+    },
+    "tests.test_trait_evidence.TraitModelWindowTests.project_images": {
+      "file": "tests/test_trait_evidence.py",
+      "line": 281,
+      "checks": []
+    },
+    "tests.test_trait_evidence.TraitModelWindowTests.check_window_reads_labels_and_blocks_drafts": {
+      "file": "tests/test_trait_evidence.py",
+      "line": 361,
+      "checks": [
+        "self.assertEqual(window._trait_model_directory(), self.root / 'projects' / 'trait-models')",
+        "self.assertEqual(dialog.call_args.kwargs['images'], ())",
+        "self.assertEqual(dialog.call_args.kwargs['model_directory'], self.root / 'projects' / 'trait-models')",
+        "self.assertEqual([seed.coat_pattern for seed in image.seeds], ['white'])",
+        "self.assertIn('draft', source.problem)"
+      ]
+    },
+    "tests.test_trait_evidence.TraitModelWindowTests.check_trained_model_is_saved_with_the_project_and_follows_save_as": {
+      "file": "tests/test_trait_evidence.py",
+      "line": 383,
+      "checks": [
+        "self.assertTrue(window._write_project(first))",
+        "self.assertEqual(kept.read_text(), 'model bytes')",
+        "self.assertEqual(trait_evidence_path(kept).read_text(), 'evidence bytes')",
+        "self.assertEqual(node.parameters['trait_model_path'], 'first.seedfiddle-annotations/trait-models/coat-pattern.json')",
+        "self.assertTrue(window._write_project(first))",
+        "self.assertEqual(window.pipeline.revision, revision)",
+        "self.assertTrue(window._write_project(second))",
+        "self.assertEqual(node.parameters['trait_model_path'], 'second.seedfiddle-annotations/trait-models/coat-pattern.json')",
+        "self.assertEqual((self.root / node.parameters['trait_model_path']).read_text(), 'model bytes')",
+        "self.assertTrue(kept.is_file())",
+        "self.assertTrue(reopened._open_project(second))",
+        "self.assertEqual(reopened.pipeline.node('trait_classifier').parameters['trait_model_path'], 'second.seedfiddle-annotations/trait-models/coat-pattern.json')"
+      ]
+    },
+    "tests.test_trait_evidence.TraitModelWindowTests.check_save_leaves_a_missing_or_absent_model_alone": {
+      "file": "tests/test_trait_evidence.py",
+      "line": 411,
+      "checks": [
+        "self.assertTrue(window._write_project(project))",
+        "self.assertEqual(node.parameters['trait_model_path'], 'None')",
+        "self.assertFalse((self.root / 'plain.seedfiddle-annotations' / 'trait-models').exists())",
+        "self.assertTrue(window._write_project(project))",
+        "self.assertEqual(node.parameters['trait_model_path'], 'gone.json')"
+      ]
+    },
+    "tests.test_trait_evidence.TraitModelWindowTests.check_export_copies_the_selected_model_or_says_there_is_none": {
+      "file": "tests/test_trait_evidence.py",
+      "line": 422,
+      "checks": [
+        "chooser.assert_not_called()",
+        "self.assertIn('no model', window.statusBar().currentMessage())",
+        "self.assertEqual(destination.read_text(), 'model bytes')",
+        "self.assertIn(str(destination), window.statusBar().currentMessage())"
+      ]
+    },
+    "tests.test_trait_evidence.TraitModelWindowTests.check_learning_menu_offers_import_and_export": {
+      "file": "tests/test_trait_evidence.py",
+      "line": 437,
+      "checks": [
+        "self.assertTrue({'Train object-level seed traits…', 'Import seed-trait model…', 'Export seed-trait model…'} <= actions)",
+        "self.assertFalse(any(('Activate frozen' in text for text in actions)))"
+      ]
+    },
+    "tests.test_trait_evidence.TraitModelWindowTests.window": {
+      "file": "tests/test_trait_evidence.py",
+      "line": 270,
+      "checks": []
+    },
     "tests.test_trait_pipeline.TraitPipelineTests.check_test_selected_method_preference_is_shared_and_filters_disabled_branches": {
       "file": "tests/test_trait_pipeline.py",
       "line": 63,
@@ -69796,7 +70331,7 @@
       "file": "tests/test_trait_training.py",
       "line": 222,
       "checks": [
-        "self.assertRaisesRegex(ValueError, 'canvas boundary')",
+        "self.assertRaisesRegex(ValueError, 'image edge')",
         "self.assertRaisesRegex(ValueError, 'outside decoded source support')"
       ]
     },
@@ -69845,15 +70380,17 @@
       "file": "tests/test_trait_training.py",
       "line": 365,
       "checks": [
+        "self.assertTrue(dialog.activate_checkbox.isChecked())",
         "self.assertEqual(request.configuration, TraitTrainingConfiguration(17, 0.04, 0.2, (0.2, 5.0), 13, 0.7))",
         "self.assertEqual(dialog.request(), request)",
         "self.assertTrue(request.activate_after_training)",
-        "self.assertEqual(request.manifest_sha256, file_sha256(self.path))"
+        "self.assertEqual(request.manifest_sha256, file_sha256(self.path))",
+        "self.assertEqual(request.output_path.parent, (self.root / 'models').resolve())"
       ]
     },
     "tests.test_trait_training.TraitTrainingUITests.check_test_trait_worker_forwards_real_controls_task_identity_and_terminal_outcomes": {
       "file": "tests/test_trait_training.py",
-      "line": 386,
+      "line": 388,
       "checks": [
         "self.assertIs(received, request)",
         "self.assertEqual(progress, [(task, 'training', 1, 3)])",
@@ -69864,7 +70401,7 @@
     },
     "tests.test_trait_training.TraitTrainingUITests.check_test_serial_worker_terminal_slot_runs_on_gui_thread": {
       "file": "tests/test_trait_training.py",
-      "line": 457,
+      "line": 459,
       "checks": [
         "self.assertTrue(finished.is_set())",
         "self.assertTrue(window._thread_pool.waitForDone(5000))",
@@ -69879,7 +70416,7 @@
     },
     "tests.test_trait_training.TraitTrainingUITests.check_test_serial_busy_stop_and_stale_terminal_signals_preserve_current_job": {
       "file": "tests/test_trait_training.py",
-      "line": 410,
+      "line": 412,
       "checks": [
         "started.assert_called_once_with(task)",
         "self.assertEqual(window._thread_pool.maxThreadCount(), 1)",
@@ -69894,7 +70431,7 @@
     },
     "tests.test_trait_training.TraitTrainingUITests.check_test_saved_only_late_stop_and_changed_graph_never_activate": {
       "file": "tests/test_trait_training.py",
-      "line": 430,
+      "line": 432,
       "checks": [
         "activation.assert_not_called()",
         "self.assertIsNone(window._learning_training_task)"
@@ -69902,7 +70439,7 @@
     },
     "tests.test_trait_training.TraitTrainingUITests.check_test_completion_activation_failure_keeps_saved_result_and_clears_busy": {
       "file": "tests/test_trait_training.py",
-      "line": 446,
+      "line": 448,
       "checks": [
         "activation.assert_called_once_with(request.output_path, abstention_threshold=0.8)",
         "self.assertIn('Model saved; activation failed', window.statusBar().currentMessage())",
@@ -69911,7 +70448,7 @@
     },
     "tests.test_trait_training.TraitTrainingUITests.check_test_active_model_output_is_preserved_and_close_cancels_current_task": {
       "file": "tests/test_trait_training.py",
-      "line": 487,
+      "line": 489,
       "checks": [
         "self.assertRaisesRegex(ValueError, 'new file')",
         "self.assertTrue(task.cancellation_requested())",
