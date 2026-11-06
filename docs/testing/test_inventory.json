@@ -26,7 +26,7 @@
     "tests.test_native_image_inputs.ImageInputContractTests"
   ],
   "core_test_count": 28,
-  "test_source_lines": 82656,
+  "test_source_lines": 82666,
   "historical_method_seconds": 0,
   "category_totals": {
     "Annotation and interactive image review": {
@@ -5363,8 +5363,8 @@
       "file": "tests/test_pipeline_workflow_ui.py",
       "purpose": "Main-workspace routing, editing and queued-delivery ownership.",
       "category": "Pipeline workspace and controls",
-      "lines": 515,
-      "source_sha256": "49e08c81708fdecc91b8f8a3a5802a6c9d467b8645bd94c2562294376ae07897",
+      "lines": 525,
+      "source_sha256": "ec7bbe7007f589fc8d0aa7da2e1f3d46881a4a6ad93344f352ba9c9e6c99e152",
       "historical_source_matches": false,
       "test_count": 1,
       "class_fixtures": {
@@ -27344,8 +27344,8 @@
       "file": "tests/test_pipeline_workflow_ui.py",
       "class": "PipelineWorkflowUiTests",
       "method": "test_workflow_lifecycle",
-      "line": 492,
-      "end_line": 511,
+      "line": 502,
+      "end_line": 521,
       "functionality": "workflow lifecycle",
       "description_basis": "method scenario name; see assertion evidence",
       "category": "Pipeline workspace and controls",
@@ -27381,9 +27381,9 @@
         "tests.test_pipeline_workflow_ui.PipelineWorkflowUiTests.check_test_structured_points_preserve_fractional_values",
         "tests.test_pipeline_workflow_ui.PipelineWorkflowUiTests.check_test_range_colorspace_change_adapts_bounds_field_count",
         "tests.test_pipeline_workflow_ui.PipelineWorkflowUiTests.check_test_actual_enabled_checkbox_bypasses_only_selected_node",
-        "tests.test_pipeline_workflow_ui.PipelineWorkflowUiTests.check_test_learning_menu_actions_preserve_native_training_routes",
-        "tests.test_pipeline_workflow_ui.PipelineWorkflowUiTests.select_binary",
+        "tests.test_pipeline_workflow_ui.PipelineWorkflowUiTests.check_test_model_nodes_train_their_own_model_kind",
         "tests.review_fixtures.editable_copy",
+        "tests.test_pipeline_workflow_ui.PipelineWorkflowUiTests.select_binary",
         "tests.test_pipeline_workflow_ui.PipelineWorkflowUiTests.load_image",
         "tests.test_pipeline_workflow_ui.PipelineWorkflowUiTests.seed_old_display",
         "tests.test_pipeline_workflow_ui.PipelineWorkflowUiTests.assert_display_cleared"
@@ -57907,11 +57907,12 @@
         "self.assertTrue(all((node.enabled for identifier, node in self.controller.graph.nodes.items() if identifier != stage.stage_id)))"
       ]
     },
-    "tests.test_pipeline_workflow_ui.PipelineWorkflowUiTests.check_test_learning_menu_actions_preserve_native_training_routes": {
+    "tests.test_pipeline_workflow_ui.PipelineWorkflowUiTests.check_test_model_nodes_train_their_own_model_kind": {
       "file": "tests/test_pipeline_workflow_ui.py",
       "line": 486,
       "checks": [
-        "self.assertEqual(train.call_args_list, [unittest.mock.call('bayes'), unittest.mock.call('kmeans')])"
+        "self.assertTrue(train.isEnabled())",
+        "route.assert_called_once_with(kind)"
       ]
     },
     "tests.test_pipeline_workflow_ui.PipelineWorkflowUiTests.select_binary": {

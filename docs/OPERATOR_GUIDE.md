@@ -252,7 +252,13 @@ On the canvas:
   excluded); `null` means the whole frame. Foreground outside the rectangle is set
   to background.
 - **Models.** Naive Bayes and K-means nodes have **Select model…** and **Train…**
-  buttons. A selected model file must stay available and unchanged; reselecting a
+  buttons. For Naive Bayes, **Train…** learns a pixel colour classifier from a sampled
+  RGB table or from image and mask folders, and saves the exact PlantCV TSV
+  (optionally with hue/saturation/value density plots as SVG). For K-means it learns
+  cluster centres from a folder of images, without labels, and saves them with their
+  training provenance in one JSON file. Defaults match PlantCV, and an editable
+  pipeline selects the trained model. A selected model file must stay available and
+  unchanged; reselecting a
   changed file recalculates its masks while reusing the prepared image. In the
   K-means category-mask node, **cat list** chooses clusters: `null` returns every
   cluster, `[0, 2]` returns one union mask.
@@ -483,13 +489,6 @@ are also kept in its `unsaved/` folder, which the next open offers to restore.
   See [learned instance segmentation](LEARNED_INSTANCE_SEGMENTATION.md).
 - **Train object-level seed traits…**, **Import seed-trait model…** and **Export
   seed-trait model…**: see [seed-trait training](TRAIT_CLASSIFIER_TRAINING.md).
-- **Train PlantCV probability model…** trains a Naive Bayes model from a sampled RGB
-  table or from image and mask directories, and saves the exact PlantCV TSV
-  (optionally with hue/saturation/value density plots as SVG). **Train frozen
-  K-means centres…** trains centres from a folder of images and saves them with
-  their training provenance in one JSON file. Defaults match PlantCV. Only the PlantCV
-  Naive Bayes and K-means pipelines use these files; both pipelines are listed when
-  **Show all default pipelines** is on.
 - **Species reference libraries…** builds, validates, publishes, forks, imports,
   exports and pins immutable species libraries. A project pins one library, chosen
   for the open image's species. On an image of another species the desktop marks the

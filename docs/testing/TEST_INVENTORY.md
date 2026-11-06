@@ -2760,7 +2760,7 @@ Fixtures: `setUpClass` at line 24, `setUp` at line 27, `tearDown` at line 34.
 
 | Test method / source | Functionality exercised | Assertion evidence | Last full run |
 | --- | --- | --- | --- |
-| [`test_workflow_lifecycle`](../../tests/test_pipeline_workflow_ui.py#L492) | workflow lifecycle | `helper: tests.test_pipeline_workflow_ui.PipelineWorkflowUiTests.check_test_shared_project_nodes_and_two_way_image_selection: self.assertTrue(CONTEXT_NODE_IDS <= self.window.pipeline_canvas.graph.nodes.keys())` | unrecorded / — |
+| [`test_workflow_lifecycle`](../../tests/test_pipeline_workflow_ui.py#L502) | workflow lifecycle | `helper: tests.test_pipeline_workflow_ui.PipelineWorkflowUiTests.check_test_shared_project_nodes_and_two_way_image_selection: self.assertTrue(CONTEXT_NODE_IDS <= self.window.pipeline_canvas.graph.nodes.keys())` | unrecorded / — |
 
 ## tests.test_pipeline_workflows
 

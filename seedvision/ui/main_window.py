@@ -3690,13 +3690,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         learning_menu.addAction(self.import_trait_model_action)
         learning_menu.addAction(self.export_trait_model_action)
         learning_menu.addSeparator()
-        self.train_native_bayes_action = QAction('Train PlantCV probability model…', self)
-        self.train_native_bayes_action.triggered.connect(lambda checked=False: self.pipeline_workflow.train_model('bayes'))
-        learning_menu.addAction(self.train_native_bayes_action)
-        self.train_native_kmeans_action = QAction('Train frozen K-means centres…', self)
-        self.train_native_kmeans_action.triggered.connect(lambda checked=False: self.pipeline_workflow.train_model('kmeans'))
-        learning_menu.addAction(self.train_native_kmeans_action)
-        learning_menu.addSeparator()
         learning_menu.addAction(self.manage_species_libraries_action)
 
         # Keep shortcuts available without duplicating the canvas controls in a menu.
@@ -3793,9 +3786,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             self.export_trait_model_action,
         ):
             learning_menu.addAction(action)
-        learning_menu.addSeparator()
-        learning_menu.addAction(self.train_native_bayes_action)
-        learning_menu.addAction(self.train_native_kmeans_action)
         learning_menu.addSeparator()
         learning_menu.addAction(self.manage_species_libraries_action)
 
@@ -15223,8 +15213,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             )
         if hasattr(self, "train_learning_model_action"):
             self.train_learning_model_action.setEnabled(not running)
-            self.train_native_bayes_action.setEnabled(not running)
-            self.train_native_kmeans_action.setEnabled(not running)
         if hasattr(self, 'train_trait_model_action'):
             self.train_trait_model_action.setEnabled(not running)
             self.import_trait_model_action.setEnabled(not running)

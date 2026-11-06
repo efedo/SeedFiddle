@@ -483,11 +483,21 @@ class PipelineWorkflowUiTests(CatalogueTestCase):
         self.assertEqual(self.controller.workflow.disabled_nodes, (stage.stage_id,))
         self.assertTrue(all(node.enabled for identifier, node in self.controller.graph.nodes.items() if identifier != stage.stage_id))
 
-    def check_test_learning_menu_actions_preserve_native_training_routes(self):
-        with patch.object(self.controller, 'train_model') as train:
-            self.window.train_native_bayes_action.trigger()
-            self.window.train_native_kmeans_action.trigger()
-        self.assertEqual(train.call_args_list, [unittest.mock.call('bayes'), unittest.mock.call('kmeans')])
+    def check_test_model_nodes_train_their_own_model_kind(self):
+        for recipe_id, kind in (('plantcv_naive_bayes_classifier', 'bayes'), ('plantcv_kmeans_predict_masks', 'kmeans')):
+            with self.subTest(recipe=recipe_id):
+                self.controller.select_template(recipe_id)
+                editable_copy(self.window)
+                stage = next(stage for stage in self.controller.workflow.recipe.stages
+                             if any(parameter.parameter_id == 'model_source' for parameter in stage.parameters))
+                self.window.pipeline_canvas.select_node(stage.stage_id)
+                layout = self.controller.node_actions.layout()
+                train = next(layout.itemAt(index).widget() for index in range(layout.count())
+                             if layout.itemAt(index).widget().text() == 'Train…')
+                self.assertTrue(train.isEnabled())
+                with patch.object(self.controller, 'train_model') as route:
+                    train.click()
+                route.assert_called_once_with(kind)
 
     def test_workflow_lifecycle(self):
         self.scenario(self.check_test_shared_project_nodes_and_two_way_image_selection)
@@ -508,7 +518,7 @@ class PipelineWorkflowUiTests(CatalogueTestCase):
         self.scenario(self.check_test_structured_points_preserve_fractional_values)
         self.scenario(self.check_test_range_colorspace_change_adapts_bounds_field_count)
         self.scenario(self.check_test_actual_enabled_checkbox_bypasses_only_selected_node)
-        self.scenario(self.check_test_learning_menu_actions_preserve_native_training_routes)
+        self.scenario(self.check_test_model_nodes_train_their_own_model_kind)
 
 
 if __name__ == '__main__':
