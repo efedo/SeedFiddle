@@ -25,8 +25,9 @@ def fixture():
         x = 10.3+column*39
         corners = ((x, 11.2), (x+26.7, 11.2), (x+26.7, 43.8), (x, 43.8))
         mean = c._sample_quadrilateral_mean(tensor, np.asarray(corners))
-        swatches.append(c.ColourSwatch(0, column, x+13.35, 27.5, corners, mean))
-    return image, c.ColourCardDetection(tuple(swatches), ((8., 8.), (90., 8.), (90., 55.), (8., 55.)), 0., .9, 2)
+        swatches.append(c.ColourSwatch(column+1, 0, column, x+13.35, 27.5, corners, mean))
+    return image, c.ColourCardDetection(tuple(swatches), ((8., 8.), (90., 8.), (90., 55.), (8., 55.)), 0., .9, 2,
+                                        None, 0, 1, 2, 2)
 
 
 def ruler(*args, minor_tick_mm=1., **kwargs):
@@ -38,7 +39,10 @@ def ruler(*args, minor_tick_mm=1., **kwargs):
 class NeutralCalibrationTests(unittest.TestCase):
     def setUp(self):
         self.image, self.card = fixture()
-        self.settings = c.CalibrationSettings(apply_perspective_correction=False)
+        # These scenarios cover grey balance itself; the chart fit has its own tests.
+        self.settings = c.CalibrationSettings(
+            apply_perspective_correction=False, colour_correction_model='Grey balance only'
+        )
 
     def run_calibration(self, settings=None, **kwargs):
         with patch.object(c, 'detect_colour_card', return_value=self.card), patch.object(c, 'detect_ruler', side_effect=ruler):
@@ -245,11 +249,11 @@ class NeutralSettingsTests(unittest.TestCase):
         from seedvision.calibration.neutral import normalize_neutral_patch_selection
         from seedvision.pipeline import build_default_pipeline
         node = build_default_pipeline().node('deskew_colour')
-        for raw, expected in (('automatic', 'automatic'), (' 24,\t1, 9 ', '1,9,24'), ('1', '1')):
+        for raw, expected in (('automatic', 'automatic'), (' 24,\t1, 9 ', '1,9,24'), ('1', '1'), ('140,25', '25,140')):
             self.assertEqual(normalize_neutral_patch_selection(raw), expected)
             self.assertEqual(node.validated_parameter_value('neutral_patch_selection', raw), expected)
             self.assertEqual(c.CalibrationSettings(neutral_patch_selection=raw).neutral_patch_selection, expected)
-        for raw in ('', '1,', '1,1', '0', '25', '01', '+1', '１', '\u00a01', '1\n', None, [1], 1):
+        for raw in ('', '1,', '1,1', '0', '1000', '01', '+1', '１', '\u00a01', '1\n', None, [1], 1):
             for normalize in (normalize_neutral_patch_selection,
                               lambda v: node.validated_parameter_value('neutral_patch_selection', v),
                               lambda v: c.CalibrationSettings(neutral_patch_selection=v, apply_colour_balance=False)):

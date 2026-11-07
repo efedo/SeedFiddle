@@ -6,6 +6,7 @@ from numbers import Real
 import numpy as np
 
 from seedvision.calibration.image import CalibrationSettings, ColourCardDetection, RulerDetection
+from seedvision.calibration.chart_colour import ColourCorrectionFacts
 from seedvision.calibration.neutral import NeutralBalanceFacts, NeutralPatchWitness, normalize_neutral_patch_selection
 
 
@@ -38,6 +39,7 @@ def _detached(value):
 def calibration_facts(calibration):
     settings = getattr(calibration, 'calibration_settings', None)
     neutral = getattr(calibration, 'neutral_balance', None)
+    correction = getattr(calibration, 'colour_correction', None)
     shape = getattr(calibration, 'source_shape_hw', None)
     complete = settings is not None and neutral is not None and shape is not None
     result = {'state': 'recorded' if complete else 'legacy_unavailable',
@@ -105,21 +107,34 @@ def calibration_facts(calibration):
                 if len(mean) != 3:
                     raise ValueError('Neutral patches require three recorded BGR means.')
                 for v in mean: _number(v, 'Neutral sample mean', minimum=0, maximum=255)
-        if (any(isinstance(v, bool) or not isinstance(v, int) or not 1 <= v <= 24 for v in available+used)
+        if (any(isinstance(v, bool) or not isinstance(v, int) or not 1 <= v <= 999 for v in available+used)
                 or len(set(available)) != len(available) or len(set(used)) != len(used)
                 or not set(used) <= set(available)
                 or tuple(w.patch_id for w in neutral.patches) != used
                 or (neutral.state == 'applied') != bool(used)):
             raise ValueError('Neutral patch witnesses do not match the recorded selection.')
-        if gains is None or neutral.channel_gains_bgr != gains:
+        chart_fit = getattr(correction, 'model', None) == 'chart_reference_fit'
+        if chart_fit:
+            if gains != (1., 1., 1.):
+                raise ValueError('A chart reference fit replaces channel gains, which must be identity.')
+        elif gains is None or neutral.channel_gains_bgr != gains:
             raise ValueError('Recorded neutral gains disagree with applied calibration gains.')
-        if neutral.state != 'applied' and gains != (1., 1., 1.):
+        if not chart_fit and neutral.state != 'applied' and gains != (1., 1., 1.):
             raise ValueError('Disabled or unavailable neutral balance must use identity gains.')
         if settings is not None and (neutral.requested_selection != settings.neutral_patch_selection
                 or neutral.sample_frame != settings.neutral_sample_frame
                 or neutral.enabled != settings.apply_colour_balance):
             raise ValueError('Neutral facts disagree with recorded calibration settings.')
         result['neutral_balance'] = _detached(neutral)
+    if correction is not None:
+        if (not isinstance(correction, ColourCorrectionFacts)
+                or correction.model not in ('chart_reference_fit', 'neutral_balance', 'none')):
+            raise ValueError('Colour correction facts must be typed.')
+        if settings is not None and correction.model == 'chart_reference_fit' and (
+                not settings.apply_colour_balance
+                or settings.colour_correction_model != 'Chart reference fit'):
+            raise ValueError('A chart reference fit disagrees with recorded calibration settings.')
+        result['colour_correction'] = _detached(correction)
     for name, expected_type in (('colour_card', ColourCardDetection), ('ruler', RulerDetection)):
         if hasattr(calibration, name):
             value = getattr(calibration, name)

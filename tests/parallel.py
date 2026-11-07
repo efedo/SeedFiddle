@@ -7,34 +7,26 @@ import sys
 import time
 from uuid import uuid4
 
-from tests.selection import ACCEPTANCE_TARGETS, matches
-
-
-# The 19 October full-run journals put 225s of native work on the slow
-# third worker while the desktop worker finished early. Move whole modules so
-# their class/catalogue fixtures remain together. Two-worker runs are unchanged.
-BALANCED_NATIVE_MODULES = frozenset((
-    'tests.test_native_core_recovery_recipe',
-    'tests.test_native_calibrated_range_recipe',
-    'tests.test_native_paper_replay',
-))
-
 
 def assignments(groups, jobs=3):
-    cpu={test.id() for test in groups['cpu-qt']}
-    buckets=[[],[],[]]
-    for test in [*groups['cpu-qt'],*groups['cuda'],*groups['acceptance']]:
-        name=test.id()
-        numerical=(name.startswith(('tests.test_plantcv_', 'tests.test_reference_',
-                    'tests.test_smpts_paper.', 'tests.test_core_recovery.'))
-                    or matches(name,ACCEPTANCE_TARGETS))
-        balanced = jobs == 3 and name.rsplit('.', 2)[0] in BALANCED_NATIVE_MODULES
-        buckets[0 if name in cpu or balanced else 1 if numerical else 2].append(name)
-    if jobs==2:buckets=[buckets[0]+buckets[1],buckets[2]]
-    elif jobs!=3:raise ValueError('Parallel full runs require two or three workers')
-    flat=[name for bucket in buckets for name in bucket]
-    expected=[test.id() for group in groups.values() for test in group]
-    if len(flat)!=len(set(flat)) or set(flat)!=set(expected):
+    """CPU/Qt units go to the first worker; CUDA modules are balanced over the rest.
+
+    Whole modules stay together so their class fixtures are built once.
+    """
+    if jobs not in (2, 3):
+        raise ValueError('Parallel full runs require two or three workers')
+    cpu = [test.id() for test in groups['cpu-qt']]
+    modules = {}
+    for test in groups['cuda']:
+        modules.setdefault(test.id().rsplit('.', 2)[0], []).append(test.id())
+    gpu = [[] for _ in range(jobs - 1)]
+    # Largest modules first, each to the lighter worker.
+    for name in sorted(modules, key=lambda name: (-len(modules[name]), name)):
+        min(gpu, key=len).extend(modules[name])
+    buckets = [cpu, *gpu]
+    flat = [name for bucket in buckets for name in bucket]
+    expected = [test.id() for group in groups.values() for test in group]
+    if len(flat) != len(set(flat)) or set(flat) != set(expected):
         raise ValueError('Worker assignment must include every discovered unit exactly once')
     return [sorted(bucket) for bucket in buckets if bucket]
 
@@ -43,7 +35,7 @@ def merge(assignments, reports, returncodes):
     expected={name for bucket in assignments for name in bucket}
     record=dict(tests=0,passed=True,failures=[],errors=[],skips=[],discovery_errors=[],
                 test_durations=[],fixture_durations=[],scenario_durations=[],
-                reference_fixture={},compilation_fixture={},recipe_acceptance_scope={})
+                compilation_fixture={},memory=dict(peak_committed_gib_by_worker=[],over_limit=[]))
     accounted=[]
     for index,(ids,report,code) in enumerate(zip(assignments,reports,returncodes,strict=True)):
         valid=(report is not None and report.get('selection',{}).get('selected_ids')==ids
@@ -60,10 +52,11 @@ def merge(assignments, reports, returncodes):
             record[key].extend(report.get(key,[]))
         record['scenario_durations'].extend(row for row in report.get('scenario_durations',[])
             if row['unit'] in ids)
-        for key in ('reference_fixture','compilation_fixture'):
-            for name,value in report.get(key,{}).items():
-                if isinstance(value,(int,float)):record[key][name]=record[key].get(name,0)+value
-        record['recipe_acceptance_scope'].update(report.get('recipe_acceptance_scope',{}))
+        for name,value in report.get('compilation_fixture',{}).items():
+            if isinstance(value,(int,float)):record['compilation_fixture'][name]=record['compilation_fixture'].get(name,0)+value
+        memory=report.get('memory') or {}
+        record['memory']['peak_committed_gib_by_worker'].append(memory.get('peak_committed_gib'))
+        record['memory']['over_limit'].extend(memory.get('over_limit',[]))
     record['all_discovered_units_accounted_for']=(len(accounted)==len(expected)
         and len(accounted)==len(set(accounted)) and set(accounted)==expected)
     record['passed'] &= record['all_discovered_units_accounted_for']

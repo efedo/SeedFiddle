@@ -2,26 +2,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from hashlib import sha256
 import json
 import math
 import os
 from pathlib import Path
 import tempfile
-from types import MappingProxyType
 import unicodedata
 
 from seedvision.persistence.analysis_settings import (
     AnalysisSettingsProfile, analysis_settings_profile_from_payload,
     analysis_settings_profile_to_payload,
 )
-from seedvision.persistence.correction_inputs import (
-    ProjectCorrectionBinding, validate_correction_binding_records, MAX_CORRECTION_BINDINGS,
-)
-from seedvision.persistence.reference_models import (
-    ReferenceModelAsset, MAX_MODEL_ASSETS, MAX_TOTAL_MODEL_BYTES,
-)
-from seedvision.pipeline.workflows import PipelineWorkflow
 
 PIPELINE_EXTENSION = '.seedfiddle-pipeline.json'
 MAX_DOCUMENT_BYTES = 24 * 1024 * 1024
@@ -54,15 +45,6 @@ def _pipeline_name(value):
 def _keys(value, fields):
     if type(value) is not dict or set(value) != set(fields):
         raise PipelineDocumentError('Document has missing or unknown fields.')
-
-
-def _backend_values(default, overrides, known):
-    if type(default) is not str or default not in ('native', 'plantcv'):
-        raise PipelineDocumentError('Backend default must be native or plantcv.')
-    if (not isinstance(overrides, (dict, MappingProxyType)) or len(overrides) > MAX_LAYOUT_NODES
-            or any(type(key) is not str or key not in known or type(value) is not str
-                   or value not in ('native', 'plantcv') for key, value in overrides.items())):
-        raise PipelineDocumentError('Backend overrides must name known nodes and backends.')
 
 
 @dataclass(frozen=True)
@@ -133,160 +115,41 @@ class PipelineLayoutDocument:
 class PipelineDocument:
     name: str
     analysis_settings: AnalysisSettingsProfile
-    pipeline_workflow: PipelineWorkflow | None = None
     node_instances: tuple = ()
     layout: PipelineLayoutDocument = field(default_factory=PipelineLayoutDocument)
-    reference_model_assets: tuple = ()
-    correction_bindings: tuple = ()
-    asset_root: str | None = None
-    backend_default: str = 'native'
-    node_backends: object = field(default_factory=dict)
 
     def __post_init__(self):
         _pipeline_name(self.name)
         if not isinstance(self.analysis_settings, AnalysisSettingsProfile):
             raise PipelineDocumentError('Pipeline requires default analytical settings.')
         analysis_settings_profile_to_payload(self.analysis_settings)
-        if self.pipeline_workflow is not None and not isinstance(self.pipeline_workflow, PipelineWorkflow):
-            raise PipelineDocumentError('Pipeline primary workflow is invalid.')
         from seedvision.pipeline.catalogue_nodes import validate_node_instances, instance_nodes, display_id
         validate_node_instances(self.node_instances)
         known = {node.identifier for node in self.analysis_settings.nodes}
-        if self.pipeline_workflow is not None:
-            known.update(stage.stage_id for stage in self.pipeline_workflow.recipe.stages)
         for instance in self.node_instances:
             known.update(display_id(instance, identifier) for identifier in instance_nodes(instance))
         if not isinstance(self.layout, PipelineLayoutDocument):
             raise PipelineDocumentError('Pipeline requires validated layout metadata.')
         if any(row[0] not in known for row in self.layout.positions) or self.layout.selected_node not in known | {None}:
             raise PipelineDocumentError('Pipeline layout refers to an unknown stable node ID.')
-        _backend_values(self.backend_default, self.node_backends, known)
-        object.__setattr__(self, 'node_backends', MappingProxyType(dict(self.node_backends)))
-        if self.asset_root is not None:
-            _text(self.asset_root, 'Asset root', 4096)
-            if not Path(self.asset_root).is_absolute():
-                raise PipelineDocumentError('Asset root must be an absolute workspace locator.')
-        _model_records(self.reference_model_assets)
-        validate_correction_binding_records(self.correction_bindings)
 
     def to_dict(self):
         from seedvision.pipeline.catalogue_nodes import node_instances_to_payload
-        return {'format': 'seedfiddle-pipeline', 'version': 1, 'name': self.name,
+        return {'format': 'seedfiddle-pipeline', 'version': 2, 'name': self.name,
                 'analysis_settings': analysis_settings_profile_to_payload(self.analysis_settings),
-                'pipeline_workflow': None if self.pipeline_workflow is None else self.pipeline_workflow.to_dict(),
-                'node_instances': node_instances_to_payload(self.node_instances), 'layout': self.layout.to_dict(),
-                'reference_model_assets': [asset.to_dict() for asset in self.reference_model_assets],
-                'correction_bindings': [binding.to_dict() for binding in self.correction_bindings],
-                'asset_root': self.asset_root, 'backend_default': self.backend_default,
-                'node_backends': dict(self.node_backends)}
+                'node_instances': node_instances_to_payload(self.node_instances), 'layout': self.layout.to_dict()}
 
     @classmethod
     def from_dict(cls, value):
-        fields = {'format', 'version', 'name', 'analysis_settings', 'pipeline_workflow', 'node_instances',
-                  'layout', 'reference_model_assets', 'correction_bindings', 'asset_root', 'backend_default', 'node_backends'}
-        _keys(value, fields)
-        if value['format'] != 'seedfiddle-pipeline' or type(value['version']) is not int or value['version'] != 1:
-            raise PipelineDocumentError('Unsupported pipeline document format or version.')
-        for name in ('reference_model_assets', 'correction_bindings'):
-            if type(value[name]) is not list:
-                raise PipelineDocumentError(f'{name} must be a bounded JSON array.')
-        if len(value['reference_model_assets']) > MAX_MODEL_ASSETS:
-            raise PipelineDocumentError('Too many model asset references.')
-        if len(value['correction_bindings']) > MAX_CORRECTION_BINDINGS:
-            raise PipelineDocumentError('Too many correction input references.')
+        if type(value) is not dict or value.get('format') != 'seedfiddle-pipeline':
+            raise PipelineDocumentError('This is not a Seed Fiddle pipeline document.')
+        if type(value.get('version')) is not int or value['version'] != 2:
+            raise PipelineDocumentError(f'Unsupported pipeline version {value.get("version")!r}; '
+                                        'this application reads only version 2.')
+        _keys(value, {'format', 'version', 'name', 'analysis_settings', 'node_instances', 'layout'})
         from seedvision.pipeline.catalogue_nodes import node_instances_from_payload
         return cls(value['name'], analysis_settings_profile_from_payload(value['analysis_settings']),
-                   None if value['pipeline_workflow'] is None else PipelineWorkflow.from_dict(value['pipeline_workflow']),
-                   node_instances_from_payload(value['node_instances']), PipelineLayoutDocument.from_dict(value['layout']),
-                   tuple(_model_from_dict(row) for row in value['reference_model_assets']),
-                   tuple(ProjectCorrectionBinding.from_dict(row) for row in value['correction_bindings']),
-                   value['asset_root'], value['backend_default'], value['node_backends'])
-
-    def merge_asset_records(self, existing_models=(), existing_bindings=()):
-        """Retain unresolved project references; reject conflicting identities."""
-        models = _merge_records(existing_models, self.reference_model_assets)
-        bindings = _merge_records(existing_bindings, self.correction_bindings)
-        _model_records(models)
-        validate_correction_binding_records(bindings)
-        return models, bindings
-
-    def asset_statuses(self, root=None, *, verify=False):
-        """Inspect transported assets in an explicit workspace, or their saved origin."""
-        location = self.asset_root if root is None else root
-        base = Path(location).resolve() if location is not None else None
-        context_base = Path(self.asset_root).resolve() if self.asset_root else base
-        references = [('model', asset.key, asset.path, asset.source_sha256, asset.source_bytes)
-                      for asset in self.reference_model_assets]
-        references.extend(('correction', binding.key + (asset.role,), asset.path, asset.source_sha256, asset.source_bytes)
-                          for binding in self.correction_bindings for asset in binding.inputs)
-        rows = []
-        for kind, key, relative, digest, size in references:
-            path = None if base is None or relative is None else (base / relative).resolve()
-            status = 'unresolved'
-            if path is not None:
-                if not path.is_relative_to(base):
-                    status = 'outside_asset_root'
-                elif not path.is_file():
-                    status = 'missing'
-                elif not verify:
-                    status = 'unchecked'
-                else:
-                    try:
-                        if path.stat().st_size != size:
-                            status = 'fingerprint_mismatch'
-                        else:
-                            hasher = sha256()
-                            with path.open('rb') as stream:
-                                for block in iter(lambda: stream.read(1024 * 1024), b''):
-                                    hasher.update(block)
-                            status = 'available' if hasher.hexdigest() == digest else 'fingerprint_mismatch'
-                    except OSError:
-                        status = 'unreadable'
-            rows.append({'kind': kind, 'key': key, 'path': path, 'status': status})
-        workflows = ([self.pipeline_workflow] if self.pipeline_workflow is not None else [])
-        workflows.extend(instance.workflow for instance in self.node_instances if instance.workflow is not None)
-        for workflow in workflows:
-            for role, filename in workflow.input_paths.items():
-                path = Path(filename)
-                if not path.is_absolute() and context_base is None:
-                    rows.append({'kind': 'context_input', 'key': (workflow.recipe.recipe_id, role),
-                                 'path': path, 'status': 'unresolved'})
-                    continue
-                path = (context_base / path).resolve() if not path.is_absolute() else path
-                rows.append({'kind': 'context_input', 'key': (workflow.recipe.recipe_id, role),
-                             'path': path, 'status': 'unchecked' if path.is_file() else 'missing'})
-        return tuple(rows)
-
-
-def _model_from_dict(value):
-    _keys(value, ReferenceModelAsset.__dataclass_fields__)
-    return ReferenceModelAsset(**value)
-
-
-def _model_records(values):
-    if type(values) is not tuple or len(values) > MAX_MODEL_ASSETS:
-        raise PipelineDocumentError('Model assets require a bounded immutable tuple.')
-    seen, paths = set(), {}
-    for value in values:
-        if not isinstance(value, ReferenceModelAsset):
-            raise PipelineDocumentError('Invalid model asset reference.')
-        _model_from_dict(value.to_dict())
-        identity = (value.source_sha256, value.source_bytes)
-        if value.key in seen or value.path in paths and paths[value.path] != identity:
-            raise PipelineDocumentError('Duplicate or conflicting model transport reference.')
-        seen.add(value.key)
-        paths[value.path] = identity
-    if sum(size for _, size in set(paths.values())) > MAX_TOTAL_MODEL_BYTES:
-        raise PipelineDocumentError('Model assets exceed their aggregate byte bound.')
-
-
-def _merge_records(existing, incoming):
-    merged = {record.key: record for record in existing}
-    for record in incoming:
-        if record.key in merged and merged[record.key] != record:
-            raise PipelineDocumentError('Imported asset conflicts with an existing project reference.')
-        merged[record.key] = record
-    return tuple(merged.values())
+                   node_instances_from_payload(value['node_instances']), PipelineLayoutDocument.from_dict(value['layout']))
 
 
 class PipelineDocumentStore:
@@ -321,8 +184,20 @@ class PipelineDocumentStore:
         return PipelineDocument.from_dict(_read(path))
 
 
+def _reject_duplicate_pairs(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise PipelineDocumentError('Standalone document repeats a JSON field.')
+        result[key] = value
+    return result
+
+
+def _reject_constant(value):
+    raise PipelineDocumentError(f'Standalone document contains the non-finite number {value}.')
+
+
 def _read(path):
-    from seedvision.benchmarking.recipes import _reject_duplicate_pairs, _reject_constant
     try:
         with Path(path).open('rb') as stream:
             raw = stream.read(MAX_DOCUMENT_BYTES + 1)

@@ -1,7 +1,7 @@
 """Shared graph-to-calculation settings contract for desktop, batch and search."""
 from dataclasses import fields
 
-BASELINE_NODES = ('seed_scale_estimation', 'background_likelihood', 'distance_candidates', 'identification', 'circle_candidates')
+BASELINE_NODES = ('seed_scale_estimation', 'automatic_material_references', 'background_likelihood', 'distance_candidates', 'identification', 'circle_candidates')
 LAYER_NODES = ('layout_detection', 'wavelet_decomposition', 'background_likelihood',
     'refined_background_likelihood', 'edge_gradients', 'surface_darkness_gradients',
     'lightening_gradient_ceiling', 'darkening_gradient_ceiling', 'frequency_noise_masks',

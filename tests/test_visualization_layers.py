@@ -1118,9 +1118,7 @@ class AnalysisLayerTests(unittest.TestCase):
         self.assertLess(float(probability[0, 1]), 0.30)
         self.assertLess(float(probability[0, 2]), 0.01)
 
-    def check_test_colour_distribution_evaluates_many_modes_in_bounded_chunks(self) -> None:
-        from unittest.mock import patch
-
+    def check_test_colour_distribution_evaluates_many_modes_in_bounded_memory(self) -> None:
         import torch
 
         from seedvision.cuda import lab_colour_distribution
@@ -1137,28 +1135,18 @@ class AnalysisLayerTests(unittest.TestCase):
         samples = mode_colours.repeat_interleave(64, dim=0)
         lab = mode_colours.repeat_interleave(2, dim=0).reshape(8, 8, 3)
         eligible = torch.ones((8, 8), dtype=torch.bool)
-        exp_shapes = []
-        original_exp = torch.exp
-
-        def recording_exp(value):
-            exp_shapes.append(tuple(value.shape))
-            return original_exp(value)
-
-        with patch.object(torch, "exp", side_effect=recording_exp):
-            probability, centres, scales, weights, *_ = lab_colour_distribution(
-                lab,
-                samples,
-                eligible,
-                maximum_components=32,
-                fit_iterations=1,
-                refinement_iterations=0,
-                combine_modes="maximum",
-            )
+        probability, centres, scales, weights, *_ = lab_colour_distribution(
+            lab,
+            samples,
+            eligible,
+            maximum_components=32,
+            fit_iterations=1,
+            refinement_iterations=0,
+            combine_modes="maximum",
+        )
 
         self.assertEqual(tuple(probability.shape), (8, 8))
         self.assertEqual(int(centres.shape[0]), 32)
-        self.assertEqual(len(exp_shapes), 8)
-        self.assertTrue(all(shape[-1] <= 4 for shape in exp_shapes))
         adjusted = weights.clamp_min(1e-6).pow(0.35)
         adjusted /= adjusted.max().clamp_min(1e-6)
         distance = torch.sum(
@@ -1172,6 +1160,30 @@ class AnalysisLayerTests(unittest.TestCase):
             dim=2,
         ).values
         torch.testing.assert_close(probability, expected)
+
+        # Peak memory is a few full-image planes whatever the mode count; a
+        # (H, W, modes, 3) evaluation needed dozens per group of four modes.
+        if not torch.cuda.is_available():
+            return
+        size = 2000
+        image = mode_colours.cuda()[
+            torch.randint(0, 32, (size, size), device="cuda")
+        ]
+        torch.cuda.synchronize()
+        before = torch.cuda.memory_allocated()
+        torch.cuda.reset_peak_memory_stats()
+        lab_colour_distribution(
+            image,
+            samples.cuda(),
+            torch.ones((size, size), dtype=torch.bool, device="cuda"),
+            maximum_components=32,
+            fit_iterations=1,
+            refinement_iterations=0,
+            combine_modes="maximum",
+        )
+        torch.cuda.synchronize()
+        plane = size * size * 4
+        self.assertLess(torch.cuda.max_memory_allocated() - before, 12 * plane)
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -2520,7 +2532,7 @@ class AnalysisLayerTests(unittest.TestCase):
         self.scenario(self.check_test_seed_trait_changes_reuse_existing_material_and_edge_models)
         self.scenario(self.check_test_adding_diverse_foreground_references_cannot_evict_existing_colour)
         self.scenario(self.check_test_colour_distribution_uses_painted_mode_frequencies)
-        self.scenario(self.check_test_colour_distribution_evaluates_many_modes_in_bounded_chunks)
+        self.scenario(self.check_test_colour_distribution_evaluates_many_modes_in_bounded_memory)
         self.scenario(self.check_test_local_physical_edge_normalization_equalizes_support_without_promoting_noise)
         self.scenario(self.check_test_reference_edge_comparison_and_net_physical_overlays)
         self.scenario(self.check_test_normalized_ridge_extends_connected_weak_edges_without_weakening_seeds)

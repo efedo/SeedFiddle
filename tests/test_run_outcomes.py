@@ -197,64 +197,22 @@ class NativeRunOutcomeTests(unittest.TestCase):
     install_profile = parity_fixture.AuthoritativeParityTests.install_profile
     decode = staticmethod(parity_fixture.AuthoritativeParityTests.decode)
 
-    def failure_routes(self, *, error=ValueError('calibration fixture failure'), cancel=False):
-        from seedvision.export.project_runner import run_project
-        from seedvision.segmentation.baseline import analyze_path, PipelineAnalysisCache
-        from seedvision.ui.main_window import _AnalysisTask
-        from PySide6.QtCore import QThreadPool
-        captured = []
-        def actual(path, **kwargs):
-            captured.append((path, kwargs))
-            return analyze_path(path, **kwargs)
-        with patch('seedvision.export.project_runner.analyze_path', side_effect=actual), \
-             patch('seedvision.segmentation.baseline.calibrate_image', side_effect=error), \
-             patch('seedvision.export.project_runner.export_project_native_graphs') as graphs, \
-             self.assertLogs('seedvision.export.run_outcomes', level='ERROR'):
-            destination = run_project(self.root, self.master, self.root / 'reports')[0]
-        batch = runs.load_run_outcome((destination / 'run-outcome.json').read_text(encoding='utf-8'))
-        self.assertTrue(graphs.called)
-        path, kwargs = captured[-1]
-        parameters = inspect.signature(_AnalysisTask).parameters
-        task_kwargs = {name: kwargs[name] for name in parameters if name in kwargs}
-        task_kwargs.update(path=path, background_reference_points=(), foreground_reference_points=(),
-            physical_edge_reference_mask=None, non_edge_reference_mask=None, manual_seed_centres=None,
-            pipeline_revision=self.window.pipeline.revision, node_cache=PipelineAnalysisCache(), dirty_nodes=frozenset())
-        task = _AnalysisTask(**task_kwargs)
-        task.setAutoDelete(False)
-        completed, terminal, failures, cancelled = [], [], [], []
-        task.signals.completed.connect(lambda *args: completed.append(args))
-        task.signals.terminal_outcome.connect(lambda outcome, revision: terminal.append((outcome, revision)))
-        task.signals.terminal_outcome.connect(self.window._analysis_terminal_outcome)
-        task.signals.failed.connect(lambda *args: failures.append(args))
-        task.signals.failed.connect(self.window._analysis_failed)
-        task.signals.cancelled.connect(lambda *args: cancelled.append(args))
-        self.window._active_tasks[self.key] = task
-        if cancel:
-            task.cancel()
-        pool = QThreadPool()
-        with patch('seedvision.segmentation.baseline.calibrate_image', side_effect=error), \
-             patch('seedvision.ui.main_window.QMessageBox.warning'), \
-             self.assertLogs('seedvision.export.run_outcomes', level='ERROR') if not cancel else self.subTest(cancel=True):
-            pool.start(task)
-            self.assertTrue(pool.waitForDone(30000))
-            self.app.processEvents()
-        self.assertEqual(completed, [])
-        self.assertEqual(len(terminal), 1)
-        self.outcome, self.revision = terminal[0]
-        self.task = task
-        if not cancel:
-            self.assertEqual(self.outcome.payload['identity'], batch['identity'])
-            self.assertEqual(self.outcome.payload['outcome_revision'], batch['outcome_revision'])
-            self.assertEqual(len(failures), 1)
-        else:
-            self.assertEqual(len(cancelled), 1)
-        return batch, destination
-
-
+    def save_project_with_added_node(self):
+        """The fixture project plus one added node, so companion export has work to do."""
+        from seedvision.persistence import (ProjectAnalysisStore, ProjectImageSpec,
+            analysis_settings_profile_from_graph)
+        from seedvision.persistence.project_analysis import ProjectUiState
+        from seedvision.pipeline.catalogue_nodes import create_instance
+        self.master = ProjectAnalysisStore(self.root).capture_and_save(
+            analysis_settings=analysis_settings_profile_from_graph(self.graph),
+            images=(ProjectImageSpec(self.source, self.image.shape[:2], biological_context=self.context),),
+            species='Soybean', ui_state=ProjectUiState(node_positions={'deskew_colour': (0., 0.)}),
+            node_instances=(create_instance('default:seed_scale_estimation'),), destination=self.master)
 
     def test_batch_rejected_cancelled_and_device_failure_publish_terminal_without_companions(self):
         from contextlib import nullcontext
         from seedvision.export.project_runner import run_project
+        self.save_project_with_added_node()
         errors = [(runs.AnalysisInputIntegrityError('stale reference'), 'rejected', runs.AnalysisInputIntegrityError),
                   (AnalysisCancelled('stop'), 'cancelled', AnalysisCancelled),
                   (torch.cuda.OutOfMemoryError('out of memory'), 'failed', RuntimeError)]
@@ -263,7 +221,7 @@ class NativeRunOutcomeTests(unittest.TestCase):
             logs = self.assertLogs('seedvision.export.run_outcomes', level='ERROR') if state == 'failed' else nullcontext()
             with self.subTest(state=state), logs, \
                  patch('seedvision.segmentation.baseline.calibrate_image', side_effect=error), \
-                 patch('seedvision.export.project_runner.export_project_native_graphs') as companions:
+                 patch('seedvision.export.project_runner.export_project_node_instances') as companions:
                 with self.assertRaises(raised):
                     run_project(self.root, self.master, output)
             companions.assert_not_called()

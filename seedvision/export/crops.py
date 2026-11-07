@@ -1,7 +1,6 @@
 """Explicit, CUDA-resident per-seed image and mask crops.
 
-This module provides a SeedFiddle-native crop artifact. It does not claim to
-reproduce unresolved SMPTS crop-padding or image-boundary behavior.
+This module provides a SeedFiddle-native crop artifact.
 """
 
 from __future__ import annotations

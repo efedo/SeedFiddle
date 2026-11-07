@@ -70,8 +70,8 @@ class PipelineModelTests(unittest.TestCase):
         order = graph.topological_order()
         self.assertEqual(order[0], "project")
         self.assertEqual(set(order), set(graph.nodes))
-        self.assertEqual(len(graph.nodes), 32)
-        self.assertEqual(len(graph.connections), 189)
+        self.assertEqual(len(graph.nodes), 33)
+        self.assertEqual(len(graph.connections), 201)
         self.assertNotIn("perimeter_background_reference", graph.nodes)
         self.assertEqual(
             graph.connection_for_input(
@@ -158,7 +158,7 @@ class PipelineModelTests(unittest.TestCase):
         graph = build_default_pipeline()
         all_nodes = {**graph.nodes, **graph.unused_nodes}
         all_connections = (*graph.connections, *graph.unused_connections)
-        self.assertEqual(len(graph.connection_templates), 267)
+        self.assertEqual(len(graph.connection_templates), 279)
         self.assertTrue(all(node.output_ports for node in all_nodes.values()))
         self.assertEqual(
             len(all_connections),
@@ -211,13 +211,19 @@ class PipelineModelTests(unittest.TestCase):
                 "project", "deskew_colour", "layout_detection",
                 "species_reference_library",
             },
+            "automatic_material_references": {
+                "deskew_colour", "ruler_detection", "layout_detection",
+                "seed_scale_estimation",
+            },
             "background_likelihood": {
                 "deskew_colour", "layout_detection", "seed_scale_estimation",
                 "ruler_detection", "project", "species_reference_library",
+                "automatic_material_references",
             },
             "refined_background_likelihood": {
                 "background_likelihood", "deskew_colour", "layout_detection",
                 "seed_scale_estimation", "project", "species_reference_library",
+                "automatic_material_references",
             },
             "edge_gradients": {
                 "wavelet_decomposition", "deskew_colour", "layout_detection",
@@ -236,6 +242,7 @@ class PipelineModelTests(unittest.TestCase):
                 "deskew_colour", "layout_detection", "seed_scale_estimation",
                 "project", "edge_gradients",
                 "frequency_noise_masks", "species_reference_library",
+                "automatic_material_references",
             },
             "reference_seed_traits": {
                 "deskew_colour", "project", "metadata",
@@ -246,6 +253,7 @@ class PipelineModelTests(unittest.TestCase):
             "material_evidence_decision": {
                 "background_likelihood", "refined_background_likelihood",
                 "reference_texture_prototypes", "seed_scale_estimation",
+                "automatic_material_references",
             },
             "reference_edge_probability": {
                 "reference_texture_prototypes", "edge_gradients",
@@ -516,6 +524,7 @@ class PipelineModelTests(unittest.TestCase):
         self.assertEqual(
             graph.upstream("refined_background_likelihood"),
             (
+                "automatic_material_references",
                 "deskew_colour",
                 "layout_detection",
                 "species_reference_library",
@@ -553,6 +562,7 @@ class PipelineModelTests(unittest.TestCase):
         self.assertEqual(
             graph.upstream("background_likelihood"),
             (
+                "automatic_material_references",
                 "deskew_colour",
                 "species_reference_library",
                 "layout_detection",
@@ -820,6 +830,7 @@ class PipelineModelTests(unittest.TestCase):
         self.assertEqual(
             graph.upstream("background_likelihood"),
             (
+                "automatic_material_references",
                 "deskew_colour",
                 "species_reference_library",
                 "layout_detection",

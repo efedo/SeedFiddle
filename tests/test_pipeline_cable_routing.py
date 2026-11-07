@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from tests.catalogue_fixtures import CatalogueTestCase
 
 from tests.functional_units import functional_units
 
@@ -143,7 +142,7 @@ def _contains_contiguous_points(
 
 
 @functional_units
-class PipelineCableRoutingTests(CatalogueTestCase):
+class PipelineCableRoutingTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         try:

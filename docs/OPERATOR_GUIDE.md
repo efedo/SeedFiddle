@@ -57,7 +57,7 @@ optional Cellpose-SAM package when it is missing (see [Cellpose-SAM](#cellpose-s
 | Images (left) | Images in the project, each with a thumbnail. The filled row is the image open in the viewer. A click or arrow key only moves the outlined list cursor; double-click or `Enter` opens that image. A badge on the thumbnail shows that an image is computing, computed, or needs attention; no badge means analysis is still required. Each row also names its image's species: the species saved for that image, otherwise the project's, and *Unknown* until one is chosen. It sits under the name in a narrow panel, abbreviating the genus if it must (*L. mexicanus*), and becomes its own column once the panel is dragged to about 300 pixels wide. Hover for the text status and the full species. The **+** button above the list adds images. A crossed thumbnail means the file could not be read, and its tooltip gives the reason. The ✕ on hover removes an image from the project. |
 | Image view | The selected overlay on the current image. Drag to pan, scroll to zoom. Its dark header holds **Overlay** and **Overlay opacity** on the left, the file name, and the zoom buttons on the right. |
 | Pipeline view | The node graph for the current image. Both views are visible by default; `Ctrl+1` and `Ctrl+2` toggle each, `Ctrl+3` shows both. |
-| Reference annotation panel | Floats over the image while **Materials** or **Seeds** is active; drag its title to move it and the corner grip to resize it. |
+| Reference annotation panel | Floats over the image while **Materials** or **Seeds** is active and is as tall as its controls. Drag its title bar to move it and the corner grip to resize it. The title bar also holds **Undo**, a chevron that rolls the panel up to its title bar and back, and **×**, which finishes annotating as turning the mode off on the toolbar does (unapplied edits stay as a draft). |
 | Right panel | Result summary, **Results…** and, when Foreground evidence is missing, **Paint Foreground references…** at the top; below, the **Node** tab (inspector for the selected node) and the **Image** tab (file, dimensions, species, analysis device and calibration evidence). |
 
 **Help → Keyboard shortcuts** lists every shortcut; the common ones are at the end
@@ -98,11 +98,10 @@ For a project saved as `name.seedfiddle-project.json`:
 
 | What | Where | Written |
 |---|---|---|
-| Node settings and wiring, the image list with file fingerprints, species, canvas layout, recipes | `name.seedfiddle-project.json` | On **Save project** |
+| Node settings, added nodes, named pipeline copies, the image list with file fingerprints, species and canvas layout | `name.seedfiddle-project.json` | On **Save project** |
 | Manual seed centres and reference layers (materials, seed outlines and seed traits), one file per image | `name.seedfiddle-annotations/manual-seed-centres/` and `…/reference-regions/` beside the project file | On **Save project** |
 | Annotation edits made since the last save | `name.seedfiddle-annotations/unsaved/` | As you edit |
 | Optimisation targets, policy and history | `name.seedfiddle-project.optimization*.json` beside the project file | When the optimiser runs |
-| Models and native recipe inputs | `native-models/` beneath the workspace folder | On **Save project** |
 
 Each project owns its annotations, so editing an image in one project never changes
 another. Annotation edits count as unsaved project changes: **Save project** copies
@@ -114,11 +113,13 @@ to the workspace's shared `projects/manual-seed-centres/` and
 `projects/reference-regions/` folders, and the first **Save project** copies them
 into the new project's folder. A project saved by an earlier version still points
 at those shared folders. It opens marked as modified, and the next save copies its
-files into its own folder. The shared files are left in place.
+files into its own folder. The shared files are left in place. A saved project loads
+only the annotations it records: a shared file for an image added to it later is
+named under **References and annotations**, but not loaded.
 
 A project with annotations must be saved inside the workspace folder, because its
-annotation folder sits beside the project file. Move the project file, its
-annotation folder and `native-models/` together.
+annotation folder sits beside the project file. Move the project file and its
+annotation folder together.
 
 ### Moving annotations between projects
 
@@ -138,42 +139,27 @@ Images list choose the same current image.
 
 ### Choosing and locking
 
-Choose a pipeline from the **Pipeline** list at the top of the Pipeline view. It
-offers **Procedural seed analysis**, **Cellpose seed analysis**, the PlantCV Otsu
-seed workflow, the calibrated Otsu seed analysis and the SMPTS paper reconstruction.
-Your own editable copies are listed under **Saved in this project**.
+Choose a pipeline from the **Pipeline** list at the top of the Pipeline view. Under
+**Default pipelines** it offers **Procedural seed analysis** and **Cellpose seed
+analysis**; your own editable copies are listed under **Saved in this project**.
 
 **Procedural seed analysis** separates seeds from material, edge and shape evidence
-built from your painted references, and includes the optional U-Net and StarDist
+built from automatic and painted references, and includes the optional U-Net and StarDist
 nodes. **Cellpose seed analysis** holds [Cellpose-SAM](#cellpose-sam) and only the
-nodes it needs: inputs, deskew and colour balance, ruler, layout, and seed scale. To
+nodes it needs: inputs, deskew and colour correction, ruler, layout, and seed scale. To
 compare both on one graph, make an editable copy of Procedural seed analysis and add
 Cellpose-SAM from **Add node**.
 
-**Analysis > Settings > Show all default pipelines** adds the rest, and the list
-then holds every pipeline under headings: **Seed Fiddle** (Procedural seed analysis,
-Cellpose seed analysis, experimental core recovery), **Seed analysis** (the PlantCV seed workflows, the
-calibrated seed analyses and the SMPTS paper reconstruction), **Thresholds and
-classifiers** (extended thresholds, Naive Bayes, K-means) and **Colour
-correction**. It is off until you turn it on, and the application remembers it. A
-project saved on a pipeline outside the short list still opens on that pipeline with
-the setting off, and the nodes of all pipelines stay available from Add node.
+Choosing the other default pipeline loads it fresh and arranges its nodes
+automatically; default pipelines are never overwritten. A project or pipeline file
+opens with the layout it was saved with. Returning to the default pipeline the graph
+came from keeps the project's own graph, including its layout; changing between the
+two, or leaving an editable copy of one, restores the factory values and layout, and
+the edits stay in the copy. Changing between them clears the open result until you
+run again; nodes they share stay calculated.
 
-Hover over a factory pipeline in the list for its description and evidence caveats,
-such as an original source being unavailable.
-
-Choosing a factory pipeline loads a fresh copy and arranges its nodes
-automatically. Factory pipelines are never overwritten; re-selecting one restores
-its original values and layout. A project or pipeline file opens with the layout it
-was saved with. Returning from a factory pipeline to the Procedural or Cellpose seed
-analysis it was opened from keeps the project's own graph, including its layout;
-changing between those two, or leaving an editable copy of one, restores the factory
-values and layout, and the edits stay in the copy. Changing between them clears the
-open result until you run again; nodes they share stay calculated.
-
-Default pipelines (Procedural seed analysis, Cellpose seed analysis and the factory pipelines) are always locked
-and cannot be renamed. Running, inspecting outputs, arranging nodes and choosing
-backends work. Parameter editors, wiring and the **Enabled** checkbox are read-only,
+Default pipelines are always locked and cannot be renamed. Running, inspecting
+outputs and arranging nodes work. Parameter editors, wiring and the **Enabled** checkbox are read-only,
 and the **Node** tab says so and links to making a copy.
 
 **Add node**, **Move to unused**, **… → Remove selected added node** and the rename
@@ -214,11 +200,6 @@ and reopens on the one you were using; choose one in the list to return to it.
   changing controls.
 - Changing a parameter recomputes only that node and its dependents on the next run.
   Moving cards, choosing overlays or changing opacity never invalidates results.
-- **Backend:** a global **Native / PlantCV** choice applies to every node; a node's
-  own **Backend** setting can override it, or **Inherit**. PlantCV execution needs the
-  pinned local reference environment; if it is unavailable the node reports that
-  instead of silently running natively. Stages without a public PlantCV equivalent
-  are native only, and the six watershed stages share one choice.
 - Full-resolution analysis stays on the GPU. If a request exceeds a precision,
   memory or work limit it is reported as unsupported rather than run at a lower
   resolution.
@@ -235,60 +216,76 @@ On the canvas:
 - Node cards show their main outputs. Viewer-only outputs are folded behind a
   "▸ n more views" row; click it to expand or fold them. Connected outputs always
   show.
-- **Add node** inserts a catalogue node; a check marks each node the pipeline
-  already uses. **… → Remove selected added node** removes an added node and its
+- **Add node** inserts another copy of a default node, with its own settings and
+  results; a check marks each node the pipeline already uses. **… → Remove selected added node** removes an added node and its
   private inputs. On a default pipeline both offer an editable copy first.
 - **Auto arrange** lays the nodes out in dependency columns. **Move to unused**,
   **Bundle cables** and **Route around nodes** sit beside it, or under **Tools** when
   the pane is narrow; **Fit**, **100%** and **−** control the canvas zoom.
 - `Ctrl+K` finds a node by name and frames it with its neighbours.
 
-### Pipeline-specific inputs
+### Colour chart and ruler
 
-- **Foreground region.** Working binary, adaptive-mean and Otsu threshold nodes and
-  the SMPTS intersection node accept a rectangular region. On an editable copy, use
-  **Select foreground region…** to draw it, or enter it in the node's settings as
-  `[left, top, right, bottom]` in that node's input pixels (right and bottom
-  excluded); `null` means the whole frame. Foreground outside the rectangle is set
-  to background.
-- **Models.** Naive Bayes and K-means nodes have **Select model…** and **Train…**
-  buttons. For Naive Bayes, **Train…** learns a pixel colour classifier from a sampled
-  RGB table or from image and mask folders, and saves the exact PlantCV TSV
-  (optionally with hue/saturation/value density plots as SVG). For K-means it learns
-  cluster centres from a folder of images, without labels, and saves them with their
-  training provenance in one JSON file. Defaults match PlantCV, and an editable
-  pipeline selects the trained model. A selected model file must stay available and
-  unchanged; reselecting a
-  changed file recalculates its masks while reusing the prepared image. In the
-  K-means category-mask node, **cat list** chooses clusters: `null` returns every
-  cluster, `[0, 2]` returns one union mask.
-- **Colour correction.** The built-in **Deskew and colour balance** node rectifies
-  geometry and balances RGB channels from neutral patches. The PlantCV colour-card
-  pipelines instead fit source patch colours to target colours (an affine transform
-  for the automatic card route, a nine-term polynomial for four-input **Correct
-  colour**). They complement each other; neither replaces the other.
-- **Calibrated seed pipelines** crop an explicit seed region after card correction.
-  Labels and coordinates in those outputs are local to the crop
-  (parent xy = local xy + crop origin). The **Chip size calibration** stage converts
-  sizes to card units when a chip size is set; otherwise sizes stay in pixels.
+- **Colour chart.** The chart may lie anywhere in the photograph and at any
+  angle. Its patches are found as a grid of uniform squares, and the chart is
+  identified from the order of its colours in each channel, which exposure,
+  white balance and tone curve do not change: the Datacolor SpyderCHECKR 24 and
+  the X-Rite ColorChecker Classic 24 (also the layout of the CameraTrax
+  24ColorCard). Patches are numbered in the chart's own upright reading order
+  however it lies: ColorChecker greys are 19–24 from white to black, as X-Rite
+  numbers them; SpyderCHECKR greys run down the first column (1, 5, 9, 13, 17,
+  21). A chart cut by the frame is numbered from its visible patches. Any other
+  grid of at least 12 patches, three or more each way, with several saturated
+  colours and a wide range of lightness, is reported as an unrecognised chart
+  and numbered row by row as it lies in the image.
+- **Ruler.** The ruler may also lie anywhere and at any angle, outside the chart.
+  The strongest pairs of parallel edges a ruler-width apart are measured in turn
+  until one carries a complete metric tick train of **Expected visible span**
+  (**Span mm**, on **Ruler detection and scale**; default 150 mm), with a whole
+  centimetre at each end. When no band does, as for a ruler cut by the frame or
+  the chart, partly covered, or shorter or longer than the span, each band is
+  measured again over its longest visible run of millimetre ticks: at least 3 cm
+  with nearly every tick present, so barcodes and textures do not qualify.
+  Scales printed without 5 mm marks are accepted. An end of the run with blank
+  ruler beyond it must be a centimetre mark; an end cut by the frame, the chart
+  or an object may fall anywhere. The imperial scale is not sought in this case,
+  and tick labels appear only when the zero end is in view. The scale is the
+  least-squares slope of tick position against tick index, so it resolves a
+  fraction of a pixel per millimetre. Tick labels count from the end where the
+  metric ticks run along the ruler's upper edge, viewed along the ruler; this
+  affects only the labels, not the scale. When neither pass finds a scale, a band
+  whose millimetre ticks still form a regular train along the expected span is
+  shown as the ruler outline, without a scale. Any other band, such as a printed
+  sample label, a box edge or graph paper, is not reported as a ruler.
 
+### Colour correction
+
+- **Colour correction.** The **Deskew and colour correction** node rectifies the
+  image from the colour chart and, by default, corrects its colours against the
+  chart's published reference values (**Chart reference fit**): every patch is
+  matched to its reference colour, so colour balance, grey balance and levels are
+  corrected together. The Datacolor SpyderCHECKR 24 and X-Rite ColorChecker
+  Classic are known, at any orientation. The neutral patches carry extra weight so
+  greys stay grey. The node status reports the chart and the mean colour error
+  (CIEDE2000) of the fitted patches and of each patch held out of its own fit.
+  When the chart is not recognised or too few patches are usable, the node falls
+  back to grey balance (channel gains from the neutral patches) and warns.
+  **Correction model** set to **Grey balance only** always uses the gains.
 ### Saving pipelines
 
 Three compact icons sit beside the **Pipeline** list: the pencil renames the pipeline,
 the folder loads one from a file and the disk saves one to a file. Hover over an icon
 for its name. **Export** and the **…** menu follow them.
 
-- The disk writes a custom pipeline file (calculation settings, node IDs, wiring,
-  enabled state, backend choices, layout and referenced assets, but no pixels or
-  results). It needs a name different from any default pipeline, and work carries on
-  in an editable copy of that name. The folder opens a file as an editable copy,
-  numbering its name if the project already has that one; referenced assets that are
-  missing are reported. Neither offers a copy first, because neither changes a default
-  pipeline.
+- The disk writes a custom pipeline file (calculation settings, added nodes and
+  layout, but no pixels or results). It needs a name different from any default
+  pipeline, and work carries on in an editable copy of that name. The folder opens a
+  file as an editable copy, numbering its name if the project already has that one.
+  Neither offers a copy first, because neither changes a default pipeline.
 - Node positions are saved with the project and with each pipeline file, and are
   restored when either is opened. Moving nodes never invalidates cached results.
-- **Export run…** writes the completed run (including partial runs) to a new folder
-  with `native-results.json`, output checkpoints and any selected model bytes.
+- **Export** writes the selected added node's result report to a folder you choose;
+  with no added node selected it opens **Results…**.
 - The **…** menu holds **Remove selected added node**, and **Export run…** when a
   narrow pane hides the **Export** button.
 
@@ -329,8 +326,48 @@ analysis first if the corrected frame is not yet available.
 
 ### Material references
 
-Choose **Materials** (or **Paint Foreground references…** when a result reports
-missing Foreground evidence), pick Background, Foreground or Other, and paint the region.
+Every image starts with automatic references, so material evidence works before
+anything is painted. The **Automatic material references** node shows them: green
+Foreground, orange Background and magenta Other.
+
+- **Foreground**: the inset interiors of confident seeds. These are the isolated
+  reference seeds when the reference region holds them. Otherwise they are seeds that
+  **Reference seed dimensions and shape** finds isolated, compact and of consistent
+  size, inside the vessel or, when no vessel rim is visible, anywhere outside the
+  chart and ruler. The search tolerates shading and a patchy backdrop, ignores dust,
+  and needs at least a quarter of a seed width of clear backdrop around each seed, so
+  a pile or a tightly packed tray gives no confident seeds rather than wrong ones.
+  The clear ring must look like the backdrop, so a hilum on a piled seed or a mark
+  on a box wall does not count, and thin strokes such as printed characters or a
+  gloss ring do not either. Blobs only a few pixels wide, such as barcode bars
+  broken up by the mask cleaning, are too small to judge and are not taken.
+- **Other**: the vessel wall, when its rim is visible around most of the fitted edge,
+  and the detected colour chart and ruler. Seeds heaped against the wall are left out
+  of it: seed-coloured blobs in the wall band stay unlabelled, while the rim's own thin
+  lines remain Other.
+- **Background**: the ring outside the vessel. When there is no vessel, or the ring's
+  colour differs from the surface around the confident seeds (a lined dish, say),
+  rings around those seeds are used instead, without their darkest part (cast
+  shadows). With neither, a band along the image border is used.
+
+Without a visible vessel, the confident seeds also set the analysis area: the
+area they span, grown by two seed widths or a quarter of that span, whichever is
+larger, less the chart and ruler. Seeds well beyond the outermost confident ones
+can fall outside it. With fewer than three confident seeds, as in most piles, the
+whole image less the chart and ruler is analysed, and labels, logos, the chart's
+frame and any part of a ruler beyond its measured span can then draw proposals.
+The views then draw the analysed area, dashed, instead of the fitted circle, and
+**Layout detection** reports no vessel. With no seed measured at all, the seed
+size is a fixed fraction of that circle and **Reference seed dimensions and
+shape** says so rather than marking a seed.
+
+Painting adds to these and outweighs them: the more you paint of a class, the less
+its automatic area counts, down to the node's floor weight, and painted pixels are
+never overridden. Turn a class off in the node to rely on painting alone.
+
+To paint, choose **Materials** (or **Paint Foreground references…** when a result
+reports missing Foreground evidence), pick Background, Foreground or Other, and paint
+the region.
 Use the exclusion controls only where a class model should ignore an area. **Apply
 + save** applies the draft to analysis and keeps it with the image's annotations
 (see [What is saved where](#what-is-saved-where)). If writing it fails, the applied
@@ -341,22 +378,25 @@ state stays in memory and the failure is reported; **Save project** retries.
 Choose **Seeds**. Then:
 
 1. Select a seed ID, or use **Next empty** / **Next unannotated** (painted seeds whose
-   condition or shape review is incomplete). **Show** displays all seeds or the
-   current one. `Alt+Left` / `Alt+Right` step through annotated seeds.
+   condition or shape review is incomplete). **Select** then a click on a painted
+   seed makes it current and returns to the previous tool; a click where no seed
+   is painted changes nothing. **Show** displays all seeds or the current one.
+   `Alt+Left` / `Alt+Right` step through annotated seeds.
 2. Paint with Brush (`Ctrl+Alt+B`), Trace edge (`Ctrl+Alt+T`), Shape fill, Smart fill
    (`Ctrl+Alt+F`) or Eraser; each tool's tooltip explains it. **Clear seed** and
    **Clear all** sit beside the visibility control.
-3. Set **Seed condition**: **No defects** and the defect choices are mutually
-   exclusive. Choose Outline and Pose. A Complete outline checks and locks **Full
-   length visible**; an incomplete outline can set it for size-only use.
-4. Leave **Exclude from modelling** clear unless the seed must be omitted from model
-   and library contributions.
-5. **Pick location** places the hilum once on the current seed (Escape cancels);
-   **Clear location** removes it. Direction is derived from the painted centroid.
+3. Under **Seed traits**, set **Condition**: **No defects** and the defect choices
+   are mutually exclusive. Choose Outline and Pose. A Complete outline checks and
+   locks **Full length visible**; an incomplete outline can set it for size-only use.
+4. Leave **Exclude from modelling** (beside **Apply + save**) clear unless the seed
+   must be omitted from model and library contributions.
+5. On the **Hilum** row, **Pick location** places the hilum once on the current seed
+   (Escape cancels); **Clear location** removes it. Direction is derived from the
+   painted centroid.
 6. **Apply + save**.
 
 A cross marks each painted seed's centroid. It scales with the image and spans a
-third of the median seed length, so crowded seeds stay visible when zoomed out.
+quarter of the median seed length, so crowded seeds stay visible when zoomed out.
 
 `Ctrl+Z` / `Ctrl+Shift+Z` undo and redo annotation edits. Applying or reprojecting
 annotations is a history boundary, and history has count and size limits.
@@ -392,8 +432,8 @@ separation and what depends on it.
 | Magenta square | Centre locked by an applied seed annotation |
 
 Markers keep a constant screen size while you edit, so they stay easy to grab.
-Outside the editor they scale with the image and span a third of the estimated
-seed diameter.
+Outside the editor they scale with the image and span a quarter of the
+estimated seed diameter.
 
 **Mode** sets how manual centres combine with automatic detection. **Augment
 automatic** keeps detection on and adds your centres, for correcting a few seeds.
@@ -489,19 +529,28 @@ are also kept in its `unsaved/` folder, which the next open offers to restore.
   See [learned instance segmentation](LEARNED_INSTANCE_SEGMENTATION.md).
 - **Train object-level seed traits…**, **Import seed-trait model…** and **Export
   seed-trait model…**: see [seed-trait training](TRAIT_CLASSIFIER_TRAINING.md).
-- **Species reference libraries…** builds, validates, publishes, forks, imports,
-  exports and pins immutable species libraries. A project pins one library, chosen
-  for the open image's species. On an image of another species the desktop marks the
+- **Species reference libraries…** creates, uses, imports and exports species
+  libraries. A library describes one species: **Species** at the top of the window,
+  set to the open image's species, picks the species every tab works on.
+  - **Libraries** lists that species' versions. With none yet, **Create a library…**
+    leads to the next tab. **Use for this project** pins the selected version; only a
+    library of the open image's species can be pinned. **Export…**, **Retire** and
+    **Import library file…** complete the set.
+  - **Create a library** lists the project's images of that species, then those with
+    no species set; creating the library records the checked ones as that species,
+    so a new project need not set **Species** image by image first. Images with
+    saved annotations are checked, and images without them are shown greyed. Give
+    the version a name, optionally start from an existing version (keeping its
+    images, each removable), and choose **Create *species* library**. The images are
+    checked before anything is published, and a version never changes afterwards.
+    Optional lineage, accession, seed-lot and repeated-photo identifiers are under
+    **Source details**.
+  - **Details** shows each evidence product's coverage and validation. Coverage
+    counts evidence, not accuracy.
+
+  A project pins one library. On an image of another species the desktop marks the
   library node blocked and analyses without the library; batch runs and optimisation
-  refuse that image. Coverage reports inventory evidence, not accuracy. See
-  [species reference libraries](SPECIES_REFERENCE_LIBRARIES.md).
-
-To use an existing PlantCV K-means `.fit` model, convert it with the Python
-environment that trained it, then select the JSON with **Select model…**:
-
-```powershell
-python -m seedvision.model_io.convert_plantcv_kmeans model.fit model.json
-```
+  refuse that image. See [species reference libraries](SPECIES_REFERENCE_LIBRARIES.md).
 
 Feature specification v2 means raw Foreground colour evidence in both inference
 and export. Datasets and checkpoints recorded with version 1 are refused: export
@@ -560,8 +609,8 @@ Controls:
 - **Mask recovery**: **Cell-probability threshold** (logit; lower admits fainter
   pixels), **Flow-error threshold** (higher accepts masks whose flows agree less
   with their shape) and **Minimum instance area** (a fraction of the squared seed
-  diameter). Objects centred outside the dish are dropped and the rest are clipped
-  to it. These controls re-decode the cached flows without rerunning the network.
+  diameter). Objects centred outside the dish (or, without a vessel, the analysis
+  area) are dropped and the rest are clipped to it. These controls re-decode the cached flows without rerunning the network.
 
 The output is unvalidated: no reviewed reference masks exist yet, so treat every
 instance as a proposal to review. To start a reviewed reference from it, use
@@ -578,11 +627,10 @@ A saved project can be re-run without the desktop:
 python scripts/analyze_pilot.py --project projects/analysis.seedfiddle-project.json --output-dir artifacts/project-results
 ```
 
-The batch uses the same saved recipe, reference archives and saved pipelines as the
+The batch uses the same saved settings, added nodes and reference archives as the
 desktop, and rejects unresolved fingerprints and unknown reference frames. Add
-`--seed-crop-padding-px 4` to write per-seed crops. Saved PlantCV/SMPTS pipelines
-produce `native_graphs/native-graphs.json` and per-graph output folders in each
-report.
+`--seed-crop-padding-px 4` to write per-seed crops. Added nodes write their results
+to a `catalogue_nodes/` folder in each report.
 
 ## Keyboard shortcuts
 

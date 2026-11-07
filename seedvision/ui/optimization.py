@@ -87,7 +87,8 @@ class OptimizationDialog(QDialog):
             item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable)
             item.setCheckState(Qt.CheckState.Checked)
             self.images.setItem(row, 0, item)
-            count = 0 if sample.labels is None else np.count_nonzero(np.unique(sample.labels))
+            # Python values: Qt refuses NumPy booleans, such as a NumPy count > 0.
+            count = 0 if sample.labels is None else int(np.count_nonzero(np.unique(sample.labels)))
             count_item = QTableWidgetItem(f'{count} eligible; {len(sample.excluded_ids)} excluded')
             if sample.excluded_ids:
                 count_item.setToolTip('Excluded seed IDs: ' + ', '.join(map(str, sample.excluded_ids))
@@ -95,7 +96,7 @@ class OptimizationDialog(QDialog):
             self.images.setItem(row, 1, count_item)
             checkbox = QCheckBox()
             checkbox.setToolTip('Declare exhaustive coverage for this image only. Unchecked leaves disjoint predictions unscored.')
-            checkbox.setEnabled(count > 0 and not sample.excluded_ids)
+            checkbox.setEnabled(bool(count > 0 and not sample.excluded_ids))
             checkbox.setChecked(sample.complete and checkbox.isEnabled())
             self.images.setCellWidget(row, 2, checkbox)
         self.images.horizontalHeader().setStretchLastSection(True)

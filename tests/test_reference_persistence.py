@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from tests.review_fixtures import workspace_window
-from tests.catalogue_fixtures import CatalogueTestCase
 
 from tests.functional_units import functional_units
 
@@ -27,7 +26,7 @@ from seedvision.persistence import (
 
 
 @functional_units
-class ReferenceRegionStoreTests(CatalogueTestCase):
+class ReferenceRegionStoreTests(unittest.TestCase):
     def check_test_invalid_shape_review_names_seed_and_required_repair(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -297,7 +296,7 @@ class ReferenceRegionStoreTests(CatalogueTestCase):
 
 
 @functional_units
-class ReferenceRegionMainWindowTests(CatalogueTestCase):
+class ReferenceRegionMainWindowTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -515,10 +514,10 @@ class ReferenceRegionMainWindowTests(CatalogueTestCase):
             window._reference_transforms[key] = np.eye(3)
             panel = window.reference_association_label.text()
             self.assertIn(
-                "Validated; waiting for corrected-image calibration", panel
+                "Loaded; waiting for the analysis to deskew the image.", panel
             )
-            self.assertIn("Saved corrected coordinates: 68 × 52 px", panel)
-            self.assertIn("Seed outlines 2 IDs / 160 px", panel)
+            self.assertIn("Saved for the deskewed image: 68 × 52 px", panel)
+            self.assertIn("Seed outlines: 2 (160 px)", panel)
             self.assertIn(str(ReferenceRegionStore(root).path_for(image_path)), panel)
             self.assertNotIn(key, window._applied_instance_annotations)
 
@@ -545,7 +544,7 @@ class ReferenceRegionMainWindowTests(CatalogueTestCase):
                 render=False,
             )
             self.assertIn(
-                "Loaded and available to analysis",
+                "Loaded and used in analysis.",
                 window.reference_association_label.text(),
             )
             dispose_window(window)

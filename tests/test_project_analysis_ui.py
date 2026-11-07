@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from tests.catalogue_fixtures import CatalogueTestCase
 
 from tests.functional_units import functional_units
 
@@ -18,7 +17,7 @@ import numpy as np
 
 
 @functional_units
-class ProjectAnalysisUiTests(CatalogueTestCase):
+class ProjectAnalysisUiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -71,69 +70,6 @@ class ProjectAnalysisUiTests(CatalogueTestCase):
         return tuple(
             Path(window.image_list.item(index).data(Qt.ItemDataRole.UserRole)).resolve()
             for index in range(window.image_list.count())
-        )
-
-    @staticmethod
-    def _reference_graph_attachment():
-        from seedvision.benchmarking.recipes import (
-            PortContract,
-            RecipeProvenance,
-            RecipeProvenanceMode,
-            RecipeSpec,
-            RecipeStage,
-            SourceMapping,
-            SourceResolution,
-            StageRunRecord,
-            StageRunState,
-        )
-        from seedvision.persistence.reference_graphs import ReferenceGraphAttachment
-
-        source = SourceMapping(
-            reference_id="ui_graph_fixture",
-            reference_version="test-only",
-            resolution=SourceResolution.PINNED,
-            source_path="fixture.py",
-            source_symbol="threshold",
-            source_sha256="a" * 64,
-            license_id="test-only",
-        )
-        recipe = RecipeSpec(
-            recipe_id="ui_graph_fixture",
-            recipe_version="1",
-            title="UI graph fixture",
-            description="Persistence-only UI fixture.",
-            provenance=RecipeProvenance(
-                mode=RecipeProvenanceMode.NATIVE_COMPATIBLE,
-                backend_id="native_fixture",
-                backend_version="test-only",
-                reference_id="ui_graph_fixture",
-                reference_version="test-only",
-                source_manifest_sha256="b" * 64,
-                environment_lock_sha256="c" * 64,
-                environment_versions={"python": "test-only"},
-                evidence_status=SourceResolution.PINNED,
-            ),
-            stages=(RecipeStage(
-                stage_id="threshold",
-                title="Threshold",
-                operation_id="fixture.threshold",
-                description="No execution is performed by this fixture.",
-                ports=(PortContract("mask", "output", "Mask", "Mask"),),
-                source_mappings=(source,),
-            ),),
-        )
-        run = StageRunRecord(
-            stage_id="threshold",
-            recipe_identity=recipe.identity,
-            state=StageRunState.EXECUTED,
-            checkpoint_sha256="d" * 64,
-        )
-        return ReferenceGraphAttachment(
-            recipe=recipe,
-            stage_runs=(run,),
-            selected_stage_id="threshold",
-            bundle_cables=True,
-            route_around_nodes=False,
         )
 
     def check_test_actions_and_profile_load_replace_only_portable_analysis_state(self) -> None:
@@ -613,38 +549,6 @@ class ProjectAnalysisUiTests(CatalogueTestCase):
             finally:
                 self._dispose(window)
 
-    def check_test_open_and_save_retain_reference_graph_metadata(self) -> None:
-        from seedvision.persistence import ProjectAnalysisStore
-
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            self._write_image(root / "images" / "capture.png")
-            source_project = root / "projects" / "with-graph.seedfiddle-project.json"
-            first = self._window(root)
-            try:
-                attachment = self._reference_graph_attachment()
-                first._project_reference_graphs = (attachment,)
-                self.assertTrue(first._write_project(source_project))
-            finally:
-                self._dispose(first)
-
-            second = self._window(root)
-            try:
-                with patch.object(second, "_confirm_project_replacement", return_value=True):
-                    self.assertTrue(second._open_project(source_project))
-                self.assertEqual(second._project_reference_graphs, (attachment,))
-
-                resaved_path = root / "projects" / "resaved.seedfiddle-project.json"
-                self.assertTrue(second._write_project(resaved_path))
-                restored = ProjectAnalysisStore(root).load(resaved_path, verify_files=True)
-                self.assertEqual(restored.document.reference_graphs, (attachment,))
-                self.assertEqual(
-                    restored.document.reference_graphs[0].checkpoint_data_status,
-                    "unavailable",
-                )
-            finally:
-                self._dispose(second)
-
     def check_test_new_project_purges_session_and_restores_default_graph_and_ui(self) -> None:
         from PySide6.QtCore import QSignalBlocker
 
@@ -661,9 +565,6 @@ class ProjectAnalysisUiTests(CatalogueTestCase):
                     window._write_project(
                         root / "projects" / "old.seedfiddle-project.json"
                     )
-                )
-                window._project_reference_graphs = (
-                    self._reference_graph_attachment(),
                 )
                 key = window._current_image_key()
                 self.assertIsNotNone(key)
@@ -700,7 +601,6 @@ class ProjectAnalysisUiTests(CatalogueTestCase):
                 self.assertEqual(window._applied_foreground_reference_masks, {})
                 self.assertEqual(window._manual_seed_centre_states, {})
                 self.assertEqual(window._reference_undo_histories, {})
-                self.assertEqual(window._project_reference_graphs, ())
                 self.assertEqual(
                     window.pipeline.node("ruler_detection").parameters[
                         "ruler_length_mm"
@@ -1612,6 +1512,10 @@ class ProjectAnalysisUiTests(CatalogueTestCase):
                 )
                 self.assertIn(key, window._withheld_reference_sidecars)
                 self.assertIn(key, window._withheld_manual_centre_sidecars)
+                self.assertEqual(
+                    window._reference_region_load_status[key],
+                    ("rejected", "The image was missing when the project was opened."),
+                )
 
                 image.write_bytes(image_bytes)
                 window._add_image(image, open_now=False)
@@ -1673,12 +1577,26 @@ class ProjectAnalysisUiTests(CatalogueTestCase):
                     window, "_confirm_project_replacement", return_value=True
                 ):
                     self.assertTrue(window._open_project(project_path))
+                # An image the project has no references for simply has none.
+                window._open_path(first)
+                self.assertIn("No references", window.reference_association_summary.text())
+                self.assertEqual(
+                    window.reference_association_label.text().splitlines()[:2],
+                    ["a.png", "No references are saved for this image."],
+                )
                 key = _path_identity(added)
                 window._add_image(added, open_now=False)
                 self.assertIn(key, window._withheld_reference_sidecars)
                 self.assertIn(key, window._withheld_manual_centre_sidecars)
                 self.assertNotIn(key, window._project_reference_sidecar_paths)
                 self.assertNotIn(key, window._project_manual_centre_sidecar_paths)
+                # A shared workspace file for an added image is named, not loaded.
+                window._open_path(added)
+                self.assertIn("References outside project", window.reference_association_summary.text())
+                panel = window.reference_association_label.text()
+                self.assertIn("References saved outside this project were not loaded.", panel)
+                self.assertIn(f"File: {reference_path}", panel)
+                self.assertNotIn(key, window._applied_foreground_reference_masks)
 
                 self.assertTrue(window._save_project())
                 saved = store.load(project_path)
@@ -2176,12 +2094,11 @@ class ProjectAnalysisUiTests(CatalogueTestCase):
                 self._dispose(window)
 
     def test_workflow_lifecycle(self):
-        """15 related ProjectAnalysisUiTests scenarios, each with private fixture state."""
+        """14 related ProjectAnalysisUiTests scenarios, each with private fixture state."""
         self.scenario(self.check_test_actions_and_profile_load_replace_only_portable_analysis_state)
         self.scenario(self.check_test_project_round_trip_restores_state_and_purges_every_old_image_value)
         self.scenario(self.check_test_absent_and_partial_ui_state_reset_unspecified_presentation_to_defaults)
         self.scenario(self.check_test_tracked_untitled_close_prompts_and_save_routes_through_save_as)
-        self.scenario(self.check_test_open_and_save_retain_reference_graph_metadata)
         self.scenario(self.check_test_new_project_purges_session_and_restores_default_graph_and_ui)
         self.scenario(self.check_test_ordinary_analysis_allows_project_save_but_guards_context_replacement)
         self.scenario(self.check_test_ordinary_recompute_keeps_reference_and_annotation_entry_points_enabled)

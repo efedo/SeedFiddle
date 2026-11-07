@@ -4,10 +4,24 @@ from tests.functional_units import functional_units
 import unittest
 from unittest.mock import patch
 
+import numpy as np
 import torch
 
-from seedvision.cuda import plantcv_correction as correction
-from tests.test_native_correction_recipe import _cuda_inputs
+from seedvision.cuda import colour_correction as correction
+
+
+def _cuda_inputs():
+    rng = np.random.default_rng(309)
+    source = rng.integers(20, 235, (17, 25, 3), dtype=np.uint8)
+    target = np.clip(source.astype(np.int16)+[9, -7, 5], 0, 255).astype(np.uint8)
+    mask = np.zeros((17, 25), dtype=np.uint8)
+    for index in range(24):
+        row, column = divmod(index, 6)
+        ys, xs = slice(1+row*4, 4+row*4), slice(1+column*4, 4+column*4)
+        source[ys, xs] = rng.integers(20, 235, 3, dtype=np.uint8)
+        target[ys, xs] = np.clip(source[ys, xs].astype(np.int16)+[9, -7, 5], 0, 255)
+        mask[ys, xs] = (index+1)*10
+    return tuple(torch.as_tensor(value.copy(), device="cuda") for value in (target, mask, source, mask))
 
 
 @unittest.skipUnless(torch.cuda.is_available(), 'CUDA required for polynomial correction')
@@ -15,7 +29,7 @@ from tests.test_native_correction_recipe import _cuda_inputs
 class PolynomialCorrectionIntegrityTests(unittest.TestCase):
     def invoke(self, inputs, callback):
         state = {'phase': 'entry', 'extracted': [], 'copied': [], 'fit': {}}
-        extract, apply, matrices = (correction.get_color_matrix_cuda,
+        extract, apply, matrices = (correction.colour_matrix_cuda,
             correction._apply, correction._matrices)
         solve = correction.np.linalg.solve
 
@@ -40,11 +54,11 @@ class PolynomialCorrectionIntegrityTests(unittest.TestCase):
             state['fit']['inverse'] = result
             return result
 
-        with patch.object(correction, 'get_color_matrix_cuda', tracked_extract), \
+        with patch.object(correction, 'colour_matrix_cuda', tracked_extract), \
                 patch.object(correction, '_matrices', tracked_matrices), \
                 patch.object(correction, '_apply', tracked_apply), \
                 patch.object(correction.np.linalg, 'solve', tracked_solve):
-            return correction.correct_color_cuda(*inputs, cancel=lambda: callback(state))
+            return correction.correct_colour_cuda(*inputs, cancel=lambda: callback(state))
 
     def check_test_target_inputs_are_guarded_during_source_extraction(self):
         for index in (0, 1):
@@ -154,9 +168,9 @@ class PolynomialCorrectionIntegrityTests(unittest.TestCase):
                 inputs = list(_cuda_inputs())
                 inputs[0] = image
                 with self.assertRaisesRegex(ValueError, 'contiguous CUDA HxWx3 uint8 BGR'):
-                    correction.correct_color_cuda(*inputs)
+                    correction.correct_colour_cuda(*inputs)
         with self.assertRaisesRegex(TypeError, 'cancel must be a zero-argument callable or None'):
-            correction.correct_color_cuda(*_cuda_inputs(), cancel=0)
+            correction.correct_colour_cuda(*_cuda_inputs(), cancel=0)
 
     def test_workflow_lifecycle(self):
         """4 related PolynomialCorrectionIntegrityTests scenarios, each with private fixture state."""

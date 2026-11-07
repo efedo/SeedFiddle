@@ -343,7 +343,10 @@ class TraitPipelineTests(unittest.TestCase):
         foreground[28:36, 44:52] = True
         cache = PipelineAnalysisCache()
         settings = TraitClassifierSettings(str(self.path), 0)
-        options = dict(settings=BaselineSettings(),
+        # The synthetic chart fills most of the frame, and a photograph without
+        # a vessel is analysed outside its chart; counting the fitted circle as
+        # the vessel keeps the instances inside the analysed crop.
+        options = dict(settings=BaselineSettings(vessel_minimum_rim_support=0.0),
             calibration_settings=calibration.CalibrationSettings(apply_perspective_correction=False),
             dish_settings=DishDetectionSettings(expected_outer_diameter_mm=0),
             foreground_reference_mask=foreground, enabled_nodes={'procedural_instances', 'trait_classifier'},

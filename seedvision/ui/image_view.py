@@ -74,6 +74,7 @@ OVERLAY_MODES = {
     "wavelet_detail_4",
     "wavelet_residual",
     "perimeter_background_reference",
+    "automatic_material_references",
     "seed_scale_estimation",
     "seed_size_ovality_distribution",
     "seed_pose_shape_distributions",
@@ -529,7 +530,7 @@ class _InstanceAnnotationTileItem(QGraphicsItem):
 
 
 # Display-only seed centre markers span this fraction of the typical seed length.
-CENTRE_MARKER_SEED_FRACTION = 1.0 / 3.0
+CENTRE_MARKER_SEED_FRACTION = 1.0 / 4.0
 
 
 class _InstanceCentreItem(QGraphicsItem):
@@ -607,6 +608,7 @@ class ImageView(QGraphicsView):
     manual_seed_centres_edited = Signal(object, object, str, str)
     manual_seed_centre_editing_cancelled = Signal()
     procedural_instance_selected = Signal(int)
+    instance_annotation_picked = Signal(int)
     hilum_landmark_edited = Signal(object, object)
     hilum_editing_cancelled = Signal()
 
@@ -1649,9 +1651,10 @@ class ImageView(QGraphicsView):
         self._set_reference_point_mode("instance" if enabled else None)
 
     def set_instance_annotation_tool(self, tool: str) -> None:
-        """Choose the brush, eraser, or image-aware instance tool."""
+        """Choose the select, brush, eraser, or image-aware instance tool."""
 
         if tool not in {
+            "select",
             "brush",
             "edge_trace",
             "smart_fill",
@@ -1665,7 +1668,33 @@ class ImageView(QGraphicsView):
         self._instance_trace_geometry = None
         self._clear_instance_preview()
         self._clear_instance_live_stroke()
+        if self._reference_point_mode is not None:
+            self.viewport().setCursor(self._reference_cursor())
         self.set_reference_erase_mode(tool == "eraser")
+
+    def _instance_select_tool_active(self) -> bool:
+        return (
+            self._reference_point_mode == "instance"
+            and self._instance_annotation_tool == "select"
+        )
+
+    def _reference_cursor(self) -> Qt.CursorShape:
+        if self._instance_select_tool_active():
+            return Qt.CursorShape.PointingHandCursor
+        return Qt.CursorShape.CrossCursor
+
+    def _pick_instance_annotation(self, scene_point: QPointF) -> None:
+        """Emit the painted seed under a Select click; ignore unpainted pixels."""
+
+        labels = self._instance_annotations
+        if labels is None:
+            return
+        x = int(np.floor(scene_point.x()))
+        y = int(np.floor(scene_point.y()))
+        if 0 <= y < labels.shape[0] and 0 <= x < labels.shape[1]:
+            label = int(labels[y, x])
+            if label > 0:
+                self.instance_annotation_picked.emit(label)
 
     def set_edge_trace_options(self, options: EdgeTraceOptions) -> None:
         self._edge_trace_options = options
@@ -1818,7 +1847,7 @@ class ImageView(QGraphicsView):
         self._reference_point_mode = mode
         if mode is not None:
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
-            self.viewport().setCursor(Qt.CursorShape.CrossCursor)
+            self.viewport().setCursor(self._reference_cursor())
         else:
             self._reference_paint_button = None
             self._reference_stroke_erases = False
@@ -1848,6 +1877,9 @@ class ImageView(QGraphicsView):
             self._hide_reference_brush_outline()
             return
         self._last_reference_hover_point = QPointF(scene_point)
+        if self._instance_select_tool_active():
+            self._hide_reference_brush_outline()
+            return
         if self._instance_assisted_tool_active():
             self._hide_reference_brush_outline()
             self._schedule_instance_preview(scene_point)
@@ -2035,7 +2067,9 @@ class ImageView(QGraphicsView):
             self._render_context_annotations(result)
             return
         if self._overlay_mode == "layout_detection":
-            self._render_dish_edges(result, width=4, include_inner=True)
+            self._render_dish_edges(
+                result, width=4, include_inner=True, analysis_area=False
+            )
             self._render_context_annotations(result)
             return
         if self._overlay_mode == "hue_only":
@@ -2063,8 +2097,14 @@ class ImageView(QGraphicsView):
             )
             self._render_context_annotations(result)
             return
+        if self._overlay_mode == "automatic_material_references":
+            self._render_automatic_material_references(result)
+            self._render_context_annotations(result)
+            return
         if self._overlay_mode == "perimeter_background_reference":
-            self._render_dish_edges(result, width=3, include_inner=False)
+            self._render_dish_edges(
+                result, width=3, include_inner=False, analysis_area=False
+            )
             self._render_background_sampling_band(result)
             self._render_background_starting_colour(result)
             self._render_context_annotations(result)
@@ -2496,6 +2536,31 @@ class ImageView(QGraphicsView):
             item.setOpacity(self._overlay_opacity)
             item.setZValue(20)
             self._overlay_items.append(item)
+
+    def _render_automatic_material_references(self, result) -> None:
+        """Foreground, Background and Other areas found without painting."""
+
+        from seedvision.segmentation.automatic_references import overlay_rgba
+
+        references = getattr(result, "automatic_material_references", None)
+        corrected = getattr(result.calibration, "gpu_corrected_bgr", None)
+        if references is None or corrected is None:
+            return
+        shape = tuple(int(value) for value in corrected.shape[-2:])
+        band = getattr(result, "perimeter_background_band", None)
+        perimeter = None
+        if (
+            references.background_source == "perimeter ring"
+            and band is not None
+            and band.accepted_sample_mask is not None
+        ):
+            perimeter = band.accepted_sample_mask.gpu_tensor()[0, 0] > 0
+        self._render_rgba_overlay(
+            overlay_rgba(references, shape, perimeter_mask=perimeter),
+            0,
+            0,
+            source_shape=shape,
+        )
 
     def _render_rgba_overlay(
         self,
@@ -2944,10 +3009,23 @@ class ImageView(QGraphicsView):
             self._overlay_items.append(circle)
 
     def _render_dish_edges(
-        self, result, *, width: int = 3, include_inner: bool = False
+        self,
+        result,
+        *,
+        width: int = 3,
+        include_inner: bool = False,
+        analysis_area: bool = True,
     ) -> None:
-        """Draw the analysis rim, plus the lower rim on the layout node."""
+        """Draw the analysis rim, plus the lower rim on the layout node.
 
+        Without a visible vessel the fitted circle bounds nothing and is not
+        drawn; ``analysis_area`` outlines the area analysed instead.
+        """
+
+        if not getattr(result, "vessel_present", True):
+            if analysis_area:
+                self._render_analysis_region_outlines(result, width)
+            return
         dish = result.dish
         legacy_radius = int(dish.radius)
         outer_radius = int(getattr(dish, "outer_radius", legacy_radius))
@@ -2989,11 +3067,32 @@ class ImageView(QGraphicsView):
             item.setZValue(10)
             self._overlay_items.append(item)
 
+    def _render_analysis_region_outlines(self, result, width: int) -> None:
+        """Outline the analysed area of a photograph without a vessel."""
+
+        pen = QPen(QColor("#41d9ff"))
+        pen.setWidth(width)
+        pen.setCosmetic(True)
+        pen.setStyle(Qt.PenStyle.DashLine)
+        for outline in getattr(result, "analysis_region_outlines", ()):
+            item = self._scene.addPolygon(
+                QPolygonF([QPointF(float(x), float(y)) for x, y in outline]), pen
+            )
+            item.setOpacity(self._overlay_opacity)
+            item.setZValue(10)
+            item.setToolTip(
+                "Analysed area: no vessel is visible, so the analysis covers the "
+                "confident seeds and their surroundings (or the whole image), less "
+                "the chart and ruler."
+            )
+            self._overlay_items.append(item)
+
     def _render_background_sampling_band(self, result, *, fill: bool = True) -> None:
         """Show the exact annulus sampled for the initial background prior."""
 
         band = getattr(result, "perimeter_background_band", None)
-        if band is None:
+        if band is None or not getattr(result, "vessel_present", True):
+            # Without a vessel the band rings a circle that is not there.
             return
         inner_radius = max(0.0, float(band.inner_radius_px))
         outer_radius = max(inner_radius, float(band.outer_radius_px))
@@ -3463,46 +3562,62 @@ class ImageView(QGraphicsView):
         rectangle.setZValue(10)
         self._overlay_items.append(rectangle)
         diameter = float(result.estimated_seed_diameter_px)
-        bounds = tuple(getattr(result, "reference_seed_bounds", ()))
+        ovals = tuple(getattr(result, "reference_seed_ovals", ()))
         fitted_diameters = tuple(
             float(value)
             for value in getattr(result, "reference_seed_diameters_px", ())
         )
-        if bounds:
-            seed_rects = tuple(
-                QRectF(
-                    float(left),
-                    float(top),
-                    float(right) - float(left),
-                    float(bottom) - float(top),
-                )
-                for left, top, right, bottom in bounds
-            )
-        else:
-            centre = QPointF(x0 + diameter * 0.7, y0 + diameter * 0.7)
-            seed_rects = (
-                QRectF(
-                    centre.x() - diameter * 0.5,
-                    centre.y() - diameter * 0.5,
-                    diameter,
-                    diameter,
-                ),
-            )
+
+        def pixels(value: float) -> str:
+            return f"{value:.1f}".rstrip("0").rstrip(".")
+
         scale_pen = QPen(QColor("#ffd84a"), 3)
         scale_pen.setCosmetic(True)
-        for index, seed_rect in enumerate(seed_rects):
-            circle = self._scene.addEllipse(seed_rect, scale_pen)
-            circle.setOpacity(self._overlay_opacity)
-            circle.setZValue(11)
-            self._overlay_items.append(circle)
-            fitted_diameter = (
-                fitted_diameters[index]
+        shapes = []
+        for index, oval in enumerate(ovals):
+            long_side = float(oval.long_side_px)
+            short_side = float(oval.short_side_px)
+            shape = self._scene.addEllipse(
+                QRectF(-long_side * 0.5, -short_side * 0.5, long_side, short_side),
+                scale_pen,
+            )
+            shape.setRotation(float(oval.angle_degrees))
+            shape.setPos(float(oval.center_x), float(oval.center_y))
+            processing = (
+                f" Processing width after the reference correction: "
+                f"{pixels(fitted_diameters[index])} px."
                 if index < len(fitted_diameters)
-                else diameter
+                else ""
             )
-            diameter_text = (
-                f"Initial fit: {fitted_diameter:.1f}".rstrip("0").rstrip(".") + " px"
-            )
+            shapes.append((
+                shape,
+                f"Initial fit: {pixels(long_side)} × {pixels(short_side)} px",
+                f"Oval fitted to an isolated reference seed: long side "
+                f"{pixels(long_side)} px, short side {pixels(short_side)} px."
+                + processing,
+            ))
+        if not shapes:
+            # No seed was measured, so none is drawn: a circle here would mark
+            # whatever lies in the reference region as a seed. The estimate is
+            # stated at the region's corner instead.
+            from_vessel = getattr(result, "vessel_present", True)
+            shapes.append((
+                None,
+                f"No seed measured: {pixels(diameter)} px "
+                + ("from the dish" if from_vessel else "from the fitted circle"),
+                f"No reference or confident seed was found. The seed width "
+                f"{pixels(diameter)} px is a fixed fraction of the "
+                + (
+                    "dish radius."
+                    if from_vessel
+                    else "best-fitting circle, which is not a vessel, so it is not a measurement."
+                ),
+            ))
+        for shape, diameter_text, tooltip in shapes:
+            if shape is not None:
+                shape.setOpacity(self._overlay_opacity)
+                shape.setZValue(11)
+                self._overlay_items.append(shape)
             label = self._scene.addText(diameter_text)
             label_font = QFont(label.font())
             label_font.setPixelSize(max(12, min(36, round(diameter * 0.16))))
@@ -3510,12 +3625,16 @@ class ImageView(QGraphicsView):
             label.setFont(label_font)
             label.setDefaultTextColor(QColor("#ffd84a"))
             label_bounds = label.boundingRect()
-            label.setPos(
-                seed_rect.center().x() - label_bounds.width() * 0.5,
-                seed_rect.top()
-                - label_bounds.height()
-                - max(2.0, diameter * 0.025),
-            )
+            if shape is None:
+                label.setPos(x0 + 10.0, y0 + 8.0)
+            else:
+                seed_rect = shape.sceneBoundingRect()
+                label.setPos(
+                    seed_rect.center().x() - label_bounds.width() * 0.5,
+                    seed_rect.top()
+                    - label_bounds.height()
+                    - max(2.0, diameter * 0.025),
+                )
             label_background_colour = QColor("#17202a")
             label_background_colour.setAlpha(224)
             label_scene_bounds = label.sceneBoundingRect().adjusted(
@@ -3529,14 +3648,12 @@ class ImageView(QGraphicsView):
             label_background.setOpacity(self._overlay_opacity)
             label_background.setZValue(10.9)
             label_background.setToolTip(
-                "Contrast background for the isolated reference diameter label."
+                "Contrast background for the initial fit label."
             )
             self._overlay_items.append(label_background)
             label.setOpacity(self._overlay_opacity)
             label.setZValue(11)
-            label.setToolTip(
-                f"Locally fitted isolated-seed width: {fitted_diameter:.1f} pixels."
-            )
+            label.setToolTip(tooltip)
             self._overlay_items.append(label)
 
         measurements = tuple(
@@ -4429,7 +4546,7 @@ class ImageView(QGraphicsView):
         facts = getattr(calibration, 'neutral_balance', None)
         used = () if facts is None else facts.used_patch_ids
         for swatch in card.swatches:
-            patch_id = swatch.row*4+swatch.column+1
+            patch_id = swatch.number
             corners = (
                 calibration.transform_points(swatch.corners)
                 if corrected
@@ -6163,6 +6280,12 @@ class ImageView(QGraphicsView):
             Qt.MouseButton.LeftButton,
             Qt.MouseButton.RightButton,
         }:
+            if self._instance_select_tool_active():
+                # Select only picks a seed; it never paints or erases.
+                if event.button() == Qt.MouseButton.LeftButton:
+                    self._pick_instance_annotation(scene_point)
+                event.accept()
+                return
             if self._instance_uses_assisted_tool(event.button()):
                 self._update_reference_brush_outline(scene_point)
                 self._commit_instance_assisted_preview(scene_point)

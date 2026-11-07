@@ -152,7 +152,6 @@ class ResultsController:
             self.addAction(action)
         self.snapshot_actions = []
         for title,method in (('Create snapshot…',self._create_snapshot),
-                             ('Create snapshot with reference checkpoints…',self._create_snapshot_with_reference_checkpoints),
                              ('Restore snapshot…',self._restore_snapshot)):
             action = QAction(title,self)
             action.triggered.connect(method)
@@ -167,12 +166,6 @@ class ResultsController:
             self.statusBar().showMessage('Wait for the current analysis to finish, then paint Foreground references.')
 
     def _create_snapshot(self):
-        self._create_snapshot_impl()
-
-    def _create_snapshot_with_reference_checkpoints(self):
-        self._create_snapshot_impl(include_reference_checkpoints=True)
-
-    def _create_snapshot_impl(self, *, include_reference_checkpoints=False):
         if self._background_work_is_active():
             return
         if not self._resolve_unapplied_project_drafts(recompute=False):
@@ -183,17 +176,11 @@ class ResultsController:
         directory = QFileDialog.getExistingDirectory(self,'Choose snapshot destination')
         if not directory:
             return
-        checkpoint_store = None
-        if include_reference_checkpoints:
-            checkpoint_store = QFileDialog.getExistingDirectory(self,'Choose reference checkpoint store to include')
-            if not checkpoint_store:
-                return
         from seedvision.persistence.snapshot import create_snapshot
         from seedvision.ui.persistence_jobs import run_persistence
         try:
             path = run_persistence(self,lambda:create_snapshot(self._root,self._current_project_path,directory,
-                library_store=self._species_library_service.store,
-                reference_checkpoint_store=checkpoint_store),'Copying and verifying immutable project snapshot…')
+                library_store=self._species_library_service.store),'Copying and verifying immutable project snapshot…')
             self.statusBar().showMessage(f'Immutable snapshot created: {path}')
         except (ValueError,OSError) as error:
             QMessageBox.warning(self,'Snapshot failed',str(error))

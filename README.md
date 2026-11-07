@@ -9,9 +9,8 @@ Analyses are typed node graphs ("pipelines"). Procedural seed analysis combines
 calibration, material and edge evidence, procedural instance separation and
 optional learned (U-Net/StarDist) branches. Cellpose seed analysis runs the
 pretrained Cellpose-SAM model on the calibrated image with only the nodes it needs.
-Eighteen further factory pipelines
-reproduce selected PlantCV and SMPTS seed workflows natively, so methods can be
-compared on the same image.
+Any of their nodes can be added again as an independent copy with its own
+settings, to compare alternatives on the same image.
 
 > **Status.** The software engineering is extensive and tested. The analytical
 > methods have **not** been validated against independently reviewed laboratory
@@ -85,29 +84,16 @@ not an equality requirement.
 
 ### Use an existing Python environment
 
-The application runtime and the PlantCV reference environment have different
-purposes. The application uses the dependencies already installed in the selected
-interpreter; the frozen PlantCV environment remains an isolated Python 3.12
-environment for reproducing reference calculations. Its lock file is byte-pinned:
-the working-tree bytes must match the CRLF SHA-256 recorded in the provenance, even
-though Git stores the text normalized. `.gitattributes` requests CRLF for fresh
-checkouts, including when `core.autocrlf=false`. An existing checkout or a
-downloaded copy that still has LF endings may need a one-time repair.
-
-Run these commands with the interpreter that contains the dependencies you
-installed:
+The application uses the dependencies already installed in the selected
+interpreter. Run these commands with the interpreter that contains them:
 
 ```powershell
-python scripts/repair_reference_lock.py
-python scripts/repair_reference_lock.py --repair
 python seed_vision.py --environment current --no-bootstrap --diagnostics
 python seed_vision.py --environment current --no-bootstrap
 ```
 
-The first lock command checks only; use `--repair` only when CRLF conversion alone
-matches the existing pinned checksum. `--environment current` keeps the explicitly
-selected interpreter, and `--no-bootstrap` prevents installation using the
-baseline pins. The diagnostics command checks runtime compatibility before
+`--environment current` keeps the explicitly selected interpreter, and
+`--no-bootstrap` prevents installation using the baseline pins. The diagnostics command checks runtime compatibility before
 launching; the final command launches Seed Fiddle.
 
 ## The window
@@ -135,10 +121,9 @@ runtime summary).
    images…** (`Ctrl+O`), or open a saved project (the File menu lists recent ones).
    Set the verified species in the **Image** tab; species is operator metadata and
    is never inferred.
-2. Choose a pipeline from the **Pipeline** list at the top of the Pipeline view. It
-   offers five to begin with; **Analysis → Settings → Show all default pipelines**
-   lists all of them. Default pipelines are locked: editing one offers an editable
-   copy under a name you choose.
+2. Choose a pipeline from the **Pipeline** list at the top of the Pipeline view:
+   **Procedural seed analysis** or **Cellpose seed analysis**. Default pipelines are
+   locked: editing one offers an editable copy under a name you choose.
 3. Paint material references (**Materials**: Background, Foreground, Other) and,
    where useful, seed outlines (**Seeds**). Missing required evidence makes a result
    *unavailable*; it is never reported as zero seeds.
@@ -153,8 +138,8 @@ The [operator guide](docs/OPERATOR_GUIDE.md) covers every step in detail.
 
 ## Batch processing
 
-A saved project can be re-run without the desktop, using the same recipe and
-reference archives:
+A saved project can be re-run without the desktop, using the same pipeline
+settings and reference archives:
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\analyze_pilot.py --project projects\analysis.seedfiddle-project.json --output-dir artifacts\project-results
@@ -165,13 +150,12 @@ Add `--seed-crop-padding-px 4` to also write per-seed image/mask crops.
 ## Development
 
 ```powershell
-.\.venv\Scripts\python.exe -m tests            # core regression subset (28 units)
-.\.venv\Scripts\python.exe -m tests --full     # all 690 units
+.\.venv\Scripts\python.exe -m tests            # core regression subset (16 units)
+.\.venv\Scripts\python.exe -m tests --full     # all 317 units
 .\.venv\Scripts\python.exe scripts\generate_node_catalogue.py --check
 ```
 
-The full suite needs CUDA, the pinned PlantCV reference environment and reviewed
-fixtures under `artifacts/`; see [Testing](docs/TESTING.md). Read
+The full suite needs CUDA; see [Testing](docs/TESTING.md). Read
 [AGENTS.md](AGENTS.md) and [HANDOFF.md](HANDOFF.md) before changing the code. The
 [documentation index](docs/README.md) lists everything else.
 

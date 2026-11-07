@@ -183,8 +183,6 @@ class PipelineDocumentsController(QObject):
 
     @staticmethod
     def _factory_of(document):
-        if document.pipeline_workflow is not None:
-            return document.pipeline_workflow.source_recipe.title
         return graph_pipeline_of({node.identifier for node in document.analysis_settings.nodes if node.active}).title
 
     def _busy(self):
@@ -205,7 +203,6 @@ class PipelineDocumentsController(QObject):
                 return False
             if self._install(document) is False:
                 return False
-            statuses = document.asset_statuses(self.window._root)
         except COPY_ERRORS as error:
             self._error('Could not load pipeline', error)
             return False
@@ -213,10 +210,7 @@ class PipelineDocumentsController(QObject):
         self.loaded(self._factory_of(document), name=name, path=path)
         if name != document.name:
             self.named.emit(name)
-        unavailable = sum(row['status'] not in ('available', 'unchecked') for row in statuses)
-        self.window.statusBar().showMessage(
-            f'Loaded pipeline {name}.'
-            + (f' {unavailable} referenced asset(s) remain unavailable.' if unavailable else ''))
+        self.window.statusBar().showMessage(f'Loaded pipeline {name}.')
         return True
 
     def save_pipeline_as(self, path, name):
@@ -254,8 +248,6 @@ class PipelineDocumentsController(QObject):
         catalogue = getattr(window, 'catalogue_nodes', None)
         if catalogue is not None and catalogue.handles(selected):
             output = catalogue._selected_output
-        elif getattr(window.pipeline_workflow, 'active', False):
-            output = window.pipeline_workflow._preferred_output
         elif getattr(window, 'overlay_combo', None) is not None:
             output = str(window.overlay_combo.currentData() or '')
         return PipelineLayoutDocument.from_graph(
@@ -276,9 +268,6 @@ class PipelineDocumentsController(QObject):
             catalogue = getattr(window, 'catalogue_nodes', None)
             if catalogue is not None and catalogue.handles(selected):
                 catalogue.output_requested(selected, document.selected_output)
-            elif window.pipeline_workflow.active and document.selected_output:
-                window.pipeline_workflow._preferred_output = document.selected_output
-                window.pipeline_workflow.select_node(selected)
             elif getattr(window, 'overlay_combo', None) is not None and document.selected_output:
                 index = window.overlay_combo.findData(document.selected_output)
                 if index >= 0:

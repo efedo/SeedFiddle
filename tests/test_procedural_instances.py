@@ -1327,8 +1327,68 @@ class ProceduralInstanceTests(unittest.TestCase):
             1.35 * float(np.mean(without_trace.boundary_cost[trace_pixels])),
         )
 
+    def check_test_instance_voronoi_labels_from_windows_not_full_image_planes(self) -> None:
+        from types import SimpleNamespace
+
+        import torch
+
+        from seedvision.cuda.layers import instance_voronoi
+
+        settings = SimpleNamespace(
+            instance_min_extent_fraction=0.72,
+            instance_max_extent_fraction=0.95,
+            instance_radius_extent_multiplier=1.55,
+        )
+        rng = np.random.default_rng(7)
+        height, width, diameter = 180, 240, 30.0
+        centers = rng.uniform((0, 0), (width, height), size=(40, 2)).astype(np.float32)
+        radii = rng.uniform(6.0, 20.0, size=40).astype(np.float32)
+        valid = np.full((height, width), 255, np.uint8)
+        valid[:, :20] = 0
+        background = np.zeros((height, width), np.uint8)
+        background[150:, :] = 255
+        labels = np.squeeze(
+            instance_voronoi(valid, background, centers, radii, diameter, settings).numpy()
+        )
+
+        # Brute force over every centre and pixel: the nearest centre by
+        # extent-normalised distance labels a pixel within its extent.
+        extents = np.clip(radii * 1.55, diameter * 0.72, diameter * 0.95)
+        yy, xx = np.mgrid[:height, :width].astype(np.float32)
+        distance = (
+            (xx[None] - centers[:, 0, None, None]) ** 2
+            + (yy[None] - centers[:, 1, None, None]) ** 2
+        ) / np.maximum(extents**2, 1.0)[:, None, None]
+        expected = np.where(
+            (valid > 0) & (background / 255.0 < 0.82) & (distance.min(axis=0) <= 1.0),
+            distance.argmin(axis=0) + 1,
+            0,
+        )
+        self.assertGreater(np.count_nonzero(expected), 0)
+        np.testing.assert_array_equal(labels, expected)
+
+        # Memory stays a few full planes, not dozens of planes per centre batch.
+        if not torch.cuda.is_available():
+            return
+        size = 2000
+        many = rng.uniform(0, size, size=(256, 2)).astype(np.float32)
+        torch.cuda.synchronize()
+        torch.cuda.reset_peak_memory_stats()
+        before = torch.cuda.memory_allocated()
+        instance_voronoi(
+            np.full((size, size), 255, np.uint8),
+            np.zeros((size, size), np.uint8),
+            many,
+            np.full(256, 20.0, np.float32),
+            diameter,
+            settings,
+        )
+        torch.cuda.synchronize()
+        plane = size * size * 4
+        self.assertLess(torch.cuda.max_memory_allocated() - before, 12 * plane)
+
     def test_workflow_lifecycle(self):
-        """21 related ProceduralInstanceTests scenarios, each with private fixture state."""
+        """22 related ProceduralInstanceTests scenarios, each with private fixture state."""
         self.scenario(self.check_test_reference_cost_settings_never_change_automatic_predictions)
         self.scenario(self.check_test_alternative_candidate_colour_is_uint8_safe_at_low_scores)
         self.scenario(self.check_test_blurred_flattened_grayscale_can_drive_centre_likelihood)
@@ -1348,6 +1408,7 @@ class ProceduralInstanceTests(unittest.TestCase):
         self.scenario(self.check_test_distinct_painted_instances_become_authoritative_markers)
         self.scenario(self.check_test_gpu_rasters_resize_without_materializing_full_host_caches)
         self.scenario(self.check_test_prepared_inputs_match_direct_result_and_are_reused)
+        self.scenario(self.check_test_instance_voronoi_labels_from_windows_not_full_image_planes)
         self.scenario(self.check_test_annotation_semantics_suppress_internal_coat_stripe_without_split)
         self.scenario(self.check_test_sparse_semantic_training_keeps_unknown_edges_neutral)
 

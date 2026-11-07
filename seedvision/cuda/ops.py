@@ -331,6 +331,48 @@ def binary_close(mask, size: int):
     return binary_erode(binary_dilate(mask, size), size)
 
 
+# torch.quantile refuses inputs with more elements than this.
+_TORCH_QUANTILE_LIMIT = 1 << 24
+
+
+def quantile(values, q: float):
+    """``torch.quantile(values, q)`` over every element, at any input size.
+
+    Above torch's input limit the same linear interpolation is taken between
+    the two order statistics found with ``torch.kthvalue``, so whole-image
+    statistics of a large photograph equal those torch would give.
+    """
+
+    import torch
+
+    flat = values.reshape(-1)
+    count = int(flat.numel())
+    if count <= _TORCH_QUANTILE_LIMIT:
+        return torch.quantile(flat, q)
+    position = float(q) * (count - 1)
+    lower = int(np.floor(position))
+    upper = int(np.ceil(position))
+    low = torch.kthvalue(flat, lower + 1).values
+    if upper == lower:
+        return low
+    high = torch.kthvalue(flat, upper + 1).values
+    return low + (high - low) * (position - lower)
+
+
+def colour_mode_membership(lab, centre, scale, metric_weights):
+    """Gaussian membership of every pixel of an (H, W, 3) Lab image in one mode.
+
+    Builds the mode's (3, H, W) difference once and reduces it in place, so a
+    colour profile costs a few full-image planes however many modes it holds.
+    A (H, W, modes, 3) difference needs three such tensors at once, which on
+    a 12-megapixel photo is about 2 GiB for four modes.
+    """
+
+    difference = lab.permute(2, 0, 1) - centre[:, None, None]
+    difference.div_(scale[:, None, None]).square_().mul_(metric_weights[:, None, None])
+    return difference.sum(dim=0).mul_(-0.5).exp_()
+
+
 def otsu_threshold(values) -> float:
     """Calculate an 8-bit Otsu threshold entirely on the tensor device."""
 
@@ -478,39 +520,22 @@ def lab_colour_distribution(
             lab.shape[:2], device=lab.device, dtype=lab.dtype
         )
         maximum_membership = torch.zeros_like(weighted_probability)
-        # A full H×W×mode tensor becomes prohibitive once a reference is allowed
-        # to retain dozens of colours. Evaluate a few modes at a time so the
-        # control scales computation rather than peak raster memory. A fuzzy
-        # union (the strongest weighted mode) also makes capacity independent:
-        # splitting one colour cloud into more overlapping fitted modes must not
+        # One mode at a time keeps peak memory at a few full-image planes
+        # however many colours a reference retains. A fuzzy union (the
+        # strongest weighted mode) also makes capacity independent: splitting
+        # one colour cloud into more overlapping fitted modes must not
         # mechanically increase its probability.
-        for start in range(0, int(centres.shape[0]), 4):
-            stop = min(start + 4, int(centres.shape[0]))
-            effective_scales = scales[start:stop] * max(
-                0.05, float(scale_multiplier)
+        multiplier = max(0.05, float(scale_multiplier))
+        for mode in range(int(centres.shape[0])):
+            component_membership = colour_mode_membership(
+                lab, centres[mode], scales[mode] * multiplier, weights
             )
-            delta = (
-                lab[:, :, None, :] - centres[None, None, start:stop, :]
-            ) / effective_scales[None, None, :, :]
-            distance = torch.sum(
-                delta.square() * weights[None, None, None, :], dim=3
-            )
-            component_membership = torch.exp(-0.5 * distance)
-            weighted = (
-                component_membership
-                * adjusted_weights[None, None, start:stop]
-            )
+            weighted = component_membership * adjusted_weights[mode]
             if combine_modes == "maximum":
-                weighted_probability = torch.maximum(
-                    weighted_probability,
-                    torch.max(weighted, dim=2).values,
-                )
+                torch.maximum(weighted_probability, weighted, out=weighted_probability)
             else:
-                weighted_probability += torch.sum(weighted, dim=2)
-            maximum_membership = torch.maximum(
-                maximum_membership,
-                torch.max(component_membership, dim=2).values,
-            )
+                weighted_probability += weighted
+            torch.maximum(maximum_membership, component_membership, out=maximum_membership)
         return weighted_probability.clamp(0.0, 1.0), maximum_membership
 
     def painted_component_weights(centres, scales):
@@ -684,29 +709,16 @@ def lab_colour_frequency_distribution(
             max(0.0, float(frequency_weight_power))
         )
         adjusted /= adjusted.max().clamp_min(1e-6)
-        for start in range(0, int(centres.shape[0]), 4):
-            stop = min(start + 4, int(centres.shape[0]))
-            effective_scales = current_scales[start:stop] * max(
-                0.05, float(scale_multiplier)
+        multiplier = max(0.05, float(scale_multiplier))
+        # One mode at a time; earlier modes keep ties.
+        for mode in range(int(centres.shape[0])):
+            membership = colour_mode_membership(
+                lab, centres[mode], current_scales[mode] * multiplier, metric_weights
             )
-            delta = (
-                lab[:, :, None, :] - centres[None, None, start:stop, :]
-            ) / effective_scales[None, None, :, :]
-            distance = torch.sum(
-                delta.square() * metric_weights[None, None, None, :], dim=3
-            )
-            membership = torch.exp(-0.5 * distance)
-            probability += torch.sum(
-                membership * adjusted[None, None, start:stop], dim=2
-            )
-            chunk_strongest, chunk_index = torch.max(membership, dim=2)
-            replace = chunk_strongest > strongest
-            strongest = torch.maximum(strongest, chunk_strongest)
-            assignments = torch.where(
-                replace,
-                (chunk_index + start).to(torch.int16),
-                assignments,
-            )
+            probability += membership * adjusted[mode]
+            replace = membership > strongest
+            torch.maximum(strongest, membership, out=strongest)
+            assignments.masked_fill_(replace, mode)
         return probability.clamp(0.0, 1.0) * eligible, strongest, assignments
 
     probability, strongest, assignments = evaluate(scales)
@@ -1112,6 +1124,9 @@ def _shift_with_invalid(coordinates, dy: int, dx: int):
 
     shifted = torch.full_like(coordinates, -1)
     height, width = coordinates.shape[-2:]
+    if abs(dy) >= height or abs(dx) >= width:
+        # A jump past the short side of an elongated image brings nothing in.
+        return shifted
     source_y0, source_y1 = max(0, -dy), min(height, height - dy)
     source_x0, source_x1 = max(0, -dx), min(width, width - dx)
     target_y0, target_y1 = source_y0 + dy, source_y1 + dy

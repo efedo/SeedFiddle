@@ -223,6 +223,8 @@ class NodeOptimizationUITests(unittest.TestCase):
                 window._applied_instance_annotations[key] = labels
                 window._applied_seed_annotations[key] = {1: SeedInstanceAnnotation(
                     1, shape_reviewed=True, outline_visibility='complete')}
+            # The second image is outlined but has no reviewed seed yet.
+            window._applied_seed_annotations[keys[1]] = {}
             window._instance_annotations_dirty.add(keys[2])
             resolved_contexts = []
             def resolve(pin, *, context, **kwargs):
@@ -234,13 +236,16 @@ class NodeOptimizationUITests(unittest.TestCase):
             self.assertEqual(resolved_contexts, contexts)
             self.assertEqual([sample.kwargs['biological_context'] for sample in samples], contexts)
             self.assertTrue(all(sample.kwargs['species_library'] is None for sample in samples))
-            self.assertTrue(all(sample.excluded_ids == (2,) for sample in samples))
+            self.assertEqual([sample.excluded_ids for sample in samples], [(2,), (1, 2)])
             self.assertIn('Unapplied draft', window._optimization_exclusions[0][1])
+            # An image with no eligible seed still opens the dialog, unticked.
             dialog = OptimizationDialog(window.pipeline, samples, None,
                 excluded_images=window._optimization_exclusions)
             self.addCleanup(dialog.close)
             self.assertIn('1 excluded', dialog.readiness.text())
             self.assertIn('1 eligible; 1 excluded', dialog.images.item(0, 1).text())
+            self.assertIn('0 eligible; 2 excluded', dialog.images.item(1, 1).text())
+            self.assertFalse(dialog.images.cellWidget(1, 2).isEnabled())
             snapshot = window._optimization_annotation_snapshot()
             window._project_image_biological_contexts[keys[0]] = contexts[1]
             self.assertNotEqual(snapshot, window._optimization_annotation_snapshot())

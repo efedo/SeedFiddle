@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from seedvision.benchmarking.checkpoints import CoordinateFrame
+from seedvision.benchmarking.manifest import CoordinateFrame
 from seedvision.benchmarking.manifest import (
     BenchmarkManifest, BenchmarkSample, SplitRole, TruthIdentity, TruthState,
 )

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from tests.catalogue_fixtures import CatalogueTestCase
 
 from tests.functional_units import functional_units
 
@@ -9,7 +8,7 @@ import unittest
 
 
 @functional_units
-class PipelineInspectorActionTests(CatalogueTestCase):
+class PipelineInspectorActionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")

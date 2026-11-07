@@ -1,4 +1,4 @@
-"""Run the saved project recipe and fingerprinted references without a GUI."""
+"""Run the saved project pipeline and fingerprinted references without a GUI."""
 from pathlib import Path
 from dataclasses import asdict
 from seedvision.pipeline import build_default_pipeline
@@ -11,16 +11,13 @@ from seedvision.persistence.manual_seed_centres import ManualSeedCentreStore
 from seedvision.segmentation.procedural import ManualSeedCentres, ManualSeedCentreMode, ManualSeedCentreSpace
 from seedvision.segmentation.baseline import analyze_path
 from seedvision.export.results import result_report, export_report
-from seedvision.export.project_native_graphs import export_project_native_graphs, export_project_node_instances
-from seedvision.export.project_reference_captures import export_project_reference_captures
-from seedvision.segmentation.baseline import PipelineAnalysisCache
+from seedvision.export.node_instances import export_project_node_instances
 from seedvision.export.run_outcomes import (run_native_analysis, NativeRunOutcome,
     export_run_outcome, AnalysisInputIntegrityError)
 from seedvision.export.preflight_outcomes import PreflightRunOutcome, record_preflight
 
 
-def run_project(root, project_path, output_directory, *, crop_padding_px=None,
-                reference_capture_runner_factory=None):
+def run_project(root, project_path, output_directory, *, crop_padding_px=None):
     root = Path(root)
     terminal_directory = Path(output_directory) / 'run-outcomes'
     with record_preflight(project_path, 'project', 'project_arguments', terminal_directory):
@@ -29,9 +26,7 @@ def run_project(root, project_path, output_directory, *, crop_padding_px=None,
     with record_preflight(project_path, 'project', 'project_load', terminal_directory):
         loaded = ProjectAnalysisStore(root).load(project_path)
     with record_preflight(project_path, 'project', 'project_sources', terminal_directory):
-        from seedvision.persistence.correction_inputs import PORTS
-        correction_issue_roles = {'correction_input:'+role for role in PORTS}
-        if any(issue.role not in correction_issue_roles for issue in loaded.issues):
+        if loaded.issues:
             raise ValueError('Project contains unresolved or changed sources/sidecars; repair them before batch execution.')
     with record_preflight(project_path, 'project', 'project_settings', terminal_directory):
         graph = build_default_pipeline()
@@ -42,7 +37,6 @@ def run_project(root, project_path, output_directory, *, crop_padding_px=None,
         catalogue = load_seed_trait_catalogue(root/'config'/'traits.json')
         service = SpeciesLibraryService()
     reports = []
-    native_cache = PipelineAnalysisCache()
     for item in loaded.images:
         with record_preflight(item.path, 'image', 'image_settings', terminal_directory):
             # An image's own species wins; one without it follows the project's.
@@ -102,26 +96,9 @@ def run_project(root, project_path, output_directory, *, crop_padding_px=None,
                 raise RuntimeError(f'{diagnostic} Terminal record: {destination}')
             if file_sha256(item.path) != item.record.source.sha256:
                 raise AnalysisInputIntegrityError('Source changed after failed analysis; companion execution is blocked.')
-            try:
-                export_project_native_graphs(loaded.document.reference_graphs, item.path,
-                    destination / 'native_graphs', expected_source_sha256=item.record.source.sha256,
-                    cache=native_cache, project_root=root,
-                    reference_model_assets=loaded.document.reference_model_assets,
-                    native_recipes=loaded.document.native_recipes,
-                    **({'pipeline_workflow': loaded.document.pipeline_workflow}
-                       if getattr(loaded.document, 'pipeline_workflow', None) is not None else {}),
-                    correction_bindings=loaded.document.correction_bindings, project_image_record=item.record,
-                    project_path=project_path)
-            finally:
-                native_cache.values.clear()
-            export_project_reference_captures(loaded.document.reference_graphs, item.path,
-                destination / 'reference_captures', expected_source_sha256=item.record.source.sha256,
-                runner_factory=reference_capture_runner_factory, project_root=root, project_path=project_path)
             if loaded.document.node_instances:
                 export_project_node_instances(loaded.document.node_instances, item.path,
                     destination / 'catalogue_nodes', expected_source_sha256=item.record.source.sha256,
-                    project_root=root, reference_model_assets=loaded.document.reference_model_assets,
-                    correction_bindings=loaded.document.correction_bindings, project_image_record=item.record,
                     default_context=instance_default_context(kwargs))
             reports.append(destination)
             continue
@@ -151,30 +128,11 @@ def run_project(root, project_path, output_directory, *, crop_padding_px=None,
             staging.rmdir()
             destination = published
         # Baseline/crop serialization is complete; release its CUDA image before
-        # starting the saved native graphs for the same source.
+        # running the node instances for the same source.
         del result
-        try:
-            export_project_native_graphs(loaded.document.reference_graphs, item.path,
-                destination/'native_graphs', expected_source_sha256=item.record.source.sha256,
-                cache=native_cache, project_root=root,
-                reference_model_assets=loaded.document.reference_model_assets,
-                native_recipes=loaded.document.native_recipes,
-                **({'pipeline_workflow': loaded.document.pipeline_workflow}
-                   if getattr(loaded.document, 'pipeline_workflow', None) is not None else {}),
-                correction_bindings=loaded.document.correction_bindings, project_image_record=item.record,
-                project_path=project_path)
-        finally:
-            # Reuse node products within this image's saved graphs, then release
-            # dense products before processing another full-resolution image.
-            native_cache.values.clear()
-        export_project_reference_captures(loaded.document.reference_graphs, item.path,
-            destination / 'reference_captures', expected_source_sha256=item.record.source.sha256,
-            runner_factory=reference_capture_runner_factory, project_root=root, project_path=project_path)
         if loaded.document.node_instances:
             export_project_node_instances(loaded.document.node_instances, item.path,
                 destination / 'catalogue_nodes', expected_source_sha256=item.record.source.sha256,
-                project_root=root, reference_model_assets=loaded.document.reference_model_assets,
-                correction_bindings=loaded.document.correction_bindings, project_image_record=item.record,
                 default_context=instance_default_context(kwargs))
         reports.append(destination)
     return reports

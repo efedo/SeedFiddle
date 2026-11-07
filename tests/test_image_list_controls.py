@@ -132,7 +132,6 @@ class ImageListControlsTests(unittest.TestCase):
                 window._optimization_targets[key] = {"area": 12}
                 window._image_review_states[key] = "reviewed"
                 window._source_fingerprints[key] = "removed fingerprint"
-                window._project_correction_bindings = (SimpleNamespace(image_id=removed_id),)
                 row = window.image_list.item(1)
                 close_rect = window._image_list_delegate.remove_rect(window.image_list.visualItemRect(row))
                 QTest.mouseClick(window.image_list.viewport(), Qt.MouseButton.LeftButton, pos=close_rect.center())
@@ -143,7 +142,6 @@ class ImageListControlsTests(unittest.TestCase):
                 self.assertNotIn(key, window._optimization_targets)
                 self.assertNotIn(key, window._image_review_states)
                 self.assertNotIn(key, window._source_fingerprints)
-                self.assertEqual(window._project_correction_bindings, ())
                 self.assertNotIn(removed_id, window._project_original_image_records)
                 self.assertEqual(window._project_unresolved_image_records[missing_id], original.images[2])
                 self.assertEqual(window._project_unresolved_selected_image_id, missing_id)
@@ -158,7 +156,7 @@ class ImageListControlsTests(unittest.TestCase):
                 dispose_window(window)
                 self.application.processEvents()
 
-    def test_removal_protects_edits_and_busy_work_then_clears_selected_native_display(self):
+    def test_removal_protects_edits_and_busy_work_then_clears_the_selection(self):
         with TemporaryDirectory() as temporary, patch.object(MainWindow, "_release_unused_cuda_blocks"):
             root = Path(temporary)
             first, second = (
@@ -169,9 +167,6 @@ class ImageListControlsTests(unittest.TestCase):
             try:
                 key = _path_identity(first)
                 second_key = _path_identity(second)
-                from seedvision.persistence.project_analysis import PROJECT_RELATIVE, _image_identifier
-                window._project_correction_bindings = (SimpleNamespace(
-                    image_id=_image_identifier(PROJECT_RELATIVE, "images/a.png")),)
                 foreground = np.zeros((36, 48), dtype=bool)
                 foreground[2:8, 5:11] = True
                 window._draft_foreground_reference_masks[key] = foreground
@@ -194,7 +189,6 @@ class ImageListControlsTests(unittest.TestCase):
                 with patch.object(QMessageBox, "warning", return_value=QMessageBox.StandardButton.Save):
                     self.assertTrue(window._remove_image(first))
                 self.assertEqual(window.image_view.image_path, second)
-                self.assertEqual(window._project_correction_bindings, ())
                 self.assertIn(second_key, window._unsaved_reference_sidecars)
                 sidecar = ReferenceRegionStore(root).path_for(first)
                 self.assertTrue(sidecar.is_file())
@@ -203,16 +197,10 @@ class ImageListControlsTests(unittest.TestCase):
                 with patch.object(QMessageBox, "warning", return_value=QMessageBox.StandardButton.Save), \
                      patch.object(window, "_retry_unsaved_project_sidecars", return_value=False):
                     self.assertFalse(window._remove_image(second))
-                controller = window.pipeline_workflow
-                controller.select_template("plantcv_seed_binary_working")
-                controller.result = SimpleNamespace(node=unittest.mock.Mock(side_effect=StopIteration))
-                controller.facts.setPlainText("Old image result")
                 with patch.object(QMessageBox, "warning", return_value=QMessageBox.StandardButton.Discard):
                     self.assertTrue(window._remove_image(second))
                 self.assertEqual(window.image_list.count(), 0)
                 self.assertIsNone(window.image_view.image_path)
-                self.assertIsNone(controller.result)
-                self.assertNotIn("Old image result", controller.facts.toPlainText())
                 self.assertIsNone(window._current_image_key())
                 self.assertFalse(window.analyze_action.isEnabled())
                 self.assertFalse(window._unsaved_manual_centre_sidecars)
@@ -816,6 +804,46 @@ class ImageListRowTests(unittest.TestCase):
         self.assertEqual(window._project_species, "Soybean")
         self.assertNotIn(follower, window._cache_dirty_nodes)
 
+    def check_a_library_build_records_its_species_on_included_images_without_one(self):
+        self._install_traits()
+        window = isolated_window(self.root)
+        self.addCleanup(dispose_window, window)
+        for path in self.paths:
+            window._add_image(path, open_now=False, mark_project_dirty=False)
+        window._open_path(self.paths[0], mark_project_dirty=False)
+        window._open_species_library_manager()
+        dialog = window._species_library_dialog
+        self.addCleanup(dialog.close)
+
+        # A new project has no species yet, so its images are listed under any.
+        dialog.species_combo.setCurrentIndex(dialog.species_combo.findData("soybean"))
+        self.assertEqual(dialog.source_list.count(), 4)
+        self.assertTrue(dialog.source_list.item(0).text().endswith(
+            "species not set, no saved annotations"))
+        self.assertIn("records the checked ones as Soybean", dialog.unset_species_label.text())
+        self.assertFalse(dialog.other_species_label.isVisibleTo(dialog))
+
+        # Building from two of them records Soybean on those two only.
+        with patch("seedvision.ui.main_window._SpeciesLibraryBuildTask") as task_type, \
+                patch.object(window._thread_pool, "start") as start:
+            window._start_species_library_build(
+                self.paths[:2], "1", None, (), BiologicalContext("soybean"), None)
+        self.addCleanup(window._species_library_build_progress.close)
+        start.assert_called_once()
+        self.assertEqual(self._species(window),
+                         ["Soybean", "Soybean", UNKNOWN_SPECIES, UNKNOWN_SPECIES])
+        self.assertEqual(window._project_species, UNKNOWN_SPECIES)
+        self.assertEqual(window.species_combo.currentText(), "Soybean")
+        self.assertEqual(window.pipeline.node("metadata").status_detail, "Soybean")
+        self.assertTrue(window._project_dirty)
+        contexts = task_type.call_args.kwargs["source_contexts"]
+        self.assertEqual(
+            [contexts[_path_identity(path)][0].species_id for path in self.paths],
+            ["soybean", "soybean", "unknown", "unknown"])
+        # The open image is now Soybean, so the published library can be used here.
+        self.assertEqual(dialog.project_species_id, "soybean")
+        window._species_library_build_task = None
+
     def check_batch_analyses_each_image_as_its_own_species(self):
         self._install_traits()
         # Of these only Lupinus mutabilis has coat patterns, and the project is not it.
@@ -922,6 +950,8 @@ class ImageListRowTests(unittest.TestCase):
         self.scenario(self.check_each_row_names_the_species_recorded_for_its_own_image)
         self.scenario(self.check_the_selector_shows_and_sets_the_open_images_species)
         self.scenario(self.check_the_first_species_chosen_also_covers_images_without_one)
+        self.scenario(
+            self.check_a_library_build_records_its_species_on_included_images_without_one)
         self.scenario(self.check_batch_analyses_each_image_as_its_own_species)
         self.scenario(self.check_species_fits_the_narrow_panel_and_is_a_column_in_a_wide_one)
         self.scenario(self.check_thumbnails_reach_neither_the_project_nor_the_disk)

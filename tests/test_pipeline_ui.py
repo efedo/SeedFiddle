@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from tests.review_fixtures import workspace_window
-from tests.catalogue_fixtures import CatalogueTestCase
 
 from tests.functional_units import functional_units
 
@@ -19,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 @functional_units
-class PipelineCanvasTests(CatalogueTestCase):
+class PipelineCanvasTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -39,8 +38,8 @@ class PipelineCanvasTests(CatalogueTestCase):
         self.application.processEvents()
         canvas.fit_graph()
         self.assertGreater(canvas.horizontalScrollBar().maximum(), 0)
-        self.assertEqual(len(canvas.node_items), 32)
-        self.assertEqual(len(canvas.edge_items), 189)
+        self.assertEqual(len(canvas.node_items), 33)
+        self.assertEqual(len(canvas.edge_items), 201)
         self.assertNotIn("circle_candidates", canvas.node_items)
         self.assertEqual(canvas.unused_nodes_button.text(), "Add node")
         unused_actions = [
@@ -844,7 +843,9 @@ class PipelineCanvasTests(CatalogueTestCase):
         )
         self.assertGreaterEqual(edge_item._footer_y, controls_bottom + 4.0)
         self.assertEqual(edge_item.height, edge_item._footer_y + 24.0)
-        self.assertLess(canvas.node_items["deskew_colour"].height, 300.0)
+        # Four inline controls (correction on/off, model, perspective, rotation)
+        # and four outputs still fit a compact card.
+        self.assertLess(canvas.node_items["deskew_colour"].height, 320.0)
         self.assertGreaterEqual(canvas.node_items["edge_gradients"].height, 108.0)
         self.assertEqual(_format_calculation_time(0.01234), "Last calc: 12.3 ms")
         self.assertEqual(_format_calculation_time(1.25), "Last calc: 1.25 s")
@@ -892,8 +893,8 @@ class PipelineCanvasTests(CatalogueTestCase):
         self.application.processEvents()
         self.assertEqual(restored, ["circle_candidates"])
         self.assertIn("circle_candidates", canvas.node_items)
-        self.assertEqual(len(canvas.node_items), 33)
-        self.assertEqual(len(canvas.edge_items), 197)
+        self.assertEqual(len(canvas.node_items), 34)
+        self.assertEqual(len(canvas.edge_items), 209)
         self.assertEqual(canvas.unused_nodes_button.text(), "Add node")
         self.assertTrue(canvas.unused_nodes_button.isEnabled())
         self.assertTrue(canvas.node_items["circle_candidates"].isSelected())
@@ -906,7 +907,7 @@ class PipelineCanvasTests(CatalogueTestCase):
         self.assertNotIn("circle_candidates", canvas.node_items)
         self.assertIn("circle_candidates", graph.unused_nodes)
         self.assertFalse(graph.node("circle_candidates").enabled)
-        self.assertEqual(len(canvas.edge_items), 189)
+        self.assertEqual(len(canvas.edge_items), 201)
         self.assertEqual(canvas.unused_nodes_button.text(), "Add node")
         restore_action = next(
             action
@@ -974,7 +975,7 @@ class PipelineCanvasTests(CatalogueTestCase):
             and edge.source_port == "corrected_image"
         )
         canvas._disconnect_connection(connection)
-        self.assertEqual(len(canvas.edge_items), 188)
+        self.assertEqual(len(canvas.edge_items), 200)
         self.assertFalse(graph.node(connection.target).enabled)
         self.assertIsNone(
             graph.connection_for_input(connection.target, connection.target_port)
@@ -991,7 +992,7 @@ class PipelineCanvasTests(CatalogueTestCase):
                 connection.source_port
             )
         )
-        self.assertEqual(len(canvas.edge_items), 189)
+        self.assertEqual(len(canvas.edge_items), 201)
         self.assertTrue(graph.node(connection.target).enabled)
         self.assertIsNotNone(
             graph.connection_for_input(connection.target, connection.target_port)
@@ -1290,7 +1291,7 @@ class PipelineCanvasTests(CatalogueTestCase):
         graph = build_default_pipeline()
         inspector = PipelineInspector()
         expected_parameter_counts = {
-            "seed_scale_estimation": 18,
+            "seed_scale_estimation": 23,
             "background_likelihood": 24,
             "distance_candidates": 4,
             "circle_candidates": 15,
@@ -3950,7 +3951,8 @@ class PipelineCanvasTests(CatalogueTestCase):
         image.fill(QColor("white"))
         self.assertTrue(image.save(str(image_path)))
         window = isolated_window(project_root)
-        self.assertEqual(window.instance_tool_options_stack.count(), 5)
+        # One options page per tool, including Select's empty page.
+        self.assertEqual(window.instance_tool_options_stack.count(), 6)
         self.assertNotIn("shape_snap", window.instance_tool_pages)
         self.assertFalse(hasattr(window, "instance_shape_snap_button"))
         with self.assertRaises(ValueError):
@@ -4499,6 +4501,7 @@ class PipelineCanvasTests(CatalogueTestCase):
             QGraphicsTextItem,
         )
 
+        from seedvision.segmentation.baseline import ReferenceSeedOval
         from seedvision.ui.image_view import ImageView
 
         view = ImageView()
@@ -4507,7 +4510,8 @@ class PipelineCanvasTests(CatalogueTestCase):
             SimpleNamespace(
                 reference_roi=(100, 150, 500, 450),
                 estimated_seed_diameter_px=80.0,
-                reference_seed_bounds=((210.0, 205.0, 288.0, 276.0),),
+                reference_seed_ovals=(ReferenceSeedOval(249.0, 240.5, 96.5, 64.0, 30.0),),
+                reference_seed_diameters_px=(69.5,),
             )
         )
 
@@ -4520,7 +4524,7 @@ class PipelineCanvasTests(CatalogueTestCase):
             item
             for item in view._overlay_items
             if isinstance(item, QGraphicsTextItem)
-            and item.toPlainText() == "Initial fit: 80 px"
+            and item.toPlainText() == "Initial fit: 96.5 × 64 px"
         ]
         self.assertEqual(len(circles), 1)
         self.assertEqual(len(labels), 1)
@@ -4528,6 +4532,14 @@ class PipelineCanvasTests(CatalogueTestCase):
             item for item in circles if item.pen().color().name() == "#ffd84a"
         )
         label = labels[0]
+        # The oval carries both sides at the seed's own orientation.
+        self.assertEqual((circle.rect().width(), circle.rect().height()), (96.5, 64.0))
+        self.assertAlmostEqual(circle.rotation(), 30.0)
+        self.assertAlmostEqual(circle.mapToScene(circle.rect().center()).x(), 249.0)
+        self.assertAlmostEqual(circle.mapToScene(circle.rect().center()).y(), 240.5)
+        self.assertIn("long side 96.5 px, short side 64 px", label.toolTip())
+        self.assertIn("69.5 px", label.toolTip())
+        self.assertLessEqual(label.sceneBoundingRect().bottom(), circle.sceneBoundingRect().top())
         self.assertTrue(circle.pen().isCosmetic())
         self.assertGreaterEqual(circle.pen().widthF(), 3.0)
         self.assertAlmostEqual(circle.opacity(), 0.43)
@@ -4546,14 +4558,14 @@ class PipelineCanvasTests(CatalogueTestCase):
             label.sceneBoundingRect().bottom(), circle.sceneBoundingRect().top()
         )
         self.assertTrue(label.font().bold())
-        self.assertAlmostEqual(circle.rect().left(), 210.0)
-        self.assertAlmostEqual(circle.rect().top(), 205.0)
+        # The oval is drawn about its own centre and rotated into place.
+        self.assertAlmostEqual(circle.rect().left(), -48.25)
+        self.assertAlmostEqual(circle.rect().top(), -32.0)
         self.assertAlmostEqual(
             label.sceneBoundingRect().center().x(),
             circle.sceneBoundingRect().center().x(),
             delta=1.0,
         )
-        self.assertIn("80.0 pixels", label.toolTip())
         view.close()
 
 
@@ -4811,17 +4823,18 @@ class PipelineCanvasTests(CatalogueTestCase):
             if isinstance(item, QGraphicsEllipseItem)
             and item.pen().color().name() == "#ffd84a"
         ]
-        expected_seed_count = max(1, len(result.reference_seed_bounds))
+        expected_seed_count = len(result.reference_seed_ovals)
+        self.assertGreater(expected_seed_count, 0)
         self.assertEqual(len(scale_circles), expected_seed_count)
         self.assertTrue(
             all(circle.pen().widthF() >= 3.0 for circle in scale_circles)
         )
+        def pixels(value):
+            return f"{value:.1f}".rstrip("0").rstrip(".")
+
         expected_diameter_texts = {
-            "Initial fit: " + f"{value:.1f}".rstrip("0").rstrip(".") + " px"
-            for value in result.reference_seed_diameters_px
-        } or {
-            "Initial fit: " + f"{result.estimated_seed_diameter_px:.1f}".rstrip("0").rstrip(".")
-            + " px"
+            f"Initial fit: {pixels(oval.long_side_px)} × {pixels(oval.short_side_px)} px"
+            for oval in result.reference_seed_ovals
         }
         scale_labels = [
             item
@@ -4951,6 +4964,66 @@ class PipelineCanvasTests(CatalogueTestCase):
         ):
             view.set_overlay_mode(mode)
             self.assertGreaterEqual(len(view._overlay_items), 1, mode)
+
+        # Without a visible vessel neither the fitted circle nor its band is
+        # drawn, the analysed area is outlined, and no seed is invented.
+        from dataclasses import replace
+
+        area = np.asarray(((100, 100), (900, 100), (900, 700), (100, 700)), np.float32)
+        no_vessel = replace(
+            result,
+            vessel_present=False,
+            vessel_rim_support=0.4,
+            analysis_region_outlines=(area,),
+            reference_seed_ovals=(),
+            reference_seed_diameters_px=(),
+        )
+        view.show_analysis(no_vessel)
+        view.set_overlay_mode("layout_detection")
+        self.assertFalse(
+            any(isinstance(item, QGraphicsEllipseItem) for item in view._overlay_items)
+        )
+        view.set_overlay_mode("perimeter_background_reference")
+        self.assertFalse(
+            any(
+                isinstance(item, (QGraphicsEllipseItem, QGraphicsPathItem))
+                for item in view._overlay_items
+            )
+        )
+        view.set_overlay_mode("proposals")
+        outlined = [
+            item
+            for item in view._overlay_items
+            if isinstance(item, QGraphicsPolygonItem)
+            and item.toolTip().startswith("Analysed area")
+        ]
+        self.assertEqual(len(outlined), 1)
+        self.assertNotIn(
+            round(result.dish.outer_axes[0] * 2.0),
+            {
+                round(item.rect().width())
+                for item in view._overlay_items
+                if isinstance(item, QGraphicsEllipseItem)
+            },
+        )
+        view.set_overlay_mode("seed_scale_estimation")
+        self.assertFalse(
+            any(
+                isinstance(item, QGraphicsEllipseItem)
+                and item.pen().color().name() == "#ffd84a"
+                for item in view._overlay_items
+            )
+        )
+        self.assertTrue(
+            any(
+                isinstance(item, QGraphicsTextItem)
+                and item.toPlainText()
+                == "No seed measured: "
+                + pixels(result.estimated_seed_diameter_px)
+                + " px from the fitted circle"
+                for item in view._overlay_items
+            )
+        )
         view.clear_analysis()
         self.assertEqual(len(view._overlay_items), 0)
         view.close()
@@ -4993,26 +5066,37 @@ class PipelineCanvasTests(CatalogueTestCase):
             "calibration_residuals",
         ):
             self.assertEqual(window.pipeline.node(node_id).status, NodeStatus.BYPASSED)
+        # The pilot's isolated reference seeds give automatic Foreground.
         self.assertEqual(
             window.pipeline.node("background_likelihood").status,
-            NodeStatus.WARNING,
+            NodeStatus.COMPLETE,
         )
         self.assertEqual(
             window.pipeline.node("refined_background_likelihood").status,
-            NodeStatus.WARNING,
+            NodeStatus.COMPLETE,
         )
         self.assertIn(
             "0.35 cm buffer",
             window.pipeline.node("layout_detection").status_detail,
         )
         self.assertIn(
-            "intentionally zero",
+            "source mode",
             window.pipeline.node("background_likelihood").status_detail,
         )
         self.assertIn("circle_candidates", window.pipeline.unused_nodes)
         self.assertEqual(
             window.pipeline.node("circle_candidates").status_detail,
             "Disabled by default while this branch is under review",
+        )
+        window._mark_analysis_complete(no_vessel)
+        layout_status = window.pipeline.node("layout_detection")
+        self.assertEqual(layout_status.status, NodeStatus.COMPLETE)
+        self.assertEqual(
+            layout_status.status_detail,
+            "No vessel visible; rim on 40% of the best-fitting circle",
+        )
+        self.assertNotIn(
+            "buffer", window.pipeline.node("background_likelihood").status_detail
         )
         dispose_window(window)
 

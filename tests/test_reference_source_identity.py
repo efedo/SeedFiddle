@@ -150,7 +150,7 @@ class ReferenceSourceAnalysisTests(unittest.TestCase):
             before = master.read_bytes()
             with patch('seedvision.export.project_runner.analyze_path',
                 side_effect=lambda *args, **kwargs: analysis_fixture(source=source)
-            ) as analyzer, patch('seedvision.export.project_runner.export_project_native_graphs'):
+            ) as analyzer, patch('seedvision.export.project_runner.export_project_node_instances'):
                 self.assertEqual(len(run_project(root, master, root/'output')), 1)
             self.assertEqual(analyzer.call_args.kwargs['reference_archive_source_sha256'], digest)
             self.assertEqual(analyzer.call_args.kwargs['reference_annotation_snapshot_source_sha256'], digest)

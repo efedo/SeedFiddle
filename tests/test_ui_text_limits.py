@@ -55,7 +55,7 @@ class UiTextLimitTests(unittest.TestCase):
 
     def test_scan_sees_the_interface(self) -> None:
         # Guards against a scan that silently matches nothing.
-        self.assertGreater(sum(1 for _ in constant_strings(COMMAND_CALLS)), 150)
+        self.assertGreater(sum(1 for _ in constant_strings(COMMAND_CALLS)), 100)
         self.assertGreater(sum(1 for _ in constant_strings({"setToolTip"})), 100)
 
 

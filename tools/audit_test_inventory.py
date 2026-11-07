@@ -30,13 +30,9 @@ annotation_shape_revision | Shape review revisions, visibility and reference-lib
 annotation_tools | Annotation drawing, brush geometry, region operations and instance tools
 annotation_transfer | Project annotation folders, unsaved drafts and annotation bundle export, restore and manifest validation
 assignment_budget | Assignment metrics and segmentation matching respect explicit work budgets
-benchmark_checkpoints | Checkpoint identities, array limits, manifests, storage and corruption rejection
-benchmark_conformance | Comparison metrics, tolerances and checkpoint conformance reports
 benchmark_manifest | Benchmark manifests, source/environment identity and evidence contracts
 bootstrap | Python/runtime dependency admission and single-entry startup
-checkpoint_bundle | Checkpoint bundle serialization, import/export and project references
-color_histogram | Color histogram calculation, comparison and desktop display
-core_recovery | Seed core extraction, recovery, label ownership and CUDA bounds
+colour_correction | Chart-fitted colour-correction matrices, CUDA application and fit diagnostics
 critical_review_fixes | Earlier regression fixes spanning annotation coordinates, learning and export
 diagnostics | Runtime diagnostic facts
 edge_trace_commit | Edge trace tool commits and desktop annotation updates
@@ -56,22 +52,6 @@ manual_seed_centre_persistence | Manual seed centre sidecar persistence and sour
 manual_seed_centre_ui | Manual centre drawing, selection and desktop persistence
 material_evidence | CUDA material likelihoods, references and evidence decisions
 measurements | Seed measurement geometry
-method_qc | Method quality-control facts, provenance and exported summaries
-native_checkpoint_inspection | Native checkpoint inspection, evidence limits and retained outputs
-native_core_recovery_recipe | Native core/recovery graph contracts, CUDA execution and cache behavior
-native_correction_dialog | Color correction dialog controls, workers and imported inputs
-native_correction_recipe | Native color correction recipe composition and execution
-native_extended_threshold_recipe | Extended threshold recipe variants, contracts and native execution
-native_mask_stage | Native mask-stage checkpoints and output identity
-native_preprocessing | Native preprocessing chains, caching and public PlantCV parity
-native_recipe | Native recipe execution, cache behavior, cancellation and results
-native_recipe_dialog | Native recipe dialog selection, execution and result state
-native_seed_working_recipe | Complete native seed working workflows
-native_smpts_recipe | Native soybean paper workflow composition and outputs
-native_threshold_stage | Native threshold stage inputs, outputs, resources and provenance
-native_watershed_diagnostic_recipe | Watershed diagnostic recipe variants and CUDA products
-native_watershed_diagnostic_replay | Saved watershed diagnostic stage replay and guards
-native_watershed_stage | Native watershed stage execution and checkpoints
 node_optimization | Node parameter search, optimizer state and cache reuse
 node_optimization_ui | Node optimizer controls and desktop result application
 oriented_edge_components | Oriented edge components, connectivity and CUDA outputs
@@ -80,55 +60,18 @@ pipeline | Pipeline graph topology, controls, settings, state and invalidation
 pipeline_cable_routing | Pipeline cable geometry and routing
 pipeline_inspector_actions | Pipeline inspector parameter editing and actions
 pipeline_ui | Pipeline desktop controls, graph state, navigation, workers and status
-plantcv_card_detection | CUDA color card detection geometry and public-source parity
-plantcv_card_preprocess | CUDA color card image preparation and source semantics
-plantcv_color | CUDA color-space conversion and PlantCV-compatible image analysis
-plantcv_color_card | CUDA color card chip sampling and correction facts
-plantcv_contours | CUDA contour extraction, topology and public geometry
-plantcv_correction | CUDA polynomial color correction and numerical compatibility
-plantcv_distance | CUDA distance transform and public-source numerical parity
-plantcv_extended_thresholds | CUDA extended threshold algorithms and input boundaries
-plantcv_fill | CUDA small-object and hole filling with public PlantCV parity
-plantcv_kmeans | CUDA k-means analysis and public-model compatibility
-plantcv_kmeans_classifier | CUDA k-means class assignment and model boundaries
-plantcv_kmeans_features | CUDA k-means features and input conversion
-plantcv_kmeans_model | K-means model structure, identity and validation
-plantcv_kmeans_predict | CUDA k-means predictions and source-model agreement
-plantcv_kmeans_preprocess | CUDA k-means image preparation and feature order
-plantcv_median | CUDA median filtering and public PlantCV pixel parity
-plantcv_minrect | CUDA minimum-area rectangle geometry and degeneracies
-plantcv_morphology | CUDA erosion/dilation and public PlantCV pixel parity
-plantcv_peaks | CUDA peak detection, spacing and source semantics
-plantcv_range | CUDA range thresholding and public pixel parity
-plantcv_raster_spans | CUDA contour rasterization, spans and output masks
-plantcv_size | CUDA PlantCV-compatible shape/size measurements
-plantcv_size_diagnostic | CUDA size diagnostic products and public compatibility
-plantcv_thresholds | CUDA binary/mean/Otsu thresholds and isolated public-source comparison
-plantcv_watershed | CUDA watershed labeling and public-source numerical parity
-plantcv_watershed_diagnostic | CUDA watershed diagnostic labels, plots and bounds
 procedural_fit | Procedural seed fitting, search behavior and geometric evidence
 procedural_fit_ui | Procedural fit controls and result application
 procedural_instances | CUDA procedural instance splitting, ownership and analysis integration
 project_analysis_persistence | Project analysis settings, image locators and atomic persistence
 project_analysis_ui | Project analysis save/reopen, dirty state, selections and desktop guards
-reference_capture | Public reference capture sessions, manifests and publication failures
-reference_checkpoint_inspection | Reference checkpoint inspection and graph-stage evidence
 reference_edge_fit | Reference-driven edge fitting and rendered evidence
 reference_edge_strip_descriptor | Reference edge strip extraction, descriptors and overlays
 reference_edge_toolbar_revision | Edge reference toolbar controls, graph revisions and image-view state
-reference_graph_persistence | Reference graph project serialization and historical identity
 reference_graph_readonly | Read-only public reference graph presentation and edit prevention
-reference_graph_view | Reference graph desktop viewing, inspection and replay
 reference_history | Reference history revision selection and UI presentation
 reference_library | Reference library aggregation, extraction, contracts and persistence
-reference_mask_inspection | Saved public mask stage inspection
-reference_mask_stage | Public mask-stage capture and checkpoint identity
 reference_persistence | Reference region sidecars, source binding and desktop lifecycle
-reference_preprocessing | Public preprocessing chains, capture, controls and cache identity
-reference_runner | Isolated PlantCV worker requests, limits, transport and failure outcomes
-reference_seed_chain | Actual public seed-chain composition, controls and cancellation
-reference_setup | Pinned reference environment and source installation checks
-reference_stage | Public stage capture, graph adaptation and checkpoint identity
 reference_texture_collage | Reference texture collage layout and image rendering
 reference_undo | Reference annotation undo/redo and independent history
 resources | CUDA resource estimation and runtime admission
@@ -138,9 +81,7 @@ seed_shape_model | Seed shape model fitting, reference aggregation and scoring
 selected_instance_view | Selected instance overlay and desktop view state
 shape_guided_fill | Shape-guided annotation filling and selection behavior
 shape_guided_ui | Shape-guided annotation desktop controls
-smpts_paper | Soybean paper method calculations and explicitly supported boundaries
 species_library_dialog | Species reference library desktop editing
-threshold_conformance | Public/native threshold checkpoint comparison and conformance
 visualization_layers | Analysis visualization layers, overlays, crops and display contracts'''.splitlines())
 
 
@@ -153,19 +94,9 @@ def category(stem: str) -> str:
         return 'Persistence, export, identity and outcomes'
     if name in {'reference_undo', 'reference_history', 'reference_texture_collage'} or name.startswith('reference_edge_'):
         return 'Annotation and interactive image review'
-    if name in {'reader_acceptance', 'recipe_acceptance', 'public_seed_acceptance'}:
-        return 'Frozen acceptance matrices'
-    if name.startswith('plantcv_') or name == 'smpts_paper':
-        return 'Numerical primitives and public-source parity'
-    if (name.startswith(('native_', 'reference_', 'benchmark_', 'peer_', 'catalogue_'))
-            or name.endswith('_roi_recipe') or name in {
-                'calibrated_public_capture_methods', 'calibrated_public_capture_dialog',
-                'checkpoint_bundle', 'kmeans_model_artifact', 'kmeans_training_directory',
-                'naive_bayes_plots', 'naive_bayes_training_directory', 'public_capture_layout',
-                'public_reference_attempt_qc', 'threshold_conformance', 'color_histogram',
-                'classifier_evaluation', 'grouped_comparison', 'adaptive_kernel_normalization'}):
-        return 'Recipe, replay and reference infrastructure'
-    if name.startswith(('project_', 'method_qc', 'recipe_', 'correction_')) or name in {
+    if name.startswith(('reference_', 'benchmark_', 'catalogue_')) or name == 'grouped_comparison':
+        return 'Benchmarks, added nodes and reference views'
+    if name.startswith('project_') or name in {
             'terminal_snapshot', 'trait_snapshot', 'portable_result_identity',
             'result_prediction_revision', 'calibration_result_revision',
             'reviewed_measurement_lineage', 'seed_crop_artifacts', 'review_workflows',

@@ -19,7 +19,7 @@ class PilotAnalysisTests(unittest.TestCase):
         except ImportError as error:
             raise unittest.SkipTest(f"OpenCV baseline dependencies unavailable: {error}")
 
-    def check_test_sparse_pilot_runs_diagnostics_without_foreground_references(self) -> None:
+    def check_test_sparse_pilot_starts_from_automatic_material_references(self) -> None:
         import numpy as np
 
         from seedvision.segmentation.baseline import BaselineSettings, analyze_path
@@ -99,11 +99,20 @@ class PilotAnalysisTests(unittest.TestCase):
         self.assertIsNotNone(result.calibration.ruler)
         self.assertIsNotNone(result.pixels_per_mm)
         self.assertGreater(result.calibration.colour_card.detected_swatch_count, 16)
-        self.assertEqual(result.foreground_threshold, 0.0)
-        self.assertEqual(result.foreground_pixel_count, 0)
-        self.assertFalse(np.any(result.foreground_colour_probability))
+        # Nothing is painted: the isolated reference seeds beside the dish give
+        # Foreground, the ring outside the dish Background, and the dish wall,
+        # chart and ruler Other.
+        references = result.automatic_material_references
+        self.assertEqual(references.foreground_source, "isolated reference seeds")
+        self.assertEqual(references.background_source, "perimeter ring")
+        self.assertEqual(
+            references.other_sources, ("vessel wall", "colour chart", "ruler")
+        )
+        # The reference seeds lie outside the analysis crop, yet their colour
+        # still trains the Foreground model.
+        self.assertTrue(np.any(result.foreground_colour_probability))
+        self.assertGreater(result.foreground_pixel_count, 0)
         self.assertGreater(result.analysis_region_pixel_count, result.foreground_pixel_count)
-        self.assertEqual(result.distance_candidate_count, 0)
         self.assertGreater(result.circle_candidate_count, 0)
         labels = result.layers.instance_labels
         colours = result.layers.instance_colours[1:]
@@ -116,6 +125,7 @@ class PilotAnalysisTests(unittest.TestCase):
             "colour_reference",
             "deskew_colour",
             "layout_detection",
+            "automatic_material_references",
             "foreground_segmentation",
             "edge_gradients",
             "edge_ridges",
@@ -161,7 +171,7 @@ class PilotAnalysisTests(unittest.TestCase):
         self.assertFalse(cutoff.complete)
         self.assertFalse(cutoff.selected)
 
-    def check_test_dense_lupin_requires_user_authored_foreground_reference(self) -> None:
+    def check_test_dense_lupin_starts_from_reference_seeds_and_paint_refines_it(self) -> None:
         import numpy as np
 
         from seedvision.segmentation import PipelineAnalysisCache, analyze_path
@@ -174,8 +184,15 @@ class PilotAnalysisTests(unittest.TestCase):
 
         self.assertIsNotNone(automatic.perimeter_background_lab)
         self.assertLess(automatic.background_prior_deviation, 30.0)
-        self.assertFalse(np.any(automatic.foreground_colour_probability))
-        self.assertEqual(automatic.foreground_pixel_count, 0)
+        # The two isolated reference seeds below the dish teach the seed colour
+        # before anything is painted, so the heaped seeds are already Foreground,
+        # and seeds against the dish wall are not taken for wall.
+        self.assertEqual(
+            automatic.automatic_material_references.foreground_source,
+            "isolated reference seeds",
+        )
+        self.assertTrue(np.any(automatic.foreground_colour_probability))
+        self.assertGreater(automatic.foreground_pixel_count, 0)
 
         reference = (
             float(automatic.dish.center_x),
@@ -196,10 +213,15 @@ class PilotAnalysisTests(unittest.TestCase):
         yy, xx = np.ogrid[: difference.shape[0], : difference.shape[1]]
         outside_reference = (xx - local_x) ** 2 + (yy - local_y) ** 2 > 40**2
         self.assertEqual(manual.foreground_reference_count, 1)
+        automatic_probability = int(
+            automatic.foreground_probability[round(local_y), round(local_x)]
+        )
         painted_probability = int(
             manual.foreground_probability[round(local_y), round(local_x)]
         )
-        self.assertGreater(painted_probability, 240)
+        self.assertGreater(automatic_probability, 160)
+        self.assertGreater(painted_probability, 220)
+        self.assertGreaterEqual(painted_probability, automatic_probability)
         self.assertLess(painted_probability, 255)
         self.assertGreater(
             int(np.count_nonzero((difference > 2) & outside_reference)),
@@ -570,50 +592,28 @@ class PilotAnalysisTests(unittest.TestCase):
             int(painted_foreground.sum()),
         )
 
-    def check_test_isolated_scale_reference_colours_do_not_become_foreground(self) -> None:
+    def check_test_isolated_reference_seed_oval_has_long_and_short_sides(self) -> None:
+        import cv2
         import numpy as np
 
-        from seedvision.cuda import CudaContext
-        from seedvision.segmentation.baseline import (
-            BaselineSettings,
-            _bgr_samples_to_lab,
-            _foreground_feature,
-        )
+        from seedvision.segmentation.baseline import _refine_reference_seed_component
 
-        crop = np.full((128, 128, 3), (180, 190, 200), np.uint8)
-        crop[36:92, 18:52] = (55, 65, 75)
-        context = CudaContext.resolve(requested="cpu")
-        settings = BaselineSettings(
-            foreground_reference_weight=0.90,
-            foreground_refinement_iterations=0,
-        )
-        reference_bgr = np.full((512, 3), (180, 190, 200), np.uint8)
-        reference_lab = _bgr_samples_to_lab(reference_bgr, context)
-        background_lab = _bgr_samples_to_lab(
-            np.full((512, 3), (220, 220, 220), np.uint8), context
-        )
-
-        unreferenced = _foreground_feature(
-            crop,
-            settings,
-            context,
-            perimeter_background_samples_lab=background_lab,
-            seed_diameter=28.0,
-        )[1]
-        automatic_result = _foreground_feature(
-            crop,
-            settings,
-            context,
-            perimeter_background_samples_lab=background_lab,
-            automatic_foreground_samples_lab=reference_lab,
-            seed_diameter=28.0,
-        )
-        automatic = automatic_result[1]
-        profile = automatic_result[-2]
-
-        np.testing.assert_array_equal(automatic, unreferenced)
-        self.assertFalse(np.any(automatic))
-        self.assertIsNone(profile)
+        crop = np.full((240, 280, 3), (196, 204, 210), np.uint8)
+        # A 120 x 70 px seed whose long side runs 25 degrees below the x axis.
+        cv2.ellipse(crop, (140, 118), (60, 35), 25.0, 0.0, 360.0, (52, 74, 96), -1)
+        seed = np.all(crop == (52, 74, 96), axis=2)
+        # A permissive catchment, as the connected components provide.
+        component = cv2.dilate(seed.astype(np.uint8), np.ones((9, 9), np.uint8)) > 0
+        fitted = _refine_reference_seed_component(crop, component, correction_factor=0.72)
+        self.assertIsNotNone(fitted)
+        diameter, oval, _mask = fitted
+        self.assertAlmostEqual(oval.long_side_px, 120.0, delta=3.0)
+        self.assertAlmostEqual(oval.short_side_px, 70.0, delta=3.0)
+        self.assertAlmostEqual(oval.angle_degrees, 25.0, delta=2.0)
+        self.assertAlmostEqual(oval.center_x, 140.0, delta=1.5)
+        self.assertAlmostEqual(oval.center_y, 118.0, delta=1.5)
+        # The processing width keeps its meaning: the corrected long side.
+        self.assertAlmostEqual(diameter, 0.72 * oval.long_side_px, places=6)
 
     def check_test_zero_reference_weight_never_forces_painted_foreground(self) -> None:
         import numpy as np
@@ -874,7 +874,7 @@ class PilotAnalysisTests(unittest.TestCase):
             adjusted.foreground_colour_probability.shape,
             adjusted.layers.valid_mask.shape,
         )
-        self.assertFalse(np.any(adjusted.foreground_colour_probability))
+        self.assertTrue(np.any(adjusted.foreground_colour_probability))
         self.assertIsNot(
             adjusted.foreground_probability,
             third.foreground_probability,
@@ -888,11 +888,11 @@ class PilotAnalysisTests(unittest.TestCase):
         self.assertIn("background_likelihood", cache.last_computed_nodes)
         self.assertIn("foreground_segmentation", cache.last_computed_nodes)
 
-    def test_sparse_pilot_runs_diagnostics_without_foreground_references(self):
-        self.scenario(self.check_test_sparse_pilot_runs_diagnostics_without_foreground_references, labelled=False)
+    def test_sparse_pilot_starts_from_automatic_material_references(self):
+        self.scenario(self.check_test_sparse_pilot_starts_from_automatic_material_references, labelled=False)
 
-    def test_dense_lupin_requires_user_authored_foreground_reference(self):
-        self.scenario(self.check_test_dense_lupin_requires_user_authored_foreground_reference, labelled=False)
+    def test_dense_lupin_starts_from_reference_seeds_and_paint_refines_it(self):
+        self.scenario(self.check_test_dense_lupin_starts_from_reference_seeds_and_paint_refines_it, labelled=False)
 
     def test_node_cache_reuses_upstream_stages_for_edge_change(self):
         self.scenario(self.check_test_node_cache_reuses_upstream_stages_for_edge_change, labelled=False)
@@ -906,7 +906,7 @@ class PilotAnalysisTests(unittest.TestCase):
         self.scenario(self.check_test_annotated_foreground_source_is_a_per_id_safely_inset_interior)
         self.scenario(self.check_test_annotated_instances_are_opt_in_foreground_colour_references)
         self.scenario(self.check_test_automatic_foreground_source_obeys_painted_class_precedence)
-        self.scenario(self.check_test_isolated_scale_reference_colours_do_not_become_foreground)
+        self.scenario(self.check_test_isolated_reference_seed_oval_has_long_and_short_sides)
         self.scenario(self.check_test_zero_reference_weight_never_forces_painted_foreground)
         self.scenario(self.check_test_painted_pattern_colours_remain_individual_frequency_bins)
         self.scenario(self.check_test_candidate_fusion_keeps_primary_marker_as_suppression_anchor)

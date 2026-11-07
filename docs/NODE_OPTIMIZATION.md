@@ -48,13 +48,13 @@ decoder/analysis controls, never silently train a neural network.
 
 ## Coverage and objectives
 
-The shared registry (`seedvision/optimization/registry.py`) gives 39 computational
+The shared registry (`seedvision/optimization/registry.py`) gives 40 computational
 nodes an optimisation capability and 12 nodes an explicit exemption. A new unknown node
 or unsupported control kind raises an error rather than silently losing coverage.
 
 | Nodes | Objective / required references |
 |---|---|
-| Deskew and colour balance; Layout detection; Material evidence decision | Foreground/nonseed material probabilities against painted material classes or complete seed silhouettes. Deskew geometry stays frozen; colour balance is searchable. |
+| Deskew and colour correction; Layout detection; Automatic material references; Material evidence decision | Foreground/nonseed material probabilities against painted material classes or complete seed silhouettes. Deskew geometry and the correction model stay frozen; switching colour correction on or off is searchable. The vessel wall width is a physical fact and stays fixed. |
 | Material colour probabilities | Foreground and background colour probabilities against reviewed material regions. |
 | Material noise probabilities | Foreground and background noise probabilities against material regions. |
 | Multiscale darkness and colour noise; Reference texture prototypes | Seed-surface/background-texture probabilities against material regions. |

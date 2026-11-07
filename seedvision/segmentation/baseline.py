@@ -32,6 +32,7 @@ from seedvision.cuda import (
     lab_colour_distribution,
     lab_colour_frequency_distribution,
     otsu_threshold,
+    resize,
 )
 from seedvision.cuda.layers import directional_edges
 from seedvision.segmentation.procedural import (
@@ -42,6 +43,17 @@ from seedvision.segmentation.procedural import (
     procedural_seed_instances,
 )
 from seedvision.segmentation.procedural_fit import procedural_reference_error_map
+from seedvision.segmentation.automatic_references import (
+    AutomaticMaterialReferences,
+    ConfidentSeed,
+    authority as automatic_reference_authority,
+    automatic_material_references,
+    polygon_mask,
+    ruler_outline,
+    sampled_rows,
+    vessel_rim_support,
+    thinned as thinned_automatic_reference,
+)
 from seedvision.learning.cellpose_sam import CellposeSamSettings
 from seedvision.learning.contracts import LearnedInstanceResult, ModelFamily
 from seedvision.learning.instance_selection import select_instances
@@ -163,6 +175,25 @@ class BaselineSettings:
     circle_highlight_weight: float = 0.10
     circle_confidence: float = 0.62
     distance_confidence: float = 0.48
+    confident_seed_search: bool = True
+    confident_seed_minimum_count: int = 3
+    confident_seed_maximum_count: int = 24
+    confident_seed_minimum_solidity: float = 0.88
+    vessel_minimum_rim_support: float = 0.70
+    automatic_foreground_reference: bool = True
+    automatic_background_reference: bool = True
+    automatic_other_reference: bool = True
+    automatic_chart_as_other: bool = True
+    automatic_seed_inset_fraction: float = 0.15
+    automatic_background_gap_fraction: float = 0.25
+    automatic_background_band_fraction: float = 0.35
+    automatic_background_shadow_fraction: float = 0.20
+    automatic_background_colour_tolerance: float = 18.0
+    automatic_perimeter_disagreement: float = 15.0
+    automatic_border_band_fraction: float = 0.03
+    automatic_wall_width_mm: float = 3.0
+    automatic_reference_floor: float = 0.10
+    automatic_reference_half_life_seed_areas: float = 0.50
 
     def __post_init__(self) -> None:
         ranges = {
@@ -305,6 +336,20 @@ class BaselineSettings:
             ),
             "circle_confidence": (self.circle_confidence, 0.10, 1.00),
             "distance_confidence": (self.distance_confidence, 0.10, 1.00),
+            "confident_seed_minimum_count": (self.confident_seed_minimum_count, 1, 50),
+            "confident_seed_maximum_count": (self.confident_seed_maximum_count, 1, 200),
+            "confident_seed_minimum_solidity": (self.confident_seed_minimum_solidity, 0.5, 1.0),
+            "vessel_minimum_rim_support": (self.vessel_minimum_rim_support, 0.0, 1.0),
+            "automatic_seed_inset_fraction": (self.automatic_seed_inset_fraction, 0.0, 0.45),
+            "automatic_background_gap_fraction": (self.automatic_background_gap_fraction, 0.0, 2.0),
+            "automatic_background_band_fraction": (self.automatic_background_band_fraction, 0.05, 2.0),
+            "automatic_background_shadow_fraction": (self.automatic_background_shadow_fraction, 0.0, 0.9),
+            "automatic_background_colour_tolerance": (self.automatic_background_colour_tolerance, 2.0, 100.0),
+            "automatic_perimeter_disagreement": (self.automatic_perimeter_disagreement, 1.0, 100.0),
+            "automatic_border_band_fraction": (self.automatic_border_band_fraction, 0.005, 0.25),
+            "automatic_wall_width_mm": (self.automatic_wall_width_mm, 0.0, 20.0),
+            "automatic_reference_floor": (self.automatic_reference_floor, 0.0, 1.0),
+            "automatic_reference_half_life_seed_areas": (self.automatic_reference_half_life_seed_areas, 0.05, 20.0),
         }
         for name, (value, minimum, maximum) in ranges.items():
             if not minimum <= value <= maximum:
@@ -328,6 +373,10 @@ class BaselineSettings:
             raise ValueError("reference_max_components must be between 1 and 10.")
         if not 0 <= self.dense_circle_relaxation <= 10:
             raise ValueError("dense_circle_relaxation must be between 0 and 10.")
+        if self.confident_seed_maximum_count < self.confident_seed_minimum_count:
+            raise ValueError(
+                "confident_seed_maximum_count must be at least confident_seed_minimum_count."
+            )
         if not 10 <= self.dense_distance_candidate_threshold <= 300:
             raise ValueError(
                 "dense_distance_candidate_threshold must be between 10 and 300."
@@ -385,6 +434,22 @@ class SeedDiameterMeasurement:
 
 
 @dataclass(frozen=True, slots=True)
+class ReferenceSeedOval:
+    """Oval fitted to one isolated reference seed along its longest span.
+
+    The long side is the maximum Feret span; the short side is the widest
+    extent perpendicular to it. The angle is the long side's direction in image
+    coordinates (y down), in degrees within (-90, 90].
+    """
+
+    center_x: float
+    center_y: float
+    long_side_px: float
+    short_side_px: float
+    angle_degrees: float
+
+
+@dataclass(frozen=True, slots=True)
 class BackgroundSamplingBand:
     """Exact Petri-dish annulus used for the initial background prior."""
 
@@ -436,13 +501,20 @@ class BaselineAnalysis:
     unet_instances: LearnedInstanceResult | None = None
     stardist_instances: LearnedInstanceResult | None = None
     cellpose_sam_instances: LearnedInstanceResult | None = None
-    reference_seed_bounds: tuple[tuple[float, float, float, float], ...] = ()
+    reference_seed_ovals: tuple[ReferenceSeedOval, ...] = ()
     reference_seed_diameters_px: tuple[float, ...] = ()
     initial_seed_diameter_px: float | None = None
     annotated_seed_diameters: tuple[SeedDiameterMeasurement, ...] = ()
     seed_diameter_source: str = "dish fallback"
+    # Whether the fitted circle is a visible vessel. Without one it bounds
+    # nothing: the analysis covers analysis_region_outlines (corrected
+    # coordinates, outer outlines and holes) instead.
+    vessel_present: bool = True
+    vessel_rim_support: float | None = None
+    analysis_region_outlines: tuple[np.ndarray, ...] = ()
     seed_measurement_summary: SeedMeasurementSummary | None = None
     seed_dimensions_shape_model: SeedDimensionsShapeModel | None = None
+    automatic_material_references: AutomaticMaterialReferences | None = None
     method: str = "classical fused review proposals"
     approximate: bool = True
     source_sha256: str | None = None
@@ -459,6 +531,16 @@ class BaselineAnalysis:
     @property
     def pixels_per_mm(self) -> float | None:
         return self.calibration.pixels_per_mm
+
+    @property
+    def initial_seed_sides_px(self) -> tuple[float, float] | None:
+        """Median long and short side of the isolated reference seed ovals."""
+        if not self.reference_seed_ovals:
+            return None
+        return (
+            float(np.median([oval.long_side_px for oval in self.reference_seed_ovals])),
+            float(np.median([oval.short_side_px for oval in self.reference_seed_ovals])),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -909,12 +991,33 @@ def analyze_image(
             (
                 reference_diameter,
                 reference_count,
-                automatic_foreground_samples_lab,
-                reference_seed_bounds,
+                confident_seeds,
+                reference_seed_ovals,
                 reference_seed_diameters,
             ) = _reference_seed_diameter(
                 analysis_image, dish, settings, cuda_context
             )
+            vessel_support = vessel_rim_support(full_perimeter_lab, dish)
+            vessel_present = vessel_support >= settings.vessel_minimum_rim_support
+            vessel_seed_search = (
+                reference_diameter is None and settings.confident_seed_search
+            )
+            if vessel_seed_search:
+                (
+                    reference_diameter,
+                    reference_count,
+                    confident_seeds,
+                    reference_seed_ovals,
+                    reference_seed_diameters,
+                ) = _confident_vessel_seeds(
+                    analysis_image,
+                    dish,
+                    settings,
+                    cuda_context,
+                    vessel_present=vessel_present,
+                    excluded_polygons=_calibration_object_polygons(calibration),
+                    image_tensor=calibration.gpu_corrected_bgr,
+                )
             annotated_seed_diameters = _annotated_seed_diameter_measurements(
                 seed_instance_annotations,
                 annotations=seed_instance_traits,
@@ -938,6 +1041,10 @@ def analyze_image(
                 "all explicitly full-length annotations"
                 if annotation_diameter is not None
                 else "isolated reference seeds"
+                if reference_diameter is not None and not vessel_seed_search
+                else "confident seeds in the vessel"
+                if reference_diameter is not None and vessel_present
+                else "confident seeds in the scene"
                 if reference_diameter is not None
                 else "dish fallback"
             )
@@ -972,14 +1079,16 @@ def analyze_image(
         values["seed_scale"] = (
             reference_diameter,
             reference_count,
-            automatic_foreground_samples_lab,
-            reference_seed_bounds,
+            confident_seeds,
+            reference_seed_ovals,
             reference_seed_diameters,
             annotated_seed_diameters,
             seed_diameter,
             seed_diameter_source,
             seed_measurement_summary,
             seed_dimensions_shape_model,
+            vessel_support,
+            vessel_present,
         )
         values['seed_scale.reviewed_input_key'] = reviewed_input_key
         computed.append("seed_scale_estimation")
@@ -987,34 +1096,114 @@ def analyze_image(
         (
             reference_diameter,
             reference_count,
-            automatic_foreground_samples_lab,
-            reference_seed_bounds,
+            confident_seeds,
+            reference_seed_ovals,
             reference_seed_diameters,
             annotated_seed_diameters,
             seed_diameter,
             seed_diameter_source,
             seed_measurement_summary,
             seed_dimensions_shape_model,
+            vessel_support,
+            vessel_present,
         ) = values["seed_scale"]
         reused.append("seed_scale_estimation")
 
-    _band_inner_radius, probability_outer_radius = _background_band_radii(
-        dish,
-        calibration.pixels_per_mm,
-        buffer_cm=layer_settings.perimeter_background_buffer_cm,
-        thickness_cm=layer_settings.perimeter_background_band_thickness_cm,
+    automatic_references_dirty = (
+        (
+            (calibration_dirty or layout_dirty or seed_scale_dirty)
+            and not retained("automatic_material_references")
+        )
+        or "automatic_material_references" in dirty
+        or "automatic_references" not in values
+    )
+    if automatic_references_dirty:
+        if node_enabled("automatic_material_references"):
+            with timings.measure("automatic_material_references"):
+                chart_polygon, ruler_polygon = _calibration_object_polygons(
+                    calibration, keep_missing=True
+                )
+                automatic_references = automatic_material_references(
+                    full_perimeter_lab,
+                    dish,
+                    confident_seeds,
+                    seed_diameter,
+                    calibration.pixels_per_mm,
+                    vessel_present=vessel_present,
+                    perimeter_samples_lab=(
+                        background_perimeter_samples_lab if vessel_present else None
+                    ),
+                    chart_polygon=chart_polygon,
+                    ruler_polygon=ruler_polygon,
+                    settings=settings,
+                )
+            computed.append("automatic_material_references")
+        else:
+            automatic_references = None
+        values["automatic_references"] = automatic_references
+    else:
+        automatic_references = values["automatic_references"]
+        reused.append("automatic_material_references")
+
+    # Without a visible vessel the dish search's best circle bounds nothing.
+    # The analysis then covers the spread of the confident seeds, grown by
+    # two seed widths, or the whole image when there are too few of them, and
+    # leaves out the chart and ruler.
+    scene_region_key = (
+        None
+        if vessel_present
+        else (
+            tuple(
+                (seed.left, seed.top, seed.mask.shape, int(np.count_nonzero(seed.mask)))
+                for seed in confident_seeds
+            ),
+            round(float(seed_diameter), 3),
+        )
     )
     crop_dirty = (
         calibration_dirty
         or layout_dirty
         or "crop" not in values
+        or values.get("crop.scene_region_key") != scene_region_key
+    )
+    if crop_dirty:
+        values["crop.scene"] = (
+            None
+            if vessel_present
+            else _scene_analysis_crop(
+                analysis_image,
+                confident_seeds,
+                seed_diameter,
+                _calibration_object_polygons(calibration),
+                settings.inner_radius_fraction,
+                cuda_context.device,
+            )
+        )
+    scene_crop = values["crop.scene"]
+    analysis_circle = dish if scene_crop is None else scene_crop[3]
+    _band_inner_radius, probability_outer_radius = _background_band_radii(
+        analysis_circle,
+        calibration.pixels_per_mm,
+        buffer_cm=layer_settings.perimeter_background_buffer_cm,
+        thickness_cm=layer_settings.perimeter_background_band_thickness_cm,
     )
     if crop_dirty:
         previous_crop = values.get("crop")
-        crop, offset_x, offset_y = _dish_crop(
-            analysis_image, dish, radius=probability_outer_radius
-        )
+        if scene_crop is None:
+            crop, offset_x, offset_y = _dish_crop(
+                analysis_image, dish, radius=probability_outer_radius
+            )
+            crop_excluded = None
+        else:
+            crop, offset_x, offset_y, _circle, crop_excluded = scene_crop
         values["crop"] = (crop, offset_x, offset_y)
+        values["crop.scene_region_key"] = scene_region_key
+        values["crop.excluded"] = crop_excluded
+        values["crop.outlines"] = (
+            ()
+            if scene_crop is None
+            else _analysis_region_outlines(crop_excluded, crop.shape, offset_x, offset_y)
+        )
         if previous_crop is not None and (
             previous_crop[0].shape != crop.shape
             or previous_crop[1:] != (offset_x, offset_y)
@@ -1022,6 +1211,7 @@ def analyze_image(
             retain_nothing()
     else:
         crop, offset_x, offset_y = values["crop"]
+        crop_excluded = values.get("crop.excluded")
 
     reference_radius = max(
         2,
@@ -1147,6 +1337,66 @@ def analyze_image(
         if 0 <= x < crop.shape[1] and 0 <= y < crop.shape[0]
     )
 
+    crop_window = (
+        slice(offset_y, offset_y + crop_height),
+        slice(offset_x, offset_x + crop_width),
+    )
+    nominal_seed_area = float(np.pi * (float(seed_diameter) * 0.5) ** 2)
+    automatic_foreground_local = None
+    automatic_foreground_outside = None
+    automatic_other_local = None
+    if automatic_references is not None:
+        reviewed_foreground_pixels = (
+            0
+            if local_foreground_reference_mask is None
+            else int(np.count_nonzero(local_foreground_reference_mask))
+        ) + (
+            0
+            if local_seed_instance_annotations is None
+            else int(np.count_nonzero(local_seed_instance_annotations))
+        )
+        reviewed_other_pixels = (
+            0
+            if local_background_exclusion_mask is None
+            else int(np.count_nonzero(local_background_exclusion_mask))
+        )
+        if automatic_references.foreground is not None:
+            automatic_foreground = thinned_automatic_reference(
+                automatic_references.foreground,
+                reviewed_foreground_pixels,
+                automatic_reference_authority(
+                    reviewed_foreground_pixels,
+                    nominal_seed_area,
+                    settings.automatic_reference_floor,
+                    settings.automatic_reference_half_life_seed_areas,
+                ),
+            )
+            automatic_foreground_local = automatic_foreground[crop_window]
+            # Reference seeds often lie outside the vessel and its crop; their
+            # pixels still teach the seed colour, as Lab and BGR samples.
+            outside = automatic_foreground.clone()
+            outside[crop_window] = False
+            if bool(outside.any().item()):
+                automatic_foreground_outside = (
+                    sampled_rows(full_perimeter_lab, outside),
+                    sampled_rows(
+                        calibration.gpu_corrected_bgr
+                        if calibration.gpu_corrected_bgr is not None
+                        else image_to_tensor(analysis_image, cuda_context),
+                        outside,
+                    ),
+                )
+        if automatic_references.other is not None:
+            automatic_other_local = thinned_automatic_reference(
+                automatic_references.other[crop_window],
+                reviewed_other_pixels,
+                automatic_reference_authority(
+                    reviewed_other_pixels,
+                    nominal_seed_area,
+                    settings.automatic_reference_floor,
+                    settings.automatic_reference_half_life_seed_areas,
+                ),
+            )
     foreground_library_signature = (
         None if species_library is None else species_library.manifest.content_sha256,
         str(settings.foreground_reference_source),
@@ -1157,6 +1407,7 @@ def analyze_image(
             (
                 crop_dirty
                 or seed_scale_dirty
+                or automatic_references_dirty
                 or painted_reference_dirty
                 or values.get("foreground.library_signature")
                 != foreground_library_signature
@@ -1204,12 +1455,14 @@ def analyze_image(
             reference_radius=reference_radius,
             seed_diameter=seed_diameter,
             valid_radius=float(probability_outer_radius),
-            analysis_radius=float(dish.outer_radius),
-            center_x=float(dish.center_x - offset_x),
-            center_y=float(dish.center_y - offset_y),
+            analysis_radius=float(analysis_circle.outer_radius),
+            center_x=float(analysis_circle.center_x - offset_x),
+            center_y=float(analysis_circle.center_y - offset_y),
+            excluded_region=crop_excluded,
             perimeter_background_lab=foreground_perimeter_prior_lab,
             perimeter_background_samples_lab=foreground_perimeter_samples_lab,
-            automatic_foreground_samples_lab=automatic_foreground_samples_lab,
+            automatic_foreground_reference_mask=automatic_foreground_local,
+            automatic_foreground_samples=automatic_foreground_outside,
             source_tensor=gpu_crop_source,
             lab_tensor=gpu_crop_lab,
             library_foreground_colour_bank=(
@@ -1539,7 +1792,7 @@ def analyze_image(
                         if circle_local_lighting is None
                         else circle_local_lighting[3]
                     ),
-                    analysis_radius=float(dish.outer_radius),
+                    analysis_radius=float(analysis_circle.outer_radius),
                 )
             computed.append("circle_candidates")
         else:
@@ -1650,6 +1903,14 @@ def analyze_image(
         )
     if identification_dirty:
         layer_dirty.add("instance_masks")
+    if automatic_references_dirty:
+        layer_dirty.update(
+            {
+                "background_likelihood",
+                "foreground_noise_likelihood",
+                "reference_texture_prototypes",
+            }
+        )
     if foreground_dirty:
         layer_dirty.update(
             {
@@ -1809,6 +2070,45 @@ def analyze_image(
         surrounding_noise_offset_x,
         surrounding_noise_offset_y,
     ) = values["layer.surrounding_noise_inputs"]
+    import torch
+
+    layer_background_prior_lab = perimeter_background_lab
+    layer_background_prior_samples_lab = perimeter_background_samples_lab
+    layer_background_prior_source_mask = (
+        None
+        if perimeter_background_band.accepted_sample_mask is None
+        else perimeter_background_band.accepted_sample_mask.gpu_tensor(
+            device=cuda_context.device
+        )[
+            :,
+            :,
+            offset_y : offset_y + crop.shape[0],
+            offset_x : offset_x + crop.shape[1],
+        ]
+    )
+    if automatic_references is not None and automatic_references.replaces_perimeter:
+        layer_background_prior_lab = automatic_references.background_prior_lab
+        layer_background_prior_samples_lab = (
+            automatic_references.background_samples_lab
+        )
+        layer_background_prior_source_mask = automatic_references.background[
+            crop_window
+        ].to(dtype=torch.uint8)
+    layer_other_reference_mask = local_background_exclusion_mask
+    if automatic_other_local is not None and bool(automatic_other_local.any().item()):
+        other_union = automatic_other_local
+        if local_background_exclusion_mask is not None:
+            other_union = other_union | (
+                image_to_tensor(
+                    np.asarray(local_background_exclusion_mask, np.uint8), cuda_context
+                )[0, 0]
+                > 0
+            )
+        layer_other_reference_mask = GpuRaster(
+            other_union[None, None].to(torch.uint8) * 255,
+            numpy_dtype=np.uint8,
+            name="Other references",
+        )
     layer_build_arguments = dict(
         offset_x=offset_x,
         offset_y=offset_y,
@@ -1817,7 +2117,7 @@ def analyze_image(
         background_reference_mask=local_background_reference_mask,
         foreground_reference_mask=local_foreground_reference_mask,
         foreground_reference_source_mask=foreground_reference_source_mask,
-        background_exclusion_mask=local_background_exclusion_mask,
+        background_exclusion_mask=layer_other_reference_mask,
         foreground_exclusion_mask=local_foreground_exclusion_mask,
         seed_instance_annotations=local_seed_instance_annotations,
         seed_instance_traits=tuple(seed_instance_traits),
@@ -1826,20 +2126,9 @@ def analyze_image(
         seed_trait_conditions=tuple(seed_trait_conditions),
         background_reference_samples=background_samples,
         background_reference_sample_count=accepted_background_points,
-        background_prior_lab=perimeter_background_lab,
-        background_prior_samples_lab=perimeter_background_samples_lab,
-        background_prior_source_mask=(
-            None
-            if perimeter_background_band.accepted_sample_mask is None
-            else perimeter_background_band.accepted_sample_mask.gpu_tensor(
-                device=cuda_context.device
-            )[
-                :,
-                :,
-                offset_y : offset_y + crop.shape[0],
-                offset_x : offset_x + crop.shape[1],
-            ]
-        ),
+        background_prior_lab=layer_background_prior_lab,
+        background_prior_samples_lab=layer_background_prior_samples_lab,
+        background_prior_source_mask=layer_background_prior_source_mask,
         background_colour_enabled=background_colour_enabled,
         background_noise_enabled=(
             node_enabled("refined_background_likelihood")
@@ -2004,7 +2293,7 @@ def analyze_image(
                         if circle_local_lighting is None
                         else circle_local_lighting[3]
                     ),
-                    analysis_radius=float(dish.outer_radius),
+                    analysis_radius=float(analysis_circle.outer_radius),
                 )
         else:
             circle_candidates = []
@@ -2514,7 +2803,12 @@ def analyze_image(
         # the seed scale); material and edge evidence never enter it.
         return cached_model_branch(
             node_id,
-            upstream_dirty=calibration_dirty or layout_dirty or (rescaled and seed_scale_dirty),
+            upstream_dirty=(
+                calibration_dirty
+                or layout_dirty
+                or crop_dirty
+                or (rescaled and seed_scale_dirty)
+            ),
             inference_signature=(
                 *cellpose_settings.inference_signature,
                 weights_version,
@@ -2583,9 +2877,16 @@ def analyze_image(
         else len(proposals)
     )
     nominal_seed_area = np.pi * (seed_diameter * 0.5) ** 2
-    usable_dish_area = np.pi * (
-        dish.outer_radius * settings.inner_radius_fraction
-    ) ** 2
+    analysis_region_pixel_count = (
+        analysis_valid.count_above(1)
+        if hasattr(analysis_valid, "count_above")
+        else int(np.count_nonzero(analysis_valid))
+    )
+    usable_dish_area = (
+        np.pi * (dish.outer_radius * settings.inner_radius_fraction) ** 2
+        if vessel_present
+        else float(analysis_region_pixel_count)
+    )
     packing_estimate = reported_instance_count * nominal_seed_area / max(1.0, usable_dish_area)
     if packing_estimate >= 0.62 or reported_instance_count >= 250:
         crowding = "high"
@@ -2620,7 +2921,7 @@ def analyze_image(
         warnings.append(
             "No painted foreground area fell inside the detected dish crop."
         )
-    if background_prior_deviation >= 18.0:
+    if vessel_present and background_prior_deviation >= 18.0:
         warnings.append(
             "Detected background colour deviates substantially from the median "
             f"colour in the {perimeter_background_band.thickness_cm:.2f} cm band "
@@ -2632,6 +2933,9 @@ def analyze_image(
     if reference_diameter is None and seed_diameter_source == "dish fallback":
         warnings.append(
             "Reference seeds were not isolated reliably; seed size was estimated from the dish."
+            if vessel_present
+            else "No seed stood clear of its neighbours and no vessel is visible; the seed "
+            "size is a fixed fraction of the fitted circle, not a measurement."
         )
     _, reported_instances, _ = select_instances(unet=unet_result,
         stardist=stardist_result, cellpose=cellpose_result,
@@ -2683,11 +2987,7 @@ def analyze_image(
             if hasattr(mask, "count_above")
             else int(np.count_nonzero(mask))
         ),
-        analysis_region_pixel_count=(
-            analysis_valid.count_above(1)
-            if hasattr(analysis_valid, "count_above")
-            else int(np.count_nonzero(analysis_valid))
-        ),
+        analysis_region_pixel_count=analysis_region_pixel_count,
         distance_candidate_count=len(marker_candidates),
         circle_candidate_count=len(circle_candidates),
         crowding=crowding,
@@ -2724,15 +3024,19 @@ def analyze_image(
         unet_instances=unet_result,
         stardist_instances=stardist_result,
         cellpose_sam_instances=cellpose_result,
-        reference_seed_bounds=reference_seed_bounds,
+        reference_seed_ovals=reference_seed_ovals,
         reference_seed_diameters_px=reference_seed_diameters,
         initial_seed_diameter_px=(
             None if reference_diameter is None else float(reference_diameter)
         ),
         annotated_seed_diameters=annotated_seed_diameters,
         seed_diameter_source=seed_diameter_source,
+        vessel_present=bool(vessel_present),
+        vessel_rim_support=float(vessel_support),
+        analysis_region_outlines=values.get("crop.outlines", ()),
         seed_measurement_summary=seed_measurement_summary,
         seed_dimensions_shape_model=seed_dimensions_shape_model,
+        automatic_material_references=automatic_references,
         trait_classifier=trait_result,
         method=(
             "multi-head U-Net plus pattern-aware watershed (review required)"
@@ -2768,6 +3072,139 @@ def _procedural_confidence_warning(reported_instances, procedural_result) -> str
     if low_confidence_fraction < 0.20:
         return None
     return f"{low_confidence_fraction:.0%} of procedural instances are below 55% confidence."
+
+
+# Without a vessel, the analysis covers the confident seeds' spread, grown by
+# this many seed widths or this fraction of the spread's longest extent,
+# whichever is larger: a few confident seeds sample a wider scatter, so seeds
+# beyond the outermost confident ones stay in. At least this many confident
+# seeds must show the spread.
+_SCENE_REGION_MARGIN_DIAMETERS = 2.0
+_SCENE_REGION_MARGIN_EXTENT_FRACTION = 0.25
+_SCENE_REGION_MINIMUM_SEEDS = 3
+
+
+def _scene_analysis_region(
+    shape_hw: tuple[int, int], seeds, seed_diameter: float, polygons, device
+):
+    """The pixels analysed in a photograph without a vessel (full image, boolean).
+
+    The convex hull of the confident seeds, grown with rounded corners by two
+    seed widths or a quarter of its longest extent, whichever is larger, or
+    the whole image when fewer than three confident seeds were found. The
+    chart and ruler, with their clearance, are left out.
+    """
+
+    import torch
+
+    region = torch.ones(shape_hw, dtype=torch.bool, device=device)
+    if len(seeds) >= _SCENE_REGION_MINIMUM_SEEDS:
+        points = np.concatenate(
+            [
+                np.argwhere(np.asarray(seed.mask))[:, ::-1] + (seed.left, seed.top)
+                for seed in seeds
+            ]
+        ).astype(np.float32)
+        hull = cv2.convexHull(points).reshape(-1, 2).astype(np.float64)
+        extent = float(
+            np.sqrt(((hull[:, None, :] - hull[None, :, :]) ** 2).sum(axis=-1)).max()
+        )
+        margin = max(
+            _SCENE_REGION_MARGIN_DIAMETERS * float(seed_diameter),
+            _SCENE_REGION_MARGIN_EXTENT_FRACTION * extent,
+        )
+        angles = np.linspace(0.0, 2.0 * np.pi, 48, endpoint=False)
+        ring = np.stack((np.cos(angles), np.sin(angles)), axis=1) * margin
+        region = polygon_mask(
+            (hull[:, None, :] + ring[None, :, :]).reshape(-1, 2), shape_hw, device
+        )
+    return region & ~_calibration_object_mask(polygons, shape_hw, device)
+
+
+def _analysis_region_outlines(excluded, crop_shape, offset_x: int, offset_y: int):
+    """Outlines (outer and holes) of the analysed pixels, for display."""
+
+    import torch
+
+    height, width = crop_shape[:2]
+    inside = (
+        np.ones((height, width), np.uint8)
+        if excluded is None
+        else (~excluded).to(torch.uint8).cpu().numpy()
+    )
+    contours, _hierarchy = cv2.findContours(
+        np.pad(inside, 1), cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE
+    )
+    return tuple(
+        contour.reshape(-1, 2).astype(np.float32) + np.float32((offset_x - 1, offset_y - 1))
+        for contour in contours
+        if len(contour) >= 3
+    )
+
+
+def _scene_analysis_crop(
+    image: np.ndarray,
+    seeds,
+    seed_diameter: float,
+    polygons,
+    inner_radius_fraction: float,
+    device,
+):
+    """The analysed window of a photograph without a vessel.
+
+    Returns ``(crop, offset_x, offset_y, circle, excluded)``: the window that
+    bounds the analysed region, a circle centred on it whose analysed
+    interior reaches every corner even after the inner-radius restriction,
+    and the window's pixels outside the region (None when there are none).
+    """
+
+    import torch
+
+    height, width = image.shape[:2]
+    region = _scene_analysis_region(
+        (height, width), seeds, seed_diameter, polygons, device
+    )
+    rows = torch.nonzero(region.any(dim=1)).flatten()
+    columns = torch.nonzero(region.any(dim=0)).flatten()
+    if not rows.numel():
+        # The chart and ruler cover the whole frame: analyse all of it.
+        region = torch.ones_like(region)
+        y0, y1, x0, x1 = 0, height, 0, width
+    else:
+        y0, y1 = int(rows[0].item()), int(rows[-1].item()) + 1
+        x0, x1 = int(columns[0].item()), int(columns[-1].item()) + 1
+    radius = int(
+        np.ceil(
+            np.hypot(y1 - y0, x1 - x0) * 0.5 / max(float(inner_radius_fraction), 1e-3)
+        )
+    ) + 2
+    circle = DishCircle(
+        center_x=x0 + (x1 - x0) // 2,
+        center_y=y0 + (y1 - y0) // 2,
+        radius=radius,
+        confidence=0.0,
+    )
+    excluded = ~region[y0:y1, x0:x1]
+    return (
+        image[y0:y1, x0:x1],
+        x0,
+        y0,
+        circle,
+        excluded if bool(excluded.any().item()) else None,
+    )
+
+
+def _calibration_object_mask(polygons, shape_hw: tuple[int, int], device):
+    """The chart and ruler outlines, grown by the clearance kept around them."""
+
+    import torch
+
+    height, width = shape_hw
+    clearance = max(2, round(0.015 * min(height, width)))
+    mask = torch.zeros(shape_hw, dtype=torch.bool, device=device)
+    for polygon in polygons:
+        mask |= polygon_mask(polygon, shape_hw, device, dilation_px=clearance)
+    return mask
 
 
 def _dish_crop(
@@ -3055,8 +3492,8 @@ def _reference_seed_diameter(
 ) -> tuple[
     float | None,
     int,
-    object | None,
-    tuple[tuple[float, float, float, float], ...],
+    tuple[ConfidentSeed, ...],
+    tuple[ReferenceSeedOval, ...],
     tuple[float, ...],
 ]:
     """Fit isolated ruler references without allowing their shadows to set size."""
@@ -3134,14 +3571,7 @@ def _reference_seed_diameter(
     # the maximum Feret width of the refined silhouette supplies the same width
     # semantics used by reviewed instance masks.
     labels_host = labels[0, 0].detach().to(device="cpu").numpy()
-    fitted: list[
-        tuple[
-            float,
-            int,
-            tuple[float, float, float, float],
-            np.ndarray,
-        ]
-    ] = []
+    fitted: list[tuple[float, int, ReferenceSeedOval, np.ndarray]] = []
     for index in candidates:
         raise_if_analysis_cancelled()
         fitted_item = _refine_reference_seed_component(
@@ -3151,14 +3581,14 @@ def _reference_seed_diameter(
         )
         if fitted_item is None:
             continue
-        diameter, bounds, refined_mask = fitted_item
+        diameter, oval, refined_mask = fitted_item
         if not (
             dish.outer_radius * 0.06
             <= diameter
             <= dish.outer_radius * 0.35
         ):
             continue
-        fitted.append((diameter, int(index), bounds, refined_mask))
+        fitted.append((diameter, int(index), oval, refined_mask))
     if not fitted:
         return None, 0, None, (), ()
 
@@ -3168,39 +3598,383 @@ def _reference_seed_diameter(
         : settings.reference_max_components
     ]
     diameters = tuple(float(item[0]) for item in selected)
-    selected_bounds = tuple(
-        (
-            float(x0 + bounds[0]),
-            float(y0 + bounds[1]),
-            float(x0 + bounds[2]),
-            float(y0 + bounds[3]),
+    selected_ovals = tuple(
+        replace(oval, center_x=x0 + oval.center_x, center_y=y0 + oval.center_y)
+        for _diameter, _index, oval, _mask in selected
+    )
+    seeds = tuple(
+        ConfidentSeed(
+            left=x0 + left,
+            top=y0 + top,
+            mask=local_mask,
+            diameter_px=float(diameter),
+            source="reference",
         )
-        for _diameter, _index, bounds, _mask in selected
+        for diameter, _index, _oval, (left, top, local_mask) in selected
     )
-    # Size comes from the shadow-resistant fit, but preserve the established
-    # broad automatic colour sampling pool.  It captures genuine coat/shadow
-    # variation and changing it here would conflate a geometric correction
-    # with an unrelated foreground-colour model retune.
-    selected_labels = torch.as_tensor(
-        [index for _diameter, index, _bounds, _mask in selected],
-        device=cuda_context.device,
-        dtype=labels.dtype,
-    )
-    sample_mask = torch.isin(labels[0, 0], selected_labels)
-    foreground_samples_lab = lab[0].permute(1, 2, 0)[sample_mask]
-    if int(foreground_samples_lab.shape[0]) > 32768:
-        indices = torch.linspace(
-            0,
-            int(foreground_samples_lab.shape[0]) - 1,
-            32768,
-            device=cuda_context.device,
-        ).round().long()
-        foreground_samples_lab = foreground_samples_lab[indices]
     return (
         float(np.median(diameters)),
         len(diameters),
-        foreground_samples_lab,
-        selected_bounds,
+        seeds,
+        selected_ovals,
+        diameters,
+    )
+
+
+def _calibration_object_polygons(calibration, *, keep_missing: bool = False):
+    """The colour chart and ruler outlines in corrected image coordinates.
+
+    With ``keep_missing`` the pair is ``(chart, ruler)`` with ``None`` for an
+    object that was not detected; otherwise only the detected outlines.
+    """
+
+    chart = (
+        None
+        if calibration.colour_card is None
+        else calibration.transform_points(calibration.colour_card.bounds)
+    )
+    ruler = ruler_outline(calibration.ruler)
+    if ruler is not None and not calibration.ruler_in_corrected_coordinates:
+        ruler = calibration.transform_points(ruler)
+    if keep_missing:
+        return chart, ruler
+    return tuple(item for item in (chart, ruler) if item is not None)
+
+
+# Confident seeds need this fraction of their width clear of other components,
+# the gap the automatic Background ring leaves around them.
+_CONFIDENT_SEED_CLEARANCE_FRACTION = 0.25
+# Lightness changes up to this (8-bit Lab, about 5 L*) are lighting, shading or
+# a patchy floor, not seed contrast; colour changes always count.
+_CONFIDENT_SEED_LIGHTNESS_TOLERANCE = 12.0
+# The floor around a confident seed must reach this many times its area: the
+# backdrop, not the body of a seed around a dark hilum or eye.
+_CONFIDENT_SEED_FLOOR_EXTENT = 20.0
+# A confident seed's widest inscribed circle spans at least this fraction of its
+# area-equivalent diameter (0.29 for an oval three times as long as wide);
+# printed characters and gloss rings are thin strokes.
+_CONFIDENT_SEED_MINIMUM_STROKE = 0.25
+# A confident seed spans at least this many widths of the mask-cleaning kernel.
+_CONFIDENT_SEED_MINIMUM_KERNEL_WIDTHS = 3.0
+# The floor around a confident seed must match the backdrop (the largest floor
+# region): within its 99th-percentile colour distance from its median, widened
+# by this factor, or this many reference colour distances, whichever is larger.
+_CONFIDENT_SEED_BACKDROP_SPREAD_FACTOR = 1.25
+_CONFIDENT_SEED_BACKDROP_MINIMUM_DISTANCES = 3.0
+
+
+def _local_floor_contrast(lab, inside, threshold: float):
+    """Shading-tolerant contrast against a floor fitted around seed-like pixels.
+
+    The floor is a support-weighted Gaussian average at a working resolution,
+    refitted without the pixels that stand out from it, so seeds, shading and a
+    vignette do not set it. Returns the contrast and where enough floor lies
+    nearby to trust it.
+    """
+
+    import torch
+
+    height, width = lab.shape[-2:]
+    scale = min(1.0, 256.0 / min(height, width))
+    size = (max(8, round(height * scale)), max(8, round(width * scale)))
+    small = resize(lab, size, mode="area")
+    valid = resize(inside[None, None].to(torch.float32), size, mode="area") > 0.99
+    sigma = 0.06 * min(size)
+
+    def contrast(values, floor):
+        lightness = (
+            (values[:, 0:1] - floor[:, 0:1]).abs()
+            - _CONFIDENT_SEED_LIGHTNESS_TOLERANCE
+        ).clamp_min(0.0)
+        return torch.sqrt(
+            lightness.square()
+            + 1.8 * (values[:, 1:2] - floor[:, 1:2]).square()
+            + 1.8 * (values[:, 2:3] - floor[:, 2:3]).square()
+        )
+
+    weight = valid.to(torch.float32)
+    for _iteration in range(4):
+        support = gaussian_blur(weight, sigma)
+        floor = gaussian_blur(small * weight, sigma) / support.clamp_min(1e-4)
+        weight = (valid & (contrast(small, floor) < threshold)).to(torch.float32)
+    known = resize(support, (height, width)) >= 0.15
+    return contrast(lab, resize(floor, (height, width))), known[0, 0]
+
+
+def _confident_vessel_seeds(
+    image: np.ndarray,
+    dish: DishCircle,
+    settings: BaselineSettings,
+    cuda_context: CudaContext,
+    *,
+    vessel_present: bool = True,
+    excluded_polygons: tuple[np.ndarray, ...] = (),
+    image_tensor=None,
+) -> tuple[
+    float | None,
+    int,
+    tuple[ConfidentSeed, ...],
+    tuple[ReferenceSeedOval, ...],
+    tuple[float, ...],
+]:
+    """Find confidently isolated seeds inside the vessel, or in the scene.
+
+    The backup when the reference region holds no seeds. Without a visible
+    vessel the search covers the whole image except a border band and the
+    chart and ruler. Contrast is measured against a local floor and ignores
+    small lightness changes, so shading and a patchy backdrop do not join the
+    seeds. Components are kept only when no comparable component (a quarter of
+    their area or more; dust does not count) lies within a quarter of a seed
+    width of their outline, that clearance opens onto floor reaching at least
+    twenty seed areas and coloured like the backdrop (so a dark hilum on a pale
+    seed in a pile, or a mark on a box wall, is not taken for a seed), they stay
+    clear of the search edge, they are compact (convex-hull solidity) and not
+    thin strokes (printed characters, gloss rings), and their sizes agree: the
+    size group with the most seed area wins, so specks cannot outvote seeds.
+    Each is refined like a reference seed, so its attached shadow does not set
+    its width.
+    """
+
+    empty = (None, 0, (), (), ())
+    import torch
+
+    height, width = image.shape[:2]
+    if vessel_present:
+        inner_x, inner_y = dish.inner_axes
+        radius = float(min(inner_x, inner_y)) * float(settings.inner_radius_fraction)
+        if radius < 16.0:
+            return empty
+        centre_x, centre_y = float(dish.center_x), float(dish.center_y)
+        x0 = max(0, int(np.floor(centre_x - radius)))
+        x1 = min(width, int(np.ceil(centre_x + radius)) + 1)
+        y0 = max(0, int(np.floor(centre_y - radius)))
+        y1 = min(height, int(np.ceil(centre_y + radius)) + 1)
+        lower = float(dish.outer_radius) * 0.03
+        upper = float(dish.outer_radius) * 0.35
+    else:
+        x0, y0, x1, y1 = 0, 0, width, height
+        lower = max(4.0, 0.004 * max(height, width))
+        # A close-up of a few large seeds still leaves room for several.
+        upper = 0.25 * min(height, width)
+    kernel_scale = max(3, round(max(height, width) / 900.0))
+    if kernel_scale % 2 == 0:
+        kernel_scale += 1
+    # Narrower components are shaped by the mask cleaning (a barcode bar
+    # chopped into blobs), too coarse for the stroke and solidity tests.
+    lower = max(lower, _CONFIDENT_SEED_MINIMUM_KERNEL_WIDTHS * kernel_scale)
+    if x1 - x0 < 32 or y1 - y0 < 32:
+        return empty
+    crop = image[y0:y1, x0:x1]
+    tensor = (
+        image_to_tensor(crop, cuda_context)
+        if image_tensor is None
+        else image_tensor[:, :, y0:y1, x0:x1]
+    )
+    lab = bgr_to_lab(tensor)
+    if vessel_present:
+        yy, xx = torch.meshgrid(
+            torch.arange(y0, y1, device=lab.device, dtype=torch.float32) - centre_y,
+            torch.arange(x0, x1, device=lab.device, dtype=torch.float32) - centre_x,
+            indexing="ij",
+        )
+        inside = xx.square() + yy.square() <= radius * radius
+    else:
+        margin = max(2, round(0.02 * min(height, width)))
+        inside = torch.zeros((height, width), dtype=torch.bool, device=lab.device)
+        inside[margin:-margin, margin:-margin] = True
+        inside &= ~_calibration_object_mask(
+            excluded_polygons, (height, width), lab.device
+        )
+    if not bool(inside.any().item()):
+        return empty
+    delta, known = _local_floor_contrast(
+        lab, inside, float(settings.reference_colour_distance_threshold)
+    )
+    inside = inside & known
+    mask = (delta >= settings.reference_colour_distance_threshold) & inside[None, None]
+    mask = binary_close(binary_open(mask, kernel_scale), kernel_scale)
+    labels, stats = connected_components(mask)
+    component_count = int(labels.max().item()) + 1
+    if component_count <= 1:
+        return empty
+    floor_labels, floor_stats = connected_components(~mask[0, 0] & inside)
+    floor_plane = floor_labels.reshape(mask.shape[-2:])
+    floor_areas = np.asarray(floor_stats["area"], dtype=np.float64)
+    if floor_areas.size <= 1:
+        return empty
+    # The backdrop is the largest floor region; its own colour range sets how
+    # far the floor around a seed may stray from it.
+    lab_pixels = lab[0].permute(1, 2, 0)
+    colour_weights = torch.tensor((1.0, 1.8, 1.8), device=lab.device, dtype=lab.dtype)
+    backdrop = lab_pixels[floor_plane == int(np.argmax(floor_areas[1:])) + 1]
+    backdrop = backdrop[:: max(1, int(backdrop.shape[0]) // 200000)]
+    backdrop_centre = torch.median(backdrop, dim=0).values
+
+    def backdrop_distance(colours):
+        return torch.sqrt(((colours - backdrop_centre).square() * colour_weights).sum(dim=-1))
+
+    backdrop_tolerance = max(
+        _CONFIDENT_SEED_BACKDROP_SPREAD_FACTOR
+        * float(torch.quantile(backdrop_distance(backdrop), 0.99)),
+        _CONFIDENT_SEED_BACKDROP_MINIMUM_DISTANCES
+        * float(settings.reference_colour_distance_threshold),
+    )
+
+    minimum_area = max(16.0, np.pi * (0.5 * lower) ** 2)
+    candidates: list[tuple[int, float]] = []
+    for index in range(1, component_count):
+        left = int(stats["left"][index])
+        top = int(stats["top"][index])
+        component_width = int(stats["width"][index])
+        component_height = int(stats["height"][index])
+        area = int(stats["area"][index])
+        if area < minimum_area:
+            continue
+        aspect = max(component_width, component_height) / max(
+            1, min(component_width, component_height)
+        )
+        equivalent_diameter = float(np.sqrt(4.0 * area / np.pi))
+        if (
+            aspect <= settings.reference_max_aspect_ratio
+            and lower <= equivalent_diameter <= upper
+        ):
+            candidates.append((index, equivalent_diameter))
+    if len(candidates) < settings.confident_seed_minimum_count:
+        return empty
+
+    # Typical components first: isolated singles cluster around the median
+    # size, while touching clumps and debris lie in the tails.
+    median_size = float(np.median([size for _index, size in candidates]))
+    candidates.sort(key=lambda item: abs(np.log(item[1] / median_size)))
+    limit = max(4 * settings.confident_seed_maximum_count, 32)
+    label_plane = labels[0, 0]
+    component_areas = torch.as_tensor(
+        np.asarray(stats["area"]), device=label_plane.device
+    )
+    fitted: list[tuple[float, ReferenceSeedOval, tuple[int, int, np.ndarray]]] = []
+    for index, size in candidates[:limit]:
+        raise_if_analysis_cancelled()
+        left = int(stats["left"][index])
+        top = int(stats["top"][index])
+        component_width = int(stats["width"][index])
+        component_height = int(stats["height"][index])
+        area = int(stats["area"][index])
+        # Clearance is a disc around the outline, not the bounding box, so
+        # seeds sown a little more than a quarter of a width apart still count.
+        pad = max(3, int(np.ceil(_CONFIDENT_SEED_CLEARANCE_FRACTION * size)))
+        wx0, wy0 = max(0, left - pad), max(0, top - pad)
+        wx1 = min(x1 - x0, left + component_width + pad)
+        wy1 = min(y1 - y0, top + component_height + pad)
+        window = label_plane[wy0:wy1, wx0:wx1]
+        own = window == index
+        others = (window > 0) & ~own & (component_areas[window] >= 0.25 * area)
+        offsets = torch.arange(-pad, pad + 1, device=own.device, dtype=torch.float32)
+        disc = (
+            offsets[:, None].square() + offsets[None, :].square() <= pad * pad
+        ).to(torch.float32)[None, None]
+        near = (
+            torch.nn.functional.conv2d(
+                own[None, None].to(torch.float32), disc, padding=pad
+            )[0, 0]
+            > 0.5
+        )
+        if bool((near & others).any().item()):
+            continue
+        # The clearance must open onto the backdrop: one floor region, much
+        # larger than the seed, holds most of the ring.
+        ring = near & ~own & (floor_plane[wy0:wy1, wx0:wx1] > 0)
+        ring_floor = floor_plane[wy0:wy1, wx0:wx1][ring]
+        if not ring_floor.numel():
+            continue
+        floor_index = int(torch.mode(ring_floor).values.item())
+        if floor_areas[floor_index] < _CONFIDENT_SEED_FLOOR_EXTENT * area:
+            continue
+        ring_colour = torch.median(lab_pixels[wy0:wy1, wx0:wx1][ring], dim=0).values
+        if float(backdrop_distance(ring_colour)) > backdrop_tolerance:
+            continue
+        # Components cut by the search edge (vessel rim, image border, chart or
+        # ruler) are fragments, not whole seeds.
+        edge = (
+            max(0, top - 2),
+            min(y1 - y0, top + component_height + 2),
+            max(0, left - 2),
+            min(x1 - x0, left + component_width + 2),
+        )
+        if not bool(inside[edge[0] : edge[1], edge[2] : edge[3]].all().item()):
+            continue
+        local = own.to(torch.uint8).cpu().numpy()
+        contours, _hierarchy = cv2.findContours(
+            local, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
+        if not contours:
+            continue
+        contour = max(contours, key=cv2.contourArea)
+        outline_area = float(cv2.contourArea(contour))
+        hull_area = float(cv2.contourArea(cv2.convexHull(contour)))
+        if hull_area <= 0.0 or (
+            outline_area / hull_area < settings.confident_seed_minimum_solidity
+        ):
+            continue
+        # The widest inscribed circle of the component itself, holes and all.
+        inscribed_radius = float(
+            cv2.distanceTransform(np.pad(local, 1), cv2.DIST_L2, 5).max()
+        )
+        if inscribed_radius < _CONFIDENT_SEED_MINIMUM_STROKE * np.sqrt(
+            4.0 * outline_area / np.pi
+        ):
+            continue
+        fitted_item = _refine_reference_seed_component(
+            np.ascontiguousarray(crop[wy0:wy1, wx0:wx1]),
+            local > 0,
+            correction_factor=float(settings.reference_scale_factor),
+        )
+        if fitted_item is None:
+            continue
+        diameter, oval, (mask_left, mask_top, local_mask) = fitted_item
+        if not lower <= diameter <= upper:
+            continue
+        fitted.append(
+            (
+                float(diameter),
+                replace(
+                    oval,
+                    center_x=x0 + wx0 + oval.center_x,
+                    center_y=y0 + wy0 + oval.center_y,
+                ),
+                (x0 + wx0 + mask_left, y0 + wy0 + mask_top, local_mask),
+            )
+        )
+    if len(fitted) < settings.confident_seed_minimum_count:
+        return empty
+    # The size group holding the most seed area anchors the consensus.
+    widths = np.asarray([item[0] for item in fitted], dtype=np.float64)
+    ratios = widths[None, :] / widths[:, None]
+    grouped = (ratios >= 0.6) & (ratios <= 1.6)
+    anchor = widths[int(np.argmax((grouped * widths[None, :] ** 2).sum(axis=1)))]
+    in_group = (widths / anchor >= 0.6) & (widths / anchor <= 1.6)
+    median_diameter = float(np.median(widths[in_group]))
+    consistent = [
+        item for item in fitted if 0.6 <= item[0] / median_diameter <= 1.6
+    ]
+    consistent.sort(key=lambda item: abs(np.log(item[0] / median_diameter)))
+    selected = consistent[: settings.confident_seed_maximum_count]
+    if len(selected) < settings.confident_seed_minimum_count:
+        return empty
+    diameters = tuple(item[0] for item in selected)
+    return (
+        float(np.median(diameters)),
+        len(selected),
+        tuple(
+            ConfidentSeed(
+                left=left,
+                top=top,
+                mask=local_mask,
+                diameter_px=diameter,
+                source="vessel" if vessel_present else "scene",
+            )
+            for diameter, _oval, (left, top, local_mask) in selected
+        ),
+        tuple(oval for _diameter, oval, _mask in selected),
         diameters,
     )
 
@@ -3210,12 +3984,12 @@ def _refine_reference_seed_component(
     component: np.ndarray,
     *,
     correction_factor: float,
-) -> tuple[
-    float,
-    tuple[float, float, float, float],
-    np.ndarray,
-] | None:
-    """Return a shadow-resistant local silhouette, width, and fitted bounds."""
+) -> tuple[float, ReferenceSeedOval, tuple[int, int, np.ndarray]] | None:
+    """Return a shadow-resistant width, its fitted oval and local silhouette.
+
+    The silhouette is ``(left, top, mask)``: a window of ``crop`` and its
+    origin, so callers never hold a crop-sized mask per seed.
+    """
 
     rows, columns = np.nonzero(component)
     if not len(rows):
@@ -3300,27 +4074,55 @@ def _refine_reference_seed_component(
     diameter = float(raw_diameter) * float(correction_factor)
     if not np.isfinite(diameter) or diameter <= 0.0:
         return None
+    oval = _span_aligned_oval(selected, endpoint_a, endpoint_b)
+    if oval is None:
+        return None
+    oval = replace(oval, center_x=left + oval.center_x, center_y=top + oval.center_y)
+    return diameter, oval, (left, top, np.ascontiguousarray(selected, dtype=np.uint8))
+
+
+def _span_aligned_oval(
+    mask: np.ndarray,
+    endpoint_a: tuple[float, float],
+    endpoint_b: tuple[float, float],
+) -> ReferenceSeedOval | None:
+    """Fit an oval to a silhouette along its longest span.
+
+    The long side runs between the maximum-Feret endpoints. The short side is
+    the silhouette's extent across that direction, measured on the same outline
+    points, and the oval is centred on the box both extents define.
+    """
+
     contours, _hierarchy = cv2.findContours(
-        selected, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        np.asarray(mask, dtype=np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE
     )
-    contour = max(contours, key=cv2.contourArea)
-    moments = cv2.moments(contour)
-    if abs(float(moments["m00"])) > 1e-6:
-        center_x = float(moments["m10"] / moments["m00"])
-        center_y = float(moments["m01"] / moments["m00"])
-    else:
-        center_x = float((endpoint_a[0] + endpoint_b[0]) * 0.5)
-        center_y = float((endpoint_a[1] + endpoint_b[1]) * 0.5)
-    radius = diameter * 0.5
-    bounds = (
-        float(left + center_x - radius),
-        float(top + center_y - radius),
-        float(left + center_x + radius),
-        float(top + center_y + radius),
+    if not contours:
+        return None
+    points = max(contours, key=cv2.contourArea).reshape(-1, 2).astype(np.float64)
+    axis = np.subtract(endpoint_b, endpoint_a).astype(np.float64)
+    length = float(np.hypot(axis[0], axis[1]))
+    if not np.isfinite(length) or length <= 0.0:
+        return None
+    along = axis / length
+    across = np.asarray((-along[1], along[0]))
+    along_extent = points @ along
+    across_extent = points @ across
+    centre = (
+        along * (along_extent.max() + along_extent.min()) * 0.5
+        + across * (across_extent.max() + across_extent.min()) * 0.5
     )
-    full_mask = np.zeros(component.shape, dtype=np.uint8)
-    full_mask[top:bottom, left:right] = selected
-    return diameter, bounds, full_mask
+    angle = float(np.degrees(np.arctan2(along[1], along[0])))
+    if angle <= -90.0:
+        angle += 180.0
+    elif angle > 90.0:
+        angle -= 180.0
+    return ReferenceSeedOval(
+        center_x=float(centre[0]),
+        center_y=float(centre[1]),
+        long_side_px=length,
+        short_side_px=float(across_extent.max() - across_extent.min()),
+        angle_degrees=angle,
+    )
 
 
 def _maximum_feret_endpoints(
@@ -3594,10 +4396,12 @@ def _foreground_feature(
     center_y: float | None = None,
     perimeter_background_lab: tuple[float, float, float] | None = None,
     perimeter_background_samples_lab=None,
-    automatic_foreground_samples_lab=None,
+    automatic_foreground_reference_mask=None,
+    automatic_foreground_samples=None,
     library_foreground_colour_bank: SpeciesForegroundColourBank | None = None,
     source_tensor=None,
     lab_tensor=None,
+    excluded_region=None,
 ) -> tuple[
     np.ndarray,
     np.ndarray,
@@ -3609,6 +4413,13 @@ def _foreground_feature(
     ForegroundColourProfile | None,
     GpuRaster | None,
 ]:
+    """Colour evidence over the analysis circle of ``crop``.
+
+    ``excluded_region`` (crop-sized boolean) removes pixels, such as the chart
+    and ruler in a photograph without a vessel, from both the diagnostic and
+    the proposal regions.
+    """
+
     height, width = crop.shape[:2]
     import torch
 
@@ -3637,6 +4448,10 @@ def _foreground_feature(
     analysis_pixels = (
         radial_distance <= seed_area_radius * settings.inner_radius_fraction
     )
+    if excluded_region is not None:
+        excluded = torch.as_tensor(excluded_region, device=cuda_context.device).bool()
+        valid_pixels &= ~excluded
+        analysis_pixels &= ~excluded
     source = image_to_tensor(crop, cuda_context) if source_tensor is None else source_tensor
     lab_nchw = bgr_to_lab(source) if lab_tensor is None else lab_tensor
     lab = lab_nchw[0].permute(1, 2, 0)
@@ -3719,10 +4534,50 @@ def _foreground_feature(
             & ~foreground_exclusion_tensor
             & ~manual_foreground_reference_tensor
         )
+    annotated_reference_present = bool(
+        automatic_foreground_reference_tensor.any().item()
+    )
+    # Confident seeds supply Foreground references when nothing was painted:
+    # their inset interiors, already thinned to their authority against the
+    # reviewed references. Painted classes keep precedence.
+    seed_reference_present = False
+    if automatic_foreground_reference_mask is not None:
+        seed_reference_tensor = (
+            automatic_foreground_reference_mask.to(
+                device=cuda_context.device, dtype=torch.bool
+            )
+            if torch.is_tensor(automatic_foreground_reference_mask)
+            else image_to_tensor(
+                np.asarray(automatic_foreground_reference_mask, np.uint8),
+                cuda_context,
+            )[0, 0]
+            > 0
+        )
+        seed_reference_tensor &= (
+            valid_pixels
+            & ~manual_mask
+            & ~foreground_exclusion_tensor
+            & ~manual_foreground_reference_tensor
+        )
+        seed_reference_present = bool(seed_reference_tensor.any().item())
+        automatic_foreground_reference_tensor |= seed_reference_tensor
     foreground_reference_tensor = (
         manual_foreground_reference_tensor
         | automatic_foreground_reference_tensor
     )
+    # Confident seeds outside the crop arrive as (Lab, BGR) sample rows.
+    outside_lab = outside_bgr = None
+    if automatic_foreground_samples is not None:
+        outside_lab, outside_bgr = automatic_foreground_samples
+        if outside_lab is not None and int(outside_lab.shape[0]):
+            outside_lab = outside_lab.to(device=lab.device, dtype=lab.dtype)
+            outside_bgr = outside_bgr.to(device=lab.device, dtype=torch.float32)
+            seed_reference_present = True
+        else:
+            outside_lab = outside_bgr = None
+    reference_samples_lab = lab[foreground_reference_tensor]
+    if outside_lab is not None:
+        reference_samples_lab = torch.cat((reference_samples_lab, outside_lab))
     # Foreground colour evidence is deliberately reference-only. Background and
     # Other paint are *not* output masks: their pixels are evaluated by the same
     # learned foreground model as every unpainted pixel. This keeps the raw
@@ -3731,7 +4586,7 @@ def _foreground_feature(
     foreground_centres = foreground_scales = foreground_weights = None
     fitted_sample_count = 0
     local_probability = torch.zeros_like(probability)
-    if bool(foreground_reference_tensor.any().item()):
+    if int(reference_samples_lab.shape[0]):
         (
             prototype_probability,
             foreground_centres,
@@ -3741,7 +4596,7 @@ def _foreground_feature(
             _,
         ) = lab_colour_frequency_distribution(
             lab,
-            lab[foreground_reference_tensor],
+            reference_samples_lab,
             valid_pixels,
             maximum_bins=settings.foreground_reference_components,
             refinement_iterations=0,
@@ -3782,23 +4637,26 @@ def _foreground_feature(
     )
     probability = torch.where(valid_pixels, probability, torch.zeros_like(probability))
 
-    # Retain a compact colour profile for noise/prototype consumers, but never
-    # synthesize one from this probability map or from isolated automatic seeds.
+    # Retain a compact colour profile for noise/prototype consumers, fitted only
+    # from reference pixels, never from this probability map.
     foreground_colour_profile = None
     if foreground_centres is not None:
         sample_bgr = source[0].permute(1, 2, 0)[foreground_reference_tensor]
+        if outside_bgr is not None:
+            sample_bgr = torch.cat((sample_bgr.to(torch.float32), outside_bgr))
         if int(sample_bgr.shape[0]) > 200000:
             sample_bgr = sample_bgr[:: max(1, int(sample_bgr.shape[0]) // 200000)]
         low_values = torch.quantile(sample_bgr, 0.05, dim=0).round().clamp(0, 255)
         high_values = torch.quantile(sample_bgr, 0.95, dim=0).round().clamp(0, 255)
         dominant = int(torch.argmax(foreground_weights).item())
-        source_name = (
-            "painted_and_annotated_instances"
-            if bool(manual_foreground_reference_tensor.any().item())
-            and bool(automatic_foreground_reference_tensor.any().item())
-            else "annotated_instances"
-            if bool(automatic_foreground_reference_tensor.any().item())
-            else "painted"
+        source_name = "_and_".join(
+            name
+            for present, name in (
+                (bool(manual_foreground_reference_tensor.any().item()), "painted"),
+                (annotated_reference_present, "annotated_instances"),
+                (seed_reference_present, "automatic_seeds"),
+            )
+            if present
         )
         foreground_colour_profile = ForegroundColourProfile(
             centre_lab=tuple(float(v) for v in foreground_centres[dominant].cpu().tolist()),
@@ -3812,7 +4670,8 @@ def _foreground_feature(
             component_weights=tuple(float(v) for v in foreground_weights.cpu().tolist()),
             refinement_iterations=0,
             source=source_name,
-            source_sample_count=int(foreground_reference_tensor.sum().item()),
+            source_sample_count=int(foreground_reference_tensor.sum().item())
+            + (0 if outside_lab is None else int(outside_lab.shape[0])),
             reference_source_mode=mode,
             current_source_count=1,
         )

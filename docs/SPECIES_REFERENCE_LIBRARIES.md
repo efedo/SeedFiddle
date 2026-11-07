@@ -5,13 +5,10 @@ listed near the end of this document remain outside the implemented contract.
 Current capability and validation status is summarized in
 [CURRENT_STATUS.md](CURRENT_STATUS.md).
 
-**Direction alignment (3 October 2026):** the
-[peer-functionality plan](PLANTCV_SMPTS_IMPLEMENTATION_PLAN.md) reuses this immutable
-library framework. All comparison arms must declare permitted library/reference
+Every method in a comparison must declare its permitted library/reference
 membership and exclude test targets from adaptation. Coverage remains distinct from
-accuracy. The original milestone wording below records the implemented baseline;
-new peer capabilities follow the root roadmap and do not create another library store.
-Current project persistence writes and reads only version 7; the version-one and
+accuracy. The original milestone wording below records the implemented baseline.
+Current project persistence writes and reads only version 8; the version-one and
 version-two migration wording below records the September library milestone.
 
 ## Implemented result

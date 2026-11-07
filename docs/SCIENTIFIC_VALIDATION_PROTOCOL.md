@@ -7,7 +7,9 @@ this protocol.
 
 The current application supports image-local adaptation and pixel-space review.
 It does not establish counting accuracy, physical metric accuracy or trait validity.
-Neutral white/gray balancing is not a colorimetric calibration. Heuristic evidence,
+The default colour correction fits each image's chart patches to their published
+reference colours and reports fitted and held-out patch errors; that corrects the
+image but is not by itself a validated colorimetric calibration. Heuristic evidence,
 prototype compatibility, model confidence, disagreement and shape-fit scores are
 uncalibrated; their common 0–1 range does not give them a common interpretation.
 
@@ -45,19 +47,17 @@ per-group/per-stratum results. Bootstrap biological/capture groups, not pixels o
 repeated views of the same seed. Declare sample-size and acceptable-error thresholds
 before opening the final split. Repeated optimization belongs to validation data.
 
-## PlantCV–SMPTS comparative extension
+## Comparative method studies
 
-The accepted [implementation plan](PLANTCV_SMPTS_IMPLEMENTATION_PLAN.md) applies
-this same protocol; it does not create a second route to scientific approval.
-Before final testing, freeze selected reference versions/recipes, the functional
-feature register, allowed inputs, primary endpoints, critical strata, absolute
-fitness thresholds and comparative margins. Pending original SMPTS access blocks
-original-code parity, not an explicitly labelled paper-port experiment.
+A comparison between methods, such as the two default pipelines or an added node
+against the node it copies, follows this same protocol; it does not create a second
+route to scientific approval. Before final testing, freeze the compared pipeline
+settings, allowed inputs, primary endpoints, critical strata, absolute fitness
+thresholds and comparative margins.
 
-Report numerical conformance, stage-isolated quality, end-to-end quality and
-resource/operator costs separately. Equalize permitted information and development
-opportunity; retain native preprocessing for complete-reference runs and common
-upstream checkpoints for isolated-stage runs. Never select a per-image winning
+Report stage-isolated quality, end-to-end quality and resource/operator costs
+separately. Equalize permitted information and development opportunity, and give
+isolated-stage runs common upstream results. Never select a per-image winning
 method from evaluation targets. Label oracle-mask/marker diagnostics separately.
 
 Use paired resampling of independent biological/acquisition groups for comparative
@@ -71,7 +71,8 @@ Report detection, misses, exclusions, abstention and eligible measurement covera
 alongside matched-seed errors. Reference extraction-only outputs require crop/count
 metrics; do not invent dense masks or arbitrary confidence rankings for AP. Preserve
 published metric definitions only when recoverable. Physical/colour/trait outputs
-still require the independent evidence below; conformance never enables them alone.
+still require the independent evidence below; agreement between methods never
+enables them alone.
 
 For operational comparisons, record hardware, warm/cold and cache state, synchronized
 GPU completion, transfers, peak memory, failures and correction time at a fixed
@@ -91,9 +92,11 @@ does not fabricate an acceptable threshold or automatically enable millimetres.
 Exported visible 2-D pixel measurements remain separate from inferred full shapes.
 
 For colour, record illumination spectrum/geometry, white balance, exposure, RAW/JPEG
-processing and patch reference values. Use held-out patches and colour differences
-before claiming colorimetric calibration. Do not interpret neutral gain correction
-as validated colour-class accuracy across capture sessions.
+processing and the chart's reference values. The node's held-out patch error is a
+within-image check; also measure colour differences on independent targets and
+repeat captures before claiming colorimetric calibration. Do not interpret the
+chart fit, or its grey-balance fallback, as validated colour-class accuracy across
+capture sessions.
 
 ## Traits, scores and operator study
 

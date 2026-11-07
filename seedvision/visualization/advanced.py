@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from seedvision.cuda.ops import GpuRaster
+from seedvision.cuda.ops import GpuRaster, quantile
 
 if TYPE_CHECKING:
     import torch
@@ -1548,7 +1548,7 @@ def _normalize(torch, tensor, valid):
     selected = tensor[valid.expand_as(tensor) > 0.5]
     if selected.numel() < 16:
         return torch.zeros_like(tensor)
-    high = torch.quantile(selected, 0.99).clamp_min(1e-6)
+    high = quantile(selected, 0.99).clamp_min(1e-6)
     return (tensor / high).clamp(0.0, 1.0)
 
 

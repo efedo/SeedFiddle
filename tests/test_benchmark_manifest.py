@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from seedvision.benchmarking.checkpoints import CoordinateFrame
+from seedvision.benchmarking.manifest import CoordinateFrame
 from seedvision.benchmarking import manifest as manifest_module
 from seedvision.benchmarking.manifest import (
     AccessPurpose,
@@ -474,6 +474,14 @@ class BenchmarkManifestTests(unittest.TestCase):
         with self.assertRaisesRegex(BenchmarkManifestError, "version"):
             BenchmarkManifest.from_dict(payload | {"version": BENCHMARK_MANIFEST_VERSION + 1})
         self.assertEqual(payload["format"], BENCHMARK_MANIFEST_FORMAT)
+        frame = payload["samples"][0]["coordinate_frame"]
+        self.assertEqual(CoordinateFrame.from_dict(frame).to_dict(), frame)
+        for change in ({"frame_id": "Not-Stable"}, {"shape": [0, 4]}, {"shape": [4]},
+                       {"units": " px"}, {"transform_sha256": "abc"}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                CoordinateFrame.from_dict(frame | change)
+        with self.assertRaisesRegex(ValueError, "invalid schema"):
+            CoordinateFrame.from_dict(frame | {"extra": 1})
 
     def check_test_unavailable_truth_cannot_carry_partial_identity_and_available_truth_is_complete(self) -> None:
         with self.assertRaisesRegex(BenchmarkManifestError, "cannot claim reviewed"):

@@ -23,6 +23,7 @@ EXEMPT = {
 # raster targets can be supplied for the conditional diagnostic objectives.
 OBJECTIVES = {
     'deskew_colour': 'material', 'layout_detection': 'material',
+    'automatic_material_references': 'material',
     'wavelet_decomposition': 'edges', 'seed_scale_estimation': 'instances',
     'background_likelihood': 'colour', 'refined_background_likelihood': 'noise',
     'edge_gradients': 'edges', 'surface_darkness_gradients': 'instances',
@@ -45,11 +46,13 @@ OBJECTIVES = {
 }
 
 FIXED = {
-    'neutral_patch_selection': 'Operator-selected neutral reference grid positions.',
-    'neutral_sample_frame': 'Frozen neutral reference sampling frame.',
+    'colour_correction_model': 'Colour reference policy; chart reference colours are not supplied by seed masks.',
+    'neutral_patch_selection': 'Operator-selected neutral reference patches.',
+    'neutral_sample_frame': 'Frozen patch sampling frame.',
     'ruler_length_mm': 'Known physical ruler length.',
     'minor_tick_mm': 'Known physical tick spacing.',
     'expected_outer_diameter_mm': 'Known physical vessel diameter.',
+    'automatic_wall_width_mm': 'Known physical vessel wall width.',
     'shape_calibration_uncertainty_fraction': 'Measured calibration uncertainty.',
     'shape_boundary_perturbation_radius_px': 'Fixed reference sensitivity convention.',
     'checkpoint_path': 'Checkpoint identity; use Learning to train or select a model.',

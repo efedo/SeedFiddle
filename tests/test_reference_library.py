@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from tests.catalogue_fixtures import CatalogueTestCase
 
 from tests.functional_units import functional_units
 
@@ -136,7 +135,7 @@ def _contribution(index: int, *, duplicate_rows: int = 1) -> ExtractedSourceCont
 
 
 @functional_units
-class SpeciesReferenceLibraryTests(CatalogueTestCase):
+class SpeciesReferenceLibraryTests(unittest.TestCase):
     def check_test_extraction_uses_production_descriptor_schemas(self) -> None:
         height, width = 96, 112
         yy, xx = np.mgrid[:height, :width]

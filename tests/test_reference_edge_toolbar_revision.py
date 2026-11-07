@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from tests.review_fixtures import dispose_window, workspace_window
-from tests.catalogue_fixtures import CatalogueTestCase
 
 from tests.functional_units import functional_units
 
@@ -16,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 @functional_units
-class ReferenceEdgeToolbarRevisionTests(CatalogueTestCase):
+class ReferenceEdgeToolbarRevisionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")

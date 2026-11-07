@@ -182,7 +182,7 @@ class PreflightOutcomeTests(unittest.TestCase):
         for index, padding, phase in ((0, None, 'project_load'), (1, -1, 'project_arguments')):
             output = self.root / f'batch-{index}'
             with patch('seedvision.export.project_runner.analyze_path') as runner, \
-                 patch('seedvision.export.project_runner.export_project_native_graphs') as companion, \
+                 patch('seedvision.export.project_runner.export_project_node_instances') as companion, \
                  self.assertRaises(ValueError) as caught:
                 run_project(self.root, project, output, crop_padding_px=padding)
             runner.assert_not_called()

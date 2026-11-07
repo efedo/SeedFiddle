@@ -64,7 +64,7 @@ class TerminalSnapshotTests(unittest.TestCase):
             package = self.create()
         self.assertEqual(self.master.read_bytes(), before_master)
         index = self.index(package)
-        self.assertEqual(index['version'], 1)
+        self.assertEqual(index['version'], 2)
         rows = portable.verify_terminal_evidence(package, index)
         self.assertEqual({raw for name, _, _, _, raw in rows if name.startswith('terminal-history/')}, expected)
         self.assertEqual({raw for name, _, _, _, raw in rows if name.startswith('terminal-acknowledgments/')}, ack_bytes)

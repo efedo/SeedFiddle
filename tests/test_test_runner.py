@@ -18,26 +18,24 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class TestRunnerTests(unittest.TestCase):
     def test_parallel_assignment_partitions_once_and_result_merge_cannot_hide_missing_or_failed_units(self):
-        from tests.parallel import assignments,merge,BALANCED_NATIVE_MODULES
+        from tests.parallel import assignments,merge
         class Item:
             def __init__(self,name):self.name=name
             def id(self):return self.name
         groups={'cpu-qt':[Item('tests.desktop.Case.test_flow')],
-            'cuda':[Item('tests.test_plantcv_size.Case.test_math'),Item('tests.graph.Case.test_flow')],
-            'acceptance':[Item('tests.test_recipe_acceptance.Case.test_matrix')]}
-        moved={module+'.'+cls+'.test_flow' for module in BALANCED_NATIVE_MODULES
-               for cls in ('ContractTests','CalculationTests')}
-        groups['cuda'].extend(Item(name) for name in sorted(moved))
+            'cuda':[Item('tests.large.Case.test_a'),Item('tests.large.Other.test_b'),
+                    Item('tests.large.Case.test_c'),Item('tests.small.Case.test_math'),
+                    Item('tests.graph.Case.test_flow')]}
         expected={item.id() for group in groups.values() for item in group}
+        large={'tests.large.Case.test_a','tests.large.Other.test_b','tests.large.Case.test_c'}
         for jobs in (2,3):
             buckets=assignments(groups,jobs)
             self.assertEqual(len(buckets),jobs)
             self.assertEqual({name for bucket in buckets for name in bucket},expected)
             self.assertEqual(sum(map(len,buckets)),len(expected))
-            # Each measured module, including all of its classes, stays whole.
-            self.assertTrue(moved.issubset(buckets[0 if jobs == 3 else 1]))
-            self.assertTrue(all(name in moved or name == 'tests.desktop.Case.test_flow'
-                                for name in buckets[0]) if jobs == 3 else True)
+            self.assertEqual(buckets[0],['tests.desktop.Case.test_flow'])
+            # Each module, including all of its classes, stays whole on one worker.
+            self.assertTrue(any(large<=set(bucket) for bucket in buckets[1:]))
             reports=[dict(tests=len(ids),passed=True,selection={'selected_ids':ids}) for ids in buckets]
             result=merge(buckets,reports,[0]*jobs)
             self.assertTrue(result['passed']);self.assertTrue(result['all_discovered_units_accounted_for'])
@@ -48,6 +46,8 @@ class TestRunnerTests(unittest.TestCase):
             self.assertFalse(merge(buckets,broken,[0]*jobs)['passed'])
             broken[-1]={**reports[-1],'tests':len(buckets[-1])-1}
             self.assertFalse(merge(buckets,broken,[0]*jobs)['passed'])
+        # The large module goes to one worker, the rest to the other.
+        self.assertEqual(sorted(map(len,assignments(groups,3)[1:])),[2,3])
         with self.assertRaisesRegex(ValueError,'exactly once'):
             assignments({**groups,'cpu-qt':groups['cpu-qt']*2},3)
 
@@ -153,31 +153,6 @@ class TestRunnerTests(unittest.TestCase):
         target([3])
         self.assertEqual(len(seen), count)
 
-    def test_catalogue_fixture_reuses_only_templates_and_restores_lazy_import_aliases(self):
-        from dataclasses import replace
-        from types import ModuleType
-        from tests.catalogue_fixtures import _catalogue, catalogue_fixture
-        from seedvision.benchmarking import native_recipe as runner, recipe_catalogue
-        original = recipe_catalogue.build_recipe_catalogue
-        _catalogue.cache_clear()
-        lazy = ModuleType('tests.fixture_lazy_import_witness')
-        with patch.dict(sys.modules, {lazy.__name__: lazy}):
-            with catalogue_fixture() as first:
-                lazy.build_recipe_catalogue = recipe_catalogue.build_recipe_catalogue
-                self.assertIs(runner.build_recipe_catalogue(), first)
-                selected = first.recipe('plantcv_seed_binary')
-                forged = replace(selected, stages=(replace(selected.stages[0],
-                    operation_id='external.unexpected'), *selected.stages[1:]))
-                with self.assertRaises(runner.NativeRecipeError):
-                    runner._validate_recipe(forged)
-            self.assertIs(lazy.build_recipe_catalogue, original)
-            self.assertIs(runner.build_recipe_catalogue, original)
-            with catalogue_fixture() as second:
-                self.assertIs(first, second)
-            self.assertEqual(_catalogue.cache_info().misses, 1)
-            self.assertEqual(_catalogue.cache_info().hits, 1)
-        _catalogue.cache_clear()
-
     def test_invalid_module_exits_before_execution_and_reports_discovery_errors(self):
         with tempfile.TemporaryDirectory(dir=ROOT / 'artifacts') as directory:
             report = Path(directory) / 'invalid.json'
@@ -216,14 +191,30 @@ class TestRunnerTests(unittest.TestCase):
         self.assertEqual(process.returncode,7,process.stderr)
         self.assertEqual(process.stdout,'flushed')
 
+    @unittest.skipUnless(sys.platform=='win32','The per-test memory limit is enforced on Windows only.')
+    def test_memory_limit_fails_an_oversized_allocation_inside_its_own_test(self):
+        # A child process, so the cap this runner already set does not interfere.
+        script=("import numpy as np\nfrom tests.memory_limit import install\n"
+            "limit=install(0.25)\n"
+            "kept=np.ones(200*2**20,np.uint8)\n"
+            "try:\n    np.ones(200*2**20,np.uint8)\nexcept MemoryError:\n    print('refused')\n"
+            "limit.start_test()\n"
+            "more=np.ones(200*2**20,np.uint8)\n"
+            "print('next test',limit.peak()>=400*2**20)\n")
+        process=subprocess.run([sys.executable,'-c',script],cwd=ROOT,capture_output=True,text=True,timeout=60)
+        self.assertEqual(process.returncode,0,process.stderr)
+        # 200 MiB fits a 0.25 GiB budget; 200 more do not. The next test's
+        # budget counts from what the process holds when it starts.
+        self.assertEqual(process.stdout.split('\n')[:2],['refused','next test True'])
+
     def test_partition_is_complete_and_fixture_timings_preserve_lifecycle(self):
         class Item:
             def __init__(self, identifier): self.identifier = identifier
             def id(self): return self.identifier
-        items = [Item('sample.Cpu.test_a'), Item('sample.Cuda.test_b'), Item('sample.Acceptance.test_c')]
-        with patch.object(selection, 'CPU_QT_TARGETS', ('sample.Cpu', 'sample.Cuda')), patch.object(selection, 'ACCEPTANCE_TARGETS', ('sample.Acceptance',)), patch.object(selection, 'CUDA_TARGETS', ('sample.Cuda',)):
+        items = [Item('sample.Cpu.test_a'), Item('sample.Cuda.test_b'), Item('sample.Other.test_c')]
+        with patch.object(selection, 'CPU_QT_TARGETS', ('sample.Cpu', 'sample.Cuda')), patch.object(selection, 'CUDA_TARGETS', ('sample.Cuda',)):
             groups = selection.partition(items)
-            self.assertEqual({k:len(v) for k,v in groups.items()}, {'cpu-qt':1, 'cuda':1, 'acceptance':1})
+            self.assertEqual({k:len(v) for k,v in groups.items()}, {'cpu-qt':1, 'cuda':2})
             self.assertEqual({t.id() for v in groups.values() for t in v}, {t.id() for t in items})
             with self.assertRaisesRegex(ValueError, 'Duplicate'):
                 selection.partition(items + items[:1])
@@ -295,23 +286,11 @@ class TestRunnerTests(unittest.TestCase):
         result = unittest.TextTestRunner(stream=io.StringIO()).run(suite)
         self.assertTrue(result.wasSuccessful(), result.failures + result.errors)
 
-    def test_fixture_bundle_checks_hashes_and_never_overwrites_reviewed_files(self):
-        from hashlib import sha256
-        with tempfile.TemporaryDirectory() as directory:
-            base = Path(directory); root = base/'project'; bundle = base/'bundle'
-            (root/'config').mkdir(parents=True)
-            (bundle/'artifacts').mkdir(parents=True)
-            data = b'immutable expected record'
-            (bundle/'artifacts/expected.json').write_bytes(data)
-            (root/'config/test_fixtures.json').write_text(json.dumps({'files':[
-                {'path':'artifacts/expected.json','group':'acceptance','sha256':sha256(data).hexdigest()}]}))
-            missing = check_prerequisites('history', root=root)
-            self.assertFalse(missing['passed'])
-            restored = check_prerequisites('history', root=root, fixture_source=bundle)
-            self.assertTrue(restored['passed'], restored)
-            self.assertEqual(restored['copied_files'], ['artifacts/expected.json'])
-            target = root/'artifacts/expected.json'; target.write_bytes(b'changed')
-            changed = check_prerequisites('history', root=root, fixture_source=bundle)
-            self.assertFalse(changed['passed'])
-            self.assertIn('SHA256 mismatch', changed['errors'][0])
-            self.assertEqual(target.read_bytes(), b'changed')
+    def test_prerequisites_require_cuda_only_for_full_and_cuda_runs(self):
+        with patch('torch.cuda.is_available', return_value=False):
+            for mode in ('core', 'cpu-qt', 'focused'):
+                self.assertTrue(check_prerequisites(mode)['passed'], mode)
+            for mode in ('full', 'cuda'):
+                failed = check_prerequisites(mode)
+                self.assertFalse(failed['passed'])
+                self.assertIn('CUDA is required', failed['errors'][0])

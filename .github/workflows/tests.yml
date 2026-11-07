@@ -35,22 +35,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           clean: false
-      # Keep the configured local runtimes and reviewed fixture inputs. Clean
-      # source files normally so deleted/untracked tests cannot survive a job.
+      # Keep the configured local runtime. Clean source files normally so
+      # deleted/untracked tests cannot survive a job.
       - run: git clean -ffdx -e /.venv/ -e /artifacts/
       - run: .venv\Scripts\python.exe -c "import torch; assert torch.cuda.is_available()"
-      # This runner owns the pinned CUDA/PlantCV environment. An optional local
-      # bundle restores reviewed ignored fixtures; missing or changed files fail
-      # preflight before any expensive numerical methods execute.
-      - shell: pwsh
-        env:
-          SEEDFIDDLE_TEST_FIXTURES: ${{ vars.SEEDFIDDLE_TEST_FIXTURES }}
-        run: |
-          $fixtureArgs = @()
-          if ($env:SEEDFIDDLE_TEST_FIXTURES) {
-            $fixtureArgs = @('--fixtures-from', $env:SEEDFIDDLE_TEST_FIXTURES)
-          }
-          .venv\Scripts\python.exe -m tests --full -v --report artifacts/ci-full-${{ github.run_id }}-${{ github.run_attempt }}.json @fixtureArgs
+      - run: .venv\Scripts\python.exe -m tests --full -v --report artifacts/ci-full-${{ github.run_id }}-${{ github.run_attempt }}.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:

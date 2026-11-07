@@ -1,18 +1,18 @@
-"""Compact, immutable facts for the native six-row, four-column card grid."""
+"""Compact, immutable facts for neutral balance from colour chart patches."""
 from dataclasses import dataclass
 import re
 
 
 def normalize_neutral_patch_selection(value: str) -> str:
-    """Accept automatic or unique local grid IDs, without Unicode coercion."""
+    """Accept automatic or unique chart patch numbers, without Unicode coercion."""
     if not isinstance(value, str) or len(value) > 1024:
-        raise ValueError('Neutral patches must be automatic or comma-separated IDs 1 through 24.')
+        raise ValueError('Neutral patches must be automatic or comma-separated patch numbers.')
     value = value.strip(' \t')
     if value == 'automatic':
         return value
     tokens = [token.strip(' \t') for token in value.split(',')]
-    if any(re.fullmatch(r'(?:[1-9]|1[0-9]|2[0-4])', token) is None for token in tokens):
-        raise ValueError('Use automatic or comma-separated decimal patch IDs 1 through 24.')
+    if any(re.fullmatch(r'[1-9][0-9]{0,2}', token) is None for token in tokens):
+        raise ValueError('Use automatic or comma-separated decimal patch numbers 1 through 999.')
     ids = [int(token) for token in tokens]
     if len(set(ids)) != len(ids):
         raise ValueError('Neutral patch IDs must be unique.')

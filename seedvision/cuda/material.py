@@ -12,6 +12,7 @@ from seedvision.cuda.ops import (
     binary_close,
     binary_open,
     image_to_tensor,
+    quantile,
 )
 
 
@@ -108,7 +109,7 @@ def _source_reliability(source, target, nontarget, valid) -> float:
     if int(target_pixels.sum().item()) < 16 or int(nontarget_pixels.sum().item()) < 16:
         return 1.0
     target_median = source[target_pixels].median()
-    nontarget_high = torch.quantile(source[nontarget_pixels], 0.90)
+    nontarget_high = quantile(source[nontarget_pixels], 0.90)
     # A source must beat the high tail of its reviewed non-target response,
     # not merely the median. This specifically prevents a broadly fitted
     # Background/Other model from earning suppressive authority while it still

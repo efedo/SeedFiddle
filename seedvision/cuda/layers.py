@@ -14,12 +14,14 @@ from seedvision.cuda.ops import (
     GpuRaster,
     bgr_to_lab,
     bilinear_sample,
+    colour_mode_membership,
     gaussian_blur,
     gradient_magnitude,
     image_to_tensor,
     lab_colour_distribution,
     lab_colour_frequency_distribution,
     oriented_connected_components,
+    quantile,
 )
 from seedvision.cuda.material import hierarchical_material_evidence
 
@@ -421,6 +423,12 @@ def _bgr_samples_to_lab(samples, context):
             np.asarray(samples, np.uint8).reshape(-1, 1, 3), context
         )
     return bgr_to_lab(nchw)[0, :, :, 0].T
+
+
+def _mask_upload(values):
+    """A reference mask ready for ``image_to_tensor``, never downloading a GPU raster."""
+
+    return values if isinstance(values, GpuRaster) else np.asarray(values, np.uint8)
 
 
 def build_cuda_analysis_layers(
@@ -1168,6 +1176,23 @@ def build_cuda_analysis_layers(
             other_reference_mask = foreground_exclusion_mask
         elif foreground_exclusion_mask is None:
             other_reference_mask = background_exclusion_mask
+        elif isinstance(background_exclusion_mask, GpuRaster):
+            import torch
+
+            other_reference_mask = GpuRaster(
+                (
+                    (image_to_tensor(background_exclusion_mask, context) > 0)
+                    | (
+                        image_to_tensor(
+                            np.asarray(foreground_exclusion_mask, np.uint8), context
+                        )
+                        > 0
+                    )
+                ).to(torch.uint8)
+                * 255,
+                numpy_dtype=np.uint8,
+                name="Other references",
+            )
         else:
             other_reference_mask = np.logical_or(
                 background_exclusion_mask, foreground_exclusion_mask
@@ -2015,7 +2040,7 @@ def background_colour_likelihood(
     background_exclusion = torch.zeros_like(valid)
     if background_exclusion_mask is not None:
         background_exclusion = image_to_tensor(
-            np.asarray(background_exclusion_mask, np.uint8), context
+            _mask_upload(background_exclusion_mask), context
         )[0, 0] > 0
         background_exclusion &= valid
         background_point_mask &= ~background_exclusion
@@ -2299,10 +2324,10 @@ def background_colour_likelihood(
             (valid_lab[:, 1] - 128.0).square()
             + (valid_lab[:, 2] - 128.0).square()
         )
-        chroma_limit = torch.quantile(
+        chroma_limit = quantile(
             chroma, settings.background_chroma_percentile / 100.0
         )
-        lightness_limit = torch.quantile(
+        lightness_limit = quantile(
             valid_lab[:, 0], settings.background_lightness_percentile / 100.0
         )
         candidates = eligible & (
@@ -2324,7 +2349,7 @@ def background_colour_likelihood(
                 (lab[:, :, 1] - 128.0).square()
                 + (lab[:, :, 2] - 128.0).square()
             )
-            threshold = torch.quantile(
+            threshold = quantile(
                 score[eligible],
                 max(
                     0.0,
@@ -2625,25 +2650,16 @@ def background_colour_profile_likelihood(
         probability = torch.zeros(
             lab.shape[:2], device=context.device, dtype=lab.dtype
         )
-        for start in range(0, int(centres.shape[0]), 4):
-            stop = min(start + 4, int(centres.shape[0]))
-            effective_scales = scales[start:stop] * max(
-                0.05, float(settings.background_distribution_scale_multiplier)
-            )
-            delta = (
-                lab[:, :, None, :] - centres[None, None, start:stop, :]
-            ) / effective_scales[None, None, :, :]
-            distance = torch.sum(
-                delta.square() * metric_weights[None, None, None, :], dim=3
-            )
-            membership = torch.exp(-0.5 * distance)
-            weighted = membership * adjusted[None, None, start:stop]
+        multiplier = max(0.05, float(settings.background_distribution_scale_multiplier))
+        # One mode at a time keeps peak memory at a few full-image planes.
+        for mode in range(int(centres.shape[0])):
+            weighted = colour_mode_membership(
+                lab, centres[mode], scales[mode] * multiplier, metric_weights
+            ) * adjusted[mode]
             if combine_modes == "maximum":
-                probability = torch.maximum(
-                    probability, torch.max(weighted, dim=2).values
-                )
+                torch.maximum(probability, weighted, out=probability)
             else:
-                probability += torch.sum(weighted, dim=2)
+                probability += weighted
         return probability.clamp(0.0, 1.0)
 
     probability = evaluate(
@@ -2824,8 +2840,8 @@ def _noise_target_calibration(values, centre, scale):
     distances = _noise_target_distance(values, centre, scale).reshape(-1)
     if not int(distances.numel()):
         return 0.0, 1.0
-    median = float(torch.quantile(distances, 0.50).item())
-    half_distance = max(1.0, float(torch.quantile(distances, 0.95).item()))
+    median = float(quantile(distances, 0.50).item())
+    half_distance = max(1.0, float(quantile(distances, 0.95).item()))
     return median, half_distance
 
 
@@ -3066,7 +3082,7 @@ def noise_frequency_background_likelihood(
     full_other_reference = torch.zeros_like(full_target_reference)
     if other_reference_mask is not None:
         full_other_reference = image_to_tensor(
-            np.asarray(other_reference_mask, np.uint8), context
+            _mask_upload(other_reference_mask), context
         )[0, 0] > 0
         full_other_reference &= full_valid[0, 0]
     elif bool(full_target_exclusion.any().item()):
@@ -3215,7 +3231,7 @@ def noise_frequency_background_likelihood(
             & ~nontarget_reference[None, None]
         )
         if bool(target_candidates.any().item()):
-            threshold = torch.quantile(texture_energy[target_candidates], 0.25)
+            threshold = quantile(texture_energy[target_candidates], 0.25)
             automatic_target = target_candidates & (texture_energy <= threshold)
     if bool(target_reference.any().item()):
         # Painted target regions and any exact retained perimeter-ring pixels
@@ -3585,7 +3601,7 @@ def _positive_percentile(torch, values, valid, percentile: float):
     selected = selected[selected > 1e-8]
     if selected.numel() == 0:
         return torch.as_tensor(1.0, device=values.device, dtype=values.dtype)
-    return torch.quantile(selected, float(percentile) / 100.0).clamp_min(1e-6)
+    return quantile(selected, float(percentile) / 100.0).clamp_min(1e-6)
 
 
 def _restored_u8(
@@ -4129,7 +4145,7 @@ def directional_edges(
             gx = mean_x / direction_norm * target
             gy = mean_y / direction_norm * target
     magnitude = torch.sqrt(gx.square() + gy.square()).clamp_min(0.0)
-    normalization = torch.quantile(
+    normalization = quantile(
         magnitude[valid], settings.edge_normalization_percentile / 100.0
     ).clamp_min(1e-5)
     strength = (magnitude / normalization).clamp(0.0, 1.0).pow(settings.edge_strength_gamma) * valid
@@ -7887,7 +7903,7 @@ def seed_boundary_tracing(
         * gaussian_blur(foreground, vote_blur)[0, 0].clamp(0.0, 1.0)
         * valid[0, 0]
     )
-    vote_scale = torch.quantile(
+    vote_scale = quantile(
         vote_accumulator.reshape(-1), 0.995
     ).clamp_min(1e-6)
     vote_ranking = vote_accumulator / vote_scale
@@ -8345,33 +8361,39 @@ def instance_voronoi(
             torch.zeros((1, 1, height, width), device=context.device),
             "instance labels",
         )
-    yy, xx = torch.meshgrid(
-        torch.arange(height, device=context.device, dtype=torch.float32),
-        torch.arange(width, device=context.device, dtype=torch.float32),
-        indexing="ij",
-    )
     best_distance = torch.full((height, width), float("inf"), device=context.device)
     best_label = torch.zeros((height, width), dtype=torch.int32, device=context.device)
-    center_tensor = torch.as_tensor(centers, device=context.device, dtype=torch.float32)
-    radius_tensor = torch.as_tensor(radii, device=context.device, dtype=torch.float32)
+    center_values = np.asarray(centers, dtype=np.float32).reshape(-1, 2)
     base_extent = seed_diameter * settings.instance_min_extent_fraction
     maximum_extent = seed_diameter * settings.instance_max_extent_fraction
-    extents = torch.clamp(
-        radius_tensor * settings.instance_radius_extent_multiplier,
-        min=base_extent,
-        max=maximum_extent,
+    extents = np.clip(
+        np.asarray(radii, dtype=np.float32) * settings.instance_radius_extent_multiplier,
+        base_extent,
+        maximum_extent,
     )
-    for index in range(0, len(centers), 64):
-        local_centers = center_tensor[index : index + 64]
-        local_extents = extents[index : index + 64]
+    columns = torch.arange(width, device=context.device, dtype=torch.float32)
+    rows = torch.arange(height, device=context.device, dtype=torch.float32)
+    # A pixel is labelled only within a centre's extent (normalised distance at
+    # most 1), so each centre needs only the window around it, not a
+    # full-image distance plane: the nearest centre of a labelled pixel always
+    # reaches it. Earlier centres keep ties.
+    for index, ((center_x, center_y), extent) in enumerate(zip(center_values, extents)):
+        scale = max(float(extent) ** 2, 1.0)
+        reach = float(np.sqrt(scale))
+        x0 = max(0, int(np.ceil(center_x - reach)))
+        x1 = min(width, int(np.floor(center_x + reach)) + 1)
+        y0 = max(0, int(np.ceil(center_y - reach)))
+        y1 = min(height, int(np.floor(center_y + reach)) + 1)
+        if x0 >= x1 or y0 >= y1:
+            continue
         distance = (
-            (xx[None] - local_centers[:, 0, None, None]).square()
-            + (yy[None] - local_centers[:, 1, None, None]).square()
-        ) / local_extents[:, None, None].square().clamp_min(1.0)
-        chunk_distance, chunk_index = torch.min(distance, dim=0)
-        update = chunk_distance < best_distance
-        best_distance = torch.where(update, chunk_distance, best_distance)
-        best_label = torch.where(update, (chunk_index + index + 1).to(torch.int32), best_label)
+            (columns[None, x0:x1] - float(center_x)).square()
+            + (rows[y0:y1, None] - float(center_y)).square()
+        ) / scale
+        window_distance = best_distance[y0:y1, x0:x1]
+        update = distance < window_distance
+        window_distance.copy_(torch.where(update, distance, window_distance))
+        best_label[y0:y1, x0:x1].masked_fill_(update, index + 1)
     foreground_gate = background < 0.82
     accepted = valid & foreground_gate & (best_distance <= 1.0)
     labels = torch.where(accepted, best_label, torch.zeros_like(best_label))

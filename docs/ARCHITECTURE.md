@@ -9,14 +9,14 @@ changes are in [AGENTS.md](../AGENTS.md); the user-facing behaviour is in the
 | Package | Responsibility |
 |---|---|
 | `seed_vision.py`, `seedvision/bootstrap.py`, `application.py`, `diagnostics.py` | Single launcher, optional `.venv` bootstrap, runtime diagnostics, CLI training/evaluation entry points. |
-| `pipeline/` | Toolkit-independent graph model (`model.py`: `PipelineGraph`, `PipelineNode`, `ParameterSpec`), graph-to-settings contract (`settings.py`), shared project inputs (`project_context.py`), editable factory workflows (`workflows.py`), added catalogue nodes, per-node backend execution, and `node_aliases.py`, which maps engine dirty-node names to graph nodes. |
+| `pipeline/` | Toolkit-independent graph model (`model.py`: `PipelineGraph`, `PipelineNode`, `ParameterSpec`), graph-to-settings contract (`settings.py`), shared project inputs (`project_context.py`), the two default pipelines (`default_pipelines.py`), added node instances (`catalogue_nodes.py`), and `node_aliases.py`, which maps engine dirty-node names to graph nodes. |
 | `segmentation/` | `baseline.py` production orchestration with node-local caching; procedural instance separation and review proposals. |
-| `cuda/`, `calibration/`, `measurement/`, `visualization/` | Device-resident evidence and PlantCV-compatible CUDA operations, ruler/card/vessel detection, reviewed geometry, display layers. |
+| `cuda/`, `calibration/`, `measurement/`, `visualization/` | Device-resident evidence and CUDA operations, chart colour correction (`cuda/colour_correction.py`), ruler/card/vessel detection, reviewed geometry, display layers. |
 | `annotation/` | Annotation tools, eligibility rules and exact coordinate transport. |
-| `benchmarking/` | PlantCV/SMPTS recipe specifications and catalogue, isolated reference runner, checkpoints, conformance, grouped study manifests and comparisons, native recipe execution. |
-| `learning/`, `classification/`, `model_io/` | U-Net/StarDist training and evaluation, the optional pretrained Cellpose-SAM branch, trait classification, standard-library model formats and PlantCV model conversion. |
-| `persistence/` | Projects, snapshots, reference archives, sidecars, settings profiles, run and QC history, image decoding (`image_decoding.read_image`, safe for non-ASCII paths). |
-| `export/` | Authoritative result reports, CSV/JSON/image and crop export, native whole-run archives, the saved-project batch runner. |
+| `benchmarking/` | Locked study manifests, grouped method comparisons and the benchmark command line. `reference_runner.py`, the former isolated PlantCV runner, is kept but has no caller. |
+| `learning/`, `classification/` | U-Net/StarDist training and evaluation, the optional pretrained Cellpose-SAM branch, trait classification. |
+| `persistence/` | Projects, pipeline files, snapshots, reference archives, sidecars, settings profiles, run history, image decoding (`image_decoding.read_image`, safe for non-ASCII paths). |
+| `export/` | Authoritative result reports, CSV/JSON/image and crop export, the saved-project batch runner and its added-node reports. |
 | `reference_library/`, `optimization/` | Immutable species libraries; reference-driven node optimisation. |
 | `ui/` | PySide6 application (see [Workflow and persistence](#workflow-and-persistence)). |
 
@@ -36,11 +36,10 @@ Every exposed control must change a calculation. Each computational node declare
 an optimisation capability or an explicit exemption, and
 [NODE_CATALOGUE.md](NODE_CATALOGUE.md) is generated from the live registry.
 
-Factory PlantCV and SMPTS pipelines are `RecipeSpec` descriptions
-(`benchmarking/recipes.py`, `recipe_catalogue.py`) projected into the same
-`PipelineGraph` and executed by `pipeline/backend_execution.py` (native CUDA or the
-isolated PlantCV runner, per node). They share the project-context nodes and the
-node-local cache.
+The two default pipelines share one graph and differ only in which nodes are
+active (`pipeline/default_pipelines.py`). An added node instance
+(`pipeline/catalogue_nodes.py`) is an independent copy of one default node with its
+own parameters and cache; it runs only the nodes it needs through the same engine.
 
 ## Data and computation ownership
 
@@ -68,8 +67,8 @@ node-local cache.
 
 `ui/main_window.py` remains the native coordinator. Bounded responsibilities are
 extracted into `ui/results.py` (results, snapshots, toolbar),
-`pipeline_canvas.py`, `pipeline_inspector.py`, `pipeline_workflow.py` (factory
-pipeline loading and node actions), `pipeline_documents.py` (the default-pipeline lock,
+`pipeline_canvas.py`, `pipeline_inspector.py`, `pipeline_workflow.py` (the Pipeline
+list and added-node output preview), `pipeline_documents.py` (the default-pipeline lock,
 named copies and pipeline files), `image_list.py` (Images list rows and their
 thumbnails), `overlay_header.py` (the overlay selector and opacity row, docked in the
 header of whichever image display is showing), `help_menu.py`, `reference_frames.py`, `work_control.py`,
@@ -91,44 +90,21 @@ content copies and restores a relocated working master. Supplementary audit evid
 is retained with its original identity; restoration does not silently reassign
 review decisions or optimization targets to changed source/result identities.
 
-Project documents (version 7) retain the loaded pipeline workflow, added node
-instances, immutable reference-graph metadata, editable native working recipes and
-bounded model-asset descriptors. Analysis settings are version 25, reference-region
-archives version 7, seed-centre files version 2 and learning feature specifications
-version 2. Each reader accepts only its current version and refuses earlier files
-rather than migrating them.
-Historical checkpoint digests do not imply restored or verified arrays.
+Project documents (version 8) retain the analysis settings, added node instances
+and the project's named pipeline copies. Pipeline files are version 2, snapshot
+indexes version 2, analysis settings version 26, reference-region archives version 7,
+seed-centre files version 2 and learning feature specifications version 2. Each
+reader accepts only its current version and refuses earlier files rather than
+migrating them.
 
 `export/results.py` defines authoritative method selection, unavailable-vs-empty
 state, pixel-space object rows, exact result revisions and JSON/CSV/image export.
 Physical units and unvalidated traits abstain. `export/project_runner.py` loads the
-same saved production recipe and source-bound references as the desktop. The legacy
+same saved analysis settings and source-bound references as the desktop, and
+`export/node_instances.py` writes each added node instance's outputs beside the
+baseline report. The legacy
 `BaselineAnalysis.count` property remains a proposal-count compatibility API and
 must not be used for new result reporting.
-
-`export/native_results.py` writes a separate v4 native whole-run projection and reads v1/v2/v3. Tagged
-ordered metadata preserves tuple/list/mapping/record distinctions and explicit
-nonfinite observations; named output bindings reference bounded checkpoint groups.
-Only an explicit save transfers dense CUDA products to CPU. All descriptors, total
-bytes, group inventories and report size are checked first. The loader checks
-semantic relationships and aggregate inventory before restoring any arrays, then
-verifies the existing checkpoint hashes and raw model-byte identity. It returns
-data without executing models or instantiating recorded Python classes. Partial
-nodes retain only actual products; output persistence does not establish conformance.
-
-`export/project_native_graphs.py` executes exact saved native attachments and working recipes
-through the same path as the desktop. It atomically publishes a companion ledger
-and output archives under the baseline report. Original/reference graphs receive
-explicit unavailable rows. Schema2 ledger rows identify historical versus working recipes;
-working recipes contain no invented run history. Each result releases ownership after export, so
-normal node-cache eviction can free its tensors; baseline tensors release before
-native execution and the image cache clears before the next source. Separate
-`persistence/reference_models.py` descriptors bind each exact historical/working model
-selection to verified workspace-relative copies. Transport paths are excluded
-from analytical identity and every run rereads selected bytes before cache reuse.
-Snapshots require complete model closure; model inventory and copy reads are
-capped by descriptor length even after preflight. This does not add per-stage
-replay certificates or scientific eligibility.
 
 ## Annotation and display coordinates
 
@@ -141,7 +117,9 @@ visually plausible but geometrically incorrect overlay.
 The main window owns the reference annotation panel, which floats over the
 central workspace while an annotation mode is active; the image view positions it,
 clamps it to the workspace and moves it by its title bar, and the window saves
-its position. The panel takes no splitter space, so it never narrows the viewer.
+its position. The panel (`ui/annotation_panel.py`) bounds its own height by its
+contents and asks to be placed again when they change. The panel takes no
+splitter space, so it never narrows the viewer.
 Otherwise the image view owns only scene content and zoom/pan behaviour. Toolbar zoom preserves the viewport
 centre; wheel zoom preserves the scene point beneath the pointer. Hilum placement
 is a one-shot interaction tied to the current seed ID and derives its saved
@@ -163,35 +141,18 @@ certify scientific validity. `learning/metrics.py` uses global object assignment
 explicit empty/unavailable policies and micro/image/group reporting. Empirical
 calibration and biological validation follow the separate laboratory protocol.
 
-## PlantCV–SMPTS comparison infrastructure
+## Benchmark studies
 
-- `benchmarking/reference_runner.py` runs selected original PlantCV 4.11.3
-  operations in the pinned, isolated environment under `artifacts/`, validating
-  source and dependency identity, inputs, outputs, timeouts and cancellation.
-  Missing environments report *unavailable*; there is no silent native fallback.
-- `benchmarking/checkpoints.py` publishes immutable, source-bound stage checkpoints;
-  `conformance.py` compares arrays, masks and partitions between checkpoints with
-  exact integer errors and declared float tolerances. These reports measure
-  computational agreement only.
-- `benchmarking/manifest.py` and the grouped-comparison modules describe locked
-  study splits, check leakage across source/group/access chains and compute paired
-  grouped comparisons.
-- `export/native_results.py` writes native whole-run archives (v4; reads v1–v3)
-  with tagged metadata and checkpoint groups, checking every size limit before any
-  CUDA-to-CPU transfer. `export/project_native_graphs.py` runs saved pipelines in
-  batch through the desktop path and records unavailable reference executors
-  explicitly.
-
-The [implementation plan](PLANTCV_SMPTS_IMPLEMENTATION_PLAN.md) is the design
-specification; the [feature register](plantcv_smpts_features.json) maps every
-operation to code, tests and acceptance status.
+`benchmarking/manifest.py` and `grouped_comparison.py` describe locked study
+splits, check leakage across source/group/access chains and compute paired grouped
+comparisons; `benchmark_cli.py` runs a prespecified comparison from the launcher.
+These reports measure agreement between methods on declared observations, not
+scientific validity.
 
 ## Extending the application
 
 Keep controls tied to actual calculations. Add the node's optimisation capability
 or an explicit non-optimisable reason, then regenerate the catalogue. Preserve
-native Qt, one launcher and device-resident reusable rasters. Do not edit reviewed
-calculation sources listed in the provenance records without a reviewed provenance
-update (see [Testing](TESTING.md#provenance-checks)). Run focused regressions and
-the full suite. Use reviewed real data for scientific claims; fixture and synthetic
+native Qt, one launcher and device-resident reusable rasters. Run focused
+regressions and the full suite. Use reviewed real data for scientific claims; fixture and synthetic
 tests establish engineering properties, not laboratory accuracy.

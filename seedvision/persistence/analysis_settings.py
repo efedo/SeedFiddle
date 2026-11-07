@@ -21,7 +21,7 @@ from seedvision.pipeline import NodeStatus, ParameterSpec, PipelineConnection, P
 
 
 ANALYSIS_SETTINGS_FORMAT = "seedfiddle-analysis-settings"
-ANALYSIS_SETTINGS_VERSION = 25
+ANALYSIS_SETTINGS_VERSION = 26
 ANALYSIS_SETTINGS_FILE_SUFFIX = ".seedfiddle-settings.json"
 
 _MAX_PROFILE_BYTES = 8 * 1024 * 1024

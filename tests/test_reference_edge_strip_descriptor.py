@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from tests.catalogue_fixtures import CatalogueTestCase
 
 from tests.functional_units import functional_units
 
@@ -10,7 +9,7 @@ import unittest
 
 
 @functional_units
-class ReferenceEdgeStripDescriptorTests(CatalogueTestCase):
+class ReferenceEdgeStripDescriptorTests(unittest.TestCase):
     """Scientific invariants for annotation-derived edge strip features."""
 
     @classmethod

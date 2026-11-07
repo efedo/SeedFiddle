@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from tests.catalogue_fixtures import CatalogueTestCase
 
 from tests.functional_units import functional_units
 
@@ -12,7 +11,7 @@ from seedvision.ui.reference_history import RasterUndoHistory
 
 
 @functional_units
-class RasterUndoHistoryTests(CatalogueTestCase):
+class RasterUndoHistoryTests(unittest.TestCase):
     def check_test_grouped_reference_edit_is_restored_atomically(self) -> None:
         shape = (300, 310)
         background = np.zeros(shape, dtype=bool)

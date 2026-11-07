@@ -1,25 +1,26 @@
-"""Main-workspace routing, editing and queued-delivery ownership."""
+"""Main-workspace routing between the default pipelines and the shared project nodes."""
 
 from tests.functional_units import functional_units
+import json
 import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from types import SimpleNamespace
 import unittest
-from tests.catalogue_fixtures import CatalogueTestCase
 from unittest.mock import patch
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
-from PySide6.QtWidgets import QApplication, QComboBox, QSpinBox
+from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import Qt
-from seedvision.ui.main_window import MainWindow
-from seedvision.ui.pipeline_workflow import SELECTOR_WIDTH, _Job
+from seedvision.pipeline.default_pipelines import CELLPOSE_SEED_ANALYSIS, PROCEDURAL_SEED_ANALYSIS
+from seedvision.ui.pipeline_workflow import DEFAULTS_HEADING, ENTRY_KIND, SELECTOR_WIDTH
 from tests.review_fixtures import dispose_window, editable_copy
 from seedvision.pipeline.project_context import CONTEXT_NODE_IDS
 
+INSTALLED = 'seedvision.learning.cellpose_sam.cellpose_installed'
+
 
 @functional_units
-class PipelineWorkflowUiTests(CatalogueTestCase):
+class PipelineWorkflowUiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])
@@ -36,28 +37,10 @@ class PipelineWorkflowUiTests(CatalogueTestCase):
         self.application.processEvents()
         self.directory.cleanup()
 
-    def select_binary(self):
-        self.controller.select_template('plantcv_seed_binary_working')
-        self.assertTrue(self.controller.active)
-        editable_copy(self.window)
-        return self.controller.workflow
-
-    def seed_old_display(self):
-        from seedvision.benchmarking.color_histogram import HueHistogramChart
-        self.controller.result = SimpleNamespace(node=unittest.mock.Mock(side_effect=StopIteration))
-        self.controller.facts.setPlainText('Old measured area: 42 pixels')
-        self.controller.histogram.set_chart(HueHistogramChart('available', ()))
-        self.controller.histogram.show()
-        self.controller._preview_candidates = [('old output', object(), {})]
-
-    def assert_display_cleared(self):
-        self.assertIsNone(self.controller.result)
-        self.assertEqual(self.controller._preview_candidates, [])
-        self.assertNotIn('Old measured area', self.controller.facts.toPlainText())
-        self.assertTrue(self.controller.facts.isHidden())
-        self.assertIsNone(self.controller.histogram.chart)
-        self.assertTrue(self.controller.histogram.isHidden())
-        self.assertTrue(self.controller.crop_selector.isHidden())
+    def choose(self, pipeline):
+        with patch(INSTALLED, return_value=True):
+            self.controller.select_template(pipeline.recipe_id)
+        self.application.processEvents()
 
     def load_image(self, name='current.png'):
         from PySide6.QtGui import QImage
@@ -69,17 +52,15 @@ class PipelineWorkflowUiTests(CatalogueTestCase):
         return path
 
     def check_test_shared_project_nodes_and_two_way_image_selection(self):
-        from seedvision.pipeline.workflows import create_workflow
         first, second = self.load_image('first.png'), self.load_image('second.png')
         for path in (first, second):
             self.window._add_image(path, open_now=False)
         self.window._open_path(first)
-        for recipe_id in (None, 'plantcv_seed_binary_working', 'smpts_paper_fixed_mean',
-                          'plantcv_color_card_correct_color'):
-            with self.subTest(recipe=recipe_id):
-                recipe = next((r for r in self.controller._all_templates if r.recipe_id == recipe_id), None)
-                self.controller.install(None if recipe is None else create_workflow(recipe))
-                initial_identity = None if recipe is None else self.controller.sync_graph().recipe.identity.analytical_dict()
+        for pipeline in (PROCEDURAL_SEED_ANALYSIS, CELLPOSE_SEED_ANALYSIS):
+            with self.subTest(pipeline=pipeline.title):
+                self.choose(pipeline)
+                self.assertIs(self.controller.graph_pipeline, pipeline)
+                self.assertIs(self.window.pipeline_canvas.graph, self.window.pipeline)
                 self.assertTrue(CONTEXT_NODE_IDS <= self.window.pipeline_canvas.graph.nodes.keys())
                 self.window.pipeline_canvas.select_node('image_selector')
                 combo = self.window.pipeline_inspector.image_selector_combo
@@ -92,15 +73,6 @@ class PipelineWorkflowUiTests(CatalogueTestCase):
                 self.window._open_list_item(self.window.image_list.item(0))
                 self.assertEqual(self.window.image_view.image_path, first)
                 self.assertEqual(combo.currentData(), str(first))
-                if recipe_id == 'plantcv_seed_binary_working':
-                    from seedvision.segmentation import PipelineAnalysisCache
-                    key = self.window._current_image_key()
-                    self.window._analysis_caches[key] = PipelineAnalysisCache()
-                    cache = self.controller.cache
-                    with patch.object(self.window, '_analyze_current_image') as analyze:
-                        self.window._species_changed(self.window.species_combo.currentText())
-                        analyze.assert_not_called()
-                    self.assertIs(self.controller.cache, cache)
                 self.window.pipeline_canvas.select_node('metadata')
                 self.assertFalse(self.window.pipeline_inspector.context_info_label.isHidden())
                 self.window.pipeline_canvas.select_node('species_reference_library')
@@ -111,36 +83,8 @@ class PipelineWorkflowUiTests(CatalogueTestCase):
                 with patch.object(self.window, '_analyze_current_image') as analyze:
                     self.window._run_pipeline_to_node('image_selector')
                     analyze.assert_not_called()
-                if recipe is not None:
-                    self.window.pipeline_canvas.select_node('image_selector')
-                    self.controller.graph.node('image_selector').x = -1500
-                    saved = self.controller.sync_graph()
-                    self.controller.install(type(saved).from_json(saved.to_json()))
-                    self.assertEqual(self.controller._selected, 'image_selector')
-                    self.assertEqual(self.controller.graph.node('image_selector').x, -1500)
-                    self.assertEqual(self.controller.workflow.recipe.identity.analytical_dict(), initial_identity)
-                    self.assertEqual(self.controller.workflow.source_recipe, recipe)
         self.window._remove_image(second)
         self.assertEqual(self.window.pipeline_inspector.image_selector_combo.count(), 1)
-
-    def check_test_actual_selector_swaps_canvas_and_restores_default_graph(self):
-        default = self.window.pipeline
-        self.window.pipeline_canvas.select_node('reference_texture_prototypes')
-        baseline_selection = self.window._selected_pipeline_node
-        workflow = self.select_binary()
-        self.assertIs(self.window.pipeline_canvas.graph, self.controller.graph)
-        self.assertEqual(set(self.controller.graph.nodes), {s.stage_id for s in workflow.recipe.stages} | CONTEXT_NODE_IDS)
-        self.assertTrue(self.controller.facts.isHidden())
-        self.assertEqual(self.controller.facts.toPlainText(), '')
-        self.seed_old_display()
-        self.controller.select_template(None)
-        self.assertIs(self.window.pipeline_canvas.graph, default)
-        self.assertFalse(self.controller.active)
-        self.assertTrue(self.window.pipeline_inspector._unified_optimization)
-        self.assertEqual(self.window._selected_pipeline_node, baseline_selection)
-        self.assert_display_cleared()
-        self.controller.install(None)
-        self.assertEqual(self.window._selected_pipeline_node, baseline_selection)
 
     def check_test_startup_pipeline_toolbar_and_compact_workflow_choices(self):
         self.window.resize(1440, 900)
@@ -155,27 +99,20 @@ class PipelineWorkflowUiTests(CatalogueTestCase):
         self.assertGreater(fraction, .27)
         self.assertLess(fraction, .39)
         self.assertIs(self.controller.strip.parent(), self.window.pipeline_canvas.control_bar)
-        # The wider list keeps its left edge, with the rename button straight after it.
-        self.assertEqual(self.controller.selector.width(), SELECTOR_WIDTH)
-        layout = self.controller.strip.layout()
-        self.assertEqual(layout.indexOf(self.controller.rename_button), layout.indexOf(self.controller.selector) + 1)
-        self.assertLessEqual(self.controller.selector.geometry().right(), self.controller.rename_button.geometry().left())
         self.assertFalse(hasattr(self.controller, 'run_button'))
         self.assertFalse(hasattr(self.controller, 'stop_button'))
         actions = self.window.workflow_toolbar.actions()
         self.assertIs(actions[actions.index(self.window.analyze_action)+1], self.window.stop_action)
-        # One grouped list holds every pipeline; the … menu has no pipeline submenu.
-        from seedvision.ui.pipeline_workflow import ENTRY_KIND
+        # One grouped list holds the default pipelines, then the project's copies.
         selector = self.controller.selector
         templates = [index for index in range(selector.count()) if selector.itemData(index, ENTRY_KIND) == 'template']
-        self.assertEqual({selector.itemData(index).recipe_id for index in templates},
-                         {'procedural_seed_analysis', 'cellpose_seed_analysis'}
-                         | {recipe.recipe_id for recipe in self.controller._all_templates})
+        self.assertEqual([selector.itemData(index).recipe_id for index in templates],
+                         [PROCEDURAL_SEED_ANALYSIS.recipe_id, CELLPOSE_SEED_ANALYSIS.recipe_id])
         headings = [selector.itemText(index) for index in range(selector.count())
                     if selector.itemData(index, ENTRY_KIND) == 'heading']
-        self.assertEqual(headings, ['SEED FIDDLE', 'SEED ANALYSIS', 'THRESHOLDS AND CLASSIFIERS', 'COLOUR CORRECTION'])
+        self.assertEqual(headings, [DEFAULTS_HEADING.upper()])
         self.assertFalse(any(selector.model().item(index).isEnabled() for index in range(selector.count())
-                             if selector.itemData(index, ENTRY_KIND) == 'heading'))
+                             if selector.itemData(index, ENTRY_KIND) in ('heading', 'saved-heading')))
         self.assertFalse(any(action.menu() for action in self.controller.more_button.menu().actions()))
         self.assertEqual(selector.itemData(selector.currentIndex(), ENTRY_KIND), 'custom')
         self.assertEqual(selector.currentText(), self.window.pipeline_documents.current_name)
@@ -196,188 +133,20 @@ class PipelineWorkflowUiTests(CatalogueTestCase):
         self.assertEqual(self.controller.export_menu_action.isVisible(), self.controller.export_button.isHidden())
         self.assertTrue(self.window.pipeline_canvas.add_node_button.isVisible())
         self.assertLessEqual(self.controller.strip.geometry().right(), self.window.pipeline_canvas.control_bar.width())
-        canvas = self.window.pipeline_canvas
-        canvas._populate_node_catalogue()
-        entries = canvas.catalogue_entry_items()
-        self.assertEqual(len(entries), 124)
-        self.assertGreater(canvas.node_catalogue_list.count(), len(entries))
-        colours = {item.foreground().color().name() for item in entries}
-        self.assertEqual(colours, {'#1768ad', '#218044'})
-
-    def check_test_typed_controls_and_choice_edit_reach_engine_contract(self):
-        self.select_binary()
-        stage = next(s for s in self.controller.workflow.recipe.stages if s.operation_id == 'threshold.binary')
-        self.window.pipeline_canvas.select_node(stage.stage_id)
-        node = self.controller.graph.node(stage.stage_id)
-        node.validate_parameter_sections()
-        choice = next(spec for spec in node.parameter_specs if spec.kind == 'choice')
-        widget = self.window.pipeline_inspector.findChild(QComboBox, 'parameter_'+choice.key)
-        self.assertIsNotNone(widget)
-        index = (widget.currentIndex()+1) % widget.count()
-        selected_value = widget.itemText(index)
-        self.seed_old_display()
-        widget.setCurrentIndex(index)
-        self.assert_display_cleared()
-        self.assertEqual(self.controller.workflow.recipe.parameters_for_runner(stage.stage_id)[choice.key], selected_value)
-        for spec in node.parameter_specs:
-            if spec.kind == 'int':
-                self.assertIsNotNone(self.window.pipeline_inspector.findChild(QSpinBox, 'parameter_'+spec.key))
-
-    def check_test_actual_run_click_uses_current_image_and_full_scope(self):
-        self.select_binary()
-        self.load_image()
-        self.controller.sync_buttons()
-        self.seed_old_display()
-        with patch.object(self.controller, 'start_job') as start, patch('seedvision.pipeline.workflows.run_workflow_path', return_value='computed') as run:
-            self.window.analyze_action.trigger()
-            self.assert_display_cleared()
-            function = start.call_args.args[0]
-            self.assertEqual(function(lambda: False), 'computed')
-        self.assertEqual(run.call_args.args[1], self.window.image_view.image_path)
-        self.assertIsNone(run.call_args.kwargs['target_node_id'])
-
-    def check_test_shared_workspace_controls_and_preparation_failure(self):
-        self.load_image()
-        controls = (self.window.overlay_opacity_slider, self.window.annotation_opacity_slider,
-                    self.window.show_material_references_checkbox, self.window.show_instance_annotations_checkbox)
-        default_enabled = [control.isEnabled() for control in controls]
-        self.window.resize(1440, 900)
-        self.window.show()
-        self.select_binary()
-        self.application.processEvents()
-        for widget in (self.window.analysis_activity_label, self.window.reference_association_summary,
-                       self.window.overlay_button):
-            self.assertTrue(widget.isVisible(), f'{widget.metaObject().className()}: {widget.objectName()}')
-        visibility_action = next(action for action in self.window.workflow_toolbar.actions()
-            if self.window.workflow_toolbar.widgetForAction(action) is self.window.reference_visibility_controls)
-        self.assertTrue(visibility_action.isVisible())
-        self.assertTrue(self.window.overlay_button.isEnabled())
-        self.assertFalse(self.window.annotate_instances_action.isEnabled())
-        self.assertIn('calibrated', self.window.annotate_instances_action.toolTip())
-        self.controller.display.show_source()
-        self.assertIs(self.window.image_display_stack.currentWidget(), self.controller.preview)
-        self.assertIn('Source image', self.controller.preview.message.text())
-        self.assertIsNone(self.window.image_view._analysis_result)
-        self.assertFalse(self.controller.display.show_annotations())
-        self.assertIsNone(self.window.image_view._analysis_result)
-        # Drawing adapts display coordinates, while saving keeps the frozen factory intact.
-        from PySide6.QtCore import QRectF
-        from seedvision.pipeline.workflows import PipelineWorkflow
-        original = self.controller.workflow.source_recipe.to_json()
-        threshold = next(stage.stage_id for stage in self.controller.workflow.recipe.stages
-                         if stage.operation_id == 'threshold.binary')
-        self.controller.select_node(threshold)
-        self.controller.select_region()
-        scale = self.controller.preview.view.sceneRect().width() / 32
-        self.controller.region_selected(QRectF(4*scale, 5*scale, 20*scale, 21*scale))
-        self.assertEqual(self.controller.workflow.foreground_regions[threshold], (4, 5, 24, 26))
-        restored = PipelineWorkflow.from_json(self.controller.sync_graph().to_json())
-        self.assertEqual(restored.foreground_regions[threshold], (4, 5, 24, 26))
-        self.assertEqual(restored.source_recipe.to_json(), original)
-        self.controller.add_variant('native_median_roi_recipe', 'build_native_median_roi_recipe')
-        self.assertEqual(self.controller.workflow.foreground_regions[threshold], (4, 5, 24, 26))
-        job = _Job(lambda cancel: None, (self.controller._generation, self.window.image_view.image_path))
-        self.controller._job = job
-        self.controller.job_completed(job, ValueError('Image exceeds available memory'), lambda result: self.fail('failed run completed'))
-        self.assertIn('Image exceeds available memory', self.window.analysis_activity_label.text())
-        self.assertIn('Image exceeds available memory', self.controller.preview.message.text())
-        self.assertTrue(self.window.analyze_action.isEnabled())
-        self.controller.selector.setCurrentIndex(0)
-        self.assertTrue(self.window.analysis_activity_label.isVisible())
-        self.assertTrue(self.window.reference_association_summary.isVisible())
-        self.assertIs(self.window.image_display_stack.currentWidget(), self.window.image_view)
-        self.assertEqual([control.isEnabled() for control in controls], default_enabled)
-
-    def check_test_canvas_run_to_node_signal_routes_selected_scope(self):
-        self.select_binary()
-        selected = self.controller._selected
-        with patch.object(self.controller, 'run') as run:
-            self.window.pipeline_canvas.run_to_node_requested.emit(selected)
-        run.assert_called_once_with(selected)
-
-    def check_test_queued_delivery_after_image_switch_is_discarded(self):
-        self.select_binary()
-        path = self.load_image('old.png')
-        job = _Job(lambda cancel: 'obsolete', (self.controller._generation, path))
-        self.controller._job = job
-        from seedvision.pipeline import NodeStatus
-        for node in self.controller.graph.nodes.values():
-            node.status = NodeStatus.COMPLETE
-        self.load_image('replacement.png')
-        self.controller.image_changed()
-        self.assertTrue(all(self.controller.graph.node(stage.stage_id).status == NodeStatus.IDLE for stage in self.controller.workflow.recipe.stages))
-        completion = unittest.mock.Mock()
-        self.controller.job_completed(job, 'obsolete', completion)
-        completion.assert_not_called()
-        self.assertIsNone(self.controller._job)
-
-    def check_test_same_path_reopen_reuses_unchanged_source_and_clears_changed_source(self):
-        from PySide6.QtGui import QImage
-        from seedvision.pipeline import NodeStatus
-        import torch
-        self.select_binary()
-        path = self.load_image()
-        self.window._add_and_open_image(str(path))
-        threshold = next(stage for stage in self.controller.workflow.recipe.stages
-            if stage.operation_id == 'threshold.binary')
-        self.window.pipeline_canvas.select_node(threshold.stage_id)
-        old_result = SimpleNamespace(nodes=(), coordinate_frame=SimpleNamespace(frame_id='same-source'),
-            node=lambda identifier: SimpleNamespace(status='executed', reason='Existing result',
-                operation_id='threshold.binary', outputs={'mask': torch.zeros((32, 32), dtype=torch.uint8)}))
-        self.controller.result = old_result
-        old_cache = self.controller.cache
-        old_cache.values['test-owned-product'] = object()
-        prepared = object()
-        self.controller._correction_prepared = prepared
-        generation = self.controller._generation
-        self.window._open_path(path)
-        self.assertIs(self.controller.result, old_result)
-        self.assertIs(self.controller.cache, old_cache)
-        self.assertIs(self.controller._correction_prepared, prepared)
-        self.assertEqual(self.controller._generation, generation)
-
-        self.seed_old_display()
-        self.controller.result = old_result
-        bypass = next(node for node in self.controller.graph.nodes.values() if node.bypassable)
-        for node in self.controller.graph.nodes.values():
-            node.status = NodeStatus.COMPLETE
-        bypass.enabled = False
-        bypass.status = NodeStatus.BYPASSED
-        job = _Job(lambda cancel: 'obsolete same-path result', (generation, path))
-        self.controller._job = job
-        replacement = QImage(48, 24, QImage.Format.Format_RGB888)
-        replacement.fill(0x906020)
-        self.assertTrue(replacement.save(str(path)))
-        self.window._open_path(path)
-        self.assertEqual(self.window.image_view.image_size, (48, 24))
-        self.assert_display_cleared()
-        self.assertIsNot(self.controller.cache, old_cache)
-        self.assertIsNone(self.controller._correction_prepared)
-        self.assertGreater(self.controller._generation, generation)
-        self.assertFalse(self.controller.export_button.isEnabled())
-        self.assertTrue(all(node.status == (NodeStatus.BYPASSED if node is bypass else NodeStatus.IDLE)
-            for key, node in self.controller.graph.nodes.items() if key not in CONTEXT_NODE_IDS))
-        completion = unittest.mock.Mock()
-        self.controller.job_completed(job, 'obsolete same-path result', completion)
-        completion.assert_not_called()
 
     def check_test_project_reset_restores_default_and_drops_copies(self):
-        self.select_binary()
-        self.controller._copies['old'] = self.controller.workflow
-        self.seed_old_display()
+        self.choose(CELLPOSE_SEED_ANALYSIS)
+        editable_copy(self.window, 'Cellpose copy')
+        documents = self.window.pipeline_documents
+        self.assertFalse(documents.locked)
+        self.assertTrue(self.controller._entries('custom'))
         self.window._clear_project_session_state()
         self.assertIs(self.window.pipeline_canvas.graph, self.window.pipeline)
-        self.assertFalse(self.controller.active)
-        self.assertEqual(self.controller._copies, {})
+        self.assertTrue(documents.locked)
+        self.assertEqual(documents.custom, {})
+        self.assertEqual(self.controller._entries('custom', 'saved-heading'), [])
         self.assertEqual(self.controller.selector.currentIndex(), self.controller.index_of(None))
-        self.assert_display_cleared()
-
-    def check_test_install_reopened_workflow_updates_selector(self):
-        from seedvision.pipeline.workflows import create_workflow
-        index = self.controller.index_of('plantcv_seed_mean_working')
-        self.controller.install(create_workflow(self.controller.selector.itemData(index)))
-        self.assertEqual(self.controller.selector.currentIndex(), index)
-        self.assertIs(self.window.pipeline_canvas.graph, self.controller.graph)
+        self.assertEqual(self.controller.selector.currentText(), self.controller.graph_pipeline.title)
 
     def check_test_templates_are_arranged_when_chosen_and_reloads_keep_their_layout(self):
         canvas = self.window.pipeline_canvas
@@ -385,140 +154,60 @@ class PipelineWorkflowUiTests(CatalogueTestCase):
         # The startup project's Procedural seed analysis is laid out in columns.
         self.assertEqual({round(node.x) % 270 for node in self.window.pipeline.nodes.values()}, {0})
         with patch.object(canvas, 'auto_arrange', wraps=canvas.auto_arrange) as arrange:
-            workflow = self.select_binary()
+            self.choose(CELLPOSE_SEED_ANALYSIS)
             arrange.assert_called_once_with()
-            self.assertEqual({round(node.x) % 270 for node in self.controller.graph.nodes.values()}, {0})
-            identifier = workflow.recipe.stages[-1].stage_id
+            self.assertEqual({round(node.x) % 270 for node in self.window.pipeline.nodes.values()}, {0})
+            identifier = CELLPOSE_SEED_ANALYSIS.selected_node
             canvas.node_items[identifier].setPos(1234.0, -567.0)
             arrange.reset_mock()
-            # Installing a working copy, as Open project and Load pipeline do, keeps its layout.
-            self.controller.install(self.controller.sync_graph())
+            # Reinstalling the graph, as Open project and Load pipeline do, keeps its layout.
+            self.controller.install()
             arrange.assert_not_called()
-        node = self.controller.graph.node(identifier)
+        node = self.window.pipeline.node(identifier)
         self.assertEqual((node.x, node.y), (1234.0, -567.0))
         self.assertTrue(canvas.auto_arrange_button.isVisibleTo(canvas.control_bar))
 
-    def check_test_correction_inputs_are_contextual_and_source_is_current_image(self):
-        self.controller.select_template('plantcv_color_card_correct_color')
-        editable_copy(self.window)
-        from PySide6.QtWidgets import QPushButton
-        texts = {w.text() for w in self.controller.node_actions.findChildren(QPushButton)}
-        self.assertIn('Target image…', texts)
-        self.assertIn('Source chip mask…', texts)
-        self.assertNotIn('Source image…', texts)
-        self.load_image()
-        from dataclasses import replace
-        self.controller.workflow = replace(self.controller.workflow, input_paths={
-            'target_rgb': str(self.root/'target.png'), 'target_mask': str(self.root/'target-mask.png'),
-            'source_mask': str(self.root/'source-mask.png')})
-        with patch.object(self.window, '_capture_correction_project_context', return_value=None), patch.object(self.controller, 'start_job') as start, patch('seedvision.benchmarking.native_correction_inputs.run_native_correction_files', return_value=('result', None)) as run:
-            self.controller.run()
-            self.assertEqual(start.call_args.args[0](lambda: False), ('result', None))
-        self.assertEqual(run.call_args.args[1]['source_rgb'], str(self.window.image_view.image_path))
-
-    def check_test_actual_save_and_open_restore_native_working_values(self):
-        self.select_binary()
+    def check_test_actual_save_and_open_restore_working_values_and_added_nodes(self):
         path = self.load_image()
         self.window._add_and_open_image(str(path))
-        stage = next(s for s in self.controller.workflow.recipe.stages if s.operation_id == 'threshold.binary')
-        self.controller.parameter_changed(stage.stage_id, 'threshold', 117)
-        self.window.pipeline_canvas.select_node(stage.stage_id)
-        from seedvision.pipeline.catalogue_nodes import catalogue_entries
-        entry = next(entry for entry in catalogue_entries() if entry.backend == 'native'
-            and entry.recipe.stage(entry.target_node).operation_id == 'threshold.binary')
-        added = self.window.catalogue_nodes.add_entry(entry.key)
-        self.window.catalogue_nodes.parameter_changed(added, 'threshold', 143)
-        self.window.catalogue_nodes.output_requested(added, 'mask')
+        self.window.pipeline.set_parameter('ruler_detection', 'ruler_length_mm', 183.0)
+        self.window.pipeline_canvas.select_node('ruler_detection')
+        catalogue = self.window.catalogue_nodes
+        added = catalogue.add_entry('default:seed_scale_estimation')
+        self.assertTrue(catalogue.parameter_changed(added, 'reference_max_components', 7))
+        port = catalogue._component(added).graph.node(added).output_ports[0][0]
+        catalogue.output_requested(added, port)
         self.window.image_workspace_action.setChecked(False)
         destination = self.root/'temporary.seedfiddle-project.json'
         from PySide6.QtWidgets import QFileDialog, QMessageBox
-        with patch.object(QFileDialog, 'getSaveFileName', return_value=(str(destination), '')), patch.object(QMessageBox, 'warning'), patch.object(QMessageBox, 'critical') as critical:
+        with patch.object(QFileDialog, 'getSaveFileName', return_value=(str(destination), '')), \
+             patch.object(QMessageBox, 'warning'), patch.object(QMessageBox, 'critical') as critical:
             self.window.save_project_action.trigger()
             critical.assert_not_called()
         self.assertTrue(destination.is_file())
-        import json
-        self.assertEqual(json.loads(destination.read_text())['node_instances'][0].get('selected_node'), entry.target_node)
+        saved = json.loads(destination.read_text(encoding='utf-8'))
+        self.assertEqual(saved['node_instances'][0].get('selected_node'), 'seed_scale_estimation')
         self.controller.select_template(None)
-        with patch.object(self.window, '_confirm_project_replacement', return_value=True), patch.object(QMessageBox, 'warning'), patch.object(QMessageBox, 'critical') as critical:
+        with patch.object(self.window, '_confirm_project_replacement', return_value=True), \
+             patch.object(QMessageBox, 'warning'), patch.object(QMessageBox, 'critical') as critical:
             self.assertTrue(self.window._open_project(destination))
             critical.assert_not_called()
-        self.assertTrue(self.controller.active)
-        self.assertEqual(self.controller.workflow.recipe.parameters_for_runner(stage.stage_id)['threshold'], 117)
-        self.assertEqual(self.controller.workflow.source_recipe.recipe_id, 'plantcv_seed_binary_working')
+        self.assertEqual(self.window.pipeline.node('ruler_detection').parameters['ruler_length_mm'], 183.0)
         self.assertEqual(self.controller.selector.currentText(), self.window.pipeline_documents.current_name)
-        self.assertEqual(self.controller._selected, stage.stage_id)
         self.assertFalse(self.window.image_workspace_action.isChecked())
         self.assertTrue(self.window.pipeline_workspace_action.isChecked())
-        self.assertEqual(self.window.catalogue_nodes._selected, added)
-        self.assertEqual(self.window.catalogue_nodes._selected_output, 'mask')
-        component = self.window.catalogue_nodes._component(added)
-        self.assertEqual(component.instance.workflow.recipe.parameters_for_runner(entry.target_node)['threshold'], 143)
-
-    def check_test_structured_points_preserve_fractional_values(self):
-        from seedvision.ui.workflow_parameters import WorkflowParameterEditor
-        editor = WorkflowParameterEditor('points', '[[1.25, 2.5], [10.75, 20.5]]')
-        emitted = []
-        editor.changed.connect(emitted.append)
-        editor.fields[0].setValue(1.375)
-        editor.emit_value()
-        import json
-        self.assertEqual(json.loads(emitted[-1]), [[1.375, 2.5], [10.75, 20.5]])
-        editor.deleteLater()
-
-    def check_test_range_colorspace_change_adapts_bounds_field_count(self):
-        self.controller.select_template('plantcv_threshold_custom_range')
-        editable_copy(self.window)
-        stage = next(s for s in self.controller.workflow.recipe.stages if s.operation_id == 'threshold.custom_range')
-        self.controller.parameter_changed(stage.stage_id, 'channel', 'CMYK')
-        values = self.controller.workflow.recipe.parameters_for_runner(stage.stage_id)
-        self.assertEqual(len(values['lower']), 4)
-        self.assertEqual(len(values['upper']), 4)
-
-    def check_test_actual_enabled_checkbox_bypasses_only_selected_node(self):
-        self.select_binary()
-        stage = next(s for s in self.controller.workflow.recipe.stages if s.operation_id == 'filter.median_blur')
-        self.window.pipeline_canvas.select_node(stage.stage_id)
-        self.assertTrue(self.window.pipeline_inspector.enabled_checkbox.isEnabled())
-        self.window.pipeline_inspector.enabled_checkbox.click()
-        self.assertEqual(self.controller.workflow.disabled_nodes, (stage.stage_id,))
-        self.assertTrue(all(node.enabled for identifier, node in self.controller.graph.nodes.items() if identifier != stage.stage_id))
-
-    def check_test_model_nodes_train_their_own_model_kind(self):
-        for recipe_id, kind in (('plantcv_naive_bayes_classifier', 'bayes'), ('plantcv_kmeans_predict_masks', 'kmeans')):
-            with self.subTest(recipe=recipe_id):
-                self.controller.select_template(recipe_id)
-                editable_copy(self.window)
-                stage = next(stage for stage in self.controller.workflow.recipe.stages
-                             if any(parameter.parameter_id == 'model_source' for parameter in stage.parameters))
-                self.window.pipeline_canvas.select_node(stage.stage_id)
-                layout = self.controller.node_actions.layout()
-                train = next(layout.itemAt(index).widget() for index in range(layout.count())
-                             if layout.itemAt(index).widget().text() == 'Train…')
-                self.assertTrue(train.isEnabled())
-                with patch.object(self.controller, 'train_model') as route:
-                    train.click()
-                route.assert_called_once_with(kind)
+        self.assertEqual(catalogue._selected, added)
+        self.assertEqual(catalogue._selected_output, port)
+        restored = catalogue._component(added)
+        self.assertEqual(restored.graph.node(added).parameters['reference_max_components'], 7)
 
     def test_workflow_lifecycle(self):
+        """5 related PipelineWorkflowUiTests scenarios, each with private fixture state."""
         self.scenario(self.check_test_shared_project_nodes_and_two_way_image_selection)
-        self.scenario(self.check_test_shared_workspace_controls_and_preparation_failure)
-        """16 related PipelineWorkflowUiTests scenarios, each with private fixture state."""
-        self.scenario(self.check_test_actual_selector_swaps_canvas_and_restores_default_graph)
         self.scenario(self.check_test_startup_pipeline_toolbar_and_compact_workflow_choices)
-        self.scenario(self.check_test_typed_controls_and_choice_edit_reach_engine_contract)
-        self.scenario(self.check_test_actual_run_click_uses_current_image_and_full_scope)
-        self.scenario(self.check_test_canvas_run_to_node_signal_routes_selected_scope)
-        self.scenario(self.check_test_queued_delivery_after_image_switch_is_discarded)
-        self.scenario(self.check_test_same_path_reopen_reuses_unchanged_source_and_clears_changed_source)
         self.scenario(self.check_test_project_reset_restores_default_and_drops_copies)
-        self.scenario(self.check_test_install_reopened_workflow_updates_selector)
         self.scenario(self.check_test_templates_are_arranged_when_chosen_and_reloads_keep_their_layout)
-        self.scenario(self.check_test_correction_inputs_are_contextual_and_source_is_current_image)
-        self.scenario(self.check_test_actual_save_and_open_restore_native_working_values)
-        self.scenario(self.check_test_structured_points_preserve_fractional_values)
-        self.scenario(self.check_test_range_colorspace_change_adapts_bounds_field_count)
-        self.scenario(self.check_test_actual_enabled_checkbox_bypasses_only_selected_node)
-        self.scenario(self.check_test_model_nodes_train_their_own_model_kind)
+        self.scenario(self.check_test_actual_save_and_open_restore_working_values_and_added_nodes)
 
 
 if __name__ == '__main__':

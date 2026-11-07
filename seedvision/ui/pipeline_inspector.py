@@ -1553,10 +1553,6 @@ class PipelineInspector(QWidget):
                             key, selected
                         )
                     )
-                elif spec.kind == "structured":
-                    from seedvision.ui.workflow_parameters import WorkflowParameterEditor
-                    editor = WorkflowParameterEditor(spec.key, value, self.parameter_container)
-                    editor.changed.connect(lambda selected, key=spec.key: self._parameter_edited(key, selected))
                 elif spec.kind == "text":
                     editor = QLineEdit(self.parameter_container)
                     editor.setText(str(value))
@@ -2164,7 +2160,7 @@ class PipelineInspector(QWidget):
         if node is None or node.identifier != 'deskew_colour':
             return
         enabled = (node.parameters['apply_colour_balance'] if enabled_override is None else enabled_override)
-        for key in ('neutral_patch_selection', 'neutral_sample_frame'):
+        for key in ('colour_correction_model', 'neutral_patch_selection', 'neutral_sample_frame'):
             editor = self.parameter_container.findChild(QWidget, 'parameter_'+key)
             if editor is not None:
                 editor.setEnabled(bool(enabled and node.enabled and node.implemented and not self.read_only and not self._editing_locked))

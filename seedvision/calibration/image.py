@@ -17,21 +17,31 @@ from seedvision.calibration.neutral import (
 
 import numpy as np
 
+from seedvision.calibration.colour_chart import identify_chart, locate_chart_grid
+from seedvision.calibration.chart_colour import (
+    ColourCorrectionFacts,
+    apply_linear_rgb_correction,
+    fit_chart_correction,
+    neutral_correction_facts,
+)
 from seedvision.calibration.geometry import CalibrationDetectionError
+from seedvision.calibration.ruler_search import RulerCandidate, ruler_candidates
 from seedvision.timing import raise_if_analysis_cancelled
 from seedvision.cuda import (
     CudaContext,
     bgr_to_gray,
     bilinear_sample,
-    binary_close,
-    connected_components,
     gaussian_blur,
-    gradient_magnitude,
     image_to_tensor,
     resize,
     tensor_to_image,
     warp_perspective,
 )
+
+
+CHART_REFERENCE_FIT = "Chart reference fit"
+GREY_BALANCE_ONLY = "Grey balance only"
+COLOUR_CORRECTION_MODELS = (CHART_REFERENCE_FIT, GREY_BALANCE_ONLY)
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +52,7 @@ class CalibrationSettings:
     minor_tick_mm: float = 1.0
     max_deskew_degrees: float = 10.0
     apply_colour_balance: bool = True
+    colour_correction_model: str = "Chart reference fit"
     apply_perspective_correction: bool = True
     max_perspective_fraction: float = 0.25
     neutral_patch_selection: str = "automatic"
@@ -58,12 +69,23 @@ class CalibrationSettings:
             raise ValueError("minor_tick_mm must be between 0.1 and 10.")
         if not 0.0 <= self.max_deskew_degrees <= 30.0:
             raise ValueError("max_deskew_degrees must be between 0 and 30.")
+        if self.colour_correction_model not in COLOUR_CORRECTION_MODELS:
+            raise ValueError(
+                "colour_correction_model must be one of "
+                + ", ".join(COLOUR_CORRECTION_MODELS) + "."
+            )
         if not 0.0 <= self.max_perspective_fraction <= 0.50:
             raise ValueError("max_perspective_fraction must be between 0 and 0.50.")
 
 
 @dataclass(frozen=True, slots=True)
 class ColourSwatch:
+    """One chart patch, numbered and placed in the chart's own upright layout.
+
+    ``corners`` run clockwise from the patch's top-left corner in the image.
+    """
+
+    number: int
     row: int
     column: int
     center_x: float
@@ -74,11 +96,28 @@ class ColourSwatch:
 
 @dataclass(frozen=True, slots=True)
 class ColourCardDetection:
+    """A located colour chart.
+
+    ``bounds`` outlines the swatch grid, clockwise from its top-left corner in
+    the image, and ``angle_degrees`` is its rotation, the mean of its sides'
+    residual angles. ``chart`` names the identified chart, whose swatches are
+    numbered in its upright reading order; it is None for an unrecognised
+    grid, numbered in image reading order. ``rotation_degrees`` is the
+    chart's clockwise rotation from upright. ``rows`` and ``columns`` give
+    the located grid as it lies in the image, which is part of the chart when
+    the image edge cuts it, and ``patch_count`` the patches on the whole chart.
+    """
+
     swatches: tuple[ColourSwatch, ...]
     bounds: tuple[tuple[float, float], ...]
     angle_degrees: float
     confidence: float
     detected_swatch_count: int
+    chart: str | None
+    rotation_degrees: int
+    rows: int
+    columns: int
+    patch_count: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,6 +202,7 @@ class ImageCalibration:
     calibration_settings: CalibrationSettings | None = None
     source_shape_hw: tuple[int, int] | None = None
     neutral_balance: NeutralBalanceFacts | None = None
+    colour_correction: ColourCorrectionFacts | None = None
     _geometry: _CalibrationGeometry | None = None
     _run_key: str | None = None
 
@@ -226,6 +266,7 @@ class _CalibrationGeometry:
     warnings: tuple[str, ...]
     product_key: tuple | None
     metadata_key: str | None = None
+    colour_correction: ColourCorrectionFacts | None = None
 
 
 def _array_key(value):
@@ -245,7 +286,8 @@ def _calibration_source_key(image, context):
 def _geometry_settings(settings):
     return (settings.max_deskew_degrees, settings.apply_colour_balance,
             settings.apply_perspective_correction, settings.max_perspective_fraction,
-            settings.neutral_patch_selection, settings.neutral_sample_frame)
+            settings.neutral_patch_selection, settings.neutral_sample_frame,
+            settings.colour_correction_model)
 
 
 def _compact_metadata_key(value):
@@ -259,7 +301,9 @@ def _compact_metadata_key(value):
 def _geometry_metadata_key(geometry):
     return _compact_metadata_key((
         None if geometry.colour_card is None else asdict(geometry.colour_card),
-        asdict(geometry.neutral_facts), geometry.geometry_settings,
+        asdict(geometry.neutral_facts),
+        None if geometry.colour_correction is None else asdict(geometry.colour_correction),
+        geometry.geometry_settings,
         geometry.deskew_degrees, geometry.perspective_corrected,
         geometry.perspective_strength, geometry.gains, geometry.warnings))
 
@@ -301,6 +345,7 @@ def _reusable_geometry(previous, source_key, settings):
             or previous.affine_matrix is not geometry.transform
             or previous.colour_card is not geometry.colour_card
             or previous.neutral_balance is not geometry.neutral_facts
+            or previous.colour_correction is not geometry.colour_correction
             or previous.channel_gains_bgr != geometry.gains):
         return None
     if geometry.product_key is None or geometry.product_key != _geometry_product_key(
@@ -376,21 +421,39 @@ def _calibrate_geometry(image, settings, context, timing_recorder, source_key):
     transform, output_size = _expanded_warp_canvas(transform, height, width)
     corrected_tensor = warp_perspective(tensor, transform, output_size)
     gains, neutral_facts = _neutral_balance(colour_card, settings, corrected_tensor, transform)
-    if neutral_facts.state == "unavailable":
-        warnings.append(neutral_facts.reason)
-    import torch
+    correction = _chart_colour_correction(colour_card, settings, corrected_tensor, transform)
+    if isinstance(correction, str):
+        # Grey balance is the fallback whenever no known chart can be fitted.
+        colour_facts = neutral_correction_facts(
+            correction, applied=neutral_facts.state == "applied"
+        )
+        if (
+            settings.apply_colour_balance
+            and settings.colour_correction_model == CHART_REFERENCE_FIT
+            and colour_card is not None
+        ):
+            warnings.append(f"Colour correction used grey balance only. {correction}")
+        if neutral_facts.state == "unavailable":
+            warnings.append(neutral_facts.reason)
+        import torch
 
-    gain_tensor = torch.as_tensor(
-        gains, device=context.device, dtype=corrected_tensor.dtype
-    ).reshape(1, 3, 1, 1)
-    balanced = corrected_tensor * gain_tensor
-    # Gamut-preserving highlight compression avoids clipping bright colour
-    # swatches channel-by-channel after neutral balance.
-    maximum_channel = balanced.amax(dim=1, keepdim=True).clamp_min(1.0)
-    gamut_scale = torch.minimum(
-        torch.ones_like(maximum_channel), 255.0 / maximum_channel
-    )
-    corrected_tensor = (balanced * gamut_scale).clamp(0.0, 255.0)
+        gain_tensor = torch.as_tensor(
+            gains, device=context.device, dtype=corrected_tensor.dtype
+        ).reshape(1, 3, 1, 1)
+        balanced = corrected_tensor * gain_tensor
+        # Gamut-preserving highlight compression avoids clipping bright colour
+        # swatches channel-by-channel after neutral balance.
+        maximum_channel = balanced.amax(dim=1, keepdim=True).clamp_min(1.0)
+        gamut_scale = torch.minimum(
+            torch.ones_like(maximum_channel), 255.0 / maximum_channel
+        )
+        corrected_tensor = (balanced * gamut_scale).clamp(0.0, 255.0)
+    else:
+        # The chart fit corrects every channel against the reference colours,
+        # greys included, so no separate channel gains are applied.
+        colour_facts, matrix, offset = correction
+        gains = np.ones(3, np.float32)
+        corrected_tensor = apply_linear_rgb_correction(corrected_tensor, matrix, offset)
     corrected = tensor_to_image(corrected_tensor)
     if deskew_timing is not None:
         timing_recorder.stop(deskew_timing)
@@ -398,7 +461,8 @@ def _calibrate_geometry(image, settings, context, timing_recorder, source_key):
     geometry = _CalibrationGeometry(source_key, _geometry_settings(settings), corrected,
         corrected_tensor, colour_card, transform, float(deskew_degrees), perspective_corrected,
         float(perspective_strength), tuple(float(value) for value in gains), neutral_facts,
-        tuple(warnings), _geometry_product_key(corrected, transform, corrected_tensor))
+        tuple(warnings), _geometry_product_key(corrected, transform, corrected_tensor),
+        colour_correction=colour_facts)
     return replace(geometry, metadata_key=_geometry_metadata_key(geometry))
 
 
@@ -445,6 +509,10 @@ def calibrate_image(
                 minor_tick_mm=settings.minor_tick_mm,
                 cuda_context=context,
                 image_tensor=corrected_tensor,
+                excluded_regions=(
+                    () if colour_card is None
+                    else (_chart_exclusion_region(colour_card, transform),)
+                ),
             )
         except CalibrationDetectionError as error:
             ruler = None
@@ -519,6 +587,7 @@ def calibrate_image(
         calibration_settings=settings,
         source_shape_hw=tuple(image.shape[:2]),
         neutral_balance=geometry.neutral_facts,
+        colour_correction=geometry.colour_correction,
         _geometry=geometry,
     )
     return replace(result, _run_key=_calibration_run_key(result))
@@ -530,120 +599,73 @@ def detect_colour_card(
     cuda_context: CudaContext | None = None,
     image_tensor=None,
 ) -> ColourCardDetection:
-    """Detect the card as a dark bordered quadrilateral on the GPU."""
+    """Find a grid colour chart at any position and orientation on the GPU.
+
+    The chart is located from its swatch lattice and identified from its
+    colours (see ``seedvision.calibration.colour_chart``). Swatches are
+    returned in patch-number order.
+    """
 
     _validate_image(image)
-    import torch
-
     context = cuda_context or CudaContext.resolve()
     source = image_tensor if image_tensor is not None else image_to_tensor(image, context)
-    height, width = image.shape[:2]
-    scale = min(1.0, 1200.0 / max(height, width))
-    small_height = max(32, round(height * scale))
-    small_width = max(32, round(width * scale))
-    small = resize(source, (small_height, small_width), mode="area") if scale < 1.0 else source
-    gray = bgr_to_gray(small)
-    search_width = max(16, round(small_width * 0.58))
-    search = gray[:, :, :, :search_width]
-    median = torch.median(search)
-    lower_quartile = torch.quantile(search, 0.28)
-    threshold = torch.minimum(median - 22.0, lower_quartile + 15.0)
-    dark = search < threshold
-    # Only bridge small breaks in the printed border.  A larger close can join
-    # the card to nearby ruled paper in real laboratory layouts and shear the
-    # fitted top edge.
-    kernel = max(5, round(min(small_height, small_width) * 0.007))
-    if kernel % 2 == 0:
-        kernel += 1
-    closed = binary_close(dark, kernel)
-    labels, stats = connected_components(closed)
-    component_count = int(labels.max().item()) + 1
-    candidates: list[tuple[float, int]] = []
-    total = small_height * small_width
-    for index in range(1, component_count):
-        area = float(stats["area"][index])
-        component_width = float(stats["width"][index])
-        component_height = float(stats["height"][index])
-        left = float(stats["left"][index])
-        top = float(stats["top"][index])
-        if component_width <= 0 or component_height <= 0:
-            continue
-        aspect = component_height / component_width
-        fill = area / (component_width * component_height)
-        plausible = (
-            area > total * 0.035
-            and 0.13 * small_width < component_width < 0.58 * small_width
-            and 0.30 * small_height < component_height < 0.99 * small_height
-            and 1.05 < aspect < 3.4
-            and left < small_width * 0.30
-            and top < small_height * 0.25
-            and fill > 0.34
-        )
-        if plausible:
-            score = area * fill * (1.0 - left / max(small_width, 1))
-            candidates.append((score, index))
-    if not candidates:
-        raise CalibrationDetectionError("Colour calibration card was not detected.")
-
-    _, selected = max(candidates)
-    mask = labels[0, 0] == selected
-    coordinates = torch.nonzero(mask, as_tuple=False).float()
-    quad_small = _quadrilateral_from_component(coordinates).cpu().numpy()
-    quad = _order_quad(quad_small / scale)
-    if _polygon_area(quad) < height * width * 0.025:
-        raise CalibrationDetectionError("Colour calibration card outline was too small.")
-
-    unit = np.float64(((0, 0), (1, 0), (1, 1), (0, 1)))
-    unit_to_image = _homography(unit, quad.astype(np.float64))
-    vertical_edges, horizontal_edges = _refine_swatch_grid_edges(
-        source, unit_to_image
-    )
-    swatches: list[ColourSwatch] = []
-    for row in range(6):
-        for column in range(4):
-            left, right = vertical_edges[column]
-            top_edge, bottom_edge = horizontal_edges[row]
-            normalized_corners = np.asarray(
-                (
-                    (left / 420.0, top_edge / 720.0),
-                    (right / 420.0, top_edge / 720.0),
-                    (right / 420.0, bottom_edge / 720.0),
-                    (left / 420.0, bottom_edge / 720.0),
-                ),
-                np.float64,
-            )
-            corners = _transform_points(normalized_corners, unit_to_image)
-            center = np.asarray(
-                (
-                    (left + right) / (2.0 * 420.0),
-                    (top_edge + bottom_edge) / (2.0 * 720.0),
-                ),
-                np.float64,
-            )
-            center_image = _transform_points(center.reshape(1, 2), unit_to_image)[0]
-            mean_bgr = _sample_quadrilateral_mean(source, corners)
+    grid = locate_chart_grid(source)
+    identity = identify_chart(grid)
+    chart = identity.chart
+    layout_columns = chart.columns if chart is not None else grid.columns
+    swatches = []
+    for row in range(grid.rows):
+        for column in range(grid.columns):
+            index = int(identity.canonical_index[row, column])
+            chart_row, chart_column = divmod(index, layout_columns)
+            centre = grid.centres[row, column]
             swatches.append(
                 ColourSwatch(
-                    row=row,
-                    column=column,
-                    center_x=float(center_image[0]),
-                    center_y=float(center_image[1]),
-                    corners=tuple((float(x), float(y)) for x, y in corners),
-                    mean_bgr=mean_bgr,
+                    number=index + 1,
+                    row=chart_row,
+                    column=chart_column,
+                    center_x=float(centre[0]),
+                    center_y=float(centre[1]),
+                    corners=tuple((float(x), float(y)) for x, y in grid.corners[row, column]),
+                    mean_bgr=tuple(float(value) for value in grid.mean_bgr[row, column]),
                 )
             )
-
-    top = quad[1] - quad[0]
-    angle = float(np.degrees(np.arctan2(top[1], top[0])))
-    selected_area = float(stats["area"][selected]) / (scale * scale)
-    confidence = float(np.clip(0.60 + selected_area / max(_polygon_area(quad), 1.0) * 0.35, 0.0, 0.98))
+    swatches.sort(key=lambda swatch: swatch.number)
+    # Rotation is the mean of all four sides' residual angles: a keystoned
+    # chart's top edge alone also carries its perspective.
+    sides = np.roll(grid.outline, -1, axis=0) - grid.outline
+    residual = np.arctan2(sides[:, 1], sides[:, 0]) - np.radians((0.0, 90.0, 180.0, 270.0))
+    angle = float(np.degrees(np.arctan2(np.sin(residual).mean(), np.cos(residual).mean())))
+    detected = int(grid.detected.sum())
+    # Missed swatches and a poor lattice fit both lower confidence; a
+    # residual of a quarter pitch leaves none.
+    confidence = float(np.clip(
+        0.98 * detected / grid.detected.size * (1.0 - 4.0 * grid.residual), 0.0, 0.98))
     return ColourCardDetection(
         swatches=tuple(swatches),
-        bounds=tuple((float(x), float(y)) for x, y in quad),
+        bounds=tuple((float(x), float(y)) for x, y in grid.outline),
         angle_degrees=angle,
         confidence=confidence,
-        detected_swatch_count=24,
+        detected_swatch_count=detected,
+        chart=None if chart is None else chart.name,
+        rotation_degrees=int(identity.rotation_degrees),
+        rows=int(grid.rows),
+        columns=int(grid.columns),
+        patch_count=len(chart.rgb) if chart is not None else int(grid.rows * grid.columns),
     )
+
+
+_RULER_CANDIDATES = 4
+# A ruler measured from its visible tick run needs at least 3 cm in view, and
+# dashes no closer than 2.5 pixels, below which neighbours blur together.
+_VISIBLE_RUN_MINIMUM_INTERVALS = 30
+_SHORTEST_TICK_PITCH = 2.5
+# A strip narrower than this many dashes may hold only the minor dashes, so
+# it is widened across the centimetre marks before their lengths are read.
+_VISIBLE_RUN_STRIP_PITCHES = 12.0
+# Grid units added around the colour chart's swatch outline where ruler edges
+# may not vote and the ruler strip may not extend.
+_CHART_EXCLUSION_MARGIN = 0.35
 
 
 def detect_ruler(
@@ -653,17 +675,24 @@ def detect_ruler(
     minor_tick_mm: float = 1.0,
     cuda_context: CudaContext | None = None,
     image_tensor=None,
+    excluded_regions: tuple[np.ndarray, ...] = (),
 ) -> RulerDetection:
     """Detect the ruler body plus independent metric/imperial tick evidence.
 
-    A coherent outline is returned even when the metric train is not yet safe
-    for absolute scale. This lets the diagnostic overlay explain which stage
-    failed instead of making every failed ruler appear wholly absent.
+    The ruler may lie anywhere and at any angle. Ruler-width pairs of
+    parallel edges are found over the whole image, outside
+    ``excluded_regions`` (convex image polygons such as the colour chart),
+    and the strongest few are measured in turn until one carries a reliable
+    metric tick train of ``ruler_length_mm``. If none does, each is measured
+    again over its longest visible run of regular ticks, for a ruler cut by
+    the frame or the chart, or shorter than the configured span.
+
+    A band that carries a regular metric tick train is returned even when
+    that train is not yet safe for absolute scale, so the diagnostic overlay
+    can explain which stage failed. A band without one is not a ruler.
     """
 
     _validate_image(image)
-    import torch
-
     context = cuda_context or CudaContext.resolve()
     source = image_tensor if image_tensor is not None else image_to_tensor(image, context)
     height, width = image.shape[:2]
@@ -672,91 +701,138 @@ def detect_ruler(
     small_width = max(32, round(width * scale))
     small = resize(source, (small_height, small_width), mode="area") if scale < 1.0 else source
     gray = gaussian_blur(bgr_to_gray(small), 0.65)
-    # The card occupies the left side of the controlled layout.  Starting at
-    # 40% keeps its long border out of the ruler-line accumulator.
-    roi_x0 = round(small_width * 0.40)
-    roi_y0 = round(small_height * 0.62)
-    roi = gray[:, :, roi_y0:, roi_x0:]
-    gradient, _, _ = gradient_magnitude(roi, scharr=True)
-    threshold = torch.quantile(gradient, 0.92)
-    if float(threshold.item()) < 1.0 or float(gradient.max().item()) < 4.0:
-        raise CalibrationDetectionError("Ruler was not detected.")
-    edge = gradient[0, 0] > torch.maximum(
-        threshold, torch.as_tensor(2.0, device=context.device)
+    excluded = tuple(np.asarray(region, np.float64).reshape(-1, 2) for region in excluded_regions)
+    candidates = ruler_candidates(
+        gray, tuple(region * scale for region in excluded), count=_RULER_CANDIDATES
     )
-    points = torch.nonzero(edge, as_tuple=False).float()
-    if points.shape[0] < 80:
+    if not candidates:
         raise CalibrationDetectionError("Ruler was not detected.")
-    point_y = points[:, 0] + roi_y0
-    point_x = points[:, 1] + roi_x0
+    # Ticks are measured on a strip resampled from the full-resolution image.
+    full_gray = gaussian_blur(bgr_to_gray(source), 0.65) if scale < 1.0 else gray
+    best: RulerDetection | None = None
+    for candidate in candidates:
+        raise_if_analysis_cancelled()
+        try:
+            ruler = _measure_ruler_candidate(
+                full_gray,
+                candidate,
+                scale,
+                excluded,
+                ruler_length_mm=ruler_length_mm,
+                minor_tick_mm=minor_tick_mm,
+                device=context.device,
+            )
+        except CalibrationDetectionError:
+            continue
+        if ruler.scale_reliable:
+            return ruler
+        # Without a periodic tick family a long straight band is not evidence
+        # of a ruler: box walls, label edges and paper edges form such bands,
+        # and the strokes of a printed label count as a few dozen loose ticks.
+        if ruler.metric_tick_segments and (
+            best is None
+            or (ruler.matched_tick_count, ruler.confidence)
+            > (best.matched_tick_count, best.confidence)
+        ):
+            best = ruler
+    # No band holds the configured span: measure the visible tick run instead.
+    for candidate in candidates:
+        raise_if_analysis_cancelled()
+        try:
+            ruler = _measure_ruler_candidate(
+                full_gray,
+                candidate,
+                scale,
+                excluded,
+                ruler_length_mm=ruler_length_mm,
+                minor_tick_mm=minor_tick_mm,
+                device=context.device,
+                visible_span=True,
+            )
+        except CalibrationDetectionError:
+            continue
+        if ruler.scale_reliable:
+            return ruler
+    if best is None:
+        raise CalibrationDetectionError("Ruler was not detected.")
+    return best
 
-    angles = torch.linspace(-10.0, 10.0, 81, device=context.device)
-    best_score = -1.0
-    best_angle = 0.0
-    best_v = 0.0
-    best_histogram = None
-    for angle_tensor in angles:
-        angle = torch.deg2rad(angle_tensor)
-        v = -torch.sin(angle) * point_x + torch.cos(angle) * point_y
-        bins = torch.round(v).long().clamp(0, small_height + small_width - 1)
-        histogram = torch.bincount(bins, minlength=small_height + small_width).float()
-        score, index = torch.max(histogram, dim=0)
-        score_value = float(score.item())
-        if score_value > best_score:
-            best_score = score_value
-            best_angle = float(angle_tensor.item())
-            best_v = float(index.item())
-            best_histogram = histogram
-    if best_histogram is None or best_score < small_width * 0.12:
-        raise CalibrationDetectionError("Ruler baseline was not detected.")
 
+def _excluded_strip_span(
+    regions: tuple[np.ndarray, ...],
+    cosine: float,
+    sine: float,
+    v_low: float,
+    v_high: float,
+) -> list[tuple[float, float]]:
+    """Ranges of u where each convex region crosses the band v_low..v_high."""
+
+    spans = []
+    for region in regions:
+        u = cosine * region[:, 0] + sine * region[:, 1]
+        v = -sine * region[:, 0] + cosine * region[:, 1]
+        polygon = list(zip(u.tolist(), v.tolist()))
+        for limit, keep_below in ((v_high, True), (v_low, False)):
+            clipped = []
+            for index, (u0, v0) in enumerate(polygon):
+                u1, v1 = polygon[(index + 1) % len(polygon)]
+                inside0 = v0 <= limit if keep_below else v0 >= limit
+                inside1 = v1 <= limit if keep_below else v1 >= limit
+                if inside0:
+                    clipped.append((u0, v0))
+                if inside0 != inside1:
+                    fraction = (limit - v0) / (v1 - v0)
+                    clipped.append((u0 + fraction * (u1 - u0), limit))
+            polygon = clipped
+            if not polygon:
+                break
+        if polygon:
+            values = [point[0] for point in polygon]
+            spans.append((min(values), max(values)))
+    return spans
+
+
+def _measure_ruler_candidate(
+    gray,
+    candidate: RulerCandidate,
+    candidate_scale: float,
+    excluded: tuple[np.ndarray, ...],
+    *,
+    ruler_length_mm: float,
+    minor_tick_mm: float,
+    device,
+    visible_span: bool = False,
+    widened: bool = False,
+) -> RulerDetection:
+    """Measure the tick families and outline of one ruler-width band.
+
+    With ``visible_span`` the metric train spans the longest visible run of
+    regular ticks rather than ``ruler_length_mm``. Its ends need not be whole
+    centimetres where the frame, the chart or an object cuts the ruler, but
+    must be where blank ruler continues beyond them. The imperial family is
+    not sought, and labels are given only from a visible zero.
+    """
+
+    import torch
+
+    height, width = gray.shape[-2:]
+    best_angle = candidate.angle_degrees
+    pair_score = candidate.pair_score
+    working_side = max(height, width) * candidate_scale
     angle_radians = np.deg2rad(best_angle)
     cosine, sine = float(np.cos(angle_radians)), float(np.sin(angle_radians))
-    point_u = cosine * point_x + sine * point_y
-    point_v = -sine * point_x + cosine * point_y
-    histogram = best_histogram
-    minimum_width = max(12, round(small_height * 0.025))
-    maximum_width = max(minimum_width + 2, round(small_height * 0.23))
-    candidate_v = torch.topk(histogram, min(80, histogram.numel())).indices
-    best_pair: tuple[float, float] | None = None
-    pair_score = -1.0
-    for first in candidate_v.detach().cpu().tolist():
-        raise_if_analysis_cancelled()
-        for second in candidate_v.detach().cpu().tolist():
-            separation = abs(second - first)
-            if not minimum_width <= separation <= maximum_width:
-                continue
-            score = float(min(histogram[first], histogram[second]).item())
-            if score > pair_score:
-                pair_score = score
-                best_pair = (float(min(first, second)), float(max(first, second)))
-    if best_pair is None:
-        half_width = max(10.0, small_height * 0.06)
-        best_pair = (best_v - half_width, best_v + half_width)
-    top_v, bottom_v = best_pair
-    ruler_width = bottom_v - top_v
-    in_body = (point_v >= top_v - 2.0) & (point_v <= bottom_v + 2.0)
-    body_u = point_u[in_body]
-    if body_u.numel() < 40:
-        raise CalibrationDetectionError("Ruler outline was incomplete.")
-    u_min = float(torch.quantile(body_u, 0.002).item())
-    u_max = float(torch.quantile(body_u, 0.998).item())
-
     # Orientation and body-line discovery are safely coarse, but 1 mm dashes
-    # on the six-megapixel fixtures are only about 18 pixels apart.  The former
-    # 1,200-pixel strip reduced them to 3--4 samples and made exact phase,
-    # individual centres and terminal bounds unnecessarily ambiguous.  Resample
-    # only the compact ruler strip from the full-resolution GPU tensor for all
-    # tick and outline work.
-    if scale < 1.0:
-        u_min /= scale
-        u_max /= scale
-        top_v /= scale
-        bottom_v /= scale
-        ruler_width = bottom_v - top_v
-        gray = gaussian_blur(bgr_to_gray(source), 0.65)
-        scale = 1.0
-    sampling_margin = max(8.0, ruler_width * 0.16)
+    # on the six-megapixel fixtures are only about 18 pixels apart, so all
+    # tick and outline work uses a strip resampled at full resolution.
+    scale = 1.0
+    u_min = candidate.u_min / candidate_scale
+    u_max = candidate.u_max / candidate_scale
+    top_v = candidate.top_v / candidate_scale
+    bottom_v = candidate.bottom_v / candidate_scale
+    ruler_width = bottom_v - top_v
+    # A visible run's ends are judged on the ruler beyond them: a band at least
+    # 12 dashes wide extends three dashes past its ends.
+    sampling_margin = max(8.0, ruler_width * (0.25 if visible_span else 0.16))
     image_corner_u = np.asarray(
         (
             0.0,
@@ -766,15 +842,26 @@ def detect_ruler(
         ),
         dtype=np.float64,
     )
-    # The coarse left bound is deliberately already permissive because the
-    # colour card abuts this ruler.  Extend only the formerly clipped right end;
-    # expanding left would admit an entire false 6-inch phase on the card.
-    u_min = max(float(np.min(image_corner_u)), u_min)
+    # The band's extent comes from edge points on a coarse image; extend it
+    # at both ends so terminal ticks and outline edges are sampled, but never
+    # across the colour chart, whose swatch edges mimic half-inch dividers.
+    centre_u = (u_min + u_max) * 0.5
+    u_min = max(float(np.min(image_corner_u)), u_min - sampling_margin)
     u_max = min(float(np.max(image_corner_u)), u_max + sampling_margin)
-    strip_length = max(16, round(u_max - u_min) + 1)
+    outline_v_margin = max(10.0, ruler_width * 0.24)
+    for low, high in _excluded_strip_span(
+        excluded, cosine, sine, top_v - outline_v_margin, bottom_v + outline_v_margin
+    ):
+        if high < centre_u:
+            u_min = max(u_min, high)
+        elif low > centre_u:
+            u_max = min(u_max, low)
+    # One sample per pixel along the ruler, so strip pitch is pixel pitch.
+    strip_length = max(16, int(np.floor(u_max - u_min)) + 1)
+    u_max = u_min + strip_length - 1
     strip_height = max(8, round(ruler_width) + 1)
-    sample_u = torch.linspace(u_min, u_max, strip_length, device=context.device)
-    sample_v = torch.linspace(top_v + 2.0, bottom_v - 2.0, strip_height, device=context.device)
+    sample_u = torch.linspace(u_min, u_max, strip_length, device=device)
+    sample_v = torch.linspace(top_v + 2.0, bottom_v - 2.0, strip_height, device=device)
     grid_v, grid_u = torch.meshgrid(sample_v, sample_u, indexing="ij")
     sample_x = cosine * grid_u - sine * grid_v
     sample_y = sine * grid_u + cosine * grid_v
@@ -784,7 +871,7 @@ def detect_ruler(
         -outline_margin,
         outline_margin,
         max(11, min(65, round(outline_margin * 2.0) + 1)),
-        device=context.device,
+        device=device,
     )
     outline_grid_u = sample_u[None, :].expand(outline_offsets.numel(), -1)
 
@@ -802,10 +889,43 @@ def detect_ruler(
         transverse_edge_support(top_v),
         transverse_edge_support(bottom_v),
     ).detach().to(device="cpu", dtype=torch.float32).numpy()
-    expected_intervals = max(2, round(ruler_length_mm / minor_tick_mm))
-    consensus_pitch = _whole_strip_regular_tick_pitch(
-        sampled, expected_intervals
-    )
+    sampled_host = sampled.detach().to(device="cpu", dtype=torch.float32).numpy()
+    if visible_span:
+        run = _visible_tick_run(sampled_host)
+        if run is None:
+            raise CalibrationDetectionError("No regular tick run was found.")
+        consensus_pitch, expected_intervals = run
+        reach = _VISIBLE_RUN_STRIP_PITCHES * consensus_pitch - ruler_width
+        if reach > 0.0 and not widened:
+            # A clear ruler's far edge is faint, so the band found may end at
+            # the minor dashes. Widen it across the longer marks, on whichever
+            # side they hang, before measuring the band as found.
+            for top_shift, bottom_shift in ((0.0, reach), (-reach, 0.0)):
+                try:
+                    ruler = _measure_ruler_candidate(
+                        gray,
+                        replace(
+                            candidate,
+                            top_v=candidate.top_v + top_shift * candidate_scale,
+                            bottom_v=candidate.bottom_v + bottom_shift * candidate_scale,
+                        ),
+                        candidate_scale,
+                        excluded,
+                        ruler_length_mm=ruler_length_mm,
+                        minor_tick_mm=minor_tick_mm,
+                        device=device,
+                        visible_span=True,
+                        widened=True,
+                    )
+                except CalibrationDetectionError:
+                    continue
+                if ruler.scale_reliable:
+                    return ruler
+    else:
+        expected_intervals = max(2, round(ruler_length_mm / minor_tick_mm))
+        consensus_pitch = _whole_strip_regular_tick_pitch(
+            sampled, expected_intervals
+        )
     (
         start_index,
         end_index,
@@ -837,13 +957,18 @@ def detect_ruler(
         imperial_matched_tick_count,
         imperial_tick_row_fraction,
         imperial_matched_tick_indices,
-    ) = _detect_regular_tick_train(
-        sampled,
-        imperial_intervals,
-        # The whole strip also contains the denser metric family and barcode;
-        # let the independently localized lower-edge band refine its own pitch.
-        fixed_pitch=0.0,
-        excluded_row_fraction=float(tick_row_fraction),
+    ) = (
+        (0.0, 0.0, 0.0, 0.0, 0, 1.0 - float(tick_row_fraction), ())
+        if visible_span
+        else _detect_regular_tick_train(
+            sampled,
+            imperial_intervals,
+            # The whole strip also contains the denser metric family and
+            # barcode; let the independently localized lower-edge band refine
+            # its own pitch.
+            fixed_pitch=0.0,
+            excluded_row_fraction=float(tick_row_fraction),
+        )
     )
     imperial_reliable = bool(
         imperial_periodicity >= 0.14
@@ -852,7 +977,6 @@ def detect_ruler(
         and abs(imperial_tick_row_fraction - tick_row_fraction) >= 0.25
     )
 
-    sampled_host = sampled.detach().to(device="cpu", dtype=torch.float32).numpy()
     (
         metric_segments_strip,
         metric_supported_indices,
@@ -890,12 +1014,32 @@ def detect_ruler(
         else ((), (), (), (), 0.0)
     )
 
+    ends_anchored = bool(
+        metric_unit_dividers
+        and metric_unit_dividers[0] == 0
+        and metric_unit_dividers[-1] == expected_intervals
+    )
+    zero_visible = True
+    if visible_span:
+        ends_anchored = zero_visible = False
+        if metric_segments_strip and len(metric_unit_dividers) >= 3:
+            first = float(metric_segments_strip[0][0])
+            last = float(metric_segments_strip[-1][0])
+            run_pitch = (last - first) / max(len(metric_segments_strip) - 1, 1)
+            start_whole = metric_unit_dividers[0] == 0
+            end_whole = metric_unit_dividers[-1] == expected_intervals
+            start_blank = _run_end_is_blank_ruler(sampled_host, first, run_pitch, -1)
+            end_blank = _run_end_is_blank_ruler(sampled_host, last, run_pitch, 1)
+            ends_anchored = (start_whole or not start_blank) and (end_whole or not end_blank)
+            zero_visible = (
+                start_blank and start_whole
+                if tick_row_fraction <= 0.5
+                else end_blank and end_whole
+            )
     metric_hierarchy_reliable = bool(
         metric_tick_classes
         and metric_hierarchy_consistency >= 0.55
-        and metric_unit_dividers
-        and metric_unit_dividers[0] == 0
-        and metric_unit_dividers[-1] == expected_intervals
+        and ends_anchored
     )
     imperial_hierarchy_reliable = bool(
         imperial_tick_classes
@@ -914,7 +1058,7 @@ def detect_ruler(
         )
         start_index = float(metric_positions[0])
         end_index = float(metric_positions[-1])
-        pitch = float(np.median(np.diff(metric_positions)))
+        pitch = _lattice_pitch(metric_positions)
         matched_tick_indices = metric_supported_indices
         matched_tick_count = len(metric_supported_indices)
     if imperial_segments_strip:
@@ -924,7 +1068,7 @@ def detect_ruler(
         )
         imperial_start_index = float(imperial_positions[0])
         _imperial_end_index = float(imperial_positions[-1])
-        imperial_pitch = float(np.median(np.diff(imperial_positions)))
+        imperial_pitch = _lattice_pitch(imperial_positions)
         imperial_matched_tick_indices = imperial_supported_indices
         imperial_matched_tick_count = len(imperial_supported_indices)
 
@@ -958,12 +1102,11 @@ def detect_ruler(
         fitted_families,
         long_edge_support=long_edge_support,
     )
-    outline_v_margin = max(10.0, ruler_width * 0.24)
     outline_v_min = top_v - outline_v_margin
     outline_v_max = bottom_v + outline_v_margin
     outline_height = max(12, round(outline_v_max - outline_v_min) + 1)
     outline_sample_v = torch.linspace(
-        outline_v_min, outline_v_max, outline_height, device=context.device
+        outline_v_min, outline_v_max, outline_height, device=device
     )
     outline_grid_v, outline_grid_u = torch.meshgrid(
         outline_sample_v, sample_u, indexing="ij"
@@ -1129,9 +1272,10 @@ def detect_ruler(
         family="metric",
         tick_coordinates_u=strip_u_coordinates(metric_segments_strip),
         tick_segments=metric_tick_segments,
-        unit_divider_indices=metric_unit_dividers,
+        unit_divider_indices=metric_unit_dividers if zero_visible else (),
         glyph_boxes_uv=metric_number_boxes_uv,
         minor_tick_mm=float(minor_tick_mm),
+        row_fraction=float(tick_row_fraction),
     )
     imperial_labels = _semantic_ruler_labels(
         family="imperial",
@@ -1140,6 +1284,7 @@ def detect_ruler(
         unit_divider_indices=imperial_unit_dividers,
         glyph_boxes_uv=imperial_number_boxes_uv,
         minor_tick_mm=float(minor_tick_mm),
+        row_fraction=float(imperial_tick_row_fraction),
     )
 
     metric_pixels_per_mm = (
@@ -1162,13 +1307,13 @@ def detect_ruler(
         )
 
     length = float(np.linalg.norm(endpoint_b - endpoint_a))
-    if length < width * 0.18:
+    if length < max(height, width) * 0.18:
         raise CalibrationDetectionError("Detected ruler scale was implausibly short.")
     confidence = float(
         np.clip(
             0.36
             + periodicity * 0.42
-            + min(0.12, pair_score / max(small_width, 1))
+            + min(0.12, pair_score / max(working_side, 1.0))
             + (0.08 if imperial_reliable else 0.0),
             0.0,
             0.99,
@@ -1302,14 +1447,18 @@ def _semantic_ruler_labels(
     unit_divider_indices: tuple[int, ...],
     glyph_boxes_uv: tuple[tuple[tuple[float, float], ...], ...],
     minor_tick_mm: float,
+    row_fraction: float,
 ) -> tuple[RulerScaleLabel, ...]:
     """Associate printed glyph evidence and physical values with long ticks.
 
     Digits are deliberately *not* allowed to establish scale.  Their presence
     corroborates a unit divider, while the value comes from the independently
-    fitted tick lattice. The controlled layout fixes metric left-to-right and
-    the upside-down imperial scale right-to-left; nearby glyphs corroborate a
-    label but cannot reverse that orientation or change calibration.
+    fitted tick lattice. On the dual-scale fixture ruler each scale counts
+    from zero in the direction it reads when its ticks hang from the upper
+    edge, so the edge carrying a family's ticks (``row_fraction`` across the
+    strip) gives its direction at any ruler orientation. Nearby glyphs
+    corroborate a label but cannot reverse that orientation or change
+    calibration.
     """
 
     if family not in {"metric", "imperial"}:
@@ -1337,12 +1486,11 @@ def _semantic_ruler_labels(
     terminal_band = max(divider_spacing * 0.72, abs(last_u - first_u) * 0.08)
     start_glyphs = int(np.count_nonzero(np.abs(box_centres - first_u) <= terminal_band))
     end_glyphs = int(np.count_nonzero(np.abs(box_centres - last_u) <= terminal_band))
-    # This controlled dual-scale ruler prints metric left-to-right and the
-    # upside-down imperial scale right-to-left. Raw glyph density is not a safe
-    # orientation signal: branding at the left imperial end previously
-    # outweighed the small zero/unit string and reversed every number label.
-    # Tick geometry owns scale; this known layout convention owns label order.
-    zero_at_start = family == "metric"
+    # Raw glyph density is not a safe orientation signal: branding at the
+    # imperial zero end previously outweighed the small zero/unit string and
+    # reversed every number label. Tick geometry owns scale; the edge holding
+    # the ticks owns label order.
+    zero_at_start = row_fraction <= 0.5
 
     labels: list[RulerScaleLabel] = []
     total_divisions = len(unit_divider_indices) - 1
@@ -1391,222 +1539,6 @@ def _semantic_ruler_labels(
         )
     )
     return tuple(labels)
-
-
-def _quadrilateral_from_component(coordinates):
-    """Fit lines to the four outer silhouettes of a card component."""
-
-    import torch
-
-    xy = coordinates[:, (1, 0)]
-    x = xy[:, 0].long()
-    y = xy[:, 1].long()
-    width = int(x.max().item()) + 1
-    height = int(y.max().item()) + 1
-    large = torch.iinfo(torch.int64).max
-    left_x = torch.full((height,), large, device=xy.device, dtype=torch.int64)
-    right_x = torch.full((height,), -1, device=xy.device, dtype=torch.int64)
-    top_y = torch.full((width,), large, device=xy.device, dtype=torch.int64)
-    bottom_y = torch.full((width,), -1, device=xy.device, dtype=torch.int64)
-    left_x.scatter_reduce_(0, y, x, reduce="amin", include_self=True)
-    right_x.scatter_reduce_(0, y, x, reduce="amax", include_self=True)
-    top_y.scatter_reduce_(0, x, y, reduce="amin", include_self=True)
-    bottom_y.scatter_reduce_(0, x, y, reduce="amax", include_self=True)
-
-    def central_indices(valid, low_fraction: float, high_fraction: float):
-        indices = torch.nonzero(valid, as_tuple=False)[:, 0]
-        low = torch.quantile(indices.float(), low_fraction)
-        high = torch.quantile(indices.float(), high_fraction)
-        return indices[(indices.float() >= low) & (indices.float() <= high)]
-
-    side_rows = central_indices(right_x >= 0, 0.08, 0.92)
-    # A projectively tilted card has sloping left/right sides. Columns near a
-    # corner trace those sides rather than the top/bottom border, so fit the
-    # horizontal silhouettes only through the central card span.
-    side_columns = central_indices(bottom_y >= 0, 0.18, 0.82)
-
-    def fit_dependent(independent, dependent, dependent_is_x: bool):
-        design = torch.stack((independent.float(), torch.ones_like(independent).float()), dim=1)
-        slope, intercept = torch.linalg.lstsq(design, dependent.float()).solution
-        if dependent_is_x:  # x = slope*y + intercept
-            return torch.as_tensor(1.0, device=xy.device), -slope, -intercept
-        # y = slope*x + intercept
-        return -slope, torch.as_tensor(1.0, device=xy.device), -intercept
-
-    left = fit_dependent(side_rows, left_x[side_rows], True)
-    right = fit_dependent(side_rows, right_x[side_rows], True)
-    top = fit_dependent(side_columns, top_y[side_columns], False)
-    bottom = fit_dependent(side_columns, bottom_y[side_columns], False)
-
-    def intersection(first, second):
-        matrix = torch.stack(
-            (torch.stack(first[:2]), torch.stack(second[:2]))
-        )
-        target = -torch.stack((first[2], second[2]))
-        return torch.linalg.solve(matrix, target)
-
-    return torch.stack(
-        (
-            intersection(left, top),
-            intersection(right, top),
-            intersection(right, bottom),
-            intersection(left, bottom),
-        )
-    )
-
-
-def _refine_swatch_grid_edges(
-    source, unit_to_image: np.ndarray
-) -> tuple[tuple[tuple[float, float], ...], tuple[tuple[float, float], ...]]:
-    """Snap the projected 4x6 template to shared RGB edge-supported grid lines.
-
-    The outer card homography first rectifies the source entirely on its tensor
-    device. Each vertical swatch edge is then supported by all six swatches in
-    that column, and each horizontal edge by all four swatches in that row.
-    Only the compact 20-by-25 response-profile table is downloaded.
-    """
-
-    import torch
-    import torch.nn.functional as functional
-
-    canonical_width = 421
-    canonical_height = 721
-    device = source.device
-    dtype = source.dtype
-    axis_x = torch.linspace(0.0, 1.0, canonical_width, device=device, dtype=dtype)
-    axis_y = torch.linspace(0.0, 1.0, canonical_height, device=device, dtype=dtype)
-    grid_y, grid_x = torch.meshgrid(axis_y, axis_x, indexing="ij")
-    homogeneous = torch.stack(
-        (grid_x, grid_y, torch.ones_like(grid_x)), dim=-1
-    )
-    transform = torch.as_tensor(
-        unit_to_image, device=device, dtype=dtype
-    )
-    mapped = homogeneous @ transform.T
-    denominator = mapped[..., 2].clamp_min(1e-8)
-    image_x = mapped[..., 0] / denominator
-    image_y = mapped[..., 1] / denominator
-    source_height, source_width = source.shape[-2:]
-    sample_grid = torch.stack(
-        (
-            image_x / max(source_width - 1, 1) * 2.0 - 1.0,
-            image_y / max(source_height - 1, 1) * 2.0 - 1.0,
-        ),
-        dim=-1,
-    )[None]
-    rectified = functional.grid_sample(
-        source,
-        sample_grid,
-        mode="bilinear",
-        padding_mode="border",
-        align_corners=True,
-    )[0]
-
-    difference_step = 2
-    vertical_difference = torch.sqrt(
-        (
-            rectified[:, :, difference_step * 2 :]
-            - rectified[:, :, : -difference_step * 2]
-        ).square().mean(dim=0)
-        + 1e-6
-    )
-    vertical_response = functional.pad(
-        vertical_difference,
-        (difference_step, difference_step, 0, 0),
-    )
-    horizontal_difference = torch.sqrt(
-        (
-            rectified[:, difference_step * 2 :, :]
-            - rectified[:, : -difference_step * 2, :]
-        ).square().mean(dim=0)
-        + 1e-6
-    )
-    horizontal_response = functional.pad(
-        horizontal_difference,
-        (0, 0, difference_step, difference_step),
-    )
-
-    search_radius = 12
-    vertical_expected = tuple(
-        edge
-        for column in range(4)
-        for edge in (22 + column * 100, 98 + column * 100)
-    )
-    horizontal_expected = tuple(
-        edge
-        for row in range(6)
-        for edge in (22 + row * 118, 108 + row * 118)
-    )
-    profiles = []
-    for expected in vertical_expected:
-        candidate_x = torch.arange(
-            expected - search_radius,
-            expected + search_radius + 1,
-            device=device,
-        )
-        row_support = []
-        for row in range(6):
-            center_y = 65 + row * 118
-            row_support.append(
-                vertical_response[
-                    center_y - 35 : center_y + 36, candidate_x
-                ].mean(dim=0)
-            )
-        profiles.append(torch.stack(row_support).mean(dim=0))
-    for expected in horizontal_expected:
-        candidate_y = torch.arange(
-            expected - search_radius,
-            expected + search_radius + 1,
-            device=device,
-        )
-        column_support = []
-        for column in range(4):
-            center_x = 60 + column * 100
-            column_support.append(
-                horizontal_response[
-                    candidate_y, center_x - 30 : center_x + 31
-                ].mean(dim=1)
-            )
-        profiles.append(torch.stack(column_support).mean(dim=0))
-    compact_profiles = torch.stack(profiles).detach().cpu().numpy()
-
-    refined: list[float] = []
-    all_expected = vertical_expected + horizontal_expected
-    for expected, profile in zip(all_expected, compact_profiles, strict=True):
-        peak_index = int(np.argmax(profile))
-        baseline = float(np.quantile(profile, 0.30))
-        if float(profile[peak_index]) < baseline + 1.0:
-            refined.append(float(expected))
-            continue
-        low = max(0, peak_index - 2)
-        high = min(len(profile), peak_index + 3)
-        weights = np.clip(profile[low:high] - baseline, 0.0, None)
-        candidate_positions = np.arange(
-            expected - search_radius + low,
-            expected - search_radius + high,
-            dtype=np.float64,
-        )
-        refined.append(
-            float(np.average(candidate_positions, weights=weights))
-            if float(weights.sum()) > 1e-6
-            else float(expected - search_radius + peak_index)
-        )
-
-    vertical_values = refined[: len(vertical_expected)]
-    horizontal_values = refined[len(vertical_expected) :]
-    vertical_edges = []
-    for column in range(4):
-        left, right = vertical_values[column * 2 : column * 2 + 2]
-        if not 56.0 <= right - left <= 94.0:
-            left, right = 22.0 + column * 100, 98.0 + column * 100
-        vertical_edges.append((left, right))
-    horizontal_edges = []
-    for row in range(6):
-        top, bottom = horizontal_values[row * 2 : row * 2 + 2]
-        if not 66.0 <= bottom - top <= 106.0:
-            top, bottom = 22.0 + row * 118, 108.0 + row * 118
-        horizontal_edges.append((top, bottom))
-    return tuple(vertical_edges), tuple(horizontal_edges)
 
 
 def _quadrilateral_sample_points(corners, device):
@@ -1661,6 +1593,7 @@ def _measured_tick_hierarchy(
     tick_count: int,
     family: str,
     ruler_height: int,
+    minor_and_major_only: bool = False,
 ) -> tuple[
     dict[int, int],
     tuple[int, ...],
@@ -1676,12 +1609,23 @@ def _measured_tick_hierarchy(
     phase, quantify consistency, and infer a length for an actually missing
     tick.  This prevents semantic expectations from rewriting contradictory
     image evidence.
+
+    ``minor_and_major_only`` fits a metric scale printed without 5 mm marks:
+    two length classes, millimetre and centimetre (levels 0 and 2).
     """
 
     if family not in {"metric", "imperial"}:
         raise ValueError(f"Unknown ruler family {family!r}.")
     level_count = 3 if family == "metric" else 5
     period = 10 if family == "metric" else 16
+    two_level = bool(minor_and_major_only and family == "metric")
+    clusters = 2 if two_level else level_count
+
+    def expected_level(index: int, phase: int) -> int:
+        if two_level:
+            return 2 if (index + phase) % 10 == 0 else 0
+        return _expected_tick_level(index, family, phase=phase)
+
     default_fractions = (
         (0.15, 0.25, 0.38)
         if family == "metric"
@@ -1730,14 +1674,14 @@ def _measured_tick_hierarchy(
         )
         return {}, inferred, default_lengths, (), 0.0, 0
     clustered_lengths = np.clip(lengths, lower, upper)
-    centres = np.linspace(lower, upper, level_count, dtype=np.float64)
+    centres = np.linspace(lower, upper, clusters, dtype=np.float64)
     assignments = np.zeros(lengths.size, dtype=np.int32)
     for _round in range(20):
         assignments = np.argmin(
             np.abs(clustered_lengths[:, None] - centres[None, :]), axis=1
         ).astype(np.int32)
         updated = centres.copy()
-        for cluster in range(level_count):
+        for cluster in range(clusters):
             selected = clustered_lengths[assignments == cluster]
             if selected.size:
                 updated[cluster] = float(np.median(selected))
@@ -1749,7 +1693,7 @@ def _measured_tick_hierarchy(
     # Empty clusters mean the image does not demonstrate the claimed printed
     # hierarchy. Retain visible lengths, but make the consistency gate fail.
     occupied = tuple(
-        cluster for cluster in range(level_count) if np.any(assignments == cluster)
+        cluster for cluster in range(clusters) if np.any(assignments == cluster)
     )
     ordered = sorted(occupied, key=lambda item: float(centres[item]))
     rank = {cluster: order for order, cluster in enumerate(ordered)}
@@ -1757,12 +1701,14 @@ def _measured_tick_hierarchy(
         [rank[int(cluster)] for cluster in assignments], dtype=np.int32
     )
     occupied_count = len(ordered)
-    if occupied_count != level_count:
+    if occupied_count != clusters:
         # Map the observed ranks across the full semantic range for a useful
         # display while preserving the low hierarchy score below.
         observed = np.rint(
-            observed * (level_count - 1) / max(occupied_count - 1, 1)
+            observed * (clusters - 1) / max(occupied_count - 1, 1)
         ).astype(np.int32)
+    if two_level:
+        observed = observed * 2
 
     strength_scale = max(float(np.median(strengths[strengths > 0])) if np.any(strengths > 0) else 1.0, 1e-6)
     weights = np.clip(np.sqrt(strengths / strength_scale), 0.35, 2.5)
@@ -1771,7 +1717,7 @@ def _measured_tick_hierarchy(
     best_parts = (0.0, 0.0, 0.0, 0.0)
     for phase in range(period):
         expected = np.asarray(
-            [_expected_tick_level(int(index), family, phase=phase) for index in indices],
+            [expected_level(int(index), phase) for index in indices],
             dtype=np.int32,
         )
         exact = float(np.average(observed == expected, weights=weights))
@@ -1821,10 +1767,11 @@ def _measured_tick_hierarchy(
             within_spreads.append(
                 float(np.median(np.abs(selected - np.median(selected))))
             )
-    separation = float(np.min(np.diff(centre_values))) if level_count > 1 else 0.0
+    separated = centre_values[[0, level_count - 1]] if two_level else centre_values
+    separation = float(np.min(np.diff(separated))) if level_count > 1 else 0.0
     spread = max(float(np.median(within_spreads)) if within_spreads else 1.0, 1.0)
     separation_quality = float(np.clip(separation / (3.0 * spread), 0.0, 1.0))
-    occupancy_quality = occupied_count / level_count
+    occupancy_quality = occupied_count / clusters
     consistency = float(
         np.clip(
             (0.48 * exact + 0.22 * rank_agreement + 0.15 * precision + 0.15 * recall)
@@ -1842,7 +1789,7 @@ def _measured_tick_hierarchy(
     if hierarchy_valid:
         expected_levels = np.asarray(
             [
-                _expected_tick_level(int(index), family, phase=best_phase)
+                expected_level(int(index), best_phase)
                 for index in indices
             ],
             dtype=np.int32,
@@ -1864,17 +1811,17 @@ def _measured_tick_hierarchy(
                 centre_values[level], centre_values[level - 1] + minimum_step
             )
     inferred = tuple(
-        _expected_tick_level(index, family, phase=best_phase)
+        expected_level(index, best_phase)
         if hierarchy_valid
         else measured_classes.get(
-            index, _expected_tick_level(index, family, phase=best_phase)
+            index, expected_level(index, best_phase)
         )
         for index in range(tick_count)
     )
     dividers = tuple(
         index
         for index in range(tick_count)
-        if _expected_tick_level(index, family, phase=best_phase) == level_count - 1
+        if expected_level(index, best_phase) == level_count - 1
     )
     return (
         measured_classes,
@@ -1954,31 +1901,9 @@ def _map_complete_tick_segments(
     # image-space spacing.  Mild residual perspective makes pitch drift by a
     # fraction of a pixel per dash; over 150 intervals that otherwise moves the
     # terminal lattice one or two whole ticks away from the print.
-    peak_radius = max(1, int(round(pitch * 0.24)))
-    dilated = cv2.dilate(
-        outer_profile.reshape(1, -1),
-        np.ones((1, peak_radius * 2 + 1), dtype=np.uint8),
-    )[0]
     profile_baseline = float(np.quantile(outer_profile, 0.45))
     profile_high = float(np.quantile(outer_profile, 0.98))
-    peak_threshold = profile_baseline + max(
-        0.8,
-        (profile_high - profile_baseline) * 0.10,
-    )
-    raw_peaks = np.flatnonzero(
-        (outer_profile >= dilated - 1e-6)
-        & (outer_profile >= peak_threshold)
-    )
-    accepted_peaks: list[int] = []
-    minimum_peak_gap = max(1.0, pitch * 0.48)
-    for candidate in sorted(
-        raw_peaks.tolist(),
-        key=lambda value: float(outer_profile[value]),
-        reverse=True,
-    ):
-        if all(abs(candidate - existing) >= minimum_peak_gap for existing in accepted_peaks):
-            accepted_peaks.append(int(candidate))
-    peaks = np.asarray(sorted(accepted_peaks), dtype=np.float64)
+    peaks = _profile_peaks(outer_profile, pitch)
 
     lattice_observed_indices: tuple[int, ...] = ()
     if peaks.size:
@@ -2156,6 +2081,23 @@ def _map_complete_tick_segments(
             result[index] = (outer_row, inner_row, float(score))
         return result
 
+    def classify(current: dict[int, tuple[float, float, float]]):
+        hierarchy = _measured_tick_hierarchy(
+            current, tick_count=intervals + 1, family=family, ruler_height=height
+        )
+        if family == "metric" and hierarchy[4] < 0.55:
+            # Some scales are printed without 5 mm marks.
+            two_level = _measured_tick_hierarchy(
+                current,
+                tick_count=intervals + 1,
+                family=family,
+                ruler_height=height,
+                minor_and_major_only=True,
+            )
+            if two_level[4] > hierarchy[4]:
+                hierarchy = two_level
+        return hierarchy
+
     measured = measure_ticks(positions)
 
     # Length is evidence, not a consequence of lattice index.  The former code
@@ -2170,12 +2112,7 @@ def _map_complete_tick_segments(
         unit_dividers,
         hierarchy_consistency,
         hierarchy_phase,
-    ) = _measured_tick_hierarchy(
-        measured,
-        tick_count=intervals + 1,
-        family=family,
-        ruler_height=height,
-    )
+    ) = classify(measured)
     if hierarchy_phase:
         period = 10 if family == "metric" else 16
         index_shift = int((-hierarchy_phase + period // 2) % period - period // 2)
@@ -2194,7 +2131,21 @@ def _map_complete_tick_segments(
             shifted_positions[above] = positions[-1] + (
                 shifted_axis[above] - intervals
             ) * (positions[-1] - positions[-2])
-        if shifted_positions[0] >= -1.0 and shifted_positions[-1] <= width:
+        # Re-phasing extrapolates the lattice past the dashes it followed.
+        # Accept it only where those positions land on printed dashes: a train
+        # whose longest marks are not the major increments must not slide half
+        # a major interval onto the plastic end or the background beyond it.
+        extrapolated = shifted_positions[below | above]
+        support_radius = max(1.25, pitch * 0.24)
+        unsupported = sum(
+            not np.any(np.abs(peaks - position) <= support_radius)
+            for position in extrapolated
+        )
+        if (
+            unsupported <= extrapolated.size // 4
+            and shifted_positions[0] >= -1.0
+            and shifted_positions[-1] <= width
+        ):
             positions = shifted_positions
             measured = measure_ticks(positions)
             (
@@ -2204,12 +2155,7 @@ def _map_complete_tick_segments(
                 unit_dividers,
                 hierarchy_consistency,
                 hierarchy_phase,
-            ) = _measured_tick_hierarchy(
-                measured,
-                tick_count=intervals + 1,
-                family=family,
-                ruler_height=height,
-            )
+            ) = classify(measured)
             lattice_observed_indices = tuple(
                 sorted(
                     index - index_shift
@@ -2228,7 +2174,10 @@ def _map_complete_tick_segments(
     if roots.size:
         root_median = float(np.median(roots))
         root_inliers = np.abs(roots - root_median) <= max(2.0, height * 0.055)
-        if int(np.count_nonzero(root_inliers)) >= 3:
+        if (
+            int(np.count_nonzero(root_inliers)) >= 3
+            and float(np.ptp(root_positions[root_inliers])) > 0.0
+        ):
             centered_u = (
                 root_positions[root_inliers] - float(np.mean(root_positions[root_inliers]))
             ) / max(float(width - 1), 1.0)
@@ -2290,6 +2239,62 @@ def _map_complete_tick_segments(
         unit_dividers,
         float(hierarchy_consistency),
     )
+
+
+def _profile_peaks(profile: np.ndarray, pitch: float) -> np.ndarray:
+    """Sub-pixel dash centres: clear local maxima at least half a pitch apart."""
+
+    import cv2
+
+    values = np.asarray(profile, np.float32)
+    peak_radius = max(1, int(round(pitch * 0.24)))
+    dilated = cv2.dilate(
+        values.reshape(1, -1),
+        np.ones((1, peak_radius * 2 + 1), dtype=np.uint8),
+    )[0]
+    baseline = float(np.quantile(values, 0.45))
+    high = float(np.quantile(values, 0.98))
+    threshold = baseline + max(0.8, (high - baseline) * 0.10)
+    raw_peaks = np.flatnonzero((values >= dilated - 1e-6) & (values >= threshold))
+    accepted: list[int] = []
+    minimum_gap = max(1.0, pitch * 0.48)
+    for candidate in sorted(
+        raw_peaks.tolist(), key=lambda value: float(values[value]), reverse=True
+    ):
+        if all(abs(candidate - existing) >= minimum_gap for existing in accepted):
+            accepted.append(int(candidate))
+    return _subpixel_peaks(values, np.asarray(sorted(accepted), dtype=np.int64))
+
+
+def _subpixel_peaks(profile: np.ndarray, peaks: np.ndarray) -> np.ndarray:
+    """Place whole-pixel maxima at the vertex of a parabola through neighbours."""
+
+    refined = peaks.astype(np.float64)
+    inner = (peaks > 0) & (peaks < len(profile) - 1)
+    index = peaks[inner]
+    left, centre, right = profile[index - 1], profile[index], profile[index + 1]
+    curvature = left - 2.0 * centre + right
+    peaked = curvature < 0.0
+    offset = np.zeros(index.shape, np.float64)
+    offset[peaked] = 0.5 * (left[peaked] - right[peaked]) / curvature[peaked]
+    refined[inner] += np.clip(offset, -0.5, 0.5)
+    return refined
+
+
+def _lattice_pitch(positions: np.ndarray) -> float:
+    """Tick pitch as the least-squares slope of position against tick index.
+
+    A median of neighbouring differences quantises the pitch to the position
+    precision; the slope over a whole train does not. Ticks more than a
+    quarter pitch from the first fit are dropped before refitting.
+    """
+
+    index = np.arange(len(positions), dtype=np.float64)
+    slope, intercept = np.polyfit(index, positions, 1)
+    keep = np.abs(positions - (slope * index + intercept)) <= 0.25 * abs(slope)
+    if int(np.count_nonzero(keep)) >= max(3, len(positions) // 2):
+        slope, _ = np.polyfit(index[keep], positions[keep], 1)
+    return float(slope)
 
 
 def _tick_constrained_outline_span(
@@ -2734,6 +2739,7 @@ def _detect_regular_tick_train(
         start, end, pitch, confidence, matched, matched_indices = _regular_tick_span(
             profile,
             intervals,
+            device=sampled_ruler.device,
             fixed_pitch=profile_pitch,
             major_profile=(
                 top_major_profile if centre < 0.5 else bottom_major_profile
@@ -2794,33 +2800,149 @@ def _regular_tick_pitch_consensus(profile: np.ndarray, intervals: int) -> float:
         return 0.0
     body_span = count - 1
     nominal = body_span / intervals
-    minimum_lag = max(2, int(np.ceil(nominal * 0.78)))
-    maximum_lag = min(count // 4, int(np.ceil(nominal * 1.04)))
+    minimum_lag = max(2.0, nominal * 0.78)
+    maximum_lag = min(count / 4.0, nominal * 1.04)
     if maximum_lag <= minimum_lag:
         return 0.0
-    centered = values - float(np.mean(values))
-    scores = []
-    lags = np.arange(minimum_lag, maximum_lag + 1, dtype=np.int32)
-    for lag in lags:
-        left = centered[:-lag]
-        right = centered[lag:]
-        denominator = max(
-            float(np.linalg.norm(left) * np.linalg.norm(right)),
-            1e-9,
-        )
-        scores.append(float(np.dot(left, right) / denominator))
-    score_array = np.asarray(scores, dtype=np.float64)
-    best_index = int(np.argmax(score_array))
-    best_pitch = float(lags[best_index])
-    if 0 < best_index < len(score_array) - 1:
-        left_score, center_score, right_score = score_array[
-            best_index - 1 : best_index + 2
-        ]
-        curvature = left_score - 2.0 * center_score + right_score
-        if abs(float(curvature)) > 1e-9:
-            offset = 0.5 * (left_score - right_score) / curvature
-            best_pitch += float(np.clip(offset, -0.5, 0.5))
-    return best_pitch
+    return _spectral_period(values, minimum_lag, maximum_lag)
+
+
+def _spectral_period(values: np.ndarray, shortest: float, longest: float) -> float:
+    """The period of the strongest spectral peak between two periods.
+
+    Zero padding samples the spectrum finely enough for a sub-pixel period:
+    whole-pixel lags quantise a 4.3-pixel pitch to 4 or 5, outside the span
+    fit's narrow window around this prior. An autocorrelation, even at
+    fractional lags, is pulled towards shorter lags by the strong
+    low-frequency 5 and 10 mm hierarchy; the band excludes it.
+    """
+
+    values = np.asarray(values, np.float64)
+    size = 16 * values.size
+    magnitude = np.abs(np.fft.rfft(values - float(np.mean(values)), n=size))
+    frequencies = np.fft.rfftfreq(size)
+    band = np.flatnonzero(
+        (frequencies >= 1.0 / longest) & (frequencies <= 1.0 / shortest)
+    )
+    if band.size < 3:
+        return 0.0
+    best = int(band[np.argmax(magnitude[band])])
+    frequency = float(frequencies[best])
+    if 0 < best < magnitude.size - 1:
+        left, centre, right = magnitude[best - 1 : best + 2]
+        curvature = left - 2.0 * centre + right
+        if curvature < 0.0:
+            offset = float(np.clip(0.5 * (left - right) / curvature, -0.5, 0.5))
+            frequency += offset * float(frequencies[1])
+    return 1.0 / frequency
+
+
+def _visible_tick_run(sampled_ruler: np.ndarray) -> tuple[float, int] | None:
+    """Pitch and interval count of the longest regular tick run in a strip.
+
+    This serves rulers whose configured span is not in view: cut by the frame
+    or the chart, or shorter than the setting. Each long edge of the strip is
+    searched with no span prior. The strongest spectral period gives the
+    pitch, and dashes are chained on that lattice, bridging up to ten missing
+    dashes where a seed covers them. A run needs 30 intervals with nearly
+    every dash present: barcodes and textures are periodic too, but leave
+    much of the lattice empty.
+    """
+
+    import cv2
+
+    gray = np.asarray(sampled_ruler, np.float32)
+    if gray.ndim != 2 or gray.shape[0] < 6:
+        return None
+    height, length = gray.shape
+    longest_pitch = length / _VISIBLE_RUN_MINIMUM_INTERVALS
+    if longest_pitch <= _SHORTEST_TICK_PITCH:
+        return None
+    kernel = min(31, max(7, (int(length) // 45) | 1))
+    background = cv2.blur(gray, (kernel, 1), borderType=cv2.BORDER_REPLICATE)
+    darkness = np.maximum(background - gray, 0.0)
+    best: tuple[int, float, int] | None = None
+    for low_fraction, high_fraction in ((0.02, 0.18), (0.82, 0.98)):
+        low = min(height - 1, max(0, round(height * low_fraction)))
+        high = min(height, max(low + 2, round(height * high_fraction)))
+        profile = darkness[low:high].mean(axis=0)
+        pitch = _spectral_period(profile, _SHORTEST_TICK_PITCH, longest_pitch)
+        if pitch <= 0.0:
+            continue
+        peaks = _profile_peaks(profile, pitch)
+        tolerance = max(1.0, pitch * 0.22)
+        unused = np.ones(peaks.size, dtype=bool)
+        for seed in range(peaks.size):
+            if not unused[seed]:
+                continue
+            unused[seed] = False
+            indices, members = [0], [float(peaks[seed])]
+            local_pitch = pitch
+            while True:
+                step_found = None
+                for step in range(1, 11):
+                    expected = members[-1] + step * local_pitch
+                    nearby = np.flatnonzero(np.abs(peaks - expected) <= tolerance)
+                    if nearby.size:
+                        step_found = (
+                            step,
+                            int(nearby[np.argmin(np.abs(peaks[nearby] - expected))]),
+                        )
+                        break
+                if step_found is None:
+                    break
+                step, member = step_found
+                unused[member] = False
+                indices.append(indices[-1] + step)
+                members.append(float(peaks[member]))
+                if len(members) >= 6:
+                    local_pitch = float(np.polyfit(indices[-12:], members[-12:], 1)[0])
+            # Bridged gaps may pick up stray texture lines beyond the scale,
+            # so each end of a run must be four consecutive dashes.
+            while len(indices) > 4 and indices[3] - indices[0] != 3:
+                indices.pop(0)
+                members.pop(0)
+            while len(indices) > 4 and indices[-1] - indices[-4] != 3:
+                indices.pop()
+                members.pop()
+            indices = [index - indices[0] for index in indices]
+            intervals = indices[-1]
+            if (
+                intervals >= _VISIBLE_RUN_MINIMUM_INTERVALS
+                and len(members) >= 0.85 * (intervals + 1)
+                and (best is None or len(members) > best[0])
+            ):
+                fitted_pitch = float(np.polyfit(indices, members, 1)[0])
+                best = (len(members), fitted_pitch, int(intervals))
+    return None if best is None else (best[1], best[2])
+
+
+def _run_end_is_blank_ruler(
+    sampled_ruler: np.ndarray, end: float, pitch: float, direction: int
+) -> bool:
+    """Whether the ruler goes on unmarked beyond the end of its tick run.
+
+    A printed scale ends on a whole unit where plastic or card continues
+    blank. An end cut by the frame, the chart or an object covering the
+    ruler, or less than three dashes from the strip's end, may fall anywhere.
+    The brightest columns either side compare ruler surface, not dashes.
+    """
+
+    gray = np.asarray(sampled_ruler, np.float32)
+    length = gray.shape[1]
+    beyond = sorted((end + direction * 1.25 * pitch, end + direction * 3.0 * pitch))
+    if beyond[0] < 0.0 or beyond[1] > length - 1:
+        return False
+    inside = sorted((end - direction * 8.0 * pitch, end - direction * 1.0 * pitch))
+    inside = (max(0.0, inside[0]), min(float(length - 1), inside[1]))
+
+    def surface(span):
+        columns = gray[:, int(np.ceil(span[0])) : int(np.floor(span[1])) + 1]
+        return np.quantile(columns, 0.80, axis=1)
+
+    ruler_surface = surface(inside)
+    difference = float(np.median(np.abs(surface(beyond) - ruler_surface)))
+    return difference <= max(8.0, 0.06 * float(np.median(ruler_surface)))
 
 
 def _regular_tick_span(
@@ -2829,8 +2951,15 @@ def _regular_tick_span(
     *,
     fixed_pitch: float = 0.0,
     major_profile: np.ndarray | None = None,
+    device=None,
 ) -> tuple[float, float, float, float, int, tuple[int, ...]]:
-    """Fit one terminally bounded, regularly spaced tick train to a 1-D profile."""
+    """Fit one terminally bounded, regularly spaced tick train to a 1-D profile.
+
+    Every pitch and phase hypothesis is scored at once; the million-sample
+    gathers run on ``device`` (the strip's tensor device).
+    """
+
+    import torch
 
     values = np.asarray(profile, np.float64)
     count = values.size
@@ -2865,7 +2994,6 @@ def _regular_tick_span(
             0.0,
             3.0,
         )
-    sample_axis = np.arange(count, dtype=np.float64)
     maximum_margin = np.maximum(1.0, body_span - intervals * pitches)
     # A terminal printed dash can sit within one pitch of a plastic edge (as on
     # the supplied 15 cm ruler).  The former 1.25-pitch symmetric inset made the
@@ -2889,70 +3017,79 @@ def _regular_tick_span(
     # 28% pitch let a lattice shifted by almost half a minor dash spacing score
     # identically to the true one after the 1,200-pixel calibration downsample.
     radii = np.minimum(0.70, np.maximum(0.35, pitches * 0.14))
+    device = torch.device("cpu") if device is None else torch.device(device)
 
-    def sampled_max(
-        sample_positions: np.ndarray,
-        offset_scales: np.ndarray,
-        source_values: np.ndarray = normalized,
-    ) -> np.ndarray:
-        sampled = np.zeros(sample_positions.shape, np.float64)
+    def on_device(array):
+        return torch.as_tensor(np.ascontiguousarray(array), dtype=torch.float64, device=device)
+
+    radii_tensor = on_device(radii)[:, None, None]
+    pitch_tensor = on_device(pitches)[:, None, None]
+    position_tensor = on_device(positions)
+
+    def interpolate(source, sample_positions):
+        # Linear interpolation on the integer sample grid, clamped at the
+        # ends as np.interp clamps.
+        last = source.numel() - 1
+        clamped = sample_positions.clamp(0.0, float(last))
+        low = clamped.floor().clamp(max=float(max(last - 1, 0)))
+        fraction = clamped - low
+        index = low.long()
+        upper = (index + 1).clamp(max=last)
+        return source[index] * (1.0 - fraction) + source[upper] * fraction
+
+    def sampled_max(sample_positions, offset_scales, source_values):
+        sampled = None
         for offset_scale in offset_scales:
             raise_if_analysis_cancelled()
-            offset = radii[:, None, None] * float(offset_scale)
-            values_at_offset = np.interp(
-                (sample_positions + offset).reshape(-1),
-                sample_axis,
-                source_values,
-            ).reshape(sample_positions.shape)
-            np.maximum(sampled, values_at_offset, out=sampled)
+            values_at_offset = interpolate(
+                source_values, sample_positions + radii_tensor * float(offset_scale)
+            )
+            sampled = (
+                values_at_offset if sampled is None
+                else torch.maximum(sampled, values_at_offset)
+            )
         return sampled
 
+    normalized_tensor = on_device(normalized)
     offsets = np.linspace(-1.0, 1.0, 5)
-    tick_values = sampled_max(positions, offsets)
+    tick_values = sampled_max(position_tensor, offsets, normalized_tensor)
     halfway = sampled_max(
-        positions[:, :, :-1] + pitches[:, None, None] * 0.5,
+        position_tensor[:, :, :-1] + pitch_tensor * 0.5,
         offsets * 0.55,
+        normalized_tensor,
     )
-    outside_positions = np.stack(
+    outside_positions = torch.stack(
         (
-            positions[:, :, 0] - pitches[:, None],
-            positions[:, :, -1] + pitches[:, None],
+            position_tensor[:, :, 0] - pitch_tensor[:, :, 0],
+            position_tensor[:, :, -1] + pitch_tensor[:, :, 0],
         ),
-        axis=-1,
+        dim=-1,
     )
-    outside = np.interp(
-        np.clip(outside_positions, 0.0, body_span).reshape(-1),
-        sample_axis,
-        normalized,
-    ).reshape(outside_positions.shape)
+    outside = interpolate(normalized_tensor, outside_positions)
     outside[(outside_positions < 0.0) | (outside_positions > body_span)] = 0.0
-    coverage = np.mean(tick_values >= 0.18, axis=2)
+    coverage = (tick_values >= 0.18).to(torch.float64).mean(dim=2)
     scores = (
-        np.mean(tick_values, axis=2)
-        - 0.62 * np.mean(halfway, axis=2)
-        - 0.48 * np.mean(outside, axis=2)
-        + 0.06 * np.mean(tick_values[:, :, (0, -1)], axis=2)
+        tick_values.mean(dim=2)
+        - 0.62 * halfway.mean(dim=2)
+        - 0.48 * outside.mean(dim=2)
+        + 0.06 * tick_values[:, :, (0, -1)].mean(dim=2)
         - 0.18 * (1.0 - coverage)
     )
     if major_normalized is not None and intervals >= 10:
-        major_ticks = sampled_max(
-            positions[:, :, ::10], offsets, major_normalized
-        )
-        half_major_ticks = sampled_max(
-            positions[:, :, 5::10], offsets, major_normalized
-        )
+        major_tensor = on_device(major_normalized)
+        major_ticks = sampled_max(position_tensor[:, :, ::10], offsets, major_tensor)
+        half_major_ticks = sampled_max(position_tensor[:, :, 5::10], offsets, major_tensor)
         scores += 0.38 * (
-            np.mean(major_ticks, axis=2)
-            - 0.50 * np.mean(half_major_ticks, axis=2)
+            major_ticks.mean(dim=2) - 0.50 * half_major_ticks.mean(dim=2)
         )
-    pitch_index, phase_index = np.unravel_index(int(np.argmax(scores)), scores.shape)
+    pitch_index, phase_index = np.unravel_index(int(torch.argmax(scores)), tuple(scores.shape))
     best = (
         float(scores[pitch_index, phase_index]),
         float(starts[pitch_index, phase_index]),
         float(positions[pitch_index, phase_index, -1]),
         float(pitches[pitch_index]),
-        tick_values[pitch_index, phase_index],
-        halfway[pitch_index, phase_index],
+        tick_values[pitch_index, phase_index].cpu().numpy(),
+        halfway[pitch_index, phase_index].cpu().numpy(),
     )
     matched_mask = best[4] >= max(0.18, float(np.median(best[5]) + 0.08))
     matched_indices = tuple(int(index) for index in np.flatnonzero(matched_mask))
@@ -2966,10 +3103,46 @@ def _regular_tick_span(
     return best[1], best[2], best[3], confidence, matched, matched_indices
 
 
+def _chart_colour_correction(card, settings, corrected_tensor, transform):
+    """Fit the chart's reference colours, or return why grey balance is used."""
+
+    if not settings.apply_colour_balance:
+        return "Colour correction is disabled."
+    if settings.colour_correction_model != CHART_REFERENCE_FIT:
+        return "Grey balance only was selected."
+    if card is None or not card.swatches:
+        return "No colour chart was detected."
+    patches = []
+    for swatch in card.swatches:
+        if settings.neutral_sample_frame == "corrected":
+            corners = _transform_points(np.asarray(swatch.corners, np.float64), transform)
+            points = _quadrilateral_sample_points(corners, corrected_tensor.device)
+            height, width = corrected_tensor.shape[-2:]
+            if bool((~points.isfinite().all() | (points[..., 0] < 0).any()
+                     | (points[..., 0] > width - 1).any() | (points[..., 1] < 0).any()
+                     | (points[..., 1] > height - 1).any()).item()):
+                continue
+            mean = _sample_quadrilateral_mean(corrected_tensor, corners)
+        else:
+            mean = swatch.mean_bgr
+        patches.append((swatch.number, swatch.row, swatch.column, tuple(float(v) for v in mean)))
+    anchors = (
+        ()
+        if settings.neutral_patch_selection == "automatic"
+        else tuple(int(value) for value in settings.neutral_patch_selection.split(","))
+    )
+    return fit_chart_correction(
+        patches,
+        chart_name=card.chart,
+        rotation_degrees=card.rotation_degrees,
+        anchor_patch_numbers=anchors,
+    )
+
+
 def _neutral_balance(card, settings, corrected_tensor, transform):
     """Sample selected grid positions in the requested unbalanced frame."""
     swatches = () if card is None else card.swatches
-    by_id = {swatch.row * 4 + swatch.column + 1: swatch for swatch in swatches}
+    by_id = {swatch.number: swatch for swatch in swatches}
     available = tuple(sorted(by_id))
     detection = None if card is None else sha256(json.dumps(
         asdict(card), sort_keys=True, allow_nan=False, separators=(',', ':')).encode('utf-8')).hexdigest()
@@ -3016,7 +3189,7 @@ def _neutral_balance(card, settings, corrected_tensor, transform):
             mean = swatch.mean_bgr
         if len(mean) != 3 or not np.isfinite(mean).all():
             return identity, facts('unavailable', reason='Neutral samples are nonfinite; identity gains were used.')
-        witnesses.append(NeutralPatchWitness(swatch.row*4+swatch.column+1, swatch.corners,
+        witnesses.append(NeutralPatchWitness(swatch.number, swatch.corners,
             tuple((float(x), float(y)) for x, y in sample_corners), swatch.mean_bgr, tuple(mean)))
     mode = 'manual'
     if not manual:
@@ -3047,6 +3220,21 @@ def _neutral_balance_gains(card: ColourCardDetection) -> np.ndarray:
     channels = np.median(np.asarray(neutral, np.float32), axis=0)
     target = float(np.mean(channels))
     return np.clip(target / np.maximum(channels, 1.0), 0.72, 1.35).astype(np.float32)
+
+
+def _chart_exclusion_region(card: ColourCardDetection, transform: np.ndarray) -> np.ndarray:
+    """The chart's swatch outline in corrected coordinates, widened by a margin."""
+
+    unit = np.float64(((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)))
+    unit_to_image = _homography(unit, np.asarray(card.bounds, np.float64))
+    margin_x = _CHART_EXCLUSION_MARGIN / max(card.columns, 1)
+    margin_y = _CHART_EXCLUSION_MARGIN / max(card.rows, 1)
+    widened = np.float64((
+        (-margin_x, -margin_y), (1.0 + margin_x, -margin_y),
+        (1.0 + margin_x, 1.0 + margin_y), (-margin_x, 1.0 + margin_y),
+    ))
+    source = _transform_points(widened, unit_to_image)
+    return _transform_points(source, transform).astype(np.float64)
 
 
 def _combined_reference_angle(
@@ -3163,11 +3351,6 @@ def _order_quad(points: np.ndarray) -> np.ndarray:
     if ordered[1, 0] < ordered[-1, 0]:
         ordered = ordered[[0, 3, 2, 1]]
     return ordered.astype(np.float32)
-
-
-def _polygon_area(points: np.ndarray) -> float:
-    x, y = points[:, 0], points[:, 1]
-    return float(abs(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1))) * 0.5)
 
 
 def _pleasant_scale_bar_length(pixels_per_mm: float | None, width: int) -> float:

@@ -1,10 +1,8 @@
 """Default pipelines stay locked; their edit controls offer a named, editable copy."""
 
-from tests.catalogue_fixtures import CatalogueTestCase
 
 from tests.functional_units import functional_units
 from contextlib import contextmanager
-from html import escape
 import json
 import os
 from pathlib import Path
@@ -13,18 +11,17 @@ import unittest
 from unittest.mock import patch
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
-from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
-from PySide6.QtGui import QHelpEvent, QWheelEvent
+from PySide6.QtCore import QPoint, QPointF, Qt
+from PySide6.QtGui import QWheelEvent
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QFileDialog, QInputDialog, QMessageBox, QStyle,
-    QStyledItemDelegate, QStyleOptionViewItem, QToolTip,
+    QStyledItemDelegate, QStyleOptionViewItem,
 )
 
 from seedvision.persistence.analysis_settings import save_analysis_settings_profile
 from seedvision.pipeline import build_default_pipeline
-from seedvision.ui.main_window import MainWindow
 from seedvision.ui.canvas_controls import COMPACT_ICON_SIZE, load_icon, rename_icon, save_icon
-from seedvision.ui.pipeline_workflow import ENTRY_KIND, SELECTOR_WIDTH, SHOW_ALL_TEMPLATES_SETTING
+from seedvision.ui.pipeline_workflow import ENTRY_KIND, SELECTOR_WIDTH
 from tests.review_fixtures import dispose_window, isolated_window
 
 YES, NO = QMessageBox.StandardButton.Yes, QMessageBox.StandardButton.No
@@ -43,7 +40,7 @@ def answers(answer=YES, names=()):
 
 
 @functional_units
-class DefaultPipelineCopyTests(CatalogueTestCase):
+class DefaultPipelineCopyTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])
@@ -61,14 +58,6 @@ class DefaultPipelineCopyTests(CatalogueTestCase):
         dispose_window(self.window)
         self.application.processEvents()
         self.temporary.cleanup()
-
-    def binary(self):
-        self.presenter.select_template('plantcv_seed_binary_working')
-        return next(stage.stage_id for stage in self.presenter.workflow.recipe.stages
-                    if stage.operation_id == 'threshold.binary')
-
-    def threshold(self, identifier):
-        return self.presenter.workflow.recipe.parameters_for_runner(identifier)['threshold']
 
     def default_value(self):
         return self.window.pipeline.node(DEFAULT_NODE).parameters[DEFAULT_KEY]
@@ -216,27 +205,6 @@ class DefaultPipelineCopyTests(CatalogueTestCase):
             self.assertFalse(hasattr(self.presenter, removed), removed)
         self.assertFalse(hasattr(self.window.catalogue_nodes, 'show_source_selected'))
 
-    def check_test_factory_entries_show_their_caveats_when_hovered(self):
-        for recipe in self.presenter._all_templates:
-            tooltip = self.selector.itemData(self.presenter.index_of(recipe.recipe_id), Qt.ItemDataRole.ToolTipRole)
-            # Qt wraps only rich text, so a long note stays readable.
-            self.assertTrue(tooltip.startswith('<p>'))
-            self.assertIn(escape(recipe.description), tooltip)
-            self.assertIn(escape(recipe.provenance.evidence_note), tooltip)
-        self.window.show()
-        self.selector.showPopup()
-        self.application.processEvents()
-        index = self.presenter.index_of('smpts_paper_fixed_mean')
-        view, model_index = self.selector.view(), self.selector.model().index(index, 0)
-        view.scrollTo(model_index)
-        self.application.processEvents()
-        centre = view.visualRect(model_index).center()
-        viewport = view.viewport()
-        QApplication.sendEvent(viewport, QHelpEvent(QEvent.Type.ToolTip, centre, viewport.mapToGlobal(centre)))
-        self.assertIn('Original capsule unavailable', QToolTip.text())
-        QToolTip.hideText()
-        self.selector.hidePopup()
-
     def offered(self):
         """What the open list shows, and what a person can pick from it."""
         view, model = self.selector.view(), self.selector.model()
@@ -244,74 +212,26 @@ class DefaultPipelineCopyTests(CatalogueTestCase):
         return ([self.selector.itemText(row) for row in shown],
                 [self.selector.itemText(row) for row in shown if model.item(row).isEnabled()])
 
-    def check_test_list_offers_five_until_the_setting_shows_them_all(self):
-        name = {recipe.recipe_id: recipe.title for recipe in self.presenter._all_templates}
-        short = ['Procedural seed analysis', 'Cellpose seed analysis', name['plantcv_seed_otsu_working'],
-                 name['plantcv_calibrated_seed_otsu'], name['smpts_paper_fixed_mean']]
-        action = self.presenter.show_all_action
+    def check_test_list_offers_the_default_pipelines_then_the_project_copies(self):
+        defaults = ['Procedural seed analysis', 'Cellpose seed analysis']
         menus = {entry.text().replace('&', ''): entry for entry in self.window.menuBar().actions()}
-        analysis = {entry.text(): entry for entry in menus['Analysis'].menu().actions()}
-        self.assertEqual(analysis['Settings'].menu().actions(), [action])
-        self.assertFalse(action.isChecked())
+        analysis = {entry.text() for entry in menus['Analysis'].menu().actions()}
+        self.assertNotIn('Settings', analysis)
         shown, selectable = self.offered()
-        self.assertEqual(selectable, short)
-        self.assertEqual(shown, ['SEED FIDDLE', *short[:2], 'SEED ANALYSIS', *short[2:]])
-        # Nothing hidden can be reached with the wheel or the keys either.
+        self.assertEqual(selectable, defaults)
+        self.assertEqual(shown, ['DEFAULT PIPELINES', *defaults])
+        # The wheel reaches each default and nothing else.
         self.selector.setFocus()
-        self.assertEqual(self.selector.currentText(), short[0])
-        seen = []
-        for _ in short[1:]:
-            self.selector.wheelEvent(QWheelEvent(QPointF(), QPointF(), QPoint(), QPoint(0, -120),
-                Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.NoScrollPhase, False))
-            seen.append(self.selector.currentText())
-        self.assertEqual(seen, short[1:])
-        self.presenter.select_template(None)
-
-        action.setChecked(True)
-        self.assertTrue(self.window._application_settings.value(SHOW_ALL_TEMPLATES_SETTING, type=bool))
-        shown, selectable = self.offered()
-        self.assertEqual(len(selectable), 20)
-        self.assertEqual(set(selectable), {*short[:2], *name.values()})
-        self.assertEqual([text for text in shown if text not in selectable],
-                         ['SEED FIDDLE', 'SEED ANALYSIS', 'THRESHOLDS AND CLASSIFIERS', 'COLOUR CORRECTION'])
-        action.setChecked(False)
-        self.assertEqual(self.offered()[1], short)
-
-    def check_test_show_all_setting_is_remembered_by_the_next_window(self):
-        self.presenter.show_all_action.setChecked(True)
-        settings = self.window._application_settings
-        settings.sync()
-        other = TemporaryDirectory()
-        self.addCleanup(other.cleanup)
-        with patch('seedvision.ui.main_window.QSettings', return_value=settings):
-            second = MainWindow(Path(other.name))
-        self.addCleanup(dispose_window, second)
-        self.assertTrue(second.pipeline_workflow.show_all_action.isChecked())
-        selector = second.pipeline_workflow.selector
-        self.assertFalse(selector.view().isRowHidden(second.pipeline_workflow.index_of('plantcv_threshold_texture')))
-
-    def check_test_hidden_pipeline_stays_loaded_and_copies_stay_listed(self):
-        recipe_id = 'plantcv_threshold_triangle'
-        row = self.presenter.index_of(recipe_id)
-        self.assertTrue(self.selector.view().isRowHidden(row))
-        self.presenter.select_template(recipe_id)
-        self.assertEqual(self.selector.currentIndex(), row)
-        self.assertEqual(self.presenter.workflow.recipe.recipe_id, recipe_id)
-        self.presenter.show_all_action.setChecked(True)
-        self.assertFalse(self.selector.view().isRowHidden(row))
-        self.presenter.show_all_action.setChecked(False)
-        self.assertTrue(self.selector.view().isRowHidden(row))
-        self.assertEqual(self.selector.currentIndex(), row)
-        self.assertEqual(self.presenter.workflow.recipe.recipe_id, recipe_id)
-        self.presenter.select_template(None)
+        self.assertEqual(self.selector.currentText(), defaults[0])
+        self.selector.wheelEvent(QWheelEvent(QPointF(), QPointF(), QPoint(), QPoint(0, -120),
+            Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.NoScrollPhase, False))
+        self.assertEqual(self.selector.currentText(), defaults[1])
+        self.presenter.select_template('procedural_seed_analysis')
         with answers(names=['My copy']):
             self.presenter.rename_button.click()
         shown, selectable = self.offered()
-        self.assertIn('My copy', selectable)
-        self.assertIn('SAVED IN THIS PROJECT', shown)
-        self.presenter.show_all_action.setChecked(True)
-        self.presenter.show_all_action.setChecked(False)
-        self.assertIn('My copy', self.offered()[1])
+        self.assertEqual(selectable, [*defaults, 'My copy'])
+        self.assertEqual(shown, ['DEFAULT PIPELINES', *defaults, 'SAVED IN THIS PROJECT', 'My copy'])
 
     def check_test_declining_keeps_the_default_and_never_asks_for_a_name(self):
         self.assert_locked_default()
@@ -398,7 +318,7 @@ class DefaultPipelineCopyTests(CatalogueTestCase):
 
     def check_test_refused_names_ask_again_with_the_reason_and_typed_text(self):
         self.make_copy('Taken')
-        self.presenter.select_template('plantcv_seed_binary_working')
+        self.presenter.select_template(None)
         self.assertTrue(self.documents.locked)
         with answers(names=['   ', 'procedural seed ANALYSIS', 'taken', 'Bad\nname', '  Fresh  ']) as (_, prompt):
             self.assertTrue(self.documents.rename_current())
@@ -440,16 +360,6 @@ class DefaultPipelineCopyTests(CatalogueTestCase):
             self.assertFalse(self.documents.rename_current())
         self.assert_on_copy('Second')
 
-        # A copy of a template carries its name in the workflow it saves.
-        identifier = self.binary()
-        self.make_copy('Binary')
-        self.presenter.parameter_changed(identifier, 'threshold', 117)
-        with answers(names=['Binary renamed']):
-            self.presenter.rename_button.click()
-        self.assertEqual(self.presenter.workflow.display_state['pipeline_name'], 'Binary renamed')
-        self.assertEqual(self.threshold(identifier), 117)
-        self.assertEqual(self.copy_names(), ['Second', 'Binary renamed'])
-
     def check_test_switching_keeps_copies_and_defaults_stay_factory(self):
         arranged = self.default_positions()
         self.make_copy('Plain')
@@ -457,29 +367,24 @@ class DefaultPipelineCopyTests(CatalogueTestCase):
         self.window.pipeline.node(DEFAULT_NODE).x += 500
         moved = self.default_positions()
         self.window.catalogue_nodes.add_entry(ADDED)
-        identifier = self.binary()
-        self.assertEqual(self.documents.custom['Plain'].name, 'Plain')
-        factory = self.threshold(identifier)
-        self.make_copy('Binary')
-        self.presenter.parameter_changed(identifier, 'threshold', 117)
 
-        self.presenter.select_template('plantcv_seed_binary_working')
-        self.assertTrue(self.documents.locked)
-        self.assertEqual(self.threshold(identifier), factory)
         self.presenter.select_template(None)
+        self.assertEqual(self.documents.custom['Plain'].name, 'Plain')
         self.assert_locked_default()
         self.assertEqual(self.default_value(), DEFAULT_FACTORY)
         self.assertEqual(self.default_positions(), arranged)
         self.assertEqual(self.window.catalogue_nodes.instances, ())
+        self.make_copy('Second')
+        self.window._pipeline_parameter_changed(DEFAULT_NODE, DEFAULT_KEY, 1280)
 
         self.show_copy('Plain')
         self.assert_on_copy('Plain')
         self.assertEqual(self.default_value(), 1728)
         self.assertEqual(self.default_positions(), moved)
         self.assertEqual(len(self.window.catalogue_nodes.instances), 1)
-        self.show_copy('Binary')
-        self.assert_on_copy('Binary')
-        self.assertEqual(self.threshold(identifier), 117)
+        self.show_copy('Second')
+        self.assert_on_copy('Second')
+        self.assertEqual(self.default_value(), 1280)
         self.assertEqual(self.window.catalogue_nodes.instances, ())
         self.presenter.select_template(None)
         self.assertEqual(self.default_value(), DEFAULT_FACTORY)
@@ -489,19 +394,19 @@ class DefaultPipelineCopyTests(CatalogueTestCase):
         destination = self.root / 'copies.seedfiddle-project.json'
         self.make_copy('Plain')
         self.window._pipeline_parameter_changed(DEFAULT_NODE, DEFAULT_KEY, 1728)
-        identifier = self.binary()
-        self.make_copy('Binary')
-        self.presenter.parameter_changed(identifier, 'threshold', 117)
+        self.presenter.select_template(None)
+        self.make_copy('Second')
+        self.window._pipeline_parameter_changed(DEFAULT_NODE, DEFAULT_KEY, 1280)
         self.save_project(destination)
         payload = json.loads(destination.read_text(encoding='utf-8'))
-        self.assertEqual(payload['active_pipeline'], 'Binary')
+        self.assertEqual(payload['active_pipeline'], 'Second')
         self.assertEqual([copy['name'] for copy in payload['custom_pipelines']], ['Plain'])
 
         self.presenter.select_template(None)
         self.open_project(destination)
-        self.assert_on_copy('Binary')
-        self.assertEqual(self.threshold(identifier), 117)
-        self.assertEqual(self.copy_names(), ['Plain', 'Binary'])
+        self.assert_on_copy('Second')
+        self.assertEqual(self.default_value(), 1280)
+        self.assertEqual(self.copy_names(), ['Plain', 'Second'])
         self.show_copy('Plain')
         self.assertEqual(self.default_value(), 1728)
 
@@ -563,13 +468,10 @@ class DefaultPipelineCopyTests(CatalogueTestCase):
             critical.assert_not_called()
 
     def test_workflow_lifecycle(self):
-        """12 related DefaultPipelineCopyTests scenarios, each with private fixture state."""
-        self.scenario(self.check_test_list_offers_five_until_the_setting_shows_them_all)
-        self.scenario(self.check_test_show_all_setting_is_remembered_by_the_next_window)
-        self.scenario(self.check_test_hidden_pipeline_stays_loaded_and_copies_stay_listed)
+        """9 related DefaultPipelineCopyTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_list_offers_the_default_pipelines_then_the_project_copies)
         self.scenario(self.check_test_load_and_save_icons_sit_beside_rename_and_offer_no_copy)
         self.scenario(self.check_test_more_menu_holds_only_node_removal_and_export_when_narrow)
-        self.scenario(self.check_test_factory_entries_show_their_caveats_when_hovered)
         self.scenario(self.check_test_add_node_names_line_up_whether_used_or_not)
         self.scenario(self.check_test_selector_is_wider_with_rename_beside_it_and_no_lock_control)
         self.scenario(self.check_test_accepting_loads_the_copy_and_applies_the_add_that_asked)

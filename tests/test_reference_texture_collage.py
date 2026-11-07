@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from tests.catalogue_fixtures import CatalogueTestCase
 
 from tests.functional_units import functional_units
 
@@ -14,7 +13,7 @@ import numpy as np
 
 
 @functional_units
-class ReferenceTextureCollageTests(CatalogueTestCase):
+class ReferenceTextureCollageTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")

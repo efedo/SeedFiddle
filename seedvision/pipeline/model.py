@@ -171,7 +171,7 @@ class PipelineNode:
             value = str(value)
             if value not in spec.choices:
                 raise ValueError(f"{value!r} is not valid for {spec.label}.")
-        elif spec.kind in ("text", "structured"):
+        elif spec.kind == "text":
             if key == 'neutral_patch_selection':
                 from seedvision.calibration.neutral import normalize_neutral_patch_selection
                 value = normalize_neutral_patch_selection(value)
@@ -278,6 +278,8 @@ _PORT_LABELS = {
     "NetPhysicalEdgeProbability": "Net prototype compatibility",
     "PerimeterColourSamples": "Perimeter colours",
     "AutomaticBackgroundReferences": "Automatic BG refs",
+    "AutomaticForegroundReferences": "Automatic FG refs",
+    "AutomaticOtherReferences": "Automatic Other refs",
     "AnnotatedForegroundReferences": "Annotated seed refs",
     "ForegroundColour": "FG colour",
     "ForegroundEvidence": "FG evidence",
@@ -1076,17 +1078,33 @@ def build_default_pipeline() -> PipelineGraph:
     colour_reference_parameters = (
         ParameterSpec(
             "apply_colour_balance",
-            "Apply neutral balance",
+            "Correct colour",
             "bool",
             description=(
-                "Estimate BGR channel gains from the least-chromatic detected swatches."
+                "Correct the image's colours from the detected chart. Off leaves the "
+                "colours as shot."
             ),
         ),
-        ParameterSpec('neutral_patch_selection', 'Neutral grid patches', 'text',
-            description='automatic or unique comma-separated IDs 1–24; row-major in the detected six-row, four-column grid. These are local grid positions, not manufacturer chip IDs.'),
-        ParameterSpec('neutral_sample_frame', 'Neutral sampling frame', 'choice',
+        ParameterSpec(
+            "colour_correction_model",
+            "Correction model",
+            "choice",
+            choices=("Chart reference fit", "Grey balance only"),
+            description=(
+                "Chart reference fit maps every measured patch onto the identified "
+                "chart's published colours with an affine transform in linear sRGB, "
+                "correcting colour balance, grey balance and levels together. Grey "
+                "balance only scales the three channels so the neutral patches come "
+                "out grey. The chart fit falls back to grey balance, with a warning, "
+                "when the chart is unknown or too few patches are usable."
+            ),
+        ),
+        ParameterSpec('neutral_patch_selection', 'Neutral patches', 'text',
+            description="automatic or unique comma-separated patch numbers. The chart fit weights these patches four times as heavily so greys stay neutral (automatic uses the identified chart's greys); grey balance uses them alone (automatic picks the least colourful patches). A recognised chart is numbered in its upright reading order (ColorChecker greys are 19–24, as X-Rite numbers them; SpyderCHECKR greys run down the first column, 1, 5, 9, 13, 17, 21); an unrecognised grid is numbered row by row as it lies in the image."),
+
+        ParameterSpec('neutral_sample_frame', 'Patch sampling frame', 'choice',
             choices=('source', 'corrected'),
-            description='Sample source pixels or the geometrically corrected CUDA image before neutral gains are applied.'),
+            description='Measure the patches in the source pixels or in the geometrically corrected CUDA image, before any colour correction.'),
     )
     ruler_parameters = (
         ParameterSpec(
@@ -1096,9 +1114,10 @@ def build_default_pipeline() -> PipelineGraph:
             10.0,
             1000.0,
             1.0,
-            "Approximate visible metric span used to reject implausible tick-family "
-            "counts. Absolute scale is measured from adjacent metric ticks, not "
-            "from the ruler endpoints.",
+            "Metric span sought first: this many millimetre ticks with a whole "
+            "centimetre at each end. Without one, the longest visible run of "
+            "regular ticks is measured. Absolute scale is measured from adjacent "
+            "metric ticks, not from the ruler endpoints.",
         ),
     )
     deskew_parameters = (
@@ -1191,7 +1210,12 @@ def build_default_pipeline() -> PipelineGraph:
         ParameterSpec("reference_colour_distance_threshold", "Reference colour distance", "float", 2.0, 50.0, 0.5, "Minimum weighted Lab distance from the ROI median."),
         ParameterSpec("reference_max_aspect_ratio", "Maximum component aspect", "float", 1.0, 8.0, 0.1, "Reject more elongated reference components above this ratio."),
         ParameterSpec("reference_max_components", "Components used", "int", 1, 10, 1, "Maximum largest accepted components contributing to median diameter."),
-        ParameterSpec("fallback_diameter_fraction", "Fallback diameter / dish radius", "float", 0.05, 0.40, 0.01, "Used only when no isolated reference component survives."),
+        ParameterSpec("confident_seed_search", "Search for confident seeds", "bool", description="When the reference region holds no seeds, look for isolated, compact seeds of consistent size inside the vessel, or across the scene when no vessel is visible. They set the seed size and become automatic Foreground references."),
+        ParameterSpec("confident_seed_minimum_count", "Minimum confident seeds", "int", 1, 50, 1, "Fewest consistent isolated seeds the search must find before its size is used."),
+        ParameterSpec("confident_seed_maximum_count", "Maximum confident seeds", "int", 1, 200, 1, "Most seeds kept, those closest to the median size first."),
+        ParameterSpec("confident_seed_minimum_solidity", "Minimum seed solidity", "float", 0.50, 1.00, 0.01, "Area over convex-hull area a component needs to count as one compact seed."),
+        ParameterSpec("vessel_minimum_rim_support", "Vessel rim support", "float", 0.0, 1.0, 0.05, "Fraction of the fitted vessel edge that must show a visible rim for the vessel to count as present. Without one, the confident seed search and the analysis cover the whole image except the chart and ruler, and the vessel wall is not an Other reference."),
+        ParameterSpec("fallback_diameter_fraction", "Fallback diameter / dish radius", "float", 0.05, 0.40, 0.01, "Used only when neither reference seeds nor confident seeds are found."),
         ParameterSpec("shape_boundary_perturbation_radius_px", "Boundary sensitivity radius", "int", 1, 8, 1, "Maximum coherent opening/closing and inward/outward radius used to estimate per-seed boundary sensitivity."),
         ParameterSpec("shape_calibration_uncertainty_fraction", "Scale uncertainty", "float", 0.0, 0.25, 0.005, "Shared relative ruler/homography uncertainty applied once per image, not once per seed."),
         ParameterSpec("shape_contour_samples", "Contour samples", "int", 32, 512, 16, "Aligned perimeter sample count used for residual shape modes and local-feature geometry."),
@@ -1200,6 +1224,22 @@ def build_default_pipeline() -> PipelineGraph:
         ParameterSpec("shape_maximum_contour_modes", "Maximum contour modes", "int", 0, 12, 1, "Maximum smooth residual contour modes retained after regularization."),
         ParameterSpec("shape_use_prior_for_oval_candidates", "Shape prior for oval candidates", "bool", description="Opt in to distribution-aware ellipse dimensions and pose families for curved-edge candidate voting."),
         ParameterSpec("shape_use_prior_for_procedural", "Shape prior for procedural candidates", "bool", description="Opt in to a separate soft population-shape compatibility term; existing hard safeguards remain authoritative."),
+    )
+    automatic_reference_parameters = (
+        ParameterSpec("automatic_foreground_reference", "Automatic Foreground", "bool", description="Use the confident seeds' inset interiors as Foreground references."),
+        ParameterSpec("automatic_seed_inset_fraction", "Seed inset", "float", 0.0, 0.45, 0.01, "Distance kept from each confident seed's edge, as a fraction of the seed size, so edges and attached shadows stay out of the Foreground reference."),
+        ParameterSpec("automatic_background_reference", "Automatic Background", "bool", description="Supply Background references: the exterior perimeter ring, rings around the confident seeds, or the image border, in that order."),
+        ParameterSpec("automatic_perimeter_disagreement", "Perimeter disagreement", "float", 1.0, 100.0, 0.5, "Colour difference (CIE ΔE, Lab distance) between the perimeter ring and the rings around confident seeds above which the seed rings replace the perimeter ring, as when the vessel floor differs from the surface around it."),
+        ParameterSpec("automatic_background_gap_fraction", "Ring gap", "float", 0.0, 2.0, 0.01, "Gap left between each confident seed and its Background ring, as a fraction of the seed size, to skip the seed's edge and cast shadow."),
+        ParameterSpec("automatic_background_band_fraction", "Ring width", "float", 0.05, 2.0, 0.01, "Width of the Background ring around each confident seed, as a fraction of the seed size."),
+        ParameterSpec("automatic_background_shadow_fraction", "Shadow share dropped", "float", 0.0, 0.9, 0.01, "Darkest share of each seed ring dropped as cast shadow."),
+        ParameterSpec("automatic_background_colour_tolerance", "Background colour tolerance", "float", 2.0, 100.0, 0.5, "Largest Lab distance from a ring's typical colour, or the border's, kept as Background; neighbouring seeds and debris lie further away."),
+        ParameterSpec("automatic_border_band_fraction", "Border band", "float", 0.005, 0.25, 0.005, "Width of the image-border band used as Background when there is neither a perimeter ring nor seed rings, as a fraction of the shorter image side."),
+        ParameterSpec("automatic_other_reference", "Automatic Other", "bool", description="Use the vessel wall, when its rim is visible, and the chart and ruler as Other references."),
+        ParameterSpec("automatic_wall_width_mm", "Wall width mm", "float", 0.0, 20.0, 0.1, "Wall width inside the outer vessel edge when its inner edge was not found."),
+        ParameterSpec("automatic_chart_as_other", "Chart and ruler are Other", "bool", description="Include the detected colour chart and ruler outlines in the Other reference."),
+        ParameterSpec("automatic_reference_floor", "Automatic weight floor", "float", 0.0, 1.0, 0.01, "Weight the automatic Foreground and Other areas keep against painted references once many seed areas are painted."),
+        ParameterSpec("automatic_reference_half_life_seed_areas", "Painted half-life", "float", 0.05, 20.0, 0.05, "Painted area, in seed areas, at which the automatic Foreground and Other areas fall halfway to their floor weight."),
     )
     foreground_parameters = (
         ParameterSpec(
@@ -1222,7 +1262,9 @@ def build_default_pipeline() -> PipelineGraph:
             0.96,
             0.01,
             "Restricts segmentation and candidate centres to this fraction of "
-            "the detected upper/outer dish radius, excluding the bright rim.",
+            "the detected upper/outer dish radius, excluding the bright rim. "
+            "Without a visible vessel the analysis follows the confident seeds "
+            "instead and this fraction has no effect.",
         ),
         ParameterSpec("foreground_chroma_weight", "Lab chroma weight", "float", 0.5, 5.0, 0.1, "Relative contribution of each Lab chroma channel to foreground distance."),
         ParameterSpec("foreground_reference_weight", "Foreground colour influence", "float", 0.0, 1.0, 0.05, "Strength of the user-authored Foreground colour model. Without painted Foreground pixels or enabled annotated-seed interiors, Foreground probability remains zero."),
@@ -1772,13 +1814,39 @@ def build_default_pipeline() -> PipelineGraph:
         ),
         PipelineNode(
             "deskew_colour",
-            "Deskew and colour balance",
+            "Deskew and colour correction",
             "Calibration",
-            "Rectify from the colour card and apply gamut-safe neutral gains",
+            "Rectify from the colour card and correct colour against its reference values",
             720,
             40,
+            details=(
+                "The detected chart's quadrilateral sets the rotation, and the "
+                "perspective when it is within the configured limit; the image is "
+                "warped on the tensor device. Each patch is measured as the mean of "
+                "an inset 11 x 11 sample grid. With the chart reference fit, the "
+                "patches are paired with the identified chart's published colours "
+                "(Datacolor SpyderCHECKR 24 from its Lab D50 values, X-Rite "
+                "ColorChecker Classic from its sRGB values) in the chart's own "
+                "orientation; a grid the detector could not identify is tried "
+                "against every known chart in each orientation that fits its shape. "
+                "Patches with a channel at 250 or above are treated as clipped and "
+                "left out. A weighted least-squares affine transform (a 3 x 3 matrix "
+                "and an offset) in linear sRGB maps the measured patches onto the "
+                "references, with neutral patches weighted four times. It is "
+                "rejected, and grey balance used instead, when fewer than 12 patches "
+                "are usable, when the best fit leaves a mean CIEDE2000 above 9, when "
+                "another orientation fits nearly as well, or when the matrix is "
+                "ill-conditioned. The transform is applied to every pixel in linear "
+                "light; pixels pushed out of gamut are scaled down along their own "
+                "hue instead of clipped per channel. The node reports the mean and "
+                "maximum CIEDE2000 of the fitted patches and the mean error when "
+                "each patch is held out of its own fit. Grey balance alone scales "
+                "the three channels so the median neutral patch is grey (gains "
+                "limited to 0.72-1.35), with the same highlight compression."
+            ),
             parameters={
                 "apply_colour_balance": True,
+                "colour_correction_model": "Chart reference fit",
                 "neutral_patch_selection": "automatic",
                 "neutral_sample_frame": "source",
                 "max_deskew_degrees": 10.0,
@@ -1800,6 +1868,9 @@ def build_default_pipeline() -> PipelineGraph:
                 "A CUDA circular bank scores radial-gradient support across the configured radius interval. "
                 "When ruler scale is available, the physical outer diameter weakly favours circles of "
                 "that size; otherwise the image-relative radius prior is used. "
+                "A physical diameter that cannot fit the configured radius interval means no such "
+                "vessel is in view, so the search runs as without a ruler and the rim-support check "
+                "decides whether a vessel is present. "
                 "The selected primary rim then seeds a dense "
                 "concentric radial-profile search that resolves the lower/inner and "
                 "upper/outer glass edges. "
@@ -1817,7 +1888,10 @@ def build_default_pipeline() -> PipelineGraph:
                 "The same node uses the upper/outer edge plus the ruler scale to define "
                 "a buffered exterior annulus for the initial Background colour reference; "
                 "when too little exterior annulus is visible, an inside-rim fallback preserves "
-                "the configured gap and thickness."
+                "the configured gap and thickness. "
+                "A circle whose rim shows on less than the Vessel rim support of Reference seed "
+                "dimensions and shape is not a vessel: it is not drawn, the node reports no vessel, "
+                "and the views outline the analysed area instead."
             ),
             parameters={
                 "downsample_max_dimension": 1600,
@@ -1901,9 +1975,29 @@ def build_default_pipeline() -> PipelineGraph:
                 "maximum-inscribed seed core then initializes a local foreground fit so "
                 "attached cast shadows cannot define the final silhouette. The median "
                 "corrected maximum width of the configured components provides the "
-                "initial estimate. Those automatic fits estimate scale only and never "
-                "become foreground-colour evidence. If no component survives, the editable "
-                "dish-radius fallback is available. All explicitly complete or full-length-visible "
+                "initial estimate. Each component is also fitted with an oval along "
+                "its maximum width, giving a long side and a short side (its widest "
+                "extent across the long side). When the region holds no seeds, the vessel "
+                "interior is searched, or the whole scene outside the chart and ruler when the "
+                "fitted vessel shows no rim around most of its edge. There, colour is compared "
+                "with a floor fitted locally around the seed-like pixels, and lightness changes "
+                "of up to about 5 L* count as shading, not seed. A component counts only when no "
+                "comparable component (dust aside) lies within a quarter of a seed width of its "
+                "outline, that gap opens onto floor reaching twenty seed areas and coloured like "
+                "the backdrop, the largest floor region (so a dark hilum on a seed in a pile or a "
+                "mark on a box wall is not taken for a seed), it is compact and not a thin stroke "
+                "(its widest inscribed circle spans at least a quarter of its width, which rules "
+                "out printed characters and gloss rings) and at least three widths of the "
+                "mask-cleaning kernel across (so barcode bars chopped into blobs are not "
+                "seeds), and its size "
+                "agrees with the size group holding the most seed area; each is refined like "
+                "a reference seed. These confident seeds set the size and are "
+                "passed to Automatic material references as Foreground. Without a visible vessel "
+                "they also bound the analysis: their convex hull, grown by two seed widths or a "
+                "quarter of its longest extent, whichever is larger, and less the chart and "
+                "ruler; with fewer than three, the whole image less the chart and ruler. If none "
+                "survive, the "
+                "editable dish-radius fallback is used. All explicitly complete or full-length-visible "
                 "annotations contribute exact maximum spans to the mean, spread and uncertainty, "
                 "overriding the initial estimate without a top-quartile filter. Complete reviewed "
                 "outlines additionally supply ovality, mean internal concavity and seed-balanced "
@@ -1921,6 +2015,11 @@ def build_default_pipeline() -> PipelineGraph:
                 "reference_max_aspect_ratio": 3.0,
                 "reference_max_components": 3,
                 "fallback_diameter_fraction": 0.16,
+                "confident_seed_search": True,
+                "confident_seed_minimum_count": 3,
+                "confident_seed_maximum_count": 24,
+                "confident_seed_minimum_solidity": 0.88,
+                "vessel_minimum_rim_support": 0.70,
                 "shape_boundary_perturbation_radius_px": 2,
                 "shape_calibration_uncertainty_fraction": 0.01,
                 "shape_contour_samples": 128,
@@ -1942,6 +2041,58 @@ def build_default_pipeline() -> PipelineGraph:
                 "measurement_summary": "SeedMeasurementSummary",
                 "pose_shape_families": "SeedPoseShapeFamilies",
                 "shape_provenance": "SeedShapeProvenance",
+            },
+        ),
+        PipelineNode(
+            "automatic_material_references",
+            "Automatic material references",
+            "Material evidence",
+            "Initial Foreground, Background and Other areas without painting",
+            1260,
+            20,
+            details=(
+                "Gives every image an initial reference area for each material class, so "
+                "colour, noise and texture evidence work before anything is painted. "
+                "Foreground is the inset interior of each confident seed from Reference "
+                "seed dimensions and shape: the isolated reference seeds, or the confident "
+                "seeds its search found. Other is the vessel wall, between its fitted "
+                "inner and outer edges, when its rim is visible, plus the detected chart "
+                "and ruler. Background is the exterior perimeter ring when a vessel is "
+                "present and its colour agrees with the rings around the confident seeds; "
+                "otherwise those rings, without their darkest share (cast shadows) and "
+                "anything far from their typical colour; otherwise a band along the image "
+                "border, without the chart, ruler and outlying colours. Painted references "
+                "take precedence: each automatic area is thinned to a share that falls from "
+                "full weight toward the floor weight as painted area grows, and painted "
+                "pixels are never overridden. The overlay shows Foreground in green, "
+                "Background in orange and Other in magenta."
+            ),
+            parameters={
+                "automatic_foreground_reference": True,
+                "automatic_seed_inset_fraction": 0.15,
+                "automatic_background_reference": True,
+                "automatic_perimeter_disagreement": 15.0,
+                "automatic_background_gap_fraction": 0.25,
+                "automatic_background_band_fraction": 0.35,
+                "automatic_background_shadow_fraction": 0.20,
+                "automatic_background_colour_tolerance": 18.0,
+                "automatic_border_band_fraction": 0.03,
+                "automatic_other_reference": True,
+                "automatic_wall_width_mm": 3.0,
+                "automatic_chart_as_other": True,
+                "automatic_reference_floor": 0.10,
+                "automatic_reference_half_life_seed_areas": 0.50,
+            },
+            parameter_specs=automatic_reference_parameters,
+            output_ports=(
+                ("foreground", "Automatic Foreground references"),
+                ("background", "Automatic Background references"),
+                ("other", "Automatic Other references"),
+            ),
+            output_port_types={
+                "foreground": "AutomaticForegroundReferences",
+                "background": "AutomaticBackgroundReferences",
+                "other": "AutomaticOtherReferences",
             },
         ),
         PipelineNode(
@@ -3358,7 +3509,8 @@ def build_default_pipeline() -> PipelineGraph:
             ("minor_tick_mm", "Minor tick mm"),
         ),
         "deskew_colour": (
-            ("apply_colour_balance", "Neutral balance"),
+            ("apply_colour_balance", "Correct colour"),
+            ("colour_correction_model", "Model"),
             ("apply_perspective_correction", "Perspective"),
             ("max_deskew_degrees", "Max rotation"),
         ),
@@ -3370,7 +3522,13 @@ def build_default_pipeline() -> PipelineGraph:
         ),
         "seed_scale_estimation": (
             ("reference_scale_factor", "Reference scale"),
+            ("confident_seed_search", "Confident seed search"),
             ("fallback_diameter_fraction", "Fallback diameter"),
+        ),
+        "automatic_material_references": (
+            ("automatic_foreground_reference", "Foreground"),
+            ("automatic_background_reference", "Background"),
+            ("automatic_other_reference", "Other"),
         ),
         "distance_candidates": (
             ("distance_neighborhood_fraction", "Peak spacing"),
@@ -3472,7 +3630,7 @@ def build_default_pipeline() -> PipelineGraph:
             ("Scale interpretation", ("ruler_length_mm", "minor_tick_mm")),
         ),
         "deskew_colour": (
-            ("Neutral colour balance", ("apply_colour_balance", "neutral_patch_selection", "neutral_sample_frame")),
+            ("Colour correction", ("apply_colour_balance", "colour_correction_model", "neutral_patch_selection", "neutral_sample_frame")),
             (
                 "Geometric correction",
                 (
@@ -3572,7 +3730,40 @@ def build_default_pipeline() -> PipelineGraph:
                     "shape_use_prior_for_procedural",
                 ),
             ),
+            (
+                "Confident seed search",
+                (
+                    "confident_seed_search",
+                    "vessel_minimum_rim_support",
+                    "confident_seed_minimum_count",
+                    "confident_seed_maximum_count",
+                    "confident_seed_minimum_solidity",
+                ),
+            ),
             ("Fallback", ("fallback_diameter_fraction",)),
+        ),
+        "automatic_material_references": (
+            ("Foreground", ("automatic_foreground_reference", "automatic_seed_inset_fraction")),
+            (
+                "Background",
+                (
+                    "automatic_background_reference",
+                    "automatic_perimeter_disagreement",
+                    "automatic_background_gap_fraction",
+                    "automatic_background_band_fraction",
+                    "automatic_background_shadow_fraction",
+                    "automatic_background_colour_tolerance",
+                    "automatic_border_band_fraction",
+                ),
+            ),
+            (
+                "Other",
+                ("automatic_other_reference", "automatic_wall_width_mm", "automatic_chart_as_other"),
+            ),
+            (
+                "Weight against painted references",
+                ("automatic_reference_floor", "automatic_reference_half_life_seed_areas"),
+            ),
         ),
         "background_likelihood": (
             ("Analysis region", ("inner_radius_fraction",)),
@@ -4264,6 +4455,21 @@ def build_default_pipeline() -> PipelineGraph:
         ),
         PipelineConnection("ruler_detection", "layout_detection", "PixelsPerMillimetre"),
         PipelineConnection("deskew_colour", "seed_scale_estimation", "CorrectedImage"),
+        PipelineConnection("deskew_colour", "automatic_material_references", "CorrectedImage"),
+        PipelineConnection("deskew_colour", "automatic_material_references", "SwatchGrid", target_port="chart"),
+        PipelineConnection("ruler_detection", "automatic_material_references", "RulerAxis", target_port="ruler"),
+        PipelineConnection("layout_detection", "automatic_material_references", "VesselGeometry"),
+        PipelineConnection(
+            "layout_detection", "automatic_material_references", "PerimeterColourSamples",
+            source_port="perimeter_background",
+        ),
+        PipelineConnection("seed_scale_estimation", "automatic_material_references", "SeedDiameter"),
+        PipelineConnection("automatic_material_references", "background_likelihood", "AutomaticForegroundReferences", source_port="foreground", target_port="automatic_foreground"),
+        PipelineConnection("automatic_material_references", "background_likelihood", "AutomaticBackgroundReferences", source_port="background", target_port="automatic_background"),
+        PipelineConnection("automatic_material_references", "background_likelihood", "AutomaticOtherReferences", source_port="other", target_port="automatic_other"),
+        PipelineConnection("automatic_material_references", "refined_background_likelihood", "AutomaticOtherReferences", source_port="other", target_port="automatic_other"),
+        PipelineConnection("automatic_material_references", "reference_texture_prototypes", "AutomaticOtherReferences", source_port="other", target_port="automatic_other"),
+        PipelineConnection("automatic_material_references", "material_evidence_decision", "AutomaticOtherReferences", source_port="other", target_port="automatic_other"),
         PipelineConnection("layout_detection", "seed_scale_estimation", "VesselGeometry"),
         PipelineConnection(
             "project",

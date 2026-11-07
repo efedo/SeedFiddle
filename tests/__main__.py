@@ -10,10 +10,10 @@ import sys
 import time
 import unittest
 
+from tests import memory_limit
 from tests.functional_units import discard_windows, live_windows
 from tests.prerequisites import check_prerequisites
-from tests.selection import (CORE_TARGETS, CPU_QT_TARGETS, ACCEPTANCE_TARGETS,
-                             HISTORY_TARGETS, flatten, matches, partition)
+from tests.selection import CORE_TARGETS, CPU_QT_TARGETS, flatten, matches, partition
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -67,24 +67,31 @@ def main(argv=None):
     parser.add_argument('--full', action='store_true', help='Discover every test; no filtering or tier skips.')
     parser.add_argument('--jobs',type=int,choices=(1,2,3),default=3,
         help='Isolated processes for full runs (default: 3); focused/tier runs use one.')
-    parser.add_argument('--tier', choices=('core', 'cpu-qt', 'cuda', 'acceptance', 'history'), help='Explicit subset; never a full-suite claim.')
+    parser.add_argument('--tier', choices=('core', 'cpu-qt', 'cuda'), help='Explicit subset; never a full-suite claim.')
     parser.add_argument('--list', action='store_true', help='List selected IDs and partition counts without running fixtures/tests.')
     parser.add_argument('--preflight', action='store_true', help='Check selected prerequisites without running tests.')
-    parser.add_argument('--fixtures-from', type=Path, help='Copy missing reviewed fixtures from a local bundle; never overwrite expectations.')
     parser.add_argument('-v', '--verbose', action='store_true')
     parser.add_argument('-f', '--failfast', action='store_true', help='Stop a focused diagnostic at the first failure.')
     parser.add_argument('--durations', type=int, default=10, help='Show this many slow tests (0 shows all).')
     parser.add_argument('--report', type=Path, help='Write a new timing/result JSON under artifacts/.')
     parser.add_argument('--stall-seconds', type=float, default=900.0,
         help='Full runs: stop a worker whose journal shows no progress for this long (default 900).')
+    parser.add_argument('--memory-limit-gb', type=float, default=memory_limit.configured_gb(),
+        help=f'Memory each test may commit beyond what its process held when it started; '
+             f'over it the allocation fails inside that test (default {memory_limit.DEFAULT_GB:g}, '
+             f'or {memory_limit.ENVIRONMENT}; 0 disables; Windows only).')
     parser.add_argument('targets', nargs='*', help='Optional unittest module, class or method names.')
     args = parser.parse_args(argv)
     if sum((args.full, bool(args.tier), bool(args.targets))) > 1:
         parser.error('--full, --tier and selected targets are mutually exclusive')
-    if args.list and (args.preflight or args.fixtures_from):
-        parser.error('--list cannot be combined with --preflight or --fixtures-from')
+    if args.list and args.preflight:
+        parser.error('--list cannot be combined with --preflight')
     if args.durations < 0:
         parser.error('--durations must be nonnegative')
+    if args.memory_limit_gb < 0:
+        parser.error('--memory-limit-gb must be nonnegative')
+    # Full-run workers inherit the budget.
+    os.environ[memory_limit.ENVIRONMENT] = repr(args.memory_limit_gb)
     if args.report:
         args.report = args.report.resolve()
         if (ROOT / 'artifacts').resolve() not in args.report.parents or args.report.exists():
@@ -108,18 +115,14 @@ def main(argv=None):
     tempfile.tempdir = str(temp_root)
     started = time.perf_counter()
     mode = 'full' if args.full else args.tier or ('focused' if args.targets else 'core')
-    targets = args.targets or (CORE_TARGETS if mode == 'core' else CPU_QT_TARGETS if mode == 'cpu-qt'
-                              else HISTORY_TARGETS if mode == 'history' else ACCEPTANCE_TARGETS if mode == 'acceptance' else ())
+    targets = args.targets or (CORE_TARGETS if mode == 'core' else CPU_QT_TARGETS if mode == 'cpu-qt' else ())
     # --list is import-only and works even on a machine without full prerequisites.
-    # Selected acceptance modules cannot evade prerequisite checks via a focused name.
-    prerequisite_mode = ('acceptance' if mode == 'focused' and any(matches(t, ACCEPTANCE_TARGETS) for t in targets) else mode)
-    preflight = {'passed': True, 'errors': [], 'checked_files': [], 'copied_files': []}
+    preflight = {'passed': True, 'errors': []}
     if not args.list:
-        preflight = check_prerequisites(prerequisite_mode, fixture_source=args.fixtures_from)
+        preflight = check_prerequisites(mode)
     if not preflight['passed']:
         for error in preflight['errors']:
             print(error, file=sys.stderr)
-        print('Prerequisites failed; no tests executed. Restore the reviewed fixture bundle and pinned reference environment.', file=sys.stderr)
         write_report({'mode': mode, 'tests': 0, 'passed': False, 'preflight': preflight,
                       'failures': [], 'errors': [], 'skips': [], 'discovery_errors': [],
                       'wall_seconds': time.perf_counter() - started, 'test_durations': [], 'fixture_durations': []})
@@ -127,7 +130,7 @@ def main(argv=None):
     if args.preflight:
         write_report({'mode': mode, 'tests': 0, 'passed': True, 'preflight_only': True,
                       'preflight': preflight, 'wall_seconds': time.perf_counter() - started})
-        print(f'{mode} prerequisites passed ({len(preflight["checked_files"])} reviewed fixture files); no tests executed.')
+        print(f'{mode} prerequisites passed; no tests executed.')
         return 0
     loader = unittest.TestLoader()
     loader.suiteClass = TimedSuite
@@ -181,18 +184,29 @@ def main(argv=None):
             discovery_and_preflight_seconds=discovery_seconds,performance_budget=budget,
             temporary_directory=str(temp_root))
         write_report(record)
+        for test_id in record['memory']['over_limit']:
+            print(f'Over the per-test memory limit: {test_id}', file=sys.stderr)
         print(f'Full suite: {record["tests"]}/{len(selection["selected_ids"])} units; '
               f'{wall:.3f}s; '+('PASS' if record['passed'] else 'FAIL'),file=sys.stderr)
         return 0 if record['passed'] else 1
     options = {'verbosity': 2 if args.verbose else 1, 'failfast': args.failfast}
     if 'durations' in inspect.signature(unittest.TextTestRunner).parameters:
         options['durations'] = args.durations
+    limit = memory_limit.install(args.memory_limit_gb)
+    if limit is not None:
+        base_result = unittest.TextTestRunner.resultclass
+
+        class MemoryLimitedResult(base_result):
+            def startTest(self, test):
+                limit.start_test()
+                super().startTest(test)
+
+        options['resultclass'] = MemoryLimitedResult
     test_started = time.perf_counter()
     from tests.compilation_fixture import compilation_fixture
     from tests.functional_units import SCENARIO_DURATIONS
-    from tests.reference_session import reference_session
     SCENARIO_DURATIONS.clear()
-    with compilation_fixture() as compiled, reference_session() as reference:
+    with compilation_fixture() as compiled:
         result = unittest.TextTestRunner(**options).run(suite)
         compilation_stats = compiled.cache_info()._asdict()
     test_seconds = time.perf_counter() - test_started
@@ -205,6 +219,16 @@ def main(argv=None):
     fixtures = sorted(getattr(result, 'fixture_durations', ()), key=lambda row: -row['seconds'])
     for fixture in fixtures[:args.durations or len(fixtures)]:
         print(f'{fixture["seconds"]:.3f}s {fixture["fixture"]} ({fixture["id"]})', file=sys.stderr)
+    memory = None
+    if limit is not None:
+        over = [test.id() for test, text in (*result.errors, *result.failures)
+                if 'MemoryError' in text or 'out of memory' in text.casefold()]
+        memory = {'limit_gib_per_test': args.memory_limit_gb,
+                  'peak_committed_gib': limit.peak() / 1024 ** 3, 'over_limit': over}
+        print(f'Peak committed memory {memory["peak_committed_gib"]:.2f} GiB; '
+              f'each test may add {args.memory_limit_gb:g} GiB.', file=sys.stderr)
+        for test_id in over:
+            print(f'Over the per-test memory limit: {test_id}', file=sys.stderr)
     if args.report:
         record = {'mode': mode, 'targets': None if args.full else list(targets),
                   'tests': result.testsRun, 'passed': result.wasSuccessful(),
@@ -218,11 +242,9 @@ def main(argv=None):
                   'temporary_directory': str(temp_root),
                   'fixture_durations': fixtures,
                   'scenario_durations': list(SCENARIO_DURATIONS),
-                  'reference_fixture': reference.stats,
                   'compilation_fixture': compilation_stats,
+                  'memory': memory,
                   'test_durations': list(getattr(result, 'collectedDurations', ())) }
-        from tests.acceptance_workflows import LAST_SELECTION
-        record['recipe_acceptance_scope'] = dict(LAST_SELECTION)
         write_report(record)
     return 0 if result.wasSuccessful() else 1
 

@@ -227,19 +227,20 @@ def detect_dish(
             maximum_radius,
             calibrated_outer_maximum,
         )
-        if calibrated_primary_maximum <= calibrated_primary_minimum + 2.0:
-            raise CalibrationDetectionError(
-                "The calibrated dish diameter conflicts with the configured "
-                "image-relative radius range."
+        # A dish of the expected physical size that cannot fit the
+        # image-relative radius range is not in view: the photograph shows
+        # no vessel, or a different one. Search without the physical prior,
+        # exactly as without a ruler, and let the rim-support check decide
+        # whether the circle found is a vessel.
+        if calibrated_primary_maximum > calibrated_primary_minimum + 2.0:
+            calibrated_primary_radius_range = (
+                calibrated_primary_minimum,
+                calibrated_primary_maximum,
             )
-        calibrated_primary_radius_range = (
-            calibrated_primary_minimum,
-            calibrated_primary_maximum,
-        )
-        calibrated_outer_radius_range = (
-            calibrated_outer_minimum,
-            calibrated_outer_maximum,
-        )
+            calibrated_outer_radius_range = (
+                calibrated_outer_minimum,
+                calibrated_outer_maximum,
+            )
     center_step = max(3.0, small_height / 115.0)
     radius_step = max(2.0, (maximum_radius - minimum_radius) / 36.0)
     x_range = (

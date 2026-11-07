@@ -136,7 +136,7 @@ class AnnotationCentresUiTests(unittest.TestCase):
         view._refresh_instance_annotation_overlay()
         self.assertEqual(len(markers()), 1)
         self.assertEqual(markers()[0].centres, {1: (40., 20.), 2: (100., 80.)})
-        self.assertAlmostEqual(markers()[0].arm, annotation_median_length(labels) / 6.0)
+        self.assertAlmostEqual(markers()[0].arm, annotation_median_length(labels) / 8.0)
         cached = view.instance_centres()
         with patch("seedvision.ui.image_view.annotation_centres", side_effect=AssertionError("Display-only change recalculated geometry")):
             view.set_annotation_opacity(.23)
@@ -160,7 +160,7 @@ class AnnotationCentresUiTests(unittest.TestCase):
         self.assertEqual(markers(), [])
         self.assertEqual(view.instance_centres(), {})
 
-    def check_test_crosshairs_span_a_third_of_the_median_seed_at_every_zoom(self):
+    def check_test_crosshairs_span_a_quarter_of_the_median_seed_at_every_zoom(self):
         from PySide6.QtCore import QRectF
         from PySide6.QtGui import QImage, QPainter
         from PySide6.QtWidgets import QGraphicsScene
@@ -178,8 +178,8 @@ class AnnotationCentresUiTests(unittest.TestCase):
             painter.end()
             pixels = np.frombuffer(image.constBits(), np.uint8).reshape(height, image.bytesPerLine() // 4, 4)
             columns = np.flatnonzero((pixels[:, :, :3] != 127).any(axis=2).any(axis=0))
-            # 120 px seeds give a 40 px marker; square stroke caps add up to 4 screen pixels.
-            self.assertAlmostEqual(columns[-1] - columns[0] + 1, 40.0 * zoom, delta=5.0)
+            # 120 px seeds give a 30 px marker; square stroke caps add up to 4 screen pixels.
+            self.assertAlmostEqual(columns[-1] - columns[0] + 1, 30.0 * zoom, delta=5.0)
 
     def check_test_centre_markers_follow_the_image_except_in_the_editor(self):
         from PySide6.QtCore import QPointF, QRectF
@@ -205,11 +205,11 @@ class AnnotationCentresUiTests(unittest.TestCase):
         self.assertTrue(unknown_size.flags() & constant)
         self.assertEqual(unknown_size.rect(), QRectF(-5.0, -5.0, 10.0, 10.0))
 
-        # 60 px estimated seeds give a 20 px marker through the real overlay path.
+        # 60 px estimated seeds give a 15 px marker through the real overlay path.
         first = len(view._overlay_items)
         with patch.object(view, "_procedural_marker_records", return_value=[record]):
             view._render_procedural_centres(SimpleNamespace(procedural_instances=object(), estimated_seed_diameter_px=60.0))
-        self.assertEqual(view._overlay_items[first].rect(), QRectF(-10.0, -10.0, 20.0, 20.0))
+        self.assertEqual(view._overlay_items[first].rect(), QRectF(-7.5, -7.5, 15.0, 15.0))
 
     def check_test_rejected_proposals_show_only_on_the_centre_overlay_with_their_reason(self):
         from PySide6.QtCore import QPointF, QRectF
@@ -237,7 +237,7 @@ class AnnotationCentresUiTests(unittest.TestCase):
             ring, *cross, marker = view._overlay_items[first:]
             self.assertEqual(len(cross), 2)
             self.assertEqual(ring.pos(), QPointF(110.0, 230.0))
-            self.assertEqual(ring.rect(), QRectF(-10.0, -10.0, 20.0, 20.0))
+            self.assertEqual(ring.rect(), QRectF(-7.5, -7.5, 15.0, 15.0))
             self.assertEqual(ring.pen().color(), QColor("#ff9f40"))
             self.assertEqual(ring.toolTip(), "Rejected proposal: above maximum concavity.")
             self.assertEqual(ring.zValue(), 34)
@@ -382,8 +382,13 @@ class AnnotationCentresUiTests(unittest.TestCase):
             3: SeedInstanceAnnotation(3, **{**complete, "shape_reviewed": False}),
         }
         self.assertEqual(window.next_unannotated_button.text(), "Next unannotated")
-        selector = window.new_instance_button.parentWidget().layout()
-        self.assertIs(selector.itemAt(4).widget(), window.next_unannotated_button)
+        header = window.new_instance_button.parentWidget().layout()
+
+        def cell(widget):
+            return header.getItemPosition(header.indexOf(widget))[:2]
+
+        row, column = cell(window.new_instance_button)
+        self.assertEqual(cell(window.next_unannotated_button), (row, column + 1))
         window.instance_id_spin.setValue(1)
         window._next_unannotated_instance()
         self.assertEqual(window.instance_id_spin.value(), 2)
@@ -479,6 +484,56 @@ class AnnotationCentresUiTests(unittest.TestCase):
         self.assertEqual(received[0][0], received[0][1])
         self.assertNotEqual(received[0][0][1], (50., 30.))
 
+    def check_test_select_tool_picks_a_painted_seed_and_resumes_the_previous_tool(self):
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+        from seedvision.ui.image_view import ImageView
+        window, image_path = self.make_window()
+        view = ImageView()
+        self.addCleanup(view.close)
+        view.resize(500, 400)
+        view.show()
+        view.load_image(image_path)
+        view._set_bgr_base_image(np.zeros((120, 160, 3), np.uint8))
+        labels = np.zeros((120, 160), np.uint16)
+        labels[20:41, 30:71] = 1
+        labels[60:91, 90:131] = 3
+        view.set_instance_annotations(labels)
+        view.set_instance_annotation_editing(True)
+        view.set_reference_brush_radius(8)
+        view.set_instance_annotation_tool("select")
+        self.app.processEvents()
+        self.assertEqual(view.viewport().cursor().shape(), Qt.CursorShape.PointingHandCursor)
+        picked, edits = [], []
+        view.instance_annotation_picked.connect(picked.append)
+        view.instance_annotations_edited.connect(edits.append)
+        QTest.mouseMove(view.viewport(), view.mapFromScene(110., 75.))
+        self.assertTrue(view._reference_brush_outline_item is None
+                        or not view._reference_brush_outline_item.isVisible())
+        QTest.mouseClick(view.viewport(), Qt.MouseButton.LeftButton, pos=view.mapFromScene(110., 75.))
+        self.assertEqual(picked, [3])
+        # Unpainted pixels leave the selection alone; right-click never erases.
+        QTest.mouseClick(view.viewport(), Qt.MouseButton.LeftButton, pos=view.mapFromScene(10., 10.))
+        QTest.mouseClick(view.viewport(), Qt.MouseButton.RightButton, pos=view.mapFromScene(50., 30.))
+        self.assertEqual(picked, [3])
+        self.assertEqual(edits, [])
+        np.testing.assert_array_equal(view._instance_annotations, labels)
+        view.set_instance_annotation_tool("brush")
+        self.assertEqual(view.viewport().cursor().shape(), Qt.CursorShape.CrossCursor)
+
+        # In the window a pick sets the seed number and returns to the last tool.
+        window.instance_smart_fill_button.setChecked(True)
+        window.instance_select_button.setChecked(True)
+        self.assertEqual(window.image_view._instance_annotation_tool, "select")
+        window.instance_id_spin.setValue(1)
+        window.image_view.instance_annotation_picked.emit(3)
+        self.assertEqual(window.instance_id_spin.value(), 3)
+        self.assertEqual(window.image_view._active_instance_id, 3)
+        self.assertTrue(window.instance_smart_fill_button.isChecked())
+        self.assertEqual(window._current_instance_tool(), "smart_fill")
+        self.assertEqual(window.image_view._instance_annotation_tool, "smart_fill")
+        self.assertIn("Seed 3 selected", window.statusBar().currentMessage())
+
     def check_test_next_empty_does_not_reuse_an_occupied_seed_at_capacity(self):
         window, _ = self.make_window()
         key = window._current_image_key()
@@ -489,8 +544,8 @@ class AnnotationCentresUiTests(unittest.TestCase):
         self.assertIn("9,999", window.statusBar().currentMessage())
 
     def test_workflow_lifecycle(self):
-        """11 related AnnotationCentresUiTests scenarios, each with private fixture state."""
-        self.scenario(self.check_test_crosshairs_span_a_third_of_the_median_seed_at_every_zoom)
+        """12 related AnnotationCentresUiTests scenarios, each with private fixture state."""
+        self.scenario(self.check_test_crosshairs_span_a_quarter_of_the_median_seed_at_every_zoom)
         self.scenario(self.check_test_centre_markers_follow_the_image_except_in_the_editor)
         self.scenario(self.check_test_rejected_proposals_show_only_on_the_centre_overlay_with_their_reason)
         self.scenario(self.check_test_compact_seed_selector_and_no_routine_explanatory_labels)
@@ -501,6 +556,7 @@ class AnnotationCentresUiTests(unittest.TestCase):
         self.scenario(self.check_test_direction_is_unknown_at_centroid_and_removed_without_landmark)
         self.scenario(self.check_test_brush_publishes_fresh_centroids_before_edit_listeners_run)
         self.scenario(self.check_test_next_empty_does_not_reuse_an_occupied_seed_at_capacity)
+        self.scenario(self.check_test_select_tool_picks_a_painted_seed_and_resumes_the_previous_tool)
 
     def test_validation_and_recovery(self):
         """1 related AnnotationCentresUiTests scenarios, each with private fixture state."""

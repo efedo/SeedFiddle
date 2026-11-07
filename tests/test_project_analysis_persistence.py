@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from tests.catalogue_fixtures import CatalogueTestCase
 
 from tests.functional_units import functional_units
 
@@ -44,7 +43,7 @@ from seedvision.pipeline import build_default_pipeline
 
 
 @functional_units
-class ProjectAnalysisPersistenceTests(CatalogueTestCase):
+class ProjectAnalysisPersistenceTests(unittest.TestCase):
     @staticmethod
     def _source(
         path: Path, shape: tuple[int, int], value: int
@@ -161,7 +160,7 @@ class ProjectAnalysisPersistenceTests(CatalogueTestCase):
             payload = json.loads(destination.read_text(encoding="utf-8"))
             self.assertEqual(
                 set(payload),
-                {"format", "version", "analysis_settings", "project", "images", "ui", "reference_graphs", "reference_model_assets", "native_recipes", "correction_bindings", "pipeline_workflow"},
+                {"format", "version", "analysis_settings", "project", "images", "ui"},
             )
             self.assertEqual(
                 set(payload["images"][0]),

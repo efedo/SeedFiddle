@@ -28,7 +28,6 @@ class WorkController:
         """Return whether Stop has anything to cancel; the one definition of running work."""
         return bool(
             getattr(getattr(self, 'catalogue_nodes', None), 'busy', False)
-            or getattr(getattr(self, 'pipeline_workflow', None), '_job', None) is not None
             or self._active_tasks
             or getattr(self, '_training_dataset_build', None) is not None
             or any(getattr(self, name, None) is not None for name in CANCELLABLE_TASKS))

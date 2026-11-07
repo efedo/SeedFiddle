@@ -1,8 +1,7 @@
 # SeedFiddle hand-off
 
-Orientation for the next developer or agent. Current as of 23 October 2026
-(`main`, after the review-fix, GUI-simplification and documentation-cleanup
-commits). Read [AGENTS.md](AGENTS.md) for the binding rules; this file explains
+Orientation for the next developer or agent. Current as of 6 November 2026
+(`main`). Read [AGENTS.md](AGENTS.md) for the binding rules; this file explains
 the context behind them.
 
 ## What the project is
@@ -10,11 +9,13 @@ the context behind them.
 A native PySide6 desktop application (`seed_vision.py` is the only launch point)
 for counting, measuring and classifying soybean and lupin seeds in calibrated
 photographs. Analyses are typed node graphs with node-local caching on a CUDA
-device. Besides Procedural seed analysis and Cellpose seed analysis, which share one
-graph and differ in which nodes are active
-(`seedvision/pipeline/default_pipelines.py`), there are 18 factory pipelines that
-reproduce PlantCV and SMPTS seed workflows natively (the "peer-functionality"
-work, families F01–F22). See [README.md](README.md) for the user view and
+device. The two default pipelines, Procedural seed analysis and Cellpose seed
+analysis, share one graph and differ in which nodes are active
+(`seedvision/pipeline/default_pipelines.py`). Any default node can also be added
+as an independent instance with its own controls and cache
+(`seedvision/pipeline/catalogue_nodes.py`). The earlier PlantCV and SMPTS
+reproductions and their recipe engine were removed in November 2026. See
+[README.md](README.md) for the user view and
 [docs/CURRENT_STATUS.md](docs/CURRENT_STATUS.md) for what is and is not done.
 
 ## Rules that are easy to break
@@ -38,15 +39,15 @@ work, families F01–F22). See [README.md](README.md) for the user view and
 |---|---|
 | `seed_vision.py` | Launcher: optional `.venv` bootstrap, diagnostics, CLI training/evaluation entry points. |
 | `seedvision/ui/` | Qt application. `main_window.py` is the coordinator; `results.py`, `pipeline_canvas.py`, `pipeline_inspector.py`, `pipeline_workflow.py`, `pipeline_documents.py`, `help_menu.py` and the dialogs own bounded pieces. |
-| `seedvision/pipeline/` | `PipelineGraph`/`PipelineNode`/`ParameterSpec` model, factory workflows, project context, `node_aliases.py` (engine dirty-node vocabulary). |
+| `seedvision/pipeline/` | `PipelineGraph`/`PipelineNode`/`ParameterSpec` model, the default pipelines, added node instances, project context, `node_aliases.py` (engine dirty-node vocabulary). |
 | `seedvision/segmentation/` | `baseline.py` production orchestration and procedural instance separation. |
-| `seedvision/cuda/`, `calibration/`, `measurement/` | Device-resident evidence, calibration and geometry. |
-| `seedvision/benchmarking/` | PlantCV/SMPTS recipes, isolated reference runner, checkpoints, conformance and grouped comparisons. |
+| `seedvision/cuda/`, `calibration/`, `measurement/` | Device-resident evidence, chart colour correction (`cuda/colour_correction.py`), calibration and geometry. |
+| `seedvision/benchmarking/` | Study manifests, grouped method comparisons and the benchmark command line; the unused `reference_runner.py` (see Open work). |
 | `seedvision/learning/` | U-Net/StarDist training, datasets, evaluation protocols; the optional Cellpose-SAM node (`cellpose_sam.py`). |
 | `seedvision/persistence/`, `export/` | Projects, snapshots, sidecars, image decoding (`image_decoding.read_image`), result reports, batch runner. |
 | `seedvision/reference_library/`, `optimization/`, `annotation/` | Species libraries, reference-driven node optimisation, annotation tools. |
-| `tests/` | Parallel unittest runner (`python -m tests`) and ~250 test modules. |
-| `config/` | Pinned runtime dependencies, PlantCV reference sources, fixture manifest, trait vocabulary. |
+| `tests/` | Parallel unittest runner (`python -m tests`) and 115 test modules. |
+| `config/` | Pinned runtime dependencies and trait vocabulary; the PlantCV lock and `peer_*.json` records belong to the unused reference runner. |
 | `scripts/` | Batch runner, node-catalogue generator, `prune_artifacts.py`. |
 | `docs/` | Guides, contracts and records; start at [docs/README.md](docs/README.md). |
 
@@ -56,53 +57,24 @@ work, families F01–F22). See [README.md](README.md) for the user view and
 .\.venv\Scripts\python.exe .\seed_vision.py --no-bootstrap
 .\.venv\Scripts\python.exe -m tests                  # core subset
 .\.venv\Scripts\python.exe -m tests tests.test_gui_layout   # focused module
-.\.venv\Scripts\python.exe -m tests --full           # 690 units, 3 workers
+.\.venv\Scripts\python.exe -m tests --full           # 317 units, 3 workers
 ```
 
-The last full run (5 November 2026) passed all 690 units with the 3 expected
-skips. Wall time over 15 minutes is reported as an advisory warning only; a run
-fails on test outcomes or an unaccounted unit, and a worker that writes no
-journal entry for `--stall-seconds` (default 900) is stopped. Details are in
-[docs/TESTING.md](docs/TESTING.md).
+Wall time over 15 minutes is reported as an advisory warning only; a run fails on
+test outcomes or an unaccounted unit, and a worker that writes no journal entry for
+`--stall-seconds` (default 900) is stopped. Run one full suite at a time per GPU.
+Details are in [docs/TESTING.md](docs/TESTING.md).
 
-### `artifacts/` holds irreplaceable test inputs
-
-`artifacts/` is git-ignored but **not** disposable. The full suite needs these
-entries, which exist nowhere else unless you keep a fixture bundle
-(`--fixtures-from`):
-
-- the frozen acceptance baselines `recipe-acceptance-baseline-v1/v2.json`,
-  `public-seed-acceptance-baseline-v1.json`, `reader-acceptance-baseline-v1.json`;
-- the provenance records (`*-code-provenance-*.json`, `*-provenance-transition-*.json`,
-  `pipeline-workspace-*.json`) listed in `config/test_fixtures.json`;
-- `plantcv-reference-env/`, `reference-sources/`, `reference-wheels/` (pinned
-  PlantCV 4.11.3 environment and sources);
-- `learned/`, `method-qc/`, `branding/` and the two `test-suite-cleanup-full-v2*.json`
-  files referenced by tests.
-
-Everything else there is generated. `scripts/prune_artifacts.py --delete` clears
-old `test-runs/` and `test-temp/` directories and never touches the list above.
+`artifacts/` is git-ignored generated output; tests need nothing in it.
+`scripts/prune_artifacts.py --delete` clears old `test-runs/` and `test-temp/`
+directories.
 
 ## Gotchas
 
-- **Frozen provenance.** `tests/acceptance_provenance.py` hashes the working-tree
-  bytes of reviewed calculation sources (for example
-  `seedvision/benchmarking/reference_runner.py`). Do not edit those files without
-  a reviewed provenance update; a cosmetic change fails the suite.
-- **Acceptance identities bind the checkout path.** `_code_record` in
-  `seedvision/benchmarking/native_recipe.py` hashes each function's `co_filename`,
-  so `tests.test_reader_acceptance` and `tests.test_recipe_acceptance` pass only
-  from `D:\Programming\SeedFiddle`. From a git worktree they report a JSON
-  acceptance mismatch on the preparation identities, whatever the code.
 - **Closed test windows stay alive.** Their own signal connections keep them alive,
   so the test runner deletes the ones each test leaves behind, and a full-suite
   worker ends itself without interpreter shutdown; see
   [docs/TESTING.md](docs/TESTING.md).
-- **Line endings.** Provenance digests are of the raw working-tree bytes, and the
-  reviewed sources are a mix of LF and CRLF files. With `core.autocrlf=true`, a
-  `git checkout`/`git restore` of an LF file rewrites it as CRLF and fails the
-  acceptance tests without any content change. Restore such a file by
-  converting it back to LF, not with git.
 - **Annotation storage is per project.** A saved project's manual centres and
   reference layers live in `name.seedfiddle-annotations/` beside its project file;
   edits go to its `unsaved/` subfolder until Save copies them in. The main window
@@ -123,10 +95,6 @@ old `test-runs/` and `test-temp/` directories and never touches the list above.
   `QAction` lives in `PySide6.QtGui`, not `QtWidgets`.
 - **UI text limits.** `tests/test_ui_text_limits.py` caps command labels at 45
   characters and tooltips at 450.
-- **Unreachable dialogs.** `NativeRecipeDialog` and its Naive Bayes, K-means and
-  correction subclasses, and `PublicReferenceCaptureDialog`, are no longer opened
-  from the application since the Reference window was removed. Only tests use them.
-  Either reconnect them or retire them.
 
 ## Open work
 
@@ -146,8 +114,12 @@ old `test-runs/` and `test-temp/` directories and never touches the list above.
   trait definitions, operator study) are external and still open; see
   [PLAN.md](PLAN.md) and
   [docs/SCIENTIFIC_VALIDATION_PROTOCOL.md](docs/SCIENTIFIC_VALIDATION_PROTOCOL.md).
-- **Original SMPTS source** is unavailable, so SMPTS stages are a paper
-  reconstruction and F09.2 is unresolved.
+- **Unused reference runner.** `seedvision/benchmarking/reference_runner.py`, which
+  ran original PlantCV 4.11.3 in an isolated Python 3.12 interpreter, has had no
+  caller or test since PlantCV was removed. It is kept, with
+  `config/plantcv-reference-requirements.txt`, the `config/peer_*.json` records,
+  `scripts/repair_reference_lock.py` and that script's check in
+  `tests/test_bootstrap.py`, until it is either retired or given a new use.
 - **GUI follow-ups** not done in the October pass: an icon strip for annotation
   tools (no icon assets exist).
 

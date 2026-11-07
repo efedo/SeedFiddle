@@ -205,7 +205,7 @@ class AnnotationWidgetTests(unittest.TestCase):
 
     def check_test_no_defects_empty_selector_and_shape_fields(self):
         from PySide6.QtGui import QImage
-        from PySide6.QtWidgets import QFrame, QGroupBox
+        from PySide6.QtWidgets import QFrame
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "images").mkdir()
@@ -241,13 +241,27 @@ class AnnotationWidgetTests(unittest.TestCase):
                 window.seed_conditions_reviewed_checkbox.setChecked(True)
                 self.assertEqual(window._draft_seed_annotations[key][1].conditions, ())
                 self.assertTrue(window.seed_conditions_reviewed_checkbox.isEnabled())
+                # No defects and the defect labels share one Condition row,
+                # split by a divider.
                 group = window.seed_conditions_reviewed_checkbox.parentWidget()
-                self.assertIsInstance(group, QGroupBox)
-                self.assertEqual(group.title(), "Seed condition")
-                self.assertIn("font-weight: bold", group.styleSheet())
+                self.assertTrue(all(
+                    checkbox.parentWidget() is group
+                    for checkbox in window.seed_condition_checkboxes.values()
+                ))
+                self.assertIs(window.seed_condition_divider.parentWidget(), group)
                 self.assertEqual(
                     window.seed_condition_divider.frameShape(), QFrame.Shape.VLine
                 )
+                traits = group.parentWidget().layout()
+
+                def cell(row, column):
+                    item = traits.itemAtPosition(row, column)
+                    return None if item is None else item.widget()
+
+                def row_of(widget):
+                    return traits.getItemPosition(traits.indexOf(widget))[0]
+
+                self.assertEqual(cell(row_of(group), 0).text(), "Condition")
                 self.assertFalse(hasattr(window, "seed_physical_id_edit"))
                 window.seed_outline_visibility_combo.setCurrentIndex(window.seed_outline_visibility_combo.findData("complete"))
                 self.assertFalse(window.seed_full_length_checkbox.isHidden())
@@ -260,22 +274,26 @@ class AnnotationWidgetTests(unittest.TestCase):
                 self.assertFalse(window.seed_full_length_checkbox.isChecked())
                 window.seed_full_length_checkbox.setChecked(True)
                 self.assertTrue(window._draft_seed_annotations[key][1].full_length_visible)
-                shape_row = window.seed_outline_visibility_combo.parentWidget()
-                row_widgets = [
-                    shape_row.layout().itemAt(index).widget()
-                    for index in range(shape_row.layout().count())
-                ]
-                self.assertEqual(len(row_widgets), 5)
-                self.assertEqual(row_widgets[0].text(), "Outline")
-                self.assertIs(row_widgets[1], window.seed_outline_visibility_combo)
-                self.assertIs(row_widgets[2], window.seed_full_length_checkbox)
-                self.assertEqual(row_widgets[3].text(), "Pose")
-                self.assertIs(row_widgets[4], window.seed_pose_combo)
+                # Full length visible sits beside Outline; Pose follows.
+                outline_row = row_of(window.seed_outline_visibility_combo)
+                self.assertEqual(cell(outline_row, 0).text(), "Outline")
+                self.assertIs(cell(outline_row, 1), window.seed_outline_visibility_combo)
+                self.assertIs(cell(outline_row, 2), window.seed_full_length_checkbox)
+                self.assertEqual(cell(outline_row + 1, 0).text(), "Pose")
+                self.assertIs(cell(outline_row + 1, 1), window.seed_pose_combo)
                 self.assertGreaterEqual(window.seed_pose_combo.width(), 72)
-                confirmation = window.apply_instance_annotations_button.parentWidget()
-                self.assertIs(
-                    confirmation.layout().itemAt(0).widget(),
-                    window.seed_shape_excluded_checkbox,
+                # Exclude from modelling sits just left of Apply + save.
+                header = window.apply_instance_annotations_button.parentWidget().layout()
+
+                def header_cell(widget):
+                    return header.getItemPosition(header.indexOf(widget))[:2]
+
+                apply_row, apply_column = header_cell(
+                    window.apply_instance_annotations_button
+                )
+                self.assertEqual(
+                    header_cell(window.seed_shape_excluded_checkbox),
+                    (apply_row, apply_column - 1),
                 )
                 window.seed_hilum_pick_button.setChecked(True)
                 self.assertTrue(window.image_view._hilum_editing)
@@ -379,10 +397,88 @@ class AnnotationWidgetTests(unittest.TestCase):
         finally:
             dispose_window(window)
 
+    def check_test_palette_fits_its_controls_and_title_bar_collapses_and_closes(self):
+        from PySide6.QtWidgets import QWidget
+        window = workspace_window(Path(__file__).resolve().parents[1])
+        try:
+            window.resize(1366, 900)
+            window.show()
+            panel = window.reference_panel
+            contents = window.reference_panel_contents
+
+            def space_below_controls():
+                self.app.processEvents()
+                lowest = max(
+                    widget.mapTo(panel, widget.rect().bottomLeft()).y()
+                    for widget in contents.findChildren(QWidget)
+                    if widget.isVisible()
+                )
+                return panel.height() - 1 - lowest
+
+            window.annotate_instances_action.setEnabled(True)
+            window.annotate_instances_action.setChecked(True)
+            self.app.processEvents()
+            self.assertEqual(panel.title(), "Seed annotation")
+            self.assertTrue(panel.title_bar.isAncestorOf(window.reference_undo_button))
+            # The panel ends at its last control: margin and border only.
+            self.assertLessEqual(space_below_controls(), 14)
+            seeds_height = panel.height()
+            tools = (
+                window.instance_select_button,
+                window.instance_paint_mode_button,
+                window.instance_edge_trace_button,
+                window.instance_shape_guided_fill_button,
+                window.instance_smart_fill_button,
+                window.instance_eraser_button,
+            )
+            self.assertEqual(len({button.y() for button in tools}), 1)
+            widths = [button.width() for button in tools]
+            self.assertLessEqual(max(widths) - min(widths), 1)
+
+            window.annotate_instances_action.setChecked(False)
+            for control in (
+                window.paint_background_action,
+                window.background_point_button,
+                window.foreground_point_button,
+            ):
+                control.setEnabled(True)
+            window.paint_background_action.setChecked(True)
+            self.app.processEvents()
+            self.assertFalse(panel.isHidden())
+            self.assertEqual(panel.title(), "Material annotation")
+            self.assertLessEqual(space_below_controls(), 14)
+            self.assertLess(panel.height(), seeds_height)
+
+            panel.title_bar.collapse_button.click()
+            self.app.processEvents()
+            self.assertTrue(panel.is_collapsed())
+            self.assertTrue(panel.scroll_area.isHidden())
+            self.assertLessEqual(panel.height(), panel.title_bar.height() + 2)
+            panel.title_bar.collapse_button.click()
+            self.assertFalse(panel.scroll_area.isHidden())
+            self.assertLessEqual(space_below_controls(), 14)
+
+            # Close finishes annotating, as the toolbar does.
+            panel.title_bar.close_button.click()
+            self.app.processEvents()
+            self.assertFalse(window.paint_background_action.isChecked())
+            self.assertTrue(panel.isHidden())
+            window.annotate_instances_action.setChecked(True)
+            self.app.processEvents()
+            self.assertFalse(panel.isHidden())
+            panel.title_bar.close_button.click()
+            self.app.processEvents()
+            self.assertFalse(window.annotate_instances_action.isChecked())
+            self.assertTrue(panel.isHidden())
+            self.assertIsNone(window.image_view._reference_point_mode)
+        finally:
+            dispose_window(window)
+
     def test_workflow_lifecycle(self):
-        """5 related AnnotationWidgetTests scenarios, each with private fixture state."""
+        """6 related AnnotationWidgetTests scenarios, each with private fixture state."""
         self.scenario(self.check_test_distribution_has_axes_units_pose_key_and_error_bars)
         self.scenario(self.check_test_imperial_measurement_uses_its_own_dividers_and_transform)
         self.scenario(self.check_test_no_defects_empty_selector_and_shape_fields)
         self.scenario(self.check_test_hilum_drag_moves_landmark_and_derives_radial_direction_without_painting)
         self.scenario(self.check_test_brush_stack_uses_only_current_page_and_resize_is_remembered)
+        self.scenario(self.check_test_palette_fits_its_controls_and_title_bar_collapses_and_closes)

@@ -19,8 +19,6 @@ import re
 import tempfile
 from typing import Any
 
-from seedvision.benchmarking.checkpoints import CoordinateFrame
-
 
 BENCHMARK_MANIFEST_FORMAT = "seedfiddle.benchmark-manifest"
 BENCHMARK_MANIFEST_VERSION = 1
@@ -36,6 +34,60 @@ MAX_MANIFEST_TEXT_CHARS = 4096
 
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _STABLE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
+_FRAME_ID = re.compile(r"[a-z][a-z0-9_.:-]{0,127}\Z")
+
+
+def _frame_text(value: Any, name: str, *, token: bool = False) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{name} must be a non-empty string.")
+    if value != value.strip():
+        raise ValueError(f"{name} cannot have leading or trailing whitespace.")
+    if token and not _FRAME_ID.fullmatch(value):
+        raise ValueError(f"{name} must be a stable lowercase identifier.")
+    return value
+
+
+@dataclass(frozen=True, slots=True)
+class CoordinateFrame:
+    """Exact raster coordinate identity; frames are never resized or inferred."""
+
+    frame_id: str
+    shape: tuple[int, int]
+    origin: str
+    axes: str
+    units: str
+    transform_sha256: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "frame_id", _frame_text(self.frame_id, "frame ID", token=True))
+        shape = self.shape
+        if not isinstance(shape, (tuple, list)) or len(shape) != 2:
+            raise ValueError("coordinate frame shape must be a height/width pair.")
+        if any(type(part) is not int or part <= 0 for part in shape):
+            raise ValueError("coordinate frame shape dimensions must be positive integers.")
+        object.__setattr__(self, "shape", (int(shape[0]), int(shape[1])))
+        for field_name in ("origin", "axes", "units"):
+            object.__setattr__(self, field_name, _frame_text(getattr(self, field_name), f"frame {field_name}"))
+        digest = self.transform_sha256
+        if digest is not None and (not isinstance(digest, str) or not _SHA256.fullmatch(digest)):
+            raise ValueError("coordinate transform SHA-256 must be a lowercase SHA-256 hex digest.")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "frame_id": self.frame_id,
+            "shape": list(self.shape),
+            "origin": self.origin,
+            "axes": self.axes,
+            "units": self.units,
+            "transform_sha256": self.transform_sha256,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: Any) -> "CoordinateFrame":
+        expected = {"frame_id", "shape", "origin", "axes", "units", "transform_sha256"}
+        if not isinstance(payload, dict) or set(payload) != expected:
+            raise ValueError("Coordinate-frame metadata has an invalid schema.")
+        return cls(**payload)
 
 
 class BenchmarkManifestError(ValueError):

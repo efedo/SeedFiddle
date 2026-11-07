@@ -51,17 +51,18 @@ Optimization: Ruler length and tick spacing are physical facts..
 | Expected visible span (`ruler_length_mm`) | 150.0 | Ruler length and tick spacing are physical facts. |
 | Minor tick interval (`minor_tick_mm`) | 1.0 | Ruler length and tick spacing are physical facts. |
 
-## Deskew and colour balance (`deskew_colour`)
+## Deskew and colour correction (`deskew_colour`)
 
-Rectify from the colour card and apply gamut-safe neutral gains
+Rectify from the colour card and correct colour against its reference values
 
 Optimization: material.
 
 | Control | Default | Search status |
 |---|---|---|
-| Apply neutral balance (`apply_colour_balance`) | True | Eligible when reviewed targets are available |
-| Neutral grid patches (`neutral_patch_selection`) | automatic | Operator-selected neutral reference grid positions. |
-| Neutral sampling frame (`neutral_sample_frame`) | source | Frozen neutral reference sampling frame. |
+| Correct colour (`apply_colour_balance`) | True | Eligible when reviewed targets are available |
+| Correction model (`colour_correction_model`) | Chart reference fit | Colour reference policy; chart reference colours are not supplied by seed masks. |
+| Neutral patches (`neutral_patch_selection`) | automatic | Operator-selected neutral reference patches. |
+| Patch sampling frame (`neutral_sample_frame`) | source | Frozen patch sampling frame. |
 | Maximum correction (`max_deskew_degrees`) | 10.0 | Frozen annotation coordinate frame; independent calibration geometry is not supplied by seed masks. |
 | Correct camera tilt (`apply_perspective_correction`) | True | Frozen annotation coordinate frame; independent calibration geometry is not supplied by seed masks. |
 | Maximum perspective strength (`max_perspective_fraction`) | 0.25 | Frozen annotation coordinate frame; independent calibration geometry is not supplied by seed masks. |
@@ -127,6 +128,11 @@ Optimization: instances.
 | Reference colour distance (`reference_colour_distance_threshold`) | 10.0 | Eligible when reviewed targets are available |
 | Maximum component aspect (`reference_max_aspect_ratio`) | 3.0 | Eligible when reviewed targets are available |
 | Components used (`reference_max_components`) | 3 | Eligible when reviewed targets are available |
+| Search for confident seeds (`confident_seed_search`) | True | Eligible when reviewed targets are available |
+| Minimum confident seeds (`confident_seed_minimum_count`) | 3 | Eligible when reviewed targets are available |
+| Maximum confident seeds (`confident_seed_maximum_count`) | 24 | Eligible when reviewed targets are available |
+| Minimum seed solidity (`confident_seed_minimum_solidity`) | 0.88 | Eligible when reviewed targets are available |
+| Vessel rim support (`vessel_minimum_rim_support`) | 0.7 | Eligible when reviewed targets are available |
 | Fallback diameter / dish radius (`fallback_diameter_fraction`) | 0.16 | Eligible when reviewed targets are available |
 | Boundary sensitivity radius (`shape_boundary_perturbation_radius_px`) | 2 | Fixed reference sensitivity convention. |
 | Scale uncertainty (`shape_calibration_uncertainty_fraction`) | 0.01 | Measured calibration uncertainty. |
@@ -136,6 +142,29 @@ Optimization: instances.
 | Maximum contour modes (`shape_maximum_contour_modes`) | 4 | Eligible when reviewed targets are available |
 | Shape prior for oval candidates (`shape_use_prior_for_oval_candidates`) | False | Eligible when reviewed targets are available |
 | Shape prior for procedural candidates (`shape_use_prior_for_procedural`) | False | Eligible when reviewed targets are available |
+
+## Automatic material references (`automatic_material_references`)
+
+Initial Foreground, Background and Other areas without painting
+
+Optimization: material.
+
+| Control | Default | Search status |
+|---|---|---|
+| Automatic Foreground (`automatic_foreground_reference`) | True | Eligible when reviewed targets are available |
+| Seed inset (`automatic_seed_inset_fraction`) | 0.15 | Eligible when reviewed targets are available |
+| Automatic Background (`automatic_background_reference`) | True | Eligible when reviewed targets are available |
+| Perimeter disagreement (`automatic_perimeter_disagreement`) | 15.0 | Eligible when reviewed targets are available |
+| Ring gap (`automatic_background_gap_fraction`) | 0.25 | Eligible when reviewed targets are available |
+| Ring width (`automatic_background_band_fraction`) | 0.35 | Eligible when reviewed targets are available |
+| Shadow share dropped (`automatic_background_shadow_fraction`) | 0.2 | Eligible when reviewed targets are available |
+| Background colour tolerance (`automatic_background_colour_tolerance`) | 18.0 | Eligible when reviewed targets are available |
+| Border band (`automatic_border_band_fraction`) | 0.03 | Eligible when reviewed targets are available |
+| Automatic Other (`automatic_other_reference`) | True | Eligible when reviewed targets are available |
+| Wall width mm (`automatic_wall_width_mm`) | 3.0 | Known physical vessel wall width. |
+| Chart and ruler are Other (`automatic_chart_as_other`) | True | Eligible when reviewed targets are available |
+| Automatic weight floor (`automatic_reference_floor`) | 0.1 | Eligible when reviewed targets are available |
+| Painted half-life (`automatic_reference_half_life_seed_areas`) | 0.5 | Eligible when reviewed targets are available |
 
 ## Material colour probabilities (`background_likelihood`)
 

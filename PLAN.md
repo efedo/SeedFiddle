@@ -7,9 +7,7 @@ measuring, and broadly classifying soybean and lupin seeds in calibrated
 laboratory photographs. A photograph contains one verified species and may contain
 isolated, touching, overlapping, damaged, patterned, or partially visible seeds.
 
-The software engineering workflow is implemented, including the PlantCV–SMPTS
-peer-functionality extension within its declared software domains. Laboratory
-readiness is still
+The software engineering workflow is implemented. Laboratory readiness is still
 blocked by representative reviewed data, prespecified tolerances, independent
 physical and colour measurements, trait definitions, and operator validation.
 Software tests and synthetic experiments do not close those gates.
@@ -144,7 +142,7 @@ model weights and cannot be presented as independent validation.
 The permanent result workflow distinguishes unavailable from a valid empty result,
 selects an authoritative method, supports per-ID accepted/excluded/unreviewed review,
 and creates immutable result revisions. CSV, structured JSON, annotated image,
-viewport export, and saved-project batch execution share the production recipe.
+viewport export, and saved-project batch execution share the production settings.
 
 Source and checkpoint hashes govern reuse. Project masters use shared mutable
 sidecars; immutable portable snapshots copy and verify analytical dependencies and
@@ -153,51 +151,24 @@ explicit alignment review. Physical units and unvalidated per-object traits abst
 
 ## Current compatibility versions
 
-- Project analysis document: version 7 when a pipeline workflow or added node
-  instances are present, otherwise 6; reads versions 1–6
+- Project analysis document: version 8
+- Pipeline file: version 2
 - Reference-region archive: version 7
-- Analysis-settings profile: version 23
+- Analysis-settings profile: version 26
 - Bundled instance-reference manifest: version 1
 - Foreground feature recipe: version 2 for unambiguous raw Foreground evidence
 
-Legacy data migrates only through the implemented readers. Never relabel an unknown
-coordinate frame or ambiguous v1 feature recipe by editing its version number.
+Each reader accepts only its current version and refuses earlier files rather than
+migrating them. Never relabel an unknown coordinate frame or ambiguous v1 feature
+recipe by editing its version number.
 
-## Accepted direction: PlantCV–SMPTS peer functionality
+## Method comparison
 
-The [comparison report](docs/PLANTCV_SMPTS_COMPARISON.md) supplies the rationale;
-[the implementation and benchmark plan](docs/PLANTCV_SMPTS_IMPLEMENTATION_PLAN.md)
-is the canonical extension specification. The goal is functional peer coverage for
-selected seed-relevant preparation, segmentation, extraction, geometry, colour, QC
-and batch capabilities. Exact numerical compatibility, independent scientific
-quality and resource/operator costs need separate acceptance evidence. No claim of
-all-PlantCV coverage or demonstrated peer performance is made.
-
-Keep the application and its production methods. Reuse existing geometry, learning,
-annotation, results and evaluation code wherever the feature audit confirms its
-contract. Do not introduce a second graph, a required PlantCV desktop dependency, a
-fixed splitter cascade or a replacement results schema. Reference runs use isolated
-environments; production keeps CUDA residency and node-local caches.
-
-All 22 capability families are implemented in their declared software domains, and
-the 18 factory pipelines load into the main Pipeline workspace with editable
-controls, Native/PlantCV backend selection, project persistence and batch execution
-(see [Current status](docs/CURRENT_STATUS.md)). What remains is external: original
-SMPTS source access (F06, F08, F09.2, F12 and F14 parity), and the laboratory gates
-below for scientific promotion. Work-package exit gates remain in force:
-
-| Work package | Deliverable and gate |
-|---|---|
-| WP0: scope and baseline | Pin the current recipe and external references; expand F01–F22 into exact operations/outputs, existing-code mappings, gaps, exclusions and acceptance tests. Resolve original SMPTS access or label reconstruction explicitly. |
-| WP1: comparison infrastructure | Versioned reference-to-node graph mappings, reference adapters, immutable stage checkpoints/replay, matched-ID audits and conformance/resource reports; detect deliberate coordinate, mask and metric errors. |
-| WP2: PlantCV capabilities | Faithful PlantCV node-editor graphs, selected compatible operations and same-input conformance evidence; reuse existing native capabilities where verified. |
-| WP3: SMPTS capabilities | Display the SMPTS reference graph and recover/compare threshold, contact, erosion and extraction stages; distinguish original code from a paper port. |
-| WP4: native enhancements | CUDA implementations, scale-aware alternatives and contour recovery supported by development ablations; preserve compatible modes. |
-| WP5: measurements and workflow | Definition-specific measurements, eligibility, comparison overlays and provenance across desktop/batch/snapshots; retain physical and trait gates. |
-| WP6: comparative validation | Locked independent study, paired grouped uncertainty, absolute/comparative gates, correction costs and documented promotion decision. |
-
-Scope changes belong in this roadmap and the feature register, not in retroactive
-benchmark exclusions.
+The PlantCV and SMPTS reproductions, their recipe engine and their reference
+tooling were removed in November 2026: none proved useful or fast enough to keep.
+Alternative methods are compared inside the one graph, as the two default pipelines
+or as added node instances, and through the grouped comparison described in
+[benchmark reports](docs/BENCHMARK_REPORTS.md).
 
 ## Remaining validation phases
 
@@ -244,9 +215,9 @@ only after the workflow and resource envelope pass.
 
 ## Current verification baseline
 
-The full suite (`python -m tests --full`, 665 units in three isolated worker
-processes) passed on 2 November 2026 with the three expected skips. The four frozen
-numerical acceptance baselines and the 223 frozen recipe profiles are unchanged.
+The full suite (`python -m tests --full`, 309 units in three isolated worker
+processes) is the engineering baseline; a run passes only when every unit is
+accounted for and none failed.
 See [docs/TESTING.md](docs/TESTING.md). Engineering tests do not establish
 scientific accuracy.
 
@@ -258,9 +229,6 @@ scientific accuracy.
    See [the seed-detection evaluation](docs/SEED_DETECTION_EVALUATION.md).
 2. **Laboratory inputs.** Obtain intended-use tolerances, reviewed grouped images,
    acquisition geometry, trait definitions and operator requirements (phases A–E).
-3. **Original SMPTS source.** If it becomes available, replace the paper
-   reconstruction and resolve F09.2.
-4. **Locked comparative study (WP6).** Freeze the complete recipe and final split,
-   then promote only capabilities that meet their functional, absolute and
-   comparative gates. Fix failures on development data and issue a new frozen
+3. **Locked comparative study.** Freeze the complete pipeline settings and final
+   split, then promote only methods that meet their absolute and comparative gates. Fix failures on development data and issue a new frozen
    revision without reusing the final test set.

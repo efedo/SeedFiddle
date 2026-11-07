@@ -1,65 +1,7 @@
 """Explicit review declarations for synthetic complete-outline test fixtures."""
 import numpy as np
-from contextlib import contextmanager, nullcontext
 from functools import lru_cache
 from seedvision.persistence.reference_regions import SeedInstanceAnnotation
-
-
-def _workflow_template_key():
-    """Small source/config digest plus identities of the loaded factory helpers.
-
-    No production validation is memoized: this key governs UI fixture setup only.
-    Reading bytes also detects edits which preserve timestamps or file sizes.
-    """
-    from hashlib import sha256
-    from importlib import import_module
-    from pathlib import Path
-    root = Path(__file__).resolve().parents[1]
-    module_names = ['seedvision.pipeline.workflows', 'seedvision.benchmarking.recipes',
-                    'seedvision.benchmarking.recipe_catalogue']
-    module_names.extend('seedvision.benchmarking.' + path.stem
-        for path in sorted((root / 'seedvision' / 'benchmarking').glob('native*recipe*.py')))
-    modules = tuple((name, import_module(name)) for name in module_names)
-    paths = [root / 'config' / 'peer_reference_sources.json',
-             root / 'config' / 'plantcv-reference-requirements.txt']
-    for directory in ('benchmarking', 'pipeline', 'cuda'):
-        paths.extend((root / 'seedvision' / directory).glob('*.py'))
-        paths.extend((root / 'seedvision' / directory).glob('*.cu'))
-    digest = sha256()
-    for path in sorted(paths):
-        digest.update(str(path.relative_to(root)).encode())
-        digest.update(sha256(path.read_bytes()).digest())
-    factories = tuple((name, member, id(value))
-        for name, module in modules
-        for member, value in sorted(vars(module).items()) if callable(value))
-    return digest.digest(), factories
-
-
-@lru_cache(maxsize=1)
-def _workflow_templates(key, builder):
-    """Share frozen recipes and retain their original serialized identities."""
-    templates = tuple(builder())
-    return templates, tuple(recipe.to_json() for recipe in templates)
-
-
-@contextmanager
-def shared_workflow_templates():
-    """Serve the frozen recipes to windows built in this scope and check they stay unchanged.
-
-    An explicitly mocked catalogue remains in control rather than being replaced.
-    """
-    from unittest.mock import Mock, patch
-    from seedvision.pipeline import workflows
-    if isinstance(workflows.workflow_catalogue, Mock):
-        yield
-        return
-    templates, identities = _workflow_templates(_workflow_template_key(), workflows.workflow_catalogue)
-    if tuple(recipe.to_json() for recipe in templates) != identities:
-        raise AssertionError('Shared workflow templates were changed before construction')
-    with patch.object(workflows, 'workflow_catalogue', return_value=templates):
-        yield
-    if tuple(recipe.to_json() for recipe in templates) != identities:
-        raise AssertionError('Window construction changed shared workflow templates')
 
 
 def open_workspace_images(window):
@@ -93,10 +35,9 @@ def editable_copy(window, name='Test pipeline'):
         window._set_project_dirty(dirty)
 
 
-def isolated_window(root, *, reuse_templates=True, settings_path=None, editable=True, images=True):
-    """Fresh desktop state with local settings and optional immutable templates.
+def isolated_window(root, *, settings_path=None, editable=True, images=True):
+    """Fresh desktop state with local settings.
 
-    Factory/source-validation witnesses can opt out.
     Edit fixtures work on a named copy; startup-lock witnesses pass editable=False.
     ``images`` adds the root's ``images/`` photographs (see open_workspace_images).
     """
@@ -106,8 +47,7 @@ def isolated_window(root, *, reuse_templates=True, settings_path=None, editable=
     settings = QSettings(str(settings_path if settings_path is not None
                              else root / 'test-application-settings.ini'), QSettings.Format.IniFormat)
     settings.clear()
-    templates = shared_workflow_templates() if reuse_templates else nullcontext()
-    with patch('seedvision.ui.main_window.QSettings', return_value=settings), templates:
+    with patch('seedvision.ui.main_window.QSettings', return_value=settings):
         window = MainWindow(root)
         if images:
             open_workspace_images(window)
@@ -118,13 +58,12 @@ def isolated_window(root, *, reuse_templates=True, settings_path=None, editable=
 
 
 def workspace_window(root):
-    """``open_workspace_images(MainWindow(root))`` on the shared frozen templates.
+    """``open_workspace_images(MainWindow(root))``.
 
     Unlike isolated_window, it keeps the real application settings and the locked default pipeline.
     """
     from seedvision.ui.main_window import MainWindow
-    with shared_workflow_templates():
-        return open_workspace_images(MainWindow(root))
+    return open_workspace_images(MainWindow(root))
 
 
 def controls_window(testcase):

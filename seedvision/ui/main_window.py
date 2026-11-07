@@ -37,7 +37,6 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QFrame,
     QGridLayout,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -63,7 +62,13 @@ from PySide6.QtWidgets import (
     QWidgetAction,
 )
 
-from seedvision.calibration.neutral import neutral_balance_description
+from seedvision.segmentation.automatic_references import (
+    describe as describe_automatic_references,
+)
+from seedvision.calibration.chart_colour import (
+    colour_correction_fell_back,
+    colour_correction_summary,
+)
 
 _KEEP_INSTANCE_GENERATION = object()
 from seedvision.pipeline import NodeStatus, build_default_pipeline, category_rank
@@ -74,7 +79,11 @@ from seedvision.ui.reference_frames import ReferenceFrameController
 from seedvision.ui.work_control import WorkController
 from seedvision.ui.results import ResultsController
 from seedvision.ui.persistence_jobs import ResponsiveReferenceRegionStore, run_persistence
-from seedvision.ui.annotation_panel import AnnotationPanel, CurrentPageStack
+from seedvision.ui.annotation_panel import (
+    AnnotationPanel,
+    CurrentPageStack,
+    even_buttons,
+)
 from seedvision.ui.annotation_transfer import AnnotationTransferController
 from seedvision.ui.deferred import run_soon
 from seedvision.diagnostics import (
@@ -270,6 +279,7 @@ VIEWER_NODE_MODES = {
     "seed_mean_shape_atlas": "seed_scale_estimation",
     "seed_shape_uncertainty": "seed_scale_estimation",
     "seed_boundary_curvature_distribution": "seed_scale_estimation",
+    "automatic_material_references": "automatic_material_references",
     "background_likelihood": "background_likelihood",
     "material_evidence_decision": "material_seed_probability",
     "distance_candidates": "distance_candidates",
@@ -318,6 +328,7 @@ OVERLAY_NODE_OWNERS = {
     "wavelet_detail_4": "wavelet_decomposition",
     "wavelet_residual": "wavelet_decomposition",
     "perimeter_background_reference": "layout_detection",
+    "automatic_material_references": "automatic_material_references",
     "seed_scale_estimation": "seed_scale_estimation",
     "seed_size_ovality_distribution": "seed_scale_estimation",
     "seed_pose_shape_distributions": "seed_scale_estimation",
@@ -530,6 +541,7 @@ OVERLAY_DATA_PORTS = {
     "seed_condition_wrinkled_probability": "condition_wrinkled",
     "seed_condition_stained_probability": "condition_stained",
     "perimeter_background_reference": "perimeter_background",
+    "automatic_material_references": "foreground",
     "procedural_seed_mask": "material_mask",
     "procedural_boundary_cost": "boundary_cost",
     "procedural_centres": "centre_likelihood",
@@ -1259,7 +1271,7 @@ _REFERENCE_SUMMARY_STATES = {
     "missing": ("No references", "muted"),
     "not checked": ("References not checked", "muted"),
     "rejected": ("References not loaded", "warn"),
-    "withheld": ("References withheld by project", "warn"),
+    "withheld": ("References outside project", "warn"),
     "memory_only": ("References not saved to disk", "warn"),
 }
 _SUMMARY_CHIP_COLOURS = {
@@ -1268,6 +1280,30 @@ _SUMMARY_CHIP_COLOURS = {
     "warn": ("#fbeadb", "#7a3d06"),
     "muted": ("#eceff2", "#4a5560"),
 }
+
+
+def _unloaded_sidecar_reason(image_status, sidecar) -> str:
+    """Say why the project's saved references for an image were not loaded."""
+
+    if image_status != ProjectFileStatus.AVAILABLE:
+        return {
+            ProjectFileStatus.MISSING: "The image was missing when the project was opened.",
+            ProjectFileStatus.FINGERPRINT_MISMATCH: "The image has changed since the project was saved.",
+            ProjectFileStatus.DIMENSION_MISMATCH: "The image size has changed since the project was saved.",
+        }.get(image_status, "The image could not be read when the project was opened.")
+    return {
+        ProjectFileStatus.MISSING: "The project's file for these references is missing.",
+        ProjectFileStatus.INVALID_SIDECAR: "The project's file for these references is not valid.",
+    }.get(sidecar.status, "The project's file for these references could not be read.")
+
+
+def _no_vessel_text(result) -> str:
+    """Layout status for a photograph whose best-fitting circle is not a vessel."""
+
+    support = getattr(result, "vessel_rim_support", None)
+    return "No vessel visible" + (
+        "" if support is None else f"; rim on {support:.0%} of the best-fitting circle"
+    )
 
 
 def _summary_chip(text: str, tone: str) -> str:
@@ -1346,10 +1382,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._project_biological_context: BiologicalContext | None = None
         self._project_species = UNKNOWN_SPECIES
         self._project_capture_group_id: str | None = None
-        self._project_reference_graphs = ()
-        self._project_reference_model_assets = ()
-        self._project_native_recipes = ()
-        self._project_correction_bindings = ()
         self._reference_region_autoload_attempted: set[str] = set()
         self._reference_region_load_status: dict[str, tuple[str, str]] = {}
         self._manual_seed_centre_autoload_attempted: set[str] = set()
@@ -1461,6 +1493,9 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             self._instance_annotations_generated
         )
         self.image_view.instance_tool_status.connect(self.statusBar().showMessage)
+        self.image_view.instance_annotation_picked.connect(
+            self._instance_annotation_picked
+        )
         self.image_view.shape_fill_size_preference_changed.connect(
             self._shape_fill_size_preference_changed
         )
@@ -1538,7 +1573,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._init_optimization()
         self._init_reference_frames()
         self._init_work_control()
-        self.stop_action.triggered.connect(lambda: self.pipeline_workflow.stop() if self.pipeline_workflow.active else None)
         self._init_results()
         self._finalize_menus()
         self._show_split_workspace()
@@ -1785,122 +1819,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         if item is not None:
             self._open_list_item(item)
         self._refresh_project_node()
-
-    def _correction_project_state(self):
-        selected = self.image_view.image_path
-        paths = tuple(Path(self.image_list.item(index).data(Qt.ItemDataRole.UserRole)).resolve()
-                      for index in range(self.image_list.count()))
-        return (self._root.resolve(), None if selected is None else Path(selected).resolve(), paths,
-                self._current_project_path, tuple(self._project_original_image_records.items()),
-                self._project_reference_graphs, self._project_native_recipes, self._project_correction_bindings,
-                self.catalogue_nodes.instances,
-                bool(getattr(self, '_closing_after_work', False)))
-
-    def _capture_correction_project_context(self):
-        from seedvision.persistence.correction_session import capture_correction_context
-        state = self._correction_project_state()
-        if state[1] is None:
-            return None
-        if state[1] not in state[2] or state[-1]:
-            raise ValueError('Select an available current project image for colour correction.')
-        context = run_persistence(self, partial(capture_correction_context, state[0], state[1],
-            original_records=tuple(self._project_original_image_records.values())),
-            'Verifying the selected correction project image…')
-        if self._correction_project_state() != state:
-            raise ValueError('The project or selected image changed while its correction context was prepared.')
-        return context
-
-    def _keep_project_correction(self, request, cancel, current):
-        from seedvision.persistence.correction_session import (
-            CorrectionKeepRequest, capture_correction_keep, validate_correction_keep_result,
-        )
-        from seedvision.persistence.native_recipes import select_native_recipe
-        from seedvision.persistence.correction_inputs import (
-            select_correction_binding, retain_selected_correction_bindings, validate_correction_binding_records,
-        )
-        from seedvision.benchmarking.native_recipe import NativeRecipeCancelled
-        if not isinstance(request, CorrectionKeepRequest):
-            raise ValueError('Correction Keep requires its current metadata request.')
-        if not current():
-            raise NativeRecipeCancelled('Correction project selection changed before Keep.')
-        state = self._correction_project_state()
-        context = request.context
-        def fresh():
-            return (not cancel.is_set() and self._correction_project_state() == state
-                    and state[0] == context.root and state[1] == context.source_path
-                    and context.source_path in state[2] and not state[-1])
-        # The dialog closure runs before file capture only. Later parameter,
-        # layout and close changes set the shared Event; final merging reads
-        # that passive token and our own metadata, without caller callbacks.
-        if not fresh():
-            raise NativeRecipeCancelled('Correction project selection changed before Keep.')
-        original = dict(state[4]).get(context.image.identifier)
-        if original is not None and original != context.image:
-            raise ValueError('The selected project image record changed before Keep.')
-        if request.pinned and request.binding not in state[7]:
-            raise ValueError('The saved correction selection changed before Keep.')
-        captured = run_persistence(self, partial(capture_correction_keep, request, cancel=cancel.is_set),
-                                   'Keeping verified correction input copies…')
-        if not fresh():
-            raise NativeRecipeCancelled('Correction project selection changed while inputs were being kept.')
-        validate_correction_keep_result(request, captured)
-        recipes = select_native_recipe(state[6], request.recipe)
-        bindings = retain_selected_correction_bindings(state[7], state[5], recipes,
-            pipeline_workflow=self.pipeline_workflow.workflow, node_instances=self.catalogue_nodes.instances)
-        bindings = validate_correction_binding_records(select_correction_binding(bindings, captured))
-        self._project_native_recipes, self._project_correction_bindings = recipes, bindings
-        if context.image.identifier not in self._project_original_image_records:
-            self._project_original_image_records[context.image.identifier] = context.image
-            self._project_original_image_order += (context.image.identifier,)
-        self._set_project_dirty()
-        return captured
-
-    @Slot(object)
-    def _set_project_native_recipes(self, value):
-        from seedvision.persistence.native_recipes import validate_native_recipes
-        try:
-            updated = validate_native_recipes(value)
-        except (ValueError, TypeError) as error:
-            QMessageBox.warning(self, 'Invalid working recipes', str(error))
-            return
-        if updated == self._project_native_recipes:
-            return
-        self._project_native_recipes = updated
-        self.pipeline_workflow.refresh_saved(updated)
-        self._retain_selected_correction_bindings()
-        self._set_project_dirty()
-
-    @Slot(object)
-    def _set_project_reference_graphs(self, value: object) -> None:
-        """Install display/history metadata without invalidating analysis caches."""
-
-        from seedvision.persistence.reference_graphs import (
-            ReferenceGraphPersistenceError,
-            validate_reference_graphs,
-        )
-
-        try:
-            updated = validate_reference_graphs(value)
-        except ReferenceGraphPersistenceError as error:
-            QMessageBox.warning(
-                self,
-                "Invalid reference graph metadata",
-                str(error),
-            )
-            return
-        if updated == self._project_reference_graphs:
-            return
-        self._project_reference_graphs = updated
-        self._retain_selected_correction_bindings()
-        # Graph layout, selection and wire presentation are project metadata.
-        # They do not alter native pipeline settings or cache keys.
-        self._set_project_dirty()
-
-    def _retain_selected_correction_bindings(self):
-        from seedvision.persistence.correction_inputs import retain_selected_correction_bindings
-        self._project_correction_bindings = retain_selected_correction_bindings(
-            self._project_correction_bindings, self._project_reference_graphs, self._project_native_recipes,
-            pipeline_workflow=self.pipeline_workflow.workflow, node_instances=self.catalogue_nodes.instances)
 
     def _refresh_recent_projects_menu(self) -> None:
         """List recent project masters, newest first, directly in the File menu."""
@@ -2296,7 +2214,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             self._set_reference_region_load_status(
                 key,
                 "saved",
-                "A previously memory-only applied snapshot was saved successfully.",
+                "An earlier failed save has now succeeded.",
             )
 
         for key in tuple(self._unsaved_manual_centre_sidecars):
@@ -2442,16 +2360,9 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 species_library=self._project_species_library_pin,
                 biological_context=self._project_level_biological_context(),
                 capture_group_id=self._project_capture_group_id,
-                reference_graphs=self._project_reference_graphs,
-                reference_model_assets=getattr(self, '_project_reference_model_assets', ()),
-                native_recipes=self._project_native_recipes,
-                pipeline_workflow=self.pipeline_workflow.sync_graph(),
                 node_instances=self.catalogue_nodes.snapshot_instances(),
                 active_pipeline=self.pipeline_documents.active_copy,
                 custom_pipelines=self.pipeline_documents.stored_copies,
-                correction_bindings=tuple(binding for binding in self._project_correction_bindings
-                    if binding.image_id not in self._project_unresolved_image_records),
-                existing_correction_bindings=self._project_correction_bindings,
             ), 'Preparing verified project data…')
             live_records = {}
             for spec, record in zip(image_specs, captured.images, strict=True):
@@ -2484,21 +2395,12 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 species_library=captured.species_library,
                 biological_context=captured.biological_context,
                 capture_group_id=captured.capture_group_id,
-                reference_graphs=self._project_reference_graphs,
-                reference_model_assets=captured.reference_model_assets,
-                native_recipes=captured.native_recipes,
-                pipeline_workflow=captured.pipeline_workflow,
                 node_instances=captured.node_instances,
                 active_pipeline=captured.active_pipeline,
                 custom_pipelines=captured.custom_pipelines,
-                correction_bindings=captured.correction_bindings+tuple(binding
-                    for binding in self._project_correction_bindings
-                    if binding.image_id in self._project_unresolved_image_records),
             )
             self._copy_optimization_companions(destination)
             saved = run_persistence(self, lambda: self._project_analysis_store.save(document, destination), 'Saving project master…')
-            self._project_reference_model_assets = document.reference_model_assets
-            self._project_correction_bindings = document.correction_bindings
         except (
             AnalysisSettingsError,
             InstanceMaskImportError,
@@ -2784,22 +2686,13 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._project_species_library_pin = loaded.document.species_library
         self._project_biological_context = loaded.document.biological_context
         self._project_capture_group_id = loaded.document.capture_group_id
-        self._project_reference_graphs = loaded.document.reference_graphs
-        self._project_reference_model_assets = loaded.document.reference_model_assets
-        self._project_native_recipes = loaded.document.native_recipes
-        self.pipeline_workflow.refresh_saved(self._project_native_recipes)
-        self.pipeline_workflow.install(loaded.document.pipeline_workflow)
+        self.pipeline_workflow.install()
         self.catalogue_nodes.set_instances(loaded.document.node_instances)
         if hasattr(self, "pipeline_documents"):
             self._loaded_pipeline_document = None
-            self._pipeline_held_model_assets = ()
-            self._pipeline_held_correction_bindings = ()
-            loaded_workflow = loaded.document.pipeline_workflow
             self.pipeline_documents.set_stored_copies(loaded.document.custom_pipelines)
-            self.pipeline_documents.loaded(self.pipeline_workflow.graph_pipeline.title if loaded_workflow is None else loaded_workflow.source_recipe.title,
-                name=loaded.document.active_pipeline or (None if loaded_workflow is None else loaded_workflow.display_state.get("pipeline_name")))
-            self.pipeline_backends.refresh()
-        self._project_correction_bindings = loaded.document.correction_bindings
+            self.pipeline_documents.loaded(self.pipeline_workflow.graph_pipeline.title,
+                name=loaded.document.active_pipeline)
         species = loaded.document.species
         self._project_species = (
             UNKNOWN_SPECIES if species in {None, "", "unknown"} else species
@@ -2853,6 +2746,9 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 self._withheld_reference_sidecars.add(key)
                 if reference is not None:
                     self._project_unresolved_reference_sidecars.add(key)
+                    self._set_reference_region_load_status(
+                        key, "rejected", _unloaded_sidecar_reason(image.status, reference)
+                    )
             centres = image.sidecar(MANUAL_SEED_CENTRES_SIDECAR)
             if centres is not None:
                 self._project_manual_centre_sidecar_paths[key] = centres.path
@@ -2984,12 +2880,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
     def _clear_project_session_state(self) -> None:
         """Purge every image-local value before installing another project."""
         self._loaded_pipeline_document = None
-        self._pipeline_held_model_assets = ()
-        self._pipeline_held_correction_bindings = ()
         self.catalogue_nodes.set_instances(())
-        self.pipeline_workflow.install(None)
-        self.pipeline_workflow._copies.clear()
-        self.pipeline_workflow.refresh_saved()
+        self.pipeline_workflow.install()
         if hasattr(self, 'pipeline_documents'):
             self.pipeline_documents.set_stored_copies(())
         if hasattr(self, '_optimization_targets'):
@@ -3072,10 +2964,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._project_biological_context = None
         self._project_species = UNKNOWN_SPECIES
         self._project_capture_group_id = None
-        self._project_reference_graphs = ()
-        self._project_reference_model_assets = ()
-        self._project_native_recipes = ()
-        self._project_correction_bindings = ()
         self._image_paths.clear()
         self.image_list.clear()
         self._image_thumbnails.clear()
@@ -3367,12 +3255,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 self._reference_region_store.path_for(path)
             )
             self._reference_layer_shapes[key] = shape
-            self._set_reference_region_load_status(
-                key,
-                "saved",
-                "The applied project draft was atomically saved and installed in "
-                "memory for analysis.",
-            )
+            self._set_reference_region_load_status(key, "saved", "")
             committed.add(key)
 
         self._finish_bulk_project_reference_change(
@@ -3766,8 +3649,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         optimise_menu.addAction(self.import_optimization_targets_action)
         optimise_menu.addAction(self.optimization_history_action)
         analysis_menu.addSeparator()
-        settings_menu = analysis_menu.addMenu("Settings")
-        settings_menu.addAction(self.pipeline_workflow.show_all_action)
 
         learning_menu = menus["learning"]
         outlines_menu = learning_menu.addMenu("Seed outlines")
@@ -3852,6 +3733,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             ("Wavelet detail 4", "wavelet_detail_4"),
             ("Wavelet low-pass residual", "wavelet_residual"),
             ("Perimeter background reference", "perimeter_background_reference"),
+            ("Automatic material references", "automatic_material_references"),
             ("Reviewed seed measurements", "seed_scale_estimation"),
             ("Size–ovality distribution", "seed_size_ovality_distribution"),
             ("Pose-conditioned shape distributions", "seed_pose_shape_distributions"),
@@ -4103,10 +3985,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
     def _rebuild_overlay_menu(self, selected_mode: str) -> None:
         """Expose overlays as node submenus so ownership stays obvious."""
 
-        presenter = getattr(self, 'pipeline_workflow', None)
-        if presenter is not None and presenter.active:
-            presenter.display.rebuild_menu()
-            return
         self.overlay_menu.clear()
         self._overlay_filter_field.clear()
         self.overlay_menu.addAction(self._overlay_filter_action)
@@ -4193,9 +4071,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
     def _sync_inspector_overlay_options(self) -> None:
         if not hasattr(self, "pipeline_inspector"):
             return
-        if getattr(self, 'pipeline_workflow', None) is not None and self.pipeline_workflow.active:
-            self.pipeline_inspector.overlay_combo.hide()
-            return
         self.pipeline_inspector.set_overlay_options(
             self._overlay_options_for_node(self._selected_pipeline_node),
             str(self.overlay_combo.currentData() or ""),
@@ -4204,35 +4079,15 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
     def _build_reference_panel(self) -> None:
         """Build reference-painting and instance-annotation controls."""
 
-        self.reference_panel = AnnotationPanel(self)
-        self.reference_panel.setObjectName("referencePaintPanel")
-        self.reference_panel.setStyleSheet(
-            "QFrame#referencePaintPanel { background: palette(window); "
-            "border: 1px solid palette(mid); border-radius: 3px; }"
-        )
-        layout = QVBoxLayout(self.reference_panel)
-        layout.setContentsMargins(10, 8, 10, 8)
-        layout.setSpacing(4)
-
-        reference_panel_header = QWidget(self.reference_panel)
-        reference_panel_header_layout = QHBoxLayout(reference_panel_header)
-        reference_panel_header_layout.setContentsMargins(0, 0, 0, 0)
-        reference_panel_header_layout.setSpacing(4)
-        # The panel floats over the viewer; its title bar is the drag handle.
-        self.reference_panel_drag_handle = QLabel(
-            "Annotation tools", reference_panel_header
-        )
-        self.reference_panel_drag_handle.setAlignment(
-            Qt.AlignmentFlag.AlignCenter
-        )
+        # The panel floats over the viewer; its title bar is the drag handle and
+        # carries Undo, collapse and close.
+        self.reference_panel = AnnotationPanel("Seed annotation", self)
+        self.reference_panel_drag_handle = self.reference_panel.title_bar
         self.reference_panel_drag_handle.setToolTip(
             "Drag to move the annotation tools anywhere in the application workspace."
         )
-        self.reference_panel_drag_handle.setStyleSheet(
-            "padding: 3px; font-weight: 600; background: palette(midlight); "
-            "border: 1px solid palette(mid); border-radius: 2px;"
-        )
-        self.reference_undo_button = QPushButton("Undo", reference_panel_header)
+        self.reference_panel.close_requested.connect(self._close_reference_panel)
+        self.reference_undo_button = self.reference_panel.add_title_button("Undo")
         self.reference_undo_button.setEnabled(False)
         self.reference_undo_button.setToolTip(
             "Undo the latest painting command for this image (Ctrl+Z). "
@@ -4241,11 +4096,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.reference_undo_button.clicked.connect(
             self._undo_active_reference_edit
         )
-        reference_panel_header_layout.addWidget(
-            self.reference_panel_drag_handle, 1
-        )
-        reference_panel_header_layout.addWidget(self.reference_undo_button)
-        layout.addWidget(reference_panel_header)
 
         self.reference_visibility_controls = QWidget(self.reference_panel)
         self.reference_visibility_controls.setSizePolicy(
@@ -4288,31 +4138,28 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             self.show_instance_annotations_checkbox
         )
 
-        self.reference_panel_scroll = QScrollArea(self.reference_panel)
-        self.reference_panel_scroll.setWidgetResizable(True)
-        self.reference_panel_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self.reference_panel_scroll.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-        )
-        self.reference_panel_scroll.setVerticalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAsNeeded
-        )
+        self.reference_panel_scroll = self.reference_panel.scroll_area
         self.reference_panel_contents = QWidget(self.reference_panel_scroll)
         self.reference_panel_contents.setSizePolicy(
             QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
         )
         reference_panel_layout = QVBoxLayout(self.reference_panel_contents)
-        reference_panel_layout.setContentsMargins(0, 0, 0, 0)
-        reference_panel_layout.setSpacing(4)
+        reference_panel_layout.setContentsMargins(10, 8, 10, 10)
+        reference_panel_layout.setSpacing(0)
         reference_panel_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
+        # Materials: class, commit and brush rows share three even columns;
+        # the colour-model options follow.
         self.reference_controls = QWidget(self.reference_panel_contents)
         reference_layout = QVBoxLayout(self.reference_controls)
         reference_layout.setContentsMargins(0, 0, 0, 0)
         reference_layout.setSpacing(4)
         reference_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        reference_grid = QGridLayout()
+        reference_grid.setContentsMargins(0, 0, 0, 0)
+        reference_grid.setHorizontalSpacing(4)
+        reference_grid.setVerticalSpacing(4)
 
-        reference_layout.addWidget(self._section_label("Material references"))
         self.background_enabled_checkbox = QCheckBox(
             "Use background colour analysis", self.reference_controls
         )
@@ -4322,14 +4169,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.background_enabled_checkbox.toggled.connect(
             self._background_enabled_toggled
         )
-        reference_options = QWidget(self.reference_controls)
-        reference_options_layout = QHBoxLayout(reference_options)
-        reference_options_layout.setContentsMargins(0, 0, 0, 0)
-        reference_options_layout.setSpacing(8)
-        reference_options_layout.addWidget(self.background_enabled_checkbox)
-        reference_options_layout.addStretch(1)
-        reference_layout.addWidget(reference_options)
-
         self.keep_perimeter_background_reference_checkbox = QCheckBox(
             "Keep perimeter-matched source", self.reference_controls
         )
@@ -4355,10 +4194,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.keep_perimeter_background_reference_checkbox.toggled.connect(
             self._keep_perimeter_background_reference_toggled
         )
-        reference_layout.addWidget(
-            self.keep_perimeter_background_reference_checkbox
-        )
-
         self.include_seed_instances_as_foreground_checkbox = QCheckBox(
             "Include annotated seeds as Foreground", self.reference_controls
         )
@@ -4381,15 +4216,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.include_seed_instances_as_foreground_checkbox.toggled.connect(
             self._include_seed_instances_as_foreground_toggled
         )
-        reference_layout.addWidget(
-            self.include_seed_instances_as_foreground_checkbox
-        )
-
-        material_buttons = QWidget(self.reference_controls)
-        reference_buttons = material_buttons
-        reference_button_layout = QHBoxLayout(reference_buttons)
-        reference_button_layout.setContentsMargins(0, 0, 0, 0)
-        reference_button_layout.setSpacing(3)
+        reference_buttons = self.reference_controls
         self.background_point_button = QPushButton(
             "Background", reference_buttons
         )
@@ -4413,7 +4240,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.clear_background_points_button.clicked.connect(
             self._clear_background_points
         )
-        reference_button_layout.addWidget(self.background_point_button)
         self.background_reference_label = self._muted_label(
             "Automatic background colour selection; no painted area."
         )
@@ -4422,6 +4248,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         background_exclusion_buttons = QWidget(self.reference_controls)
         background_exclusion_layout = QHBoxLayout(background_exclusion_buttons)
         background_exclusion_layout.setContentsMargins(0, 0, 0, 0)
+        background_exclusion_buttons.hide()
         self.background_exclusion_button = QPushButton(
             "Other", background_exclusion_buttons
         )
@@ -4453,7 +4280,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.clear_background_exclusion_button.clicked.connect(
             self._clear_background_exclusion
         )
-        reference_button_layout.addWidget(self.background_exclusion_button)
         self.background_exclusion_label = self._muted_label(
             "No painted negative background examples."
         )
@@ -4462,6 +4288,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         foreground_buttons = QWidget(self.reference_controls)
         foreground_button_layout = QHBoxLayout(foreground_buttons)
         foreground_button_layout.setContentsMargins(0, 0, 0, 0)
+        foreground_buttons.hide()
         self.foreground_point_button = QPushButton(
             "Foreground", foreground_buttons
         )
@@ -4489,8 +4316,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.clear_foreground_points_button.clicked.connect(
             self._clear_foreground_points
         )
-        reference_button_layout.addWidget(self.foreground_point_button)
-        reference_layout.addWidget(material_buttons)
         self.foreground_reference_label = self._muted_label(
             "No painted foreground reference."
         )
@@ -4499,6 +4324,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         foreground_exclusion_buttons = QWidget(self.reference_controls)
         foreground_exclusion_layout = QHBoxLayout(foreground_exclusion_buttons)
         foreground_exclusion_layout.setContentsMargins(0, 0, 0, 0)
+        foreground_exclusion_buttons.hide()
         self.foreground_exclusion_button = QPushButton(
             "Exclude from foreground", foreground_exclusion_buttons
         )
@@ -4600,13 +4426,14 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             self._reference_brush_radius_changed
         )
         self.reference_brush_label = QLabel("12 px", brush_widget)
-        self.reference_brush_label.setMinimumWidth(48)
+        self.reference_brush_label.setMinimumWidth(42)
+        self.reference_brush_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
         brush_layout.addWidget(self.reference_brush_slider, 1)
         brush_layout.addWidget(self.reference_brush_label)
 
-        brush_mode_widget = QWidget(self.reference_controls)
-        brush_mode_layout = QHBoxLayout(brush_mode_widget)
-        brush_mode_layout.setContentsMargins(0, 0, 0, 0)
+        brush_mode_widget = self.reference_controls
         self.reference_paint_mode_button = QPushButton("Paint", brush_mode_widget)
         self.reference_paint_mode_button.setCheckable(True)
         self.reference_paint_mode_button.setChecked(True)
@@ -4635,19 +4462,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.clear_reference_layer_button.clicked.connect(
             self._clear_active_reference_layer
         )
-        brush_mode_layout.addWidget(self.reference_paint_mode_button)
-        brush_mode_layout.addWidget(self.reference_eraser_button)
-        brush_mode_layout.addWidget(self.clear_reference_layer_button)
 
-        brush_form = QFormLayout()
-        brush_form.setVerticalSpacing(4)
-        brush_form.addRow("Brush mode", brush_mode_widget)
-        brush_form.addRow("Brush radius", brush_widget)
-        reference_layout.addLayout(brush_form)
-
-        confirmation_buttons = QWidget(self.reference_controls)
-        confirmation_layout = QHBoxLayout(confirmation_buttons)
-        confirmation_layout.setContentsMargins(0, 0, 0, 0)
+        confirmation_buttons = self.reference_controls
         self.apply_reference_masks_button = QPushButton(
             "Apply + save", confirmation_buttons
         )
@@ -4679,10 +4495,43 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.save_reference_regions_button.clicked.connect(
             self._save_reference_regions
         )
-        confirmation_layout.addWidget(self.apply_reference_masks_button, 1)
-        confirmation_layout.addWidget(self.revert_reference_masks_button)
-        confirmation_layout.addWidget(self.save_reference_regions_button)
-        reference_layout.addWidget(confirmation_buttons)
+        # As in the seed editor, the action that keeps edits reads as primary.
+        self.apply_reference_masks_button.setStyleSheet("font-weight: 600;")
+        material_rows = (
+            ("Material", (
+                self.background_point_button,
+                self.foreground_point_button,
+                self.background_exclusion_button,
+            )),
+            ("", (
+                self.apply_reference_masks_button,
+                self.revert_reference_masks_button,
+                self.save_reference_regions_button,
+            )),
+            ("Brush mode", (
+                self.reference_paint_mode_button,
+                self.reference_eraser_button,
+                self.clear_reference_layer_button,
+            )),
+        )
+        for row, (label, buttons) in enumerate(material_rows):
+            if label:
+                reference_grid.addWidget(QLabel(label, self.reference_controls), row, 0)
+            for column, button in enumerate(buttons, start=1):
+                reference_grid.addWidget(button, row, column)
+        even_buttons(*(button for _label, row in material_rows for button in row))
+        reference_grid.addWidget(
+            QLabel("Brush radius", self.reference_controls), len(material_rows), 0
+        )
+        reference_grid.addWidget(brush_widget, len(material_rows), 1, 1, 3)
+        for column in (1, 2, 3):
+            reference_grid.setColumnStretch(column, 1)
+        reference_layout.addLayout(reference_grid)
+        reference_layout.addSpacing(2)
+        reference_layout.addWidget(self._separator())
+        reference_layout.addWidget(self.background_enabled_checkbox)
+        reference_layout.addWidget(self.keep_perimeter_background_reference_checkbox)
+        reference_layout.addWidget(self.include_seed_instances_as_foreground_checkbox)
         self.reference_confirmation_label = self._muted_label("")
         reference_layout.addWidget(self.reference_confirmation_label)
 
@@ -4701,18 +4550,26 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         )
         self.instance_annotation_help_label.hide()
 
-        instance_selector = QWidget(self.instance_annotation_controls)
+        instance_header = QWidget(self.instance_annotation_controls)
+        header_grid = QGridLayout(instance_header)
+        header_grid.setContentsMargins(0, 0, 0, 0)
+        header_grid.setHorizontalSpacing(4)
+        header_grid.setVerticalSpacing(4)
+        header_grid.setColumnStretch(1, 1)
+        header_grid.setColumnStretch(2, 1)
+        instance_selector = QWidget(instance_header)
         selector_layout = QHBoxLayout(instance_selector)
         selector_layout.setContentsMargins(0, 0, 0, 0)
+        selector_layout.setSpacing(4)
         self.instance_colour_swatch = QLabel(instance_selector)
         self.instance_colour_swatch.setFixedSize(22, 22)
         self.instance_id_spin = QSpinBox(instance_selector)
         self.instance_id_spin.setRange(1, 9999)
         self.instance_id_spin.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.instance_id_spin.valueChanged.connect(self._instance_id_changed)
-        self.new_instance_button = QPushButton("Next empty", instance_selector)
+        self.new_instance_button = QPushButton("Next empty", instance_header)
         self.new_instance_button.clicked.connect(self._new_instance_annotation)
-        self.next_unannotated_button = QPushButton("Next unannotated", instance_selector)
+        self.next_unannotated_button = QPushButton("Next unannotated", instance_header)
         self.next_unannotated_button.setToolTip(
             "Select the next painted seed whose condition or shape has not been reviewed."
         )
@@ -4720,18 +4577,22 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         selector_layout.addWidget(QLabel("Seed:", instance_selector))
         selector_layout.addWidget(self.instance_colour_swatch)
         selector_layout.addWidget(self.instance_id_spin)
-        selector_layout.addWidget(self.new_instance_button)
-        selector_layout.addWidget(self.next_unannotated_button)
-        selector_layout.addStretch(1)
-        instance_layout.addWidget(instance_selector)
-
-        self.instance_empty_label = QLabel("empty", self.instance_annotation_controls)
+        self.instance_empty_label = QLabel("empty", instance_selector)
         self.instance_empty_label.setStyleSheet("color: #cf2020; font-weight: bold;")
-        instance_layout.addWidget(self.instance_empty_label)
-        instance_visibility_row = QWidget(self.instance_annotation_controls)
+        # Stepping between empty and painted seeds must not shift the row.
+        empty_policy = self.instance_empty_label.sizePolicy()
+        empty_policy.setRetainSizeWhenHidden(True)
+        self.instance_empty_label.setSizePolicy(empty_policy)
+        selector_layout.addWidget(self.instance_empty_label)
+        selector_layout.addStretch(1)
+        header_grid.addWidget(instance_selector, 0, 0)
+        header_grid.addWidget(self.new_instance_button, 0, 1)
+        header_grid.addWidget(self.next_unannotated_button, 0, 2)
+
+        instance_visibility_row = QWidget(instance_header)
         instance_visibility_layout = QHBoxLayout(instance_visibility_row)
         instance_visibility_layout.setContentsMargins(0, 0, 0, 0)
-        instance_visibility_layout.setSpacing(3)
+        instance_visibility_layout.setSpacing(4)
         instance_visibility_layout.addWidget(QLabel("Show:", instance_visibility_row))
         self.instance_visibility_combo = QComboBox(instance_visibility_row)
         self.instance_visibility_combo.addItem("all", "all")
@@ -4745,24 +4606,37 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             )
         )
         instance_visibility_layout.addWidget(self.instance_visibility_combo, 1)
-        self.clear_current_instance_button = QPushButton("Clear seed", instance_visibility_row)
+        self.clear_current_instance_button = QPushButton("Clear seed", instance_header)
         self.clear_current_instance_button.clicked.connect(
             self._clear_current_instance_annotation
         )
-        self.clear_all_instances_button = QPushButton("Clear all", instance_visibility_row)
+        self.clear_all_instances_button = QPushButton("Clear all", instance_header)
         self.clear_all_instances_button.clicked.connect(
             self._clear_all_instance_annotations
         )
-        instance_visibility_layout.addWidget(self.clear_current_instance_button)
-        instance_visibility_layout.addWidget(self.clear_all_instances_button)
-        instance_layout.addWidget(instance_visibility_row)
+        header_grid.addWidget(instance_visibility_row, 2, 0)
+        header_grid.addWidget(self.clear_current_instance_button, 2, 1)
+        header_grid.addWidget(self.clear_all_instances_button, 2, 2)
 
+        # Seed traits: one labelled grid whose two field columns have one width.
         self.annotation_metadata = QWidget(self.instance_annotation_controls)
-        metadata_layout = QVBoxLayout(self.annotation_metadata)
-        metadata_layout.setContentsMargins(0,0,0,0)
-        metadata_layout.addWidget(self._section_label("Seed traits"))
-        trait_form = QFormLayout()
-        trait_form.setVerticalSpacing(4)
+        traits_grid = QGridLayout(self.annotation_metadata)
+        traits_grid.setContentsMargins(0, 0, 0, 0)
+        traits_grid.setHorizontalSpacing(4)
+        traits_grid.setVerticalSpacing(4)
+        traits_grid.setColumnStretch(1, 1)
+        traits_grid.setColumnStretch(2, 1)
+        traits_grid.addWidget(self._section_label("Seed traits"), 0, 0, 1, 3)
+
+        def trait_row(
+            row: int, label: str, first: QWidget, second: QWidget | None = None,
+            *, wide: bool = False,
+        ) -> None:
+            traits_grid.addWidget(QLabel(label, self.annotation_metadata), row, 0)
+            traits_grid.addWidget(first, row, 1, 1, 2 if wide else 1)
+            if second is not None:
+                traits_grid.addWidget(second, row, 2)
+
         self.seed_coat_pattern_combo = QComboBox(
             self.instance_annotation_controls
         )
@@ -4773,7 +4647,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.seed_coat_pattern_combo.currentIndexChanged.connect(
             self._seed_trait_controls_changed
         )
-        trait_form.addRow("Coat pattern", self.seed_coat_pattern_combo)
+        trait_row(1, "Coat pattern", self.seed_coat_pattern_combo, wide=True)
         self.seed_conditions_reviewed_checkbox = QCheckBox(
             "No defects", self.instance_annotation_controls
         )
@@ -4784,11 +4658,11 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.seed_conditions_reviewed_checkbox.toggled.connect(
             self._seed_trait_controls_changed
         )
-        condition_group = QGroupBox("Seed condition", self.instance_annotation_controls)
-        condition_group.setStyleSheet("QGroupBox::title { font-weight: bold; }")
+        condition_group = QWidget(self.annotation_metadata)
         condition_layout = QGridLayout(condition_group)
-        condition_layout.setContentsMargins(5, 2, 5, 3)
-        condition_layout.setSpacing(3)
+        condition_layout.setContentsMargins(0, 2, 0, 2)
+        condition_layout.setHorizontalSpacing(8)
+        condition_layout.setVerticalSpacing(4)
         condition_rows = max(2, (len(self._seed_trait_catalogue.conditions) + 1) // 2)
         condition_layout.addWidget(
             self.seed_conditions_reviewed_checkbox, 0, 0, condition_rows, 1
@@ -4809,13 +4683,10 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             checkbox.toggled.connect(self._seed_trait_controls_changed)
             condition_layout.addWidget(checkbox, index // 2, 2 + index % 2)
             self.seed_condition_checkboxes[condition] = checkbox
-        trait_form.addRow(condition_group)
-        metadata_layout.addLayout(trait_form)
+        condition_layout.setColumnStretch(4, 1)
+        trait_row(2, "Condition", condition_group, wide=True)
         self._populate_seed_coat_patterns()
 
-        metadata_layout.addWidget(self._section_label("Seed shape"))
-        shape_form = QFormLayout()
-        shape_form.setVerticalSpacing(4)
         self.seed_shape_excluded_checkbox = QCheckBox(
             "Exclude from modelling", self.instance_annotation_controls
         )
@@ -4862,21 +4733,14 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             self._seed_trait_controls_changed
         )
         self.seed_pose_combo.setMinimumWidth(72)
-        shape_row = QWidget(self.instance_annotation_controls)
-        shape_row_layout = QHBoxLayout(shape_row)
-        shape_row_layout.setContentsMargins(0, 0, 0, 0)
-        shape_row_layout.setSpacing(4)
-        shape_row_layout.addWidget(QLabel("Outline", shape_row))
-        shape_row_layout.addWidget(self.seed_outline_visibility_combo, 1)
-        shape_row_layout.addWidget(self.seed_full_length_checkbox)
-        shape_row_layout.addWidget(QLabel("Pose", shape_row))
-        shape_row_layout.addWidget(self.seed_pose_combo, 1)
-        shape_form.addRow(shape_row)
+        # A complete outline sets Full length visible, so they share a row.
+        trait_row(
+            3, "Outline", self.seed_outline_visibility_combo,
+            self.seed_full_length_checkbox,
+        )
+        trait_row(4, "Pose", self.seed_pose_combo)
 
-        hilum_widget = QWidget(self.instance_annotation_controls)
-        hilum_layout = QHBoxLayout(hilum_widget)
-        hilum_layout.setContentsMargins(0, 0, 0, 0)
-        hilum_layout.setSpacing(3)
+        hilum_widget = self.annotation_metadata
         self._picked_hilum_point = None
         self.seed_hilum_pick_button = QPushButton("Pick location", hilum_widget)
         self.seed_hilum_pick_button.setCheckable(True)
@@ -4888,17 +4752,15 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.image_view.hilum_landmark_edited.connect(self._hilum_landmark_edited)
         self.image_view.hilum_editing_cancelled.connect(
             lambda: self.seed_hilum_pick_button.setChecked(False))
-        hilum_layout.addWidget(self.seed_hilum_pick_button, 1)
         self.seed_hilum_clear_button = QPushButton("Clear location", hilum_widget)
         self.seed_hilum_clear_button.clicked.connect(self._clear_hilum_location)
-        hilum_layout.addWidget(self.seed_hilum_clear_button)
-        shape_form.addRow("Hilum location", hilum_widget)
-        metadata_layout.addLayout(shape_form)
+        even_buttons(self.seed_hilum_pick_button, self.seed_hilum_clear_button)
+        trait_row(5, "Hilum", self.seed_hilum_pick_button, self.seed_hilum_clear_button)
         self.seed_shape_status_label = self._muted_label(
             "Choose an explicit outline and pose before including this seed."
         )
         self.seed_shape_status_label.setWordWrap(True)
-        metadata_layout.addWidget(self.seed_shape_status_label)
+        traits_grid.addWidget(self.seed_shape_status_label, 6, 0, 1, 3)
 
         self.load_instance_reference_button = QPushButton(
             "Import bundled seed outlines…", self.instance_annotation_controls
@@ -4929,11 +4791,11 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         # Import lives in Learning > Seed outlines; the buttons stay as state
         # holders for availability sync but are not a second visible home.
         instance_import_buttons.hide()
-        instance_layout.addWidget(instance_import_buttons)
 
         instance_brush_widget = QWidget(self.instance_annotation_controls)
         instance_brush_layout = QHBoxLayout(instance_brush_widget)
         instance_brush_layout.setContentsMargins(0, 0, 0, 0)
+        instance_brush_layout.addWidget(QLabel("Brush radius", instance_brush_widget))
         self.instance_brush_slider = QSlider(
             Qt.Orientation.Horizontal, instance_brush_widget
         )
@@ -4947,15 +4809,25 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             self._instance_brush_radius_changed
         )
         self.instance_brush_label = QLabel("12 px", instance_brush_widget)
-        self.instance_brush_label.setMinimumWidth(48)
+        self.instance_brush_label.setMinimumWidth(42)
+        self.instance_brush_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
         instance_brush_layout.addWidget(self.instance_brush_slider, 1)
         instance_brush_layout.addWidget(self.instance_brush_label)
 
         instance_mode_widget = QWidget(self.instance_annotation_controls)
         instance_mode_layout = QGridLayout(instance_mode_widget)
         instance_mode_layout.setContentsMargins(0, 0, 0, 0)
-        instance_mode_layout.setHorizontalSpacing(3)
-        instance_mode_layout.setVerticalSpacing(3)
+        instance_mode_layout.setHorizontalSpacing(4)
+        instance_mode_layout.setVerticalSpacing(4)
+        self.instance_select_button = QPushButton("Select", instance_mode_widget)
+        self.instance_select_button.setCheckable(True)
+        self.instance_select_button.setToolTip(
+            "Click a painted seed to make it the current seed, then return to "
+            "the previous tool. A click where no seed is painted changes nothing."
+        )
+        self._instance_tool_before_select = "brush"
         self.instance_paint_mode_button = QPushButton("Brush", instance_mode_widget)
         self.instance_paint_mode_button.setCheckable(True)
         self.instance_paint_mode_button.setChecked(True)
@@ -4998,6 +4870,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.instance_brush_mode_group = QButtonGroup(instance_mode_widget)
         self.instance_brush_mode_group.setExclusive(True)
         instance_tools = (
+            (self.instance_select_button, "select"),
             (self.instance_paint_mode_button, "brush"),
             (self.instance_edge_trace_button, "edge_trace"),
             (self.instance_shape_guided_fill_button, "shape_guided_fill"),
@@ -5011,14 +4884,10 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                     selected_tool, checked
                 )
             )
-            instance_mode_layout.addWidget(button, index // 3, index % 3)
-
-        instance_layout.addWidget(instance_mode_widget)
-
-        instance_brush_form = QFormLayout()
-        instance_brush_form.setVerticalSpacing(4)
-        instance_brush_form.addRow("Brush radius", instance_brush_widget)
-        instance_layout.addLayout(instance_brush_form)
+            # All six tools on one row of even buttons.
+            instance_mode_layout.addWidget(button, 0, index)
+            instance_mode_layout.setColumnStretch(index, 1)
+        even_buttons(*(button for button, _tool in instance_tools))
 
         self.instance_tool_options_stack = CurrentPageStack(
             self.instance_annotation_controls
@@ -5030,6 +4899,11 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         brush_page_layout.setContentsMargins(0, 0, 0, 0)
         self.instance_tool_pages["brush"] = brush_page
         self.instance_tool_options_stack.addWidget(brush_page)
+
+        select_page = QWidget(self.instance_tool_options_stack)
+        QVBoxLayout(select_page).setContentsMargins(0, 0, 0, 0)
+        self.instance_tool_pages["select"] = select_page
+        self.instance_tool_options_stack.addWidget(select_page)
 
         edge_page = QWidget(self.instance_tool_options_stack)
         edge_form = QFormLayout(edge_page)
@@ -5382,7 +5256,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         eraser_page_layout.setContentsMargins(0, 0, 0, 0)
         self.instance_tool_pages["eraser"] = eraser_page
         self.instance_tool_options_stack.addWidget(eraser_page)
-        instance_layout.addWidget(self.instance_tool_options_stack)
 
         for control in (
             self.edge_trace_evidence_combo,
@@ -5446,11 +5319,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             "reviewed for an accidental split, stray mark, or reused ID."
         )
         self.instance_continuity_warning_label.hide()
-        instance_layout.addWidget(self.instance_continuity_warning_label)
 
-        instance_confirmation = QWidget(self.instance_annotation_controls)
-        instance_confirmation_layout = QHBoxLayout(instance_confirmation)
-        instance_confirmation_layout.setContentsMargins(0, 0, 0, 0)
+        instance_confirmation = instance_header
         self.apply_instance_annotations_button = QPushButton(
             "Apply + save", instance_confirmation
         )
@@ -5473,15 +5343,30 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.revert_instance_annotations_button.clicked.connect(
             self._revert_instance_annotations
         )
-        instance_confirmation_layout.addWidget(self.seed_shape_excluded_checkbox)
-        instance_confirmation_layout.addWidget(
-            self.apply_instance_annotations_button, 1
+        header_grid.addWidget(self.seed_shape_excluded_checkbox, 1, 0)
+        header_grid.addWidget(self.apply_instance_annotations_button, 1, 1)
+        header_grid.addWidget(self.revert_instance_annotations_button, 1, 2)
+        even_buttons(
+            self.new_instance_button,
+            self.next_unannotated_button,
+            self.apply_instance_annotations_button,
+            self.revert_instance_annotations_button,
+            self.clear_current_instance_button,
+            self.clear_all_instances_button,
         )
-        instance_confirmation_layout.addWidget(
-            self.revert_instance_annotations_button
-        )
-        instance_layout.insertWidget(1,instance_confirmation)
+
+        # Seeds, top to bottom: select and commit, paint, describe.
+        instance_layout.addWidget(instance_header)
+        instance_layout.addWidget(self.instance_continuity_warning_label)
+        instance_layout.addSpacing(2)
+        instance_layout.addWidget(self._separator())
+        instance_layout.addWidget(instance_mode_widget)
+        instance_layout.addWidget(instance_brush_widget)
+        instance_layout.addWidget(self.instance_tool_options_stack)
+        instance_layout.addSpacing(2)
+        instance_layout.addWidget(self._separator())
         instance_layout.addWidget(self.annotation_metadata)
+        instance_layout.addWidget(instance_import_buttons)
         self.instance_annotation_confirmation_label = self._muted_label(
             "Applied annotations are saved automatically and then constrain the "
             "instance branch."
@@ -5503,17 +5388,15 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             )
             combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
             combo.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        # The panel keeps each editor's minimum width and is never taller than
+        # the shown editor; when the workspace is shorter, the editor scrolls
+        # rather than compressing its rows into one another.
         for page in (self.reference_controls, self.instance_annotation_controls):
-            page.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Maximum)
-        # The overlay may be shorter than either editor in the split workspace.
-        # Preserve the editors' natural vertical layout and let the surrounding
-        # scroll area reveal it instead of compressing rows into one another.
-        # Keep width flexible so the contents still fit a narrow image viewer.
+            page.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         reference_layout.setSizeConstraint(QLayout.SizeConstraint.SetDefaultConstraint)
         instance_layout.setSizeConstraint(QLayout.SizeConstraint.SetDefaultConstraint)
         self.instance_annotation_controls.hide()
-        self.reference_panel_scroll.setWidget(self.reference_panel_contents)
-        layout.addWidget(self.reference_panel_scroll)
+        self.reference_panel.set_contents(self.reference_panel_contents)
         self._update_instance_colour_swatch()
 
         self.reference_panel.hide()
@@ -5521,6 +5404,10 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.image_view.set_context_panel(self.reference_panel)
         self.image_view.set_context_panel_drag_handle(
             self.reference_panel_drag_handle
+        )
+        # Re-place the panel when its contents grow, shrink or roll up.
+        self.reference_panel.contents_resized.connect(
+            self.image_view._layout_context_panel
         )
         self._link_brush_radius_sliders()
         self.image_workspace_action.toggled.connect(
@@ -5687,7 +5574,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.pipeline_canvas.graph = graph
         preferred = self.catalogue_nodes._selected
         if preferred not in graph.nodes:
-            preferred = self.pipeline_workflow._selected if self.pipeline_workflow.active else self._selected_pipeline_node
+            preferred = self._selected_pipeline_node
         self.pipeline_canvas.rebuild_from_graph(preferred)
 
     def _select_added_node(self, identifier, output=None) -> None:
@@ -5829,10 +5716,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         image_layout.addStretch(1)
 
         layout.addWidget(self.pipeline_inspector)
-        layout.addWidget(self.pipeline_workflow.crop_selector)
-        layout.addWidget(self.pipeline_workflow.node_actions)
         layout.addWidget(self.pipeline_workflow.facts)
-        layout.addWidget(self.pipeline_workflow.histogram)
         layout.addWidget(self.overlay_legend_label)
 
         self.calibration_section = QWidget(content)
@@ -5946,11 +5830,14 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         )
 
     def _bundled_instance_association_text(self, path: Path) -> str:
-        """Describe a declared source-coordinate bootstrap without loading it."""
+        """Describe bundled draft outlines for one image without loading them.
+
+        Returns an empty string when there are none for this image.
+        """
 
         manifest = self._root / "seed-instance-references" / "manifest.json"
         if not manifest.is_file():
-            return "Bundled pre-annotation: none"
+            return ""
         try:
             payload = json.loads(manifest.read_text(encoding="utf-8"))
             entries = payload.get("entries")
@@ -5967,11 +5854,11 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 if _path_identity(candidate) == _path_identity(path):
                     matches.append(entry)
             if not matches:
-                return "Bundled pre-annotation: none associated"
+                return ""
             if len(matches) != 1:
                 return (
-                    "Bundled pre-annotation: invalid ambiguous association "
-                    f"({len(matches)} entries)"
+                    "Bundled outlines: the manifest lists this image "
+                    f"{len(matches)} times, so none are offered."
                 )
             entry = matches[0]
             mask_path = (
@@ -5984,17 +5871,18 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             )
             count = entry.get("instance_count")
             count_text = (
-                f"{int(count):,} declared seed IDs"
+                f"{int(count):,} seeds"
                 if isinstance(count, int) and not isinstance(count, bool)
-                else "unknown declared count"
+                else "seed count unknown"
             )
-            availability = "available" if mask_path.is_file() else "mask missing"
+            if not mask_path.is_file():
+                return f"Bundled outlines: the mask file is missing\n{mask_path}"
             return (
-                f"Bundled pre-annotation: {availability}; {count_text}; "
-                f"{reviewed_text}\n{mask_path}"
+                f"Bundled outlines available: {count_text}, {reviewed_text}"
+                f"\n{mask_path}"
             )
         except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
-            return f"Bundled pre-annotation: manifest error — {error}"
+            return f"Bundled outlines: the manifest could not be read: {error}"
 
     def _refresh_reference_association_panel(self) -> None:
         """Show disk, project, pending, and in-memory associations for one image."""
@@ -6011,39 +5899,27 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             self._refresh_project_node()
             return
 
-        canonical = self._reference_region_store.path_for(path)
-        explicit = self._project_reference_sidecar_paths.get(key)
-        archive = explicit if explicit is not None else canonical
-        archive_role = (
-            "Project sidecar" if explicit is not None else "Canonical applied archive"
+        recorded = self._project_reference_sidecar_paths.get(key)
+        archive = (
+            recorded
+            if recorded is not None
+            else self._reference_region_store.path_for(path)
         )
-        archive_presence = "exists" if archive.is_file() else "not found"
 
         status, detail = self._reference_region_load_status.get(
-            key,
-            (
-                "withheld"
-                if key in self._withheld_reference_sidecars
-                else "not checked",
-                (
-                    "The open project does not authorize this loose-workspace "
-                    "sidecar."
-                    if key in self._withheld_reference_sidecars
-                    else "No load attempt has been recorded in this session."
-                ),
-            ),
+            key, ("not checked", "")
         )
         status_labels = {
-            "loaded": "Loaded and available to analysis",
-            "pending": "Validated; waiting for corrected-image calibration",
-            "missing": "No applied archive associated",
-            "rejected": "Found but not loaded",
-            "withheld": "Withheld by project association policy",
-            "saved": "Saved and available to analysis",
-            "memory_only": "Applied in memory; disk save failed",
-            "not checked": "Not checked",
+            "loaded": "Loaded and used in analysis.",
+            "pending": "Loaded; waiting for the analysis to deskew the image.",
+            "missing": "No references are saved for this image.",
+            "rejected": "Saved references were not loaded.",
+            "withheld": "References saved outside this project were not loaded.",
+            "saved": "Saved and used in analysis.",
+            "memory_only": "Applied, but saving them failed.",
+            "not checked": "Not checked yet.",
         }
-        status_text = status_labels.get(status, status.replace("_", " ").title())
+        status_text = status_labels.get(status, status.replace("_", " ").capitalize())
 
         pending = self._pending_unbound_reference_bundles.get(key)
         if pending is not None:
@@ -6082,34 +5958,24 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 key, self._applied_seed_annotation_species.get(key, "")
             )
 
-        lines = [
-            f"Current image: {path.name}",
-            f"State: {status_text}",
-            detail,
-            "",
-            f"{archive_role}: {archive_presence}",
-            str(archive),
-        ]
-        if explicit is not None and canonical != explicit and canonical.is_file():
-            lines.extend(
-                (
-                    "",
-                    "Additional loose-workspace archive (not selected by the project):",
-                    str(canonical),
-                )
-            )
+        lines = [path.name, status_text]
+        if detail:
+            lines.append(detail)
+        if archive.is_file():
+            lines.extend(("", f"File: {archive}"))
+        elif recorded is not None:
+            lines.extend(("", f"Missing file: {recorded}"))
         if shape is not None:
             lines.append(
-                f"Saved corrected coordinates: {shape[1]:,} × {shape[0]:,} px"
+                f"Saved for the deskewed image: {shape[1]:,} × {shape[0]:,} px"
             )
         if any(counts):
             lines.extend(
                 (
                     "",
-                    "Known content:",
-                    f"Background {counts[0]:,} px; Foreground {counts[1]:,} px; "
+                    f"Background {counts[0]:,} px · Foreground {counts[1]:,} px · "
                     f"Other {counts[2]:,} px",
-                    f"Seed outlines {counts[3]:,} IDs / {counts[4]:,} px",
+                    f"Seed outlines: {counts[3]:,} ({counts[4]:,} px)",
                 )
             )
             if semantic_annotations:
@@ -6122,30 +5988,27 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                     for annotation in semantic_annotations
                 )
                 lines.append(
-                    f"Seed semantic labels: {coat_count:,} coat-pattern; "
-                    f"{reviewed_count:,} condition-reviewed"
-                    + (
-                        f"; vocabulary {semantic_species}"
-                        if semantic_species
-                        else ""
-                    )
+                    f"Seed labels: {coat_count:,} with a coat pattern, "
+                    f"{reviewed_count:,} with conditions reviewed"
+                    + (f" ({semantic_species})" if semantic_species else "")
                 )
         elif status in {"loaded", "pending", "saved"}:
-            lines.extend(("", "Known content: empty archive"))
-        if key in self._reference_masks_dirty or key in self._instance_annotations_dirty:
-            lines.extend(("", "Draft edits: unapplied (not yet analytical)"))
+            lines.extend(("", "The saved file is empty."))
+        draft = key in self._reference_masks_dirty or key in self._instance_annotations_dirty
+        if draft:
+            lines.extend(("", "Unapplied edits: not used in analysis until applied."))
         bundled_text = self._bundled_instance_association_text(path)
-        lines.extend(("", bundled_text))
+        if bundled_text:
+            lines.extend(("", bundled_text))
         text = "\n".join(lines)
         self.reference_association_label.setText(text)
         self.reference_association_label.setToolTip(text)
-        draft = key in self._reference_masks_dirty or key in self._instance_annotations_dirty
         self.reference_association_summary.setText(
             _reference_summary_html(
                 status,
                 seed_count=counts[3] if any(counts) else 0,
                 draft=draft,
-                bundled_available=bundled_text.startswith("Bundled pre-annotation: available"),
+                bundled_available=bundled_text.startswith("Bundled outlines available"),
             )
         )
         self.reference_association_summary.setToolTip(text)
@@ -6155,13 +6018,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         """Keep long or superseded work visible even between node boundaries."""
 
         if not hasattr(self, "analysis_activity_label"):
-            return
-        presenter = getattr(self, 'pipeline_workflow', None)
-        if presenter is not None and presenter.active:
-            text = presenter.activity or 'Ready to run the selected pipeline.'
-            if presenter._started_at is not None:
-                text += f'\nElapsed: {max(0, monotonic() - presenter._started_at):.0f}s'
-            self.analysis_activity_label.setText(text)
             return
         if not self._analysis_activities:
             self.analysis_activity_label.setText(
@@ -6237,7 +6093,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         return bool(
             getattr(self, '_optimization_task', None) is not None
             or bool(getattr(getattr(self, 'catalogue_nodes', None), 'running', False))
-            or getattr(getattr(self, 'pipeline_workflow', None), '_job', None) is not None
             or self._learning_training_task is not None
             or self._procedural_fit_task is not None
             or self._reference_edge_fit_task is not None
@@ -6562,10 +6417,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             identifier for identifier in self._project_original_image_order
             if identifier not in removed_ids
         )
-        self._project_correction_bindings = tuple(
-            binding for binding in self._project_correction_bindings
-            if binding.image_id not in removed_ids
-        )
         if self._project_unresolved_selected_image_id in removed_ids:
             self._project_unresolved_selected_image_id = None
         if self._pending_analysis_key == key:
@@ -6576,7 +6427,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
 
         if selected:
             self._sync_species_selector()
-            self.pipeline_workflow.image_changed()
+            self.pipeline_workflow.sync_buttons()
             self.catalogue_nodes.image_changed()
             self.pipeline.invalidate(
                 (*self.pipeline.nodes, *self.pipeline.unused_nodes), preserve_bypassed=True
@@ -6620,14 +6471,12 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             # replacement image so the serialized worker cannot continue an
             # obsolete run merely because the user did not request another run.
             self._cancel_noncurrent_image_work(target_key)
-        if self.pipeline_workflow.active:
-            self.pipeline_workflow.stop()
         succeeded, error = self.image_view.load_image(path)
         if not succeeded:
             QMessageBox.warning(self, "Could not open image", f"{path}\n\n{error}")
             return
         self._sync_species_selector()
-        self.pipeline_workflow.image_changed()
+        self.pipeline_workflow.sync_buttons()
         self.catalogue_nodes.image_changed()
         self.filename_label.setText(path.name)
         for index in range(self.image_list.count()):
@@ -6655,14 +6504,20 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             not self._project_manifest_sidecar_policy_active
             or key in self._project_unbound_reference_loads
         )
-        if not reference_load_allowed:
-            self._set_reference_region_load_status(
-                key,
-                "withheld",
-                "The open project has no verified reference-region sidecar "
-                "association for this image; a same-named loose archive is not "
-                "loaded implicitly.",
-            )
+        if (
+            not reference_load_allowed
+            and key not in self._project_unresolved_reference_sidecars
+        ):
+            # The project records no references for this image. Only a file in
+            # the shared workspace folder can exist outside it, and it is never
+            # loaded into a project unasked.
+            shared = self._workspace_reference_region_store.path_for(path)
+            if shared.is_file():
+                self._set_reference_region_load_status(
+                    key, "withheld", f"File: {shared}"
+                )
+            else:
+                self._set_reference_region_load_status(key, "missing", "")
         if (
             reference_load_allowed
             and key not in self._reference_region_autoload_attempted
@@ -6803,9 +6658,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         if self.catalogue_nodes.handles(self.catalogue_nodes._selected):
             self.catalogue_nodes.select_node(self.catalogue_nodes._selected)
             return
-        if self.pipeline_workflow.active:
-            self.pipeline_workflow.select_node(self.pipeline_workflow._selected)
-            return
         self._stop_manual_seed_centre_editing()
         self._stop_reference_point_editing()
         self.image_view.clear_analysis()
@@ -6898,9 +6750,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
     ) -> None:
         if dirty_nodes is None and enabled_node_scope is None:
             self.catalogue_nodes.run()
-        if getattr(self, 'pipeline_workflow', None) is not None and self.pipeline_workflow.active:
-            self.pipeline_workflow.run()
-            return
         if getattr(self, '_closing_after_work', False):
             return
         self._stop_requested = False
@@ -7151,9 +7000,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         if self.catalogue_nodes.handles(node_id):
             self.catalogue_nodes.run(node_id)
             return
-        if getattr(self, 'pipeline_workflow', None) is not None and self.pipeline_workflow.active:
-            self.pipeline_workflow.run(node_id)
-            return
 
         if node_id not in self.pipeline.nodes:
             return
@@ -7311,8 +7157,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         task = self._active_tasks.get(key)
         current_key = self._current_image_key()
         if (
-            self.pipeline_workflow.active
-            or current_key != key
+            current_key != key
             or (
                 task is not None
                 and bool(getattr(task, "cancellation_requested", False))
@@ -7510,8 +7355,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         activity = self._analysis_activities.get(key)
         task = self._active_tasks.get(key)
         cancelled_or_obsolete = (
-            self.pipeline_workflow.active
-            or self._current_image_key() != key
+            self._current_image_key() != key
             or pipeline_revision != self.pipeline.revision
             or (
                 task is not None
@@ -7650,9 +7494,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         return None
 
     def _show_analysis_result(self, result) -> None:
-        if self.pipeline_workflow.active:
-            self.pipeline_workflow.select_node(self.pipeline_workflow._selected)
-            return
         path = result.image_path
         key = _path_identity(path) if path is not None else ""
         if key and not self._prepare_reference_frame(key, result):
@@ -7718,11 +7559,9 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         if card is None:
             self.colour_status_label.setText("Not found; no neutral correction")
         else:
-            gains = calibration.channel_gains_bgr
             self.colour_status_label.setText(
-                f"{card.detected_swatch_count}/24 found; BGR gains "
-                f"{gains[0]:.3f}/{gains[1]:.3f}/{gains[2]:.3f}; "
-                + neutral_balance_description(getattr(calibration, "neutral_balance", None))
+                f"{card.chart or 'Unrecognised chart'}: {card.detected_swatch_count}/{card.patch_count} found; "
+                + colour_correction_summary(calibration)
             )
         ruler = calibration.ruler
         if ruler is None:
@@ -7774,6 +7613,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.dish_status_label.setText(
             f"Petri dish; lower {dish.inner_radius:,} px, upper "
             f"{dish.outer_radius:,} px; confidence {dish.confidence:.0%}"
+            if getattr(result, "vessel_present", True)
+            else _no_vessel_text(result)
         )
         self.reference_status_label.setText(
             f"{result.estimated_seed_diameter_px:.0f} px — "
@@ -8663,12 +8504,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._withheld_reference_sidecars.discard(key)
         self._project_unresolved_reference_sidecars.discard(key)
         self._unsaved_reference_sidecars.discard(key)
-        self._set_reference_region_load_status(
-            key,
-            "loaded",
-            "The fingerprinted archive passed corrected-coordinate validation; "
-            "its applied material regions and seed IDs are installed in memory.",
-        )
+        self._set_reference_region_load_status(key, "loaded", "")
         affected = {
             "project",
             *self.pipeline.downstream_from_port(
@@ -8746,8 +8582,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._set_reference_region_load_status(
             key,
             "saved",
-            "The invalid archive was backed up and replaced by an empty valid "
-            "archive for the current corrected coordinates.",
+            f"The unreadable file was backed up to {backup_path} and replaced "
+            "with an empty one.",
         )
         self._set_project_dirty()
         QMessageBox.information(
@@ -8795,9 +8631,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             self._set_reference_region_load_status(
                 key,
                 "rejected",
-                "Source fingerprint mismatch: the archive is associated with "
-                f"SHA-256 {error.expected_sha256}, while this file is "
-                f"{error.actual_sha256}.",
+                "The image has changed since they were saved "
+                f"(SHA-256 then {error.expected_sha256}, now {error.actual_sha256}).",
             )
             return False
         except (InvalidReferenceArchive, ReferenceRegionError, OSError) as error:
@@ -8816,7 +8651,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             self._set_reference_region_load_status(
                 key,
                 "rejected",
-                f"Archive validation failed: {error}",
+                f"The file could not be read: {error}",
             )
             return False
         if bundle is None:
@@ -8824,12 +8659,14 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 self._withheld_reference_sidecars.add(key)
                 if archive_path is not None:
                     self._project_unresolved_reference_sidecars.add(key)
-            self._set_reference_region_load_status(
-                key,
-                "missing",
-                "No saved applied reference-region archive was found for this "
-                "exact image association.",
-            )
+            if archive_path is not None:
+                self._set_reference_region_load_status(
+                    key,
+                    "rejected",
+                    "The project's file for these references is missing.",
+                )
+            else:
+                self._set_reference_region_load_status(key, "missing", "")
             return False
 
         self._reference_layer_shapes[key] = tuple(
@@ -8837,8 +8674,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         )
         self._unsaved_reference_sidecars.discard(key)
         self._pending_unbound_reference_bundles[key] = bundle
-        self._set_reference_region_load_status(key, "pending",
-            "Source identity verified. Saved references await calibration-frame validation.")
+        self._set_reference_region_load_status(key, "pending", "")
         result = self._analyses.get(key)
         if result is not None:
             self._resolve_pending_project_reference_bundle(key, result)
@@ -9043,7 +8879,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             self._set_reference_region_load_status(
                 key,
                 "memory_only",
-                f"Applied state remains in memory, but its disk save failed: {error}",
+                str(error),
             )
             QMessageBox.critical(
                 self,
@@ -9071,12 +8907,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self._project_reference_sidecar_paths[key] = (
             self._reference_region_store.path_for(path)
         )
-        self._set_reference_region_load_status(
-            key,
-            "saved",
-            "The applied material regions and seed IDs were atomically saved and "
-            "are installed in memory for analysis.",
-        )
+        self._set_reference_region_load_status(key, "saved", "")
         return destination
 
     def _ensure_reference_draft(self, mask_kind: str) -> None:
@@ -9275,6 +9106,18 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             self.paint_background_action.setChecked(False)
         self.image_view.set_context_panel_visible(False)
 
+    def _close_reference_panel(self) -> None:
+        """Finish annotating from the panel's title bar, as the toolbar does.
+
+        Unchecking Materials or Seeds keeps any unapplied edits as a draft.
+        """
+
+        self.annotate_instances_action.setChecked(False)
+        self.paint_background_action.setChecked(False)
+        if not self.reference_panel.isHidden():
+            # A material class can be chosen without the Materials action.
+            self._stop_reference_point_editing()
+
     def _sync_reference_panel_visibility(self) -> None:
         active = (
             self.background_point_button.isChecked()
@@ -9284,6 +9127,9 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             or self.annotate_instances_action.isChecked()
         )
         instance_mode = self.annotate_instances_action.isChecked()
+        self.reference_panel.set_title(
+            "Seed annotation" if instance_mode else "Material annotation"
+        )
         self.reference_controls.setVisible(active and not instance_mode)
         self.instance_annotation_controls.setVisible(instance_mode)
         self.image_view.set_context_panel_visible(
@@ -9437,6 +9283,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         )
         self.instance_brush_slider.setEnabled(has_result and not running)
         for button in (
+            self.instance_select_button,
             self.instance_paint_mode_button,
             self.instance_edge_trace_button,
             self.instance_shape_guided_fill_button,
@@ -9661,8 +9508,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
     @Slot(bool)
     def _background_toolbar_editing_changed(self, enabled: bool) -> None:
         if enabled:
-            if not self._prepare_workflow_annotation_editor():
-                return
             target = (
                 self.background_point_button
                 if self.background_point_button.isEnabled()
@@ -9679,8 +9524,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
 
     @Slot(bool)
     def _background_point_editing_changed(self, enabled: bool) -> None:
-        if enabled and not self._prepare_workflow_annotation_editor():
-            return
         with QSignalBlocker(self.paint_background_action):
             self.paint_background_action.setChecked(enabled)
         if enabled:
@@ -9721,8 +9564,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
 
     @Slot(bool)
     def _foreground_point_editing_changed(self, enabled: bool) -> None:
-        if enabled and not self._prepare_workflow_annotation_editor():
-            return
         with QSignalBlocker(self.paint_background_action):
             self.paint_background_action.setChecked(enabled)
         if enabled:
@@ -9763,8 +9604,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
 
     @Slot(bool)
     def _background_exclusion_editing_changed(self, enabled: bool) -> None:
-        if enabled and not self._prepare_workflow_annotation_editor():
-            return
         with QSignalBlocker(self.paint_background_action):
             self.paint_background_action.setChecked(enabled)
         if enabled:
@@ -9799,8 +9638,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
 
     @Slot(bool)
     def _foreground_exclusion_editing_changed(self, enabled: bool) -> None:
-        if enabled and not self._prepare_workflow_annotation_editor():
-            return
         if enabled:
             for button in (
                 self.background_point_button,
@@ -9834,8 +9671,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
 
     @Slot(bool)
     def _physical_edge_editing_changed(self, enabled: bool) -> None:
-        if enabled and not self._prepare_workflow_annotation_editor():
-            return
         if enabled:
             for button in (
                 self.background_point_button,
@@ -9865,8 +9700,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
 
     @Slot(bool)
     def _non_edge_editing_changed(self, enabled: bool) -> None:
-        if enabled and not self._prepare_workflow_annotation_editor():
-            return
         if enabled:
             for button in (
                 self.background_point_button,
@@ -9897,8 +9730,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
 
     @Slot(bool)
     def _instance_annotation_editing_changed(self, enabled: bool) -> None:
-        if enabled and not self._prepare_workflow_annotation_editor():
-            return
         if enabled:
             with QSignalBlocker(self.background_point_button):
                 self.background_point_button.setChecked(False)
@@ -9934,10 +9765,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         else:
             self.statusBar().showMessage("Seed instance annotation finished.")
         self._sync_reference_panel_visibility()
-
-    def _prepare_workflow_annotation_editor(self):
-        presenter = getattr(self, 'pipeline_workflow', None)
-        return presenter is None or not presenter.active or presenter.display.show_annotations()
 
     @Slot(int)
     def _reference_brush_radius_changed(self, radius: int) -> None:
@@ -9995,6 +9822,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
 
     def _current_instance_tool(self) -> str:
         for button, tool in (
+            (self.instance_select_button, "select"),
             (self.instance_paint_mode_button, "brush"),
             (self.instance_edge_trace_button, "edge_trace"),
             (self.instance_shape_guided_fill_button, "shape_guided_fill"),
@@ -10009,6 +9837,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
     def _instance_tool_selected(self, tool: str, checked: bool) -> None:
         if not checked:
             return
+        if tool != "select":
+            self._instance_tool_before_select = tool
         page = self.instance_tool_pages.get(tool)
         if page is not None:
             self.instance_tool_options_stack.setCurrentWidget(page)
@@ -10019,6 +9849,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
 
     def _show_instance_tool_instructions(self, tool: str) -> None:
         instructions = {
+            "select": "Select: click a painted seed to make it the current seed.",
             "brush": "Brush: paint an interior mark for the current seed; right-drag erases.",
             "edge_trace": "Trace edge: open segments apply as one-pixel edges; return to the cyan first anchor to preview and fill a closed loop.",
             "shape_guided_fill": "Shape fill: use the wheel to size the dotted oval prior, inspect the edge-refined Smart-fill preview, then click to apply.",
@@ -10269,6 +10100,26 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
     def _instance_eraser_toggled(self, enabled: bool) -> None:
         if enabled:
             self._instance_tool_selected("eraser", True)
+
+    @Slot(int)
+    def _instance_annotation_picked(self, identifier: int) -> None:
+        """Make the clicked painted seed current and resume the previous tool."""
+
+        if identifier > self.instance_id_spin.maximum():
+            return
+        self.instance_id_spin.setValue(identifier)
+        tool = self._instance_tool_before_select
+        buttons = {
+            "brush": self.instance_paint_mode_button,
+            "edge_trace": self.instance_edge_trace_button,
+            "shape_guided_fill": self.instance_shape_guided_fill_button,
+            "smart_fill": self.instance_smart_fill_button,
+            "eraser": self.instance_eraser_button,
+        }
+        buttons[tool].setChecked(True)
+        self.statusBar().showMessage(
+            f"Seed {identifier} selected; {buttons[tool].text()} is active."
+        )
 
     @Slot(int)
     def _instance_id_changed(self, identifier: int) -> None:
@@ -11504,12 +11355,27 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             self._species_library_dialog.raise_()
             self._species_library_dialog.activateWindow()
             return
+        image_paths = tuple(self._image_paths.values())
         dialog = SpeciesLibraryManagerDialog(
             service=self._species_library_service,
             context=self._effective_biological_context(),
-            image_paths=tuple(self._image_paths.values()),
+            image_paths=image_paths,
             current_pin=self._project_species_library_pin,
             capture_group_id=self._project_capture_group_id,
+            species=tuple(
+                (vocabulary.species_id, vocabulary.display_name)
+                for vocabulary in self._seed_trait_catalogue.species
+            ),
+            image_species={
+                str(path): self._effective_biological_context(path).species_id
+                for path in image_paths
+            },
+            # Only images with saved annotations can contribute to a library.
+            annotated_paths=frozenset(
+                str(path)
+                for path in image_paths
+                if self._reference_region_store.path_for(path).exists()
+            ),
             parent=self,
         )
         dialog.pin_selected.connect(self._pin_species_library)
@@ -11574,20 +11440,47 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                     "The biological context is invalid."
                 )
             return
-        self._project_biological_context = biological_context
-        self._project_capture_group_id = capture_group_id
-        self._set_project_dirty()
-        self._refresh_project_node()
+        # Included images with no species set take the library's, as the
+        # dialog states; each source must carry the library's species.
+        unset = {
+            _path_identity(Path(value))
+            for value in paths
+            if self._effective_biological_context(Path(value)).species_id == "unknown"
+        }
+        if unset and biological_context.species_id != "unknown":
+            for key in unset:
+                self._project_image_biological_contexts[key] = BiologicalContext(
+                    biological_context.species_id
+                )
+            self._catalogue_context_changed()
+            self._sync_species_selector()
+            self._image_species_changed(unset)
+            if self._species_library_dialog is not None:
+                self._species_library_dialog.update_image_species(
+                    {
+                        str(path): self._effective_biological_context(path).species_id
+                        for path in self._image_paths.values()
+                    },
+                    self._effective_biological_context().species_id,
+                )
+        # The library may be for another species than the project's: its
+        # identifiers then describe that library's sources only.
+        if biological_context.species_id == self._project_level_biological_context().species_id:
+            self._project_biological_context = biological_context
+            self._project_capture_group_id = capture_group_id
+            self._set_project_dirty()
+            self._refresh_project_node()
+        source_capture_group = (
+            self._project_capture_group_id
+            if self._project_capture_group_id is not None
+            else capture_group_id
+        )
         source_contexts = {
-            _path_identity(spec.path): (
-                self._effective_biological_context(spec.path),
-                (
-                    spec.capture_group_id
-                    if spec.capture_group_id is not None
-                    else capture_group_id
-                ),
+            _path_identity(path): (
+                self._effective_biological_context(path),
+                source_capture_group,
             )
-            for spec in self._project_image_specs()
+            for path in self._image_paths.values()
         }
         task = _SpeciesLibraryBuildTask(
             service=self._species_library_service,
@@ -11599,7 +11492,9 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             source_contexts=source_contexts,
             calibration_settings=self._calibration_settings(),
             trait_vocabulary_path=self._root / "config" / "traits.json",
-            species_display_name=self.species_combo.currentText().strip(),
+            species_display_name=self._seed_trait_catalogue.for_species(
+                biological_context.species_id
+            ).display_name,
             base_pin=base_pin,
             removed_source_sha256=tuple(removed_source_sha256),
         )
@@ -11767,7 +11662,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 "Wait for the current analysis or training run to finish.",
             )
             return
-        if self.pipeline_workflow.active or self.pipeline_workflow.graph_pipeline is not PROCEDURAL_SEED_ANALYSIS:
+        if self.pipeline_workflow.graph_pipeline is not PROCEDURAL_SEED_ANALYSIS:
             QMessageBox.information(
                 self,
                 f"Choose {PROCEDURAL_SEED_ANALYSIS.title}",
@@ -11950,9 +11845,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
     ) -> None:
         if self.catalogue_nodes.handles(node_id):
             self.catalogue_nodes.select_node(node_id)
-            return
-        if getattr(self, 'pipeline_workflow', None) is not None and self.pipeline_workflow.active:
-            self.pipeline_workflow.select_node(node_id)
             return
         if action_id == PipelineInspector.OPTIMIZE_NODE_ACTION:
             self._start_node_optimization(node_id)
@@ -12944,14 +12836,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
     @Slot(int)
     def _overlay_changed(self, index: int) -> None:
         del index
-        presenter = getattr(self, 'pipeline_workflow', None)
-        if presenter is not None and presenter.active:
-            # Default-pipeline overlay selections made by annotation tools must
-            # stay in the explicitly selected calibrated editor.
-            if presenter.display.mode == 'annotations':
-                self.image_view.set_overlay_mode('calibrated_image')
-            presenter.display.sync_controls()
-            return
         mode = str(self.overlay_combo.currentData())
         self._rebuild_overlay_menu(mode)
         if not self._installing_project:
@@ -12994,9 +12878,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         if self.catalogue_nodes.handles(selected):
             self.catalogue_nodes.output_requested(selected, mode)
             return
-        if getattr(self, 'pipeline_workflow', None) is not None and self.pipeline_workflow.active:
-            self.pipeline_workflow.select_node(self.pipeline_workflow._selected)
-            return
         index = self.overlay_combo.findData(mode)
         if index < 0:
             return
@@ -13009,10 +12890,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
     @Slot(int)
     def _overlay_opacity_changed(self, value: int) -> None:
         self.overlay_opacity_label.setText(f"{value}%")
-        presenter = getattr(self, 'pipeline_workflow', None)
-        if presenter is not None and presenter.active:
-            presenter.display.set_opacity(value)
-            return
         self.image_view.set_overlay_opacity(value / 100.0)
 
     @Slot(int)
@@ -13105,7 +12982,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 "Original decoded image before deskew, colour balance, or scale overlay."
             ),
             "deskew_colour": (
-                "Geometrically corrected image; neutral balance follows the selected controls. Cyan outlines the "
+                "Geometrically corrected image, with colours corrected as the Deskew and colour correction controls select. Cyan outlines the "
                 "corrected card extent; yellow outlines corrected swatch locations."
             ),
             "colour_reference": (
@@ -13156,6 +13033,13 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 "colour: cyan when it is outside the dish, or orange for the inside-rim "
                 "fallback when too little outer band is visible. The swatch shows the "
                 "selected median starting colour and remains undimmed by overlay opacity."
+            ),
+            "automatic_material_references": (
+                "Reference areas found without painting. Green: Foreground, the inset "
+                "interiors of the confident seeds. Orange: Background, the perimeter ring, "
+                "the rings around the confident seeds or the image border. Magenta: Other, "
+                "the vessel wall when its rim is visible, and the chart and ruler. Painted "
+                "references outweigh these areas as they grow."
             ),
             "seed_scale_estimation": (
                 "Yellow centreline: initial isolated-reference fit (not an uncertainty border). "
@@ -13789,11 +13673,15 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         )
         self.pipeline.set_status(
             "deskew_colour",
-            NodeStatus.COMPLETE if card is not None and getattr(getattr(calibration, "neutral_balance", None), "state", None) != "unavailable" else NodeStatus.WARNING,
+            NodeStatus.COMPLETE
+            if card is not None
+            and getattr(getattr(calibration, "neutral_balance", None), "state", None) != "unavailable"
+            and not colour_correction_fell_back(calibration)
+            else NodeStatus.WARNING,
             (
                 f"Rotated {calibration.deskew_degrees:+.2f}°; "
-                f"{card.detected_swatch_count}/24 swatches; "
-                + neutral_balance_description(getattr(calibration, "neutral_balance", None))
+                f"{card.chart or 'unrecognised chart'}, {card.detected_swatch_count}/{card.patch_count} swatches; "
+                + colour_correction_summary(calibration)
                 if card is not None
                 else f"Rotated {calibration.deskew_degrees:+.2f}°; swatch grid not found"
             ),
@@ -13801,19 +13689,25 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         if calibration.perspective_corrected:
             self.pipeline.set_status(
                 "deskew_colour",
-                NodeStatus.WARNING if getattr(getattr(calibration, "neutral_balance", None), "state", None) == "unavailable" else NodeStatus.COMPLETE,
+                NodeStatus.WARNING
+                if getattr(getattr(calibration, "neutral_balance", None), "state", None) == "unavailable"
+                or colour_correction_fell_back(calibration)
+                else NodeStatus.COMPLETE,
                 f"Projective tilt {calibration.perspective_strength:.3f}; "
                 f"rotation {calibration.deskew_degrees:+.2f}°; "
-                + neutral_balance_description(getattr(calibration, "neutral_balance", None)),
+                + colour_correction_summary(calibration),
             )
         self.pipeline.set_status(
             "layout_detection",
             (
                 NodeStatus.COMPLETE
                 if result.dish.rim_pair_detected
+                or not getattr(result, "vessel_present", True)
                 else NodeStatus.WARNING
             ),
-            (
+            _no_vessel_text(result)
+            if not getattr(result, "vessel_present", True)
+            else (
                 f"Centre ({result.dish.center_x}, {result.dish.center_y}); "
                 f"lower {result.dish.inner_radius}px; upper "
                 f"{result.dish.outer_radius}px; confidence "
@@ -13834,9 +13728,26 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             ),
             f"{result.estimated_seed_diameter_px:.1f}px from "
             f"{result.seed_diameter_source}; "
-            f"{result.reference_seed_count} isolated fit(s), "
-            f"{sum(1 for item in result.annotated_seed_diameters if item.complete)} complete annotated width(s)",
+            f"{result.reference_seed_count} isolated fit(s)"
+            + (
+                ""
+                if result.initial_seed_sides_px is None
+                else " (median {:.1f} × {:.1f} px)".format(*result.initial_seed_sides_px)
+            )
+            + f", {sum(1 for item in result.annotated_seed_diameters if item.complete)} complete annotated width(s)",
         )
+        automatic_references = getattr(result, "automatic_material_references", None)
+        if automatic_references is not None:
+            self.pipeline.set_status(
+                "automatic_material_references",
+                (
+                    NodeStatus.COMPLETE
+                    if automatic_references.foreground is not None
+                    and automatic_references.background_source != "none"
+                    else NodeStatus.WARNING
+                ),
+                describe_automatic_references(automatic_references),
+            )
         self.pipeline.set_status(
             "hue_only",
             NodeStatus.COMPLETE,
@@ -13849,19 +13760,21 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         )
         sampling_band = result.perimeter_background_band
         layout_node = self.pipeline.node("layout_detection")
-        self.pipeline.set_status(
-            "layout_detection",
-            (
-                NodeStatus.COMPLETE
-                if result.dish.rim_pair_detected and sampling_band.outside_vessel
-                else NodeStatus.WARNING
-            ),
-            layout_node.status_detail
-            + f"; background annulus {sampling_band.buffer_cm:.2f} cm buffer / "
-            + f"{sampling_band.thickness_cm:.2f} cm band / "
-            + f"{sampling_band.sample_count:,} pixels"
-            + ("" if sampling_band.outside_vessel else "; inside-rim fallback"),
-        )
+        # Without a vessel the annulus rings a circle that is not there.
+        if getattr(result, "vessel_present", True):
+            self.pipeline.set_status(
+                "layout_detection",
+                (
+                    NodeStatus.COMPLETE
+                    if result.dish.rim_pair_detected and sampling_band.outside_vessel
+                    else NodeStatus.WARNING
+                ),
+                layout_node.status_detail
+                + f"; background annulus {sampling_band.buffer_cm:.2f} cm buffer / "
+                + f"{sampling_band.thickness_cm:.2f} cm band / "
+                + f"{sampling_band.sample_count:,} pixels"
+                + ("" if sampling_band.outside_vessel else "; inside-rim fallback"),
+            )
         foreground_fraction = result.foreground_pixel_count / max(
             1, result.analysis_region_pixel_count
         )
@@ -13876,8 +13789,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             f"{foreground_colour_profile.library_source_count} library source(s) / "
             f"{foreground_colour_profile.library_profile_count} profile(s)"
             if foreground_colour_profile is not None
-            else "Foreground has no painted or enabled annotated-seed reference; "
-            "probability is intentionally zero"
+            else "Foreground has no painted, annotated-seed or automatic seed "
+            "reference; probability is intentionally zero"
         )
         self.pipeline.set_status(
             "distance_candidates",
@@ -13949,14 +13862,15 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         background_deviation = float(
             getattr(result, "background_prior_deviation", 0.0)
         )
-        prior_warning = background_deviation >= 18.0
+        vessel_present = getattr(result, "vessel_present", True)
+        prior_warning = vessel_present and background_deviation >= 18.0
         prior_suffix = (
             f"; perimeter deviation ΔLab {background_deviation:.1f}"
-            if background_mode != "disabled"
+            if background_mode != "disabled" and vessel_present
             else ""
         )
         sampling_band = getattr(result, "perimeter_background_band", None)
-        if sampling_band is not None and background_mode != "disabled":
+        if sampling_band is not None and background_mode != "disabled" and vessel_present:
             prior_suffix += (
                 f"; initial {'outer' if sampling_band.outside_vessel else 'inner fallback'} "
                 f"band {sampling_band.sample_count:,} px; "
@@ -14570,13 +14484,8 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             self.pipeline_workflow.sync_buttons()
             return
         self.catalogue_nodes.clear_selection()
-        if not self.pipeline_workflow.active:
-            self.image_display_stack.setCurrentWidget(self.image_view)
-            self.pipeline_workflow.facts.hide()
-            self.pipeline_workflow.node_actions.hide()
-        if getattr(self, 'pipeline_workflow', None) is not None and self.pipeline_workflow.active:
-            self.pipeline_workflow.select_node(node_id)
-            return
+        self.image_display_stack.setCurrentWidget(self.image_view)
+        self.pipeline_workflow.facts.hide()
         selection_changed = node_id != self._selected_pipeline_node
         if node_id != "procedural_instances" and self.image_view.manual_seed_centre_editing:
             self._stop_manual_seed_centre_editing()
@@ -14587,8 +14496,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             self._context_library_key = None
         self._refresh_project_node()
         self.pipeline_inspector.set_node(self.pipeline.node(node_id))
-        if hasattr(self, "pipeline_backends"):
-            self.pipeline_backends.refresh()
         self.pipeline_inspector.enable_unified_optimization()
         # Selected-node controls live at the top of the panel, so reset from
         # whichever summary section the user had previously been viewing.
@@ -14642,9 +14549,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
     def _pipeline_unused_node_restored(self, node_id: str) -> None:
         """Expose a toolbox node's viewer layer after explicit restoration."""
         self.catalogue_nodes.sync_primary()
-        if getattr(self, 'pipeline_workflow', None) is not None and self.pipeline_workflow.active:
-            self.pipeline_workflow.connections_changed()
-            return
 
         mode = VIEWER_NODE_MODES.get(node_id)
         self._rebuild_overlay_combo(mode)
@@ -14663,9 +14567,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
     def _pipeline_unused_node_shelved(self, node_id: str) -> None:
         """Remove an optional node's viewer product and stale cached result."""
         self.catalogue_nodes.sync_primary()
-        if getattr(self, 'pipeline_workflow', None) is not None and self.pipeline_workflow.active:
-            self.pipeline_workflow.connections_changed()
-            return
 
         self._rebuild_overlay_combo("raw_image")
         for image_key in set(self._analysis_caches) | set(self._analyses):
@@ -14691,9 +14592,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             return
         if self.catalogue_nodes.handles(node_id):
             self.catalogue_nodes.parameter_changed(node_id, key, value)
-            return
-        if getattr(self, 'pipeline_workflow', None) is not None and self.pipeline_workflow.active:
-            self.pipeline_workflow.parameter_changed(node_id, key, value)
             return
         parameter_spec = next(
             (
@@ -14775,9 +14673,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             return
         if self.catalogue_nodes.handles(node_id):
             self.catalogue_nodes.reset_parameters(node_id)
-            return
-        if getattr(self, 'pipeline_workflow', None) is not None and self.pipeline_workflow.active:
-            self.pipeline_workflow.reset_parameters(node_id)
             return
         node = self.pipeline.node(node_id)
         parameter_specs = {spec.key: spec for spec in node.parameter_specs}
@@ -14948,9 +14843,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             return
         if self.catalogue_nodes.connections_changed(affected):
             return
-        if getattr(self, 'pipeline_workflow', None) is not None and self.pipeline_workflow.active:
-            self.pipeline_workflow.connections_changed(affected)
-            return
 
         affected_set = set(affected)
         if not affected_set:
@@ -15028,9 +14920,6 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             return
         if self.catalogue_nodes.handles(node_id):
             self.catalogue_nodes.enabled_changed(node_id, enabled)
-            return
-        if getattr(self, 'pipeline_workflow', None) is not None and self.pipeline_workflow.active:
-            self.pipeline_workflow.enabled_changed(node_id, enabled)
             return
         if enabled and node_id in {"unet_instances", "stardist_instances"}:
             configured = Path(
@@ -15125,6 +15014,11 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
                 image_key for image_key in set(self._analysis_caches) | set(self._analyses)
                 if image_key not in self._project_image_biological_contexts
             )
+        self._image_species_changed(changed)
+
+    def _image_species_changed(self, changed: set[str]) -> None:
+        """Re-run the species-dependent nodes of images whose species changed."""
+
         self._set_project_dirty()
         self._refresh_project_node()
         self._populate_seed_coat_patterns()
@@ -15145,12 +15039,15 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
             for image_key in changed:
                 self._cache_dirty_nodes.setdefault(image_key, set()).update(affected)
                 self._analyses.pop(image_key, None)
-        if key is None:
+        key = self._current_image_key()
+        if key is None or key not in changed:
             return
-        self.pipeline.set_status("metadata", NodeStatus.COMPLETE, species)
+        self.pipeline.set_status(
+            "metadata", NodeStatus.COMPLETE, self._image_species_name(key)
+        )
         if affected:
             self.pipeline.invalidate(affected)
-            if key in self._analysis_caches and not self.pipeline_workflow.active:
+            if key in self._analysis_caches:
                 self._analyze_current_image(dirty_nodes=affected)
         self.pipeline_canvas.refresh(("metadata", *affected))
 
@@ -15232,16 +15129,12 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
 
         if getattr(self, 'pipeline_workflow', None) is not None:
             self.pipeline_workflow.sync_buttons()
-            presenter = self.pipeline_workflow
-            display = getattr(presenter, 'display', None)
-            if presenter.active and display is not None:
-                display.sync_controls()
 
     def _show_pipeline_workspace(self) -> None:
         self.pipeline_workspace_action.setChecked(True)
         self.pipeline_workflow.strip.setVisible(True)
         self.image_workspace_action.setChecked(False)
-        self.pipeline_canvas.select_node(self.pipeline_workflow._selected if self.pipeline_workflow.active else self._selected_pipeline_node)
+        self.pipeline_canvas.select_node(self._selected_pipeline_node)
 
     def _catalogue_context_changed(self) -> None:
         catalogue = getattr(self, 'catalogue_nodes', None)
@@ -15265,7 +15158,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
         self.pipeline_canvas.refresh()
 
     def _fit_active_workspace(self) -> None:
-        if self.pipeline_workflow.active:
+        if self.pipeline_workflow.preview.isVisible():
             self.pipeline_workflow.preview.fit_image()
         if self.pipeline_canvas.isVisible():
             self.pipeline_canvas.fit_graph()
@@ -15302,7 +15195,7 @@ class MainWindow(ResultsController, WorkController, ReferenceFrameController, Op
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt override
         """Finish the sole GPU job and deterministically release owned caches."""
 
-        self.pipeline_workflow.stop()
+        self._stop_current_work()
         self.catalogue_nodes.stop()
         if self._thread_pool.activeThreadCount() > 0:
             self._closing_after_work = True

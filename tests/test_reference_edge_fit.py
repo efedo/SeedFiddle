@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from tests.catalogue_fixtures import CatalogueTestCase
 
 from tests.functional_units import functional_units
 
@@ -23,7 +22,7 @@ from seedvision.visualization import AnalysisLayerSettings
 
 
 @functional_units
-class ReferenceEdgeFitTests(CatalogueTestCase):
+class ReferenceEdgeFitTests(unittest.TestCase):
     def check_test_internal_prototype_sources_are_prominent_normal_maxima(self) -> None:
         import torch
 

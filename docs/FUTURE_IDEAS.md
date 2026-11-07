@@ -123,12 +123,3 @@ related historical suggestions do not become commitments automatically.
   candidates for targeted material painting or focused instance-boundary
   correction in the authoritative seed-ID layer.
 
-## 2026-10-03 — accepted peer-functionality direction
-
-The [root roadmap](../PLAN.md) now adopts the
-[PlantCV–SMPTS implementation/benchmark plan](PLANTCV_SMPTS_IMPLEMENTATION_PLAN.md).
-Comparison infrastructure and selected seed-focused capabilities are planned work,
-not merely brainstorm items. Related older ideas (method disagreement, contour
-refinement, synthetic development data and correction-time studies) remain historical
-suggestions; only the explicitly scoped F01–F22/WP0–WP6 contracts are commitments.
-No particular routing policy or extra learned architecture is promoted by this entry.

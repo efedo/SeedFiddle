@@ -16,12 +16,12 @@
   extension rules.
 - [Testing](TESTING.md): runner, tiers, prerequisites and CI. Generated
   [test inventory](testing/TEST_INVENTORY.md); the
-  [18 October consolidation](archive/TEST_SUITE_REDESIGN_2026_10_18.md); the
-  [frozen recipe profile coverage](testing/RECIPE_PROFILE_COVERAGE.md).
+  [18 October consolidation](archive/TEST_SUITE_REDESIGN_2026_10_18.md).
 - [Node catalogue](NODE_CATALOGUE.md): generated list of every node, control,
   default and optimisation status. Regenerate with `scripts/generate_node_catalogue.py`.
-- [Roadmap](../PLAN.md): engineering phases, the peer-functionality direction and the
-  remaining validation phases.
+- [Roadmap](../PLAN.md): engineering phases and the remaining validation phases.
+- [Benchmark reports](BENCHMARK_REPORTS.md): the grouped method comparison run from
+  the launcher.
 
 ## Methods and science
 
@@ -40,23 +40,6 @@
   [local edge normalisation](LOCAL_EDGE_NORMALIZATION.md) and
   [ruler evidence detection](RULER_EVIDENCE_DETECTION.md): implementation records for
   specific calculations. Their UI descriptions may predate the current window.
-
-## PlantCV–SMPTS peer functionality
-
-- [Comparison report](PLANTCV_SMPTS_COMPARISON.md): rationale and scope.
-- [Implementation and benchmark plan](PLANTCV_SMPTS_IMPLEMENTATION_PLAN.md): the
-  design specification (families F01–F22, work packages WP0–WP6).
-- [Method and input-domain inventory](PLANTCV_SMPTS_METHOD_DOMAIN_MATRIX.md) and its
-  [JSON](plantcv_smpts_method_domain_matrix.json); the operation-level
-  [feature register](plantcv_smpts_features.json) (validated by
-  `tests/test_peer_feature_register.py`); the
-  [acceptance audit](PLANTCV_SMPTS_ACCEPTANCE_AUDIT.json).
-- [Benchmark reports](BENCHMARK_REPORTS.md): command-line benchmark actions and the
-  reference-environment setup.
-- Third-party algorithm notices: [OpenCV](OPENCV_MATH_NOTICES.md),
-  [scikit-image watershed](SCIKIT_IMAGE_WATERSHED_NOTICES.md),
-  [SciPy k-means](SCIPY_KMEANS_NOTICES.md), [scikit-learn k-means](SKLEARN_KMEANS_NOTICES.md),
-  [Bayes KDE](BAYES_KDE_NOTICES.md).
 
 ## Ideas and history
 

@@ -1,6 +1,5 @@
 """Procedural and Cellpose seed analysis are one catalogue with different active nodes."""
 
-from tests.catalogue_fixtures import CatalogueTestCase
 
 from tests.functional_units import functional_units
 import json
@@ -30,7 +29,7 @@ INSTALLED = 'seedvision.learning.cellpose_sam.cellpose_installed'
 
 
 @functional_units
-class GraphDefaultPipelineTests(CatalogueTestCase):
+class GraphDefaultPipelineTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])
@@ -134,17 +133,6 @@ class GraphDefaultPipelineTests(CatalogueTestCase):
         self.assertEqual(warning.call_args.args[1], 'Cellpose-SAM is not installed')
         self.assert_on(PROCEDURAL_SEED_ANALYSIS, set(build_procedural_pipeline().nodes))
 
-    def check_test_returning_from_a_factory_pipeline_keeps_the_graph(self):
-        self.choose(CELLPOSE_SEED_ANALYSIS)
-        self.presenter.select_template('plantcv_threshold_triangle')
-        self.assertEqual(self.presenter.workflow.recipe.recipe_id, 'plantcv_threshold_triangle')
-        self.assertEqual(set(self.window.pipeline.nodes), CELLPOSE_NODES)
-        self.presenter.select_template(None)
-        self.assert_on(CELLPOSE_SEED_ANALYSIS, CELLPOSE_NODES)
-        self.presenter.select_template('plantcv_threshold_triangle')
-        self.choose(PROCEDURAL_SEED_ANALYSIS)
-        self.assert_on(PROCEDURAL_SEED_ANALYSIS, set(build_procedural_pipeline().nodes))
-
     def check_test_a_copy_keeps_its_graph_across_pipeline_changes(self):
         self.choose(CELLPOSE_SEED_ANALYSIS)
         with (patch.object(QMessageBox, 'question', return_value=YES),
@@ -197,12 +185,11 @@ class GraphDefaultPipelineTests(CatalogueTestCase):
         self.scenario(self.check_test_graph_says_which_pipeline_it_came_from)
 
     def test_choosing_between_them(self):
-        """10 related GraphDefaultPipelineTests scenarios, each with private fixture state."""
+        """9 related GraphDefaultPipelineTests scenarios, each with private fixture state."""
         self.scenario(self.check_test_list_changes_the_graph_and_back)
         self.scenario(self.check_test_changing_pipeline_keeps_shared_nodes_and_clears_the_open_result)
         self.scenario(self.check_test_overlays_follow_the_chosen_pipeline)
         self.scenario(self.check_test_missing_package_keeps_the_current_pipeline)
-        self.scenario(self.check_test_returning_from_a_factory_pipeline_keeps_the_graph)
         self.scenario(self.check_test_a_copy_keeps_its_graph_across_pipeline_changes)
         self.scenario(self.check_test_titles_are_reserved_for_copies)
         self.scenario(self.check_test_project_reopens_on_the_pipeline_it_was_saved_on)

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from tests.catalogue_fixtures import CatalogueTestCase
 
 from tests.functional_units import functional_units
 
@@ -18,7 +17,7 @@ from seedvision.persistence import ReferenceRegionBundle
 
 
 @functional_units
-class ReferenceUndoUiTests(CatalogueTestCase):
+class ReferenceUndoUiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
